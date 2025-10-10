@@ -1,5 +1,5 @@
 #include "lexer.h"
-#include "alloc.h"
+#include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -115,7 +115,7 @@ static Token lexer_error_token(Lexer *lexer, const char *message) {
 }
 
 // Keyword lookup table
-static TokenType lexer_check_keyword(const char *start, int length, const char *rest, TokenType type) {
+static TokenType lexer_check_keyword(const char *start, size_t length, const char *rest, TokenType type) {
     return (strlen(rest) == length && memcmp(start, rest, length) == 0) ? type : TOKEN_IDENTIFIER;
 }
 

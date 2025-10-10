@@ -2,6 +2,7 @@
 #define LEXER_H
 
 #include "ast.h"  // For Location
+#include "alloc.h"
 #include <stddef.h>
 
 // Token types
