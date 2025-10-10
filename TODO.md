@@ -328,20 +328,18 @@ Test each pass incrementally:
 
 Start with tiny programs:
 ```
-fn main() -> int {
+fn main() int {
     return 42;
 }
 ```
 
 Then grow:
 ```
-fn add(a: int, b: int) -> int {
+fn add(a int, b int) int {
     return a + b;
 }
 
-fn main() -> int {
-    return add(5, 10);
-}
+fn main() int => add(5, 10)
 ```
 
 Then add complexity:
@@ -351,7 +349,7 @@ type Point = struct {
     y: int;
 };
 
-fn distance(p: Point) -> int {
+fn distance(p Point) int {
     return p.x + p.y;  // simplified
 }
 ```
