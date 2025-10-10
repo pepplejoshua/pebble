@@ -63,7 +63,13 @@ struct AstNode {
     Location loc;
     union {
         // Declarations
-        struct { char *name; AstNode *type_expr; AstNode *body; } func_decl;
+        struct {
+          char *name;
+          FuncParam *params;
+          size_t param_count;
+          AstNode *return_type;
+          AstNode *body;
+        } func_decl;
         struct { char *name; AstNode *type_expr; AstNode *init; } var_decl;
         struct { char *name; AstNode *type_expr; AstNode *value; } const_decl;
         struct { char *name; AstNode *type_expr; } type_decl;

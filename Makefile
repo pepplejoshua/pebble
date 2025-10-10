@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g -I utils -I deps
-OBJS = utils/alloc.o lexer.o parser.o ast.o symbol.o type.o checker.o main.o
+CFLAGS = -Wall -Wextra -g -I utils -I deps -I ast
+OBJS = utils/alloc.o ast/ast.o lexer.o parser.o symbol.o type.o checker.o main.o
 
 pebble: $(OBJS)
 	$(CC) $(CFLAGS) -o pebble $(OBJS)
