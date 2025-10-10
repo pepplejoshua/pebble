@@ -1,7 +1,7 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -g -I src
 # OBJS = alloc.o ast.o lexer.o parser.o symbol.o type.o checker.o main.o
-OBJS = alloc.o ast.o symbol.o type.o main.o
+OBJS = src/alloc.o src/ast.o src/symbol.o src/type.o src/main.o
 
 peb: $(OBJS)
 	$(CC) $(CFLAGS) -o peb $(OBJS)
