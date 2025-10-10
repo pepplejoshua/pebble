@@ -42,7 +42,7 @@ void stack_alloc_init(StackAlloc *sa, size_t arena_capacity, size_t scope_capaci
 }
 
 void stack_push_scope(StackAlloc *sa) {
-    Scope *new_scope = arena_alloc(&sa->arena, sizeof(Scope));
+    StackScope *new_scope = arena_alloc(&sa->arena, sizeof(StackScope));
     new_scope->buffer = arena_alloc(&sa->arena, sa->scope_capacity);
     new_scope->capacity = sa->scope_capacity;
     new_scope->used = 0;
@@ -58,7 +58,7 @@ void stack_pop_scope(StackAlloc *sa) {
 
 void *stack_alloc(StackAlloc *sa, size_t size) {
     assert(sa->current && "No current scope");
-    Scope *scope = sa->current;
+    StackScope *scope = sa->current;
     if (scope->used + size > scope->capacity) {
         // For simplicity, just assert; in a real impl, you could grow or error
         assert(0 && "Scope capacity exceeded");

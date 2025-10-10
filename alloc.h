@@ -15,15 +15,15 @@ void *arena_alloc(Arena *arena, size_t size);
 void arena_free(Arena *arena);  // Frees the whole arena
 
 // Ephemeral stack allocator
-typedef struct Scope {
+typedef struct StackScope {
     char *buffer;
     size_t capacity;
     size_t used;
-    struct Scope *prev;  // Stack link
-} Scope;
+    struct StackScope *prev;  // Stack link
+} StackScope;
 
 typedef struct {
-    Scope *current;
+    StackScope *current;
     Arena arena;  // Use the long-lived arena to allocate scope buffers
     size_t scope_capacity;
 } StackAlloc;

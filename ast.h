@@ -2,6 +2,7 @@
 #define AST_H
 
 #include <stddef.h>  // For size_t
+#include <stdbool.h> // For bool
 
 // Forward declarations
 typedef struct AstNode AstNode;
