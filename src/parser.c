@@ -448,3 +448,339 @@ AstNode *parse_expression_stmt(Parser *parser) {
     stmt->data.expr_stmt.expr = expr;
     return stmt;
 }
+
+// ============================================================================
+// EXPRESSION PARSING
+// ============================================================================
+
+AstNode *parse_expression(Parser *parser) {
+    return parse_or_expr(parser);
+}
+
+AstNode *parse_or_expr(Parser *parser) {
+    AstNode *left = parse_and_expr(parser);
+
+    while (parser_match(parser, TOKEN_OR)) {
+        Location loc = parser->previous.location;
+        AstNode *right = parse_and_expr(parser);
+
+        AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, loc);
+        binop->data.binop.op = BINOP_OR;
+        binop->data.binop.left = left;
+        binop->data.binop.right = right;
+        left = binop;
+    }
+
+    return left;
+}
+
+AstNode *parse_and_expr(Parser *parser) {
+    AstNode *left = parse_equality(parser);
+
+    while (parser_match(parser, TOKEN_AND)) {
+        Location loc = parser->previous.location;
+        AstNode *right = parse_equality(parser);
+
+        AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, loc);
+        binop->data.binop.op = BINOP_AND;
+        binop->data.binop.left = left;
+        binop->data.binop.right = right;
+        left = binop;
+    }
+
+    return left;
+}
+
+AstNode *parse_equality(Parser *parser) {
+    AstNode *left = parse_comparison(parser);
+
+    while (parser_match(parser, TOKEN_EQ) || parser_match(parser, TOKEN_NE)) {
+        Token op = parser->previous;
+        AstNode *right = parse_comparison(parser);
+
+        AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+        binop->data.binop.op = token_to_binary_op(op.type);
+        binop->data.binop.left = left;
+        binop->data.binop.right = right;
+        left = binop;
+    }
+
+    return left;
+}
+
+AstNode *parse_comparison(Parser *parser) {
+    AstNode *left = parse_term(parser);
+
+    while (parser_match(parser, TOKEN_LT) || parser_match(parser, TOKEN_LE) ||
+           parser_match(parser, TOKEN_GT) || parser_match(parser, TOKEN_GE)) {
+        Token op = parser->previous;
+        AstNode *right = parse_term(parser);
+
+        AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+        binop->data.binop.op = token_to_binary_op(op.type);
+        binop->data.binop.left = left;
+        binop->data.binop.right = right;
+        left = binop;
+    }
+
+    return left;
+}
+
+AstNode *parse_term(Parser *parser) {
+    AstNode *left = parse_factor(parser);
+
+    while (parser_match(parser, TOKEN_PLUS) || parser_match(parser, TOKEN_MINUS)) {
+        Token op = parser->previous;
+        AstNode *right = parse_factor(parser);
+
+        AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+        binop->data.binop.op = token_to_binary_op(op.type);
+        binop->data.binop.left = left;
+        binop->data.binop.right = right;
+        left = binop;
+    }
+
+    return left;
+}
+
+AstNode *parse_factor(Parser *parser) {
+    AstNode *left = parse_unary(parser);
+
+    while (parser_match(parser, TOKEN_STAR) || parser_match(parser, TOKEN_SLASH)) {
+        Token op = parser->previous;
+        AstNode *right = parse_unary(parser);
+
+        AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+        binop->data.binop.op = token_to_binary_op(op.type);
+        binop->data.binop.left = left;
+        binop->data.binop.right = right;
+        left = binop;
+    }
+
+    return left;
+}
+
+AstNode *parse_unary(Parser *parser) {
+    if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT)) {
+        Token op = parser->previous;
+        AstNode *operand = parse_unary(parser);  // Right-associative (allow chaining)
+
+        AstNode *unop = alloc_node(AST_EXPR_UNARY_OP, op.location);
+        unop->data.unop.op = token_to_unary_op(op.type);
+        unop->data.unop.operand = operand;
+        return unop;
+    }
+
+    return parse_postfix(parser);
+}
+
+AstNode *parse_postfix(Parser *parser) {
+    AstNode *expr = parse_primary(parser);
+
+    while (true) {
+        if (parser_match(parser, TOKEN_LPAREN)) {
+            // Function call: expr(args)
+            expr = parse_call(parser, expr);
+        } else if (parser_match(parser, TOKEN_LBRACKET)) {
+            // Array indexing: expr[index]
+            expr = parse_index(parser, expr);
+        } else if (parser_match(parser, TOKEN_DOT)) {
+            // Member access: expr.member
+            expr = parse_member(parser, expr);
+        } else {
+            break;
+        }
+    }
+
+    return expr;
+}
+
+AstNode *parse_call(Parser *parser, AstNode *func) {
+    Location loc = parser->previous.location;
+
+    // Parse arguments
+    AstNode **args = NULL;
+    size_t arg_count = 0;
+
+    if (!parser_check(parser, TOKEN_RPAREN)) {
+        args = arena_alloc(&long_lived, 16 * sizeof(AstNode*));  // Max 16 args
+
+        do {
+            if (arg_count >= 16) {
+                parser_error(parser, "Too many arguments (max 16)");
+                break;
+            }
+            args[arg_count++] = parse_expression(parser);
+        } while (parser_match(parser, TOKEN_COMMA));
+    }
+
+    parser_consume(parser, TOKEN_RPAREN, "Expected ')' after arguments");
+
+    AstNode *call = alloc_node(AST_EXPR_CALL, loc);
+    call->data.call.func = func;
+    call->data.call.args = args;
+    call->data.call.arg_count = arg_count;
+    return call;
+}
+
+AstNode *parse_index(Parser *parser, AstNode *array) {
+    Location loc = parser->previous.location;
+
+    AstNode *index = parse_expression(parser);
+    parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after index");
+
+    AstNode *idx = alloc_node(AST_EXPR_INDEX, loc);
+    idx->data.index_expr.array = array;
+    idx->data.index_expr.index = index;
+    return idx;
+}
+
+AstNode *parse_member(Parser *parser, AstNode *object) {
+    Location loc = parser->previous.location;
+
+    Token member = parser_consume(parser, TOKEN_IDENTIFIER, "Expected member name after '.'");
+
+    AstNode *mem = alloc_node(AST_EXPR_MEMBER, loc);
+    mem->data.member_expr.object = object;
+    mem->data.member_expr.member = str_dup(member.lexeme);
+    return mem;
+}
+
+AstNode *parse_primary(Parser *parser) {
+    // Literals
+    if (parser_match(parser, TOKEN_INT)) {
+        Token num = parser->previous;
+        AstNode *lit = alloc_node(AST_EXPR_LITERAL_INT, num.location);
+        lit->data.int_lit.value = num.value.int_val;
+        return lit;
+    }
+
+    if (parser_match(parser, TOKEN_FLOAT)) {
+        Token num = parser->previous;
+        AstNode *lit = alloc_node(AST_EXPR_LITERAL_FLOAT, num.location);
+        lit->data.float_lit.value = num.value.float_val;
+        return lit;
+    }
+
+    if (parser_match(parser, TOKEN_STRING)) {
+        Token str = parser->previous;
+        AstNode *lit = alloc_node(AST_EXPR_LITERAL_STRING, str.location);
+        lit->data.str_lit.value = str.value.str_val;  // Already duplicated by lexer
+        return lit;
+    }
+
+    if (parser_match(parser, TOKEN_TRUE) || parser_match(parser, TOKEN_FALSE)) {
+        Token bool_tok = parser->previous;
+        AstNode *lit = alloc_node(AST_EXPR_LITERAL_BOOL, bool_tok.location);
+        lit->data.bool_lit.value = bool_tok.value.bool_val;
+        return lit;
+    }
+
+    // Identifier
+    if (parser_match(parser, TOKEN_IDENTIFIER)) {
+        Token ident = parser->previous;
+        AstNode *id = alloc_node(AST_EXPR_IDENTIFIER, ident.location);
+        id->data.ident.name = str_dup(ident.lexeme);
+        return id;
+    }
+
+    // Parenthesized expression
+    if (parser_match(parser, TOKEN_LPAREN)) {
+        AstNode *expr = parse_expression(parser);
+        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
+        return expr;
+    }
+
+    parser_error(parser, "Expected expression");
+    return NULL;
+}
+
+// ============================================================================
+// TYPE EXPRESSION PARSING
+// ============================================================================
+
+AstNode *parse_type_expression(Parser *parser) {
+    AstNode *type = NULL;
+
+    // Pointer type: *T
+    if (parser_match(parser, TOKEN_STAR)) {
+        Location loc = parser->previous.location;
+        AstNode *base = parse_type_expression(parser);  // Recursive for **T, etc.
+
+        type = alloc_node(AST_TYPE_POINTER, loc);
+        type->data.type_pointer.base = base;
+        return type;
+    }
+
+    // Array or slice: [N]T or []T
+    if (parser_match(parser, TOKEN_LBRACKET)) {
+        Location loc = parser->previous.location;
+
+        // Check for slice []T vs array [N]T
+        if (parser_match(parser, TOKEN_RBRACKET)) {
+            // Slice: []T
+            AstNode *element = parse_type_expression(parser);
+            type = alloc_node(AST_TYPE_SLICE, loc);
+            type->data.type_slice.element = element;
+            return type;
+        } else {
+            // Array: [N]T
+            if (!parser_check(parser, TOKEN_INT)) {
+                parser_error(parser, "Expected array size");
+                return NULL;
+            }
+            Token size_tok = parser->previous;
+            parser_advance(parser);
+            size_t size = (size_t)size_tok.value.int_val;
+
+            parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after array size");
+            AstNode *element = parse_type_expression(parser);
+
+            type = alloc_node(AST_TYPE_ARRAY, loc);
+            type->data.type_array.element = element;
+            type->data.type_array.size = size;
+            return type;
+        }
+    }
+
+    // Built-in types
+    if (parser_match(parser, TOKEN_INT_TYPE)) {
+        type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+        type->data.type_named.name = str_dup("int");
+        return type;
+    }
+
+    if (parser_match(parser, TOKEN_FLOAT_TYPE)) {
+        type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+        type->data.type_named.name = str_dup("float");
+        return type;
+    }
+
+    if (parser_match(parser, TOKEN_BOOL_TYPE)) {
+        type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+        type->data.type_named.name = str_dup("bool");
+        return type;
+    }
+
+    if (parser_match(parser, TOKEN_STR_TYPE)) {
+        type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+        type->data.type_named.name = str_dup("str");
+        return type;
+    }
+
+    if (parser_match(parser, TOKEN_VOID_TYPE)) {
+        type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+        type->data.type_named.name = str_dup("void");
+        return type;
+    }
+
+    // Custom/named types
+    if (parser_match(parser, TOKEN_IDENTIFIER)) {
+        type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+        type->data.type_named.name = str_dup(parser->previous.lexeme);
+        return type;
+    }
+
+    parser_error(parser, "Expected type");
+    return NULL;
+}
