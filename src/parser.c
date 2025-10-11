@@ -170,17 +170,47 @@ static AstNode *alloc_node(AstKind kind, Location loc) {
 // ============================================================================
 
 AstNode *parse_program(Parser *parser) {
-    if (parser->current.type == TOKEN_EOF) {
-        return NULL;
+    // Parse all top-level declarations
+    AstNode **decls = arena_alloc(&long_lived, 64 * sizeof(AstNode*));
+    size_t decl_count = 0;
+
+    while (!parser_check(parser, TOKEN_EOF)) {
+        if (decl_count >= 64) {
+            parser_error(parser, "Too many top-level declarations (max 64)");
+            break;
+        }
+
+        AstNode *decl = parse_declaration(parser);
+        if (decl != NULL) {
+            decls[decl_count++] = decl;
+        }
+
+        // If we had an error and didn't make progress, break to avoid infinite loop
+        if (parser->had_error && parser->current.type == parser->previous.type) {
+            break;
+        }
     }
 
-    return parse_declaration(parser);
+    // Create a program node to hold all declarations
+    Location loc = {
+        .file = parser->lexer.filename,
+        .line = 1,
+        .column = 1
+    };
+
+    AstNode *program = alloc_node(AST_STMT_BLOCK, loc);
+    program->data.block_stmt.stmts = decls;
+    program->data.block_stmt.stmt_count = decl_count;
+
+    return program;
 }
+
 
 AstNode *parse_declaration(Parser *parser) {
     if (parser_match(parser, TOKEN_FN)) {
         return parse_function_decl(parser);
     }
+
     if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR)) {
         return parse_variable_decl(parser);
     }
@@ -246,6 +276,7 @@ AstNode *parse_function_decl(Parser *parser) {
         body->data.block_stmt.stmt_count = 1;
     } else {
         // Regular function: fn name(...) type { ... }
+        parser_consume(parser, TOKEN_LBRACE, "Expected '{' before function body");
         body = parse_block_stmt(parser);
     }
 
@@ -406,7 +437,10 @@ AstNode *parse_block_stmt(Parser *parser) {
             break;
         }
 
-        stmts[stmt_count++] = parse_statement(parser);
+        AstNode *stmt = parse_statement(parser);
+        if (stmt != NULL) {  // Add NULL check
+            stmts[stmt_count++] = stmt;
+        }
     }
 
     parser_consume(parser, TOKEN_RBRACE, "Expected '}' after block");
