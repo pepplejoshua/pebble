@@ -314,3 +314,137 @@ AstNode *parse_type_decl(Parser *parser) {
 
     return node;
 }
+
+// ============================================================================
+// STATEMENT PARSING
+// ============================================================================
+
+AstNode *parse_statement(Parser *parser) {
+    if (parser_match(parser, TOKEN_RETURN)) {
+        return parse_return_stmt(parser);
+    }
+    if (parser_match(parser, TOKEN_IF)) {
+        return parse_if_stmt(parser);
+    }
+    if (parser_match(parser, TOKEN_WHILE)) {
+        return parse_while_stmt(parser);
+    }
+    if (parser_match(parser, TOKEN_LBRACE)) {
+        return parse_block_stmt(parser);
+    }
+    if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR)) {
+        return parse_variable_decl(parser);  // Local variables
+    }
+
+    // Check for assignment: identifier = expr
+    if (parser_check(parser, TOKEN_IDENTIFIER)) {
+        // Look ahead for assignment
+        // We need to peek ahead to see if there's an = after the identifier
+        // For now, let's parse as expression and convert if needed
+        return parse_assignment_stmt(parser);
+    }
+
+    // Otherwise, it's an expression statement
+    return parse_expression_stmt(parser);
+}
+
+AstNode *parse_return_stmt(Parser *parser) {
+    Location loc = parser->previous.location;
+
+    AstNode *expr = NULL;
+    if (!parser_check(parser, TOKEN_SEMICOLON)) {
+        expr = parse_expression(parser);
+    }
+
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after return statement");
+
+    AstNode *stmt = alloc_node(AST_STMT_RETURN, loc);
+    stmt->data.return_stmt.expr = expr;
+    return stmt;
+}
+
+AstNode *parse_if_stmt(Parser *parser) {
+    Location loc = parser->previous.location;
+
+    AstNode *cond = parse_expression(parser);
+    AstNode *then_branch = parse_statement(parser);
+
+    AstNode *else_branch = NULL;
+    if (parser_match(parser, TOKEN_ELSE)) {
+        else_branch = parse_statement(parser);
+    }
+
+    AstNode *stmt = alloc_node(AST_STMT_IF, loc);
+    stmt->data.if_stmt.cond = cond;
+    stmt->data.if_stmt.then_branch = then_branch;
+    stmt->data.if_stmt.else_branch = else_branch;
+    return stmt;
+}
+
+AstNode *parse_while_stmt(Parser *parser) {
+    Location loc = parser->previous.location;
+
+    AstNode *cond = parse_expression(parser);
+    AstNode *body = parse_statement(parser);
+
+    AstNode *stmt = alloc_node(AST_STMT_WHILE, loc);
+    stmt->data.while_stmt.cond = cond;
+    stmt->data.while_stmt.body = body;
+    return stmt;
+}
+
+AstNode *parse_block_stmt(Parser *parser) {
+    Location loc = parser->previous.location;
+
+    // Parse statements until we hit }
+    AstNode **stmts = arena_alloc(&long_lived, 64 * sizeof(AstNode*));  // Max 64 statements for now
+    size_t stmt_count = 0;
+
+    while (!parser_check(parser, TOKEN_RBRACE) && !parser_check(parser, TOKEN_EOF)) {
+        if (stmt_count >= 64) {
+            parser_error(parser, "Too many statements in block (max 64)");
+            break;
+        }
+
+        stmts[stmt_count++] = parse_statement(parser);
+    }
+
+    parser_consume(parser, TOKEN_RBRACE, "Expected '}' after block");
+
+    AstNode *block = alloc_node(AST_STMT_BLOCK, loc);
+    block->data.block_stmt.stmts = stmts;
+    block->data.block_stmt.stmt_count = stmt_count;
+    return block;
+}
+
+AstNode *parse_assignment_stmt(Parser *parser) {
+    // We know current token is identifier
+    AstNode *lhs = parse_expression(parser);  // This will parse the identifier
+
+    if (parser_match(parser, TOKEN_EQUAL)) {
+        Location loc = parser->previous.location;
+        AstNode *rhs = parse_expression(parser);
+        parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after assignment");
+
+        AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+        assign->data.assign_stmt.lhs = lhs;
+        assign->data.assign_stmt.rhs = rhs;
+        return assign;
+    } else {
+        // Not an assignment, it's an expression statement
+        parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after expression");
+
+        AstNode *expr_stmt = alloc_node(AST_STMT_EXPR, lhs->loc);
+        expr_stmt->data.expr_stmt.expr = lhs;
+        return expr_stmt;
+    }
+}
+
+AstNode *parse_expression_stmt(Parser *parser) {
+    AstNode *expr = parse_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after expression");
+
+    AstNode *stmt = alloc_node(AST_STMT_EXPR, expr->loc);
+    stmt->data.expr_stmt.expr = expr;
+    return stmt;
+}
