@@ -4,6 +4,7 @@
 #include "type.h"
 #include "lexer.h"
 #include "parser.h"
+#include "checker.h"
 #include <stdio.h>
 
 extern Arena long_lived;
@@ -184,10 +185,117 @@ void test_parser(void) {
     printf("\n✓ Parser tests completed\n");
 }
 
+void test_checker(void) {
+    printf("=== Checker Tests (Pass 2: Collect Globals) ===\n");
+    // Test 1: Valid - unique global declarations
+    {
+        printf("\n--- Test 1: Valid unique globals ---\n");
+        const char *source =
+            "fn add(a int, b int) int { return a + b; }\n"
+            "fn subtract(a int, b int) int { return a - b; }\n"
+            "var count int;\n"
+            "let pi = 3.14;\n"
+            "type MyInt = int;";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (success && !checker_has_errors()) {
+                printf("✓ Collected globals successfully\n");
+
+                // Verify symbols were added
+                Symbol *add = scope_lookup(global_scope, "add");
+                Symbol *sub = scope_lookup(global_scope, "subtract");
+                Symbol *count = scope_lookup(global_scope, "count");
+                Symbol *pi = scope_lookup(global_scope, "pi");
+                Symbol *myint = scope_lookup(global_scope, "MyInt");
+
+                printf("  - 'add' found: %s (kind: %d)\n", add ? "yes" : "no", add ? add->kind : -1);
+                printf("  - 'subtract' found: %s (kind: %d)\n", sub ? "yes" : "no", sub ? sub->kind : -1);
+                printf("  - 'count' found: %s (kind: %d)\n", count ? "yes" : "no", count ? count->kind : -1);
+                printf("  - 'pi' found: %s (kind: %d)\n", pi ? "yes" : "no", pi ? pi->kind : -1);
+                printf("  - 'MyInt' found: %s (kind: %d)\n", myint ? "yes" : "no", myint ? myint->kind : -1);
+            } else {
+                printf("❌ Expected success but got errors\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    // Test 2: Invalid - duplicate function names
+    {
+        printf("\n--- Test 2: Duplicate function names ---\n");
+        const char *source =
+            "fn foo() int { return 1; }\n"
+            "fn foo() int { return 2; }";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success && checker_has_errors()) {
+                printf("✓ Correctly detected duplicate 'foo'\n");
+            } else {
+                printf("❌ Should have detected duplicate declaration\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    // Test 3: Invalid - mixed duplicates (function and variable)
+    {
+        printf("\n--- Test 3: Mixed duplicate (function + variable) ---\n");
+        const char *source =
+            "fn bar() void { }\n"
+            "var bar int;";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success && checker_has_errors()) {
+                printf("✓ Correctly detected duplicate 'bar'\n");
+            } else {
+                printf("❌ Should have detected duplicate declaration\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    printf("\n✓ Checker tests completed\n");
+}
+
 void test_all() {
   test_setup();
   printf("\n\n");
   test_lexer();
   printf("\n\n");
   test_parser();
+  printf("\n\n");
+  test_checker();
 }

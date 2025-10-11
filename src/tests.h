@@ -7,6 +7,7 @@
 void test_setup(void);
 void test_lexer(void);
 void test_parser(void);
+void test_checker(void);
 void test_all(void);
 
 // Helper functions

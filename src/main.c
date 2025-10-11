@@ -22,6 +22,8 @@ int main(int argc, char **argv) {
             test_lexer();
         } else if (strcmp(argv[1], "--test-parser") == 0) {
             test_parser();
+        } else if (strcmp(argv[1], "--test-checker") == 0) {
+            test_checker();
         } else if (strcmp(argv[1], "--test-all") == 0) {
             test_all();
         } else {
@@ -35,6 +37,7 @@ int main(int argc, char **argv) {
         printf("       %s --test\n", argv[0]);
         printf("       %s --test-lexer\n", argv[0]);
         printf("       %s --test-parser\n", argv[0]);
+        printf("       %s --test-checker\n", argv[0]);
         printf("       %s --test-all\n", argv[0]);
     }
 
