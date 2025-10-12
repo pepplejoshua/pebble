@@ -420,6 +420,23 @@ Type *resolve_type_expression(AstNode *type_expr) {
           return type_create_function(param_types, param_count, return_type);
       }
 
+      case AST_TYPE_TUPLE: {
+            // Resolve all element types
+            size_t element_count = type_expr->data.type_tuple.element_count;
+            AstNode **element_type_exprs = type_expr->data.type_tuple.element_types;
+
+            Type **element_types = arena_alloc(&long_lived, sizeof(Type*) * element_count);
+
+            for (size_t i = 0; i < element_count; i++) {
+                element_types[i] = resolve_type_expression(element_type_exprs[i]);
+                if (!element_types[i]) {
+                    return NULL;
+                }
+            }
+
+            return type_create_tuple(element_types, element_count);
+        }
+
       default:
           checker_error(type_expr->loc, "invalid type expression");
           return NULL;
@@ -686,6 +703,29 @@ Type *check_expression(AstNode *expr) {
                 return NULL;
             }
 
+            // Handle tuple member access (numeric fields: .0, .1, .2)
+            if (object_type->kind == TYPE_TUPLE) {
+                // Parse field name as number
+                char *endptr;
+                long index = strtol(field_name, &endptr, 10);
+
+                // Verify it's a valid number
+                if (*endptr != '\0' || index < 0) {
+                    checker_error(expr->loc, "tuple field must be a non-negative integer");
+                    return NULL;
+                }
+
+                // Check bounds
+                if ((size_t)index >= object_type->data.tuple.element_count) {
+                    checker_error(expr->loc, "tuple index %ld is out of bounds (tuple has %zu elements)",
+                                    index, object_type->data.tuple.element_count);
+                    return NULL;
+                }
+
+                // Return the element type at this index
+                return object_type->data.tuple.element_types[index];
+            }
+
             // Verify it's a struct
             if (object_type->kind != TYPE_STRUCT) {
                 checker_error(object_expr->loc, "member access requires struct type");
@@ -707,6 +747,24 @@ Type *check_expression(AstNode *expr) {
             // Field not found
             checker_error(expr->loc, "struct has no field named '%s'", field_name);
             return NULL;
+        }
+
+        case AST_EXPR_TUPLE: {
+            // Type-check all tuple elements
+            size_t element_count = expr->data.tuple_expr.element_count;
+            AstNode **elements = expr->data.tuple_expr.elements;
+
+            Type **element_types = arena_alloc(&long_lived, sizeof(Type*) * element_count);
+
+            for (size_t i = 0; i < element_count; i++) {
+                element_types[i] = check_expression(elements[i]);
+                if (!element_types[i]) {
+                    return NULL;  // Error already reported
+                }
+            }
+
+            // Create and return tuple type
+            return type_create_tuple(element_types, element_count);
         }
 
         default:
