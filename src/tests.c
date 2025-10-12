@@ -446,6 +446,71 @@ void test_checker(void) {
         }
     }
 
+    // Test 6: Tuples
+    {
+        printf("\n--- Test 6: Tuples ---\n");
+
+        const char *source =
+            "type Data = (int, str, bool);\n"
+            "var t1 (int, str, bool);\n"
+            "var t2 Data;\n"
+            "fn get_tuple() (int, str) { return (1, \"test\"); }";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals
+            success = check_globals();
+
+            if (success && !checker_has_errors()) {
+                printf("✓ Pass 3 completed successfully\n");
+
+                // Get symbols
+                Symbol *t1 = scope_lookup(global_scope, "t1");
+                Symbol *t2 = scope_lookup(global_scope, "t2");
+                Symbol *get_tuple = scope_lookup(global_scope, "get_tuple");
+
+                // Verify tuple types are cached
+                if (t1 && t2 && t1->type == t2->type) {
+                    printf("  ✓ (int, str, bool) cached: t1 and t2 share same type\n");
+                } else {
+                    printf("  ❌ Tuple NOT cached\n");
+                }
+
+                // Verify function with tuple return type
+                if (get_tuple && get_tuple->type && get_tuple->type->kind == TYPE_FUNCTION) {
+                    Type *ret = get_tuple->type->data.func.return_type;
+                    if (ret && ret->kind == TYPE_TUPLE) {
+                        printf("  ✓ Function returns tuple type\n");
+                    } else {
+                        printf("  ❌ Function return type not tuple\n");
+                    }
+                } else {
+                    printf("  ❌ Function type resolution failed\n");
+                }
+            } else {
+                printf("❌ Pass 3 failed with errors\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
     printf("\n✓ Checker tests completed\n");
 }
 
