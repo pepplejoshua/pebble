@@ -16,6 +16,7 @@ extern Arena long_lived;
 typedef struct {
     bool has_errors;
     int error_count;
+    bool in_type_resolution;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -23,6 +24,7 @@ static CheckerState checker_state;
 void checker_init(void) {
     checker_state.has_errors = false;
     checker_state.error_count = 0;
+    checker_state.in_type_resolution = false;
     symbol_table_init();  // Create fresh global scope
 }
 
@@ -106,29 +108,62 @@ bool collect_globals(AstNode **decls, size_t decl_count) {
 static void check_type_declarations(void) {
     Symbol *sym, *tmp;
 
-    // Iterate over all symbols in global scope
+    // Build list of ONLY type declarations (skip everything else)
+    Symbol **worklist = NULL;
+    size_t worklist_size = 0;
+    size_t worklist_capacity = 0;
+
     HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-        // Only process type declarations
-        if (sym->kind != SYMBOL_TYPE) {
-            continue;
+        if (sym->kind == SYMBOL_TYPE) {
+            sym->type = NULL;
+            // Add to worklist
+            if (worklist_size >= worklist_capacity) {
+                worklist_capacity = worklist_capacity == 0 ? 8 : worklist_capacity * 2;
+                worklist = realloc(worklist, sizeof(Symbol*) * worklist_capacity);
+            }
+            worklist[worklist_size++] = sym;
         }
-
-        // Get the type expression from the declaration
-        AstNode *type_expr = sym->decl->data.type_decl.type_expr;
-
-        // Resolve it to a type object
-        Type *resolved = resolve_type_expression(type_expr);
-        if (!resolved) {
-            continue; // Error already reported
-        }
-
-        // Store in symbol
-        sym->type = resolved;
-
-        // Register in global type table under given name
-        type_register(sym->name, resolved);
     }
+
+    checker_state.in_type_resolution = true;
+
+    // Iterate only over unresolved types
+    bool made_progress = true;
+    while (worklist_size > 0 && made_progress) {
+        made_progress = false;
+        size_t new_size = 0;
+
+        for (size_t i = 0; i < worklist_size; i++) {  // ← Only unresolved types!
+            sym = worklist[i];
+
+            AstNode *type_expr = sym->decl->data.type_decl.type_expr;
+            Type *resolved = resolve_type_expression(type_expr);
+
+            if (resolved) {
+                sym->type = resolved;
+                type_register(sym->name, resolved);
+                made_progress = true;
+                // Don't add back to worklist - it's resolved!
+            } else {
+                worklist[new_size++] = sym;  // Keep for next iteration
+            }
+        }
+
+        worklist_size = new_size;  // Shrink worklist
+    }
+
+    // Report errors for remaining unresolved types
+    for (size_t i = 0; i < worklist_size; i++) {
+        sym = worklist[i];
+        checker_error(sym->decl->data.type_decl.type_expr->loc,
+            "cannot resolve type '%s' (circular dependency or undefined type)",
+            sym->name);
+    }
+
+    checker_state.in_type_resolution = false;
+    free(worklist);
 }
+
 
 // Sub-pass 3b: Check constant declarations
 static void check_global_constants(void) {
@@ -343,6 +378,16 @@ Type *resolve_type_expression(AstNode *type_expr) {
             const char *name = type_expr->data.type_named.name;
             Type *type = type_lookup(name);
             if (!type) {
+                // During type resolution, check if it's an unresolved type decl
+                if (checker_state.in_type_resolution) {  // ADD THIS CHECK
+                    Symbol *sym = scope_lookup_local(global_scope, name);
+                    if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
+                        // It's a forward reference - return NULL to retry later
+                        return NULL;
+                    }
+                }
+
+                // Otherwise, it's truly undefined
                 checker_error(type_expr->loc, "undefined type '%s'", name);
                 return NULL;
             }
