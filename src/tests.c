@@ -366,6 +366,85 @@ void test_checker(void) {
         }
     }
 
+    // Test 5: Type interning - cached types
+    {
+        printf("\n--- Test 5: Type interning ---\n");
+
+        const char *source =
+            "type IntSlice = []int;\n"
+            "type IntPtr = *int;\n"
+            "type IntArray = [5]int;\n"
+            "var s1 []int;\n"
+            "var s2 IntSlice;\n"
+            "var p1 *int;\n"
+            "var p2 IntPtr;\n"
+            "var a1 [5]int;\n"
+            "var a2 IntArray;";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals
+            success = check_globals();
+
+            if (success && !checker_has_errors()) {
+                printf("✓ Pass 3 completed successfully\n");
+
+                // Get symbols
+                Symbol *s1 = scope_lookup(global_scope, "s1");
+                Symbol *s2 = scope_lookup(global_scope, "s2");
+                Symbol *p1 = scope_lookup(global_scope, "p1");
+                Symbol *p2 = scope_lookup(global_scope, "p2");
+                Symbol *a1 = scope_lookup(global_scope, "a1");
+                Symbol *a2 = scope_lookup(global_scope, "a2");
+
+                // Verify types are cached (same pointer)
+                if (s1 && s2 && s1->type == s2->type) {
+                    printf("  ✓ []int cached: s1 and s2 share same type object\n");
+                } else {
+                    printf("  ❌ []int NOT cached: s1=%p, s2=%p\n",
+                           (void*)(s1 ? s1->type : NULL),
+                           (void*)(s2 ? s2->type : NULL));
+                }
+
+                if (p1 && p2 && p1->type == p2->type) {
+                    printf("  ✓ *int cached: p1 and p2 share same type object\n");
+                } else {
+                    printf("  ❌ *int NOT cached: p1=%p, p2=%p\n",
+                           (void*)(p1 ? p1->type : NULL),
+                           (void*)(p2 ? p2->type : NULL));
+                }
+
+                if (a1 && a2 && a1->type == a2->type) {
+                    printf("  ✓ [5]int cached: a1 and a2 share same type object\n");
+                } else {
+                    printf("  ❌ [5]int NOT cached: a1=%p, a2=%p\n",
+                           (void*)(a1 ? a1->type : NULL),
+                           (void*)(a2 ? a2->type : NULL));
+                }
+            } else {
+                printf("❌ Pass 3 failed with errors\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
     printf("\n✓ Checker tests completed\n");
 }
 
