@@ -376,7 +376,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
           if (!element) {
               return NULL;
           }
-          return type_create_array(element, 0);
+          return type_create_slice(element);
       }
 
       case AST_TYPE_STRUCT: {

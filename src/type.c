@@ -1,6 +1,7 @@
 #include "type.h"
 #include "alloc.h"
 #include "ast.h"
+#include "uthash.h"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -15,8 +16,11 @@ Type *type_bool = NULL;
 Type *type_string = NULL;
 Type *type_void = NULL;
 
-// Type table (hash map of named types)
+// Type table (hash map of name => type entries)
 TypeEntry *type_table = NULL;
+
+// Unified cache for compound types (stringified structure -> canonical type)
+static TypeEntry *type_cache = NULL;
 
 // Helper to duplicate strings
 static char *str_dup(const char *str) {
@@ -38,19 +42,90 @@ Type *type_create(TypeKind kind) {
 // Create pointer type
 Type *type_create_pointer(Type *base) {
     assert(base);
+
+    // Generate cache key
+    char key[128];
+    snprintf(key, sizeof(key), "ptr_%p", (void*)base);
+
+    // Check cache
+    TypeEntry *entry;
+    HASH_FIND_STR(type_cache, key, entry);
+    if (entry) {
+        return entry->type;
+    }
+
+    // Create new pointer type
     Type *type = type_create(TYPE_POINTER);
     type->data.ptr.base = base;
+
+    // Cache it
+    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
+    cache_entry->name = str_dup(key);
+    cache_entry->type = type;
+    HASH_ADD_STR(type_cache, name, cache_entry);
+
+    return type;
+}
+
+
+// Create slice type
+Type *type_create_slice(Type *element) {
+    assert(element);
+
+    // Generate cache key
+    char key[128];
+    snprintf(key, sizeof(key), "slice_%p", (void*)element);
+
+    // Check cache
+    TypeEntry *entry;
+    HASH_FIND_STR(type_cache, key, entry);
+    if (entry) {
+        return entry->type;
+    }
+
+    // Create new slice type (using array structure with size 0)
+    Type *type = type_create(TYPE_SLICE);
+    type->data.array.element = element;
+    type->data.array.size = 0;
+
+    // Cache it
+    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
+    cache_entry->name = str_dup(key);
+    cache_entry->type = type;
+    HASH_ADD_STR(type_cache, name, cache_entry);
+
     return type;
 }
 
 // Create array type
 Type *type_create_array(Type *element, size_t size) {
     assert(element);
+
+    // Generate cache key
+    char key[128];
+    snprintf(key, sizeof(key), "array_%p_%zu", (void*)element, size);
+
+    // Check cache
+    TypeEntry *entry;
+    HASH_FIND_STR(type_cache, key, entry);
+    if (entry) {
+        return entry->type;
+    }
+
+    // Create new array type
     Type *type = type_create(TYPE_ARRAY);
     type->data.array.element = element;
     type->data.array.size = size;
+
+    // Cache it
+    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
+    cache_entry->name = str_dup(key);
+    cache_entry->type = type;
+    HASH_ADD_STR(type_cache, name, cache_entry);
+
     return type;
 }
+
 
 // Create struct type
 Type *type_create_struct(char **field_names, Type **field_types, size_t field_count) {
@@ -76,6 +151,27 @@ Type *type_create_struct(char **field_names, Type **field_types, size_t field_co
 // Create function type
 Type *type_create_function(Type **param_types, size_t param_count, Type *return_type) {
     assert(return_type);
+
+    // Generate cache key from param types + return type
+    char key[512];
+    int offset = snprintf(key, sizeof(key), "func");
+
+    // Add each parameter type pointer to the key
+    for (size_t i = 0; i < param_count; i++) {
+        offset += snprintf(key + offset, sizeof(key) - offset, "_%p", (void*)param_types[i]);
+    }
+
+    // Add return type
+    snprintf(key + offset, sizeof(key) - offset, "_ret_%p", (void*)return_type);
+
+    // Check cache
+    TypeEntry *entry;
+    HASH_FIND_STR(type_cache, key, entry);
+    if (entry) {
+        return entry->type;
+    }
+
+    // Create new function type
     Type *type = type_create(TYPE_FUNCTION);
 
     if (param_count > 0) {
@@ -89,8 +185,16 @@ Type *type_create_function(Type **param_types, size_t param_count, Type *return_
 
     type->data.func.param_count = param_count;
     type->data.func.return_type = return_type;
+
+    // Cache it
+    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
+    cache_entry->name = str_dup(key);
+    cache_entry->type = type;
+    HASH_ADD_STR(type_cache, name, cache_entry);
+
     return type;
 }
+
 
 // Look up named type in type table
 Type *type_lookup(const char *name) {
