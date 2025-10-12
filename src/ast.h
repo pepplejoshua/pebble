@@ -39,6 +39,7 @@ typedef enum {
     AST_EXPR_CALL,
     AST_EXPR_INDEX,
     AST_EXPR_MEMBER,
+    AST_EXPR_TUPLE,
 
     // Type expressions
     AST_TYPE_NAMED,      // int, float, CustomType
@@ -47,6 +48,7 @@ typedef enum {
     AST_TYPE_SLICE,      // []T
     AST_TYPE_STRUCT,     // struct { ... }
     AST_TYPE_FUNCTION,   // fn(T1, T2) R
+    AST_TYPE_TUPLE,      // (T1, T2, T3)
 } AstKind;
 
 // Binary/unary ops
@@ -101,6 +103,10 @@ struct AstNode {
         struct { AstNode *func; AstNode **args; size_t arg_count; } call;
         struct { AstNode *array; AstNode *index; } index_expr;
         struct { AstNode *object; char *member; } member_expr;
+        struct {
+          AstNode **elements;
+          size_t element_count;
+        } tuple_expr;
 
         // Type expressions
         struct { char *name; } type_named;
@@ -117,6 +123,10 @@ struct AstNode {
             size_t param_count;
             AstNode *return_type;
         } type_function;
+        struct {
+          AstNode **element_types;
+          size_t element_count;
+        } type_tuple;
     } data;
 };
 

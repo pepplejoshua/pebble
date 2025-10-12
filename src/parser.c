@@ -718,12 +718,52 @@ AstNode *parse_primary(Parser *parser) {
         return id;
     }
 
-    // Parenthesized expression
+    // Grouping / Tuple literal
     if (parser_match(parser, TOKEN_LPAREN)) {
-        AstNode *expr = parse_expression(parser);
-        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
-        return expr;
+        Location loc = parser->previous.location;
+
+        // Empty tuple/parens not allowed
+        if (parser_match(parser, TOKEN_RPAREN)) {
+            parser_error(parser, "empty parentheses not allowed");
+            return NULL;
+        }
+
+        // Parse first expression
+        AstNode **elements = NULL;
+        size_t count = 0;
+        size_t capacity = 4;
+        elements = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+
+        elements[count++] = parse_expression(parser);
+
+        // Check for comma (distinguishes tuple from grouped expression)
+        if (parser_match(parser, TOKEN_COMMA)) {
+            // It's a tuple literal! Parse remaining elements
+            do {
+                // Grow array if needed
+                if (count >= capacity) {
+                    capacity *= 2;
+                    AstNode **new_array = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                    memcpy(new_array, elements, count * sizeof(AstNode*));
+                    elements = new_array;
+                }
+
+                elements[count++] = parse_expression(parser);
+            } while (parser_match(parser, TOKEN_COMMA));
+
+            parser_consume(parser, TOKEN_RPAREN, "Expected ')' after tuple literal");
+
+            AstNode *tuple = alloc_node(AST_EXPR_TUPLE, loc);
+            tuple->data.tuple_expr.elements = elements;
+            tuple->data.tuple_expr.element_count = count;
+            return tuple;
+        } else {
+            // No comma - just a grouped expression, return the inner expression
+            parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
+            return elements[0];
+        }
     }
+
 
     parser_error(parser, "Expected expression");
     return NULL;
@@ -735,6 +775,52 @@ AstNode *parse_primary(Parser *parser) {
 
 AstNode *parse_type_expression(Parser *parser) {
     AstNode *type = NULL;
+
+    // Tuple type: (T1, T2, ...)
+    if (parser_match(parser, TOKEN_LPAREN)) {
+        Location loc = parser->previous.location;
+
+        // Empty tuple not allowed
+        if (parser_match(parser, TOKEN_RPAREN)) {
+            parser_error(parser, "empty tuple type not allowed");
+            return NULL;
+        }
+
+        // Parse first element type
+        AstNode **element_types = NULL;
+        size_t count = 0;
+        size_t capacity = 4;
+        element_types = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+
+        element_types[count++] = parse_type_expression(parser);
+
+        // Check for comma (distinguishes tuple from parenthesized type)
+        if (parser_match(parser, TOKEN_COMMA)) {
+            // It's a tuple. Parse remaining elements
+            do {
+                // Grow array if needed
+                if (count >= capacity) {
+                    capacity *= 2;
+                    AstNode **new_array = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                    memcpy(new_array, element_types, count * sizeof(AstNode*));
+                    element_types = new_array;
+                }
+
+                element_types[count++] = parse_type_expression(parser);
+            } while (parser_match(parser, TOKEN_COMMA));
+
+            parser_consume(parser, TOKEN_RPAREN, "Expected ')' after tuple type");
+
+            type = alloc_node(AST_TYPE_TUPLE, loc);
+            type->data.type_tuple.element_types = element_types;
+            type->data.type_tuple.element_count = count;
+            return type;
+        } else {
+            // No comma - just a parenthesized type, return the inner type
+            parser_consume(parser, TOKEN_RPAREN, "Expected ')'");
+            return element_types[0];
+        }
+    }
 
     // Pointer type: *T
     if (parser_match(parser, TOKEN_STAR)) {
