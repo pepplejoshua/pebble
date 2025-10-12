@@ -591,7 +591,123 @@ Type *check_expression(AstNode *expr) {
             return NULL;
         }
 
-        // TODO: Add more expression types in Pass 4
+        case AST_EXPR_CALL: {
+            AstNode *func_expr = expr->data.call.func;
+            AstNode **args = expr->data.call.args;
+            size_t arg_count = expr->data.call.arg_count;
+
+            // Function expression must be an identifier (for now)
+            if (func_expr->kind != AST_EXPR_IDENTIFIER) {
+                checker_error(func_expr->loc, "function calls must use identifiers");
+                return NULL;
+            }
+
+            // Look up the function symbol
+            const char *func_name = func_expr->data.ident.name;
+            Symbol *func_sym = scope_lookup(current_scope, func_name);
+            if (!func_sym) {
+                checker_error(func_expr->loc, "undefined function '%s'", func_name);
+                return NULL;
+            }
+
+            // Verify it's actually a function
+            if (func_sym->kind != SYMBOL_FUNCTION) {
+                checker_error(func_expr->loc, "'%s' is not a function", func_name);
+                return NULL;
+            }
+
+            Type *func_type = func_sym->type;
+            size_t param_count = func_type->data.func.param_count;
+            Type **param_types = func_type->data.func.param_types;
+            Type *return_type = func_type->data.func.return_type;
+
+            // Check argument count
+            if (arg_count != param_count) {
+                checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
+                             func_name, param_count, arg_count);
+                return NULL;
+            }
+
+            // Check each argument type
+            for (size_t i = 0; i < arg_count; i++) {
+                Type *arg_type = check_expression(args[i]);
+                if (!arg_type) {
+                    continue;  // Error already reported
+                }
+
+                if (!type_equals(arg_type, param_types[i])) {
+                    checker_error(args[i]->loc, "argument %zu type mismatch in call to '%s'",
+                                 i + 1, func_name);
+                }
+            }
+
+            return return_type;
+        }
+
+        case AST_EXPR_INDEX: {
+            AstNode *array_expr = expr->data.index_expr.array;
+            AstNode *index_expr = expr->data.index_expr.index;
+
+            // Check the array expression
+            Type *array_type = check_expression(array_expr);
+            if (!array_type) {
+                return NULL;
+            }
+
+            // Verify it's actually an array or slice
+            if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE) {
+                checker_error(array_expr->loc, "cannot index into non-array type");
+                return NULL;
+            }
+
+            // Check the index expression
+            Type *index_type = check_expression(index_expr);
+            if (!index_type) {
+                return NULL;
+            }
+
+            // Verify index is an integer
+            if (index_type->kind != TYPE_INT) {
+                checker_error(index_expr->loc, "array index must be an integer");
+                return NULL;
+            }
+
+            // Return the element type
+            return array_type->data.array.element;
+        }
+
+        case AST_EXPR_MEMBER: {
+            AstNode *object_expr = expr->data.member_expr.object;
+            const char *field_name = expr->data.member_expr.member;
+
+            // Check the object expression
+            Type *object_type = check_expression(object_expr);
+            if (!object_type) {
+                return NULL;
+            }
+
+            // Verify it's a struct
+            if (object_type->kind != TYPE_STRUCT) {
+                checker_error(object_expr->loc, "member access requires struct type");
+                return NULL;
+            }
+
+            // Look up the field in the struct
+            size_t field_count = object_type->data.struct_data.field_count;
+            char **field_names = object_type->data.struct_data.field_names;
+            Type **field_types = object_type->data.struct_data.field_types;
+
+            for (size_t i = 0; i < field_count; i++) {
+                if (strcmp(field_names[i], field_name) == 0) {
+                    // Found the field!
+                    return field_types[i];
+                }
+            }
+
+            // Field not found
+            checker_error(expr->loc, "struct has no field named '%s'", field_name);
+            return NULL;
+        }
 
         default:
             checker_error(expr->loc, "unsupported expression type in expression type checking");
