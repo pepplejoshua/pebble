@@ -401,10 +401,10 @@ void test_checker(void) {
 
             // Pass 3: Check globals
             success = check_globals();
+            printf("%s\n\n", source);
 
             if (success && !checker_has_errors()) {
                 printf("✓ Pass 3 completed successfully\n");
-                printf("%s\n\n", source);
 
                 // Get symbols
                 Symbol *s1 = scope_lookup(global_scope, "s1");
@@ -502,6 +502,77 @@ void test_checker(void) {
                     }
                 } else {
                     printf("  ❌ Function type resolution failed\n");
+                }
+            } else {
+                printf("❌ Pass 3 failed with errors\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    // Test 7: Forward references (out-of-order declarations)
+    {
+        printf("\n--- Test 7: Forward references ---\n");
+
+        const char *source =
+            "fn main() int { return helper(); }\n"              // Uses helper before declared
+            "fn helper() int { return get_value(); }\n"        // Uses get_value before declared
+            "fn get_value() int { return VALUE; }\n"           // Uses VALUE before declared
+            "let VALUE = 42;\n"                                // Constant after functions
+            "\n"
+            "type Result = (Status, int);\n"                   // Uses Status before declared
+            "type Status = int;\n"                             // Type after being referenced
+            "\n"
+            "var cache Result;\n"                              // Uses Result (which uses Status)
+            "\n"
+            "fn process() Data { return create_data(); }\n"    // Uses Data before declared
+            "fn create_data() Data {\n"                        // Uses Data in signature
+            "    var d Data;\n"
+            "    return d;\n"
+            "}\n"
+            "type Data = (int, str);";                         // Data declared last
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals
+            success = check_globals();
+            printf("%s\n\n", source);
+
+            if (success && !checker_has_errors()) {
+                printf("✓ All forward references resolved successfully\n");
+
+                // Verify some key resolutions
+                Symbol *main_fn = scope_lookup(global_scope, "main");
+                Symbol *result_type = scope_lookup(global_scope, "Result");
+                Symbol *cache_var = scope_lookup(global_scope, "cache");
+
+                if (main_fn && main_fn->type) {
+                    printf("  ✓ main() signature resolved\n");
+                }
+
+                if (result_type && result_type->type && result_type->type->kind == TYPE_TUPLE) {
+                    printf("  ✓ Result (tuple using forward-referenced Status) resolved\n");
+                }
+
+                if (cache_var && cache_var->type && cache_var->type->kind == TYPE_TUPLE) {
+                    printf("  ✓ cache variable uses forward-referenced types\n");
                 }
             } else {
                 printf("❌ Pass 3 failed with errors\n");

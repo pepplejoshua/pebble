@@ -349,7 +349,6 @@ Type *resolve_type_expression(AstNode *type_expr) {
             return type;
         }
 
-
       case AST_TYPE_POINTER: {
           // Resolve base type and create pointer type
           Type *base = resolve_type_expression(type_expr->data.type_pointer.base);
