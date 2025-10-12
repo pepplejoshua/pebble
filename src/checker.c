@@ -598,3 +598,262 @@ Type *check_expression(AstNode *expr) {
             return NULL;
     }
 }
+
+//=============================================================================
+// PASS 4: CHECK FUNCTION BODIES
+//=============================================================================
+
+// Statement checking
+// Returns false if statement does not return and true if it does
+static bool check_statement(AstNode *stmt, Type *expected_return_type) {
+    if (!stmt) {
+        return false;
+    }
+
+    switch (stmt->kind) {
+        case AST_STMT_RETURN: {
+            AstNode *expr = stmt->data.return_stmt.expr;
+
+            // Check return expression
+            Type *expr_type = check_expression(expr);
+            if (!expr_type) {
+                return true;  // Error already reported
+            }
+
+            // Verify it matches expected return type
+            if (!type_equals(expr_type, expected_return_type)) {
+                checker_error(stmt->loc, "return type mismatch");
+            }
+
+            return true;
+        }
+
+        case AST_STMT_IF: {
+            AstNode *cond = stmt->data.if_stmt.cond;
+            AstNode *then_branch = stmt->data.if_stmt.then_branch;
+            AstNode *else_branch = stmt->data.if_stmt.else_branch;
+
+            // Check condition is boolean
+            Type *cond_type = check_expression(cond);
+            if (cond_type && cond_type->kind != TYPE_BOOL) {
+                checker_error(cond->loc, "if condition must be boolean");
+            }
+
+            // Check both branches
+            bool then_returns = check_statement(then_branch, expected_return_type);
+            bool else_returns = else_branch ? check_statement(else_branch, expected_return_type) : false;
+
+            // Only returns if BOTH branches return
+            return then_returns && else_returns;
+        }
+
+        case AST_STMT_WHILE: {
+            AstNode *cond = stmt->data.while_stmt.cond;
+            AstNode *body = stmt->data.while_stmt.body;
+
+            // Check condition is boolean
+            Type *cond_type = check_expression(cond);
+            if (cond_type && cond_type->kind != TYPE_BOOL) {
+                checker_error(cond->loc, "while condition must be boolean");
+            }
+
+            // Check body
+            check_statement(body, expected_return_type);
+
+            // Can't prove while always executes
+            return false;
+        }
+
+        case AST_STMT_BLOCK: {
+            // Create child scope for this block
+            Scope *block_scope = scope_create(current_scope);
+            scope_push(block_scope);
+
+            // Check all statements in the block
+            AstNode **stmts = stmt->data.block_stmt.stmts;
+            size_t count = stmt->data.block_stmt.stmt_count;
+            bool returns = false;
+
+            for (size_t i = 0; i < count; i++) {
+                if (check_statement(stmts[i], expected_return_type)) {
+                    returns = true;
+
+                    // Warn about unreachable code (only once)
+                    if (i < count - 1) {
+                        checker_error(stmts[i + 1]->loc, "unreachable code after return");
+                        break;  // Stop checking, don't spam errors
+                    }
+                }
+            }
+
+            // Pop back to parent scope
+            scope_pop();
+            return returns;
+        }
+
+        case AST_STMT_ASSIGN: {
+            AstNode *lhs = stmt->data.assign_stmt.lhs;
+            AstNode *rhs = stmt->data.assign_stmt.rhs;
+
+            // LHS can be identifier, member access, or array index
+            if (lhs->kind != AST_EXPR_IDENTIFIER &&
+                lhs->kind != AST_EXPR_MEMBER &&
+                lhs->kind != AST_EXPR_INDEX) {
+                checker_error(lhs->loc, "invalid assignment target");
+                return false;
+            }
+
+            // Check both sides
+            Type *lhs_type = check_expression(lhs);
+            Type *rhs_type = check_expression(rhs);
+
+            if (lhs_type && rhs_type && !type_equals(lhs_type, rhs_type)) {
+                checker_error(stmt->loc, "assignment type mismatch");
+            }
+            return false;
+        }
+
+        case AST_STMT_EXPR: {
+            // Just check the expression, ignore result
+            check_expression(stmt->data.expr_stmt.expr);
+            return false;
+        }
+
+        case AST_DECL_VARIABLE: {
+            // Local variable: var x int; or var y = 42;
+            char *name = stmt->data.var_decl.name;
+            AstNode *type_expr = stmt->data.var_decl.type_expr;
+            AstNode *init = stmt->data.var_decl.init;
+
+            // Must have type or initializer
+            if (!type_expr && !init) {
+                checker_error(stmt->loc, "variable '%s' must have type or initializer", name);
+                return false;
+            }
+
+            Type *var_type = NULL;
+
+            // Resolve type if provided
+            if (type_expr) {
+                var_type = resolve_type_expression(type_expr);
+                if (!var_type) return false;
+            }
+
+            // Check initializer if provided
+            if (init) {
+                Type *init_type = check_expression(init);
+                if (!init_type) return false;
+
+                if (var_type && !type_equals(var_type, init_type)) {
+                    checker_error(init->loc, "initializer type mismatch");
+                    return false;
+                }
+
+                if (!var_type) {
+                    var_type = init_type;  // Infer type
+                }
+            }
+
+            // Check for duplicate in current scope
+            Symbol *existing = scope_lookup_local(current_scope, name);
+            if (existing) {
+                checker_error(stmt->loc, "variable '%s' already declared in this scope", name);
+                return false;
+            }
+
+            // Add to current scope
+            Symbol *var_sym = symbol_create(name, SYMBOL_VARIABLE, stmt);
+            var_sym->type = var_type;
+            var_sym->data.var.is_global = false;
+            scope_add_symbol(current_scope, var_sym);
+            return false;
+        }
+
+        case AST_DECL_CONSTANT: {
+            // Local constant: let x = 42;
+            char *name = stmt->data.const_decl.name;
+            AstNode *type_expr = stmt->data.const_decl.type_expr;
+            AstNode *value = stmt->data.const_decl.value;
+
+            // Constants must have initializer
+            if (!value) {
+                checker_error(stmt->loc, "constant '%s' must be initialized", name);
+                return false;
+            }
+
+            Type *const_type = NULL;
+
+            // Resolve explicit type if provided
+            if (type_expr) {
+                const_type = resolve_type_expression(type_expr);
+                if (!const_type) return false;
+            }
+
+            // Check value
+            Type *value_type = check_expression(value);
+            if (!value_type) return false;
+
+            if (const_type && !type_equals(const_type, value_type)) {
+                checker_error(value->loc, "constant initializer type mismatch");
+                return false;
+            }
+
+            if (!const_type) {
+                const_type = value_type;  // Infer type
+            }
+
+            // Check for duplicate
+            Symbol *existing = scope_lookup_local(current_scope, name);
+            if (existing) {
+                checker_error(stmt->loc, "constant '%s' already declared in this scope", name);
+                return false;
+            }
+
+            // Add to current scope
+            Symbol *const_sym = symbol_create(name, SYMBOL_CONSTANT, stmt);
+            const_sym->type = const_type;
+            scope_add_symbol(current_scope, const_sym);
+            return false;
+        }
+
+
+        default:
+            checker_error(stmt->loc, "unsupported statement type");
+            return false;
+    }
+}
+
+// Main entry point for Pass 4
+bool check_function_bodies(void) {
+    Symbol *sym, *tmp;
+
+    // Iterate over all function symbols in global scope
+    HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+        // Only process functions
+        if (sym->kind != SYMBOL_FUNCTION) {
+            continue;
+        }
+
+        // Get function details
+        AstNode *decl = sym->decl;
+        AstNode *body = decl->data.func_decl.body;
+        Type *func_type = sym->type;
+        Type *return_type = func_type->data.func.return_type;
+
+        // Push function's local scope (contains parameters)
+        scope_push(sym->data.func.local_scope);
+
+        // Check the function body
+        bool definitely_returns = check_statement(body, return_type);
+
+        // If non-void, ensure all paths return
+        if (return_type->kind != TYPE_VOID && !definitely_returns) {
+            checker_error(decl->loc, "function '%s' may not return a value on all paths", sym->name);
+        }
+
+        // Pop back to global scope
+        scope_pop();
+    }
+
+    return !checker_has_errors();
+}

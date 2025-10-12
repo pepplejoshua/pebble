@@ -16,6 +16,10 @@ bool collect_globals(AstNode **decls, size_t decl_count);
 // Returns true if successful, false if there were errors
 bool check_globals(void);
 
+// Pass 4: Type-check function bodies
+// Returns true if successful, false if there were errors
+bool check_function_bodies(void);
+
 // Helper: Resolve a type expression AST node to a Type object
 Type *resolve_type_expression(AstNode *type_expr);
 
