@@ -1,6 +1,4 @@
 #include "alloc.h"
-#include "symbol.h"
-#include "type.h"
 #include "tests.h"
 #include <stdio.h>
 #include <string.h>
@@ -11,8 +9,6 @@ Arena long_lived;
 int main(int argc, char **argv) {
     // Initialize compiler systems
     arena_init(&long_lived, 1024 * 1024);
-    type_system_init();
-    symbol_table_init();
 
     // Handle command-line arguments
     if (argc > 1) {

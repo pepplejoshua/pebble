@@ -39,6 +39,8 @@ const char *ast_kind_name(AstKind kind) {
 void test_setup(void) {
     printf("=== Pebble Compiler Tests ===\n");
 
+    type_system_init();
+
     // Test type lookup
     Type *int_type = type_lookup("int");
     Type *str_type = type_lookup("str");
@@ -281,6 +283,83 @@ void test_checker(void) {
                 printf("✓ Correctly detected duplicate 'bar'\n");
             } else {
                 printf("❌ Should have detected duplicate declaration\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    // Test 4: Pass 3 - Type resolution
+    {
+        printf("\n--- Test 4: Pass 3 - Type resolution ---\n");
+
+        const char *source =
+            "type MyInt = int;\n"
+            "type IntPtr = *int;\n"
+            "let pi = 3.14;\n"
+            "var count int;\n"
+            "var total = 100;\n"
+            "fn add(a int, b int) int { return a + b; }";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals
+            success = check_globals();
+
+            if (success && !checker_has_errors()) {
+                printf("✓ Pass 3 completed successfully\n");
+
+                // Verify types were resolved
+                Symbol *myint = scope_lookup(global_scope, "MyInt");
+                Symbol *intptr = scope_lookup(global_scope, "IntPtr");
+                Symbol *pi = scope_lookup(global_scope, "pi");
+                Symbol *count = scope_lookup(global_scope, "count");
+                Symbol *total = scope_lookup(global_scope, "total");
+                Symbol *add = scope_lookup(global_scope, "add");
+
+                printf("  - MyInt type: %s\n", myint && myint->type ? "resolved" : "NULL");
+                printf("  - IntPtr type: %s\n", intptr && intptr->type ? "resolved" : "NULL");
+                printf("  - pi type: %s (kind: %d)\n",
+                       pi && pi->type ? "resolved" : "NULL",
+                       pi && pi->type ? pi->type->kind : -1);
+                printf("  - count type: %s (kind: %d)\n",
+                       count && count->type ? "resolved" : "NULL",
+                       count && count->type ? count->type->kind : -1);
+                printf("  - total type: %s (kind: %d)\n",
+                       total && total->type ? "resolved" : "NULL",
+                       total && total->type ? total->type->kind : -1);
+                printf("  - add type: %s (kind: %d)\n",
+                       add && add->type ? "resolved" : "NULL",
+                       add && add->type ? add->type->kind : -1);
+
+                // Check function has local scope with parameters
+                if (add && add->data.func.local_scope) {
+                    printf("  - add has local scope: yes\n");
+                    Symbol *a = scope_lookup_local(add->data.func.local_scope, "a");
+                    Symbol *b = scope_lookup_local(add->data.func.local_scope, "b");
+                    printf("    - param 'a' in scope: %s\n", a ? "yes" : "no");
+                    printf("    - param 'b' in scope: %s\n", b ? "yes" : "no");
+                } else {
+                    printf("  - add has local scope: NO ❌\n");
+                }
+            } else {
+                printf("❌ Pass 3 failed with errors\n");
             }
         } else {
             printf("❌ Parse failed\n");

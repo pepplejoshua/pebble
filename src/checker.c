@@ -23,7 +23,7 @@ static CheckerState checker_state;
 void checker_init(void) {
     checker_state.has_errors = false;
     checker_state.error_count = 0;
-    symbol_table_init();  // Initialize global scope
+    symbol_table_init();  // Create fresh global scope
 }
 
 bool checker_has_errors(void) {
@@ -254,13 +254,73 @@ static void check_global_variables(void) {
 
 // Sub-pass 3d: Check function signatures
 static void check_function_signatures(void) {
-    // Walk global_scope->symbols
-    // For each SYMBOL_FUNCTION
-    // Resolve param types, return type, create function scope
+    Symbol *sym, *tmp;
+
+    // Iterate over all symbols in global scope
+    HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+        // Only process function declarations
+        if (sym->kind != SYMBOL_FUNCTION) {
+            continue;
+        }
+
+        AstNode *decl = sym->decl;
+        FuncParam *params = decl->data.func_decl.params;
+        size_t param_count = decl->data.func_decl.param_count;
+        AstNode *return_type_expr = decl->data.func_decl.return_type;
+
+        // Resolve parameter types
+        Type **param_types = NULL;
+        if (param_count > 0) {
+            param_types = arena_alloc(&long_lived, sizeof(Type*) * param_count);
+            for (size_t i = 0; i < param_count; i++) {
+                param_types[i] = resolve_type_expression(params[i].type);
+                if (!param_types[i]) {
+                    // Error already reported, but keep going to check other params
+                    param_types[i] = type_int;  // Use placeholder to continue
+                }
+            }
+        }
+
+        // Resolve return type
+        Type *return_type = resolve_type_expression(return_type_expr);
+        if (!return_type) {
+            continue;  // Error already reported
+        }
+
+        // Create function type
+        sym->type = type_create_function(param_types, param_count, return_type);
+
+        // Create function's local scope with global as parent
+        Scope *func_scope = scope_create(global_scope);
+        sym->data.func.local_scope = func_scope;
+
+        // Add parameters as symbols in the function scope
+        for (size_t i = 0; i < param_count; i++) {
+            if (!param_types[i]) {
+                continue;  // Skip if type resolution failed
+            }
+
+            // Create parameter symbol
+            Symbol *param_sym = symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
+            param_sym->type = param_types[i];
+            param_sym->data.var.is_global = false;  // Parameters are local
+
+            // Check for duplicate parameter names
+            Symbol *existing = scope_lookup_local(func_scope, params[i].name);
+            if (existing) {
+                checker_error(decl->loc, "duplicate parameter name '%s'", params[i].name);
+                continue;
+            }
+
+            scope_add_symbol(func_scope, param_sym);
+        }
+    }
 }
+
 
 // Main entry point for Pass 3
 bool check_globals(void) {
+    type_system_init();
     check_type_declarations();
     check_global_constants();
     check_global_variables();
@@ -278,17 +338,19 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
 
     switch (type_expr->kind) {
-      case AST_TYPE_NAMED: {
+        case AST_TYPE_NAMED: {
+            // Look up named type in type table
+            const char *name = type_expr->data.type_named.name;
+            printf("DEBUG: Looking up type '%s'\n", name);  // DEBUG
+            Type *type = type_lookup(name);
+            printf("DEBUG: Result = %p\n", (void*)type);    // DEBUG
+            if (!type) {
+                checker_error(type_expr->loc, "undefined type '%s'", name);
+                return NULL;
+            }
+            return type;
+        }
 
-          // Look up named type in type table
-          const char *name = type_expr->data.type_named.name;
-          Type *type = type_lookup(name);
-          if (!type) {
-              checker_error(type_expr->loc, "undefined type '%s'", name);
-              return NULL;
-          }
-          return type;
-      }
 
       case AST_TYPE_POINTER: {
           // Resolve base type and create pointer type

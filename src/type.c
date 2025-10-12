@@ -1,5 +1,6 @@
 #include "type.h"
 #include "alloc.h"
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -102,8 +103,13 @@ Type *type_lookup(const char *name) {
 // Register a named type in type table
 void type_register(const char *name, Type *type) {
     assert(name && type);
-    type->name = str_dup(name);
-    HASH_ADD_STR(type_table, name, type);
+
+    // Create a wrapper/alias type entry
+    Type *entry = arena_alloc(&long_lived, sizeof(Type));
+    memcpy(entry, type, sizeof(Type));
+    entry->name = str_dup(name);
+
+    HASH_ADD_STR(type_table, name, entry);
 }
 
 // Check if two types are equal
@@ -172,6 +178,11 @@ bool type_is_numeric(Type *type) {
 
 // Initialize the type system
 void type_system_init(void) {
+    // Only initialize if not already done
+    if (type_int != NULL) {
+        return;  // Already initialized
+    }
+
     // Create built-in types
     type_int = type_create(TYPE_INT);
     type_float = type_create(TYPE_FLOAT);
