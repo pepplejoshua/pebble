@@ -131,10 +131,59 @@ static void check_type_declarations(void) {
 }
 
 // Sub-pass 3b: Check constant declarations
-static void check_constants(void) {
-    // Walk global_scope->symbols
-    // For each SYMBOL_CONSTANT, resolve type and check initializer
-    // Store result in symbol->type
+static void check_global_constants(void) {
+    Symbol *sym, *tmp;
+
+    // Iterate over all symbols in global scope
+    HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+        // Only process constant declarations
+        if (sym->kind != SYMBOL_CONSTANT) {
+            continue;
+        }
+
+        AstNode *decl = sym->decl;
+        AstNode *type_expr = decl->data.const_decl.type_expr;
+        AstNode *value = decl->data.const_decl.value;
+
+        // Rule: Constants must have an initializer
+        if (!value) {
+            checker_error(decl->loc, "global constant '%s' must be initialized", sym->name);
+            continue;
+        }
+
+        // Rule: For now, only allow literal initializers
+        if (value->kind != AST_EXPR_LITERAL_INT &&
+            value->kind != AST_EXPR_LITERAL_FLOAT &&
+            value->kind != AST_EXPR_LITERAL_STRING &&
+            value->kind != AST_EXPR_LITERAL_BOOL) {
+            checker_error(value->loc, "global constant initializer must be a literal (complex expressions not yet supported)");
+            continue;
+        }
+
+        // Check the initializer expression
+        Type *inferred_type = check_expression(value);
+        if (!inferred_type) {
+            continue;  // Error already reported
+        }
+
+        // If explicit type is given, resolve and verify it matches
+        if (type_expr) {
+            Type *explicit_type = resolve_type_expression(type_expr);
+            if (!explicit_type) {
+                continue;  // Error already reported
+            }
+
+            if (!type_equals(explicit_type, inferred_type)) {
+                checker_error(value->loc, "constant initializer type mismatch");
+                continue;
+            }
+
+            sym->type = explicit_type;
+        } else {
+            // No explicit type, use inferred type
+            sym->type = inferred_type;
+        }
+    }
 }
 
 // Sub-pass 3c: Check global variable declarations
@@ -154,7 +203,7 @@ static void check_function_signatures(void) {
 // Main entry point for Pass 3
 bool check_globals(void) {
     check_type_declarations();
-    check_constants();
+    check_global_constants();
     check_global_variables();
     check_function_signatures();
     return !checker_has_errors();
