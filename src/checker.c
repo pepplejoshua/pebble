@@ -188,9 +188,68 @@ static void check_global_constants(void) {
 
 // Sub-pass 3c: Check global variable declarations
 static void check_global_variables(void) {
-    // Walk global_scope->symbols
-    // For each SYMBOL_VARIABLE with is_global=true
-    // Resolve type, optionally check initializer
+    Symbol *sym, *tmp;
+
+    // Iterate over all symbols in global scope
+    HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+        // Only process variable declarations
+        if (sym->kind != SYMBOL_VARIABLE) {
+            continue;
+        }
+
+        AstNode *decl = sym->decl;
+        AstNode *type_expr = decl->data.var_decl.type_expr;
+        AstNode *init = decl->data.var_decl.init;
+
+        // Rule: Must have type or initializer (or both)
+        if (!type_expr && !init) {
+            checker_error(decl->loc, "variable '%s' must have either a type annotation or an initializer", sym->name);
+            continue;
+        }
+
+        Type *explicit_type = NULL;
+        Type *inferred_type = NULL;
+
+        // Resolve explicit type if provided
+        if (type_expr) {
+            explicit_type = resolve_type_expression(type_expr);
+            if (!explicit_type) {
+                continue;  // Error already reported
+            }
+        }
+
+        // Check initializer if provided
+        if (init) {
+            // Rule: For now, only allow literal initializers
+            if (init->kind != AST_EXPR_LITERAL_INT &&
+                init->kind != AST_EXPR_LITERAL_FLOAT &&
+                init->kind != AST_EXPR_LITERAL_STRING &&
+                init->kind != AST_EXPR_LITERAL_BOOL) {
+                checker_error(init->loc, "global variable initializer must be a literal (complex expressions not yet supported)");
+                continue;
+            }
+
+            inferred_type = check_expression(init);
+            if (!inferred_type) {
+                continue;  // Error already reported
+            }
+        }
+
+        // Verify types match if both are present
+        if (explicit_type && inferred_type) {
+            if (!type_equals(explicit_type, inferred_type)) {
+                checker_error(init->loc, "variable initializer type mismatch");
+                continue;
+            }
+            sym->type = explicit_type;
+        } else if (explicit_type) {
+            // Only explicit type, no initializer
+            sym->type = explicit_type;
+        } else {
+            // Only initializer, infer type
+            sym->type = inferred_type;
+        }
+    }
 }
 
 // Sub-pass 3d: Check function signatures
