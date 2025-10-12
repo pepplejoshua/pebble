@@ -7,6 +7,7 @@
 
 // Forward declarations
 typedef struct Type Type;
+typedef struct TypeEntry TypeEntry;
 
 // Type kinds
 typedef enum {
@@ -49,8 +50,13 @@ struct Type {
             Type *return_type;      // Return type
         } func;
     } data;
+};
 
-    UT_hash_handle hh;  // For type table hash
+// Type table entry (name -> type mapping)
+struct TypeEntry {
+    char *name;              // Key for hash table
+    Type *type;              // Pointer to the type
+    UT_hash_handle hh;       // Hash handle
 };
 
 // Built-in types
@@ -61,7 +67,7 @@ extern Type *type_string;
 extern Type *type_void;
 
 // Type table (global hash map of named types)
-extern Type *type_table;
+extern TypeEntry *type_table;
 
 // Type system functions
 void type_system_init(void);

@@ -341,9 +341,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
         case AST_TYPE_NAMED: {
             // Look up named type in type table
             const char *name = type_expr->data.type_named.name;
-            printf("DEBUG: Looking up type '%s'\n", name);  // DEBUG
             Type *type = type_lookup(name);
-            printf("DEBUG: Result = %p\n", (void*)type);    // DEBUG
             if (!type) {
                 checker_error(type_expr->loc, "undefined type '%s'", name);
                 return NULL;

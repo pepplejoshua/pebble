@@ -1,5 +1,6 @@
 #include "type.h"
 #include "alloc.h"
+#include "ast.h"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -15,7 +16,7 @@ Type *type_string = NULL;
 Type *type_void = NULL;
 
 // Type table (hash map of named types)
-Type *type_table = NULL;
+TypeEntry *type_table = NULL;
 
 // Helper to duplicate strings
 static char *str_dup(const char *str) {
@@ -95,20 +96,18 @@ Type *type_create_function(Type **param_types, size_t param_count, Type *return_
 Type *type_lookup(const char *name) {
     if (!name) return NULL;
 
-    Type *type;
-    HASH_FIND_STR(type_table, name, type);
-    return type;
+    TypeEntry *entry;
+    HASH_FIND_STR(type_table, name, entry);
+    return entry ? entry->type : NULL;
 }
 
 // Register a named type in type table
 void type_register(const char *name, Type *type) {
     assert(name && type);
 
-    // Create a wrapper/alias type entry
-    Type *entry = arena_alloc(&long_lived, sizeof(Type));
-    memcpy(entry, type, sizeof(Type));
-    entry->name = str_dup(name);
-
+    TypeEntry *entry = arena_alloc(&long_lived, sizeof(TypeEntry));
+    entry->name = strdup(name);
+    entry->type = type;
     HASH_ADD_STR(type_table, name, entry);
 }
 
