@@ -582,6 +582,127 @@ void test_checker(void) {
         }
     }
 
+    // Test 8: Circular type dependencies (should fail)
+    {
+        printf("\n--- Test 8: Circular type dependencies ---\n");
+
+        const char *source =
+            "type A = B;\n"
+            "type B = C;\n"
+            "type C = A;";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals (should detect cycle)
+            success = check_globals();
+
+            if (!success && checker_has_errors()) {
+                printf("✓ Correctly detected circular type dependency\n");
+            } else {
+                printf("❌ Should have detected circular dependency (A→B→C→A)\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    // Test 9: Self-referential type (should fail)
+    {
+        printf("\n--- Test 9: Self-referential type ---\n");
+
+        const char *source = "type Node = Node;";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals (should detect cycle)
+            success = check_globals();
+
+            if (!success && checker_has_errors()) {
+                printf("✓ Correctly detected self-referential type\n");
+            } else {
+                printf("❌ Should have detected self-reference (Node→Node)\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
+    // Test 10: Valid indirect type usage via pointer (should pass)
+    {
+        printf("\n--- Test 10: Valid indirect type via pointer ---\n");
+
+        const char *source =
+            "type Node = (int, *Node);\n"  // Valid: pointer breaks the cycle
+            "var head Node;";
+
+        Parser parser;
+        parser_init(&parser, source, "<test>");
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error && program) {
+            checker_init();
+
+            // Pass 2: Collect globals
+            bool success = collect_globals(
+                program->data.block_stmt.stmts,
+                program->data.block_stmt.stmt_count
+            );
+
+            if (!success) {
+                printf("❌ Pass 2 failed\n");
+                return;
+            }
+
+            // Pass 3: Check globals (should succeed - pointer breaks cycle)
+            success = check_globals();
+
+            if (success && !checker_has_errors()) {
+                printf("✓ Correctly allowed self-reference via pointer\n");
+
+                Symbol *node = scope_lookup(global_scope, "Node");
+                if (node && node->type && node->type->kind == TYPE_TUPLE) {
+                    printf("  ✓ Node type resolved as tuple\n");
+                }
+            } else {
+                printf("❌ Should have allowed pointer-based self-reference\n");
+            }
+        } else {
+            printf("❌ Parse failed\n");
+        }
+    }
+
     printf("\n✓ Checker tests completed\n");
 }
 
