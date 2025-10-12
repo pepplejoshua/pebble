@@ -3,6 +3,7 @@
 #include "ast.h"
 #include "symbol.h"
 #include "type.h"
+#include "uthash.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -103,9 +104,30 @@ bool collect_globals(AstNode **decls, size_t decl_count) {
 
 // Sub-pass 3a: Resolve type declarations
 static void check_type_declarations(void) {
-    // Walk global_scope->symbols
-    // For each SYMBOL_TYPE, resolve its type expression
-    // Store result in symbol->type
+    Symbol *sym, *tmp;
+
+    // Iterate over all symbols in global scope
+    HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+        // Only process type declarations
+        if (sym->kind != SYMBOL_TYPE) {
+            continue;
+        }
+
+        // Get the type expression from the declaration
+        AstNode *type_expr = sym->decl->data.type_decl.type_expr;
+
+        // Resolve it to a type object
+        Type *resolved = resolve_type_expression(type_expr);
+        if (!resolved) {
+            continue; // Error already reported
+        }
+
+        // Store in symbol
+        sym->type = resolved;
+
+        // Register in global type table under given name
+        type_register(sym->name, resolved);
+    }
 }
 
 // Sub-pass 3b: Check constant declarations
