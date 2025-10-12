@@ -20,7 +20,8 @@ typedef enum {
     TYPE_ARRAY,
     TYPE_SLICE,
     TYPE_STRUCT,
-    TYPE_FUNCTION
+    TYPE_FUNCTION,
+    TYPE_TUPLE
 } TypeKind;
 
 // Type structure
@@ -49,6 +50,11 @@ struct Type {
             size_t param_count;     // Number of parameters
             Type *return_type;      // Return type
         } func;
+
+        struct {
+            Type **element_types;   // Tuple element types
+            size_t element_count;   // Number of elements
+        } tuple;
     } data;
 };
 
@@ -76,6 +82,7 @@ Type *type_create_pointer(Type *base);
 Type *type_create_slice(Type *element);
 Type *type_create_array(Type *element, size_t size);
 Type *type_create_struct(char **field_names, Type **field_types, size_t field_count);
+Type *type_create_tuple(Type **element_types, size_t element_count);
 Type *type_create_function(Type **param_types, size_t param_count, Type *return_type);
 
 // Type lookup and registration

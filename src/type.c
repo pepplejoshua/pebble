@@ -148,6 +148,46 @@ Type *type_create_struct(char **field_names, Type **field_types, size_t field_co
     return type;
 }
 
+// Create tuple type
+Type *type_create_tuple(Type **element_types, size_t element_count) {
+    assert(element_types && element_count > 0);
+
+    // Generate cache key from element types
+    char key[512];
+    int offset = snprintf(key, sizeof(key), "tuple");
+
+    // Add each element type pointer to the key
+    for (size_t i = 0; i < element_count; i++) {
+        offset += snprintf(key + offset, sizeof(key) - offset, "_%p", (void*)element_types[i]);
+    }
+
+    // Check cache
+    TypeEntry *entry;
+    HASH_FIND_STR(type_cache, key, entry);
+    if (entry) {
+        return entry->type;
+    }
+
+    // Create new tuple type
+    Type *type = type_create(TYPE_TUPLE);
+
+    // Copy element types array
+    Type **types = arena_alloc(&long_lived, element_count * sizeof(Type*));
+    memcpy(types, element_types, element_count * sizeof(Type*));
+
+    type->data.tuple.element_types = types;
+    type->data.tuple.element_count = element_count;
+
+    // Cache it
+    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
+    cache_entry->name = str_dup(key);
+    cache_entry->type = type;
+    HASH_ADD_STR(type_cache, name, cache_entry);
+
+    return type;
+}
+
+
 // Create function type
 Type *type_create_function(Type **param_types, size_t param_count, Type *return_type) {
     assert(return_type);
@@ -265,6 +305,18 @@ bool type_equals(Type *a, Type *b) {
             for (size_t i = 0; i < a->data.func.param_count; i++) {
                 if (!type_equals(a->data.func.param_types[i],
                                b->data.func.param_types[i])) {
+                    return false;
+                }
+            }
+            return true;
+
+        case TYPE_TUPLE:
+            if (a->data.tuple.element_count != b->data.tuple.element_count) {
+                return false;
+            }
+            for (size_t i = 0; i < a->data.tuple.element_count; i++) {
+                if (!type_equals(a->data.tuple.element_types[i],
+                                b->data.tuple.element_types[i])) {
                     return false;
                 }
             }

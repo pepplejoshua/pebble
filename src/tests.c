@@ -404,6 +404,7 @@ void test_checker(void) {
 
             if (success && !checker_has_errors()) {
                 printf("✓ Pass 3 completed successfully\n");
+                printf("%s\n\n", source);
 
                 // Get symbols
                 Symbol *s1 = scope_lookup(global_scope, "s1");
