@@ -12,6 +12,16 @@ void checker_init(void);
 // Returns true if successful, false if there were errors
 bool collect_globals(AstNode **decls, size_t decl_count);
 
+// Pass 3: Type-check all global declarations (4 sub-passes)
+// Returns true if successful, false if there were errors
+bool check_globals(void);
+
+// Helper: Resolve a type expression AST node to a Type object
+Type *resolve_type_expression(AstNode *type_expr);
+
+// Helper: Check an expression and return its type
+Type *check_expression(AstNode *expr);
+
 // Check if checker has encountered errors
 bool checker_has_errors(void);
 
