@@ -724,13 +724,40 @@ AstNode *parse_call(Parser *parser, AstNode *func) {
 AstNode *parse_index(Parser *parser, AstNode *array) {
     Location loc = parser->previous.location;
 
-    AstNode *index = parse_expression(parser);
-    parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after index");
+    // Check for slice syntax: arr[start:end]
+    AstNode *start = NULL;
+    AstNode *end = NULL;
 
-    AstNode *idx = alloc_node(AST_EXPR_INDEX, loc);
-    idx->data.index_expr.array = array;
-    idx->data.index_expr.index = index;
-    return idx;
+    // Parse start (or empty for [:end])
+    if (!parser_check(parser, TOKEN_COLON)) {
+        start = parse_expression(parser);
+    }
+
+    // Check for colon (slice) vs close bracket (index)
+    if (parser_match(parser, TOKEN_COLON)) {
+        // It's a slice: arr[start:end]
+
+        // Parse end (or empty for [start:])
+        if (!parser_check(parser, TOKEN_RBRACKET)) {
+            end = parse_expression(parser);
+        }
+
+        parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after slice");
+
+        AstNode *slice = alloc_node(AST_EXPR_SLICE, loc);
+        slice->data.slice_expr.array = array;
+        slice->data.slice_expr.start = start;
+        slice->data.slice_expr.end = end;
+        return slice;
+    } else {
+        // It's an index: arr[expr]
+        parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after index");
+
+        AstNode *index = alloc_node(AST_EXPR_INDEX, loc);
+        index->data.index_expr.array = array;
+        index->data.index_expr.index = start;  // start is the index expression
+        return index;
+    }
 }
 
 AstNode *parse_member(Parser *parser, AstNode *object) {

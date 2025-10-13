@@ -36,8 +36,12 @@ struct Type {
 
         struct {
             Type *element;   // Element type
-            size_t size;     // Array size (0 for slices)
+            size_t size;     // Array size
         } array;
+
+        struct {
+            Type *element;   // Element type
+        } slice;
 
         struct {
             char **field_names;     // Array of field names

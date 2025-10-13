@@ -38,10 +38,12 @@ typedef enum {
     AST_EXPR_UNARY_OP,
     AST_EXPR_CALL,
     AST_EXPR_INDEX,
+    AST_EXPR_SLICE,
     AST_EXPR_MEMBER,
     AST_EXPR_TUPLE,
     AST_EXPR_STRUCT_LITERAL,
     AST_EXPR_ARRAY_LITERAL,
+    AST_EXPR_IMPLICIT_CAST,
 
     // Type expressions
     AST_TYPE_NAMED,      // int, float, CustomType
@@ -104,6 +106,7 @@ struct AstNode {
         struct { UnaryOp op; AstNode *operand; } unop;
         struct { AstNode *func; AstNode **args; size_t arg_count; } call;
         struct { AstNode *array; AstNode *index; } index_expr;
+        struct { AstNode *array; AstNode *start; AstNode *end; } slice_expr;
         struct { AstNode *object; char *member; } member_expr;
         struct {
           AstNode **elements;
@@ -119,6 +122,10 @@ struct AstNode {
           AstNode **elements;
           size_t element_count;
         } array_literal;
+        struct {
+          AstNode *expr;            // Expression being cast
+          Type *target_type;
+        } implicit_cast;
 
         // Type expressions
         struct { char *name; } type_named;

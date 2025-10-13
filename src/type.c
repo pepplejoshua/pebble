@@ -47,8 +47,7 @@ Type *type_create_pointer(Type *base) {
 Type *type_create_slice(Type *element) {
     assert(element);
     Type *type = type_create(TYPE_SLICE);
-    type->data.array.element = element;
-    type->data.array.size = 0;
+    type->data.slice.element = element;
     return type;
 }
 
@@ -172,7 +171,7 @@ static bool type_equals_impl(Type *a, Type *b, Type **visited_a, Type **visited_
                                    visited_a, visited_b, visited_count);
 
         case TYPE_SLICE:
-            return type_equals_impl(a->data.array.element, b->data.array.element,
+            return type_equals_impl(a->data.slice.element, b->data.slice.element,
                                    visited_a, visited_b, visited_count);
 
         case TYPE_STRUCT:

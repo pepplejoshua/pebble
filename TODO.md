@@ -17,10 +17,6 @@
 - [ ] **Defer statements** - If desired (Go-style)
 
 ### Type System Enhancements
-- [ ] **Type inference for local variables**
-  - `var x = 42;` (infer int)
-  - Currently requires explicit types
-
 - [ ] **Const evaluation** - Evaluate constant expressions
   - `const SIZE = 10 * 10;`
   - Currently only supports literals

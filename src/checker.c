@@ -546,6 +546,32 @@ static bool is_lvalue(AstNode *expr) {
     }
 }
 
+// Insert implicit cast if needed, returns the (possibly wrapped) expression
+// Returns NULL if types are incompatible
+static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
+    if (type_equals(expr_type, target_type)) {
+        return expr;  // No cast needed
+    }
+
+    // Check if implicit conversion is allowed
+    if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_SLICE) {
+        // Array [N]T can convert to slice []T
+        if (type_equals(expr_type->data.array.element, target_type->data.slice.element)) {
+            // Create implicit cast node
+            AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+            cast->kind = AST_EXPR_IMPLICIT_CAST;
+            cast->loc = expr->loc;
+            cast->data.implicit_cast.expr = expr;
+            cast->data.implicit_cast.target_type = target_type;
+            return cast;
+        }
+    }
+
+    // No valid conversion
+    return NULL;
+}
+
+
 Type *check_expression(AstNode *expr) {
     if (!expr) {
         return NULL;
@@ -745,9 +771,12 @@ Type *check_expression(AstNode *expr) {
                     continue;  // Error already reported
                 }
 
-                if (!type_equals(arg_type, param_types[i])) {
+                AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
+                if (!converted) {
                     checker_error(args[i]->loc, "argument %zu type mismatch in call to '%s'",
                                  i + 1, func_name);
+                } else {
+                    args[i] = converted;
                 }
             }
 
@@ -784,6 +813,59 @@ Type *check_expression(AstNode *expr) {
 
             // Return the element type
             return array_type->data.array.element;
+        }
+
+        case AST_EXPR_SLICE: {
+            AstNode *array_expr = expr->data.slice_expr.array;
+            AstNode *start_expr = expr->data.slice_expr.start;
+            AstNode *end_expr = expr->data.slice_expr.end;
+
+            // Check the array expression
+            Type *array_type = check_expression(array_expr);
+            if (!array_type) {
+                return NULL;
+            }
+
+            // Can slice arrays or slices
+            if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE) {
+                checker_error(array_expr->loc, "cannot slice non-array/slice type");
+                return NULL;
+            }
+
+            // Get element type
+            Type *element_type = NULL;
+            if (array_type->kind == TYPE_ARRAY) {
+                element_type = array_type->data.array.element;
+            } else {
+                element_type = array_type->data.slice.element;
+            }
+
+            // Check start index if present
+            if (start_expr) {
+                Type *start_type = check_expression(start_expr);
+                if (!start_type) {
+                    return NULL;
+                }
+                if (start_type->kind != TYPE_INT) {
+                    checker_error(start_expr->loc, "slice start index must be an integer");
+                    return NULL;
+                }
+            }
+
+            // Check end index if present
+            if (end_expr) {
+                Type *end_type = check_expression(end_expr);
+                if (!end_type) {
+                    return NULL;
+                }
+                if (end_type->kind != TYPE_INT) {
+                    checker_error(end_expr->loc, "slice end index must be an integer");
+                    return NULL;
+                }
+            }
+
+            // Return slice type
+            return type_create_slice(element_type);
         }
 
         case AST_EXPR_MEMBER: {
@@ -962,6 +1044,12 @@ Type *check_expression(AstNode *expr) {
             return type_create_array(element_type, element_count);
         }
 
+        case AST_EXPR_IMPLICIT_CAST: {
+            // The cast was already validated when inserted
+            // Just return the target type
+            return expr->data.implicit_cast.target_type;
+        }
+
         default:
             checker_error(expr->loc, "unsupported expression type in expression type checking");
             return NULL;
@@ -989,9 +1077,12 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
                 return true;  // Error already reported
             }
 
-            // Verify it matches expected return type
-            if (!type_equals(expr_type, expected_return_type)) {
+            // Verify it matches expected return type (with implicit cast if needed)
+            AstNode *converted = maybe_insert_cast(expr, expr_type, expected_return_type);
+            if (!converted) {
                 checker_error(stmt->loc, "return type mismatch");
+            } else {
+                stmt->data.return_stmt.expr = converted;  // Replace with cast node if needed
             }
 
             return true;
@@ -1076,8 +1167,13 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             Type *lhs_type = check_expression(lhs);
             Type *rhs_type = check_expression(rhs);
 
-            if (lhs_type && rhs_type && !type_equals(lhs_type, rhs_type)) {
-                checker_error(stmt->loc, "assignment type mismatch");
+            if (lhs_type && rhs_type) {
+                AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
+                if (!converted) {
+                    checker_error(stmt->loc, "assignment type mismatch");
+                } else {
+                    stmt->data.assign_stmt.rhs = converted;  // Replace with cast node if needed
+                }
             }
             return false;
         }
@@ -1113,13 +1209,17 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
                 Type *init_type = check_expression(init);
                 if (!init_type) return false;
 
-                if (var_type && !type_equals(var_type, init_type)) {
-                    checker_error(init->loc, "initializer type mismatch");
-                    return false;
-                }
-
-                if (!var_type) {
-                    var_type = init_type;  // Infer type
+                if (var_type) {
+                    // Type is specified, check compatibility and insert cast if needed
+                    AstNode *converted = maybe_insert_cast(init, init_type, var_type);
+                    if (!converted) {
+                        checker_error(init->loc, "initializer type mismatch");
+                        return false;
+                    }
+                    stmt->data.var_decl.init = converted;  // Replace with cast node if needed
+                } else {
+                    // No type specified, infer from initializer
+                    var_type = init_type;
                 }
             }
 
@@ -1162,13 +1262,17 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             Type *value_type = check_expression(value);
             if (!value_type) return false;
 
-            if (const_type && !type_equals(const_type, value_type)) {
-                checker_error(value->loc, "constant initializer type mismatch");
-                return false;
-            }
-
-            if (!const_type) {
-                const_type = value_type;  // Infer type
+            if (const_type) {
+                // Type specified, check compatibility and insert cast if needed
+                AstNode *converted = maybe_insert_cast(value, value_type, const_type);
+                if (!converted) {
+                    checker_error(value->loc, "constant initializer type mismatch");
+                    return false;
+                }
+                stmt->data.const_decl.value = converted;  // Replace with cast node if needed
+            } else {
+                // No type specified, infer from value
+                const_type = value_type;
             }
 
             // Check for duplicate
