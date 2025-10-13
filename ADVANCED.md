@@ -58,48 +58,222 @@ fn outer(x int) int {
 - Multi-level nesting requires careful capture analysis
 - Name mangling must avoid collisions
 
-## 2. First-Class Function Types and Struct Declarations
+## 2. Anonymous Type Code Generation
 
-### Function Types Everywhere
-Allow function types in any type position for expressive callbacks and function values.
+### Challenge
+Pebble allows inline/anonymous type expressions, but C requires all types to be declared before use.
 
-```go
-// Function type in parameters
-fn map(arr []int, func (int) str) []str {
-    var result []str;
-    // ... implementation
+```pebble
+// Valid Pebble - inline types
+var point (int, int) = (10, 20);
+var data struct { x: int; y: str; };
+fn process(items [](int, str)) { }
+```
+
+```c
+// Invalid C - can't use anonymous types directly
+struct { int x; char* y; } data;  // ❌ Error
+```
+
+### Solution: Multi-Pass Codegen with Content-Based Naming
+
+**Pass 1: Type Collection**
+- Walk entire AST
+- Collect all anonymous types that need typedef declarations
+- Generate deterministic names based on type structure
+- Deduplicate identical structures
+
+**Pass 2: C Code Generation**
+1. Emit all typedef declarations
+2. Emit named type declarations
+3. Emit function prototypes
+4. Emit function definitions
+
+### Naming Scheme
+
+Anonymous types are named by their structural content, ensuring identical types share the same name.
+
+**Primitives (no typedef needed):**
+```c
+int, float, bool, char* (for str), void
+```
+
+**Pointers (no typedef, direct C syntax):**
+```c
+int*
+char**
+tuple_int_int*
+```
+
+**Tuples (typedef with content-based name):**
+```pebble
+(int, str)          → tuple_int_str
+(int, (str, bool))  → tuple_int_tuple_str_bool
+(*int, str)         → tuple_ptr_int_str
+```
+
+Generated C:
+```c
+typedef struct {
+    int _0;
+    char* _1;
+} tuple_int_str;
+```
+
+**Anonymous Structs (typedef with field names):**
+```pebble
+struct { x: int; y: str }  → anon_struct_x_int_y_str
+```
+
+Generated C:
+```c
+typedef struct {
+    int x;
+    char* y;
+} anon_struct_x_int_y_str;
+```
+
+**Slices (always typedef, always struct):**
+```pebble
+[]int               → slice_int
+[]tuple_int_str     → slice_tuple_int_str
+[]*int              → slice_ptr_int
+```
+
+Generated C:
+```c
+typedef struct {
+    int* data;
+    size_t len;
+    size_t cap;
+} slice_int;
+```
+
+**Arrays:**
+- Simple arrays: Use direct C syntax
+- Complex element types: Generate typedef
+
+```pebble
+[10]int             → int[10]           // Direct
+[5](int, str)       → array_tuple_int_str_5[5]  // Typedef
+```
+
+Generated C for complex case:
+```c
+typedef tuple_int_str array_tuple_int_str_5[5];
+```
+
+### Implementation Details
+
+**Type Name Generation Algorithm:**
+```c
+char* type_to_c_typename(Type* type) {
+    switch (type->kind) {
+        case TYPE_INT:    return "int";
+        case TYPE_FLOAT:  return "float";
+        case TYPE_BOOL:   return "bool";
+        case TYPE_STRING: return "str";
+        case TYPE_VOID:   return "void";
+
+        case TYPE_POINTER:
+            return sprintf("ptr_%s", type_to_c_typename(type->base));
+
+        case TYPE_TUPLE:
+            // "tuple_<type1>_<type2>_..."
+            char* name = "tuple";
+            for (each element type) {
+                name = sprintf("%s_%s", name, type_to_c_typename(element));
+            }
+            return name;
+
+        case TYPE_SLICE:
+            return sprintf("slice_%s", type_to_c_typename(type->element));
+
+        case TYPE_ARRAY:
+            return sprintf("array_%s_%zu",
+                          type_to_c_typename(type->element),
+                          type->size);
+
+        case TYPE_STRUCT:
+            if (named) return type->name;
+            // "anon_struct_<field1>_<type1>_..."
+            char* name = "anon_struct";
+            for (each field) {
+                name = sprintf("%s_%s_%s", name, field.name,
+                              type_to_c_typename(field.type));
+            }
+            return name;
+    }
+}
+```
+
+**Deduplication:**
+- Content-based names naturally deduplicate
+- `(int, str)` used 10 times → single `tuple_int_str` typedef
+- Track emitted typedefs to avoid duplicates
+
+**Output Structure:**
+```c
+// 1. Standard includes
+#include <stddef.h>
+#include <stdbool.h>
+
+// 2. Forward declarations (for recursive types)
+typedef struct tuple_int_ptr_tuple_int_ptr_tuple_int_ptr_... tuple_int_ptr_...;
+
+// 3. Anonymous type typedefs
+typedef struct { int _0; char* _1; } tuple_int_str;
+typedef struct { int x; char* y; } anon_struct_x_int_y_str;
+typedef struct { int* data; size_t len; size_t cap; } slice_int;
+
+// 4. Named type declarations
+typedef tuple_int_str Point;
+typedef struct Node Node;
+struct Node { int value; Node* next; };
+
+// 5. Function prototypes
+int main(void);
+tuple_int_str get_point(void);
+
+// 6. Function definitions
+tuple_int_str get_point(void) {
+    tuple_int_str result = {10, "hello"};
     return result;
 }
-
-// Function type in variables
-let transform fn(int) int = double;
-let callback fn() void = printDone;
-
-// Function type in return position
-fn makeAdder(x int) fn(int) int {
-    // Returns a function
-}
 ```
 
-### Struct as Dedicated Declaration
-Structs use dedicated `struct` keyword, not `type` expressions. Prevents inline anonymous structs.
+### Edge Cases
 
-```go
-// Struct declaration (not a type alias)
-struct Point {
-    x int;
-    y int;
-}
+**Self-Referential Anonymous Types:**
+```pebble
+// Not allowed - anonymous types can't reference themselves
+var x (int, *???)  // What would ??? be?
 
-// Usage
-let p Point = {x = 1, y = 2};
-
-// Not allowed - no inline structs
-let bad struct { x int } = {x = 1};  // Error
+// Solution: Must use named types
+type Node = (int, *Node);  // ✓ OK
 ```
 
-### Implementation Notes
-- Parse `AST_TYPE_FUNCTION` nodes in any type expression context
-- Add `AST_DECL_STRUCT` separate from `AST_DECL_TYPE`
-- Reject `AST_TYPE_STRUCT` in type resolution (only named structs allowed)
-- Function types resolve to `TYPE_FUNCTION` in type system
+**Very Long Names:**
+```pebble
+type Complex = ([10](int, (str, bool)), *((int, int), str));
+// Generates: array_tuple_int_tuple_str_bool_10, tuple_tuple_int_int_str, etc.
+```
+
+Name truncation not needed - C identifiers can be very long, and these are internal.
+
+**Recursive Type Dependencies:**
+```pebble
+type A = (B, int);
+type B = (A, str);  // Circular!
+```
+
+Already caught by semantic analysis (circular dependency error).
+
+### Benefits
+
+1. **Automatic deduplication** - Identical structures share typedefs
+2. **Deterministic output** - Same input always generates same C code
+3. **Readable names** - Type structure visible in name
+4. **No collisions** - Content-based naming prevents conflicts
+5. **C compiler friendly** - Clean, standard C with typedefs
+```
