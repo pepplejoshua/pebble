@@ -1,57 +1,14 @@
 # Pebble Compiler
 
-## ✅ Completed
-- 4-pass compilation (lexer → parser → type checking → function bodies)
-- Out-of-order type resolution
-- Self-referential types via pointers
-- Tuples with member access (.0, .1, etc.)
-- Type aliases
-- Forward references
-- Structural type equality with cycle detection
-- Comprehensive test suite
-
 ## 🚧 Missing Language Features
 
-### Core Types
-- [ ] **Struct types** - Parse and implement struct type syntax
-  - `type Point = struct { x int, y int }`
-  - Field access: `point.x`
-  - Struct literals: `Point.{ x = 10, y = 20 }`.
-    - There will be some ambiguity here in the parser  since it will think it
-    is an expression followed by a block of statements.
-
-- [ ] **Function types as type expressions** - Parse fn types
-  - `type BinaryOp = fn(int, int) int;`
-  - Function type variables
-  - First-class functions (if desired)
-
-### Expressions
-- [ ] **Struct literals** - Create struct instances
-  - Parse `StructName { field1: value1, field2: value2 }`
-  - Type check field names and types
-
-- [ ] **Tuple literals** - Currently parsed but need full checking
-  - Verify: `(1, 2, 3)` type inference
-  - Tuple destructuring (optional)
-
-- [ ] **Array literals** - Create array instances
-  - `[1, 2, 3, 4, 5]`
-  - Type inference from elements
-
-- [ ] **Slice literals** - Create slices
-  - Syntax TBD (maybe same as arrays?)
-
 ### Operators
-- [ ] **Pointer operations**
-  - Address-of: `&x`
-  - Dereference: `*ptr`
-
 - [ ] **Array/slice operations**
   - Slice syntax: `arr[1:5]`
   - Length operation
 
 ### Statements
-- [ ] **For loops** - If desired
+- [ ] **For loops** - If desired, later
   - `for i in 0..10 { }`
   - Or C-style: `for (i = 0; i < 10; i++) { }`
 
