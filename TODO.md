@@ -73,6 +73,57 @@
 
 - [ ] **Generic types** - Future (complex)
 
+### File Input and Processing
+- [ ] **Command-line argument parsing**
+  - Accept source file path: `./peb file.peb`
+  - Multiple files: `./peb main.peb lib.peb`
+  - Flags: `--output`, `--verbose`, `--help`, etc.
+
+- [ ] **File reading**
+  - Read source file into memory
+  - Handle file not found errors
+  - Handle read errors gracefully
+  - Support stdin: `./peb -` or `cat file.peb | ./peb`
+
+- [ ] **Error reporting with file context**
+  - Show filename in error messages
+  - Display source line with error
+  - Point to exact column with `^`
+  - Support multiple files in error messages
+
+- [ ] **Output file generation**
+  - Write generated C to output file
+  - Default: `input.peb` → `output.c`
+  - Custom: `./peb input.peb -o custom.c`
+  - Option to write to stdout for piping
+
+- [ ] **Build pipeline**
+  - Generate C file from Pebble source
+  - Optionally invoke C compiler (gcc/clang)
+  - `./peb input.peb --compile` → generates executable
+  - Handle compilation errors from C compiler
+
+### Basic C FFI (Foreign Function Interface)
+- [ ] **Parse `extern` declarations**
+  - `extern fn c_function(params) return_type;`
+  - Mark symbols as external (don't codegen body)
+
+- [ ] **Codegen for extern functions**
+  - Emit C declarations (or `#include` directives)
+  - No type conversions - direct passthrough
+
+- [ ] **Type restrictions for extern**
+  - Allow: `int`, `float`, `bool`, `void`, `*T`, `[N]T`
+  - Disallow (for now): `str`, `[]T`, tuples, structs
+  - Error if invalid type used in extern signature
+
+- [ ] **Test with standard C library**
+  - `extern fn printf(fmt *char) int;`
+  - `extern fn malloc(size uint) *void;`
+  - `extern fn strlen(s *char) int;`
+  - Verify generated C compiles and links
+
+
 ## 🔨 Code Generation (Next Major Phase)
 
 ### Pass 5: C Code Generation
@@ -209,5 +260,3 @@
 4. ✅ Basic codegen (simple programs first)
 5. ✅ Expand codegen to handle all features
 6. ✅ Integration testing with real C compilation
-
-You've built an excellent foundation. The hard part (semantic analysis) is done! 🎉
