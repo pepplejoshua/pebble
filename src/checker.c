@@ -830,6 +830,74 @@ Type *check_expression(AstNode *expr) {
             return type_create_tuple(element_types, element_count);
         }
 
+        case AST_EXPR_STRUCT_LITERAL: {
+            const char *type_name = expr->data.struct_literal.type_name;
+            char **field_names = expr->data.struct_literal.field_names;
+            AstNode **field_values = expr->data.struct_literal.field_values;
+            size_t field_count = expr->data.struct_literal.field_count;
+
+            // Look up the type
+            Symbol *type_sym = scope_lookup(current_scope, type_name);
+            if (!type_sym) {
+                checker_error(expr->loc, "undefined type '%s'", type_name);
+                return NULL;
+            }
+
+            if (type_sym->kind != SYMBOL_TYPE) {
+                checker_error(expr->loc, "'%s' is not a type", type_name);
+                return NULL;
+            }
+
+            Type *struct_type = type_sym->type;
+            if (struct_type->kind != TYPE_STRUCT) {
+                checker_error(expr->loc, "'%s' is not a struct type", type_name);
+                return NULL;
+            }
+
+            // Verify field count matches
+            size_t expected_count = struct_type->data.struct_data.field_count;
+            if (field_count != expected_count) {
+                checker_error(expr->loc, "struct literal has %zu fields, but type '%s' has %zu fields",
+                             field_count, type_name, expected_count);
+                return NULL;
+            }
+
+            // Check each field
+            char **expected_names = struct_type->data.struct_data.field_names;
+            Type **expected_types = struct_type->data.struct_data.field_types;
+
+            for (size_t i = 0; i < field_count; i++) {
+                // Find this field in the struct type
+                bool found = false;
+                for (size_t j = 0; j < expected_count; j++) {
+                    if (strcmp(field_names[i], expected_names[j]) == 0) {
+                        found = true;
+
+                        // Type-check the value
+                        Type *value_type = check_expression(field_values[i]);
+                        if (!value_type) {
+                            return NULL;  // Error already reported
+                        }
+
+                        if (!type_equals(value_type, expected_types[j])) {
+                            checker_error(field_values[i]->loc,
+                                         "field '%s' has type mismatch in struct literal", field_names[i]);
+                            return NULL;
+                        }
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    checker_error(expr->loc, "struct '%s' has no field named '%s'",
+                                 type_name, field_names[i]);
+                    return NULL;
+                }
+            }
+
+            return struct_type;
+        }
+
         default:
             checker_error(expr->loc, "unsupported expression type in expression type checking");
             return NULL;

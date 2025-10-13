@@ -628,6 +628,57 @@ static void test_structural_equality(void) {
     }
 }
 
+static void test_structs(void) {
+    printf("\n--- Test 6: Structs ---\n");
+
+    TestCase tc = {
+        .source =
+            "type Point = struct { x int, y int };\n"
+            "type Rect = struct { top_left Point, width int, height int };\n"
+            "var p1 Point;\n"
+            "var p2 Point;\n"
+            "fn make_point() Point {\n"
+            "  var p = Point.{ x = 10, y = 20 };\n"
+            "  return p;\n"
+            "}\n"
+            "fn get_x(pt Point) int {\n"
+            "  return pt.x;\n"
+            "}",
+        .should_pass = true
+    };
+
+    if (run_test_case("Structs", tc)) {
+        printf("✓ Pass 3 completed successfully\n");
+
+        Symbol *point_type = scope_lookup(global_scope, "Point");
+        Symbol *rect_type = scope_lookup(global_scope, "Rect");
+        Symbol *p1 = scope_lookup(global_scope, "p1");
+        Symbol *p2 = scope_lookup(global_scope, "p2");
+
+        // Check Point type exists and is struct
+        if (point_type && point_type->type && point_type->type->kind == TYPE_STRUCT) {
+            printf("  ✓ Point is a struct type\n");
+        } else {
+            printf("  ❌ Point is not a struct type\n");
+        }
+
+        // Check struct equality
+        if (p1 && p2 && type_equals(p1->type, p2->type)) {
+            printf("  ✓ Struct types are equal\n");
+        } else {
+            printf("  ❌ Struct types not equal\n");
+        }
+
+        // Check nested struct
+        if (rect_type && rect_type->type && rect_type->type->kind == TYPE_STRUCT) {
+            printf("  ✓ Rect is a struct type (nested struct)\n");
+        } else {
+            printf("  ❌ Rect is not a struct type\n");
+        }
+    }
+}
+
+
 // Main test runner
 void test_checker(void) {
     printf("=== Checker Tests ===\n");
@@ -637,6 +688,7 @@ void test_checker(void) {
     test_mixed_duplicates();
     test_type_resolution();
     test_tuples();
+    test_structs();
     test_forward_references();
     test_circular_dependencies();
     test_self_referential_direct();

@@ -151,6 +151,7 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
             break;
         case 's':
             if (length == 3) return lexer_check_keyword(start, 3, "str", TOKEN_STR_TYPE);
+            if (length == 6) return lexer_check_keyword(start, 6, "struct", TOKEN_STRUCT);  // ADD THIS LINE
             break;
         case 't':
             if (length > 1) {
@@ -324,6 +325,7 @@ const char *token_type_name(TokenType type) {
         case TOKEN_ELSE: return "ELSE";
         case TOKEN_WHILE: return "WHILE";
         case TOKEN_TYPE: return "TYPE";
+        case TOKEN_STRUCT: return "STRUCT";
         case TOKEN_LET: return "LET";
         case TOKEN_VAR: return "VAR";
         case TOKEN_TRUE: return "TRUE";

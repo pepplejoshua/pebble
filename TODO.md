@@ -14,9 +14,9 @@
 
 ### Core Types
 - [ ] **Struct types** - Parse and implement struct type syntax
-  - `type Point = struct { x: int; y: int; }`
+  - `type Point = struct { x int, y int }`
   - Field access: `point.x`
-  - Struct literals: `Point { x: 10, y: 20 }`.
+  - Struct literals: `Point.{ x = 10, y = 20 }`.
     - There will be some ambiguity here in the parser  since it will think it
     is an expression followed by a block of statements.
 

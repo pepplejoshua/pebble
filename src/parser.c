@@ -613,14 +613,71 @@ AstNode *parse_postfix(Parser *parser) {
 
     while (true) {
         if (parser_match(parser, TOKEN_LPAREN)) {
-            // Function call: expr(args)
             expr = parse_call(parser, expr);
         } else if (parser_match(parser, TOKEN_LBRACKET)) {
-            // Array indexing: expr[index]
             expr = parse_index(parser, expr);
         } else if (parser_match(parser, TOKEN_DOT)) {
-            // Member access: expr.member
-            expr = parse_member(parser, expr);
+            // Check for struct literal: IDENTIFIER.{ ... }
+            if (parser_check(parser, TOKEN_LBRACE) && expr->kind == AST_EXPR_IDENTIFIER) {
+                parser_advance(parser); // consume '{'
+                Location loc = expr->loc;
+                char *type_name = expr->data.ident.name;
+
+                // Parse struct literal fields
+                char **field_names = NULL;
+                AstNode **field_values = NULL;
+                size_t count = 0;
+                size_t capacity = 4;
+
+                field_names = arena_alloc(&long_lived, capacity * sizeof(char*));
+                field_values = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+
+                // Allow empty struct literal
+                if (!parser_check(parser, TOKEN_RBRACE)) {
+                    do {
+                        // Grow arrays if needed
+                        if (count >= capacity) {
+                            capacity *= 2;
+                            char **new_names = arena_alloc(&long_lived, capacity * sizeof(char*));
+                            AstNode **new_values = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                            memcpy(new_names, field_names, count * sizeof(char*));
+                            memcpy(new_values, field_values, count * sizeof(AstNode*));
+                            field_names = new_names;
+                            field_values = new_values;
+                        }
+
+                        // Parse field: IDENTIFIER = EXPR
+                        if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+                            parser_error(parser, "Expected field name in struct literal");
+                            return NULL;
+                        }
+                        Token field_name = parser->previous;
+                        parser_advance(parser);
+
+                        parser_consume(parser, TOKEN_EQUAL, "Expected '=' after field name");
+
+                        field_names[count] = str_dup(field_name.lexeme);
+                        field_values[count] = parse_expression(parser);
+                        if (!field_values[count]) {
+                            return NULL;
+                        }
+                        count++;
+
+                    } while (parser_match(parser, TOKEN_COMMA));
+                }
+
+                parser_consume(parser, TOKEN_RBRACE, "Expected '}' after struct literal fields");
+
+                expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+                expr->data.struct_literal.type_name = type_name;
+                expr->data.struct_literal.field_names = field_names;
+                expr->data.struct_literal.field_values = field_values;
+                expr->data.struct_literal.field_count = count;
+                return expr;
+            } else {
+                // Regular member access
+                expr = parse_member(parser, expr);
+            }
         } else {
             break;
         }
@@ -861,6 +918,62 @@ AstNode *parse_type_expression(Parser *parser) {
             type->data.type_array.size = size;
             return type;
         }
+    }
+
+    // Struct type: struct { field1 type1, field2 type2, ... }
+    if (parser_match(parser, TOKEN_STRUCT)) {
+        Location loc = parser->previous.location;
+
+        parser_consume(parser, TOKEN_LBRACE, "Expected '{' after 'struct'");
+
+        // Parse fields
+        char **field_names = NULL;
+        AstNode **field_types = NULL;
+        size_t count = 0;
+        size_t capacity = 4;
+
+        field_names = arena_alloc(&long_lived, capacity * sizeof(char*));
+        field_types = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+
+        // Allow empty struct
+        if (!parser_check(parser, TOKEN_RBRACE)) {
+            do {
+                // Grow arrays if needed
+                if (count >= capacity) {
+                    capacity *= 2;
+                    char **new_names = arena_alloc(&long_lived, capacity * sizeof(char*));
+                    AstNode **new_types = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                    memcpy(new_names, field_names, count * sizeof(char*));
+                    memcpy(new_types, field_types, count * sizeof(AstNode*));
+                    field_names = new_names;
+                    field_types = new_types;
+                }
+
+                // Parse field: IDENTIFIER TYPE
+                if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+                    parser_error(parser, "Expected field name");
+                    return NULL;
+                }
+                Token field_name = parser->previous;
+                parser_advance(parser);
+
+                field_names[count] = str_dup(field_name.lexeme);
+                field_types[count] = parse_type_expression(parser);
+                if (!field_types[count]) {
+                    return NULL;
+                }
+                count++;
+
+            } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        parser_consume(parser, TOKEN_RBRACE, "Expected '}' after struct fields");
+
+        type = alloc_node(AST_TYPE_STRUCT, loc);
+        type->data.type_struct.field_names = field_names;
+        type->data.type_struct.field_types = field_types;
+        type->data.type_struct.field_count = count;
+        return type;
     }
 
     // Built-in types
