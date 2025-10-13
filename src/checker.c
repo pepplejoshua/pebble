@@ -108,7 +108,7 @@ bool collect_globals(AstNode **decls, size_t decl_count) {
 static void check_type_declarations(void) {
     Symbol *sym, *tmp;
 
-    // Build list of ONLY type declarations (skip everything else)
+    // Build worklist of type declarations
     Symbol **worklist = NULL;
     size_t worklist_size = 0;
     size_t worklist_capacity = 0;
@@ -116,7 +116,6 @@ static void check_type_declarations(void) {
     HASH_ITER(hh, global_scope->symbols, sym, tmp) {
         if (sym->kind == SYMBOL_TYPE) {
             sym->type = NULL;
-            // Add to worklist
             if (worklist_size >= worklist_capacity) {
                 worklist_capacity = worklist_capacity == 0 ? 8 : worklist_capacity * 2;
                 worklist = realloc(worklist, sizeof(Symbol*) * worklist_capacity);
@@ -127,36 +126,56 @@ static void check_type_declarations(void) {
 
     checker_state.in_type_resolution = true;
 
-    // Iterate only over unresolved types
+    // PHASE 1: Pre-register all type names as placeholders
+    for (size_t i = 0; i < worklist_size; i++) {
+        sym = worklist[i];
+        Type *placeholder = type_create(TYPE_UNRESOLVED);
+        type_register(sym->name, placeholder);
+    }
+
+    // PHASE 2: Resolve types (handles out-of-order dependencies)
     bool made_progress = true;
     while (worklist_size > 0 && made_progress) {
         made_progress = false;
         size_t new_size = 0;
 
-        for (size_t i = 0; i < worklist_size; i++) {  // ← Only unresolved types!
+        for (size_t i = 0; i < worklist_size; i++) {
             sym = worklist[i];
-
             AstNode *type_expr = sym->decl->data.type_decl.type_expr;
             Type *resolved = resolve_type_expression(type_expr);
 
             if (resolved) {
-                sym->type = resolved;
-                type_register(sym->name, resolved);
-                made_progress = true;
-                // Don't add back to worklist - it's resolved!
+                Type *placeholder = type_lookup(sym->name);
+
+                // Always mutate placeholder in place
+                if (placeholder && placeholder->kind == TYPE_UNRESOLVED) {
+                    *placeholder = *resolved;
+                }
+
+                sym->type = placeholder;
+
+                // Check if fully resolved (not TYPE_UNRESOLVED anymore)
+                if (placeholder->kind != TYPE_UNRESOLVED) {
+                    made_progress = true;
+                    // Remove from worklist
+                } else {
+                    // Still TYPE_UNRESOLVED, keep trying
+                    worklist[new_size++] = sym;
+                }
             } else {
-                worklist[new_size++] = sym;  // Keep for next iteration
+                // Resolution failed, keep trying
+                worklist[new_size++] = sym;
             }
         }
 
-        worklist_size = new_size;  // Shrink worklist
+        worklist_size = new_size;
     }
 
-    // Report errors for remaining unresolved types
+    // PHASE 3: Report circular dependencies
     for (size_t i = 0; i < worklist_size; i++) {
         sym = worklist[i];
         checker_error(sym->decl->data.type_decl.type_expr->loc,
-            "cannot resolve type '%s' (circular dependency or undefined type)",
+            "cannot resolve type '%s' (circular dependency)",
             sym->name);
     }
 
