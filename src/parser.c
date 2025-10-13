@@ -821,6 +821,38 @@ AstNode *parse_primary(Parser *parser) {
         }
     }
 
+    // Array literal: [1, 2, 3]
+    if (parser_match(parser, TOKEN_LBRACKET)) {
+        Location loc = parser->previous.location;
+
+        // Parse elements
+        AstNode **elements = NULL;
+        size_t count = 0;
+        size_t capacity = 4;
+        elements = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+
+        // Allow empty array literal
+        if (!parser_check(parser, TOKEN_RBRACKET)) {
+            do {
+                // Grow array if needed
+                if (count >= capacity) {
+                    capacity *= 2;
+                    AstNode **new_array = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                    memcpy(new_array, elements, count * sizeof(AstNode*));
+                    elements = new_array;
+                }
+
+                elements[count++] = parse_expression(parser);
+            } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after array elements");
+
+        AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, loc);
+        array_lit->data.array_literal.elements = elements;
+        array_lit->data.array_literal.element_count = count;
+        return array_lit;
+    }
 
     parser_error(parser, "Expected expression");
     return NULL;
@@ -949,8 +981,8 @@ AstNode *parse_type_expression(Parser *parser) {
                 parser_error(parser, "Expected array size");
                 return NULL;
             }
-            Token size_tok = parser->previous;
             parser_advance(parser);
+            Token size_tok = parser->previous;
             size_t size = (size_t)size_tok.value.int_val;
 
             parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after array size");

@@ -228,6 +228,17 @@ static bool run_test_case(const char *test_name, TestCase tc) {
         }
         printf("❌ %s: Expected success but got errors\n", test_name);
         return false;
+    }
+
+    // Pass 4: Check function bodies
+    success = check_function_bodies();
+
+    if (tc.should_pass) {
+        if (success && !checker_has_errors()) {
+            return true;
+        }
+        printf("❌ %s: Expected success but got errors\n", test_name);
+        return false;
     } else {
         if (!success || checker_has_errors()) {
             return true;
@@ -717,6 +728,44 @@ static void test_function_types(void) {
     }
 }
 
+static void test_array_literals(void) {
+    printf("=== Array Literals ===\n");
+
+    TestCase tc = {
+        .source =
+            "fn test_arrays() void {\n"
+            "  var nums = [1, 2, 3, 4, 5];\n"
+            "  let even [5]int = [0, 2, 4, 6, 8];\n"
+            "  var first = nums[0];\n"
+            "  var matrix = [[1, 2], [3, 4]];\n"
+            "}\n"
+            "fn make_array() [3]int {\n"
+            "  return [10, 20, 30];\n"
+            "}",
+        .should_pass = true
+    };
+
+    if (run_test_case("Array Literals", tc)) {
+        printf("✓ Pass 4 completed successfully\n");
+
+        Symbol *test_arrays = scope_lookup(global_scope, "test_arrays");
+        Symbol *make_array = scope_lookup(global_scope, "make_array");
+
+        if (test_arrays) {
+            printf("  ✓ test_arrays function defined\n");
+        }
+
+        // Check make_array return type
+        if (make_array && make_array->type && make_array->type->kind == TYPE_FUNCTION) {
+            Type *ret = make_array->type->data.func.return_type;
+            if (ret && ret->kind == TYPE_ARRAY && ret->data.array.size == 3) {
+                printf("  ✓ make_array returns [3]int\n");
+            } else {
+                printf("  ❌ make_array return type incorrect\n");
+            }
+        }
+    }
+}
 
 // Main test runner
 void test_checker(void) {
@@ -725,17 +774,30 @@ void test_checker(void) {
     printf("========================================\n");
 
     test_unique_globals();
+    printf("\n");
     test_duplicate_functions();
+    printf("\n");
     test_mixed_duplicates();
+    printf("\n");
     test_type_resolution();
+    printf("\n");
     test_tuples();
+    printf("\n");
     test_structs();
+    printf("\n");
     test_forward_references();
+    printf("\n");
     test_circular_dependencies();
+    printf("\n");
     test_self_referential_direct();
+    printf("\n");
     test_self_referential_via_pointer();
+    printf("\n");
     test_structural_equality();
+    printf("\n");
     test_function_types();
+    printf("\n");
+    test_array_literals();
 
     printf("\n✓ Checker tests completed\n");
 }

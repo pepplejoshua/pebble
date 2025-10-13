@@ -898,6 +898,40 @@ Type *check_expression(AstNode *expr) {
             return struct_type;
         }
 
+        case AST_EXPR_ARRAY_LITERAL: {
+            size_t element_count = expr->data.array_literal.element_count;
+            AstNode **elements = expr->data.array_literal.elements;
+
+            // Empty array literal - we can't infer the type
+            if (element_count == 0) {
+                checker_error(expr->loc, "cannot infer type of empty array literal");
+                return NULL;
+            }
+
+            // Type-check first element to infer array element type
+            Type *element_type = check_expression(elements[0]);
+            if (!element_type) {
+                return NULL;  // Error already reported
+            }
+
+            // Check all other elements have the same type
+            for (size_t i = 1; i < element_count; i++) {
+                Type *elem_type = check_expression(elements[i]);
+                if (!elem_type) {
+                    return NULL;  // Error already reported
+                }
+
+                if (!type_equals(elem_type, element_type)) {
+                    checker_error(elements[i]->loc,
+                                 "array literal elements must all have the same type");
+                    return NULL;
+                }
+            }
+
+            // Create and return array type with inferred element type and size
+            return type_create_array(element_type, element_count);
+        }
+
         default:
             checker_error(expr->loc, "unsupported expression type in expression type checking");
             return NULL;

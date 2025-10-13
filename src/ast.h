@@ -41,6 +41,7 @@ typedef enum {
     AST_EXPR_MEMBER,
     AST_EXPR_TUPLE,
     AST_EXPR_STRUCT_LITERAL,
+    AST_EXPR_ARRAY_LITERAL,
 
     // Type expressions
     AST_TYPE_NAMED,      // int, float, CustomType
@@ -114,6 +115,10 @@ struct AstNode {
             AstNode **field_values; // [10, 20]
             size_t field_count;
         } struct_literal;
+        struct {
+          AstNode **elements;
+          size_t element_count;
+        } array_literal;
 
         // Type expressions
         struct { char *name; } type_named;
