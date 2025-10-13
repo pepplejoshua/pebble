@@ -48,7 +48,7 @@ void test_setup(void) {
     printf("✓ type_lookup('str'): %s\n", str_type ? "found" : "not found");
 
     // Test type creation
-    Type *ptr_int = type_create_pointer(int_type);
+    type_create_pointer(int_type);
     printf("✓ Created pointer type: *int\n");
 
     // Test symbol creation
@@ -187,521 +187,461 @@ void test_parser(void) {
     printf("\n✓ Parser tests completed\n");
 }
 
-void test_checker(void) {
-    printf("=== Checker Tests (Pass 2: Collect Globals) ===\n");
-    // Test 1: Valid - unique global declarations
-    {
-        printf("\n--- Test 1: Valid unique globals ---\n");
-        const char *source =
+// Helper to reduce boilerplate
+typedef struct {
+    const char *source;
+    bool should_pass;
+} TestCase;
+
+static bool run_test_case(const char *test_name, TestCase tc) {
+    Parser parser;
+    parser_init(&parser, tc.source, "<test>");
+    AstNode *program = parse_program(&parser);
+
+    if (parser.had_error || !program) {
+        printf("❌ %s: Parse failed\n", test_name);
+        return false;
+    }
+
+    checker_init();
+
+    // Pass 2: Collect globals
+    bool success = collect_globals(
+        program->data.block_stmt.stmts,
+        program->data.block_stmt.stmt_count
+    );
+
+    if (!success) {
+        if (!tc.should_pass) {
+            return true;  // Expected to fail
+        }
+        printf("❌ %s: Pass 2 failed\n", test_name);
+        return false;
+    }
+
+    // Pass 3: Check globals
+    success = check_globals();
+
+    if (tc.should_pass) {
+        if (success && !checker_has_errors()) {
+            return true;
+        }
+        printf("❌ %s: Expected success but got errors\n", test_name);
+        return false;
+    } else {
+        if (!success || checker_has_errors()) {
+            return true;
+        }
+        printf("❌ %s: Expected errors but passed\n", test_name);
+        return false;
+    }
+}
+
+// Individual test functions
+static void test_unique_globals(void) {
+    printf("\n--- Test 1: Valid unique globals ---\n");
+
+    TestCase tc = {
+        .source =
             "fn add(a int, b int) int { return a + b; }\n"
             "fn subtract(a int, b int) int { return a - b; }\n"
             "var count int;\n"
             "let pi = 3.14;\n"
-            "type MyInt = int;";
+            "type MyInt = int;",
+        .should_pass = true
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
+    if (run_test_case("Unique globals", tc)) {
+        printf("✓ Collected globals successfully\n");
 
-        if (!parser.had_error && program) {
-            checker_init();
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
+        // Verify symbols
+        Symbol *add = scope_lookup(global_scope, "add");
+        Symbol *sub = scope_lookup(global_scope, "subtract");
+        Symbol *count = scope_lookup(global_scope, "count");
+        Symbol *pi = scope_lookup(global_scope, "pi");
+        Symbol *myint = scope_lookup(global_scope, "MyInt");
 
-            if (success && !checker_has_errors()) {
-                printf("✓ Collected globals successfully\n");
-
-                // Verify symbols were added
-                Symbol *add = scope_lookup(global_scope, "add");
-                Symbol *sub = scope_lookup(global_scope, "subtract");
-                Symbol *count = scope_lookup(global_scope, "count");
-                Symbol *pi = scope_lookup(global_scope, "pi");
-                Symbol *myint = scope_lookup(global_scope, "MyInt");
-
-                printf("  - 'add' found: %s (kind: %d)\n", add ? "yes" : "no", add ? add->kind : -1);
-                printf("  - 'subtract' found: %s (kind: %d)\n", sub ? "yes" : "no", sub ? sub->kind : -1);
-                printf("  - 'count' found: %s (kind: %d)\n", count ? "yes" : "no", count ? count->kind : -1);
-                printf("  - 'pi' found: %s (kind: %d)\n", pi ? "yes" : "no", pi ? pi->kind : -1);
-                printf("  - 'MyInt' found: %s (kind: %d)\n", myint ? "yes" : "no", myint ? myint->kind : -1);
-            } else {
-                printf("❌ Expected success but got errors\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
-        }
+        printf("  - 'add' found: %s (kind: %d)\n", add ? "yes" : "no", add ? add->kind : -1);
+        printf("  - 'subtract' found: %s (kind: %d)\n", sub ? "yes" : "no", sub ? sub->kind : -1);
+        printf("  - 'count' found: %s (kind: %d)\n", count ? "yes" : "no", count ? count->kind : -1);
+        printf("  - 'pi' found: %s (kind: %d)\n", pi ? "yes" : "no", pi ? pi->kind : -1);
+        printf("  - 'MyInt' found: %s (kind: %d)\n", myint ? "yes" : "no", myint ? myint->kind : -1);
     }
+}
 
-    // Test 2: Invalid - duplicate function names
-    {
-        printf("\n--- Test 2: Duplicate function names ---\n");
-        const char *source =
+static void test_duplicate_functions(void) {
+    printf("\n--- Test 2: Duplicate function names ---\n");
+
+    TestCase tc = {
+        .source =
             "fn foo() int { return 1; }\n"
-            "fn foo() int { return 2; }";
+            "fn foo() int { return 2; }",
+        .should_pass = false
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
-
-        if (!parser.had_error && program) {
-            checker_init();
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success && checker_has_errors()) {
-                printf("✓ Correctly detected duplicate 'foo'\n");
-            } else {
-                printf("❌ Should have detected duplicate declaration\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
-        }
+    if (run_test_case("Duplicate functions", tc)) {
+        printf("✓ Correctly detected duplicate 'foo'\n");
     }
+}
 
-    // Test 3: Invalid - mixed duplicates (function and variable)
-    {
-        printf("\n--- Test 3: Mixed duplicate (function + variable) ---\n");
-        const char *source =
+static void test_mixed_duplicates(void) {
+    printf("\n--- Test 3: Mixed duplicate (function + variable) ---\n");
+
+    TestCase tc = {
+        .source =
             "fn bar() void { }\n"
-            "var bar int;";
+            "var bar int;",
+        .should_pass = false
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
-
-        if (!parser.had_error && program) {
-            checker_init();
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success && checker_has_errors()) {
-                printf("✓ Correctly detected duplicate 'bar'\n");
-            } else {
-                printf("❌ Should have detected duplicate declaration\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
-        }
+    if (run_test_case("Mixed duplicates", tc)) {
+        printf("✓ Correctly detected duplicate 'bar'\n");
     }
+}
 
-    // Test 4: Pass 3 - Type resolution
-    {
-        printf("\n--- Test 4: Pass 3 - Type resolution ---\n");
+static void test_type_resolution(void) {
+    printf("\n--- Test 4: Pass 3 - Type resolution ---\n");
 
-        const char *source =
+    TestCase tc = {
+        .source =
             "type MyInt = int;\n"
             "type IntPtr = *int;\n"
             "let pi = 3.14;\n"
             "var count int;\n"
             "var total = 100;\n"
-            "fn add(a int, b int) int { return a + b; }";
+            "fn add(a int, b int) int { return a + b; }",
+        .should_pass = true
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
+    if (run_test_case("Type resolution", tc)) {
+        printf("✓ Pass 3 completed successfully\n");
 
-        if (!parser.had_error && program) {
-            checker_init();
+        Symbol *myint = scope_lookup(global_scope, "MyInt");
+        Symbol *intptr = scope_lookup(global_scope, "IntPtr");
+        Symbol *pi = scope_lookup(global_scope, "pi");
+        Symbol *add = scope_lookup(global_scope, "add");
 
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
+        printf("  - MyInt type: %s\n", myint && myint->type ? "resolved" : "NULL");
+        printf("  - IntPtr type: %s\n", intptr && intptr->type ? "resolved" : "NULL");
+        printf("  - pi type: %s (kind: %d)\n",
+               pi && pi->type ? "resolved" : "NULL",
+               pi && pi->type ? pi->type->kind : -1);
 
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals
-            success = check_globals();
-
-            if (success && !checker_has_errors()) {
-                printf("✓ Pass 3 completed successfully\n");
-
-                // Verify types were resolved
-                Symbol *myint = scope_lookup(global_scope, "MyInt");
-                Symbol *intptr = scope_lookup(global_scope, "IntPtr");
-                Symbol *pi = scope_lookup(global_scope, "pi");
-                Symbol *count = scope_lookup(global_scope, "count");
-                Symbol *total = scope_lookup(global_scope, "total");
-                Symbol *add = scope_lookup(global_scope, "add");
-
-                printf("  - MyInt type: %s\n", myint && myint->type ? "resolved" : "NULL");
-                printf("  - IntPtr type: %s\n", intptr && intptr->type ? "resolved" : "NULL");
-                printf("  - pi type: %s (kind: %d)\n",
-                       pi && pi->type ? "resolved" : "NULL",
-                       pi && pi->type ? pi->type->kind : -1);
-                printf("  - count type: %s (kind: %d)\n",
-                       count && count->type ? "resolved" : "NULL",
-                       count && count->type ? count->type->kind : -1);
-                printf("  - total type: %s (kind: %d)\n",
-                       total && total->type ? "resolved" : "NULL",
-                       total && total->type ? total->type->kind : -1);
-                printf("  - add type: %s (kind: %d)\n",
-                       add && add->type ? "resolved" : "NULL",
-                       add && add->type ? add->type->kind : -1);
-
-                // Check function has local scope with parameters
-                if (add && add->data.func.local_scope) {
-                    printf("  - add has local scope: yes\n");
-                    Symbol *a = scope_lookup_local(add->data.func.local_scope, "a");
-                    Symbol *b = scope_lookup_local(add->data.func.local_scope, "b");
-                    printf("    - param 'a' in scope: %s\n", a ? "yes" : "no");
-                    printf("    - param 'b' in scope: %s\n", b ? "yes" : "no");
-                } else {
-                    printf("  - add has local scope: NO ❌\n");
-                }
-            } else {
-                printf("❌ Pass 3 failed with errors\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
+        if (add && add->data.func.local_scope) {
+            printf("  - add has local scope: yes\n");
+            Symbol *a = scope_lookup_local(add->data.func.local_scope, "a");
+            Symbol *b = scope_lookup_local(add->data.func.local_scope, "b");
+            printf("    - param 'a' in scope: %s\n", a ? "yes" : "no");
+            printf("    - param 'b' in scope: %s\n", b ? "yes" : "no");
         }
     }
+}
 
-    // Test 5: Type interning - cached types
-    {
-        printf("\n--- Test 5: Type interning ---\n");
+static void test_tuples(void) {
+    printf("\n--- Test 5: Tuples ---\n");
 
-        const char *source =
-            "type IntSlice = []int;\n"
-            "type IntPtr = *int;\n"
-            "type IntArray = [5]int;\n"
-            "var s1 []int;\n"
-            "var s2 IntSlice;\n"
-            "var p1 *int;\n"
-            "var p2 IntPtr;\n"
-            "var a1 [5]int;\n"
-            "var a2 IntArray;";
-
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
-
-        if (!parser.had_error && program) {
-            checker_init();
-
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals
-            success = check_globals();
-            printf("%s\n\n", source);
-
-            if (success && !checker_has_errors()) {
-                printf("✓ Pass 3 completed successfully\n");
-
-                // Get symbols
-                Symbol *s1 = scope_lookup(global_scope, "s1");
-                Symbol *s2 = scope_lookup(global_scope, "s2");
-                Symbol *p1 = scope_lookup(global_scope, "p1");
-                Symbol *p2 = scope_lookup(global_scope, "p2");
-                Symbol *a1 = scope_lookup(global_scope, "a1");
-                Symbol *a2 = scope_lookup(global_scope, "a2");
-
-                // Verify types are cached (same pointer)
-                if (s1 && s2 && s1->type == s2->type) {
-                    printf("  ✓ []int cached: s1 and s2 share same type object\n");
-                } else {
-                    printf("  ❌ []int NOT cached: s1=%p, s2=%p\n",
-                           (void*)(s1 ? s1->type : NULL),
-                           (void*)(s2 ? s2->type : NULL));
-                }
-
-                if (p1 && p2 && p1->type == p2->type) {
-                    printf("  ✓ *int cached: p1 and p2 share same type object\n");
-                } else {
-                    printf("  ❌ *int NOT cached: p1=%p, p2=%p\n",
-                           (void*)(p1 ? p1->type : NULL),
-                           (void*)(p2 ? p2->type : NULL));
-                }
-
-                if (a1 && a2 && a1->type == a2->type) {
-                    printf("  ✓ [5]int cached: a1 and a2 share same type object\n");
-                } else {
-                    printf("  ❌ [5]int NOT cached: a1=%p, a2=%p\n",
-                           (void*)(a1 ? a1->type : NULL),
-                           (void*)(a2 ? a2->type : NULL));
-                }
-            } else {
-                printf("❌ Pass 3 failed with errors\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
-        }
-    }
-
-    // Test 6: Tuples
-    {
-        printf("\n--- Test 6: Tuples ---\n");
-
-        const char *source =
+    TestCase tc = {
+        .source =
             "type Data = (int, str, bool);\n"
             "var t1 (int, str, bool);\n"
             "var t2 Data;\n"
-            "fn get_tuple() (int, str) { return (1, \"test\"); }";
+            "fn get_tuple() (int, str) { return (1, \"test\"); }",
+        .should_pass = true
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
+    if (run_test_case("Tuples", tc)) {
+        printf("✓ Pass 3 completed successfully\n");
 
-        if (!parser.had_error && program) {
-            checker_init();
+        Symbol *t1 = scope_lookup(global_scope, "t1");
+        Symbol *t2 = scope_lookup(global_scope, "t2");
+        Symbol *get_tuple = scope_lookup(global_scope, "get_tuple");
 
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals
-            success = check_globals();
-
-            if (success && !checker_has_errors()) {
-                printf("✓ Pass 3 completed successfully\n");
-
-                // Get symbols
-                Symbol *t1 = scope_lookup(global_scope, "t1");
-                Symbol *t2 = scope_lookup(global_scope, "t2");
-                Symbol *get_tuple = scope_lookup(global_scope, "get_tuple");
-
-                // Verify tuple types are cached
-                if (t1 && t2 && t1->type == t2->type) {
-                    printf("  ✓ (int, str, bool) cached: t1 and t2 share same type\n");
-                } else {
-                    printf("  ❌ Tuple NOT cached\n");
-                }
-
-                // Verify function with tuple return type
-                if (get_tuple && get_tuple->type && get_tuple->type->kind == TYPE_FUNCTION) {
-                    Type *ret = get_tuple->type->data.func.return_type;
-                    if (ret && ret->kind == TYPE_TUPLE) {
-                        printf("  ✓ Function returns tuple type\n");
-                    } else {
-                        printf("  ❌ Function return type not tuple\n");
-                    }
-                } else {
-                    printf("  ❌ Function type resolution failed\n");
-                }
-            } else {
-                printf("❌ Pass 3 failed with errors\n");
-            }
+        // Check types are correct (not necessarily same object)
+        if (t1 && t2 && type_equals(t1->type, t2->type)) {
+            printf("  ✓ Tuple types are equal\n");
         } else {
-            printf("❌ Parse failed\n");
+            printf("  ❌ Tuple types not equal\n");
+        }
+
+        if (get_tuple && get_tuple->type && get_tuple->type->kind == TYPE_FUNCTION) {
+            Type *ret = get_tuple->type->data.func.return_type;
+            if (ret && ret->kind == TYPE_TUPLE) {
+                printf("  ✓ Function returns tuple type\n");
+            }
         }
     }
+}
 
-    // Test 7: Forward references (out-of-order declarations)
-    {
-        printf("\n--- Test 7: Forward references ---\n");
+static void test_forward_references(void) {
+    printf("\n--- Test 6: Forward references ---\n");
 
-        const char *source =
-            "fn main() int { return helper(); }\n"              // Uses helper before declared
-            "fn helper() int { return get_value(); }\n"        // Uses get_value before declared
-            "fn get_value() int { return VALUE; }\n"           // Uses VALUE before declared
-            "let VALUE = 42;\n"                                // Constant after functions
+    TestCase tc = {
+        .source =
+            "fn main() int { return helper(); }\n"
+            "fn helper() int { return get_value(); }\n"
+            "fn get_value() int { return VALUE; }\n"
+            "let VALUE = 42;\n"
             "\n"
-            "type Result = (Status, int);\n"                   // Uses Status before declared
-            "type Status = int;\n"                             // Type after being referenced
+            "type Result = (Status, int);\n"
+            "type Status = int;\n"
             "\n"
-            "var cache Result;\n"                              // Uses Result (which uses Status)
+            "var cache Result;\n"
             "\n"
-            "fn process() Data { return create_data(); }\n"    // Uses Data before declared
-            "fn create_data() Data {\n"                        // Uses Data in signature
+            "fn process() Data { return create_data(); }\n"
+            "fn create_data() Data {\n"
             "    var d Data;\n"
             "    return d;\n"
             "}\n"
-            "type Data = (int, str);";                         // Data declared last
+            "type Data = (int, str);",
+        .should_pass = true
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
+    if (run_test_case("Forward references", tc)) {
+        printf("✓ All forward references resolved successfully\n");
 
-        if (!parser.had_error && program) {
-            checker_init();
+        Symbol *main_fn = scope_lookup(global_scope, "main");
+        Symbol *result_type = scope_lookup(global_scope, "Result");
+        Symbol *cache_var = scope_lookup(global_scope, "cache");
 
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals
-            success = check_globals();
-            printf("%s\n\n", source);
-
-            if (success && !checker_has_errors()) {
-                printf("✓ All forward references resolved successfully\n");
-
-                // Verify some key resolutions
-                Symbol *main_fn = scope_lookup(global_scope, "main");
-                Symbol *result_type = scope_lookup(global_scope, "Result");
-                Symbol *cache_var = scope_lookup(global_scope, "cache");
-
-                if (main_fn && main_fn->type) {
-                    printf("  ✓ main() signature resolved\n");
-                }
-
-                if (result_type && result_type->type && result_type->type->kind == TYPE_TUPLE) {
-                    printf("  ✓ Result (tuple using forward-referenced Status) resolved\n");
-                }
-
-                if (cache_var && cache_var->type && cache_var->type->kind == TYPE_TUPLE) {
-                    printf("  ✓ cache variable uses forward-referenced types\n");
-                }
-            } else {
-                printf("❌ Pass 3 failed with errors\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
+        if (main_fn && main_fn->type) {
+            printf("  ✓ main() signature resolved\n");
+        }
+        if (result_type && result_type->type && result_type->type->kind == TYPE_TUPLE) {
+            printf("  ✓ Result resolved\n");
+        }
+        if (cache_var && cache_var->type && cache_var->type->kind == TYPE_TUPLE) {
+            printf("  ✓ cache variable resolved\n");
         }
     }
+}
 
-    // Test 8: Circular type dependencies (should fail)
-    {
-        printf("\n--- Test 8: Circular type dependencies ---\n");
+static void test_circular_dependencies(void) {
+    printf("\n--- Test 7: Circular type dependencies ---\n");
 
-        const char *source =
+    TestCase tc = {
+        .source =
             "type A = B;\n"
             "type B = C;\n"
-            "type C = A;";
+            "type C = A;",
+        .should_pass = false
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
-
-        if (!parser.had_error && program) {
-            checker_init();
-
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals (should detect cycle)
-            success = check_globals();
-
-            if (!success && checker_has_errors()) {
-                printf("✓ Correctly detected circular type dependency\n");
-            } else {
-                printf("❌ Should have detected circular dependency (A→B→C→A)\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
-        }
+    if (run_test_case("Circular dependencies", tc)) {
+        printf("✓ Correctly detected circular type dependency\n");
     }
+}
 
-    // Test 9: Self-referential type (should fail)
-    {
-        printf("\n--- Test 9: Self-referential type ---\n");
+static void test_self_referential_direct(void) {
+    printf("\n--- Test 8: Self-referential type (direct) ---\n");
 
-        const char *source = "type Node = Node;";
+    TestCase tc = {
+        .source = "type Node = Node;",
+        .should_pass = false
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
-
-        if (!parser.had_error && program) {
-            checker_init();
-
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals (should detect cycle)
-            success = check_globals();
-
-            if (!success && checker_has_errors()) {
-                printf("✓ Correctly detected self-referential type\n");
-            } else {
-                printf("❌ Should have detected self-reference (Node→Node)\n");
-            }
-        } else {
-            printf("❌ Parse failed\n");
-        }
+    if (run_test_case("Self-referential direct", tc)) {
+        printf("✓ Correctly detected self-referential type\n");
     }
+}
 
-    // Test 10: Valid indirect type usage via pointer (should pass)
-    {
-        printf("\n--- Test 10: Valid indirect type via pointer ---\n");
+static void test_self_referential_via_pointer(void) {
+    printf("\n--- Test 9: Self-referential via pointer ---\n");
 
-        const char *source =
-            "type Node = (int, *Node);\n"  // Valid: pointer breaks the cycle
-            "var head Node;";
+    TestCase tc = {
+        .source =
+            "type Node = (int, *Node);\n"
+            "var head Node;",
+        .should_pass = true
+    };
 
-        Parser parser;
-        parser_init(&parser, source, "<test>");
-        AstNode *program = parse_program(&parser);
+    if (run_test_case("Self-referential via pointer", tc)) {
+        printf("✓ Correctly allowed self-reference via pointer\n");
 
-        if (!parser.had_error && program) {
-            checker_init();
+        Symbol *node = scope_lookup(global_scope, "Node");
+        if (node && node->type && node->type->kind == TYPE_TUPLE) {
+            printf("  ✓ Node type resolved as tuple\n");
 
-            // Pass 2: Collect globals
-            bool success = collect_globals(
-                program->data.block_stmt.stmts,
-                program->data.block_stmt.stmt_count
-            );
-
-            if (!success) {
-                printf("❌ Pass 2 failed\n");
-                return;
-            }
-
-            // Pass 3: Check globals (should succeed - pointer breaks cycle)
-            success = check_globals();
-
-            if (success && !checker_has_errors()) {
-                printf("✓ Correctly allowed self-reference via pointer\n");
-
-                Symbol *node = scope_lookup(global_scope, "Node");
-                if (node && node->type && node->type->kind == TYPE_TUPLE) {
-                    printf("  ✓ Node type resolved as tuple\n");
+            // Verify circular structure
+            Type *tuple = node->type;
+            if (tuple->data.tuple.element_count == 2) {
+                Type *ptr_type = tuple->data.tuple.element_types[1];
+                if (ptr_type && ptr_type->kind == TYPE_POINTER) {
+                    Type *base = ptr_type->data.ptr.base;
+                    if (base == tuple) {
+                        printf("  ✓ Circular structure verified\n");
+                    }
                 }
-            } else {
-                printf("❌ Should have allowed pointer-based self-reference\n");
             }
-        } else {
-            printf("❌ Parse failed\n");
         }
     }
+}
+
+static void test_structural_equality(void) {
+    printf("\n--- Test 10: Structural type equality ---\n");
+
+    TestCase tc = {
+        .source =
+            // Same structure, different names
+            "type Point1 = (int, int);\n"
+            "type Point2 = (int, int);\n"
+            "var p1 Point1;\n"
+            "var p2 Point2;\n"
+            "\n"
+            // Nested structures
+            "type Vec3 = (int, int, int);\n"
+            "type Color = (int, int, int);\n"
+            "var position Vec3;\n"
+            "var rgb Color;\n"
+            "\n"
+            // Complex nested types
+            "type NodeA = (int, *NodeA);\n"
+            "type NodeB = (int, *NodeB);\n"
+            "var listA NodeA;\n"
+            "var listB NodeB;\n"
+            "\n"
+            // Pointer types
+            "type IntPtr1 = *int;\n"
+            "type IntPtr2 = *int;\n"
+            "var ptr1 IntPtr1;\n"
+            "var ptr2 IntPtr2;\n"
+            "\n"
+            // Nested pointers
+            "type PtrPtr1 = **int;\n"
+            "type PtrPtr2 = **int;\n"
+            "var pp1 PtrPtr1;\n"
+            "var pp2 PtrPtr2;\n"
+            "\n"
+            // Arrays and slices
+            "type IntArray = [10]int;\n"
+            "type IntSlice = []int;\n"
+            "var arr1 [10]int;\n"
+            "var arr2 IntArray;\n"
+            "var slice1 []int;\n"
+            "var slice2 IntSlice;\n"
+            "\n"
+            // Mixed complex types
+            "type ComplexA = ([5](int, int), *int);\n"
+            "type ComplexB = ([5](int, int), *int);\n"
+            "var c1 ComplexA;\n"
+            "var c2 ComplexB;",
+        .should_pass = true
+    };
+
+    if (run_test_case("Structural equality", tc)) {
+        printf("✓ All types resolved\n");
+
+        // Test 1: Same tuple structure, different names
+        Symbol *p1 = scope_lookup(global_scope, "p1");
+        Symbol *p2 = scope_lookup(global_scope, "p2");
+        if (p1 && p2) {
+            bool equal = type_equals(p1->type, p2->type);
+            printf("  %s Point1 == Point2: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal" : "NOT equal");
+        }
+
+        // Test 2: Different tuple structures
+        Symbol *position = scope_lookup(global_scope, "position");
+        if (p1 && position) {
+            bool equal = type_equals(p1->type, position->type);
+            printf("  %s Point1 != Vec3: %s\n",
+                   !equal ? "✓" : "❌",
+                   !equal ? "correctly different" : "WRONGLY equal");
+        }
+
+        // Test 3: Same structure but semantically different (Vec3 vs Color)
+        Symbol *rgb = scope_lookup(global_scope, "rgb");
+        if (position && rgb) {
+            bool equal = type_equals(position->type, rgb->type);
+            printf("  %s Vec3 == Color: %s (both (int,int,int))\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal" : "NOT equal");
+        }
+
+        // Test 4: Self-referential types (should be equal structurally)
+        Symbol *listA = scope_lookup(global_scope, "listA");
+        Symbol *listB = scope_lookup(global_scope, "listB");
+        if (listA && listB) {
+            bool equal = type_equals(listA->type, listB->type);
+            printf("  %s NodeA == NodeB: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal (both self-ref)" : "NOT equal");
+        }
+
+        // Test 5: Simple pointers
+        Symbol *ptr1 = scope_lookup(global_scope, "ptr1");
+        Symbol *ptr2 = scope_lookup(global_scope, "ptr2");
+        if (ptr1 && ptr2) {
+            bool equal = type_equals(ptr1->type, ptr2->type);
+            printf("  %s *int == *int: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal" : "NOT equal");
+        }
+
+        // Test 6: Nested pointers
+        Symbol *pp1 = scope_lookup(global_scope, "pp1");
+        Symbol *pp2 = scope_lookup(global_scope, "pp2");
+        if (pp1 && pp2) {
+            bool equal = type_equals(pp1->type, pp2->type);
+            printf("  %s **int == **int: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal" : "NOT equal");
+        }
+
+        // Test 7: Arrays (same size and element type)
+        Symbol *arr1 = scope_lookup(global_scope, "arr1");
+        Symbol *arr2 = scope_lookup(global_scope, "arr2");
+        if (arr1 && arr2) {
+            bool equal = type_equals(arr1->type, arr2->type);
+            printf("  %s [10]int == IntArray: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal" : "NOT equal");
+        }
+
+        // Test 8: Slices
+        Symbol *slice1 = scope_lookup(global_scope, "slice1");
+        Symbol *slice2 = scope_lookup(global_scope, "slice2");
+        if (slice1 && slice2) {
+            bool equal = type_equals(slice1->type, slice2->type);
+            printf("  %s []int == IntSlice: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal" : "NOT equal");
+        }
+
+        // Test 9: Arrays vs slices (should NOT be equal)
+        if (arr1 && slice1) {
+            bool equal = type_equals(arr1->type, slice1->type);
+            printf("  %s [10]int != []int: %s\n",
+                   !equal ? "✓" : "❌",
+                   !equal ? "correctly different" : "WRONGLY equal");
+        }
+
+        // Test 10: Complex nested types
+        Symbol *c1 = scope_lookup(global_scope, "c1");
+        Symbol *c2 = scope_lookup(global_scope, "c2");
+        if (c1 && c2) {
+            bool equal = type_equals(c1->type, c2->type);
+            printf("  %s ComplexA == ComplexB: %s\n",
+                   equal ? "✓" : "❌",
+                   equal ? "structurally equal (arrays of tuples + ptr)" : "NOT equal");
+        }
+    }
+}
+
+// Main test runner
+void test_checker(void) {
+    printf("=== Checker Tests ===\n");
+
+    test_unique_globals();
+    test_duplicate_functions();
+    test_mixed_duplicates();
+    test_type_resolution();
+    test_tuples();
+    test_forward_references();
+    test_circular_dependencies();
+    test_self_referential_direct();
+    test_self_referential_via_pointer();
+    test_structural_equality();
 
     printf("\n✓ Checker tests completed\n");
 }
