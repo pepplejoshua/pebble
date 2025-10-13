@@ -61,7 +61,7 @@ typedef enum {
 } BinaryOp;
 
 typedef enum {
-    UNOP_NEG, UNOP_NOT
+    UNOP_NEG, UNOP_NOT, UNOP_ADDR, UNOP_DEREF
 } UnaryOp;
 
 typedef struct {

@@ -728,6 +728,55 @@ static void test_function_types(void) {
     }
 }
 
+static void test_pointer_operators(void) {
+    printf("=== Pointer Operators ===\n");
+
+    // Test valid pointer operations
+    TestCase tc_valid = {
+        .source =
+            "fn test_pointers() void {\n"
+            "  var x int = 42;\n"
+            "  var ptr *int = &x;\n"
+            "  var val int = *ptr;\n"
+            "  var ptr_ptr **int = &ptr;\n"
+            "}\n"
+            "fn get_pointer(x int) *int {\n"
+            "  return &x;\n"
+            "}",
+        .should_pass = true
+    };
+
+    if (run_test_case("Pointer Operators - Valid", tc_valid)) {
+        printf("✓ Valid pointer operations pass\n");
+
+        Symbol *get_pointer = scope_lookup(global_scope, "get_pointer");
+
+        // Check get_pointer return type
+        if (get_pointer && get_pointer->type && get_pointer->type->kind == TYPE_FUNCTION) {
+            Type *ret = get_pointer->type->data.func.return_type;
+            if (ret && ret->kind == TYPE_POINTER) {
+                Type *base = ret->data.ptr.base;
+                if (base && base->kind == TYPE_INT) {
+                    printf("  ✓ get_pointer returns *int\n");
+                }
+            }
+        }
+    }
+
+    // Test invalid lvalue (taking address of literal)
+    TestCase tc_invalid = {
+        .source =
+            "fn test_invalid() void {\n"
+            "  var ptr *int = &5;\n"
+            "}",
+        .should_pass = false
+    };
+
+    if (run_test_case("Pointer Operators - Invalid lvalue", tc_invalid)) {
+        printf("✓ Correctly rejected address of literal\n");
+    }
+}
+
 static void test_array_literals(void) {
     printf("=== Array Literals ===\n");
 
@@ -798,6 +847,8 @@ void test_checker(void) {
     test_function_types();
     printf("\n");
     test_array_literals();
+    printf("\n");
+    test_pointer_operators();
 
     printf("\n✓ Checker tests completed\n");
 }

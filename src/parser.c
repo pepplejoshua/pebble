@@ -1,5 +1,7 @@
 #include "parser.h"
 #include "alloc.h"
+#include "ast.h"
+#include "lexer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,6 +139,8 @@ UnaryOp token_to_unary_op(TokenType type) {
     switch (type) {
         case TOKEN_MINUS:   return UNOP_NEG;
         case TOKEN_NOT:     return UNOP_NOT;
+        case TOKEN_AMPERSAND: return UNOP_ADDR;
+        case TOKEN_STAR: return UNOP_DEREF;
         default:
             // This should never happen if called correctly
             fprintf(stderr, "Invalid unary operator token: %d\n", type);
@@ -595,7 +599,10 @@ AstNode *parse_factor(Parser *parser) {
 }
 
 AstNode *parse_unary(Parser *parser) {
-    if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT)) {
+    if (parser_match(parser, TOKEN_MINUS) ||
+        parser_match(parser, TOKEN_NOT) ||
+        parser_match(parser, TOKEN_AMPERSAND) ||
+        parser_match(parser, TOKEN_STAR)) {
         Token op = parser->previous;
         AstNode *operand = parse_unary(parser);  // Right-associative (allow chaining)
 

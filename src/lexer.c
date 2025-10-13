@@ -300,8 +300,9 @@ Token lexer_next_token(Lexer *lexer) {
         case '&':
             if (lexer_match(lexer, '&')) {
                 return lexer_make_token(lexer, TOKEN_AND);
+            } else {
+                return lexer_make_token(lexer, TOKEN_AMPERSAND);
             }
-            break;
         case '|':
             if (lexer_match(lexer, '|')) {
                 return lexer_make_token(lexer, TOKEN_OR);
@@ -349,6 +350,7 @@ const char *token_type_name(TokenType type) {
         case TOKEN_AND: return "AND";
         case TOKEN_OR: return "OR";
         case TOKEN_NOT: return "NOT";
+        case TOKEN_AMPERSAND: return "AMPERSAND";
         case TOKEN_SEMICOLON: return "SEMICOLON";
         case TOKEN_COMMA: return "COMMA";
         case TOKEN_DOT: return "DOT";

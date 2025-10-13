@@ -533,6 +533,19 @@ static bool type_is_comparable(Type *type) {
     }
 }
 
+static bool is_lvalue(AstNode *expr) {
+    switch (expr->kind) {
+        case AST_EXPR_IDENTIFIER:
+        case AST_EXPR_INDEX:
+        case AST_EXPR_MEMBER:
+            return true;
+        case AST_EXPR_UNARY_OP:
+            return expr->data.unop.op == UNOP_DEREF;
+        default:
+            return false;
+    }
+}
+
 Type *check_expression(AstNode *expr) {
     if (!expr) {
         return NULL;
@@ -665,6 +678,23 @@ Type *check_expression(AstNode *expr) {
                     return NULL;
                 }
                 return type_bool;
+            }
+
+            if (op == UNOP_ADDR) {
+                if (!is_lvalue(expr->data.unop.operand)) {
+                    checker_error(expr->loc, "cannot take address of expression without memory location");
+                    return NULL;
+                }
+                return type_create_pointer(operand);
+            }
+
+            if (op == UNOP_DEREF) {
+                // Dereference: *ptr returns T where ptr has type *T
+                if (operand->kind != TYPE_POINTER) {
+                    checker_error(expr->loc, "dereference requires a pointer operand");
+                    return NULL;
+                }
+                return operand->data.ptr.base;
             }
 
             checker_error(expr->loc, "unknown unary operator");
