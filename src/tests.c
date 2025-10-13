@@ -239,7 +239,7 @@ static bool run_test_case(const char *test_name, TestCase tc) {
 
 // Individual test functions
 static void test_unique_globals(void) {
-    printf("\n--- Test 1: Valid unique globals ---\n");
+    printf("=== Valid unique globals ===\n");
 
     TestCase tc = {
         .source =
@@ -270,7 +270,7 @@ static void test_unique_globals(void) {
 }
 
 static void test_duplicate_functions(void) {
-    printf("\n--- Test 2: Duplicate function names ---\n");
+    printf("=== Duplicate function names ===\n");
 
     TestCase tc = {
         .source =
@@ -285,7 +285,7 @@ static void test_duplicate_functions(void) {
 }
 
 static void test_mixed_duplicates(void) {
-    printf("\n--- Test 3: Mixed duplicate (function + variable) ---\n");
+    printf("=== Mixed duplicate (function + variable) ===\n");
 
     TestCase tc = {
         .source =
@@ -300,7 +300,7 @@ static void test_mixed_duplicates(void) {
 }
 
 static void test_type_resolution(void) {
-    printf("\n--- Test 4: Pass 3 - Type resolution ---\n");
+    printf("=== Type Resolution ===\n");
 
     TestCase tc = {
         .source =
@@ -338,7 +338,7 @@ static void test_type_resolution(void) {
 }
 
 static void test_tuples(void) {
-    printf("\n--- Test 5: Tuples ---\n");
+    printf("=== Tuples ===\n");
 
     TestCase tc = {
         .source =
@@ -373,7 +373,7 @@ static void test_tuples(void) {
 }
 
 static void test_forward_references(void) {
-    printf("\n--- Test 6: Forward references ---\n");
+    printf("=== Forward references ===\n");
 
     TestCase tc = {
         .source =
@@ -416,7 +416,7 @@ static void test_forward_references(void) {
 }
 
 static void test_circular_dependencies(void) {
-    printf("\n--- Test 7: Circular type dependencies ---\n");
+    printf("=== Circular type dependencies ===\n");
 
     TestCase tc = {
         .source =
@@ -432,7 +432,7 @@ static void test_circular_dependencies(void) {
 }
 
 static void test_self_referential_direct(void) {
-    printf("\n--- Test 8: Self-referential type (direct) ---\n");
+    printf("=== Self-referential type (direct) ===\n");
 
     TestCase tc = {
         .source = "type Node = Node;",
@@ -445,7 +445,7 @@ static void test_self_referential_direct(void) {
 }
 
 static void test_self_referential_via_pointer(void) {
-    printf("\n--- Test 9: Self-referential via pointer ---\n");
+    printf("=== Self-referential via pointer ===\n");
 
     TestCase tc = {
         .source =
@@ -477,7 +477,7 @@ static void test_self_referential_via_pointer(void) {
 }
 
 static void test_structural_equality(void) {
-    printf("\n--- Test 10: Structural type equality ---\n");
+    printf("=== Structural type equality ===\n");
 
     TestCase tc = {
         .source =
@@ -629,7 +629,7 @@ static void test_structural_equality(void) {
 }
 
 static void test_structs(void) {
-    printf("\n--- Test 6: Structs ---\n");
+    printf("=== Structs ===\n");
 
     TestCase tc = {
         .source =
@@ -678,10 +678,51 @@ static void test_structs(void) {
     }
 }
 
+static void test_function_types(void) {
+    printf("=== Function Types ===\n");
+
+    TestCase tc = {
+        .source =
+            "type BinaryOp = fn(int, int) int;\n"
+            "type Callback = fn() void;\n"
+            "type Transform = fn(str) str;\n"
+            "var op1 BinaryOp;\n"
+            "var op2 fn(int, int) int;\n"
+            "fn apply(f fn(int, int) int, a int, b int) int {\n"
+            "  return f(a, b);\n"
+            "}",
+        .should_pass = true
+    };
+
+    if (run_test_case("Function Types", tc)) {
+        printf("✓ Pass 3 completed successfully\n");
+
+        Symbol *binary_op = scope_lookup(global_scope, "BinaryOp");
+        Symbol *op1 = scope_lookup(global_scope, "op1");
+        Symbol *op2 = scope_lookup(global_scope, "op2");
+
+        // Check BinaryOp is a function type
+        if (binary_op && binary_op->type && binary_op->type->kind == TYPE_FUNCTION) {
+            printf("  ✓ BinaryOp is a function type\n");
+        } else {
+            printf("  ❌ BinaryOp is not a function type\n");
+        }
+
+        // Check function type equality
+        if (op1 && op2 && type_equals(op1->type, op2->type)) {
+            printf("  ✓ Function types are equal\n");
+        } else {
+            printf("  ❌ Function types not equal\n");
+        }
+    }
+}
+
 
 // Main test runner
 void test_checker(void) {
-    printf("=== Checker Tests ===\n");
+    printf("\n========================================\n");
+    printf("       CHECKER TESTS\n");
+    printf("========================================\n");
 
     test_unique_globals();
     test_duplicate_functions();
@@ -694,6 +735,7 @@ void test_checker(void) {
     test_self_referential_direct();
     test_self_referential_via_pointer();
     test_structural_equality();
+    test_function_types();
 
     printf("\n✓ Checker tests completed\n");
 }

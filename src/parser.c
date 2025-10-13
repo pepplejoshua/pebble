@@ -833,6 +833,49 @@ AstNode *parse_primary(Parser *parser) {
 AstNode *parse_type_expression(Parser *parser) {
     AstNode *type = NULL;
 
+    // Function type: fn(T1, T2, ...) ReturnType
+    if (parser_match(parser, TOKEN_FN)) {
+        Location loc = parser->previous.location;
+
+        parser_consume(parser, TOKEN_LPAREN, "Expected '(' after 'fn'");
+
+        // Parse parameter types
+        AstNode **param_types = NULL;
+        size_t count = 0;
+        size_t capacity = 4;
+        param_types = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+
+        // Allow empty parameter list
+        if (!parser_check(parser, TOKEN_RPAREN)) {
+            do {
+                // Grow array if needed
+                if (count >= capacity) {
+                    capacity *= 2;
+                    AstNode **new_array = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                    memcpy(new_array, param_types, count * sizeof(AstNode*));
+                    param_types = new_array;
+                }
+
+                param_types[count++] = parse_type_expression(parser);
+            } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after parameter types");
+
+        // Parse return type
+        AstNode *return_type = parse_type_expression(parser);
+        if (!return_type) {
+            parser_error(parser, "Expected return type after function parameters");
+            return NULL;
+        }
+
+        type = alloc_node(AST_TYPE_FUNCTION, loc);
+        type->data.type_function.param_types = param_types;
+        type->data.type_function.param_count = count;
+        type->data.type_function.return_type = return_type;
+        return type;
+    }
+
     // Tuple type: (T1, T2, ...)
     if (parser_match(parser, TOKEN_LPAREN)) {
         Location loc = parser->previous.location;
