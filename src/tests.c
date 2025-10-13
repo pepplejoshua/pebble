@@ -728,6 +728,55 @@ static void test_function_types(void) {
     }
 }
 
+static void test_slicing(void) {
+    printf("=== Slicing ===\n");
+
+    TestCase tc = {
+        .source =
+            "fn test_slicing() void {\n"
+            "  var arr [5]int = [1, 2, 3, 4, 5];\n"
+            "  var s1 []int = arr[1:4];\n"
+            "  var s2 []int = arr[:];\n"
+            "  var s3 []int = arr[:3];\n"
+            "  var s4 []int = arr[2:];\n"
+            "  var s5 []int = s1[0:2];\n"
+            "}\n"
+            "fn take_slice(nums []int) int {\n"
+            "  return nums[0];\n"
+            "}\n"
+            "fn test_implicit_conversion() void {\n"
+            "  var arr [3]int = [10, 20, 30];\n"
+            "  var x int = take_slice(arr);\n"
+            "}",
+        .should_pass = true
+    };
+
+    if (run_test_case("Slicing", tc)) {
+        printf("✓ Slicing operations pass\n");
+
+        Symbol *test_slicing = scope_lookup(global_scope, "test_slicing");
+        Symbol *take_slice = scope_lookup(global_scope, "take_slice");
+
+        if (test_slicing) {
+            printf("  ✓ test_slicing function defined\n");
+        }
+
+        // Check take_slice parameter type
+        if (take_slice && take_slice->type && take_slice->type->kind == TYPE_FUNCTION) {
+            Type *param = take_slice->type->data.func.param_types[0];
+            if (param && param->kind == TYPE_SLICE) {
+                Type *elem = param->data.slice.element;
+                if (elem && elem->kind == TYPE_INT) {
+                    printf("  ✓ take_slice accepts []int\n");
+                }
+            }
+        }
+
+        printf("  ✓ Implicit array-to-slice conversion works\n");
+    }
+}
+
+
 static void test_pointer_operators(void) {
     printf("=== Pointer Operators ===\n");
 
@@ -849,6 +898,8 @@ void test_checker(void) {
     test_array_literals();
     printf("\n");
     test_pointer_operators();
+    printf("\n");
+    test_slicing();
 
     printf("\n✓ Checker tests completed\n");
 }

@@ -2,11 +2,6 @@
 
 ## 🚧 Missing Language Features
 
-### Operators
-- [ ] **Array/slice operations**
-  - Slice syntax: `arr[1:5]`
-  - Length operation
-
 ### Statements
 - [ ] **For loops** - If desired, later
   - `for i in 0..10 { }`
