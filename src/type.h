@@ -21,13 +21,13 @@ typedef enum {
     TYPE_SLICE,
     TYPE_STRUCT,
     TYPE_FUNCTION,
-    TYPE_TUPLE
+    TYPE_TUPLE,
+    TYPE_UNRESOLVED,
 } TypeKind;
 
 // Type structure
 struct Type {
     TypeKind kind;
-    char *name;              // Optional name for user-defined types
 
     union {
         struct {

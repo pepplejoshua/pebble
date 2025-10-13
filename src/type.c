@@ -19,9 +19,6 @@ Type *type_void = NULL;
 // Type table (hash map of name => type entries)
 TypeEntry *type_table = NULL;
 
-// Unified cache for compound types (stringified structure -> canonical type)
-static TypeEntry *type_cache = NULL;
-
 // Helper to duplicate strings
 static char *str_dup(const char *str) {
     if (!str) return NULL;
@@ -35,97 +32,34 @@ static char *str_dup(const char *str) {
 Type *type_create(TypeKind kind) {
     Type *type = arena_alloc(&long_lived, sizeof(Type));
     type->kind = kind;
-    type->name = NULL;
     return type;
 }
 
-// Create pointer type
+// Create pointer type (no caching)
 Type *type_create_pointer(Type *base) {
     assert(base);
-
-    // Generate cache key
-    char key[128];
-    snprintf(key, sizeof(key), "ptr_%p", (void*)base);
-
-    // Check cache
-    TypeEntry *entry;
-    HASH_FIND_STR(type_cache, key, entry);
-    if (entry) {
-        return entry->type;
-    }
-
-    // Create new pointer type
     Type *type = type_create(TYPE_POINTER);
     type->data.ptr.base = base;
-
-    // Cache it
-    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
-    cache_entry->name = str_dup(key);
-    cache_entry->type = type;
-    HASH_ADD_STR(type_cache, name, cache_entry);
-
     return type;
 }
 
-
-// Create slice type
+// Create slice type (no caching)
 Type *type_create_slice(Type *element) {
     assert(element);
-
-    // Generate cache key
-    char key[128];
-    snprintf(key, sizeof(key), "slice_%p", (void*)element);
-
-    // Check cache
-    TypeEntry *entry;
-    HASH_FIND_STR(type_cache, key, entry);
-    if (entry) {
-        return entry->type;
-    }
-
-    // Create new slice type (using array structure with size 0)
     Type *type = type_create(TYPE_SLICE);
     type->data.array.element = element;
     type->data.array.size = 0;
-
-    // Cache it
-    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
-    cache_entry->name = str_dup(key);
-    cache_entry->type = type;
-    HASH_ADD_STR(type_cache, name, cache_entry);
-
     return type;
 }
 
-// Create array type
+// Create array type (no caching)
 Type *type_create_array(Type *element, size_t size) {
     assert(element);
-
-    // Generate cache key
-    char key[128];
-    snprintf(key, sizeof(key), "array_%p_%zu", (void*)element, size);
-
-    // Check cache
-    TypeEntry *entry;
-    HASH_FIND_STR(type_cache, key, entry);
-    if (entry) {
-        return entry->type;
-    }
-
-    // Create new array type
     Type *type = type_create(TYPE_ARRAY);
     type->data.array.element = element;
     type->data.array.size = size;
-
-    // Cache it
-    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
-    cache_entry->name = str_dup(key);
-    cache_entry->type = type;
-    HASH_ADD_STR(type_cache, name, cache_entry);
-
     return type;
 }
-
 
 // Create struct type
 Type *type_create_struct(char **field_names, Type **field_types, size_t field_count) {
@@ -148,27 +82,9 @@ Type *type_create_struct(char **field_names, Type **field_types, size_t field_co
     return type;
 }
 
-// Create tuple type
+// Create tuple type (no caching)
 Type *type_create_tuple(Type **element_types, size_t element_count) {
     assert(element_types && element_count > 0);
-
-    // Generate cache key from element types
-    char key[512];
-    int offset = snprintf(key, sizeof(key), "tuple");
-
-    // Add each element type pointer to the key
-    for (size_t i = 0; i < element_count; i++) {
-        offset += snprintf(key + offset, sizeof(key) - offset, "_%p", (void*)element_types[i]);
-    }
-
-    // Check cache
-    TypeEntry *entry;
-    HASH_FIND_STR(type_cache, key, entry);
-    if (entry) {
-        return entry->type;
-    }
-
-    // Create new tuple type
     Type *type = type_create(TYPE_TUPLE);
 
     // Copy element types array
@@ -177,41 +93,12 @@ Type *type_create_tuple(Type **element_types, size_t element_count) {
 
     type->data.tuple.element_types = types;
     type->data.tuple.element_count = element_count;
-
-    // Cache it
-    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
-    cache_entry->name = str_dup(key);
-    cache_entry->type = type;
-    HASH_ADD_STR(type_cache, name, cache_entry);
-
     return type;
 }
 
-
-// Create function type
+// Create function type (no caching)
 Type *type_create_function(Type **param_types, size_t param_count, Type *return_type) {
     assert(return_type);
-
-    // Generate cache key from param types + return type
-    char key[512];
-    int offset = snprintf(key, sizeof(key), "func");
-
-    // Add each parameter type pointer to the key
-    for (size_t i = 0; i < param_count; i++) {
-        offset += snprintf(key + offset, sizeof(key) - offset, "_%p", (void*)param_types[i]);
-    }
-
-    // Add return type
-    snprintf(key + offset, sizeof(key) - offset, "_ret_%p", (void*)return_type);
-
-    // Check cache
-    TypeEntry *entry;
-    HASH_FIND_STR(type_cache, key, entry);
-    if (entry) {
-        return entry->type;
-    }
-
-    // Create new function type
     Type *type = type_create(TYPE_FUNCTION);
 
     if (param_count > 0) {
@@ -225,16 +112,8 @@ Type *type_create_function(Type **param_types, size_t param_count, Type *return_
 
     type->data.func.param_count = param_count;
     type->data.func.return_type = return_type;
-
-    // Cache it
-    TypeEntry *cache_entry = arena_alloc(&long_lived, sizeof(TypeEntry));
-    cache_entry->name = str_dup(key);
-    cache_entry->type = type;
-    HASH_ADD_STR(type_cache, name, cache_entry);
-
     return type;
 }
-
 
 // Look up named type in type table
 Type *type_lookup(const char *name) {
@@ -255,11 +134,25 @@ void type_register(const char *name, Type *type) {
     HASH_ADD_STR(type_table, name, entry);
 }
 
-// Check if two types are equal
-bool type_equals(Type *a, Type *b) {
+// Helper with cycle detection for type equality
+static bool type_equals_impl(Type *a, Type *b, Type **visited_a, Type **visited_b, size_t *visited_count) {
     if (a == b) return true;  // Same pointer
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
+
+    // Check if we've already started comparing these types (cycle detection)
+    for (size_t i = 0; i < *visited_count; i++) {
+        if (visited_a[i] == a && visited_b[i] == b) {
+            return true;  // Assume equal to break cycle
+        }
+    }
+
+    // Mark as visiting
+    if (*visited_count < 64) {
+        visited_a[*visited_count] = a;
+        visited_b[*visited_count] = b;
+        (*visited_count)++;
+    }
 
     switch (a->kind) {
         case TYPE_INT:
@@ -267,17 +160,20 @@ bool type_equals(Type *a, Type *b) {
         case TYPE_BOOL:
         case TYPE_STRING:
         case TYPE_VOID:
-            return true;  // Built-in types are equal by kind
+            return true;
 
         case TYPE_POINTER:
-            return type_equals(a->data.ptr.base, b->data.ptr.base);
+            return type_equals_impl(a->data.ptr.base, b->data.ptr.base,
+                                   visited_a, visited_b, visited_count);
 
         case TYPE_ARRAY:
             return a->data.array.size == b->data.array.size &&
-                   type_equals(a->data.array.element, b->data.array.element);
+                   type_equals_impl(a->data.array.element, b->data.array.element,
+                                   visited_a, visited_b, visited_count);
 
         case TYPE_SLICE:
-            return type_equals(a->data.array.element, b->data.array.element);
+            return type_equals_impl(a->data.array.element, b->data.array.element,
+                                   visited_a, visited_b, visited_count);
 
         case TYPE_STRUCT:
             if (a->data.struct_data.field_count != b->data.struct_data.field_count) {
@@ -288,8 +184,9 @@ bool type_equals(Type *a, Type *b) {
                           b->data.struct_data.field_names[i]) != 0) {
                     return false;
                 }
-                if (!type_equals(a->data.struct_data.field_types[i],
-                               b->data.struct_data.field_types[i])) {
+                if (!type_equals_impl(a->data.struct_data.field_types[i],
+                                     b->data.struct_data.field_types[i],
+                                     visited_a, visited_b, visited_count)) {
                     return false;
                 }
             }
@@ -299,12 +196,14 @@ bool type_equals(Type *a, Type *b) {
             if (a->data.func.param_count != b->data.func.param_count) {
                 return false;
             }
-            if (!type_equals(a->data.func.return_type, b->data.func.return_type)) {
+            if (!type_equals_impl(a->data.func.return_type, b->data.func.return_type,
+                                 visited_a, visited_b, visited_count)) {
                 return false;
             }
             for (size_t i = 0; i < a->data.func.param_count; i++) {
-                if (!type_equals(a->data.func.param_types[i],
-                               b->data.func.param_types[i])) {
+                if (!type_equals_impl(a->data.func.param_types[i],
+                                     b->data.func.param_types[i],
+                                     visited_a, visited_b, visited_count)) {
                     return false;
                 }
             }
@@ -315,16 +214,29 @@ bool type_equals(Type *a, Type *b) {
                 return false;
             }
             for (size_t i = 0; i < a->data.tuple.element_count; i++) {
-                if (!type_equals(a->data.tuple.element_types[i],
-                                b->data.tuple.element_types[i])) {
+                if (!type_equals_impl(a->data.tuple.element_types[i],
+                                     b->data.tuple.element_types[i],
+                                     visited_a, visited_b, visited_count)) {
                     return false;
                 }
             }
             return true;
+
+        case TYPE_UNRESOLVED:
+            return false;
     }
 
     return false;
 }
+
+// Check if two types are equal (with cycle detection)
+bool type_equals(Type *a, Type *b) {
+    Type *visited_a[64] = {NULL};
+    Type *visited_b[64] = {NULL};
+    size_t visited_count = 0;
+    return type_equals_impl(a, b, visited_a, visited_b, &visited_count);
+}
+
 
 // Check if type is numeric (int or float)
 bool type_is_numeric(Type *type) {
@@ -334,9 +246,9 @@ bool type_is_numeric(Type *type) {
 // Initialize the type system
 void type_system_init(void) {
     // Only initialize if not already done
-    if (type_int != NULL) {
-        return;  // Already initialized
-    }
+    // if (type_int != NULL) {
+    //     return;  // Already initialized
+    // }
 
     // Create built-in types
     type_int = type_create(TYPE_INT);
