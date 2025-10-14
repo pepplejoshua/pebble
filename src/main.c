@@ -1,4 +1,5 @@
 #include "alloc.h"
+#include "codegen.h"
 #include "tests.h"
 #include "parser.h"
 #include "checker.h"
@@ -126,23 +127,14 @@ static bool compile_file(const char *filename) {
     }
 
     // Debug: Print type information
-    debug_print_type_table();
-
-    // Pass 5: Code generation
-    // FILE *output = fopen("output.c", "w");
-    // if (!output) {
-        // printf("Failed to open output.c\n");
-        // return false;
-    // }
-
-    // Codegen cg;
-    // codegen_init(&cg, output);
-    // emit_program(&cg, program);
-
-    // fclose(output);
-    // printf("Generated output.c\n");
+    // debug_print_type_table();
 
     printf("Compilation successful!\n");
+
+    Codegen cg;
+    codegen_init(&cg, stdout);
+    emit_program(&cg);
+    printf("\n");
 
     free(source);
     return true;
