@@ -1,66 +1,13 @@
-// Test tuple aliases (structural - should be same type)
+type Node = struct {
+    data int,
+    next *Node
+};
+
+type TNode = (int, *TNode);
+
 type Point = (int, int);
 type Vec2 = (int, int);
 
-// Test named structs (nominal - should be different types)
-type Person = struct {
-    name str,
-    age int
-};
+fn point_2_vec2(p Point) Vec2 => p
 
-type Employee = struct {
-    name str,
-    age int
-};
-
-// Test pointer types (structural - should be same type)
-type IntPtr = *int;
-type AnotherIntPtr = *int;
-
-// Test array types (structural - should be same type)
-type IntArray5 = [5]int;
-type AnotherIntArray5 = [5]int;
-
-// Test nested structural types
-type PointPtr = *Point;
-type AnotherPointPtr = *(int, int);  // Same as PointPtr due to canonicalization
-
-// Function that uses tuple aliases (should work - both are tuple_int_int)
-fn distance(a Point, b Vec2) (int, int) {
-    return (a.0 - b.0, a.1 - b.1);
-}
-
-// Function that returns tuple alias
-fn make_point(x int, y int) Point {
-    return (x, y);
-}
-
-// Function with pointer parameters (should work - both are ptr_int)
-fn pointer_func(p IntPtr, q AnotherIntPtr) IntPtr {
-    return p;
-}
-
-// Function with array parameters (should work - both are array_5_int)
-fn array_func(a IntArray5, b AnotherIntArray5) IntArray5 {
-    return b;
-}
-
-// Test tuple member access
-fn tuple_ops(p Point) int {
-    return p.0 + p.1;
-}
-
-fn main() int {
-    // Test tuple alias compatibility
-    var p Point = (3, 4);
-    var v Vec2 = (1, 2);
-    var dist = distance(p, v);  // Point and Vec2 are interchangeable
-
-    // Test return type compatibility
-    var point = make_point(10, 20);  // Returns Point, assigns to point
-
-    // Test tuple access
-    var sum = tuple_ops(p);
-
-    return sum;
-}
+fn main() int => point_2_vec2((0, 1)).0
