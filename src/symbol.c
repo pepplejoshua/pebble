@@ -11,15 +11,6 @@ extern Arena long_lived;
 Scope *global_scope = NULL;
 Scope *current_scope = NULL;
 
-// Helper to duplicate strings
-static char *str_dup(const char *str) {
-    if (!str) return NULL;
-    size_t len = strlen(str) + 1;
-    char *copy = arena_alloc(&long_lived, len);
-    memcpy(copy, str, len);
-    return copy;
-}
-
 // Create a new scope
 Scope *scope_create(Scope *parent) {
     Scope *scope = arena_alloc(&long_lived, sizeof(Scope));

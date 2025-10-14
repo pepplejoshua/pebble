@@ -152,15 +152,6 @@ UnaryOp token_to_unary_op(TokenType type) {
 // AST NODE CREATION HELPERS
 // ============================================================================
 
-// Helper to duplicate strings into arena
-static char *str_dup(const char *str) {
-    if (!str) return NULL;
-    size_t len = strlen(str) + 1;
-    char *copy = arena_alloc(&long_lived, len);
-    memcpy(copy, str, len);
-    return copy;
-}
-
 // Helper to create basic AST node
 static AstNode *alloc_node(AstKind kind, Location loc) {
     AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
@@ -658,8 +649,8 @@ AstNode *parse_postfix(Parser *parser) {
                             parser_error(parser, "Expected field name in struct literal");
                             return NULL;
                         }
-                        Token field_name = parser->previous;
                         parser_advance(parser);
+                        Token field_name = parser->previous;
 
                         parser_consume(parser, TOKEN_EQUAL, "Expected '=' after field name");
 
@@ -763,13 +754,24 @@ AstNode *parse_index(Parser *parser, AstNode *array) {
 AstNode *parse_member(Parser *parser, AstNode *object) {
     Location loc = parser->previous.location;
 
-    Token member = parser_consume(parser, TOKEN_IDENTIFIER, "Expected member name after '.'");
-
     AstNode *mem = alloc_node(AST_EXPR_MEMBER, loc);
     mem->data.member_expr.object = object;
-    mem->data.member_expr.member = str_dup(member.lexeme);
+
+    // Accept either identifier (named member) or int (tuple index)
+    if (parser_check(parser, TOKEN_INT)) {
+        Token idx = parser_consume(parser, TOKEN_INT, "Expected member name or index after '.'");
+        // Convert int to string
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d", (int)idx.value.int_val);
+        mem->data.member_expr.member = str_dup(buf);
+    } else {
+        Token member = parser_consume(parser, TOKEN_IDENTIFIER, "Expected member name or index after '.'");
+        mem->data.member_expr.member = str_dup(member.lexeme);
+    }
+
     return mem;
 }
+
 
 AstNode *parse_primary(Parser *parser) {
     // Literals
@@ -1063,8 +1065,8 @@ AstNode *parse_type_expression(Parser *parser) {
                     parser_error(parser, "Expected field name");
                     return NULL;
                 }
-                Token field_name = parser->previous;
                 parser_advance(parser);
+                Token field_name = parser->previous;
 
                 field_names[count] = str_dup(field_name.lexeme);
                 field_types[count] = parse_type_expression(parser);
