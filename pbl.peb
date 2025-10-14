@@ -1,0 +1,11 @@
+type Simple = struct { x int };
+
+fn test(s Simple) int {
+    return s.x;
+}
+
+fn main() int {
+    var s Simple = Simple.{ x = 42 };
+    var tup (int, str, bool);
+    return test(s);
+}
