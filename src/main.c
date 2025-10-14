@@ -121,6 +121,7 @@ static bool compile_file(const char *filename) {
     if (!check_function_bodies()) {
         printf("Compilation failed during function body checking\n");
         free(source);
+        debug_print_type_table();
         return false;
     }
 

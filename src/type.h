@@ -29,6 +29,7 @@ typedef enum {
 struct Type {
     TypeKind kind;
     char *canonical_name;
+    char *declared_name;
 
     union {
         struct {

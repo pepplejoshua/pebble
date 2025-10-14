@@ -105,97 +105,289 @@ bool collect_globals(AstNode **decls, size_t decl_count) {
 // PASS 3: CHECK GLOBALS
 //=============================================================================
 
-// Canonicalize a type (compute name, deduplicate)
-static void canonicalize_type(Type **type_ref) {
+typedef struct Visited {
+    Type *key;
+    UT_hash_handle hh;
+} Visited;
+
+static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     Type *type = *type_ref;
-    if (!type) return;
+    if (!type) return false;
 
-    // If this type already has a canonical name, it's already processed
-    if (type->canonical_name) return;
+    // If already canonicalized, check for deduplication
+    if (type->canonical_name != NULL) {
+        Type *existing = canonical_lookup(type->canonical_name);
+        if (existing && existing != type) {
+            *type_ref = existing;
+        }
+        return false;
+    }
 
-    // Recursively canonicalize component types first
+    // Check for cycle (back-edge)
+    Visited *found;
+    HASH_FIND_PTR(*visited, &type, found);
+    if (found) {
+        return true;  // Cycle detected
+    }
+
+    // Add to visited (currently processing)
+    Visited *new_v = arena_alloc(&long_lived, sizeof(Visited));
+    new_v->key = type;
+    HASH_ADD_PTR(*visited, key, new_v);
+
+    // Recursively canonicalize component types
+    bool cycle_detected = false;
+
     switch (type->kind) {
-        case TYPE_INT:
-        case TYPE_FLOAT:
-        case TYPE_BOOL:
-        case TYPE_STRING:
-        case TYPE_VOID:
-            // Primitives already have canonical names from type_system_init
-            return;
-
         case TYPE_POINTER:
-            // Canonicalize base type first
-            canonicalize_type(&(type->data.ptr.base));
+            if (canonicalize_type_internal(&type->data.ptr.base, visited)) {
+                cycle_detected = true;
+            }
             break;
 
         case TYPE_SLICE:
-            // Canonicalize element type first
-            canonicalize_type(&(type->data.slice.element));
+            if (canonicalize_type_internal(&type->data.slice.element, visited)) {
+                cycle_detected = true;
+            }
             break;
 
         case TYPE_ARRAY:
-            // Canonicalize element type first
-            canonicalize_type(&(type->data.array.element));
+            if (canonicalize_type_internal(&type->data.array.element, visited)) {
+                cycle_detected = true;
+            }
             break;
 
         case TYPE_TUPLE:
-            // Canonicalize all element types first
             for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-                canonicalize_type(&(type->data.tuple.element_types[i]));
+                if (canonicalize_type_internal(&type->data.tuple.element_types[i], visited)) {
+                    cycle_detected = true;
+                }
             }
             break;
 
         case TYPE_STRUCT:
-            // Canonicalize field types (for nested structural types)
             for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
-                canonicalize_type(&(type->data.struct_data.field_types[i]));
+                if (canonicalize_type_internal(&type->data.struct_data.field_types[i], visited)) {
+                    cycle_detected = true;
+                }
             }
-            // Named structs already have canonical_name set in Pass 3a
-            if (type->canonical_name) return;
-            // For anonymous structs (future), compute structural name
             break;
 
         case TYPE_FUNCTION:
-            // Canonicalize all param types first
             for (size_t i = 0; i < type->data.func.param_count; i++) {
-                canonicalize_type(&(type->data.func.param_types[i]));
+                if (canonicalize_type_internal(&type->data.func.param_types[i], visited)) {
+                    cycle_detected = true;
+                }
             }
-            // Canonicalize return type first
-            canonicalize_type(&(type->data.func.return_type));
+            if (canonicalize_type_internal(&type->data.func.return_type, visited)) {
+                cycle_detected = true;
+            }
             break;
 
+        default:
+            // Primitives don't need recursion
+            break;
+    }
+
+    // Now build canonical name based on type kind
+    char *canonical_name = NULL;
+
+    // Helper to get a component's name (handles cycles)
+    #define GET_COMPONENT_NAME(component) \
+        ({ \
+            Type *_c = (component); \
+            char *_name; \
+            if (_c->canonical_name) { \
+                /* Already canonicalized */ \
+                _name = _c->canonical_name; \
+            } else { \
+                /* Not canonicalized yet - check if in cycle */ \
+                Visited *_found; \
+                HASH_FIND_PTR(*visited, &_c, _found); \
+                if (_found) { \
+                    /* In cycle - use declared name if available */ \
+                    if (_c->declared_name) { \
+                        _name = _c->declared_name; \
+                    } else { \
+                        _name = "UNRESOLVED"; \
+                    } \
+                } else { \
+                    /* Not in visited and no canonical name - shouldn't happen */ \
+                    _name = "UNRESOLVED"; \
+                } \
+            } \
+            _name; \
+        })
+
+    switch (type->kind) {
+        case TYPE_INT:
+            canonical_name = str_dup("int");
+            break;
+
+        case TYPE_FLOAT:
+            canonical_name = str_dup("float");
+            break;
+
+        case TYPE_BOOL:
+            canonical_name = str_dup("bool");
+            break;
+
+        case TYPE_STRING:
+            canonical_name = str_dup("str");
+            break;
+
+        case TYPE_VOID:
+            canonical_name = str_dup("void");
+            break;
+
+        case TYPE_POINTER: {
+            char *base_name = GET_COMPONENT_NAME(type->data.ptr.base);
+            size_t len = strlen("ptr_") + strlen(base_name) + 1;
+            canonical_name = arena_alloc(&long_lived, len);
+            snprintf(canonical_name, len, "ptr_%s", base_name);
+            break;
+        }
+
+        case TYPE_SLICE: {
+            char *elem_name = GET_COMPONENT_NAME(type->data.slice.element);
+            size_t len = strlen("slice_") + strlen(elem_name) + 1;
+            canonical_name = arena_alloc(&long_lived, len);
+            snprintf(canonical_name, len, "slice_%s", elem_name);
+            break;
+        }
+
+        case TYPE_ARRAY: {
+            char *elem_name = GET_COMPONENT_NAME(type->data.array.element);
+            size_t len = strlen("array_") + 20 + strlen(elem_name) + 1;
+            canonical_name = arena_alloc(&long_lived, len);
+            snprintf(canonical_name, len, "array_%zu_%s", type->data.array.size, elem_name);
+            break;
+        }
+
+        case TYPE_TUPLE: {
+            // If cyclic, must use nominal name
+            if (cycle_detected) {
+                canonical_name = str_dup(type->declared_name);
+            } else {
+                // Non-cyclic tuple - structural name
+                size_t capacity = 256;
+                canonical_name = arena_alloc(&long_lived, capacity);
+                size_t offset = 0;
+
+                offset += snprintf(canonical_name + offset, capacity - offset, "tuple");
+
+                for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+                    char *elem_name = GET_COMPONENT_NAME(type->data.tuple.element_types[i]);
+
+                    size_t needed = offset + 1 + strlen(elem_name) + 1;
+                    if (needed > capacity) {
+                        capacity = needed * 2;
+                        char *new_buf = arena_alloc(&long_lived, capacity);
+                        memcpy(new_buf, canonical_name, offset);
+                        canonical_name = new_buf;
+                    }
+
+                    offset += snprintf(canonical_name + offset, capacity - offset, "_%s", elem_name);
+                }
+            }
+            break;
+        }
+
+        case TYPE_STRUCT: {
+            // Structs are always nominal (use declared name)
+            if (type->declared_name) {
+                canonical_name = str_dup(type->declared_name);
+            } else {
+                // Anonymous struct - build structural name
+                size_t capacity = 256;
+                canonical_name = arena_alloc(&long_lived, capacity);
+                size_t offset = 0;
+
+                offset += snprintf(canonical_name + offset, capacity - offset, "struct");
+
+                for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+                    char *field_name = type->data.struct_data.field_names[i];
+                    char *type_name = GET_COMPONENT_NAME(type->data.struct_data.field_types[i]);
+
+                    size_t needed = offset + 1 + strlen(field_name) + 1 + strlen(type_name) + 1;
+                    if (needed > capacity) {
+                        capacity = needed * 2;
+                        char *new_buf = arena_alloc(&long_lived, capacity);
+                        memcpy(new_buf, canonical_name, offset);
+                        canonical_name = new_buf;
+                    }
+
+                    offset += snprintf(canonical_name + offset, capacity - offset,
+                                      "_%s_%s", field_name, type_name);
+                }
+            }
+            break;
+        }
+
+        case TYPE_FUNCTION: {
+            size_t total_len = strlen("func");
+            for (size_t i = 0; i < type->data.func.param_count; i++) {
+                char *param_name = GET_COMPONENT_NAME(type->data.func.param_types[i]);
+                total_len += 1 + strlen(param_name);
+            }
+            char *ret_name = GET_COMPONENT_NAME(type->data.func.return_type);
+            total_len += strlen("_ret_") + strlen(ret_name);
+
+            canonical_name = arena_alloc(&long_lived, total_len + 1);
+            strcpy(canonical_name, "func");
+            for (size_t i = 0; i < type->data.func.param_count; i++) {
+                strcat(canonical_name, "_");
+                char *param_name = GET_COMPONENT_NAME(type->data.func.param_types[i]);
+                strcat(canonical_name, param_name);
+            }
+            strcat(canonical_name, "_ret_");
+            strcat(canonical_name, ret_name);
+            break;
+        }
+
         case TYPE_UNRESOLVED:
-            assert(false && "Should not have unresolved types in canonicalization");
-            return;
+            canonical_name = str_dup("UNRESOLVED");
+            break;
     }
 
-    // Now that all components are canonicalized, compute this type's name
-    char *canonical_name = compute_canonical_name(type);
-    if (!canonical_name) {
-        // Error already reported (self-referential structural type)
-        return;
-    }
+    #undef GET_COMPONENT_NAME
 
-    // Check if this type already exists (deduplication)
+    // Check for existing type with same canonical name (deduplication)
     Type *existing = canonical_lookup(canonical_name);
     if (existing) {
-        // Found duplicate - replace with existing type
+        // Found duplicate - replace with existing
         *type_ref = existing;
-        return;
+    } else {
+        // First occurrence - set canonical name and register
+        type->canonical_name = canonical_name;
+        canonical_register(canonical_name, type);
     }
 
-    // First time seeing this type - set canonical name and register
-    type->canonical_name = canonical_name;
-    canonical_register(canonical_name, type);
+    // Remove from visited
+    HASH_DEL(*visited, new_v);
+    return cycle_detected;
 }
 
+// Canonicalize a type (compute name, deduplicate)
+static void canonicalize_type(Type **type_ref) {
+    if (!type_ref || !*type_ref) return;
+
+    Visited *visited = NULL;
+    canonicalize_type_internal(type_ref, &visited);
+
+    // Clean up visited
+    Visited *curr, *tmp;
+    HASH_ITER(hh, visited, curr, tmp) {
+        HASH_DEL(visited, curr);
+    }
+}
 
 // Sub-pass 3a-prime: Compute canonical names and deduplicate types
 static void canonicalize_types(void) {
     // Walk all global symbols and canonicalize their types
     Symbol *sym, *tmp;
     HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-        if (sym->type && sym->type->canonical_name == NULL) {
+        if (sym->type) {
             // Type hasn't been canonicalized yet
             canonicalize_type(&(sym->type));
 
@@ -256,7 +448,7 @@ static void check_type_declarations(void) {
                 }
 
                 if (placeholder->kind == TYPE_STRUCT || placeholder->kind == TYPE_TUPLE) {
-                    placeholder->canonical_name = str_dup(sym->name);
+                    placeholder->declared_name = str_dup(sym->name);
                 }
 
                 sym->type = placeholder;

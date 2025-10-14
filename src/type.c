@@ -3,6 +3,7 @@
 #include "ast.h"
 #include "uthash.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
@@ -401,30 +402,9 @@ void type_system_init(void) {
     canonical_register("void", type_void);
 }
 
-// Compute canonical name for a fully resolved type
 // Compute canonical name for a type (with cycle detection)
 char *compute_canonical_name(Type *type) {
-    // Cycle detection for structural types
-    static Type *visited[64];
-    static size_t visited_count = 0;
-
     assert(type);
-
-    // Check for cycles (self-referential structural types)
-    for (size_t i = 0; i < visited_count; i++) {
-        if (visited[i] == type) {
-            fprintf(stderr, "Error: Self-referential structural type detected (use named struct instead)\n");
-            return NULL;
-        }
-    }
-
-    // Add to visited (only for types that can recurse)
-    if (visited_count < 64 &&
-        (type->kind == TYPE_POINTER || type->kind == TYPE_ARRAY ||
-         type->kind == TYPE_SLICE || type->kind == TYPE_TUPLE ||
-         type->kind == TYPE_FUNCTION)) {
-        visited[visited_count++] = type;
-    }
 
     char *result = NULL;
 
@@ -522,11 +502,6 @@ char *compute_canonical_name(Type *type) {
         case TYPE_UNRESOLVED:
             assert(false && "Cannot compute canonical name for unresolved type");
             return NULL;
-    }
-
-    // Remove from visited
-    if (visited_count > 0 && visited[visited_count - 1] == type) {
-        visited_count--;
     }
     return result;
 }
