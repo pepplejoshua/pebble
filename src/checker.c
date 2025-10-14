@@ -146,9 +146,14 @@ static void canonicalize_type(Type **type_ref) {
             break;
 
         case TYPE_STRUCT:
-            // For named structs, canonical name is already set in Pass 3a
-            // For anonymous structs (future), we would canonicalize fields here
-            return;
+            // Canonicalize field types (for nested structural types)
+            for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+                canonicalize_type(&(type->data.struct_data.field_types[i]));
+            }
+            // Named structs already have canonical_name set in Pass 3a
+            if (type->canonical_name) return;
+            // For anonymous structs (future), compute structural name
+            break;
 
         case TYPE_FUNCTION:
             // Canonicalize all param types first
@@ -166,6 +171,10 @@ static void canonicalize_type(Type **type_ref) {
 
     // Now that all components are canonicalized, compute this type's name
     char *canonical_name = compute_canonical_name(type);
+    if (!canonical_name) {
+        // Error already reported (self-referential structural type)
+        return;
+    }
 
     // Check if this type already exists (deduplication)
     Type *existing = canonical_lookup(canonical_name);
@@ -246,7 +255,7 @@ static void check_type_declarations(void) {
                     *placeholder = *resolved;
                 }
 
-                if (placeholder->kind == TYPE_STRUCT) {
+                if (placeholder->kind == TYPE_STRUCT || placeholder->kind == TYPE_TUPLE) {
                     placeholder->canonical_name = str_dup(sym->name);
                 }
 
@@ -442,7 +451,7 @@ static void check_function_signatures(void) {
         }
 
         // Create function type
-        sym->type = type_create_function(param_types, param_count, return_type);
+        sym->type = type_create_function(param_types, param_count, return_type, !checker_state.in_type_resolution);
 
         // Create function's local scope with global as parent
         Scope *func_scope = scope_create(global_scope);
@@ -519,7 +528,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
           if (!base) {
               return NULL;
           }
-          return type_create_pointer(base);
+          return type_create_pointer(base, !checker_state.in_type_resolution);
       }
 
       case AST_TYPE_ARRAY: {
@@ -529,7 +538,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
               return NULL;
           }
           size_t size = type_expr->data.type_array.size;
-          return type_create_array(element, size);
+          return type_create_array(element, size, !checker_state.in_type_resolution);
       }
 
       case AST_TYPE_SLICE: {
@@ -539,7 +548,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
           if (!element) {
               return NULL;
           }
-          return type_create_slice(element);
+          return type_create_slice(element, !checker_state.in_type_resolution);
       }
 
       case AST_TYPE_STRUCT: {
@@ -580,7 +589,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
               return NULL;
           }
 
-          return type_create_function(param_types, param_count, return_type);
+          return type_create_function(param_types, param_count, return_type, !checker_state.in_type_resolution);
       }
 
       case AST_TYPE_TUPLE: {
@@ -597,7 +606,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
                 }
             }
 
-            return type_create_tuple(element_types, element_count);
+            return type_create_tuple(element_types, element_count, !checker_state.in_type_resolution);
         }
 
       default:
@@ -811,7 +820,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "cannot take address of expression without memory location");
                     return NULL;
                 }
-                return type_create_pointer(operand);
+                return type_create_pointer(operand, !checker_state.in_type_resolution);
             }
 
             if (op == UNOP_DEREF) {
@@ -965,7 +974,7 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Return slice type
-            return type_create_slice(element_type);
+            return type_create_slice(element_type, !checker_state.in_type_resolution);
         }
 
         case AST_EXPR_MEMBER: {
@@ -1039,7 +1048,7 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Create and return tuple type
-            return type_create_tuple(element_types, element_count);
+            return type_create_tuple(element_types, element_count, !checker_state.in_type_resolution);
         }
 
         case AST_EXPR_STRUCT_LITERAL: {
@@ -1141,7 +1150,7 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Create and return array type with inferred element type and size
-            return type_create_array(element_type, element_count);
+            return type_create_array(element_type, element_count, !checker_state.in_type_resolution);
         }
 
         case AST_EXPR_IMPLICIT_CAST: {

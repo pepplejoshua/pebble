@@ -48,7 +48,7 @@ void test_setup(void) {
     printf("✓ type_lookup('str'): %s\n", str_type ? "found" : "not found");
 
     // Test type creation
-    type_create_pointer(int_type);
+    type_create_pointer(int_type, true);
     printf("✓ Created pointer type: *int\n");
 
     // Test symbol creation

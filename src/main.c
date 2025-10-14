@@ -3,6 +3,7 @@
 #include "parser.h"
 #include "checker.h"
 #include "type.h"
+// #include "codegen.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -126,7 +127,19 @@ static bool compile_file(const char *filename) {
     // Debug: Print type information
     debug_print_type_table();
 
-    // TODO: Add Pass 5: Code generation
+    // Pass 5: Code generation
+    // FILE *output = fopen("output.c", "w");
+    // if (!output) {
+        // printf("Failed to open output.c\n");
+        // return false;
+    // }
+
+    // Codegen cg;
+    // codegen_init(&cg, output);
+    // emit_program(&cg, program);
+
+    // fclose(output);
+    // printf("Generated output.c\n");
 
     printf("Compilation successful!\n");
 

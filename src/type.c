@@ -30,75 +30,86 @@ Type *type_create(TypeKind kind) {
 }
 
 // Create pointer type (with deduplication)
-Type *type_create_pointer(Type *base) {
+// Create pointer type (conditional canonicalization)
+Type *type_create_pointer(Type *base, bool canonicalize) {
     assert(base);
 
-    // Create temp type to compute canonical name
-    Type temp = {
-        .kind = TYPE_POINTER,
-        .data.ptr.base = base,
-        .canonical_name = NULL
-    };
+    if (canonicalize) {
+        // Compute canonical name and deduplicate
+        char *canonical_name = compute_canonical_name(base);
+        Type *existing = canonical_lookup(canonical_name);
+        if (existing) return existing;
 
-    char *canonical_name = compute_canonical_name(&temp);
-
-    // Check if this type already exists
-    Type *existing = canonical_lookup(canonical_name);
-    if (existing) {
-        return existing;
+        Type *type = arena_alloc(&long_lived, sizeof(Type));
+        type->kind = TYPE_POINTER;
+        type->data.ptr.base = base;
+        type->canonical_name = canonical_name;
+        canonical_register(canonical_name, type);
+        return type;
+    } else {
+        // Just create type without canonicalization
+        Type *type = type_create(TYPE_POINTER);
+        type->data.ptr.base = base;
+        return type;
     }
-
-    // Create new type
-    Type *type = arena_alloc(&long_lived, sizeof(Type));
-    *type = temp;
-    type->canonical_name = canonical_name;
-    canonical_register(canonical_name, type);
-    return type;
 }
 
 // Create slice type (with deduplication)
-Type *type_create_slice(Type *element) {
+Type *type_create_slice(Type *element, bool canonicalize) {
     assert(element);
 
-    Type temp = {
-        .kind = TYPE_SLICE,
-        .data.slice.element = element,
-        .canonical_name = NULL
-    };
+    if (canonicalize) {
+        Type temp = {
+            .kind = TYPE_SLICE,
+            .data.slice.element = element,
+            .canonical_name = NULL
+        };
 
-    char *canonical_name = compute_canonical_name(&temp);
+        char *canonical_name = compute_canonical_name(&temp);
 
-    Type *existing = canonical_lookup(canonical_name);
-    if (existing) return existing;
+        Type *existing = canonical_lookup(canonical_name);
+        if (existing) return existing;
 
-    Type *type = arena_alloc(&long_lived, sizeof(Type));
-    *type = temp;
-    type->canonical_name = canonical_name;
-    canonical_register(canonical_name, type);
-    return type;
+        Type *type = arena_alloc(&long_lived, sizeof(Type));
+        *type = temp;
+        type->canonical_name = canonical_name;
+        canonical_register(canonical_name, type);
+        return type;
+    } else {
+        Type *type = type_create(TYPE_SLICE);
+        type->data.slice.element = element;
+        return type;
+    }
 }
 
 // Create array type (with deduplication)
-Type *type_create_array(Type *element, size_t size) {
+Type *type_create_array(Type *element, size_t size, bool canonicalize) {
     assert(element);
 
-    Type temp = {
-        .kind = TYPE_ARRAY,
-        .data.array.element = element,
-        .data.array.size = size,
-        .canonical_name = NULL
-    };
+    if (canonicalize) {
+        Type temp = {
+            .kind = TYPE_ARRAY,
+            .data.array.element = element,
+            .data.array.size = size,
+            .canonical_name = NULL
+        };
 
-    char *canonical_name = compute_canonical_name(&temp);
+        char *canonical_name = compute_canonical_name(&temp);
 
-    Type *existing = canonical_lookup(canonical_name);
-    if (existing) return existing;
+        Type *existing = canonical_lookup(canonical_name);
+        if (existing) return existing;
 
-    Type *type = arena_alloc(&long_lived, sizeof(Type));
-    *type = temp;
-    type->canonical_name = canonical_name;
-    canonical_register(canonical_name, type);
-    return type;
+        Type *type = arena_alloc(&long_lived, sizeof(Type));
+        *type = temp;
+        type->canonical_name = canonical_name;
+        canonical_register(canonical_name, type);
+        return type;
+    } else {
+        Type *type = type_create(TYPE_ARRAY);
+        type->data.array.element = element;
+        type->data.array.size = size;
+        return type;
+    }
 }
 
 // Create struct type
@@ -124,56 +135,78 @@ Type *type_create_struct(char **field_names, Type **field_types, size_t field_co
 
 // Create tuple type (no caching)
 // Create tuple type (with deduplication)
-Type *type_create_tuple(Type **element_types, size_t element_count) {
+Type *type_create_tuple(Type **element_types, size_t element_count, bool canonicalize) {
     assert(element_types && element_count > 0);
 
-    // First create a temporary type to compute canonical name
-    Type *temp_type = arena_alloc(&long_lived, sizeof(Type));
-    temp_type->kind = TYPE_TUPLE;
-    temp_type->data.tuple.element_types = element_types;
-    temp_type->data.tuple.element_count = element_count;
+    if (canonicalize) {
+        // First create a temporary type to compute canonical name
+        Type *temp_type = arena_alloc(&long_lived, sizeof(Type));
+        temp_type->kind = TYPE_TUPLE;
+        temp_type->data.tuple.element_types = element_types;
+        temp_type->data.tuple.element_count = element_count;
 
-    // Compute canonical name (this requires element types to be canonicalized first)
-    // For now, assume element types are already canonicalized
-    char *canonical_name = compute_canonical_name(temp_type);
+        // Compute canonical name (this requires element types to be canonicalized first)
+        // For now, assume element types are already canonicalized
+        char *canonical_name = compute_canonical_name(temp_type);
 
-    // Check if this type already exists
-    Type *existing = canonical_lookup(canonical_name);
-    if (existing) {
-        // Return existing type, discard temp
-        return existing;
+        // Check if this type already exists
+        Type *existing = canonical_lookup(canonical_name);
+        if (existing) {
+            // Return existing type, discard temp
+            return existing;
+        }
+
+        // First time - finalize the type
+        Type *type = temp_type;
+        type->canonical_name = canonical_name;
+        canonical_register(canonical_name, type);
+        return type;
+    } else {
+        Type *type = type_create(TYPE_TUPLE);
+        Type **types = arena_alloc(&long_lived, element_count * sizeof(Type*));
+        memcpy(types, element_types, element_count * sizeof(Type*));
+        type->data.tuple.element_types = types;
+        type->data.tuple.element_count = element_count;
+        return type;
     }
-
-    // First time - finalize the type
-    Type *type = temp_type;
-    type->canonical_name = canonical_name;
-    canonical_register(canonical_name, type);
-    return type;
 }
 
 // Create function type (no caching)
 // Create function type (with deduplication)
-Type *type_create_function(Type **param_types, size_t param_count, Type *return_type) {
+Type *type_create_function(Type **param_types, size_t param_count, Type *return_type, bool canonicalize) {
     assert(return_type);
 
-    Type temp = {
-        .kind = TYPE_FUNCTION,
-        .data.func.param_types = param_types,
-        .data.func.param_count = param_count,
-        .data.func.return_type = return_type,
-        .canonical_name = NULL
-    };
+    if (canonicalize) {
+        Type temp = {
+            .kind = TYPE_FUNCTION,
+            .data.func.param_types = param_types,
+            .data.func.param_count = param_count,
+            .data.func.return_type = return_type,
+            .canonical_name = NULL
+        };
 
-    char *canonical_name = compute_canonical_name(&temp);
+        char *canonical_name = compute_canonical_name(&temp);
 
-    Type *existing = canonical_lookup(canonical_name);
-    if (existing) return existing;
+        Type *existing = canonical_lookup(canonical_name);
+        if (existing) return existing;
 
-    Type *type = arena_alloc(&long_lived, sizeof(Type));
-    *type = temp;
-    type->canonical_name = canonical_name;
-    canonical_register(canonical_name, type);
-    return type;
+        Type *type = arena_alloc(&long_lived, sizeof(Type));
+        *type = temp;
+        type->canonical_name = canonical_name;
+        canonical_register(canonical_name, type);
+        return type;
+    } else {
+        Type *type = type_create(TYPE_FUNCTION);
+        if (param_count > 0) {
+            assert(param_types);
+            Type **types = arena_alloc(&long_lived, param_count * sizeof(Type*));
+            memcpy(types, param_types, param_count * sizeof(Type*));
+            type->data.func.param_types = types;
+        }
+        type->data.func.param_count = param_count;
+        type->data.func.return_type = return_type;
+        return type;
+    }
 }
 
 // Look up named type in type table
@@ -369,8 +402,31 @@ void type_system_init(void) {
 }
 
 // Compute canonical name for a fully resolved type
+// Compute canonical name for a type (with cycle detection)
 char *compute_canonical_name(Type *type) {
+    // Cycle detection for structural types
+    static Type *visited[64];
+    static size_t visited_count = 0;
+
     assert(type);
+
+    // Check for cycles (self-referential structural types)
+    for (size_t i = 0; i < visited_count; i++) {
+        if (visited[i] == type) {
+            fprintf(stderr, "Error: Self-referential structural type detected (use named struct instead)\n");
+            return NULL;
+        }
+    }
+
+    // Add to visited (only for types that can recurse)
+    if (visited_count < 64 &&
+        (type->kind == TYPE_POINTER || type->kind == TYPE_ARRAY ||
+         type->kind == TYPE_SLICE || type->kind == TYPE_TUPLE ||
+         type->kind == TYPE_FUNCTION)) {
+        visited[visited_count++] = type;
+    }
+
+    char *result = NULL;
 
     switch (type->kind) {
         case TYPE_INT:
@@ -378,80 +434,69 @@ char *compute_canonical_name(Type *type) {
         case TYPE_BOOL:
         case TYPE_STRING:
         case TYPE_VOID:
-            // Primitives already have canonical names set
-            return type->canonical_name;
+            result = type->canonical_name;
+            break;
 
         case TYPE_POINTER: {
-            // ptr_<base_type>
             char *base_name = compute_canonical_name(type->data.ptr.base);
             size_t len = strlen("ptr_") + strlen(base_name) + 1;
-            char *name = arena_alloc(&long_lived, len);
-            snprintf(name, len, "ptr_%s", base_name);
-            return name;
-        }
-
-        case TYPE_SLICE: {
-            // slice_<element_type>
-            char *elem_name = compute_canonical_name(type->data.slice.element);
-            size_t len = strlen("slice_") + strlen(elem_name) + 1;
-            char *name = arena_alloc(&long_lived, len);
-            snprintf(name, len, "slice_%s", elem_name);
-            return name;
+            result = arena_alloc(&long_lived, len);
+            snprintf(result, len, "ptr_%s", base_name);
+            break;
         }
 
         case TYPE_ARRAY: {
-            // array_<size>_<element_type>
             char *elem_name = compute_canonical_name(type->data.array.element);
-            // Estimate length: "array_" + digits + "_" + elem_name + null
             size_t len = strlen("array_") + 10 + 1 + strlen(elem_name) + 1;
-            char *name = arena_alloc(&long_lived, len);
-            snprintf(name, len, "array_%zu_%s", type->data.array.size, elem_name);
-            return name;
+            result = arena_alloc(&long_lived, len);
+            snprintf(result, len, "array_%zu_%s", type->data.array.size, elem_name);
+            break;
+        }
+
+        case TYPE_SLICE: {
+            char *elem_name = compute_canonical_name(type->data.slice.element);
+            size_t len = strlen("slice_") + strlen(elem_name) + 1;
+            result = arena_alloc(&long_lived, len);
+            snprintf(result, len, "slice_%s", elem_name);
+            break;
         }
 
         case TYPE_TUPLE: {
-            // tuple_<elem1>_<elem2>_...
-            if (type->data.tuple.element_count == 0) {
-                return "tuple_void";  // Empty tuple
-            }
-
-            // First compute all element names
+            // Compute all element names
             char **elem_names = arena_alloc(&long_lived,
                 type->data.tuple.element_count * sizeof(char*));
             size_t total_len = strlen("tuple_");
 
             for (size_t i = 0; i < type->data.tuple.element_count; i++) {
                 elem_names[i] = compute_canonical_name(type->data.tuple.element_types[i]);
-                total_len += strlen(elem_names[i]) + 1;  // +1 for "_"
+                total_len += strlen(elem_names[i]) + 1;
             }
             total_len--;  // Remove last "_"
 
-            char *name = arena_alloc(&long_lived, total_len + 1);
-            strcpy(name, "tuple_");
+            result = arena_alloc(&long_lived, total_len + 1);
+            strcpy(result, "tuple_");
             for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-                if (i > 0) strcat(name, "_");
-                strcat(name, elem_names[i]);
+                if (i > 0) strcat(result, "_");
+                strcat(result, elem_names[i]);
             }
-            return name;
+            break;
         }
 
         case TYPE_STRUCT: {
             // Named structs already have canonical_name set (nominal)
-            // If it's null, it's anonymous/structurally typed (TODO for later)
-            return type->canonical_name ? type->canonical_name : "TODO_anon_struct";
+            result = type->canonical_name;
+            break;
         }
 
         case TYPE_FUNCTION: {
-            // func_<param1>_<param2>_..._ret_<return_type>
-            size_t total_len = strlen("func_");
-
-            // Compute all param names
+            // Compute param names
+            size_t total_len = strlen("func");
             char **param_names = NULL;
             if (type->data.func.param_count > 0) {
                 param_names = arena_alloc(&long_lived, type->data.func.param_count * sizeof(char*));
                 for (size_t i = 0; i < type->data.func.param_count; i++) {
                     param_names[i] = compute_canonical_name(type->data.func.param_types[i]);
-                    total_len += strlen(param_names[i]) + 1;  // +1 for "_"
+                    total_len += strlen(param_names[i]) + 1;
                 }
             }
 
@@ -459,29 +504,29 @@ char *compute_canonical_name(Type *type) {
             char *ret_name = compute_canonical_name(type->data.func.return_type);
             total_len += strlen("_ret_") + strlen(ret_name);
 
-            char *name = arena_alloc(&long_lived, total_len + 1);
-            strcpy(name, "func");
+            result = arena_alloc(&long_lived, total_len + 1);
+            strcpy(result, "func");
 
             if (type->data.func.param_count > 0) {
                 for (size_t i = 0; i < type->data.func.param_count; i++) {
-                    strcat(name, "_");
-                    strcat(name, param_names[i]);
+                    strcat(result, "_");
+                    strcat(result, param_names[i]);
                 }
-            } else {
-                // No params, but we still need "_ret_"
             }
 
-            strcat(name, "_ret_");
-            strcat(name, ret_name);
-            return name;
+            strcat(result, "_ret_");
+            strcat(result, ret_name);
+            break;
         }
 
         case TYPE_UNRESOLVED:
-            // Shouldn't happen after Pass 3a
             assert(false && "Cannot compute canonical name for unresolved type");
             return NULL;
     }
 
-    assert(false && "Unknown type kind");
-    return NULL;
+    // Remove from visited
+    if (visited_count > 0 && visited[visited_count - 1] == type) {
+        visited_count--;
+    }
+    return result;
 }

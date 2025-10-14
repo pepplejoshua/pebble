@@ -86,12 +86,12 @@ extern TypeEntry *canonical_type_table;
 // Type system functions
 void type_system_init(void);
 Type *type_create(TypeKind kind);
-Type *type_create_pointer(Type *base);
-Type *type_create_slice(Type *element);
-Type *type_create_array(Type *element, size_t size);
+Type *type_create_pointer(Type *base, bool canonicalize);
+Type *type_create_slice(Type *element, bool canonicalize);
+Type *type_create_array(Type *element, size_t size, bool canonicalize);
 Type *type_create_struct(char **field_names, Type **field_types, size_t field_count);
-Type *type_create_tuple(Type **element_types, size_t element_count);
-Type *type_create_function(Type **param_types, size_t param_count, Type *return_type);
+Type *type_create_tuple(Type **element_types, size_t element_count, bool canonicalize);
+Type *type_create_function(Type **param_types, size_t param_count, Type *return_type, bool canonicalize);
 
 // Type lookup and registration
 Type *type_lookup(const char *name);
