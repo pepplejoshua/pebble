@@ -32,3 +32,12 @@ void arena_free(Arena *arena) {
     arena->capacity = 0;
     arena->used = 0;
 }
+
+// Duplicate string to arena
+char *str_dup(const char *str) {
+    if (!str) return NULL;
+    size_t len = strlen(str) + 1;
+    char *copy = arena_alloc(&long_lived, len);
+    memcpy(copy, str, len);
+    return copy;
+}

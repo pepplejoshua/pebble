@@ -7,7 +7,7 @@
 extern Arena long_lived;
 
 // Helper to duplicate strings into arena
-static char *str_dup(const char *str, size_t len) {
+static char *str_dup_lex(const char *str, size_t len) {
     char *copy = arena_alloc(&long_lived, len + 1);
     memcpy(copy, str, len);
     copy[len] = '\0';
@@ -99,7 +99,7 @@ static Token lexer_make_token(Lexer *lexer, TokenType type) {
     token.location.column = lexer->column - (lexer->current - lexer->start);
 
     size_t length = lexer->current - lexer->start;
-    token.lexeme = str_dup(&lexer->source[lexer->start], length);
+    token.lexeme = str_dup_lex(&lexer->source[lexer->start], length);
 
     return token;
 }
@@ -110,7 +110,7 @@ static Token lexer_error_token(Lexer *lexer, const char *message) {
     token.location.file = lexer->filename;
     token.location.line = lexer->line;
     token.location.column = lexer->column;
-    token.lexeme = str_dup(message, strlen(message));
+    token.lexeme = str_dup_lex(message, strlen(message));
     return token;
 }
 
@@ -192,7 +192,7 @@ static Token lexer_scan_string(Lexer *lexer) {
 
     // Extract string value (without quotes)
     size_t length = lexer->current - lexer->start - 2;
-    token.value.str_val = str_dup(&lexer->source[lexer->start + 1], length);
+    token.value.str_val = str_dup_lex(&lexer->source[lexer->start + 1], length);
 
     return token;
 }

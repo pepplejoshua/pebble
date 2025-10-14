@@ -6,15 +6,6 @@
 // External allocators (will be defined in main.c)
 extern Arena long_lived;
 
-// Helper to duplicate strings into long-lived arena
-static char *str_dup(const char *str) {
-    if (!str) return NULL;
-    size_t len = strlen(str) + 1;
-    char *copy = arena_alloc(&long_lived, len);
-    memcpy(copy, str, len);
-    return copy;
-}
-
 // Create AST node with basic setup
 static AstNode *ast_node_create(AstKind kind, Location loc) {
     AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
