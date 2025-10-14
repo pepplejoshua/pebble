@@ -4,6 +4,7 @@
 #include "symbol.h"
 #include "type.h"
 #include "uthash.h"
+#include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -104,6 +105,99 @@ bool collect_globals(AstNode **decls, size_t decl_count) {
 // PASS 3: CHECK GLOBALS
 //=============================================================================
 
+// Canonicalize a type (compute name, deduplicate)
+static void canonicalize_type(Type **type_ref) {
+    Type *type = *type_ref;
+    if (!type) return;
+
+    // If this type already has a canonical name, it's already processed
+    if (type->canonical_name) return;
+
+    // Recursively canonicalize component types first
+    switch (type->kind) {
+        case TYPE_INT:
+        case TYPE_FLOAT:
+        case TYPE_BOOL:
+        case TYPE_STRING:
+        case TYPE_VOID:
+            // Primitives already have canonical names from type_system_init
+            return;
+
+        case TYPE_POINTER:
+            // Canonicalize base type first
+            canonicalize_type(&(type->data.ptr.base));
+            break;
+
+        case TYPE_SLICE:
+            // Canonicalize element type first
+            canonicalize_type(&(type->data.slice.element));
+            break;
+
+        case TYPE_ARRAY:
+            // Canonicalize element type first
+            canonicalize_type(&(type->data.array.element));
+            break;
+
+        case TYPE_TUPLE:
+            // Canonicalize all element types first
+            for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+                canonicalize_type(&(type->data.tuple.element_types[i]));
+            }
+            break;
+
+        case TYPE_STRUCT:
+            // For named structs, canonical name is already set in Pass 3a
+            // For anonymous structs (future), we would canonicalize fields here
+            return;
+
+        case TYPE_FUNCTION:
+            // Canonicalize all param types first
+            for (size_t i = 0; i < type->data.func.param_count; i++) {
+                canonicalize_type(&(type->data.func.param_types[i]));
+            }
+            // Canonicalize return type first
+            canonicalize_type(&(type->data.func.return_type));
+            break;
+
+        case TYPE_UNRESOLVED:
+            assert(false && "Should not have unresolved types in canonicalization");
+            return;
+    }
+
+    // Now that all components are canonicalized, compute this type's name
+    char *canonical_name = compute_canonical_name(type);
+
+    // Check if this type already exists (deduplication)
+    Type *existing = canonical_lookup(canonical_name);
+    if (existing) {
+        // Found duplicate - replace with existing type
+        *type_ref = existing;
+        return;
+    }
+
+    // First time seeing this type - set canonical name and register
+    type->canonical_name = canonical_name;
+    canonical_register(canonical_name, type);
+}
+
+
+// Sub-pass 3a-prime: Compute canonical names and deduplicate types
+static void canonicalize_types(void) {
+    // Walk all global symbols and canonicalize their types
+    Symbol *sym, *tmp;
+    HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+        if (sym->type && sym->type->canonical_name == NULL) {
+            // Type hasn't been canonicalized yet
+            canonicalize_type(&(sym->type));
+
+            // Keep type_table in sync (important for deduplication)
+            if (sym->kind == SYMBOL_TYPE) {
+                type_register(sym->name, sym->type);
+            }
+        }
+    }
+}
+
 // Sub-pass 3a: Resolve type declarations
 static void check_type_declarations(void) {
     Symbol *sym, *tmp;
@@ -152,6 +246,10 @@ static void check_type_declarations(void) {
                     *placeholder = *resolved;
                 }
 
+                if (placeholder->kind == TYPE_STRUCT) {
+                    placeholder->canonical_name = str_dup(sym->name);
+                }
+
                 sym->type = placeholder;
 
                 // Check if fully resolved (not TYPE_UNRESOLVED anymore)
@@ -181,8 +279,10 @@ static void check_type_declarations(void) {
 
     checker_state.in_type_resolution = false;
     free(worklist);
-}
 
+    // Sub-pass 3a' - canonicalize and deduplicate
+    canonicalize_types();
+}
 
 // Sub-pass 3b: Check constant declarations
 static void check_global_constants(void) {
