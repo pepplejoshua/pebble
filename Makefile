@@ -1,5 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -I src
+# OBJS = src/alloc.o src/ast.o src/lexer.o src/parser.o src/tests.o src/symbol.o src/type.o src/checker.o src/codegen.o src/main.o
 OBJS = src/alloc.o src/ast.o src/lexer.o src/parser.o src/tests.o src/symbol.o src/type.o src/checker.o src/main.o
 
 peb: $(OBJS)

@@ -28,6 +28,7 @@ typedef enum {
 // Type structure
 struct Type {
     TypeKind kind;
+    char *canonical_name;
 
     union {
         struct {
@@ -79,6 +80,9 @@ extern Type *type_void;
 // Type table (global hash map of named types)
 extern TypeEntry *type_table;
 
+// Canonical type table (global hash map of canonical name -> type)
+extern TypeEntry *canonical_type_table;
+
 // Type system functions
 void type_system_init(void);
 Type *type_create(TypeKind kind);
@@ -92,6 +96,11 @@ Type *type_create_function(Type **param_types, size_t param_count, Type *return_
 // Type lookup and registration
 Type *type_lookup(const char *name);
 void type_register(const char *name, Type *type);
+Type *canonical_lookup(const char *canonical_name);
+void canonical_register(const char *canonical_name, Type *type);
+
+// Compute canonical name for a fully resolved type
+char *compute_canonical_name(Type *type);
 
 // Type checking utilities
 bool type_equals(Type *a, Type *b);
