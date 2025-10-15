@@ -155,6 +155,7 @@ UnaryOp token_to_unary_op(TokenType type) {
 // Helper to create basic AST node
 static AstNode *alloc_node(AstKind kind, Location loc) {
     AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
+    memset(node, 0, sizeof(AstNode));
     node->kind = kind;
     node->loc = loc;
     return node;

@@ -534,11 +534,11 @@ static void check_global_constants(void) {
             }
 
             sym->type = explicit_type;
-            sym->decl->data.const_decl.resolved_type = explicit_type;
+            sym->decl->resolved_type = explicit_type;
         } else {
             // No explicit type, use inferred type
             sym->type = inferred_type;
-            sym->decl->data.const_decl.resolved_type = inferred_type;
+            sym->decl->resolved_type = inferred_type;
         }
     }
 }
@@ -599,15 +599,15 @@ static void check_global_variables(void) {
                 continue;
             }
             sym->type = explicit_type;
-            sym->decl->data.var_decl.resolved_type = explicit_type;
+            sym->decl->resolved_type = explicit_type;
         } else if (explicit_type) {
             // Only explicit type, no initializer
             sym->type = explicit_type;
-            sym->decl->data.var_decl.resolved_type = explicit_type;
+            sym->decl->resolved_type = explicit_type;
         } else {
             // Only initializer, infer type
             sym->type = inferred_type;
-            sym->decl->data.var_decl.resolved_type = inferred_type;
+            sym->decl->resolved_type = inferred_type;
         }
     }
 }
@@ -921,6 +921,8 @@ Type *check_expression(AstNode *expr) {
                 checker_error(expr->loc, "name '%s' used before type is resolved", name);
                 return NULL;
             }
+            // expr->resolved_type = sym->type;
+            expr->resolved_type = sym->type;
             return sym->type;
         }
 
@@ -945,6 +947,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "type mismatch in binary operation");
                     return NULL;
                 }
+                expr->resolved_type = left;
                 return left;  // Result type is same as operands
             }
 
@@ -958,6 +961,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "type mismatch in comparison");
                     return NULL;
                 }
+                expr->resolved_type = type_bool;
                 return type_bool;  // Comparisons return bool
             }
 
@@ -971,6 +975,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "type mismatch in equality check");
                     return NULL;
                 }
+                expr->resolved_type = type_bool;
                 return type_bool;
             }
 
@@ -981,6 +986,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "logical operation requires boolean operands");
                     return NULL;
                 }
+                expr->resolved_type = type_bool;
                 return type_bool;
             }
 
@@ -1001,6 +1007,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "negation requires numeric operand");
                     return NULL;
                 }
+                expr->resolved_type = operand;
                 return operand;
             }
 
@@ -1009,6 +1016,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "logical not requires boolean operand");
                     return NULL;
                 }
+                expr->resolved_type = type_bool;
                 return type_bool;
             }
 
@@ -1017,7 +1025,9 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "cannot take address of expression without memory location");
                     return NULL;
                 }
-                return type_create_pointer(operand, !checker_state.in_type_resolution);
+                Type *ptr = type_create_pointer(operand, !checker_state.in_type_resolution);
+                expr->resolved_type = ptr;
+                return ptr;
             }
 
             if (op == UNOP_DEREF) {
@@ -1026,6 +1036,7 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "dereference requires a pointer operand");
                     return NULL;
                 }
+                expr->resolved_type = operand->data.ptr.base;
                 return operand->data.ptr.base;
             }
 
@@ -1086,6 +1097,7 @@ Type *check_expression(AstNode *expr) {
                 }
             }
 
+            expr->resolved_type = return_type;
             return return_type;
         }
 
@@ -1118,6 +1130,7 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Return the element type
+            expr->resolved_type = array_type->data.array.element;
             return array_type->data.array.element;
         }
 
@@ -1172,7 +1185,7 @@ Type *check_expression(AstNode *expr) {
 
             // Return slice type
             Type *slice = type_create_slice(element_type, !checker_state.in_type_resolution);
-            expr->data.slice_expr.resolved_type = slice;
+            expr->resolved_type = slice;
             return slice;
         }
 
@@ -1206,6 +1219,7 @@ Type *check_expression(AstNode *expr) {
                 }
 
                 // Return the element type at this index
+                expr->resolved_type = object_type->data.tuple.element_types[index];
                 return object_type->data.tuple.element_types[index];
             }
 
@@ -1223,6 +1237,7 @@ Type *check_expression(AstNode *expr) {
             for (size_t i = 0; i < field_count; i++) {
                 if (strcmp(field_names[i], field_name) == 0) {
                     // Found the field!
+                    expr->resolved_type = field_types[i];
                     return field_types[i];
                 }
             }
@@ -1317,6 +1332,7 @@ Type *check_expression(AstNode *expr) {
                 }
             }
 
+            expr->resolved_type = struct_type;
             return struct_type;
         }
 
@@ -1352,7 +1368,7 @@ Type *check_expression(AstNode *expr) {
 
             // Create and return array type with inferred element type and size
             Type* array = type_create_array(element_type, element_count, !checker_state.in_type_resolution);
-            expr->data.array_literal.resolved_type = array;
+            expr->resolved_type = array;
             return array;
         }
 
@@ -1546,7 +1562,7 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             Symbol *var_sym = symbol_create(name, SYMBOL_VARIABLE, stmt);
             var_sym->type = var_type;
             var_sym->data.var.is_global = false;
-            stmt->data.var_decl.resolved_type = var_type;
+            stmt->resolved_type = var_type;
             scope_add_symbol(current_scope, var_sym);
             return false;
         }
@@ -1598,7 +1614,7 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             // Add to current scope
             Symbol *const_sym = symbol_create(name, SYMBOL_CONSTANT, stmt);
             const_sym->type = const_type;
-            stmt->data.const_decl.resolved_type = const_type;
+            stmt->resolved_type = const_type;
             scope_add_symbol(current_scope, const_sym);
             return false;
         }

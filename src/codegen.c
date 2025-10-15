@@ -167,7 +167,6 @@ void emit_program(Codegen *cg) {
         }
     }
 
-
     // Emit sections
     emit_sections(cg);
 }
@@ -412,7 +411,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         }
         case AST_DECL_VARIABLE: {
             emit_indent_spaces(cg);
-            emit_type_name(cg, stmt->data.var_decl.resolved_type);  // Resolved type?
+            emit_type_name(cg, stmt->resolved_type);  // Resolved type?
             emit_string(cg, " ");
             emit_string(cg, stmt->data.var_decl.name);
             if (stmt->data.var_decl.init) {
@@ -425,7 +424,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         case AST_DECL_CONSTANT: {
             emit_indent_spaces(cg);
             emit_string(cg, "const ");
-            emit_type_name(cg, stmt->data.const_decl.resolved_type);
+            emit_type_name(cg, stmt->resolved_type);
             emit_string(cg, " ");
             emit_string(cg, stmt->data.const_decl.name);
             emit_string(cg, " = ");
@@ -508,7 +507,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         case AST_EXPR_ARRAY_LITERAL: {
             emit_string(cg, "(");
-            emit_type_name(cg, expr->data.array_literal.resolved_type);
+            emit_type_name(cg, expr->resolved_type);
             emit_string(cg, "){ {");
             for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
                 if (i > 0) emit_string(cg, ", ");
@@ -524,7 +523,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         case AST_EXPR_SLICE: {
             emit_string(cg, "(");
-            emit_type_name(cg, expr->data.slice_expr.resolved_type);
+            emit_type_name(cg, expr->resolved_type);
             emit_string(cg, "){ &");
             emit_expr(cg, expr->data.slice_expr.array);
             emit_string(cg, ".data[");

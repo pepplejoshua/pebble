@@ -75,6 +75,7 @@ typedef struct {
 struct AstNode {
     AstKind kind;
     Location loc;
+    Type *resolved_type;
 
     union {
         // Declarations
@@ -85,8 +86,8 @@ struct AstNode {
           AstNode *return_type;
           AstNode *body;
         } func_decl;
-        struct { char *name; AstNode *type_expr; AstNode *init; Type* resolved_type; } var_decl;
-        struct { char *name; AstNode *type_expr; AstNode *value; Type* resolved_type; } const_decl;
+        struct { char *name; AstNode *type_expr; AstNode *init; } var_decl;
+        struct { char *name; AstNode *type_expr; AstNode *value; } const_decl;
         struct { char *name; AstNode *type_expr; } type_decl;
 
         // Statements
@@ -108,7 +109,7 @@ struct AstNode {
         struct { AstNode *func; AstNode **args; size_t arg_count; } call;
         struct { AstNode *array; AstNode *index; } index_expr;
         struct { AstNode *object; char *member; } member_expr;
-        struct { AstNode *array; AstNode *start; AstNode *end; Type* resolved_type; } slice_expr;
+        struct { AstNode *array; AstNode *start; AstNode *end; } slice_expr;
         struct {
           AstNode **elements;
           size_t element_count;
@@ -123,7 +124,6 @@ struct AstNode {
         struct {
           AstNode **elements;
           size_t element_count;
-          Type* resolved_type;
         } array_literal;
         struct {
           AstNode *expr;            // Expression being cast
