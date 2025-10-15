@@ -885,15 +885,19 @@ Type *check_expression(AstNode *expr) {
 
     switch (expr->kind) {
         case AST_EXPR_LITERAL_INT:
+            expr->resolved_type = type_int;
             return type_int;
 
         case AST_EXPR_LITERAL_FLOAT:
+            expr->resolved_type = type_float;
             return type_float;
 
         case AST_EXPR_LITERAL_STRING:
+            expr->resolved_type = type_string;
             return type_string;
 
         case AST_EXPR_LITERAL_BOOL:
+            expr->resolved_type = type_bool;
             return type_bool;
 
         case AST_EXPR_IDENTIFIER: {
