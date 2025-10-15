@@ -38,7 +38,7 @@ void codegen_init(Codegen *cg, FILE *output) {
     cg->defs = NULL; cg->defs_len = 0; cg->defs_cap = 0;
 
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
-    cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n\n";
+    cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
 
     // Init uthash sets to empty
     cg->declared_types = NULL;
@@ -349,6 +349,33 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 void emit_stmt(Codegen *cg, AstNode *stmt) {
     if (!stmt) return;
     switch (stmt->kind) {
+        case AST_STMT_PRINT: {
+            Type *type = stmt->data.print_stmt.expr->resolved_type;
+
+            emit_indent_spaces(cg);
+            if (type->kind == TYPE_INT) {
+                emit_string(cg, "printf(\"%d\\n\", ");
+            } else if (type->kind == TYPE_FLOAT) {
+                emit_string(cg, "printf(\"%f\\n\", ");
+            } else if (type->kind == TYPE_STRING) {
+                emit_string(cg, "printf(\"%s\\n\", ");
+            } else if (type->kind == TYPE_BOOL) {
+                emit_string(cg, "printf(\"%s\\n\", ");
+                emit_expr(cg, stmt->data.print_stmt.expr);
+                emit_string(cg, " ? \"true\" : \"false\"");
+                emit_line(cg, ");");
+                return;
+            } else {
+                emit_string(cg, "printf(\"[");
+                emit_string(cg, stmt->data.print_stmt.expr->resolved_type->canonical_name);
+                emit_string(cg, "]\\n\");\n");
+                return;
+            }
+
+            emit_expr(cg, stmt->data.print_stmt.expr);
+            emit_string(cg, ");\n");
+            break;
+        }
         case AST_STMT_RETURN:
             emit_indent_spaces(cg);
             emit_string(cg, "return ");
@@ -387,12 +414,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
             emit_string(cg, "while (");
             emit_expr(cg, stmt->data.while_stmt.cond);
             emit_string(cg, ") ");
-            emit_line(cg, "{");
+            emit_string(cg, "{\n");
             emit_indent(cg);
             emit_stmt(cg, stmt->data.while_stmt.body);
             emit_dedent(cg);
             emit_indent_spaces(cg);
-            emit_line(cg, "}");
+            emit_string(cg, "}\n");
             break;
         }
         case AST_STMT_EXPR: {

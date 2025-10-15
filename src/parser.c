@@ -342,6 +342,21 @@ AstNode *parse_type_decl(Parser *parser) {
     return node;
 }
 
+AstNode *parse_print_stmt(Parser *parser) {
+    // print expr;
+
+    Location loc = parser->previous.location;
+    AstNode *expr = parse_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after print statement.");
+
+    AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
+    node->kind = AST_STMT_PRINT;
+    node->loc = loc;
+    node->data.print_stmt.expr = expr;
+
+    return node;
+}
+
 // ============================================================================
 // STATEMENT PARSING
 // ============================================================================
@@ -361,6 +376,9 @@ AstNode *parse_statement(Parser *parser) {
     }
     if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR)) {
         return parse_variable_decl(parser);  // Local variables
+    }
+    if (parser_match(parser, TOKEN_PRINT)) {
+        return parse_print_stmt(parser);
     }
 
     // Check for assignment: identifier = expr

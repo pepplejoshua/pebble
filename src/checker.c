@@ -1375,6 +1375,7 @@ Type *check_expression(AstNode *expr) {
         case AST_EXPR_IMPLICIT_CAST: {
             // The cast was already validated when inserted
             // Just return the target type
+            expr->resolved_type = expr->data.implicit_cast.target_type;
             return expr->data.implicit_cast.target_type;
         }
 
@@ -1396,6 +1397,16 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     }
 
     switch (stmt->kind) {
+        case AST_STMT_PRINT: {
+            AstNode* expr = stmt->data.print_stmt.expr;
+            Type *expr_type = check_expression(expr);
+            if (!expr_type) {
+                return false;  // Error already reported
+            }
+
+            return false;
+        }
+
         case AST_STMT_RETURN: {
             AstNode *expr = stmt->data.return_stmt.expr;
 

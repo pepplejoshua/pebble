@@ -1,23 +1,10 @@
-type Node = struct {
-    data int,
-    next *Node
-};
-
-type TNode = (int, *TNode);
-
-type Point = (int, int);
-type Vec2 = (int, int);
-
-fn point_2_vec2(p Point) Vec2 {
-    var q = (p.0, p.1);
-    return q;
-}
-
 fn main() int {
     var arr [5]int = [1, 2, 3, 4, 5];
-    ONE = arr[0];
     var sl []int = arr[:];
-    return point_2_vec2((0, sl[0])).0;
+    var i = 0;
+    while i < 5 {
+        print sl[i];
+        i = i + 1;
+    }
+    return 0;
 }
-
-var ONE = 1;

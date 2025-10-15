@@ -168,6 +168,9 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
         case 'w':
             if (length == 5) return lexer_check_keyword(start, 5, "while", TOKEN_WHILE);
             break;
+        case 'p':
+            if (length == 5) return lexer_check_keyword(start, 5, "print", TOKEN_PRINT);
+            break;
     }
 
     return TOKEN_IDENTIFIER;

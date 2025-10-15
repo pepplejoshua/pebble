@@ -26,6 +26,7 @@ typedef enum {
     TOKEN_VAR, // var b = 5; a is a mutable variable
     TOKEN_TRUE,
     TOKEN_FALSE,
+    TOKEN_PRINT,
 
     // Types (built-in)
     TOKEN_INT_TYPE,    // "int"

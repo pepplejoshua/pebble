@@ -28,6 +28,7 @@ typedef enum {
     AST_STMT_BLOCK,
     AST_STMT_EXPR,
     AST_STMT_ASSIGN,
+    AST_STMT_PRINT,
 
     AST_EXPR_LITERAL_INT,
     AST_EXPR_LITERAL_FLOAT,
@@ -97,6 +98,7 @@ struct AstNode {
         struct { AstNode **stmts; size_t stmt_count; } block_stmt;
         struct { AstNode *expr; } expr_stmt;
         struct { AstNode *lhs; AstNode *rhs; } assign_stmt;
+        struct { AstNode *expr; } print_stmt;
 
         // Expressions
         struct { long long value; } int_lit;

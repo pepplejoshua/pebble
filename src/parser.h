@@ -22,6 +22,7 @@ AstNode *parse_declaration(Parser *parser);
 AstNode *parse_function_decl(Parser *parser);
 AstNode *parse_variable_decl(Parser *parser);  // Handles both let/var
 AstNode *parse_type_decl(Parser *parser);
+AstNode *parse_print_stmt(Parser *parser);
 
 // Statements
 AstNode *parse_statement(Parser *parser);
