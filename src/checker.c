@@ -1225,31 +1225,39 @@ Type *check_expression(AstNode *expr) {
                 // Return the element type at this index
                 expr->resolved_type = object_type->data.tuple.element_types[index];
                 return object_type->data.tuple.element_types[index];
-            }
+            } else if (object_type->kind == TYPE_ARRAY || object_type->kind == TYPE_SLICE) {
+                // Arrays and slices have only 'len' field
+                if (strcmp(field_name, "len") == 0) {
+                    expr->resolved_type = type_int;
+                    return type_int;
+                } else {
+                    const char* type_name = object_type->kind == TYPE_ARRAY ? "array" : "slice";
+                    checker_error(expr->loc, "%s has only 'len' field", type_name);
+                    return NULL;
+                }
+            } else if (object_type->kind == TYPE_STRUCT) {
+                // Look up the field in the struct
+                size_t field_count = object_type->data.struct_data.field_count;
+                char **field_names = object_type->data.struct_data.field_names;
+                Type **field_types = object_type->data.struct_data.field_types;
 
-            // Verify it's a struct
-            if (object_type->kind != TYPE_STRUCT) {
-                checker_error(object_expr->loc, "member access requires struct type");
+                for (size_t i = 0; i < field_count; i++) {
+                    if (strcmp(field_names[i], field_name) == 0) {
+                        // Found the field!
+                        expr->resolved_type = field_types[i];
+                        return field_types[i];
+                    }
+                }
+
+                // Field not found
+                checker_error(expr->loc, "struct has no field named '%s'", field_name);
+                return NULL;
+            } else {
+                checker_error(object_expr->loc, "member access requires struct, array, or slice type");
                 return NULL;
             }
-
-            // Look up the field in the struct
-            size_t field_count = object_type->data.struct_data.field_count;
-            char **field_names = object_type->data.struct_data.field_names;
-            Type **field_types = object_type->data.struct_data.field_types;
-
-            for (size_t i = 0; i < field_count; i++) {
-                if (strcmp(field_names[i], field_name) == 0) {
-                    // Found the field!
-                    expr->resolved_type = field_types[i];
-                    return field_types[i];
-                }
-            }
-
-            // Field not found
-            checker_error(expr->loc, "struct has no field named '%s'", field_name);
-            return NULL;
         }
+
 
         case AST_EXPR_TUPLE: {
             // Type-check all tuple elements

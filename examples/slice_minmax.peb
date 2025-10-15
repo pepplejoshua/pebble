@@ -1,0 +1,31 @@
+fn find_min(slice []int) int {
+    var min_val = slice[0];
+    var i = 1;
+    while i < slice.len {  // Slice has a .len field (compiled as struct member)
+        if slice[i] < min_val {
+            min_val = slice[i];
+        }
+        i = i + 1;
+    }
+    return min_val;
+}
+
+fn find_max(slice []int) int {
+    var max_val = slice[0];
+    var i = 1;
+    while i < slice.len {
+        if slice[i] > max_val {
+            max_val = slice[i];
+        }
+        i = i + 1;
+    }
+    return max_val;
+}
+
+fn main() int {
+    var arr [10]int = [42, 7, 99, 12, 3, 88, 15, 1, 66, 24];
+    var sub_slice []int = arr[2:7];  // Elements 2 through 6 (99,12,3,88,15)
+    print find_min(sub_slice);  // 3
+    print find_max(sub_slice);  // 99
+    return 0;
+}
