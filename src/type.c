@@ -30,14 +30,18 @@ Type *type_create(TypeKind kind) {
     return type;
 }
 
-// Create pointer type (with deduplication)
 // Create pointer type (conditional canonicalization)
 Type *type_create_pointer(Type *base, bool canonicalize) {
     assert(base);
 
     if (canonicalize) {
-        // Compute canonical name and deduplicate
-        char *canonical_name = compute_canonical_name(base);
+        // Create temp pointer type to compute canonical name
+        Type temp = {
+            .kind = TYPE_POINTER,
+            .data.ptr.base = base,
+            .canonical_name = NULL
+        };
+        char *canonical_name = compute_canonical_name(&temp);
         Type *existing = canonical_lookup(canonical_name);
         if (existing) return existing;
 
