@@ -1171,7 +1171,9 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Return slice type
-            return type_create_slice(element_type, !checker_state.in_type_resolution);
+            Type *slice = type_create_slice(element_type, !checker_state.in_type_resolution);
+            expr->data.slice_expr.resolved_type = slice;
+            return slice;
         }
 
         case AST_EXPR_MEMBER: {
@@ -1245,7 +1247,9 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Create and return tuple type
-            return type_create_tuple(element_types, element_count, !checker_state.in_type_resolution);
+            Type *tuple =  type_create_tuple(element_types, element_count, !checker_state.in_type_resolution);
+            expr->data.tuple_expr.resolved_type = tuple;
+            return tuple;
         }
 
         case AST_EXPR_STRUCT_LITERAL: {
@@ -1347,7 +1351,9 @@ Type *check_expression(AstNode *expr) {
             }
 
             // Create and return array type with inferred element type and size
-            return type_create_array(element_type, element_count, !checker_state.in_type_resolution);
+            Type* array = type_create_array(element_type, element_count, !checker_state.in_type_resolution);
+            expr->data.array_literal.resolved_type = array;
+            return array;
         }
 
         case AST_EXPR_IMPLICIT_CAST: {

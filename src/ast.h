@@ -75,6 +75,7 @@ typedef struct {
 struct AstNode {
     AstKind kind;
     Location loc;
+
     union {
         // Declarations
         struct {
@@ -106,11 +107,12 @@ struct AstNode {
         struct { UnaryOp op; AstNode *operand; } unop;
         struct { AstNode *func; AstNode **args; size_t arg_count; } call;
         struct { AstNode *array; AstNode *index; } index_expr;
-        struct { AstNode *array; AstNode *start; AstNode *end; } slice_expr;
         struct { AstNode *object; char *member; } member_expr;
+        struct { AstNode *array; AstNode *start; AstNode *end; Type* resolved_type; } slice_expr;
         struct {
           AstNode **elements;
           size_t element_count;
+          Type* resolved_type;
         } tuple_expr;
         struct {
             char *type_name;        // "Point"
@@ -121,6 +123,7 @@ struct AstNode {
         struct {
           AstNode **elements;
           size_t element_count;
+          Type* resolved_type;
         } array_literal;
         struct {
           AstNode *expr;            // Expression being cast

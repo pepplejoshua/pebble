@@ -93,7 +93,6 @@ void emit_program(Codegen *cg) {
 
     // Emit forwards/defs for vars/constants
     cg->current_section = "forward_vars_funcs";
-
     HASH_ITER(hh, global_scope->symbols, sym, tmp) {
         if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
             // Emit extern decl
@@ -107,11 +106,18 @@ void emit_program(Codegen *cg) {
     cg->current_section = "defs";
     HASH_ITER(hh, global_scope->symbols, sym, tmp) {
         if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
-            // Emit full def (skip value for now)
             emit_type_name(cg, sym->type);
             emit_string(cg, " ");
             emit_string(cg, sym->name);
+            if (sym->kind == SYMBOL_VARIABLE && sym->decl && sym->decl->data.var_decl.init) {
+                emit_string(cg, " = ");
+                emit_expr(cg, sym->decl->data.var_decl.init);
+            } else if (sym->kind == SYMBOL_CONSTANT && sym->decl && sym->decl->data.const_decl.value) {
+                emit_string(cg, " = ");
+                emit_expr(cg, sym->decl->data.const_decl.value);
+            }
             emit_line(cg, ";");
+
         }
     }
 
@@ -185,9 +191,25 @@ void emit_type_name(Codegen *cg, Type *type) {
             break;
         case TYPE_STRUCT:
         case TYPE_TUPLE:
-        case TYPE_ARRAY:
             emit_string(cg, type->canonical_name);  // Just "Node" or "tuple_int_int", not "struct ..."
             break;
+        case TYPE_ARRAY: {
+            int old_indent = cg->indent_level;
+            cg->indent_level = 0;
+            emit_type_if_needed(cg, type);
+            emit_string(cg, type->canonical_name);
+            cg->indent_level = old_indent;
+            break;
+        }
+        case TYPE_SLICE: {
+            int old_indent = cg->indent_level;
+            cg->indent_level = 0;
+            emit_type_if_needed(cg, type);
+            emit_string(cg, type->canonical_name);
+            cg->indent_level = old_indent;
+            break;
+        }
+
         default:
             emit_string(cg, type->canonical_name); break;
     }
@@ -247,10 +269,10 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
         char *old_section = cg->current_section;
         cg->current_section = "forward_types";
         emit_string(cg, "typedef struct ");
-        emit_type_name(cg, type);
+        emit_string(cg, canonical);
         emit_string(cg, " ");
         emit_string(cg, canonical);
-        emit_line(cg, ";");
+        emit_string(cg, ";\n");
         cg->current_section = old_section;
 
         // Insert into declared_types hash
@@ -260,7 +282,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     }
 
     // Check if already defined (full struct/tuple)
-    if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE) {
+    if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
+        type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE) {
         CodegenTypeEntry *def_entry;
         HASH_FIND_STR(cg->defined_types, canonical, def_entry);
         if (!def_entry) {
@@ -281,6 +304,23 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
                     emit_string(cg, ";");
                     emit_line(cg, "");
                 }
+            } else if (type->kind == TYPE_ARRAY) {
+                emit_indent_spaces(cg);
+                emit_type_name(cg, type->data.array.element);
+                char buf[32];
+                sprintf(buf, " data[%zu];", type->data.array.size);
+                emit_string(cg, buf);
+                emit_string(cg, "\n");
+                emit_indent_spaces(cg);
+                emit_string(cg, "size_t len;\n");
+            } else if (type->kind == TYPE_SLICE) {
+                emit_indent_spaces(cg);
+                emit_type_name(cg, type->data.slice.element);
+                emit_string(cg, "* data;");
+                emit_line(cg, "");
+                emit_indent_spaces(cg);
+                emit_string(cg, "size_t len;");
+                emit_line(cg, "");
             } else {  // TYPE_TUPLE
                 for (size_t i = 0; i < type->data.tuple.element_count; i++) {
                     emit_indent_spaces(cg);
@@ -413,6 +453,116 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, buf);
             break;
         }
+        case AST_EXPR_LITERAL_FLOAT: {
+            char buf[64];
+            sprintf(buf, "%f", expr->data.float_lit.value);
+            emit_string(cg, buf);
+            break;
+        }
+        case AST_EXPR_LITERAL_STRING:
+            emit_string(cg, "\"");
+            emit_string(cg, expr->data.str_lit.value);
+            emit_string(cg, "\"");
+            break;
+        case AST_EXPR_LITERAL_BOOL:
+            emit_string(cg, expr->data.bool_lit.value ? "true" : "false");
+            break;
+        case AST_EXPR_BINARY_OP: {
+            emit_string(cg, "(");
+            emit_expr(cg, expr->data.binop.left);
+            emit_string(cg, " ");
+            // Map BinaryOp to C op string
+            switch (expr->data.binop.op) {
+                case BINOP_ADD: emit_string(cg, "+"); break;
+                case BINOP_SUB: emit_string(cg, "-"); break;
+                case BINOP_MUL: emit_string(cg, "*"); break;
+                case BINOP_DIV: emit_string(cg, "/"); break;
+                case BINOP_EQ: emit_string(cg, "=="); break;
+                case BINOP_NE: emit_string(cg, "!="); break;
+                case BINOP_LT: emit_string(cg, "<"); break;
+                case BINOP_LE: emit_string(cg, "<="); break;
+                case BINOP_GT: emit_string(cg, ">"); break;
+                case BINOP_GE: emit_string(cg, ">="); break;
+                case BINOP_AND: emit_string(cg, "&&"); break;
+                case BINOP_OR: emit_string(cg, "||"); break;
+                default: emit_string(cg, "/* ? */");
+            }
+            emit_string(cg, " ");
+            emit_expr(cg, expr->data.binop.right);
+            emit_string(cg, ")");
+            break;
+        }
+
+        case AST_EXPR_UNARY_OP: {
+            // Map UnaryOp to C op string
+            switch (expr->data.unop.op) {
+                case UNOP_NEG: emit_string(cg, "-"); break;
+                case UNOP_NOT: emit_string(cg, "!"); break;
+                case UNOP_ADDR: emit_string(cg, "&"); break;
+                case UNOP_DEREF: emit_string(cg, "*"); break;
+                default: emit_string(cg, "/* ? */");
+            }
+            emit_expr(cg, expr->data.unop.operand);
+            break;
+        }
+
+        case AST_EXPR_ARRAY_LITERAL: {
+            emit_string(cg, "(");
+            emit_type_name(cg, expr->data.array_literal.resolved_type);
+            emit_string(cg, "){ {");
+            for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
+                if (i > 0) emit_string(cg, ", ");
+                emit_expr(cg, expr->data.array_literal.elements[i]);
+            }
+            emit_string(cg, "}, ");
+            char count_buf[16];
+            sprintf(count_buf, "%zu", expr->data.array_literal.element_count);
+            emit_string(cg, count_buf);
+            emit_string(cg, " }");
+            break;
+        }
+
+        case AST_EXPR_SLICE: {
+            emit_string(cg, "(");
+            emit_type_name(cg, expr->data.slice_expr.resolved_type);
+            emit_string(cg, "){ &");
+            emit_expr(cg, expr->data.slice_expr.array);
+            emit_string(cg, ".data[");
+            if (expr->data.slice_expr.start) {
+                emit_expr(cg, expr->data.slice_expr.start);
+            } else {
+                emit_string(cg, "0");
+            }
+            emit_string(cg, "], ");
+            if (expr->data.slice_expr.end) {
+                emit_expr(cg, expr->data.slice_expr.end);
+                emit_string(cg, " - ");
+                if (expr->data.slice_expr.start) {
+                    emit_expr(cg, expr->data.slice_expr.start);
+                } else {
+                    emit_string(cg, "0");
+                }
+            } else {
+                emit_expr(cg, expr->data.slice_expr.array);
+                emit_string(cg, ".len - ");
+                if (expr->data.slice_expr.start) {
+                    emit_expr(cg, expr->data.slice_expr.start);
+                } else {
+                    emit_string(cg, "0");
+                }
+            }
+            emit_string(cg, " }");
+            break;
+        }
+
+        case AST_EXPR_INDEX: {
+            emit_expr(cg, expr->data.index_expr.array);
+            emit_string(cg, ".data[");
+            emit_expr(cg, expr->data.index_expr.index);
+            emit_string(cg, "]");
+            break;
+        }
+
         case AST_EXPR_CALL: {
             emit_expr(cg, expr->data.call.func);
             emit_string(cg, "(");
@@ -423,8 +573,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, ")");
             break;
         }
+
         case AST_EXPR_TUPLE: {
-            emit_string(cg, "{");
+            emit_string(cg, "(");
+            emit_type_name(cg, expr->data.tuple_expr.resolved_type);
+            emit_string(cg, ") {");
             for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
                 if (i > 0) emit_string(cg, ", ");
                 emit_expr(cg, expr->data.tuple_expr.elements[i]);
@@ -432,6 +585,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, "}");
             break;
         }
+
         case AST_EXPR_MEMBER: {
             emit_expr(cg, expr->data.member_expr.object);
             emit_string(cg, ".");
@@ -441,7 +595,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, expr->data.member_expr.member);
             break;
         }
-        // Add more cases as needed
+
         default:
             emit_string(cg, "/* TODO */");
     }
