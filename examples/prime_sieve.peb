@@ -1,36 +1,36 @@
-fn main() int {
-    var is_prime [1001]bool;
-    // Initialize all to false manually
+fn sieve(is_prime []bool, limit int) void {
     var i = 0;
-    while i < 1001 {
+    while i <= limit {
         is_prime[i] = false;
         i = i + 1;
     }
 
-    // Mark primes: assume 2+ are potential primes
     i = 2;
-    while i < 1001 {
+    while i <= limit {
         is_prime[i] = true;
         i = i + 1;
     }
 
-    // Sieve: mark multiples as not prime
     var p = 2;
-    while p * p < 1001 {
+    while p * p <= limit {
         if is_prime[p] {
             var multiple = p * 2;
-            while multiple < 1001 {
+            while multiple <= limit {
                 is_prime[multiple] = false;
                 multiple = multiple + p;
             }
         }
         p = p + 1;
     }
+}
 
-    // Print primes
-    i = 2;
-    while i < 100 {
-        if is_prime[i] {
+fn main() int {
+    var primes [1001]bool;
+    let limit = 1000;
+    sieve(primes, limit);
+    var i = 2;
+    while i <= limit {
+        if primes[i] {
             print i;
         }
         i = i + 1;
