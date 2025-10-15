@@ -132,15 +132,25 @@ static bool compile_file(const char *filename) {
     printf("Compilation successful!\n");
 
     Codegen cg;
-    codegen_init(&cg, stdout);
+    FILE *output = fopen("output.c", "w");
+    codegen_init(&cg, output);
+    // codegen_init(&cg, stdout);
     emit_program(&cg);
-    printf("\n");
+    // printf("\n");
+    fclose(output);
+    printf("Generated output.c\n");
+
+    // Compile with GCC
+    int gcc_result = system("gcc output.c -o output -Wall -Wextra");
+    if (gcc_result != 0) {
+        printf("GCC compilation failed\n");
+        return false;
+    }
+    printf("Compiled to output executable\n");
 
     free(source);
     return true;
 }
-
-
 
 int main(int argc, char **argv) {
     // Initialize compiler systems
@@ -177,9 +187,9 @@ int main(int argc, char **argv) {
 
 
     // Report memory usage
-    printf("Memory used: %zu bytes (%.2f KB) out of %zu bytes (%.2f KB)\n",
-            long_lived.used, long_lived.used / 1024.0,
-            long_lived.capacity, long_lived.capacity / 1024.0);
+    // printf("Memory used: %zu bytes (%.2f KB) out of %zu bytes (%.2f KB)\n",
+    //         long_lived.used, long_lived.used / 1024.0,
+    //         long_lived.capacity, long_lived.capacity / 1024.0);
 
     // Cleanup
     arena_free(&long_lived);

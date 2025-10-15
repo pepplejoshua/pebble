@@ -1,4 +1,6 @@
 peb
+output
+output.c
 
 # Prerequisites
 *.d

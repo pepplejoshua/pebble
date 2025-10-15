@@ -14,8 +14,10 @@ fn point_2_vec2(p Point) Vec2 {
 }
 
 fn main() int {
-    var arr [5]int;
-    return point_2_vec2((0, ONE)).0;
+    var arr [5]int = [1, 2, 3, 4, 5];
+    ONE = arr[0];
+    var sl []int = arr[:];
+    return point_2_vec2((0, sl[0])).0;
 }
 
 var ONE = 1;
