@@ -8,6 +8,14 @@ type TNode = (int, *TNode);
 type Point = (int, int);
 type Vec2 = (int, int);
 
-fn point_2_vec2(p Point) Vec2 => p
+fn point_2_vec2(p Point) Vec2 {
+    var q = (p.0, p.1);
+    return q;
+}
 
-fn main() int => point_2_vec2((0, 1)).0
+fn main() int {
+    var arr [5]int;
+    return point_2_vec2((0, ONE)).0;
+}
+
+var ONE = 1;

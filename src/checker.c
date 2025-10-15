@@ -534,9 +534,11 @@ static void check_global_constants(void) {
             }
 
             sym->type = explicit_type;
+            sym->decl->data.const_decl.resolved_type = explicit_type;
         } else {
             // No explicit type, use inferred type
             sym->type = inferred_type;
+            sym->decl->data.const_decl.resolved_type = inferred_type;
         }
     }
 }
@@ -597,12 +599,15 @@ static void check_global_variables(void) {
                 continue;
             }
             sym->type = explicit_type;
+            sym->decl->data.var_decl.resolved_type = explicit_type;
         } else if (explicit_type) {
             // Only explicit type, no initializer
             sym->type = explicit_type;
+            sym->decl->data.var_decl.resolved_type = explicit_type;
         } else {
             // Only initializer, infer type
             sym->type = inferred_type;
+            sym->decl->data.var_decl.resolved_type = inferred_type;
         }
     }
 }
@@ -1535,6 +1540,7 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             Symbol *var_sym = symbol_create(name, SYMBOL_VARIABLE, stmt);
             var_sym->type = var_type;
             var_sym->data.var.is_global = false;
+            stmt->data.var_decl.resolved_type = var_type;
             scope_add_symbol(current_scope, var_sym);
             return false;
         }
@@ -1586,6 +1592,7 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             // Add to current scope
             Symbol *const_sym = symbol_create(name, SYMBOL_CONSTANT, stmt);
             const_sym->type = const_type;
+            stmt->data.const_decl.resolved_type = const_type;
             scope_add_symbol(current_scope, const_sym);
             return false;
         }

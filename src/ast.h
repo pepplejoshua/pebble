@@ -84,8 +84,8 @@ struct AstNode {
           AstNode *return_type;
           AstNode *body;
         } func_decl;
-        struct { char *name; AstNode *type_expr; AstNode *init; } var_decl;
-        struct { char *name; AstNode *type_expr; AstNode *value; } const_decl;
+        struct { char *name; AstNode *type_expr; AstNode *init; Type* resolved_type; } var_decl;
+        struct { char *name; AstNode *type_expr; AstNode *value; Type* resolved_type; } const_decl;
         struct { char *name; AstNode *type_expr; } type_decl;
 
         // Statements

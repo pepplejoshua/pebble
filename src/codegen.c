@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "symbol.h"
+#include "type.h"
 #include <stddef.h>
 #include <stdio.h>
 
@@ -184,6 +185,7 @@ void emit_type_name(Codegen *cg, Type *type) {
             break;
         case TYPE_STRUCT:
         case TYPE_TUPLE:
+        case TYPE_ARRAY:
             emit_string(cg, type->canonical_name);  // Just "Node" or "tuple_int_int", not "struct ..."
             break;
         default:
@@ -319,7 +321,79 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
                 emit_stmt(cg, stmt->data.block_stmt.stmts[i]);
             }
             break;
-        // Add other stmt cases as needed
+        case AST_STMT_IF: {
+            emit_indent_spaces(cg);
+            emit_string(cg, "if (");
+            emit_expr(cg, stmt->data.if_stmt.cond);
+            emit_string(cg, ") ");
+            emit_line(cg, "{");
+            emit_indent(cg);
+            emit_stmt(cg, stmt->data.if_stmt.then_branch);
+            emit_dedent(cg);
+            emit_indent_spaces(cg);
+            emit_line(cg, "}");
+            if (stmt->data.if_stmt.else_branch) {
+                emit_indent_spaces(cg);
+                emit_line(cg, " else {");
+                emit_indent(cg);
+                emit_stmt(cg, stmt->data.if_stmt.else_branch);
+                emit_dedent(cg);
+                emit_indent_spaces(cg);
+                emit_line(cg, "}");
+            }
+            break;
+        }
+        case AST_STMT_WHILE: {
+            emit_indent_spaces(cg);
+            emit_string(cg, "while (");
+            emit_expr(cg, stmt->data.while_stmt.cond);
+            emit_string(cg, ") ");
+            emit_line(cg, "{");
+            emit_indent(cg);
+            emit_stmt(cg, stmt->data.while_stmt.body);
+            emit_dedent(cg);
+            emit_indent_spaces(cg);
+            emit_line(cg, "}");
+            break;
+        }
+        case AST_STMT_EXPR: {
+            emit_indent_spaces(cg);
+            emit_expr(cg, stmt->data.expr_stmt.expr);
+            emit_string(cg, ";\n");
+            break;
+        }
+        case AST_STMT_ASSIGN: {
+            emit_indent_spaces(cg);
+            emit_expr(cg, stmt->data.assign_stmt.lhs);
+            emit_string(cg, " = ");
+            emit_expr(cg, stmt->data.assign_stmt.rhs);
+            emit_string(cg, ";\n");
+            break;
+        }
+        case AST_DECL_VARIABLE: {
+            emit_indent_spaces(cg);
+            emit_type_name(cg, stmt->data.var_decl.resolved_type);  // Resolved type?
+            emit_string(cg, " ");
+            emit_string(cg, stmt->data.var_decl.name);
+            if (stmt->data.var_decl.init) {
+                emit_string(cg, " = ");
+                emit_expr(cg, stmt->data.var_decl.init);
+            }
+            emit_string(cg, ";\n");
+            break;
+        }
+        case AST_DECL_CONSTANT: {
+            emit_indent_spaces(cg);
+            emit_string(cg, "const ");
+            emit_type_name(cg, stmt->data.const_decl.resolved_type);
+            emit_string(cg, " ");
+            emit_string(cg, stmt->data.const_decl.name);
+            emit_string(cg, " = ");
+            emit_expr(cg, stmt->data.const_decl.value);
+            emit_string(cg, ";\n");
+            break;
+        }
+
         default:
             emit_indent_spaces(cg);
             emit_string(cg, "/* TODO stmt */");
