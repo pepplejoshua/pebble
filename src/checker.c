@@ -1549,7 +1549,8 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             // LHS can be identifier, member access, or array index
             if (lhs->kind != AST_EXPR_IDENTIFIER &&
                 lhs->kind != AST_EXPR_MEMBER &&
-                lhs->kind != AST_EXPR_INDEX) {
+                lhs->kind != AST_EXPR_INDEX &&
+                !(lhs->kind == AST_EXPR_UNARY_OP && lhs->data.unop.op == UNOP_DEREF)) {
                 checker_error(lhs->loc, "invalid assignment target");
                 return false;
             }

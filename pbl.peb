@@ -1,28 +1,7 @@
-fn bubble_sort(arr [5]int) [5]int {
-    var swapped = true;
-    while swapped {
-        swapped = false;
-        var i = 0;
-        while i < 4 {  // Array length - 1
-            if arr[i] > arr[i + 1] {
-                let temp = arr[i];
-                arr[i] = arr[i + 1];
-                arr[i + 1] = temp;
-                swapped = true;
-            }
-            i = i + 1;
-        }
-    }
-    return arr;  // Pebble can return arrays!
-}
-
 fn main() int {
-    var nums [5]int = [5, 3, 8, 1, 2];
-    let sorted = bubble_sort(nums);
-    var i = 0;
-    while i < 5 {
-        print sorted[i];  // Prints 1, 2, 3, 5, 8
-        i = i + 1;
-    }
+    let a = 1;
+    var b = &a;
+    *b = 3;
+    print *b;
     return 0;
 }

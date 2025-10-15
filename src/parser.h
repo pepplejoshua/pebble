@@ -31,7 +31,6 @@ AstNode *parse_if_stmt(Parser *parser);
 AstNode *parse_while_stmt(Parser *parser);
 AstNode *parse_block_stmt(Parser *parser);
 AstNode *parse_assignment_stmt(Parser *parser);
-AstNode *parse_expression_stmt(Parser *parser);
 
 // Expressions (recursive descent by precedence level)
 AstNode *parse_expression(Parser *parser);              // Entry point

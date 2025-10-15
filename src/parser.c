@@ -400,16 +400,7 @@ AstNode *parse_statement(Parser *parser) {
         return parse_break_continue_stmt(parser);
     }
 
-    // Check for assignment: identifier = expr
-    if (parser_check(parser, TOKEN_IDENTIFIER)) {
-        // Look ahead for assignment
-        // We need to peek ahead to see if there's an = after the identifier
-        // For now, let's parse as expression and convert if needed
-        return parse_assignment_stmt(parser);
-    }
-
-    // Otherwise, it's an expression statement
-    return parse_expression_stmt(parser);
+    return parse_assignment_stmt(parser);
 }
 
 AstNode *parse_return_stmt(Parser *parser) {
@@ -505,15 +496,6 @@ AstNode *parse_assignment_stmt(Parser *parser) {
         expr_stmt->data.expr_stmt.expr = lhs;
         return expr_stmt;
     }
-}
-
-AstNode *parse_expression_stmt(Parser *parser) {
-    AstNode *expr = parse_expression(parser);
-    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after expression");
-
-    AstNode *stmt = alloc_node(AST_STMT_EXPR, expr->loc);
-    stmt->data.expr_stmt.expr = expr;
-    return stmt;
 }
 
 // ============================================================================
