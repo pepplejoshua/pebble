@@ -126,6 +126,7 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     switch (start[0]) {
         case 'b':
             if (length == 4) return lexer_check_keyword(start, 4, "bool", TOKEN_BOOL_TYPE);
+            if (length == 5) return lexer_check_keyword(start, 5, "break", TOKEN_BREAK);
             break;
         case 'e':
             if (length == 4) return lexer_check_keyword(start, 4, "else", TOKEN_ELSE);
@@ -170,6 +171,9 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
             break;
         case 'p':
             if (length == 5) return lexer_check_keyword(start, 5, "print", TOKEN_PRINT);
+            break;
+        case 'c':
+            if (length == 8) return lexer_check_keyword(start, 8, "continue", TOKEN_CONTINUE);
             break;
     }
 

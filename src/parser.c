@@ -357,6 +357,22 @@ AstNode *parse_print_stmt(Parser *parser) {
     return node;
 }
 
+AstNode *parse_break_continue_stmt(Parser *parser) {
+    // break;
+    // continue;
+
+    Location loc = parser->previous.location;
+    bool is_break = parser->previous.type == TOKEN_BREAK;
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after control flow jump statement.");
+
+    AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
+
+    node->kind = is_break ? AST_STMT_BREAK : AST_STMT_CONTINUE;
+    node->loc = loc;
+
+    return node;
+}
+
 // ============================================================================
 // STATEMENT PARSING
 // ============================================================================
@@ -379,6 +395,9 @@ AstNode *parse_statement(Parser *parser) {
     }
     if (parser_match(parser, TOKEN_PRINT)) {
         return parse_print_stmt(parser);
+    }
+    if (parser_match(parser, TOKEN_BREAK) || parser_match(parser, TOKEN_CONTINUE)) {
+        return parse_break_continue_stmt(parser);
     }
 
     // Check for assignment: identifier = expr

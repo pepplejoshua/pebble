@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "ast.h"
 #include "symbol.h"
 #include "type.h"
 #include <stddef.h>
@@ -349,6 +350,14 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 void emit_stmt(Codegen *cg, AstNode *stmt) {
     if (!stmt) return;
     switch (stmt->kind) {
+        case AST_STMT_BREAK:
+            emit_indent_spaces(cg);
+            emit_string(cg, "break;\n");
+            break;
+        case AST_STMT_CONTINUE:
+            emit_indent_spaces(cg);
+            emit_string(cg, "continue;\n");
+            break;
         case AST_STMT_PRINT: {
             Type *type = stmt->data.print_stmt.expr->resolved_type;
 
@@ -378,8 +387,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         }
         case AST_STMT_RETURN:
             emit_indent_spaces(cg);
-            emit_string(cg, "return ");
-            emit_expr(cg, stmt->data.return_stmt.expr);
+            emit_string(cg, "return");
+            if (stmt->data.return_stmt.expr) {
+                emit_string(cg, " ");
+                emit_expr(cg, stmt->data.return_stmt.expr);
+            }
             emit_string(cg, ";\n");
             break;
         case AST_STMT_BLOCK:
@@ -529,6 +541,30 @@ void emit_expr(Codegen *cg, AstNode *expr) {
                 default: emit_string(cg, "/* ? */");
             }
             emit_expr(cg, expr->data.unop.operand);
+            break;
+        }
+
+        case AST_EXPR_IMPLICIT_CAST: {
+            Type *target = expr->data.implicit_cast.target_type;
+            AstNode *src_expr = expr->data.implicit_cast.expr;
+            Type *src_type = src_expr->resolved_type;
+
+            if (src_type->kind == TYPE_ARRAY && target->kind == TYPE_SLICE) {
+                // Special: construct slice from array
+                emit_string(cg, "(");
+                emit_type_name(cg, target);  // e.g., slice_int
+                emit_string(cg, "){ &");
+                emit_expr(cg, src_expr);
+                emit_string(cg, ".data[0], ");
+                emit_expr(cg, src_expr);
+                emit_string(cg, ".len }");
+            } else {
+                // General cast, e.g., (float)int
+                emit_string(cg, "(");
+                emit_type_name(cg, target);
+                emit_string(cg, ")");
+                emit_expr(cg, src_expr);
+            }
             break;
         }
 

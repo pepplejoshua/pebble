@@ -27,6 +27,8 @@ typedef enum {
     TOKEN_TRUE,
     TOKEN_FALSE,
     TOKEN_PRINT,
+    TOKEN_BREAK,
+    TOKEN_CONTINUE,
 
     // Types (built-in)
     TOKEN_INT_TYPE,    // "int"

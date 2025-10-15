@@ -18,6 +18,7 @@ typedef struct {
     bool has_errors;
     int error_count;
     bool in_type_resolution;
+    bool in_loop;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -26,6 +27,7 @@ void checker_init(void) {
     checker_state.has_errors = false;
     checker_state.error_count = 0;
     checker_state.in_type_resolution = false;
+    checker_state.in_loop = false;
     symbol_table_init();  // Create fresh global scope
 }
 
@@ -871,6 +873,14 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_t
             cast->data.implicit_cast.target_type = target_type;
             return cast;
         }
+    } else if (expr_type->kind == TYPE_INT && target_type->kind == TYPE_FLOAT) {
+        // Promote int to float
+        AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+        cast->kind = AST_EXPR_IMPLICIT_CAST;
+        cast->loc = expr->loc;
+        cast->data.implicit_cast.expr = expr;
+        cast->data.implicit_cast.target_type = target_type;
+        return cast;
     }
 
     // No valid conversion
@@ -947,12 +957,21 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "arithmetic operation requires numeric operands");
                     return NULL;
                 }
+                // Handle type promotion: int + float -> float
                 if (!type_equals(left, right)) {
-                    checker_error(expr->loc, "type mismatch in binary operation");
-                    return NULL;
+                    if (left->kind == TYPE_INT && right->kind == TYPE_FLOAT) {
+                        expr->data.binop.left = maybe_insert_cast(expr->data.binop.left, left, right);
+                        left = right;  // Now both float
+                    } else if (left->kind == TYPE_FLOAT && right->kind == TYPE_INT) {
+                        expr->data.binop.right = maybe_insert_cast(expr->data.binop.right, right, left);
+                        right = left;
+                    } else {
+                        checker_error(expr->loc, "incompatible types in binary operation");
+                        return NULL;
+                    }
                 }
                 expr->resolved_type = left;
-                return left;  // Result type is same as operands
+                return left;  // Result type is unified
             }
 
             // Comparison: <, >, <=, >=
@@ -961,12 +980,21 @@ Type *check_expression(AstNode *expr) {
                     checker_error(expr->loc, "comparison requires numeric operands");
                     return NULL;
                 }
+                // Handle type promotion for consistency
                 if (!type_equals(left, right)) {
-                    checker_error(expr->loc, "type mismatch in comparison");
-                    return NULL;
+                    if (left->kind == TYPE_INT && right->kind == TYPE_FLOAT) {
+                        expr->data.binop.left = maybe_insert_cast(expr->data.binop.left, left, right);
+                        left = right;
+                    } else if (left->kind == TYPE_FLOAT && right->kind == TYPE_INT) {
+                        expr->data.binop.right = maybe_insert_cast(expr->data.binop.right, right, left);
+                        right = left;
+                    } else {
+                        checker_error(expr->loc, "incompatible types in comparison");
+                        return NULL;
+                    }
                 }
                 expr->resolved_type = type_bool;
-                return type_bool;  // Comparisons return bool
+                return type_bool;
             }
 
             // Equality: ==, !=
@@ -1409,6 +1437,14 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     }
 
     switch (stmt->kind) {
+        case AST_STMT_BREAK:
+        case AST_STMT_CONTINUE: {
+            if (!checker_state.in_loop) {
+                checker_error(stmt->loc, "control flow jump statement can be used only inside a loop");
+            }
+            return false;
+        }
+
         case AST_STMT_PRINT: {
             AstNode* expr = stmt->data.print_stmt.expr;
             Type *expr_type = check_expression(expr);
@@ -1468,8 +1504,12 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
                 checker_error(cond->loc, "while condition must be boolean");
             }
 
+
+            bool old_in_loop = checker_state.in_loop;
+            checker_state.in_loop = true;
             // Check body
             check_statement(body, expected_return_type);
+            checker_state.in_loop = old_in_loop;
 
             // Can't prove while always executes
             return false;
