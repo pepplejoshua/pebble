@@ -41,6 +41,7 @@ AstNode *parse_or_expr(Parser *parser);    // ||
 AstNode *parse_and_expr(Parser *parser);   // &&
 AstNode *parse_equality(Parser *parser);   // == !=
 AstNode *parse_comparison(Parser *parser); // < <= > >=
+AstNode *parse_cast(Parser *parser);       // expr as type
 AstNode *parse_term(Parser *parser);       // + -
 AstNode *parse_factor(Parser *parser);     // * /
 AstNode *parse_unary(Parser *parser);      // ! -

@@ -128,6 +128,10 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   const char *start = &lexer->source[lexer->start];
 
   switch (start[0]) {
+  case 'a':
+    if (length == 2)
+      return lexer_check_keyword(start, 2, "as", TOKEN_AS);
+    break;
   case 'b':
     if (length == 4)
       return lexer_check_keyword(start, 4, "bool", TOKEN_BOOL_TYPE);
@@ -186,11 +190,12 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     if (length == 3)
       return lexer_check_keyword(start, 3, "str", TOKEN_STR_TYPE);
     if (length == 6) {
-      TokenType struct_token_type =
-          lexer_check_keyword(start, 6, "struct", TOKEN_STRUCT);
-      return struct_token_type == TOKEN_STRUCT
-                 ? struct_token_type
-                 : lexer_check_keyword(start, 6, "sizeof", TOKEN_SIZEOF);
+      if (start[1] == 't' && start[2] == 'r') {
+        return lexer_check_keyword(start, 6, "struct", TOKEN_STRUCT);
+      }
+      if (start[1] == 'i' && start[2] == 'z') {
+        return lexer_check_keyword(start, 6, "sizeof", TOKEN_SIZEOF);
+      }
     }
     break;
   case 't':
@@ -512,6 +517,8 @@ const char *token_type_name(TokenType type) {
     return "CONTINUE";
   case TOKEN_SIZEOF:
     return "SIZEOF";
+  case TOKEN_AS:
+    return "AS";
   case TOKEN_INT_TYPE:
     return "INT_TYPE";
   case TOKEN_FLOAT_TYPE:

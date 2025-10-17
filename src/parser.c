@@ -667,18 +667,34 @@ AstNode *parse_equality(Parser *parser) {
 }
 
 AstNode *parse_comparison(Parser *parser) {
-  AstNode *left = parse_term(parser);
+  AstNode *left = parse_cast(parser);
 
   while (parser_match(parser, TOKEN_LT) || parser_match(parser, TOKEN_LE) ||
          parser_match(parser, TOKEN_GT) || parser_match(parser, TOKEN_GE)) {
     Token op = parser->previous;
-    AstNode *right = parse_term(parser);
+    AstNode *right = parse_cast(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
     binop->data.binop.op = token_to_binary_op(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
+  }
+
+  return left;
+}
+
+AstNode *parse_cast(Parser *parser) {
+  AstNode *left = parse_term(parser);
+
+  while (parser_match(parser, TOKEN_AS)) {
+    Token op = parser->previous;
+    AstNode *right = parse_type_expression(parser);
+
+    AstNode *expl_cast = alloc_node(AST_EXPR_EXPLICIT_CAST, op.location);
+    expl_cast->data.explicit_cast.expr = left;
+    expl_cast->data.explicit_cast.target_type = right;
+    left = expl_cast;
   }
 
   return left;
