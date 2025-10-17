@@ -489,10 +489,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, ");\n");
       return;
     } else {
-      emit_string(cg, "printf(\"[");
-      emit_string(cg,
-                  stmt->data.print_stmt.expr->resolved_type->canonical_name);
-      emit_string(cg, "]\\n\");\n");
+      emit_string(cg, "printf(\"");
+      emit_string(cg, type_name(stmt->data.print_stmt.expr->resolved_type));
+      emit_string(cg, "\\n\");\n");
       return;
     }
 
@@ -851,6 +850,16 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, ")");
       emit_expr(cg, src_expr);
     }
+    break;
+  }
+
+  case AST_EXPR_EXPLICIT_CAST: {
+    Type *target_type = expr->resolved_type;
+
+    emit_string(cg, "(");
+    emit_type_name(cg, target_type); // Uses canonical name
+    emit_string(cg, ")");
+    emit_expr(cg, expr->data.explicit_cast.expr);
     break;
   }
 

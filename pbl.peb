@@ -1,10 +1,8 @@
-type Point = struct {
-    x int,
-    y int
-};
-
 fn main() int {
-    var point_mem_size = sizeof Point;
-    print point_mem_size;
+    var a = 2;
+    var b = &a as *void;
+    var c = b as *int;
+    *c = *c + 1;
+    print a;
     return 0;
 }

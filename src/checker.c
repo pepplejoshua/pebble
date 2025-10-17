@@ -890,16 +890,6 @@ static bool type_is_comparable(Type *type) {
   case TYPE_BOOL:
   case TYPE_STRING:
     return true;
-
-  // Pointers, arrays, structs, functions not supported yet
-  case TYPE_POINTER:
-  case TYPE_ARRAY:
-  case TYPE_SLICE:
-  case TYPE_STRUCT:
-  case TYPE_FUNCTION:
-  case TYPE_VOID:
-    return false;
-
   default:
     return false;
   }
@@ -967,6 +957,28 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
 
   // No valid conversion
   return NULL;
+}
+
+static bool is_valid_cast(Type *from, Type *to) {
+  // Numeric types can convert to each other
+  if (type_is_numeric(from) && type_is_numeric(to)) {
+    return true;
+  }
+
+  // Pointer to pointer
+  if (from->kind == TYPE_POINTER && to->kind == TYPE_POINTER) {
+    return true;
+  }
+
+  // Int <-> Pointer (for FFI)
+  if (type_is_numeric(from) && to->kind == TYPE_POINTER) {
+    return true;
+  }
+  if (from->kind == TYPE_POINTER && type_is_numeric(to)) {
+    return true;
+  }
+
+  return false;
 }
 
 Type *check_expression(AstNode *expr) {
@@ -1599,6 +1611,34 @@ Type *check_expression(AstNode *expr) {
     // Just return the target type
     expr->resolved_type = expr->data.implicit_cast.target_type;
     return expr->data.implicit_cast.target_type;
+  }
+
+  case AST_EXPR_EXPLICIT_CAST: {
+    // Type-check the value being cast
+    Type *value_type = check_expression(expr->data.explicit_cast.expr);
+    if (!value_type)
+      return NULL;
+
+    // Resolve the target type
+    Type *target_type =
+        resolve_type_expression(expr->data.explicit_cast.target_type);
+    if (!target_type) {
+      checker_error(expr->loc, "Invalid cast target type");
+      return NULL;
+    }
+
+    // expr->data.explicit_cast.target_type->resolved_type = target_type;
+
+    // Validate the cast is legal
+    if (!is_valid_cast(value_type, target_type)) {
+      checker_error(expr->loc, "Invalid cast from %s to %s",
+                    type_name(value_type), type_name(target_type));
+      return NULL;
+    }
+
+    // Result type is the target type
+    expr->resolved_type = target_type;
+    return target_type;
   }
 
   default:
