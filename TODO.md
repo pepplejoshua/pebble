@@ -16,9 +16,6 @@
   - `const SIZE = 10 * 10;`
   - Currently only supports literals
 
-- [ ] **Method syntax** - If desired
-  - `fn (p Point) distance() int { }`
-
 - [ ] **Generic types** - Future (complex)
 
 ### File Input and Processing
@@ -43,13 +40,8 @@
   - Write generated C to output file
   - Default: `input.peb` → `output.c`
   - Custom: `./peb input.peb -o custom.c`
+  - Only output the files: `./peb input.peb -o`
   - Option to write to stdout for piping
-
-- [ ] **Build pipeline**
-  - Generate C file from Pebble source
-  - Optionally invoke C compiler (gcc/clang)
-  - `./peb input.peb --compile` → generates executable
-  - Handle compilation errors from C compiler
 
 ### Basic C FFI (Foreign Function Interface)
 - [ ] **Parse `extern` declarations**
@@ -61,7 +53,7 @@
   - No type conversions - direct passthrough
 
 - [ ] **Type restrictions for extern**
-  - Allow: `int`, `float`, `bool`, `void`, `*T`, `[N]T`
+  - Allow: `int`, `float`, `bool`, `void`, `*T`
   - Disallow (for now): `str`, `[]T`, tuples, structs
   - Error if invalid type used in extern signature
 
