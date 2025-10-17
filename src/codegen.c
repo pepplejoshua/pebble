@@ -59,6 +59,45 @@ static void emit_indent_spaces(Codegen *cg) {
     }
 }
 
+// Check if an expression is a zero/false literal (for optimization)
+static bool is_zero_value(AstNode *expr) {
+    if (!expr) return false;
+
+    switch (expr->kind) {
+        case AST_EXPR_LITERAL_INT:
+            return expr->data.int_lit.value == 0;
+        
+        case AST_EXPR_LITERAL_FLOAT:
+            return expr->data.float_lit.value == 0.0;
+        
+        case AST_EXPR_LITERAL_BOOL:
+            return expr->data.bool_lit.value == false;
+        
+        case AST_EXPR_TUPLE: {
+            // All elements must be zero
+            for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
+                if (!is_zero_value(expr->data.tuple_expr.elements[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        case AST_EXPR_STRUCT_LITERAL: {
+            // All field values must be zero
+            for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
+                if (!is_zero_value(expr->data.struct_literal.field_values[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        default:
+            return false;
+    }
+}
+
 void emit_line(Codegen *cg, const char *line) {
         if (!cg->current_section) return;
         // Build indented line in a temp buffer (use a stack buf; 1K should suffice for PBL)
@@ -584,6 +623,68 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             break;
         }
 
+        case AST_EXPR_ARRAY_REPEAT: {
+            AstNode *value_expr = expr->data.array_repeat.value;
+            size_t count = expr->data.array_repeat.count;
+            Type *array_type = expr->resolved_type;
+            Type *element_type = array_type->data.array.element;
+
+            // Optimization: if value is zero, use {0} initializer
+            if (is_zero_value(value_expr)) {
+                emit_string(cg, "(");
+                emit_type_name(cg, array_type);
+                emit_string(cg, "){0}");
+                break;
+            }
+
+            // Generate statement expression with loop
+            emit_string(cg, "({\n");
+            emit_indent(cg);
+
+            // Declare the array variable
+            emit_indent_spaces(cg);
+            emit_type_name(cg, array_type);
+            emit_string(cg, " _arr;\n");
+
+            // Evaluate value expression once
+            emit_indent_spaces(cg);
+            emit_type_name(cg, element_type);
+            emit_string(cg, " _val = ");
+            emit_expr(cg, value_expr);
+            emit_string(cg, ";\n");
+
+            // Generate the fill loop
+            emit_indent_spaces(cg);
+            emit_string(cg, "for (size_t _i = 0; _i < ");
+            char count_buf[32];
+            sprintf(count_buf, "%zu", count);
+            emit_string(cg, count_buf);
+            emit_string(cg, "; _i++) {\n");
+            emit_indent(cg);
+
+            emit_indent_spaces(cg);
+            emit_string(cg, "_arr.data[_i] = _val;\n");
+
+            emit_dedent(cg);
+            emit_indent_spaces(cg);
+            emit_string(cg, "}\n");
+
+            // Set the array length
+            emit_indent_spaces(cg);
+            emit_string(cg, "_arr.len = ");
+            emit_string(cg, count_buf);
+            emit_string(cg, ";\n");
+
+            // Return the array value
+            emit_indent_spaces(cg);
+            emit_string(cg, "_arr;\n");
+
+            emit_dedent(cg);
+            emit_indent_spaces(cg);
+            emit_string(cg, "})");
+            break;
+        }
+
         case AST_EXPR_SLICE: {
             emit_string(cg, "(");
             emit_type_name(cg, expr->resolved_type);
@@ -655,6 +756,21 @@ void emit_expr(Codegen *cg, AstNode *expr) {
                 emit_string(cg, "_");
             }
             emit_string(cg, expr->data.member_expr.member);
+            break;
+        }
+
+        case AST_EXPR_STRUCT_LITERAL: {
+            emit_string(cg, "(");
+            emit_string(cg, expr->data.struct_literal.type_name);
+            emit_string(cg, "){");
+            for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
+                if (i > 0) emit_string(cg, ", ");
+                emit_string(cg, ".");
+                emit_string(cg, expr->data.struct_literal.field_names[i]);
+                emit_string(cg, " = ");
+                emit_expr(cg, expr->data.struct_literal.field_values[i]);
+            }
+            emit_string(cg, "}");
             break;
         }
 

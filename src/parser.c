@@ -877,29 +877,64 @@ AstNode *parse_primary(Parser *parser) {
         }
     }
 
-    // Array literal: [1, 2, 3]
+    // Array literal [1, 2, 3] or array repeat [value; count]
     if (parser_match(parser, TOKEN_LBRACKET)) {
         Location loc = parser->previous.location;
 
-        // Parse elements
+        // Check for empty array literal
+        if (parser_check(parser, TOKEN_RBRACKET)) {
+            parser_advance(parser);
+            AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, loc);
+            array_lit->data.array_literal.elements = NULL;
+            array_lit->data.array_literal.element_count = 0;
+            return array_lit;
+        }
+
+        // Parse first expression
+        AstNode *first_expr = parse_expression(parser);
+
+        // Check if it's array repeat syntax: [value; count]
+        if (parser_match(parser, TOKEN_SEMICOLON)) {
+            // Expect integer literal for count
+            if (!parser_check(parser, TOKEN_INT)) {
+                parser_error(parser, "Expected integer literal for array repeat count");
+                return NULL;
+            }
+            
+            long long repeat_count = parser->current.value.int_val;
+            if (repeat_count <= 0) {
+                parser_error(parser, "Array repeat count must be positive");
+                return NULL;
+            }
+            
+            parser_advance(parser);
+            parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after array repeat count");
+
+            AstNode *array_repeat = alloc_node(AST_EXPR_ARRAY_REPEAT, loc);
+            array_repeat->data.array_repeat.value = first_expr;
+            array_repeat->data.array_repeat.count = (size_t)repeat_count;
+            return array_repeat;
+        }
+
+        // Otherwise it's an array literal
         AstNode **elements = NULL;
         size_t count = 0;
         size_t capacity = 4;
         elements = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+        
+        elements[count++] = first_expr;
 
-        // Allow empty array literal
-        if (!parser_check(parser, TOKEN_RBRACKET)) {
-            do {
-                // Grow array if needed
-                if (count >= capacity) {
-                    capacity *= 2;
-                    AstNode **new_array = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
-                    memcpy(new_array, elements, count * sizeof(AstNode*));
-                    elements = new_array;
-                }
+        // Parse remaining elements
+        while (parser_match(parser, TOKEN_COMMA)) {
+            // Grow array if needed
+            if (count >= capacity) {
+                capacity *= 2;
+                AstNode **new_array = arena_alloc(&long_lived, capacity * sizeof(AstNode*));
+                memcpy(new_array, elements, count * sizeof(AstNode*));
+                elements = new_array;
+            }
 
-                elements[count++] = parse_expression(parser);
-            } while (parser_match(parser, TOKEN_COMMA));
+            elements[count++] = parse_expression(parser);
         }
 
         parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after array elements");

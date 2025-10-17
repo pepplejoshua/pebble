@@ -47,6 +47,7 @@ typedef enum {
     AST_EXPR_TUPLE,
     AST_EXPR_STRUCT_LITERAL,
     AST_EXPR_ARRAY_LITERAL,
+    AST_EXPR_ARRAY_REPEAT,
     AST_EXPR_IMPLICIT_CAST,
 
     // Type expressions
@@ -130,6 +131,10 @@ struct AstNode {
           AstNode **elements;
           size_t element_count;
         } array_literal;
+        struct {
+          AstNode *value;       // The expression to repeat
+          size_t count;         // How many times (from integer literal)
+        } array_repeat;
         struct {
           AstNode *expr;            // Expression being cast
           Type *target_type;

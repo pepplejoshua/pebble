@@ -1412,6 +1412,22 @@ Type *check_expression(AstNode *expr) {
             return array;
         }
 
+        case AST_EXPR_ARRAY_REPEAT: {
+            AstNode *value_expr = expr->data.array_repeat.value;
+            size_t count = expr->data.array_repeat.count;
+
+            // Type-check the value expression
+            Type *value_type = check_expression(value_expr);
+            if (!value_type) {
+                return NULL;  // Error already reported
+            }
+
+            // Create array type with the element type and count
+            Type *array_type = type_create_array(value_type, count, !checker_state.in_type_resolution);
+            expr->resolved_type = array_type;
+            return array_type;
+        }
+
         case AST_EXPR_IMPLICIT_CAST: {
             // The cast was already validated when inserted
             // Just return the target type
