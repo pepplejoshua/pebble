@@ -1,38 +1,29 @@
-type Point = struct {
-    x int,
-    y int
-};
-
 fn main() int {
-    // Test loop with iter variable
-    print "Loop 0..5:";
-    loop 0..5 {
-        print iter;
+    // Test classic for loop
+    print "For loop 0 to 4:";
+    for var i = 0; i < 5; i = i + 1 {
+        print i;
     }
 
-    print "Loop 2..=4:";
-    loop 2..=4 {
-        print iter;
+    print "For loop 10 to 12:";
+    for var j = 10; j <= 12; j = j + 1 {
+        print j;
     }
 
-    let my_const = 42;
-    print my_const;
+    // Test nested for loops
+    print "Nested for loops:";
+    for var x = 0; x < 3; x = x + 1 {
+        for var y = 0; y < 2; y = y + 1 {
+            print x;
+        }
+    }
 
-    var zeros [5]int = [0; 5];
-    var nums [3]int = [42; 3];
-    var flags [10]bool = [false; 10];
-    var inferred = [99; 7];
-    var nested = [[1, 2, 3]; 2];
-    var points = [Point.{x = 10, y = 20}; 3];
-    var zero_points = [Point.{x = 0, y = 0}; 3];
-
-    print zeros[0];
-    print nums[1];
-    print flags[5];
-    print inferred[3];
-    print nested[0][2];
-    print points[1].x;
-    print zero_points[1].y;
+    // Test for loop with existing variable
+    print "Using existing variable:";
+    var counter = 5;
+    for counter = 5; counter < 8; counter = counter + 1 {
+        print counter;
+    }
 
     return 0;
 }

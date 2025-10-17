@@ -27,6 +27,7 @@ typedef enum {
     AST_STMT_IF,
     AST_STMT_WHILE,
     AST_STMT_LOOP,
+    AST_STMT_FOR,
     AST_STMT_BLOCK,
     AST_STMT_EXPR,
     AST_STMT_ASSIGN,
@@ -101,6 +102,7 @@ struct AstNode {
         struct { AstNode *cond; AstNode *then_branch; AstNode *else_branch; } if_stmt;
         struct { AstNode *cond; AstNode *body; } while_stmt;
         struct { AstNode *start; AstNode *end; bool inclusive; AstNode *body; } loop_stmt;
+        struct { AstNode *init; AstNode *cond; AstNode *update; AstNode *body; } for_stmt;
         struct { AstNode **stmts; size_t stmt_count; } block_stmt;
         struct { AstNode *expr; } expr_stmt;
         struct { AstNode *lhs; AstNode *rhs; } assign_stmt;

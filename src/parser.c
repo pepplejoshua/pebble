@@ -97,6 +97,7 @@ void parser_synchronize(Parser *parser) {
             case TOKEN_IF:
             case TOKEN_WHILE:
             case TOKEN_LOOP:
+            case TOKEN_FOR:
             case TOKEN_RETURN:
                 return;
             default:
@@ -391,6 +392,9 @@ AstNode *parse_statement(Parser *parser) {
     if (parser_match(parser, TOKEN_LOOP)) {
         return parse_loop_stmt(parser);
     }
+    if (parser_match(parser, TOKEN_FOR)) {
+        return parse_for_stmt(parser);
+    }
     if (parser_match(parser, TOKEN_LBRACE)) {
         return parse_block_stmt(parser);
     }
@@ -480,6 +484,49 @@ AstNode *parse_loop_stmt(Parser *parser) {
     stmt->data.loop_stmt.end = end;
     stmt->data.loop_stmt.inclusive = inclusive;
     stmt->data.loop_stmt.body = body;
+    return stmt;
+}
+
+AstNode *parse_for_stmt(Parser *parser) {
+    Location loc = parser->previous.location;
+
+    // Parse init (can be variable declaration or assignment)
+    AstNode *init;
+    if (parser_match(parser, TOKEN_VAR)) {
+        init = parse_variable_decl(parser);
+    } else {
+        // Parse assignment without semicolon
+        AstNode *init_lhs = parse_expression(parser);
+        parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop init");
+        AstNode *init_rhs = parse_expression(parser);
+        parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after for loop init");
+        
+        init = alloc_node(AST_STMT_ASSIGN, init_lhs->loc);
+        init->data.assign_stmt.lhs = init_lhs;
+        init->data.assign_stmt.rhs = init_rhs;
+    }
+
+    // Parse condition
+    AstNode *cond = parse_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after for loop condition");
+
+    // Parse update (assignment without semicolon)
+    AstNode *lhs = parse_expression(parser);
+    parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
+    AstNode *rhs = parse_expression(parser);
+    
+    AstNode *update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
+    update->data.assign_stmt.lhs = lhs;
+    update->data.assign_stmt.rhs = rhs;
+
+    // Parse body
+    AstNode *body = parse_statement(parser);
+
+    AstNode *stmt = alloc_node(AST_STMT_FOR, loc);
+    stmt->data.for_stmt.init = init;
+    stmt->data.for_stmt.cond = cond;
+    stmt->data.for_stmt.update = update;
+    stmt->data.for_stmt.body = body;
     return stmt;
 }
 

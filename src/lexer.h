@@ -21,6 +21,7 @@ typedef enum {
     TOKEN_ELSE,
     TOKEN_WHILE,
     TOKEN_LOOP,
+    TOKEN_FOR,
     TOKEN_TYPE,
     TOKEN_STRUCT,
     TOKEN_LET, // let a = 5; a is constant

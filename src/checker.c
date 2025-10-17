@@ -1573,6 +1573,40 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             return false;
         }
 
+        case AST_STMT_FOR: {
+            AstNode *init = stmt->data.for_stmt.init;
+            AstNode *cond = stmt->data.for_stmt.cond;
+            AstNode *update = stmt->data.for_stmt.update;
+            AstNode *body = stmt->data.for_stmt.body;
+
+            // Create scope for the for loop
+            Scope *for_scope = scope_create(current_scope);
+            scope_push(for_scope);
+
+            // Check init (assignment statement)
+            check_statement(init, expected_return_type);
+
+            // Check condition is boolean
+            Type *cond_type = check_expression(cond);
+            if (cond_type && cond_type->kind != TYPE_BOOL) {
+                checker_error(cond->loc, "for loop condition must be boolean");
+            }
+
+            // Check update (assignment statement)
+            check_statement(update, expected_return_type);
+
+            bool old_in_loop = checker_state.in_loop;
+            checker_state.in_loop = true;
+            // Check body
+            check_statement(body, expected_return_type);
+            checker_state.in_loop = old_in_loop;
+
+            scope_pop();
+
+            // Can't prove for loop always executes
+            return false;
+        }
+
         case AST_STMT_BLOCK: {
             // Create child scope for this block
             Scope *block_scope = scope_create(current_scope);

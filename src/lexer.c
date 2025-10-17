@@ -137,6 +137,7 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
                     case 'a': return lexer_check_keyword(start, 5, "false", TOKEN_FALSE);
                     case 'l': return lexer_check_keyword(start, 5, "float", TOKEN_FLOAT_TYPE);
                     case 'n': return lexer_check_keyword(start, 2, "fn", TOKEN_FN);
+                    case 'o': return lexer_check_keyword(start, 3, "for", TOKEN_FOR);
                 }
             }
             break;
@@ -341,6 +342,7 @@ const char *token_type_name(TokenType type) {
         case TOKEN_ELSE: return "ELSE";
         case TOKEN_WHILE: return "WHILE";
         case TOKEN_LOOP: return "LOOP";
+        case TOKEN_FOR: return "FOR";
         case TOKEN_TYPE: return "TYPE";
         case TOKEN_STRUCT: return "STRUCT";
         case TOKEN_LET: return "LET";

@@ -529,6 +529,62 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, "}\n");
     break;
   }
+  case AST_STMT_FOR: {
+    AstNode *init = stmt->data.for_stmt.init;
+    
+    // Check if init is a variable declaration
+    if (init->kind == AST_DECL_VARIABLE) {
+      // Generate: for (int i = 0; cond; update) { body }
+      emit_indent_spaces(cg);
+      emit_string(cg, "for (");
+      emit_type_name(cg, init->resolved_type);
+      emit_string(cg, " ");
+      emit_string(cg, init->data.var_decl.name);
+      emit_string(cg, " = ");
+      emit_expr(cg, init->data.var_decl.init);
+      emit_string(cg, "; ");
+      emit_expr(cg, stmt->data.for_stmt.cond);
+      emit_string(cg, "; ");
+      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.lhs);
+      emit_string(cg, " = ");
+      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
+      emit_string(cg, ") {\n");
+      emit_indent(cg);
+      emit_stmt(cg, stmt->data.for_stmt.body);
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
+      emit_string(cg, "}\n");
+    } else {
+      // Init is assignment, need scope for existing variable
+      // Generate: { init; for (; cond; update) { body } }
+      emit_indent_spaces(cg);
+      emit_string(cg, "{\n");
+      emit_indent(cg);
+
+      // Emit init
+      emit_stmt(cg, init);
+
+      // Emit for loop
+      emit_indent_spaces(cg);
+      emit_string(cg, "for (; ");
+      emit_expr(cg, stmt->data.for_stmt.cond);
+      emit_string(cg, "; ");
+      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.lhs);
+      emit_string(cg, " = ");
+      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
+      emit_string(cg, ") {\n");
+      emit_indent(cg);
+      emit_stmt(cg, stmt->data.for_stmt.body);
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
+      emit_string(cg, "}\n");
+
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
+      emit_string(cg, "}\n");
+    }
+    break;
+  }
   case AST_STMT_EXPR: {
     emit_indent_spaces(cg);
     emit_expr(cg, stmt->data.expr_stmt.expr);

@@ -30,6 +30,7 @@ AstNode *parse_return_stmt(Parser *parser);
 AstNode *parse_if_stmt(Parser *parser);
 AstNode *parse_while_stmt(Parser *parser);
 AstNode *parse_loop_stmt(Parser *parser);
+AstNode *parse_for_stmt(Parser *parser);
 AstNode *parse_block_stmt(Parser *parser);
 AstNode *parse_assignment_stmt(Parser *parser);
 

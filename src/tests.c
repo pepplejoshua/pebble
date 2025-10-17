@@ -28,6 +28,8 @@ const char *ast_kind_name(AstKind kind) {
     return "WHILE_STMT";
   case AST_STMT_LOOP:
     return "LOOP_STMT";
+  case AST_STMT_FOR:
+    return "FOR_STMT";
   case AST_STMT_BLOCK:
     return "BLOCK_STMT";
   case AST_STMT_EXPR:
