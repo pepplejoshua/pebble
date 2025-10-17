@@ -268,8 +268,8 @@ void emit_type_name(Codegen *cg, Type *type) {
     emit_string(cg, "ptrdiff_t");
     break;
   case TYPE_CHAR:
-  emit_string(cg, "char");
-  break;
+    emit_string(cg, "char");
+    break;
   case TYPE_DOUBLE:
     emit_string(cg, "double");
     break;
@@ -453,9 +453,29 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     Type *type = stmt->data.print_stmt.expr->resolved_type;
 
     emit_indent_spaces(cg);
-    if (type->kind == TYPE_INT) {
+    if (type->kind == TYPE_INT || type->kind == TYPE_I32) {
       emit_string(cg, "printf(\"%d\\n\", ");
-    } else if (type->kind == TYPE_FLOAT) {
+    } else if (type->kind == TYPE_I8) {
+      emit_string(cg, "printf(\"%hhd\\n\", ");
+    } else if (type->kind == TYPE_I16) {
+      emit_string(cg, "printf(\"%hd\\n\", ");
+    } else if (type->kind == TYPE_I64) {
+      emit_string(cg, "printf(\"%lld\\n\", ");
+    } else if (type->kind == TYPE_ISIZE) {
+      emit_string(cg, "printf(\"%td\\n\", ");
+    } else if (type->kind == TYPE_U8) {
+      emit_string(cg, "printf(\"%hhu\\n\", ");
+    } else if (type->kind == TYPE_U16) {
+      emit_string(cg, "printf(\"%hu\\n\", ");
+    } else if (type->kind == TYPE_U32) {
+      emit_string(cg, "printf(\"%u\\n\", ");
+    } else if (type->kind == TYPE_U64) {
+      emit_string(cg, "printf(\"%llu\\n\", ");
+    } else if (type->kind == TYPE_USIZE) {
+      emit_string(cg, "printf(\"%zu\\n\", ");
+    } else if (type->kind == TYPE_CHAR) {
+      emit_string(cg, "printf(\"%c\\n\", ");
+    } else if (type->kind == TYPE_FLOAT || type->kind == TYPE_DOUBLE) {
       emit_string(cg, "printf(\"%f\\n\", ");
     } else if (type->kind == TYPE_STRING) {
       emit_string(cg, "printf(\"%s\\n\", ");

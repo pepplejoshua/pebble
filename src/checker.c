@@ -939,7 +939,9 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
       cast->data.implicit_cast.target_type = target_type;
       return cast;
     }
-  } else if (expr_type->kind == TYPE_INT && target_type->kind == TYPE_FLOAT) {
+  } else if (expr_type->kind == TYPE_INT &&
+             (target_type->kind == TYPE_FLOAT ||
+              target_type->kind == TYPE_DOUBLE)) {
     // Promote int to float
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
