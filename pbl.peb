@@ -1,8 +1,12 @@
+type Point = (int, int);
+
 fn main() int {
     var a = 2;
     var b = &a as *void;
     var c = b as *int;
     *c = *c + 1;
     print a;
+
+    var d Point = (1, 2);
     return 0;
 }

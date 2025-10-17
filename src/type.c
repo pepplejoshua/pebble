@@ -582,6 +582,9 @@ char *type_name(Type *type) {
     return fn_str;
   }
   case TYPE_TUPLE: {
+    if (type->declared_name) {
+      return type->declared_name;
+    }
     // Step 1: Cache element type names
     size_t num_elements = type->data.tuple.element_count;
     char **elem_ty_names =

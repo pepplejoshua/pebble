@@ -1627,8 +1627,6 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // expr->data.explicit_cast.target_type->resolved_type = target_type;
-
     // Validate the cast is legal
     if (!is_valid_cast(value_type, target_type)) {
       checker_error(expr->loc, "Invalid cast from %s to %s",
