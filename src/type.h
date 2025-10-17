@@ -130,6 +130,9 @@ void canonical_register(const char *canonical_name, Type *type);
 // Compute canonical name for a fully resolved type
 char *compute_canonical_name(Type *type);
 
+// Generate regular name for a fully resolved type
+char *type_name(Type *type);
+
 // Type checking utilities
 bool type_equals(Type *a, Type *b);
 bool type_is_numeric(Type *type);

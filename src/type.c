@@ -264,114 +264,6 @@ Type *canonical_lookup(const char *canonical_name) {
   return entry ? entry->type : NULL;
 }
 
-// // Helper with cycle detection for type equality
-// static bool type_equals_impl(Type *a, Type *b, Type **visited_a, Type
-// **visited_b, size_t *visited_count) {
-//     if (a == b) return true;  // Same pointer
-//     if (!a || !b) return false;
-//     if (a->kind != b->kind) return false;
-
-//     // Check if we've already started comparing these types (cycle detection)
-//     for (size_t i = 0; i < *visited_count; i++) {
-//         if (visited_a[i] == a && visited_b[i] == b) {
-//             return true;  // Assume equal to break cycle
-//         }
-//     }
-
-//     // Mark as visiting
-//     if (*visited_count < 64) {
-//         visited_a[*visited_count] = a;
-//         visited_b[*visited_count] = b;
-//         (*visited_count)++;
-//     }
-
-//     switch (a->kind) {
-//         case TYPE_INT:
-//         case TYPE_FLOAT:
-//         case TYPE_BOOL:
-//         case TYPE_STRING:
-//         case TYPE_VOID:
-//             return true;
-
-//         case TYPE_POINTER:
-//             return type_equals_impl(a->data.ptr.base, b->data.ptr.base,
-//                                    visited_a, visited_b, visited_count);
-
-//         case TYPE_ARRAY:
-//             return a->data.array.size == b->data.array.size &&
-//                    type_equals_impl(a->data.array.element,
-//                    b->data.array.element,
-//                                    visited_a, visited_b, visited_count);
-
-//         case TYPE_SLICE:
-//             return type_equals_impl(a->data.slice.element,
-//             b->data.slice.element,
-//                                    visited_a, visited_b, visited_count);
-
-//         case TYPE_STRUCT:
-//             if (a->data.struct_data.field_count !=
-//             b->data.struct_data.field_count) {
-//                 return false;
-//             }
-//             for (size_t i = 0; i < a->data.struct_data.field_count; i++) {
-//                 if (strcmp(a->data.struct_data.field_names[i],
-//                           b->data.struct_data.field_names[i]) != 0) {
-//                     return false;
-//                 }
-//                 if (!type_equals_impl(a->data.struct_data.field_types[i],
-//                                      b->data.struct_data.field_types[i],
-//                                      visited_a, visited_b, visited_count)) {
-//                     return false;
-//                 }
-//             }
-//             return true;
-
-//         case TYPE_FUNCTION:
-//             if (a->data.func.param_count != b->data.func.param_count) {
-//                 return false;
-//             }
-//             if (!type_equals_impl(a->data.func.return_type,
-//             b->data.func.return_type,
-//                                  visited_a, visited_b, visited_count)) {
-//                 return false;
-//             }
-//             for (size_t i = 0; i < a->data.func.param_count; i++) {
-//                 if (!type_equals_impl(a->data.func.param_types[i],
-//                                      b->data.func.param_types[i],
-//                                      visited_a, visited_b, visited_count)) {
-//                     return false;
-//                 }
-//             }
-//             return true;
-
-//         case TYPE_TUPLE:
-//             if (a->data.tuple.element_count != b->data.tuple.element_count) {
-//                 return false;
-//             }
-//             for (size_t i = 0; i < a->data.tuple.element_count; i++) {
-//                 if (!type_equals_impl(a->data.tuple.element_types[i],
-//                                      b->data.tuple.element_types[i],
-//                                      visited_a, visited_b, visited_count)) {
-//                     return false;
-//                 }
-//             }
-//             return true;
-
-//         case TYPE_UNRESOLVED:
-//             return false;
-//     }
-
-//     return false;
-// }
-
-// // Check if two types are equal (with cycle detection)
-// bool type_equals(Type *a, Type *b) {
-//     Type *visited_a[64] = {NULL};
-//     Type *visited_b[64] = {NULL};
-//     size_t visited_count = 0;
-//     return type_equals_impl(a, b, visited_a, visited_b, &visited_count);
-// }
-
 // Check if two types are equal (using canonical names)
 bool type_equals(Type *a, Type *b) {
   if (a == b)
@@ -593,4 +485,136 @@ char *compute_canonical_name(Type *type) {
     return NULL;
   }
   return result;
+}
+
+static size_t num_digits(uint64_t n) {
+  if (n == 0)
+    return 1;
+  size_t digits = 0;
+  while (n > 0) {
+    digits++;
+    n /= 10;
+  }
+  return digits;
+}
+
+char *type_name(Type *type) {
+  switch (type->kind) {
+  case TYPE_INT:
+  case TYPE_FLOAT:
+  case TYPE_BOOL:
+  case TYPE_STRING:
+  case TYPE_VOID:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_USIZE:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_ISIZE:
+  case TYPE_CHAR:
+  case TYPE_DOUBLE:
+    return type->canonical_name;
+  case TYPE_STRUCT:
+    return type->declared_name;
+  case TYPE_POINTER: {
+    char *base_ty_name = type_name(type->data.ptr.base);
+    size_t len = strlen(base_ty_name) + 2;
+    char *ptr_str = arena_alloc(&long_lived, len);
+    ptr_str[0] = '*';
+    memcpy(ptr_str + 1, base_ty_name, strlen(base_ty_name) + 1);
+    return ptr_str;
+  }
+  case TYPE_ARRAY: {
+    char *element_ty_name = type_name(type->data.array.element);
+    size_t num_len =
+        num_digits(type->data.array.size); // Length of size as string
+    size_t len =
+        strlen(element_ty_name) + num_len + 3; // [N]T + null terminator
+    char *arr_str = arena_alloc(&long_lived, len);
+    snprintf(arr_str, len, "[%zu]%s", type->data.array.size, element_ty_name);
+    return arr_str;
+  }
+  case TYPE_SLICE: {
+    char *element_ty_name = type_name(type->data.slice.element);
+    size_t len = strlen(element_ty_name) + 3; // []T + null terminator
+    char *slice_str = arena_alloc(&long_lived, len);
+    slice_str[0] = '[';
+    slice_str[1] = ']';
+    memcpy(slice_str + 2, element_ty_name, strlen(element_ty_name) + 1);
+    return slice_str;
+  }
+  case TYPE_FUNCTION: {
+    // Step 1: Cache parameter and return type names
+    size_t num_params = type->data.func.param_count;
+    char **param_ty_names =
+        arena_alloc(&long_lived, num_params * sizeof(char *));
+    size_t len = 4; // "fn ("
+    for (size_t i = 0; i < num_params; i++) {
+      param_ty_names[i] = type_name(type->data.func.param_types[i]);
+      len += strlen(param_ty_names[i]);
+      if (i < num_params - 1)
+        len += 2; // ", "
+    }
+    len += 2; // ") "
+    char *ret_ty_name = type_name(type->data.func.return_type);
+    len += strlen(ret_ty_name) + 1; // Return type + null terminator
+
+    // Step 2: Build the string
+    char *fn_str = arena_alloc(&long_lived, len);
+    strcpy(fn_str, "fn (");
+    size_t offset = 4;
+    for (size_t i = 0; i < num_params; i++) {
+      size_t param_len = strlen(param_ty_names[i]);
+      memcpy(fn_str + offset, param_ty_names[i], param_len);
+      offset += param_len;
+      if (i < num_params - 1) {
+        fn_str[offset++] = ',';
+        fn_str[offset++] = ' ';
+      }
+    }
+    fn_str[offset++] = ')';
+    fn_str[offset++] = ' ';
+    strcpy(fn_str + offset, ret_ty_name);
+    return fn_str;
+  }
+  case TYPE_TUPLE: {
+    // Step 1: Cache element type names
+    size_t num_elements = type->data.tuple.element_count;
+    char **elem_ty_names =
+        arena_alloc(&long_lived, num_elements * sizeof(char *));
+    size_t len = 1; // "("
+    for (size_t i = 0; i < num_elements; i++) {
+      elem_ty_names[i] = type_name(type->data.tuple.element_types[i]);
+      len += strlen(elem_ty_names[i]);
+      if (i < num_elements - 1)
+        len += 2; // ", "
+    }
+    len += 2; // ")" + null terminator
+
+    // Step 2: Build the string
+    char *tuple_str = arena_alloc(&long_lived, len);
+    tuple_str[0] = '(';
+    size_t offset = 1;
+    for (size_t i = 0; i < num_elements; i++) {
+      size_t elem_len = strlen(elem_ty_names[i]);
+      memcpy(tuple_str + offset, elem_ty_names[i], elem_len);
+      offset += elem_len;
+      if (i < num_elements - 1) {
+        tuple_str[offset++] = ',';
+        tuple_str[offset++] = ' ';
+      }
+    }
+    tuple_str[offset++] = ')';
+    tuple_str[offset] = '\0';
+    return tuple_str;
+  }
+  case TYPE_UNRESOLVED:
+    return "UNRESOLVED";
+  default:
+    return "UNKNOWN_TYPE";
+  }
 }
