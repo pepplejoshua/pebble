@@ -2,9 +2,7 @@
 #include "checker.h"
 #include "codegen.h"
 #include "parser.h"
-#include "tests.h"
 #include "type.h"
-// #include "codegen.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -158,22 +156,10 @@ int main(int argc, char **argv) {
 
   // Handle command-line arguments
   if (argc > 1) {
-    if (strcmp(argv[1], "--test") == 0) {
-      test_setup();
-    } else if (strcmp(argv[1], "--test-lexer") == 0) {
-      test_lexer();
-    } else if (strcmp(argv[1], "--test-parser") == 0) {
-      test_parser();
-    } else if (strcmp(argv[1], "--test-checker") == 0) {
-      test_checker();
-    } else if (strcmp(argv[1], "--test-all") == 0) {
-      test_all();
-    } else {
-      // Compile a source file
-      // printf("Compiling: %s\n", argv[1]);
-      if (!compile_file(argv[1])) {
-        return 1;
-      }
+    // Compile a source file
+    // printf("Compiling: %s\n", argv[1]);
+    if (!compile_file(argv[1])) {
+      return 1;
     }
   } else {
     printf("Pebble Compiler\n");
