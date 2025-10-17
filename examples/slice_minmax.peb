@@ -1,23 +1,19 @@
 fn find_min(slice []int) int {
     var min_val = slice[0];
-    var i = 1;
-    while i < slice.len {  // Slice has a .len field (compiled as struct member)
-        if slice[i] < min_val {
-            min_val = slice[i];
+    loop 1..slice.len {
+        if slice[iter] < min_val {
+            min_val = slice[iter];
         }
-        i = i + 1;
     }
     return min_val;
 }
 
 fn find_max(slice []int) int {
     var max_val = slice[0];
-    var i = 1;
-    while i < slice.len {
-        if slice[i] > max_val {
-            max_val = slice[i];
+    loop 1..slice.len {
+        if slice[iter] > max_val {
+            max_val = slice[iter];
         }
-        i = i + 1;
     }
     return max_val;
 }

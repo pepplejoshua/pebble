@@ -146,6 +146,7 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
             break;
         case 'l':
             if (length == 3) return lexer_check_keyword(start, 3, "let", TOKEN_LET);
+            if (length == 4) return lexer_check_keyword(start, 4, "loop", TOKEN_LOOP);
             break;
         case 'r':
             if (length == 6) return lexer_check_keyword(start, 6, "return", TOKEN_RETURN);
@@ -282,7 +283,14 @@ Token lexer_next_token(Lexer *lexer) {
         case ']': return lexer_make_token(lexer, TOKEN_RBRACKET);
         case ';': return lexer_make_token(lexer, TOKEN_SEMICOLON);
         case ',': return lexer_make_token(lexer, TOKEN_COMMA);
-        case '.': return lexer_make_token(lexer, TOKEN_DOT);
+        case '.':
+            if (lexer_match(lexer, '.')) {
+                if (lexer_match(lexer, '=')) {
+                    return lexer_make_token(lexer, TOKEN_DOTDOTEQ);
+                }
+                return lexer_make_token(lexer, TOKEN_DOTDOT);
+            }
+            return lexer_make_token(lexer, TOKEN_DOT);
         case ':': return lexer_make_token(lexer, TOKEN_COLON);
         case '+': return lexer_make_token(lexer, TOKEN_PLUS);
         case '-': return lexer_make_token(lexer, TOKEN_MINUS);
@@ -332,12 +340,16 @@ const char *token_type_name(TokenType type) {
         case TOKEN_IF: return "IF";
         case TOKEN_ELSE: return "ELSE";
         case TOKEN_WHILE: return "WHILE";
+        case TOKEN_LOOP: return "LOOP";
         case TOKEN_TYPE: return "TYPE";
         case TOKEN_STRUCT: return "STRUCT";
         case TOKEN_LET: return "LET";
         case TOKEN_VAR: return "VAR";
         case TOKEN_TRUE: return "TRUE";
         case TOKEN_FALSE: return "FALSE";
+        case TOKEN_PRINT: return "PRINT";
+        case TOKEN_BREAK: return "BREAK";
+        case TOKEN_CONTINUE: return "CONTINUE";
         case TOKEN_INT_TYPE: return "INT_TYPE";
         case TOKEN_FLOAT_TYPE: return "FLOAT_TYPE";
         case TOKEN_BOOL_TYPE: return "BOOL_TYPE";
@@ -361,6 +373,8 @@ const char *token_type_name(TokenType type) {
         case TOKEN_SEMICOLON: return "SEMICOLON";
         case TOKEN_COMMA: return "COMMA";
         case TOKEN_DOT: return "DOT";
+        case TOKEN_DOTDOT: return "DOTDOT";
+        case TOKEN_DOTDOTEQ: return "DOTDOTEQ";
         case TOKEN_LPAREN: return "LPAREN";
         case TOKEN_RPAREN: return "RPAREN";
         case TOKEN_LBRACE: return "LBRACE";

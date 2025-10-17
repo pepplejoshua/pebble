@@ -20,6 +20,7 @@ typedef enum {
     TOKEN_IF,
     TOKEN_ELSE,
     TOKEN_WHILE,
+    TOKEN_LOOP,
     TOKEN_TYPE,
     TOKEN_STRUCT,
     TOKEN_LET, // let a = 5; a is constant
@@ -58,6 +59,8 @@ typedef enum {
     TOKEN_SEMICOLON,   // ;
     TOKEN_COMMA,       // ,
     TOKEN_DOT,         // .
+    TOKEN_DOTDOT,      // ..
+    TOKEN_DOTDOTEQ,    // ..=
     TOKEN_LPAREN,      // (
     TOKEN_RPAREN,      // )
     TOKEN_LBRACE,      // {

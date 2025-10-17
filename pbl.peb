@@ -4,6 +4,20 @@ type Point = struct {
 };
 
 fn main() int {
+    // Test loop with iter variable
+    print "Loop 0..5:";
+    loop 0..5 {
+        print iter;
+    }
+
+    print "Loop 2..=4:";
+    loop 2..=4 {
+        print iter;
+    }
+
+    let my_const = 42;
+    print my_const;
+
     var zeros [5]int = [0; 5];
     var nums [3]int = [42; 3];
     var flags [10]bool = [false; 10];
@@ -11,7 +25,7 @@ fn main() int {
     var nested = [[1, 2, 3]; 2];
     var points = [Point.{x = 10, y = 20}; 3];
     var zero_points = [Point.{x = 0, y = 0}; 3];
-    
+
     print zeros[0];
     print nums[1];
     print flags[5];
@@ -19,6 +33,6 @@ fn main() int {
     print nested[0][2];
     print points[1].x;
     print zero_points[1].y;
-    
+
     return 0;
 }

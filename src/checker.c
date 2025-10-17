@@ -1531,6 +1531,48 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
             return false;
         }
 
+        case AST_STMT_LOOP: {
+            AstNode *start = stmt->data.loop_stmt.start;
+            AstNode *end = stmt->data.loop_stmt.end;
+            AstNode *body = stmt->data.loop_stmt.body;
+
+            // Check start is an integer literal (not a variable)
+            if (start->kind != AST_EXPR_LITERAL_INT) {
+                checker_error(start->loc, "loop range start must be an integer literal");
+            }
+
+            // Check end is an integer (can be variable or expression)
+            Type *end_type = check_expression(end);
+            if (end_type && end_type->kind != TYPE_INT) {
+                checker_error(end->loc, "loop range end must be an integer");
+            }
+
+            // Create a scope for the loop body and register 'iter' as a constant
+            Scope *loop_scope = scope_create(current_scope);
+            scope_push(loop_scope);
+
+            // Register 'iter' as a const variable of type int
+            Symbol *iter_sym = scope_lookup_local(current_scope, "iter");
+            if (iter_sym) {
+                checker_error(stmt->loc, "'iter' is already defined in this scope");
+            } else {
+                Symbol *new_sym = symbol_create("iter", SYMBOL_CONSTANT, NULL);
+                new_sym->type = type_int;
+                scope_add_symbol(current_scope, new_sym);
+            }
+
+            bool old_in_loop = checker_state.in_loop;
+            checker_state.in_loop = true;
+            // Check body
+            check_statement(body, expected_return_type);
+            checker_state.in_loop = old_in_loop;
+
+            scope_pop();
+
+            // Can't prove loop always executes (range could be empty)
+            return false;
+        }
+
         case AST_STMT_BLOCK: {
             // Create child scope for this block
             Scope *block_scope = scope_create(current_scope);
@@ -1569,6 +1611,15 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
                 !(lhs->kind == AST_EXPR_UNARY_OP && lhs->data.unop.op == UNOP_DEREF)) {
                 checker_error(lhs->loc, "invalid assignment target");
                 return false;
+            }
+
+            // If LHS is an identifier, check if it's a constant
+            if (lhs->kind == AST_EXPR_IDENTIFIER) {
+                Symbol *sym = scope_lookup(current_scope, lhs->data.ident.name);
+                if (sym && sym->kind == SYMBOL_CONSTANT) {
+                    checker_error(lhs->loc, "cannot assign to constant");
+                    return false;
+                }
             }
 
             // Check both sides

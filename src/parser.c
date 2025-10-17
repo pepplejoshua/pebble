@@ -96,6 +96,7 @@ void parser_synchronize(Parser *parser) {
             case TOKEN_LET:
             case TOKEN_IF:
             case TOKEN_WHILE:
+            case TOKEN_LOOP:
             case TOKEN_RETURN:
                 return;
             default:
@@ -387,6 +388,9 @@ AstNode *parse_statement(Parser *parser) {
     if (parser_match(parser, TOKEN_WHILE)) {
         return parse_while_stmt(parser);
     }
+    if (parser_match(parser, TOKEN_LOOP)) {
+        return parse_loop_stmt(parser);
+    }
     if (parser_match(parser, TOKEN_LBRACE)) {
         return parse_block_stmt(parser);
     }
@@ -445,6 +449,37 @@ AstNode *parse_while_stmt(Parser *parser) {
     AstNode *stmt = alloc_node(AST_STMT_WHILE, loc);
     stmt->data.while_stmt.cond = cond;
     stmt->data.while_stmt.body = body;
+    return stmt;
+}
+
+AstNode *parse_loop_stmt(Parser *parser) {
+    Location loc = parser->previous.location;
+
+    // Parse start expression
+    AstNode *start = parse_expression(parser);
+
+    // Expect .. or ..=
+    bool inclusive = false;
+    if (parser_match(parser, TOKEN_DOTDOTEQ)) {
+        inclusive = true;
+    } else if (parser_match(parser, TOKEN_DOTDOT)) {
+        inclusive = false;
+    } else {
+        parser_error(parser, "Expected '..' or '..=' in loop range");
+        return NULL;
+    }
+
+    // Parse end expression
+    AstNode *end = parse_expression(parser);
+
+    // Parse loop body
+    AstNode *body = parse_statement(parser);
+
+    AstNode *stmt = alloc_node(AST_STMT_LOOP, loc);
+    stmt->data.loop_stmt.start = start;
+    stmt->data.loop_stmt.end = end;
+    stmt->data.loop_stmt.inclusive = inclusive;
+    stmt->data.loop_stmt.body = body;
     return stmt;
 }
 
