@@ -987,6 +987,10 @@ Type *check_expression(AstNode *expr) {
     expr->resolved_type = type_string;
     return type_string;
 
+  case AST_EXPR_LITERAL_CHAR:
+    expr->resolved_type = type_char;
+    return type_char;
+
   case AST_EXPR_LITERAL_BOOL:
     expr->resolved_type = type_bool;
     return type_bool;

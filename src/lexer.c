@@ -267,6 +267,55 @@ static Token lexer_scan_string(Lexer *lexer) {
   return token;
 }
 
+static Token lexer_scan_char(Lexer *lexer) {
+  if (lexer_is_at_end(lexer)) {
+    return lexer_error_token(lexer, "Unterminated character literal");
+  }
+
+  char c = lexer_advance(lexer);
+
+  // Handle escape sequences
+  if (c == '\\') {
+    if (lexer_is_at_end(lexer)) {
+      return lexer_error_token(lexer, "Unterminated escape sequence");
+    }
+    c = lexer_advance(lexer);
+    switch (c) {
+    case 'n':
+      c = '\n';
+      break;
+    case 'r':
+      c = '\r';
+      break;
+    case 't':
+      c = '\t';
+      break;
+    case '\\':
+      c = '\\';
+      break;
+    case '\'':
+      c = '\'';
+      break;
+    case '0':
+      c = '\0';
+      break;
+    default:
+      return lexer_error_token(lexer, "Invalid escape sequence");
+    }
+  }
+
+  // Expect closing quote
+  if (lexer_peek(lexer) != '\'') {
+    return lexer_error_token(lexer,
+                             "Expected closing quote for character literal");
+  }
+  lexer_advance(lexer); // Skip closing quote
+
+  Token token = lexer_make_token(lexer, TOKEN_CHAR);
+  token.value.char_val = c;
+  return token;
+}
+
 static Token lexer_scan_number(Lexer *lexer) {
   while (is_digit(lexer_peek(lexer))) {
     lexer_advance(lexer);
@@ -375,6 +424,8 @@ Token lexer_next_token(Lexer *lexer) {
     return lexer_make_token(lexer, TOKEN_SLASH);
   case '"':
     return lexer_scan_string(lexer);
+  case '\'':
+    return lexer_scan_char(lexer);
 
   case '!':
     return lexer_make_token(lexer,
@@ -417,6 +468,8 @@ const char *token_type_name(TokenType type) {
     return "FLOAT";
   case TOKEN_STRING:
     return "STRING";
+  case TOKEN_CHAR:
+    return "CHAR";
   case TOKEN_BOOL:
     return "BOOL";
   case TOKEN_IDENTIFIER:

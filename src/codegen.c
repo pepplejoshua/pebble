@@ -94,6 +94,9 @@ static bool is_zero_value(AstNode *expr) {
   case AST_EXPR_LITERAL_BOOL:
     return expr->data.bool_lit.value == false;
 
+  case AST_EXPR_LITERAL_CHAR:
+    return expr->data.char_lit.value == 0;
+
   case AST_EXPR_TUPLE: {
     // All elements must be zero
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
@@ -709,6 +712,35 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, expr->data.str_lit.value);
     emit_string(cg, "\"");
     break;
+  case AST_EXPR_LITERAL_CHAR: {
+    char c = expr->data.char_lit.value;
+    emit_string(cg, "'");
+    if (c == '\n') {
+      emit_string(cg, "\\n");
+    } else if (c == '\r') {
+      emit_string(cg, "\\r");
+    } else if (c == '\t') {
+      emit_string(cg, "\\t");
+    } else if (c == '\\') {
+      emit_string(cg, "\\\\");
+    } else if (c == '\'') {
+      emit_string(cg, "\\'");
+    } else if (c == '\0') {
+      emit_string(cg, "\\0");
+    } else if (c >= 32 && c <= 126) {
+      // Printable ASCII (including ", numbers, letters, punctuation, etc.) —
+      // emit as-is
+      char buf[2] = {c, '\0'};
+      emit_string(cg, buf);
+    } else {
+      // Non-printable or non-ASCII (e.g., control characters, extended chars) —
+      // use fallback
+      emit_string(cg, "?");
+    }
+    emit_string(cg, "'");
+    break;
+  }
+
   case AST_EXPR_LITERAL_BOOL:
     emit_string(cg, expr->data.bool_lit.value ? "true" : "false");
     break;

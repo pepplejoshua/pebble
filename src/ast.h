@@ -38,6 +38,7 @@ typedef enum {
   AST_EXPR_LITERAL_INT,
   AST_EXPR_LITERAL_FLOAT,
   AST_EXPR_LITERAL_STRING,
+  AST_EXPR_LITERAL_CHAR,
   AST_EXPR_LITERAL_BOOL,
   AST_EXPR_IDENTIFIER,
   AST_EXPR_BINARY_OP,
@@ -165,6 +166,9 @@ struct AstNode {
     struct {
       char *value;
     } str_lit;
+    struct {
+      char value;
+    } char_lit;
     struct {
       bool value;
     } bool_lit;

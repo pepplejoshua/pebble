@@ -933,6 +933,13 @@ AstNode *parse_primary(Parser *parser) {
     return lit;
   }
 
+  if (parser_match(parser, TOKEN_CHAR)) {
+    Token char_tok = parser->previous;
+    AstNode *lit = alloc_node(AST_EXPR_LITERAL_CHAR, char_tok.location);
+    lit->data.char_lit.value = char_tok.value.char_val;
+    return lit;
+  }
+
   if (parser_match(parser, TOKEN_TRUE) || parser_match(parser, TOKEN_FALSE)) {
     Token bool_tok = parser->previous;
     AstNode *lit = alloc_node(AST_EXPR_LITERAL_BOOL, bool_tok.location);

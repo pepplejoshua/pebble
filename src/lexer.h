@@ -11,6 +11,7 @@ typedef enum {
   TOKEN_INT,
   TOKEN_FLOAT,
   TOKEN_STRING,
+  TOKEN_CHAR,
   TOKEN_BOOL,
   TOKEN_IDENTIFIER,
 
@@ -98,6 +99,7 @@ typedef struct {
   union {
     long long int_val;
     double float_val;
+    char char_val;
     bool bool_val;
     char *str_val; // For string literals (processed, allocated)
   } value;

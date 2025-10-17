@@ -1,12 +1,5 @@
 fn main() int {
-    var result u32 = test(42);
-    print result;
-
-    var a double = 100;
-    print a;
+    var c char = 'a';
+    var newline char = '\n';
     return 0;
-}
-
-fn test(x u32) u32 {
-    return x + 1;
 }
