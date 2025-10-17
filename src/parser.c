@@ -1297,6 +1297,78 @@ AstNode *parse_type_expression(Parser *parser) {
     return type;
   }
 
+  if (parser_match(parser, TOKEN_U8_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("u8");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_U16_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("u16");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_U32_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("u32");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_U64_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("u64");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_USIZE_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("usize");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_I8_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("i8");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_I16_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("i16");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_I32_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("i32");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_I64_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("i64");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_ISIZE_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("isize");
+    return type;
+  }
+
+  if (parser_match(parser, TOKEN_CHAR_TYPE)) {
+  type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+  type->data.type_named.name = str_dup("char");
+  return type;
+  }
+
+  if (parser_match(parser, TOKEN_DOUBLE_TYPE)) {
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("double");
+    return type;
+  }
+
   // Custom/named types
   if (parser_match(parser, TOKEN_IDENTIFIER)) {
     type = alloc_node(AST_TYPE_NAMED, parser->previous.location);

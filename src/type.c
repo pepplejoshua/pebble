@@ -16,6 +16,18 @@ Type *type_float = NULL;
 Type *type_bool = NULL;
 Type *type_string = NULL;
 Type *type_void = NULL;
+Type *type_u8 = NULL;
+Type *type_u16 = NULL;
+Type *type_u32 = NULL;
+Type *type_u64 = NULL;
+Type *type_usize = NULL;
+Type *type_i8 = NULL;
+Type *type_i16 = NULL;
+Type *type_i32 = NULL;
+Type *type_i64 = NULL;
+Type *type_isize = NULL;
+Type *type_char = NULL;
+Type *type_double = NULL;
 
 // Type table (hash map of name => type entries)
 TypeEntry *type_table = NULL;
@@ -377,7 +389,13 @@ bool type_equals(Type *a, Type *b) {
 
 // Check if type is numeric (int or float)
 bool type_is_numeric(Type *type) {
-  return type && (type->kind == TYPE_INT || type->kind == TYPE_FLOAT);
+  return type && (type->kind == TYPE_INT || type->kind == TYPE_FLOAT ||
+                  type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
+                  type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
+                  type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
+                  type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
+                  type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
+                  type->kind == TYPE_DOUBLE);
 }
 
 // Initialize the type system
@@ -388,6 +406,18 @@ void type_system_init(void) {
   type_bool = type_create(TYPE_BOOL);
   type_string = type_create(TYPE_STRING);
   type_void = type_create(TYPE_VOID);
+  type_u8 = type_create(TYPE_U8);
+  type_u16 = type_create(TYPE_U16);
+  type_u32 = type_create(TYPE_U32);
+  type_u64 = type_create(TYPE_U64);
+  type_usize = type_create(TYPE_USIZE);
+  type_i8 = type_create(TYPE_I8);
+  type_i16 = type_create(TYPE_I16);
+  type_i32 = type_create(TYPE_I32);
+  type_i64 = type_create(TYPE_I64);
+  type_isize = type_create(TYPE_ISIZE);
+  type_char = type_create(TYPE_CHAR);
+  type_double = type_create(TYPE_DOUBLE);
 
   // Set canonical names for built-in types
   type_int->canonical_name = "int";
@@ -395,6 +425,18 @@ void type_system_init(void) {
   type_bool->canonical_name = "bool";
   type_string->canonical_name = "str";
   type_void->canonical_name = "void";
+  type_u8->canonical_name = "u8";
+  type_u16->canonical_name = "u16";
+  type_u32->canonical_name = "u32";
+  type_u64->canonical_name = "u64";
+  type_usize->canonical_name = "usize";
+  type_i8->canonical_name = "i8";
+  type_i16->canonical_name = "i16";
+  type_i32->canonical_name = "i32";
+  type_i64->canonical_name = "i64";
+  type_isize->canonical_name = "isize";
+  type_char->canonical_name = "char";
+  type_double->canonical_name = "double";
 
   // Register built-in types in type table
   type_register("int", type_int);
@@ -402,6 +444,18 @@ void type_system_init(void) {
   type_register("bool", type_bool);
   type_register("str", type_string);
   type_register("void", type_void);
+  type_register("u8", type_u8);
+  type_register("u16", type_u16);
+  type_register("u32", type_u32);
+  type_register("u64", type_u64);
+  type_register("usize", type_usize);
+  type_register("i8", type_i8);
+  type_register("i16", type_i16);
+  type_register("i32", type_i32);
+  type_register("i64", type_i64);
+  type_register("isize", type_isize);
+  type_register("char", type_char);
+  type_register("double", type_double);
 
   // Register built-ins in canonical type table
   canonical_register("int", type_int);
@@ -409,6 +463,18 @@ void type_system_init(void) {
   canonical_register("bool", type_bool);
   canonical_register("str", type_string);
   canonical_register("void", type_void);
+  canonical_register("u8", type_u8);
+  canonical_register("u16", type_u16);
+  canonical_register("u32", type_u32);
+  canonical_register("u64", type_u64);
+  canonical_register("usize", type_usize);
+  canonical_register("i8", type_i8);
+  canonical_register("i16", type_i16);
+  canonical_register("i32", type_i32);
+  canonical_register("i64", type_i64);
+  canonical_register("isize", type_isize);
+  canonical_register("char", type_char);
+  canonical_register("double", type_double);
 }
 
 // Compute canonical name for a type (with cycle detection)
@@ -423,6 +489,18 @@ char *compute_canonical_name(Type *type) {
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_VOID:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_USIZE:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_ISIZE:
+  case TYPE_CHAR:
+  case TYPE_DOUBLE:
     result = type->canonical_name;
     break;
 

@@ -237,6 +237,42 @@ void emit_type_name(Codegen *cg, Type *type) {
   case TYPE_VOID:
     emit_string(cg, "void");
     break;
+  case TYPE_U8:
+    emit_string(cg, "unsigned char");
+    break;
+  case TYPE_U16:
+    emit_string(cg, "unsigned short");
+    break;
+  case TYPE_U32:
+    emit_string(cg, "unsigned int");
+    break;
+  case TYPE_U64:
+    emit_string(cg, "unsigned long long");
+    break;
+  case TYPE_USIZE:
+    emit_string(cg, "size_t");
+    break;
+  case TYPE_I8:
+    emit_string(cg, "signed char");
+    break;
+  case TYPE_I16:
+    emit_string(cg, "short");
+    break;
+  case TYPE_I32:
+    emit_string(cg, "int");
+    break;
+  case TYPE_I64:
+    emit_string(cg, "long long");
+    break;
+  case TYPE_ISIZE:
+    emit_string(cg, "ptrdiff_t");
+    break;
+  case TYPE_CHAR:
+  emit_string(cg, "char");
+  break;
+  case TYPE_DOUBLE:
+    emit_string(cg, "double");
+    break;
   case TYPE_POINTER:
     emit_type_name(cg, type->data.ptr.base);
     emit_string(cg, "*");

@@ -244,6 +244,54 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     canonical_name = str_dup("void");
     break;
 
+  case TYPE_U8:
+    canonical_name = str_dup("u8");
+    break;
+
+  case TYPE_U16:
+    canonical_name = str_dup("u16");
+    break;
+
+  case TYPE_U32:
+    canonical_name = str_dup("u32");
+    break;
+
+  case TYPE_U64:
+    canonical_name = str_dup("u64");
+    break;
+
+  case TYPE_USIZE:
+    canonical_name = str_dup("usize");
+    break;
+
+  case TYPE_I8:
+    canonical_name = str_dup("i8");
+    break;
+
+  case TYPE_I16:
+    canonical_name = str_dup("i16");
+    break;
+
+  case TYPE_I32:
+    canonical_name = str_dup("i32");
+    break;
+
+  case TYPE_I64:
+    canonical_name = str_dup("i64");
+    break;
+
+  case TYPE_ISIZE:
+    canonical_name = str_dup("isize");
+    break;
+
+  case TYPE_CHAR:
+    canonical_name = str_dup("char");
+    break;
+
+  case TYPE_DOUBLE:
+    canonical_name = str_dup("double");
+    break;
+
   case TYPE_POINTER: {
     char *base_name = GET_COMPONENT_NAME(type->data.ptr.base);
     size_t len = strlen("ptr_") + strlen(base_name) + 1;
@@ -899,6 +947,20 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     return cast;
+  } else if (expr_type->kind == TYPE_INT &&
+             (target_type->kind == TYPE_U8 || target_type->kind == TYPE_U16 ||
+              target_type->kind == TYPE_U32 || target_type->kind == TYPE_U64 ||
+              target_type->kind == TYPE_USIZE || target_type->kind == TYPE_I8 ||
+              target_type->kind == TYPE_I16 || target_type->kind == TYPE_I32 ||
+              target_type->kind == TYPE_I64 ||
+              target_type->kind == TYPE_ISIZE)) {
+    // Allow int literals to convert to sized integer types
+    AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+    cast->kind = AST_EXPR_IMPLICIT_CAST;
+    cast->loc = expr->loc;
+    cast->data.implicit_cast.expr = expr;
+    cast->data.implicit_cast.target_type = target_type;
+    return cast;
   }
 
   // No valid conversion
@@ -976,13 +1038,34 @@ Type *check_expression(AstNode *expr) {
                       "arithmetic operation requires numeric operands");
         return NULL;
       }
-      // Handle type promotion: int + float -> float
+      // Handle type promotion: int + float -> float,
+      // int + sized_int -> sized_int
       if (!type_equals(left, right)) {
         if (left->kind == TYPE_INT && right->kind == TYPE_FLOAT) {
           expr->data.binop.left =
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right; // Now both float
         } else if (left->kind == TYPE_FLOAT && right->kind == TYPE_INT) {
+          expr->data.binop.right =
+              maybe_insert_cast(expr->data.binop.right, right, left);
+          right = left;
+        } else if (left->kind == TYPE_INT &&
+                   (right->kind == TYPE_U8 || right->kind == TYPE_U16 ||
+                    right->kind == TYPE_U32 || right->kind == TYPE_U64 ||
+                    right->kind == TYPE_USIZE || right->kind == TYPE_I8 ||
+                    right->kind == TYPE_I16 || right->kind == TYPE_I32 ||
+                    right->kind == TYPE_I64 || right->kind == TYPE_ISIZE)) {
+          // Promote int to sized integer type
+          expr->data.binop.left =
+              maybe_insert_cast(expr->data.binop.left, left, right);
+          left = right;
+        } else if (right->kind == TYPE_INT &&
+                   (left->kind == TYPE_U8 || left->kind == TYPE_U16 ||
+                    left->kind == TYPE_U32 || left->kind == TYPE_U64 ||
+                    left->kind == TYPE_USIZE || left->kind == TYPE_I8 ||
+                    left->kind == TYPE_I16 || left->kind == TYPE_I32 ||
+                    left->kind == TYPE_I64 || left->kind == TYPE_ISIZE)) {
+          // Promote int to sized integer type
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
@@ -1008,6 +1091,26 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right;
         } else if (left->kind == TYPE_FLOAT && right->kind == TYPE_INT) {
+          expr->data.binop.right =
+              maybe_insert_cast(expr->data.binop.right, right, left);
+          right = left;
+        } else if (left->kind == TYPE_INT &&
+                   (right->kind == TYPE_U8 || right->kind == TYPE_U16 ||
+                    right->kind == TYPE_U32 || right->kind == TYPE_U64 ||
+                    right->kind == TYPE_USIZE || right->kind == TYPE_I8 ||
+                    right->kind == TYPE_I16 || right->kind == TYPE_I32 ||
+                    right->kind == TYPE_I64 || right->kind == TYPE_ISIZE)) {
+          // Promote int to sized integer type
+          expr->data.binop.left =
+              maybe_insert_cast(expr->data.binop.left, left, right);
+          left = right;
+        } else if (right->kind == TYPE_INT &&
+                   (left->kind == TYPE_U8 || left->kind == TYPE_U16 ||
+                    left->kind == TYPE_U32 || left->kind == TYPE_U64 ||
+                    left->kind == TYPE_USIZE || left->kind == TYPE_I8 ||
+                    left->kind == TYPE_I16 || left->kind == TYPE_I32 ||
+                    left->kind == TYPE_I64 || left->kind == TYPE_ISIZE)) {
+          // Promote int to sized integer type
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;

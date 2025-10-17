@@ -1,29 +1,8 @@
 fn main() int {
-    // Test classic for loop
-    print "For loop 0 to 4:";
-    for var i = 0; i < 5; i = i + 1 {
-        print i;
-    }
-
-    print "For loop 10 to 12:";
-    for var j = 10; j <= 12; j = j + 1 {
-        print j;
-    }
-
-    // Test nested for loops
-    print "Nested for loops:";
-    for var x = 0; x < 3; x = x + 1 {
-        for var y = 0; y < 2; y = y + 1 {
-            print x;
-        }
-    }
-
-    // Test for loop with existing variable
-    print "Using existing variable:";
-    var counter = 5;
-    for counter = 5; counter < 8; counter = counter + 1 {
-        print counter;
-    }
-
+    var result u32 = test(42);
     return 0;
+}
+
+fn test(x u32) u32 {
+    return x + 1;
 }

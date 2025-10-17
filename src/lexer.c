@@ -153,10 +153,24 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     }
     break;
   case 'i':
-    if (length == 2)
-      return lexer_check_keyword(start, 2, "if", TOKEN_IF);
-    if (length == 3)
-      return lexer_check_keyword(start, 3, "int", TOKEN_INT_TYPE);
+    if (length == 2) {
+      if (start[1] == 'f')
+        return lexer_check_keyword(start, 2, "if", TOKEN_IF);
+      if (start[1] == '8')
+        return lexer_check_keyword(start, 2, "i8", TOKEN_I8_TYPE);
+    }
+    if (length == 3) {
+      if (start[1] == 'n' && start[2] == 't')
+        return lexer_check_keyword(start, 3, "int", TOKEN_INT_TYPE);
+      if (start[1] == '1' && start[2] == '6')
+        return lexer_check_keyword(start, 3, "i16", TOKEN_I16_TYPE);
+      if (start[1] == '3' && start[2] == '2')
+        return lexer_check_keyword(start, 3, "i32", TOKEN_I32_TYPE);
+      if (start[1] == '6' && start[2] == '4')
+        return lexer_check_keyword(start, 3, "i64", TOKEN_I64_TYPE);
+    }
+    if (length == 5)
+      return lexer_check_keyword(start, 5, "isize", TOKEN_ISIZE_TYPE);
     break;
   case 'l':
     if (length == 3)
@@ -185,6 +199,20 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
       }
     }
     break;
+  case 'u':
+    if (length == 2)
+      return lexer_check_keyword(start, 2, "u8", TOKEN_U8_TYPE);
+    if (length == 3) {
+      if (start[1] == '1' && start[2] == '6')
+        return lexer_check_keyword(start, 3, "u16", TOKEN_U16_TYPE);
+      if (start[1] == '3' && start[2] == '2')
+        return lexer_check_keyword(start, 3, "u32", TOKEN_U32_TYPE);
+      if (start[1] == '6' && start[2] == '4')
+        return lexer_check_keyword(start, 3, "u64", TOKEN_U64_TYPE);
+    }
+    if (length == 5)
+      return lexer_check_keyword(start, 5, "usize", TOKEN_USIZE_TYPE);
+    break;
   case 'v':
     if (length == 3)
       return lexer_check_keyword(start, 3, "var", TOKEN_VAR);
@@ -202,6 +230,12 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   case 'c':
     if (length == 8)
       return lexer_check_keyword(start, 8, "continue", TOKEN_CONTINUE);
+    if (length == 4)
+      return lexer_check_keyword(start, 4, "char", TOKEN_CHAR_TYPE);
+    break;
+  case 'd':
+    if (length == 6)
+      return lexer_check_keyword(start, 6, "double", TOKEN_DOUBLE_TYPE);
     break;
   }
 
@@ -429,6 +463,30 @@ const char *token_type_name(TokenType type) {
     return "STR_TYPE";
   case TOKEN_VOID_TYPE:
     return "VOID_TYPE";
+  case TOKEN_U8_TYPE:
+    return "U8_TYPE";
+  case TOKEN_U16_TYPE:
+    return "U16_TYPE";
+  case TOKEN_U32_TYPE:
+    return "U32_TYPE";
+  case TOKEN_U64_TYPE:
+    return "U64_TYPE";
+  case TOKEN_USIZE_TYPE:
+    return "USIZE_TYPE";
+  case TOKEN_I8_TYPE:
+    return "I8_TYPE";
+  case TOKEN_I16_TYPE:
+    return "I16_TYPE";
+  case TOKEN_I32_TYPE:
+    return "I32_TYPE";
+  case TOKEN_I64_TYPE:
+    return "I64_TYPE";
+  case TOKEN_ISIZE_TYPE:
+    return "ISIZE_TYPE";
+  case TOKEN_CHAR_TYPE:
+    return "CHAR_TYPE";
+  case TOKEN_DOUBLE_TYPE:
+    return "DOUBLE_TYPE";
   case TOKEN_PLUS:
     return "PLUS";
   case TOKEN_MINUS:
