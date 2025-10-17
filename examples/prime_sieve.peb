@@ -1,9 +1,5 @@
 fn sieve(is_prime []bool, limit int) void {
     var i = 0;
-    while i <= limit {
-        is_prime[i] = false;
-        i = i + 1;
-    }
 
     i = 2;
     while i <= limit {
@@ -25,7 +21,7 @@ fn sieve(is_prime []bool, limit int) void {
 }
 
 fn main() int {
-    var primes [1001]bool;
+    var primes [1001]bool = [false; 1001];
     let limit = 1000;
     sieve(primes, limit);
     var i = 2;
