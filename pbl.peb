@@ -1,5 +1,10 @@
+type Point = struct {
+    x int,
+    y int
+};
+
 fn main() int {
-    var c char = 'a';
-    var newline char = '\n';
+    var point_mem_size = sizeof Point;
+    print point_mem_size;
     return 0;
 }

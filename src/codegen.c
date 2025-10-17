@@ -694,6 +694,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_IDENTIFIER:
     emit_string(cg, expr->data.ident.name);
     break;
+
   case AST_EXPR_LITERAL_INT: {
     // Format long long
     char buf[32];
@@ -701,17 +702,29 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, buf);
     break;
   }
+
   case AST_EXPR_LITERAL_FLOAT: {
     char buf[64];
     sprintf(buf, "%f", expr->data.float_lit.value);
     emit_string(cg, buf);
     break;
   }
+
   case AST_EXPR_LITERAL_STRING:
     emit_string(cg, "\"");
     emit_string(cg, expr->data.str_lit.value);
     emit_string(cg, "\"");
     break;
+
+  case AST_EXPR_SIZEOF: {
+    Type *type = expr->data.sizeof_expr.type_expr->resolved_type;
+
+    emit_string(cg, "sizeof(");
+    emit_type_name(cg, type);
+    emit_string(cg, ")");
+    break;
+  }
+
   case AST_EXPR_LITERAL_CHAR: {
     char c = expr->data.char_lit.value;
     emit_string(cg, "'");

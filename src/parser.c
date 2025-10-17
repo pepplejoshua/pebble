@@ -1072,6 +1072,16 @@ AstNode *parse_primary(Parser *parser) {
     return array_lit;
   }
 
+  // Sizeof expression (sizeof type)
+  if (parser_match(parser, TOKEN_SIZEOF)) {
+    Location loc = parser->previous.location;
+    AstNode *type_ast = parse_type_expression(parser);
+
+    AstNode *sizeof_expr = alloc_node(AST_EXPR_SIZEOF, loc);
+    sizeof_expr->data.sizeof_expr.type_expr = type_ast;
+    return sizeof_expr;
+  }
+
   parser_error(parser, "Expected expression");
   return NULL;
 }
@@ -1365,9 +1375,9 @@ AstNode *parse_type_expression(Parser *parser) {
   }
 
   if (parser_match(parser, TOKEN_CHAR_TYPE)) {
-  type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
-  type->data.type_named.name = str_dup("char");
-  return type;
+    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
+    type->data.type_named.name = str_dup("char");
+    return type;
   }
 
   if (parser_match(parser, TOKEN_DOUBLE_TYPE)) {

@@ -32,24 +32,25 @@ typedef enum {
   TOKEN_PRINT,
   TOKEN_BREAK,
   TOKEN_CONTINUE,
+  TOKEN_SIZEOF,
 
   // Types (built-in)
-  TOKEN_INT_TYPE,   // "int"
-  TOKEN_FLOAT_TYPE, // "float"
-  TOKEN_BOOL_TYPE,  // "bool"
-  TOKEN_STR_TYPE,   // "str"
-  TOKEN_VOID_TYPE,  // "void"
-  TOKEN_U8_TYPE,    // "u8"
-  TOKEN_U16_TYPE,   // "u16"
-  TOKEN_U32_TYPE,   // "u32"
-  TOKEN_U64_TYPE,   // "u64"
-  TOKEN_USIZE_TYPE, // "usize"
-  TOKEN_I8_TYPE,    // "i8"
-  TOKEN_I16_TYPE,   // "i16"
-  TOKEN_I32_TYPE,   // "i32"
-  TOKEN_I64_TYPE,   // "i64"
-  TOKEN_ISIZE_TYPE, // "isize"
-  TOKEN_CHAR_TYPE,  // "char"
+  TOKEN_INT_TYPE,    // "int"
+  TOKEN_FLOAT_TYPE,  // "float"
+  TOKEN_BOOL_TYPE,   // "bool"
+  TOKEN_STR_TYPE,    // "str"
+  TOKEN_VOID_TYPE,   // "void"
+  TOKEN_U8_TYPE,     // "u8"
+  TOKEN_U16_TYPE,    // "u16"
+  TOKEN_U32_TYPE,    // "u32"
+  TOKEN_U64_TYPE,    // "u64"
+  TOKEN_USIZE_TYPE,  // "usize"
+  TOKEN_I8_TYPE,     // "i8"
+  TOKEN_I16_TYPE,    // "i16"
+  TOKEN_I32_TYPE,    // "i32"
+  TOKEN_I64_TYPE,    // "i64"
+  TOKEN_ISIZE_TYPE,  // "isize"
+  TOKEN_CHAR_TYPE,   // "char"
   TOKEN_DOUBLE_TYPE, // "double"
 
   // Operators

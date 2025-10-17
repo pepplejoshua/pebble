@@ -52,6 +52,7 @@ typedef enum {
   AST_EXPR_ARRAY_LITERAL,
   AST_EXPR_ARRAY_REPEAT,
   AST_EXPR_IMPLICIT_CAST,
+  AST_EXPR_SIZEOF,
 
   // Type expressions
   AST_TYPE_NAMED,    // int, float, CustomType
@@ -225,6 +226,9 @@ struct AstNode {
       AstNode *expr; // Expression being cast
       Type *target_type;
     } implicit_cast;
+    struct {
+      AstNode *type_expr; // type to get size of
+    } sizeof_expr;
 
     // Type expressions
     struct {

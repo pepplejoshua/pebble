@@ -995,6 +995,24 @@ Type *check_expression(AstNode *expr) {
     expr->resolved_type = type_bool;
     return type_bool;
 
+  case AST_EXPR_SIZEOF: {
+    AstNode *type_expr = expr->data.sizeof_expr.type_expr;
+
+    // Resolve the type expression to get the actual Type*
+    Type *type = resolve_type_expression(type_expr);
+    if (!type) {
+      checker_error(expr->loc, "Invalid type in sizeof");
+      return NULL;
+    }
+
+    // Store the resolved Type for codegen
+    expr->data.sizeof_expr.type_expr->resolved_type = type;
+
+    // sizeof always returns int
+    expr->resolved_type = type_int;
+    return type_int;
+  }
+
   case AST_EXPR_IDENTIFIER: {
     const char *name = expr->data.ident.name;
     Symbol *sym = scope_lookup(current_scope, name);
