@@ -2,8 +2,8 @@
 #define TYPE_H
 
 #include "uthash.h"
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 // Forward declarations
 typedef struct Type Type;
@@ -11,64 +11,64 @@ typedef struct TypeEntry TypeEntry;
 
 // Type kinds
 typedef enum {
-    TYPE_INT,
-    TYPE_FLOAT,
-    TYPE_BOOL,
-    TYPE_STRING,
-    TYPE_VOID,
-    TYPE_POINTER,
-    TYPE_ARRAY,
-    TYPE_SLICE,
-    TYPE_STRUCT,
-    TYPE_FUNCTION,
-    TYPE_TUPLE,
-    TYPE_UNRESOLVED,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_BOOL,
+  TYPE_STRING,
+  TYPE_VOID,
+  TYPE_POINTER,
+  TYPE_ARRAY,
+  TYPE_SLICE,
+  TYPE_STRUCT,
+  TYPE_FUNCTION,
+  TYPE_TUPLE,
+  TYPE_UNRESOLVED,
 } TypeKind;
 
 // Type structure
 struct Type {
-    TypeKind kind;
-    char *canonical_name;
-    char *declared_name;
+  TypeKind kind;
+  char *canonical_name;
+  char *declared_name;
 
-    union {
-        struct {
-            Type *base;      // Base type for pointer
-        } ptr;
+  union {
+    struct {
+      Type *base; // Base type for pointer
+    } ptr;
 
-        struct {
-            Type *element;   // Element type
-            size_t size;     // Array size
-        } array;
+    struct {
+      Type *element; // Element type
+      size_t size;   // Array size
+    } array;
 
-        struct {
-            Type *element;   // Element type
-        } slice;
+    struct {
+      Type *element; // Element type
+    } slice;
 
-        struct {
-            char **field_names;     // Array of field names
-            Type **field_types;     // Array of field types
-            size_t field_count;     // Number of fields
-        } struct_data;
+    struct {
+      char **field_names; // Array of field names
+      Type **field_types; // Array of field types
+      size_t field_count; // Number of fields
+    } struct_data;
 
-        struct {
-            Type **param_types;     // Parameter types
-            size_t param_count;     // Number of parameters
-            Type *return_type;      // Return type
-        } func;
+    struct {
+      Type **param_types; // Parameter types
+      size_t param_count; // Number of parameters
+      Type *return_type;  // Return type
+    } func;
 
-        struct {
-            Type **element_types;   // Tuple element types
-            size_t element_count;   // Number of elements
-        } tuple;
-    } data;
+    struct {
+      Type **element_types; // Tuple element types
+      size_t element_count; // Number of elements
+    } tuple;
+  } data;
 };
 
 // Type table entry (name -> type mapping)
 struct TypeEntry {
-    char *name;              // Key for hash table
-    Type *type;              // Pointer to the type
-    UT_hash_handle hh;       // Hash handle
+  char *name;        // Key for hash table
+  Type *type;        // Pointer to the type
+  UT_hash_handle hh; // Hash handle
 };
 
 // Built-in types
@@ -90,9 +90,12 @@ Type *type_create(TypeKind kind);
 Type *type_create_pointer(Type *base, bool canonicalize);
 Type *type_create_slice(Type *element, bool canonicalize);
 Type *type_create_array(Type *element, size_t size, bool canonicalize);
-Type *type_create_struct(char **field_names, Type **field_types, size_t field_count);
-Type *type_create_tuple(Type **element_types, size_t element_count, bool canonicalize);
-Type *type_create_function(Type **param_types, size_t param_count, Type *return_type, bool canonicalize);
+Type *type_create_struct(char **field_names, Type **field_types,
+                         size_t field_count);
+Type *type_create_tuple(Type **element_types, size_t element_count,
+                        bool canonicalize);
+Type *type_create_function(Type **param_types, size_t param_count,
+                           Type *return_type, bool canonicalize);
 
 // Type lookup and registration
 Type *type_lookup(const char *name);

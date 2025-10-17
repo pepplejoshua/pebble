@@ -531,7 +531,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   }
   case AST_STMT_FOR: {
     AstNode *init = stmt->data.for_stmt.init;
-    
+
     // Check if init is a variable declaration
     if (init->kind == AST_DECL_VARIABLE) {
       // Generate: for (int i = 0; cond; update) { body }
