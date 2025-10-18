@@ -35,6 +35,7 @@ typedef enum {
   TOKEN_SIZEOF,
   TOKEN_AS,
   TOKEN_NIL,
+  TOKEN_EXTERN,
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"

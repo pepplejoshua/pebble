@@ -13,6 +13,7 @@ typedef struct Type Type;
 // Symbol kinds
 typedef enum {
   SYMBOL_FUNCTION,
+  SYMBOL_EXTERN_FUNCTION,
   SYMBOL_VARIABLE,
   SYMBOL_CONSTANT,
   SYMBOL_TYPE

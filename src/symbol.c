@@ -89,6 +89,7 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl) {
   // Initialize kind-specific data
   switch (kind) {
   case SYMBOL_FUNCTION:
+  case SYMBOL_EXTERN_FUNCTION:
     symbol->data.func.local_scope = NULL; // Created later
     break;
   case SYMBOL_VARIABLE:
