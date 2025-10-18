@@ -34,6 +34,7 @@ typedef enum {
   TOKEN_CONTINUE,
   TOKEN_SIZEOF,
   TOKEN_AS,
+  TOKEN_NIL,
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"

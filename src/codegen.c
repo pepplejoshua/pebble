@@ -690,6 +690,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
+  case AST_EXPR_LITERAL_NIL:
+    emit_string(cg, "NULL");
+    break;
+
   case AST_EXPR_IDENTIFIER:
     emit_string(cg, expr->data.ident.name);
     break;

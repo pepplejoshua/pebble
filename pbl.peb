@@ -1,12 +1,15 @@
-type Point = (int, int);
+fn deref(a *int) void {
+    if a == nil {
+        print "ptr to nil";
+    } else {
+        print *a;
+    }
+}
 
 fn main() int {
-    var a = 2;
-    var b = &a as *void;
-    var c = b as *int;
-    *c = *c + 1;
-    print a;
-
-    var d Point = (1, 2);
+    var a *int = nil;
+    var b = 5;
+    deref(a);
+    deref(&b);
     return 0;
 }

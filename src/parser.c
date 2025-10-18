@@ -963,6 +963,12 @@ AstNode *parse_primary(Parser *parser) {
     return lit;
   }
 
+  if (parser_match(parser, TOKEN_NIL)) {
+    Token nil_tok = parser->previous;
+    AstNode *lit = alloc_node(AST_EXPR_LITERAL_NIL, nil_tok.location);
+    return lit;
+  }
+
   // Identifier
   if (parser_match(parser, TOKEN_IDENTIFIER)) {
     Token ident = parser->previous;

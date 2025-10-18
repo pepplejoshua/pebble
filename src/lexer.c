@@ -142,6 +142,10 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     if (length == 4)
       return lexer_check_keyword(start, 4, "else", TOKEN_ELSE);
     break;
+  case 'n':
+    if (length == 3)
+      return lexer_check_keyword(start, 3, "nil", TOKEN_NIL);
+    break;
   case 'f':
     if (length > 1) {
       switch (start[1]) {

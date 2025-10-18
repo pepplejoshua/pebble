@@ -225,71 +225,71 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
 
   switch (type->kind) {
   case TYPE_INT:
-    canonical_name = str_dup("int");
+    canonical_name = type_int->canonical_name;
     break;
 
   case TYPE_FLOAT:
-    canonical_name = str_dup("float");
+    canonical_name = type_float->canonical_name;
     break;
 
   case TYPE_BOOL:
-    canonical_name = str_dup("bool");
+    canonical_name = type_bool->canonical_name;
     break;
 
   case TYPE_STRING:
-    canonical_name = str_dup("str");
+    canonical_name = type_string->canonical_name;
     break;
 
   case TYPE_VOID:
-    canonical_name = str_dup("void");
+    canonical_name = type_void->canonical_name;
     break;
 
   case TYPE_U8:
-    canonical_name = str_dup("u8");
+    canonical_name = type_u8->canonical_name;
     break;
 
   case TYPE_U16:
-    canonical_name = str_dup("u16");
+    canonical_name = type_u16->canonical_name;
     break;
 
   case TYPE_U32:
-    canonical_name = str_dup("u32");
+    canonical_name = type_u32->canonical_name;
     break;
 
   case TYPE_U64:
-    canonical_name = str_dup("u64");
+    canonical_name = type_u64->canonical_name;
     break;
 
   case TYPE_USIZE:
-    canonical_name = str_dup("usize");
+    canonical_name = type_usize->canonical_name;
     break;
 
   case TYPE_I8:
-    canonical_name = str_dup("i8");
+    canonical_name = type_i8->canonical_name;
     break;
 
   case TYPE_I16:
-    canonical_name = str_dup("i16");
+    canonical_name = type_i16->canonical_name;
     break;
 
   case TYPE_I32:
-    canonical_name = str_dup("i32");
+    canonical_name = type_i32->canonical_name;
     break;
 
   case TYPE_I64:
-    canonical_name = str_dup("i64");
+    canonical_name = type_i64->canonical_name;
     break;
 
   case TYPE_ISIZE:
-    canonical_name = str_dup("isize");
+    canonical_name = type_isize->canonical_name;
     break;
 
   case TYPE_CHAR:
-    canonical_name = str_dup("char");
+    canonical_name = type_char->canonical_name;
     break;
 
   case TYPE_DOUBLE:
-    canonical_name = str_dup("double");
+    canonical_name = type_double->canonical_name;
     break;
 
   case TYPE_POINTER: {
@@ -889,6 +889,7 @@ static bool type_is_comparable(Type *type) {
   case TYPE_FLOAT:
   case TYPE_BOOL:
   case TYPE_STRING:
+  case TYPE_POINTER:
     return true;
   default:
     return false;
@@ -917,7 +918,18 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
   }
 
   // Check if implicit conversion is allowed
-  if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_SLICE) {
+  if (expr_type->kind == TYPE_POINTER && target_type->kind == TYPE_POINTER) {
+    // *void to *T || *T to *void
+    if (expr_type->data.ptr.base == type_void ||
+        target_type->data.ptr.base == type_void) {
+      AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+      cast->kind = AST_EXPR_IMPLICIT_CAST;
+      cast->loc = expr->loc;
+      cast->data.implicit_cast.expr = expr;
+      cast->data.implicit_cast.target_type = target_type;
+      return cast;
+    }
+  } else if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_SLICE) {
     // Array [N]T can convert to slice []T
     if (type_equals(expr_type->data.array.element,
                     target_type->data.slice.element)) {
@@ -981,12 +993,22 @@ static bool is_valid_cast(Type *from, Type *to) {
   return false;
 }
 
+static bool is_nil_type(Type *type) {
+  return type->kind == TYPE_POINTER && type->data.ptr.base->kind == TYPE_VOID;
+}
+
 Type *check_expression(AstNode *expr) {
   if (!expr) {
     return NULL;
   }
 
   switch (expr->kind) {
+  case AST_EXPR_LITERAL_NIL: {
+    Type *void_ptr = type_create_pointer(type_void, true);
+    expr->resolved_type = void_ptr;
+    return void_ptr;
+  }
+
   case AST_EXPR_LITERAL_INT:
     expr->resolved_type = type_int;
     return type_int;
@@ -1166,6 +1188,15 @@ Type *check_expression(AstNode *expr) {
                       "equality comparison not supported for this type");
         return NULL;
       }
+
+      // Allow comparison if one operand is nil (void*) and the other is a
+      // pointer
+      if ((is_nil_type(left) && right->kind == TYPE_POINTER) ||
+          (is_nil_type(right) && left->kind == TYPE_POINTER)) {
+        expr->resolved_type = type_bool;
+        return type_bool;
+      }
+
       if (!type_equals(left, right)) {
         checker_error(expr->loc, "type mismatch in equality check");
         return NULL;
