@@ -1029,6 +1029,17 @@ Type *check_expression(AstNode *expr) {
     expr->resolved_type = type_bool;
     return type_bool;
 
+  case AST_EXPR_GROUPED_EXPR: {
+    Type *resolved_type = check_expression(expr->data.grouped_expr.inner_expr);
+
+    if (!resolved_type) {
+      return NULL;
+    }
+
+    expr->resolved_type = resolved_type;
+    return resolved_type;
+  }
+
   case AST_EXPR_SIZEOF: {
     AstNode *type_expr = expr->data.sizeof_expr.type_expr;
 

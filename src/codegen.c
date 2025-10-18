@@ -760,8 +760,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_LITERAL_BOOL:
     emit_string(cg, expr->data.bool_lit.value ? "true" : "false");
     break;
-  case AST_EXPR_BINARY_OP: {
+
+  case AST_EXPR_GROUPED_EXPR:
     emit_string(cg, "(");
+    emit_expr(cg, expr->data.grouped_expr.inner_expr);
+    emit_string(cg, ")");
+    break;
+
+  case AST_EXPR_BINARY_OP: {
     emit_expr(cg, expr->data.binop.left);
     emit_string(cg, " ");
     // Map BinaryOp to C op string
@@ -807,7 +813,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     }
     emit_string(cg, " ");
     emit_expr(cg, expr->data.binop.right);
-    emit_string(cg, ")");
     break;
   }
 

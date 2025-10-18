@@ -1020,7 +1020,9 @@ AstNode *parse_primary(Parser *parser) {
     } else {
       // No comma - just a grouped expression, return the inner expression
       parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
-      return elements[0];
+      AstNode *grouped_expr = alloc_node(AST_EXPR_GROUPED_EXPR, loc);
+      grouped_expr->data.grouped_expr.inner_expr = elements[0];
+      return grouped_expr;
     }
   }
 
