@@ -235,7 +235,7 @@ void emit_type_name(Codegen *cg, Type *type) {
     emit_string(cg, "bool");
     break;
   case TYPE_STRING:
-    emit_string(cg, "char*");
+    emit_string(cg, "const char*");
     break;
   case TYPE_VOID:
     emit_string(cg, "void");

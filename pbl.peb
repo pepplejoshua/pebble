@@ -1,11 +1,13 @@
-extern fn malloc(size usize) *void;
-extern fn free(ptr *void) void;
+extern fn system(cmd str) int;
+extern fn strlen(s str) usize;
 
 fn main() int {
-    var num *int = malloc(sizeof int);
-    *num = 42;
-    print *num;
+    var greeting = "hi";
+    print strlen(greeting);
 
-    free(num);
+    // show folder contents
+    system("ls -l");
+
+
     return 0;
 }
