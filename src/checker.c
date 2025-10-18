@@ -1108,6 +1108,24 @@ Type *check_expression(AstNode *expr) {
     // Arithmetic: +, -, *, /
     if (op == BINOP_ADD || op == BINOP_SUB || op == BINOP_MUL ||
         op == BINOP_DIV) {
+      // Handle Pointer arithmetic
+      if (op == BINOP_ADD) {
+        if (left->kind == TYPE_POINTER && right->kind == TYPE_INT) {
+          expr->resolved_type = left;
+          return left;
+        } else if (left->kind == TYPE_INT && right->kind == TYPE_POINTER) {
+          expr->resolved_type = right;
+          return right;
+        }
+      }
+      if (op == BINOP_SUB) {
+        if (left->kind == TYPE_POINTER && right->kind == TYPE_INT) {
+          expr->resolved_type = left;
+          return left;
+        }
+      }
+
+      // Otherwise, perform normal checks
       if (!type_is_numeric(left) || !type_is_numeric(right)) {
         checker_error(expr->loc,
                       "arithmetic operation requires numeric operands");
