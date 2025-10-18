@@ -1,0 +1,80 @@
+extern fn malloc(size usize) *void;
+extern fn realloc(ptr *void, size usize) *void;
+extern fn free(ptr *void) void;
+extern fn memcpy(dst *void, src *void, n usize) *void;
+extern fn strlen(s str) usize;
+
+type String = struct {
+    data *char,
+    length usize,
+    capacity usize
+};
+
+fn string_new() *String {
+    var s *String = malloc(sizeof String);
+    s.capacity = 16;
+    s.length = 0;
+    s.data = malloc(16);
+    *(s.data) = '\0';  // Initial null terminator
+    return s;
+}
+
+fn string_free(s *String) void {
+    free(s.data);
+    free(s);
+}
+
+fn string_grow(s *String, new_capacity usize) void {
+    s.data = realloc(s.data, new_capacity);
+    s.capacity = new_capacity;
+}
+
+fn string_append_char(s *String, c char) void {
+    // Grow if needed
+    if s.length + 1 >= s.capacity {
+        string_grow(s, s.capacity * 2);
+    }
+
+    // Append character using pointer arithmetic
+    *(s.data + s.length) = c;
+    s.length = s.length + 1;
+    *(s.data + s.length) = '\0';  // Null terminator
+}
+
+fn string_append_str(s *String, new_str str) void {
+    var len = strlen(new_str);
+
+    // Calculate needed capacity
+    var needed = s.length + len + 1;
+    if needed > s.capacity {
+        var new_cap = s.capacity;
+        while new_cap < needed {
+            new_cap = new_cap * 2;
+        }
+        string_grow(s, new_cap);
+    }
+
+    // Copy using memcpy
+    var dst = s.data + s.length;
+    var src = new_str as *void;
+    memcpy(dst, src, len);
+
+    s.length = s.length + len;
+    *(s.data + s.length) = '\0';
+}
+
+fn string_to_cstr(s *String) str {
+    return s.data as str;
+}
+
+fn main() int {
+    var s = string_new();
+    string_append_str(s, "Hello");
+    string_append_char(s, ' ');
+    string_append_str(s, "World!");
+
+    print string_to_cstr(s);
+
+    string_free(s);
+    return 0;
+}

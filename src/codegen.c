@@ -1018,13 +1018,39 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_MEMBER: {
-    emit_expr(cg, expr->data.member_expr.object);
-    emit_string(cg, ".");
-    if (expr->data.member_expr.member[0] >= '0' &&
-        expr->data.member_expr.member[0] <= '9') {
+    AstNode *object_expr = expr->data.member_expr.object;
+    const char *member = expr->data.member_expr.member;
+
+    // Get the type of the object expression
+    Type *object_type = object_expr->resolved_type;
+
+    // Check if the object is a pointer and prepare the operator
+    if (object_type && object_type->kind == TYPE_POINTER) {
+      Type *base_type = object_type->data.ptr.base;
+      if (base_type && base_type->kind == TYPE_STRUCT) {
+        // Pointer to struct: emit object directly, then -> (e.g., ptr->field)
+        emit_expr(cg, object_expr);
+        emit_string(cg, "->");
+      } else {
+        // Pointer to tuple, array, or slice: emit (*object). (e.g., (*ptr).len
+        // or (*ptr)._0)
+        emit_string(cg, "(*");
+        emit_expr(cg, object_expr);
+        emit_string(cg, ").");
+      }
+    } else {
+      // Non-pointer: emit object, then . (e.g., obj.field or t._0)
+      emit_expr(cg, object_expr);
+      emit_string(cg, ".");
+    }
+
+    // For tuple access, prepend underscore to numeric fields
+    if (member[0] >= '0' && member[0] <= '9') {
       emit_string(cg, "_");
     }
-    emit_string(cg, expr->data.member_expr.member);
+
+    // Emit the member name
+    emit_string(cg, member);
     break;
   }
 

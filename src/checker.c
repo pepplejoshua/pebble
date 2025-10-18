@@ -890,9 +890,10 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
 // Helper: Check if a type supports equality comparison
 static bool type_is_comparable(Type *type) {
+  if (type_is_numeric(type))
+    return true;
+
   switch (type->kind) {
-  case TYPE_INT:
-  case TYPE_FLOAT:
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_POINTER:
@@ -993,6 +994,18 @@ static bool is_valid_cast(Type *from, Type *to) {
     return true;
   }
   if (from->kind == TYPE_POINTER && type_is_numeric(to)) {
+    return true;
+  }
+
+  // str (which is const char *) -> *void
+  if (from == type_string && to->kind == TYPE_POINTER &&
+      to->data.ptr.base == type_void) {
+    return true;
+  }
+
+  // *char to str (which is const char *)
+  if (from->kind == TYPE_POINTER && from->data.ptr.base == type_char &&
+      to == type_string) {
     return true;
   }
 
@@ -1110,16 +1123,16 @@ Type *check_expression(AstNode *expr) {
         op == BINOP_DIV) {
       // Handle Pointer arithmetic
       if (op == BINOP_ADD) {
-        if (left->kind == TYPE_POINTER && right->kind == TYPE_INT) {
+        if (left->kind == TYPE_POINTER && type_is_numeric(right)) {
           expr->resolved_type = left;
           return left;
-        } else if (left->kind == TYPE_INT && right->kind == TYPE_POINTER) {
+        } else if (type_is_numeric(left) && right->kind == TYPE_POINTER) {
           expr->resolved_type = right;
           return right;
         }
       }
       if (op == BINOP_SUB) {
-        if (left->kind == TYPE_POINTER && right->kind == TYPE_INT) {
+        if (left->kind == TYPE_POINTER && type_is_numeric(right)) {
           expr->resolved_type = left;
           return left;
         }
@@ -1230,6 +1243,26 @@ Type *check_expression(AstNode *expr) {
           (is_nil_type(right) && left->kind == TYPE_POINTER)) {
         expr->resolved_type = type_bool;
         return type_bool;
+      } else if (left->kind == TYPE_INT &&
+                 (right->kind == TYPE_U8 || right->kind == TYPE_U16 ||
+                  right->kind == TYPE_U32 || right->kind == TYPE_U64 ||
+                  right->kind == TYPE_USIZE || right->kind == TYPE_I8 ||
+                  right->kind == TYPE_I16 || right->kind == TYPE_I32 ||
+                  right->kind == TYPE_I64 || right->kind == TYPE_ISIZE)) {
+        // Promote int to sized integer type
+        expr->data.binop.left =
+            maybe_insert_cast(expr->data.binop.left, left, right);
+        left = right;
+      } else if (right->kind == TYPE_INT &&
+                 (left->kind == TYPE_U8 || left->kind == TYPE_U16 ||
+                  left->kind == TYPE_U32 || left->kind == TYPE_U64 ||
+                  left->kind == TYPE_USIZE || left->kind == TYPE_I8 ||
+                  left->kind == TYPE_I16 || left->kind == TYPE_I32 ||
+                  left->kind == TYPE_I64 || left->kind == TYPE_ISIZE)) {
+        // Promote int to sized integer type
+        expr->data.binop.right =
+            maybe_insert_cast(expr->data.binop.right, right, left);
+        right = left;
       }
 
       if (!type_equals(left, right)) {
@@ -1465,9 +1498,20 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // Handle tuple member access (numeric fields: .0, .1, .2)
-    if (object_type->kind == TYPE_TUPLE) {
-      // Parse field name as number
+    // Flag to track if we're dealing with a pointer
+    Type *base_type = object_type;
+
+    // Handle pointer dereferencing
+    if (object_type->kind == TYPE_POINTER) {
+      base_type = object_type->data.ptr.base;
+      if (!base_type) {
+        checker_error(expr->loc, "invalid pointer type with no base type");
+        return NULL;
+      }
+    }
+
+    // Handle tuple member access
+    if (base_type->kind == TYPE_TUPLE) {
       char *endptr;
       long index = strtol(field_name, &endptr, 10);
 
@@ -1477,50 +1521,47 @@ Type *check_expression(AstNode *expr) {
         return NULL;
       }
 
-      // Check bounds
-      if ((size_t)index >= object_type->data.tuple.element_count) {
+      if ((size_t)index >= base_type->data.tuple.element_count) {
         checker_error(
             expr->loc,
             "tuple index %ld is out of bounds (tuple has %zu elements)", index,
-            object_type->data.tuple.element_count);
+            base_type->data.tuple.element_count);
         return NULL;
       }
 
-      // Return the element type at this index
-      expr->resolved_type = object_type->data.tuple.element_types[index];
-      return object_type->data.tuple.element_types[index];
-    } else if (object_type->kind == TYPE_ARRAY ||
-               object_type->kind == TYPE_SLICE) {
-      // Arrays and slices have only 'len' field
+      expr->resolved_type = base_type->data.tuple.element_types[index];
+      return expr->resolved_type;
+    }
+    // Handle array or slice member access
+    else if (base_type->kind == TYPE_ARRAY || base_type->kind == TYPE_SLICE) {
       if (strcmp(field_name, "len") == 0) {
         expr->resolved_type = type_int;
         return type_int;
       } else {
         const char *type_name =
-            object_type->kind == TYPE_ARRAY ? "array" : "slice";
+            base_type->kind == TYPE_ARRAY ? "array" : "slice";
         checker_error(expr->loc, "%s has only 'len' field", type_name);
         return NULL;
       }
-    } else if (object_type->kind == TYPE_STRUCT) {
-      // Look up the field in the struct
-      size_t field_count = object_type->data.struct_data.field_count;
-      char **field_names = object_type->data.struct_data.field_names;
-      Type **field_types = object_type->data.struct_data.field_types;
+    }
+    // Handle struct member access
+    else if (base_type->kind == TYPE_STRUCT) {
+      size_t field_count = base_type->data.struct_data.field_count;
+      char **field_names = base_type->data.struct_data.field_names;
+      Type **field_types = base_type->data.struct_data.field_types;
 
       for (size_t i = 0; i < field_count; i++) {
         if (strcmp(field_names[i], field_name) == 0) {
-          // Found the field!
           expr->resolved_type = field_types[i];
           return field_types[i];
         }
       }
 
-      // Field not found
       checker_error(expr->loc, "struct has no field named '%s'", field_name);
       return NULL;
     } else {
-      checker_error(object_expr->loc,
-                    "member access requires struct, array, or slice type");
+      checker_error(object_expr->loc, "member access requires struct, array, "
+                                      "slice, or pointer to one of these");
       return NULL;
     }
   }
