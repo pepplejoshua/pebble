@@ -19,6 +19,7 @@ typedef struct {
 // Tagged union for AST nodes
 typedef enum {
   AST_DECL_FUNCTION,
+  AST_DECL_EXTERN_FUNC,
   AST_DECL_VARIABLE,
   AST_DECL_CONSTANT,
   AST_DECL_TYPE,
@@ -105,6 +106,12 @@ struct AstNode {
       AstNode *return_type;
       AstNode *body;
     } func_decl;
+    struct {
+      char *name;
+      FuncParam *params;
+      size_t param_count;
+      AstNode *return_type;
+    } extern_func;
     struct {
       char *name;
       AstNode *type_expr;

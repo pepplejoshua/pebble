@@ -224,9 +224,14 @@ AstNode *parse_declaration(Parser *parser) {
     return parse_function_decl(parser);
   }
 
+  if (parser_match(parser, TOKEN_EXTERN)) {
+    return parse_extern_function(parser);
+  }
+
   if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR)) {
     return parse_variable_decl(parser);
   }
+
   if (parser_match(parser, TOKEN_TYPE)) {
     return parse_type_decl(parser);
   }
@@ -303,6 +308,60 @@ AstNode *parse_function_decl(Parser *parser) {
   func->data.func_decl.param_count = param_count;
   func->data.func_decl.return_type = return_type;
   func->data.func_decl.body = body;
+  return func;
+}
+
+AstNode *parse_extern_function(Parser *parser) {
+  // extern fn name(params) return_type;
+  parser_consume(parser, TOKEN_FN,
+                 "Extern can only be applied to functions at this time.");
+
+  Token name =
+      parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
+
+  parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
+
+  // Parse parameters
+  FuncParam *params = NULL;
+  size_t param_count = 0;
+
+  if (!parser_check(parser, TOKEN_RPAREN)) {
+    // We have parameters
+    // For now, allocate space for up to 16 parameters (we'll improve this
+    // later)
+    params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+
+    do {
+      if (param_count >= 16) {
+        parser_error(parser, "Too many parameters (max 16)");
+        break;
+      }
+
+      Token param_name =
+          parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+      AstNode *param_type = parse_type_expression(parser);
+
+      params[param_count].name =
+          param_name.lexeme; // Already allocated by lexer
+      params[param_count].type = param_type;
+      param_count++;
+
+    } while (parser_match(parser, TOKEN_COMMA));
+  }
+
+  parser_consume(parser, TOKEN_RPAREN, "Expected ')' after parameters");
+
+  // Return type
+  AstNode *return_type = parse_type_expression(parser);
+
+  parser_consume(parser, TOKEN_SEMICOLON,
+                 "Expected ';' after extern function declaration");
+
+  AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+  func->data.func_decl.name = str_dup(name.lexeme);
+  func->data.func_decl.params = params;
+  func->data.func_decl.param_count = param_count;
+  func->data.func_decl.return_type = return_type;
   return func;
 }
 
