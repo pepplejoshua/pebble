@@ -172,7 +172,7 @@ void emit_program(Codegen *cg) {
   // Emit func prototypes
   cg->current_section = "forward_vars_funcs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_FUNCTION) {
+    if (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_EXTERN_FUNCTION) {
       Type *func = sym->type; // Assume sym->ast points to func node
       // Emit prototype
       emit_type_name(cg, func->data.func.return_type);

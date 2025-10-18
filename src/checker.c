@@ -62,6 +62,10 @@ static void collect_declaration(AstNode *decl) {
     name = decl->data.func_decl.name;
     kind = SYMBOL_FUNCTION;
     break;
+  case AST_DECL_EXTERN_FUNC:
+    name = decl->data.extern_func.name;
+    kind = SYMBOL_EXTERN_FUNCTION;
+    break;
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
     kind = SYMBOL_VARIABLE;
@@ -681,7 +685,7 @@ static void check_function_signatures(void) {
   // Iterate over all symbols in global scope
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     // Only process function declarations
-    if (sym->kind != SYMBOL_FUNCTION) {
+    if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_EXTERN_FUNCTION) {
       continue;
     }
 
@@ -713,30 +717,32 @@ static void check_function_signatures(void) {
     sym->type = type_create_function(param_types, param_count, return_type,
                                      !checker_state.in_type_resolution);
 
-    // Create function's local scope with global as parent
-    Scope *func_scope = scope_create(global_scope);
-    sym->data.func.local_scope = func_scope;
-
     // Add parameters as symbols in the function scope
-    for (size_t i = 0; i < param_count; i++) {
-      if (!param_types[i]) {
-        continue; // Skip if type resolution failed
+    if (sym->kind == SYMBOL_FUNCTION) {
+      // Create function's local scope with global as parent
+      Scope *func_scope = scope_create(global_scope);
+      sym->data.func.local_scope = func_scope;
+      for (size_t i = 0; i < param_count; i++) {
+        if (!param_types[i]) {
+          continue; // Skip if type resolution failed
+        }
+
+        // Create parameter symbol
+        Symbol *param_sym =
+            symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
+        param_sym->type = param_types[i];
+        param_sym->data.var.is_global = false; // Parameters are local
+
+        // Check for duplicate parameter names
+        Symbol *existing = scope_lookup_local(func_scope, params[i].name);
+        if (existing) {
+          checker_error(decl->loc, "duplicate parameter name '%s'",
+                        params[i].name);
+          continue;
+        }
+
+        scope_add_symbol(func_scope, param_sym);
       }
-
-      // Create parameter symbol
-      Symbol *param_sym = symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
-      param_sym->type = param_types[i];
-      param_sym->data.var.is_global = false; // Parameters are local
-
-      // Check for duplicate parameter names
-      Symbol *existing = scope_lookup_local(func_scope, params[i].name);
-      if (existing) {
-        checker_error(decl->loc, "duplicate parameter name '%s'",
-                      params[i].name);
-        continue;
-      }
-
-      scope_add_symbol(func_scope, param_sym);
     }
   }
 }
@@ -1055,7 +1061,7 @@ Type *check_expression(AstNode *expr) {
 
     // sizeof always returns int
     expr->resolved_type = type_int;
-    return type_int;
+    return type_usize;
   }
 
   case AST_EXPR_IDENTIFIER: {
@@ -1303,7 +1309,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Verify it's actually a function
-    if (func_sym->kind != SYMBOL_FUNCTION) {
+    if (func_sym->kind != SYMBOL_FUNCTION &&
+        func_sym->kind != SYMBOL_EXTERN_FUNCTION) {
       checker_error(func_expr->loc, "'%s' is not a function", func_name);
       return NULL;
     }
