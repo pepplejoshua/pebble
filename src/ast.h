@@ -20,6 +20,7 @@ typedef struct {
 typedef enum {
   AST_DECL_FUNCTION,
   AST_DECL_EXTERN_FUNC,
+  AST_DECL_EXTERN_TYPE,
   AST_DECL_VARIABLE,
   AST_DECL_CONSTANT,
   AST_DECL_TYPE,
@@ -112,6 +113,9 @@ struct AstNode {
       size_t param_count;
       AstNode *return_type;
     } extern_func;
+    struct {
+      char *name;
+    } extern_type;
     struct {
       char *name;
       AstNode *type_expr;

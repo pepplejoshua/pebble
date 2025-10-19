@@ -35,6 +35,7 @@ typedef enum {
   TYPE_FUNCTION,
   TYPE_TUPLE,
   TYPE_UNRESOLVED,
+  TYPE_OPAQUE,
 } TypeKind;
 
 // Type structure

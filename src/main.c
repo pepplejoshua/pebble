@@ -20,7 +20,7 @@ static char *read_file(const char *path) {
   size_t file_size = ftell(file);
   rewind(file);
 
-  char *buffer = malloc(file_size + 1);
+  char *buffer = arena_alloc(&long_lived, file_size + 1);
   if (!buffer) {
     fprintf(stderr, "Not enough memory to read file '%s'\n", path);
     fclose(file);
@@ -31,7 +31,6 @@ static char *read_file(const char *path) {
   if (bytes_read < file_size) {
     fprintf(stderr, "Could not read file '%s'\n", path);
     fclose(file);
-    free(buffer);
     return NULL;
   }
 
@@ -93,7 +92,6 @@ static bool compile_file(const char *filename) {
 
   if (parser.had_error) {
     printf("Compilation failed due to parse errors\n");
-    free(source);
     return false;
   }
 
@@ -104,21 +102,18 @@ static bool compile_file(const char *filename) {
   if (!collect_globals(program->data.block_stmt.stmts,
                        program->data.block_stmt.stmt_count)) {
     printf("Compilation failed during symbol collection\n");
-    free(source);
     return false;
   }
 
   // Pass 3: Type check globals
   if (!check_globals()) {
     printf("Compilation failed during type checking\n");
-    free(source);
     return false;
   }
 
   // Pass 4: Type check function bodies
   if (!check_function_bodies()) {
     printf("Compilation failed during function body checking\n");
-    free(source);
     // debug_print_type_table();
     return false;
   }
@@ -145,7 +140,6 @@ static bool compile_file(const char *filename) {
   }
   printf("Compiled to output executable\n");
 
-  free(source);
   return true;
 }
 

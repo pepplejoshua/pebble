@@ -239,7 +239,7 @@ void type_register(const char *name, Type *type) {
   assert(name && type);
 
   TypeEntry *entry = arena_alloc(&long_lived, sizeof(TypeEntry));
-  entry->name = strdup(name);
+  entry->name = str_dup(name);
   entry->type = type;
   HASH_ADD_STR(type_table, name, entry);
 }
@@ -393,6 +393,7 @@ char *compute_canonical_name(Type *type) {
   case TYPE_ISIZE:
   case TYPE_CHAR:
   case TYPE_DOUBLE:
+  case TYPE_OPAQUE:
     result = type->canonical_name;
     break;
 

@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "alloc.h"
 #include "ast.h"
 #include "symbol.h"
 #include "type.h"
@@ -131,7 +132,7 @@ void emit_program(Codegen *cg) {
   cg->current_section = "forward_types"; // For typedefs
   Symbol *sym, *tmp;
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_TYPE) {
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
       Type *t = type_lookup(sym->name);
       if (t)
         emit_type_if_needed(cg, t); // Emits typedef and def if struct/tuple
@@ -172,7 +173,9 @@ void emit_program(Codegen *cg) {
   // Emit func prototypes
   cg->current_section = "forward_vars_funcs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_EXTERN_FUNCTION) {
+    if (sym->kind == SYMBOL_FUNCTION) {
+      // if (sym->kind == SYMBOL_FUNCTION || sym->kind ==
+      // SYMBOL_EXTERN_FUNCTION) {
       Type *func = sym->type; // Assume sym->ast points to func node
       // Emit prototype
       emit_type_name(cg, func->data.func.return_type);
@@ -280,6 +283,9 @@ void emit_type_name(Codegen *cg, Type *type) {
     emit_type_name(cg, type->data.ptr.base);
     emit_string(cg, "*");
     break;
+  case TYPE_OPAQUE:
+    emit_string(cg, type->canonical_name);
+    break;
   case TYPE_STRUCT:
   case TYPE_TUPLE:
     emit_string(cg, type->canonical_name); // Just "Node" or "tuple_int_int",
@@ -369,7 +375,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     cg->current_section = old_section;
 
     // Insert into declared_types hash
-    decl_entry = malloc(sizeof(CodegenTypeEntry));
+    decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
     decl_entry->key = str_dup(canonical); // Persist key
     HASH_ADD_STR(cg->declared_types, key, decl_entry);
   }
@@ -432,7 +438,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       cg->current_section = old_section;
 
       // Insert into defined_types hash to prevent duplicates
-      def_entry = malloc(sizeof(CodegenTypeEntry));
+      def_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
       def_entry->key = str_dup(canonical); // Persist key
       HASH_ADD_STR(cg->defined_types, key, def_entry);
     }
@@ -749,8 +755,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       char buf[2] = {c, '\0'};
       emit_string(cg, buf);
     } else {
-      // Non-printable or non-ASCII (e.g., control characters, extended chars) —
-      // use fallback
+      // Non-printable or non-ASCII (e.g., control characters, extended chars)
+      // — use fallback
       emit_string(cg, "?");
     }
     emit_string(cg, "'");
@@ -1032,8 +1038,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
       } else {
-        // Pointer to tuple, array, or slice: emit (*object). (e.g., (*ptr).len
-        // or (*ptr)._0)
+        // Pointer to tuple, array, or slice: emit (*object). (e.g.,
+        // (*ptr).len or (*ptr)._0)
         emit_string(cg, "(*");
         emit_expr(cg, object_expr);
         emit_string(cg, ").");

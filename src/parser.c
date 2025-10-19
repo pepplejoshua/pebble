@@ -225,7 +225,7 @@ AstNode *parse_declaration(Parser *parser) {
   }
 
   if (parser_match(parser, TOKEN_EXTERN)) {
-    return parse_extern_function(parser);
+    return parse_extern(parser);
   }
 
   if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR)) {
@@ -311,58 +311,68 @@ AstNode *parse_function_decl(Parser *parser) {
   return func;
 }
 
-AstNode *parse_extern_function(Parser *parser) {
+AstNode *parse_extern(Parser *parser) {
   // extern fn name(params) return_type;
-  parser_consume(parser, TOKEN_FN,
-                 "Extern can only be applied to functions at this time.");
+  if (parser_match(parser, TOKEN_FN)) {
+    Token name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                "Expected extern function name");
 
-  Token name =
-      parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
+    parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
 
-  parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
+    // Parse parameters
+    FuncParam *params = NULL;
+    size_t param_count = 0;
 
-  // Parse parameters
-  FuncParam *params = NULL;
-  size_t param_count = 0;
+    if (!parser_check(parser, TOKEN_RPAREN)) {
+      // We have parameters
+      // For now, allocate space for up to 16 parameters (we'll improve this
+      // later)
+      params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
 
-  if (!parser_check(parser, TOKEN_RPAREN)) {
-    // We have parameters
-    // For now, allocate space for up to 16 parameters (we'll improve this
-    // later)
-    params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+      do {
+        if (param_count >= 16) {
+          parser_error(parser, "Too many parameters (max 16)");
+          break;
+        }
 
-    do {
-      if (param_count >= 16) {
-        parser_error(parser, "Too many parameters (max 16)");
-        break;
-      }
+        Token param_name =
+            parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+        AstNode *param_type = parse_type_expression(parser);
 
-      Token param_name =
-          parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
-      AstNode *param_type = parse_type_expression(parser);
+        params[param_count].name =
+            param_name.lexeme; // Already allocated by lexer
+        params[param_count].type = param_type;
+        param_count++;
 
-      params[param_count].name =
-          param_name.lexeme; // Already allocated by lexer
-      params[param_count].type = param_type;
-      param_count++;
+      } while (parser_match(parser, TOKEN_COMMA));
+    }
 
-    } while (parser_match(parser, TOKEN_COMMA));
+    parser_consume(parser, TOKEN_RPAREN, "Expected ')' after parameters");
+
+    // Return type
+    AstNode *return_type = parse_type_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after extern function declaration");
+
+    AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+    func->data.func_decl.name = str_dup(name.lexeme);
+    func->data.func_decl.params = params;
+    func->data.func_decl.param_count = param_count;
+    func->data.func_decl.return_type = return_type;
+    return func;
+  } else if (parser_match(parser, TOKEN_TYPE)) {
+    Token name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                "Expected extern function name");
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after extern type declaration");
+
+    AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+    opaque_type->data.extern_type.name = str_dup(name.lexeme);
+    return opaque_type;
   }
-
-  parser_consume(parser, TOKEN_RPAREN, "Expected ')' after parameters");
-
-  // Return type
-  AstNode *return_type = parse_type_expression(parser);
-
-  parser_consume(parser, TOKEN_SEMICOLON,
-                 "Expected ';' after extern function declaration");
-
-  AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
-  func->data.func_decl.name = str_dup(name.lexeme);
-  func->data.func_decl.params = params;
-  func->data.func_decl.param_count = param_count;
-  func->data.func_decl.return_type = return_type;
-  return func;
+  parser_error(
+      parser, "extern is only allowed on function prototypes or opaque types.");
+  return NULL;
 }
 
 AstNode *parse_variable_decl(Parser *parser) {

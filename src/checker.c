@@ -55,6 +55,7 @@ void checker_error(Location loc, const char *fmt, ...) {
 static void collect_declaration(AstNode *decl) {
   char *name = NULL;
   SymbolKind kind;
+  bool is_opaque_type = false;
 
   // Extract name and kind based on declaration type
   switch (decl->kind) {
@@ -65,6 +66,11 @@ static void collect_declaration(AstNode *decl) {
   case AST_DECL_EXTERN_FUNC:
     name = decl->data.extern_func.name;
     kind = SYMBOL_EXTERN_FUNCTION;
+    break;
+  case AST_DECL_EXTERN_TYPE:
+    name = decl->data.extern_type.name;
+    kind = SYMBOL_TYPE;
+    is_opaque_type = true;
     break;
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
@@ -94,6 +100,11 @@ static void collect_declaration(AstNode *decl) {
   Symbol *symbol = symbol_create(name, kind, decl);
   if (kind == SYMBOL_VARIABLE) {
     symbol->data.var.is_global = true;
+  }
+  if (is_opaque_type) {
+    symbol->type = type_create(TYPE_OPAQUE);
+    symbol->type->declared_name = symbol->name;
+    symbol->type->canonical_name = symbol->name;
   }
   scope_add_symbol(global_scope, symbol);
 }
@@ -408,6 +419,10 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   case TYPE_UNRESOLVED:
     canonical_name = str_dup("UNRESOLVED");
     break;
+
+  case TYPE_OPAQUE:
+    canonical_name = type->canonical_name;
+    break;
   }
 
 #undef GET_COMPONENT_NAME
@@ -448,7 +463,9 @@ static void canonicalize_types(void) {
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->type) {
       // Type hasn't been canonicalized yet
-      canonicalize_type(&(sym->type));
+      // Don't attempt to canonicalize opaque types
+      if (sym->type->kind != TYPE_OPAQUE)
+        canonicalize_type(&(sym->type));
 
       // Keep type_table in sync (important for deduplication)
       if (sym->kind == SYMBOL_TYPE) {
@@ -468,8 +485,8 @@ static void check_type_declarations(void) {
   size_t worklist_capacity = 0;
 
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_TYPE) {
-      sym->type = NULL;
+    // Opaque types have their sym->type already set
+    if (sym->kind == SYMBOL_TYPE && sym->type == NULL) {
       if (worklist_size >= worklist_capacity) {
         worklist_capacity = worklist_capacity == 0 ? 8 : worklist_capacity * 2;
         worklist = realloc(worklist, sizeof(Symbol *) * worklist_capacity);
@@ -803,6 +820,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!element) {
       return NULL;
     }
+    if (element->kind == TYPE_OPAQUE) {
+      checker_error(type_expr->loc,
+                    "Cannot have array of opaque type '%s'"
+                    "(use pointer instead)",
+                    element->canonical_name);
+      return NULL;
+    }
     size_t size = type_expr->data.type_array.size;
     return type_create_array(element, size, !checker_state.in_type_resolution);
   }
@@ -812,6 +836,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // We might need to change this later
     Type *element = resolve_type_expression(type_expr->data.type_slice.element);
     if (!element) {
+      return NULL;
+    }
+    if (element->kind == TYPE_OPAQUE) {
+      checker_error(type_expr->loc,
+                    "Cannot have slice of opaque type '%s'"
+                    "(use pointer instead)",
+                    element->canonical_name);
       return NULL;
     }
     return type_create_slice(element, !checker_state.in_type_resolution);
@@ -828,6 +859,14 @@ Type *resolve_type_expression(AstNode *type_expr) {
     for (size_t i = 0; i < field_count; i++) {
       field_types[i] = resolve_type_expression(field_type_exprs[i]);
       if (!field_types[i]) {
+        return NULL;
+      }
+
+      if (field_types[i]->kind == TYPE_OPAQUE) {
+        checker_error(type_expr->loc,
+                      "Cannot have field of opaque type '%s' in struct (use "
+                      "pointer instead)",
+                      field_types[i]->canonical_name);
         return NULL;
       }
     }
@@ -870,6 +909,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
     for (size_t i = 0; i < element_count; i++) {
       element_types[i] = resolve_type_expression(element_type_exprs[i]);
       if (!element_types[i]) {
+        return NULL;
+      }
+      if (element_types[i]->kind == TYPE_OPAQUE) {
+        checker_error(type_expr->loc,
+                      "Cannot have tuple field of opaque type '%s'"
+                      "(use pointer instead)",
+                      element_types[i]->canonical_name);
         return NULL;
       }
     }
@@ -1066,6 +1112,12 @@ Type *check_expression(AstNode *expr) {
     Type *type = resolve_type_expression(type_expr);
     if (!type) {
       checker_error(expr->loc, "Invalid type in sizeof");
+      return NULL;
+    }
+
+    if (type->kind == TYPE_OPAQUE) {
+      checker_error(expr->loc, "Cannot take sizeof opaque type '%s'",
+                    type->canonical_name);
       return NULL;
     }
 
@@ -1330,6 +1382,13 @@ Type *check_expression(AstNode *expr) {
       // Dereference: *ptr returns T where ptr has type *T
       if (operand->kind != TYPE_POINTER) {
         checker_error(expr->loc, "dereference requires a pointer operand");
+        return NULL;
+      }
+
+      if (operand->data.ptr.base->kind == TYPE_OPAQUE) {
+        checker_error(expr->loc,
+                      "Cannot dereference pointer to opaque type '%s'",
+                      operand->data.ptr.base->canonical_name);
         return NULL;
       }
       expr->resolved_type = operand->data.ptr.base;
@@ -2038,6 +2097,14 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
       }
     }
 
+    if (var_type->kind == TYPE_OPAQUE) {
+      checker_error(
+          stmt->loc,
+          "Cannot declare variable of opaque type '%s' (use pointer instead)",
+          var_type->canonical_name);
+      return false;
+    }
+
     // Check for duplicate in current scope
     Symbol *existing = scope_lookup_local(current_scope, name);
     if (existing) {
@@ -2093,6 +2160,14 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     } else {
       // No type specified, infer from value
       const_type = value_type;
+    }
+
+    if (const_type->kind == TYPE_OPAQUE) {
+      checker_error(
+          stmt->loc,
+          "Cannot declare constant of opaque type '%s' (use pointer instead)",
+          const_type->canonical_name);
+      return false;
     }
 
     // Check for duplicate
