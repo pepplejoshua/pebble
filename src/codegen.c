@@ -960,15 +960,27 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_SLICE: {
     emit_string(cg, "(");
     emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, "){ &");
-    emit_expr(cg, expr->data.slice_expr.array);
-    emit_string(cg, ".data[");
-    if (expr->data.slice_expr.start) {
-      emit_expr(cg, expr->data.slice_expr.start);
+    emit_string(cg, "){ ");
+    if (expr->data.slice_expr.array->resolved_type->kind == TYPE_POINTER) {
+      emit_expr(cg, expr->data.slice_expr.array);
+      emit_string(cg, " + ");
+      if (expr->data.slice_expr.start) {
+        emit_expr(cg, expr->data.slice_expr.start);
+      } else {
+        emit_string(cg, "0");
+      }
     } else {
-      emit_string(cg, "0");
+      emit_string(cg, "&");
+      emit_expr(cg, expr->data.slice_expr.array);
+      emit_string(cg, ".data[");
+      if (expr->data.slice_expr.start) {
+        emit_expr(cg, expr->data.slice_expr.start);
+      } else {
+        emit_string(cg, "0");
+      }
+      emit_string(cg, "]");
     }
-    emit_string(cg, "], ");
+    emit_string(cg, ", ");
     if (expr->data.slice_expr.end) {
       emit_expr(cg, expr->data.slice_expr.end);
       emit_string(cg, " - ");

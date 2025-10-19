@@ -1512,9 +1512,11 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // Can slice arrays or slices
-    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE) {
-      checker_error(array_expr->loc, "cannot slice non-array/slice type");
+    // Can slice arrays, slices, or pointers
+    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE &&
+        array_type->kind != TYPE_POINTER) {
+      checker_error(array_expr->loc,
+                    "cannot slice non-array/slice/pointer type");
       return NULL;
     }
 
@@ -1522,8 +1524,27 @@ Type *check_expression(AstNode *expr) {
     Type *element_type = NULL;
     if (array_type->kind == TYPE_ARRAY) {
       element_type = array_type->data.array.element;
-    } else {
+    } else if (array_type->kind == TYPE_SLICE) {
       element_type = array_type->data.slice.element;
+    } else if (array_type->kind == TYPE_POINTER) {
+      element_type = array_type->data.ptr.base;
+    }
+
+    // Pointer slicing requires an end index
+    if (array_type->kind == TYPE_POINTER && !end_expr) {
+      checker_error(
+          expr->loc,
+          "pointer slicing requires an end index to determine slice lengthq");
+      return NULL;
+    }
+
+    // Cannot slice to create opaque slice
+    if (element_type->kind == TYPE_OPAQUE) {
+      checker_error(
+          expr->loc,
+          "Cannot have slice of opaque type '%s' (use pointer instead)",
+          element_type->canonical_name);
+      return NULL;
     }
 
     // Check start index if present
