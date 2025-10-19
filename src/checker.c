@@ -1468,9 +1468,11 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // Verify it's actually an array or slice
-    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE) {
-      checker_error(array_expr->loc, "cannot index into non-array type");
+    // Verify it's actually an array, slice, or string
+    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE &&
+        array_type->kind != TYPE_STRING) {
+      checker_error(array_expr->loc,
+                    "cannot index into non-array/slice/string type");
       return NULL;
     }
 
@@ -1487,8 +1489,16 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Return the element type
-    expr->resolved_type = array_type->data.array.element;
-    return array_type->data.array.element;
+    if (array_type->kind == TYPE_ARRAY) {
+      expr->resolved_type = array_type->data.array.element;
+      return array_type->data.array.element;
+    } else if (array_type->kind == TYPE_SLICE) {
+      expr->resolved_type = array_type->data.slice.element;
+      return array_type->data.slice.element;
+    } else { // TYPE_STRING
+      expr->resolved_type = type_char;
+      return type_char;
+    }
   }
 
   case AST_EXPR_SLICE: {
@@ -1502,9 +1512,11 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // Can slice arrays or slices
-    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE) {
-      checker_error(array_expr->loc, "cannot slice non-array/slice type");
+    // Can slice arrays, slices, or pointers
+    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE &&
+        array_type->kind != TYPE_POINTER) {
+      checker_error(array_expr->loc,
+                    "cannot slice non-array/slice/pointer type");
       return NULL;
     }
 
@@ -1512,8 +1524,27 @@ Type *check_expression(AstNode *expr) {
     Type *element_type = NULL;
     if (array_type->kind == TYPE_ARRAY) {
       element_type = array_type->data.array.element;
-    } else {
+    } else if (array_type->kind == TYPE_SLICE) {
       element_type = array_type->data.slice.element;
+    } else if (array_type->kind == TYPE_POINTER) {
+      element_type = array_type->data.ptr.base;
+    }
+
+    // Pointer slicing requires an end index
+    if (array_type->kind == TYPE_POINTER && !end_expr) {
+      checker_error(
+          expr->loc,
+          "pointer slicing requires an end index to determine slice lengthq");
+      return NULL;
+    }
+
+    // Cannot slice to create opaque slice
+    if (element_type->kind == TYPE_OPAQUE) {
+      checker_error(
+          expr->loc,
+          "Cannot have slice of opaque type '%s' (use pointer instead)",
+          element_type->canonical_name);
+      return NULL;
     }
 
     // Check start index if present
@@ -2035,6 +2066,16 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check both sides
     Type *lhs_type = check_expression(lhs);
     Type *rhs_type = check_expression(rhs);
+
+    // Check if assigning to an index of str (immutable)
+    if (lhs->kind == AST_EXPR_INDEX) {
+      AstNode *array_expr = lhs->data.index_expr.array;
+      Type *array_type = array_expr->resolved_type;
+      if (array_type && array_type == type_string) {
+        checker_error(lhs->loc, "cannot assign to index of immutable string");
+        return false;
+      }
+    }
 
     if (lhs_type && rhs_type) {
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
