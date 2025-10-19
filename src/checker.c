@@ -1468,9 +1468,11 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // Verify it's actually an array or slice
-    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE) {
-      checker_error(array_expr->loc, "cannot index into non-array type");
+    // Verify it's actually an array, slice, or string
+    if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE &&
+        array_type->kind != TYPE_STRING) {
+      checker_error(array_expr->loc,
+                    "cannot index into non-array/slice/string type");
       return NULL;
     }
 
@@ -1487,8 +1489,16 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Return the element type
-    expr->resolved_type = array_type->data.array.element;
-    return array_type->data.array.element;
+    if (array_type->kind == TYPE_ARRAY) {
+      expr->resolved_type = array_type->data.array.element;
+      return array_type->data.array.element;
+    } else if (array_type->kind == TYPE_SLICE) {
+      expr->resolved_type = array_type->data.slice.element;
+      return array_type->data.slice.element;
+    } else { // TYPE_STRING
+      expr->resolved_type = type_char;
+      return type_char;
+    }
   }
 
   case AST_EXPR_SLICE: {
@@ -2035,6 +2045,16 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check both sides
     Type *lhs_type = check_expression(lhs);
     Type *rhs_type = check_expression(rhs);
+
+    // Check if assigning to an index of str (immutable)
+    if (lhs->kind == AST_EXPR_INDEX) {
+      AstNode *array_expr = lhs->data.index_expr.array;
+      Type *array_type = array_expr->resolved_type;
+      if (array_type && array_type == type_string) {
+        checker_error(lhs->loc, "cannot assign to index of immutable string");
+        return false;
+      }
+    }
 
     if (lhs_type && rhs_type) {
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);

@@ -991,10 +991,22 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_INDEX: {
-    emit_expr(cg, expr->data.index_expr.array);
-    emit_string(cg, ".data[");
-    emit_expr(cg, expr->data.index_expr.index);
-    emit_string(cg, "]");
+    AstNode *array_expr = expr->data.index_expr.array;
+    Type *array_type = array_expr->resolved_type;
+
+    if (array_type->kind == TYPE_STRING) {
+      // For str, index directly
+      emit_expr(cg, array_expr);
+      emit_string(cg, "[");
+      emit_expr(cg, expr->data.index_expr.index);
+      emit_string(cg, "]");
+    } else {
+      // For arrays/slices, use .data
+      emit_expr(cg, array_expr);
+      emit_string(cg, ".data[");
+      emit_expr(cg, expr->data.index_expr.index);
+      emit_string(cg, "]");
+    }
     break;
   }
 
