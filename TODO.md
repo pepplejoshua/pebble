@@ -2,11 +2,108 @@
 
 ## 🚧 Missing Language Features
 
-### Statements
-- [ ] **For loops** - If desired, later
-  - `for i in 0..10 { }`
-  - Or C-style: `for (i = 0; i < 10; i++) { }`
+### Ideas from discussions with Caleb
+- extern can take a lib name. the compiler cli can take -L (lib location) and -l (lib name)
+- `if let` to safely work with pointers.
+- When a variable is declared without init, auto init with {0} in the c code.
+- In range loop, allow the user specify the binding name for their loop variable
+- Parser errors trigger a lot of segfaults
+- Allow multiple variable declarations:
+```go
+fn main() void {
+    var f int, i int;
+}
+```
+- Improve `print` to take multiple arguments. Remove default '\n' at the end of `print`.
+- Maybe add `println` with default `print`.
+- Add bounds checks for index access on arrays and slices.
+- Module system would be great. Call modules "pebbles".
+- Support destructing for tuples, arrays and structs. Start simple and allow deeply nesting / mixing them.
+- When destructuring array / slice, the "rest" of the array / slice, can be a slice itself:
+```go
+var arr [5]int = [1,2,3,4,5];
+var [a, b, ...rest] = arr; // 1, 2, [3,4,5]
+```
+- Consider Go-like syntax for methods:
+```go
+type Foo = struct {
+  value int
+};
 
+fn (f *Foo) mult(m int) int {
+  return f.value * m;
+}
+
+fn main() int {
+  var f *Foo = malloc(sizeo Foo);
+  f.value = 20;
+  print f.mult(2);
+  free(f);
+  return 0;
+}
+```
+compiling to:
+```c
+int Foo_method_mult(Foo *f, int m) {
+  return f->value * m;
+}
+
+int main() {
+  Foo *f = malloc(sizeof(Foo));
+  f->value = 20;
+  printf("%d\n", Foo_method_mult(f, 2));
+  free(f);
+  return 0;
+}
+```
+- Consider UFCS instead of method syntax, since it just works:
+```go
+fn mult(a int, b int) int => a * b;
+
+fn main() int {
+  var a = 21;
+  print a.mult(2);
+  return 0;
+}
+```
+- Get inline function-typed stuff working:
+```go
+fn add(a int, b int) int {
+  return a + b;
+}
+
+fn take_function(f fn (int, int) int, a int, b int) int => f(a, b);
+
+fn main() int {
+    let a = add;
+    print take_function(a, 10, 20);
+    return 0;
+}
+```
+compiles to:
+```c
+typedef int (*func_int_int_ret_int)(int, int);
+
+int add(int a, int b);
+int main();
+
+int add(int a, int b) {
+    return a + b;
+}
+
+int take_function(func_int_int_ret_int f, int a, int b) {
+  return f(a, b);
+}
+
+int main() {
+    const func_int_int_ret_int a = add;
+    printf("%d\n", take_function(a, 10, 20));
+    return 0;
+}
+```
+- `const` type modifier
+
+### Statements
 - [ ] **Switch/match statements** - If desired
 
 - [ ] **Defer statements** - If desired (Go-style)
@@ -65,41 +162,6 @@
 
 
 ## 🔨 Code Generation (Next Major Phase)
-
-### Pass 5: C Code Generation
-- [ ] **Setup**
-  - Create `codegen.c/h`
-  - Implement C AST builder (or direct string generation)
-
-- [ ] **Type translation**
-  - Map Pebble types → C types
-  - Generate struct definitions
-  - Generate typedefs
-
-- [ ] **Expression codegen**
-  - Literals
-  - Variables
-  - Binary/unary operations
-  - Function calls
-  - Array indexing
-  - Member access
-  - Tuple access → struct field access
-
-- [ ] **Statement codegen**
-  - Variable declarations
-  - Assignments
-  - If/while/for
-  - Return
-  - Blocks
-
-- [ ] **Function codegen**
-  - Function prototypes
-  - Function definitions
-  - Parameter handling
-
-- [ ] **Self-referential types**
-  - Handle circular struct definitions properly
-  - Forward declare structs when needed
 
 ### Build System Integration
 - [ ] **Compilation pipeline**
