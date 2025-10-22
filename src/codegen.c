@@ -34,6 +34,9 @@ static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
     *buf = realloc(*buf, *cap);
     if (!*buf) { /* error */
     }
+
+    // NOTE: zero out buffer, this fixes strange bytes appearing in source
+    memset(*buf, 0, *cap);
   }
   memcpy(*buf + *len, str, str_len);
   *len += str_len;
@@ -399,6 +402,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       // Emit full def
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
+
       emit_string(cg, "struct ");
       emit_string(cg, canonical);
       emit_string(cg, " {");
