@@ -284,19 +284,53 @@ AstNode *parse_function_decl(Parser *parser) {
   size_t param_count = 0;
 
   if (!parser_check(parser, TOKEN_RPAREN)) {
-    // We have parameters
-    // For now, allocate space for up to 16 parameters (we'll improve this
-    // later)
-    params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+    size_t param_capacity = 4;
+    params = arena_alloc(&long_lived, param_capacity * sizeof(FuncParam));
 
     do {
-      if (param_count >= 16) {
-        parser_error(parser, "Too many parameters (max 16)");
+      if (param_count >= 256) {
+        parser_error(parser, "Too many parameters (max 256)");
         break;
+      }
+
+      if (param_count >= param_capacity) {
+        param_capacity *= 2;
+        FuncParam *new_params =
+            arena_alloc(&long_lived, param_capacity * sizeof(FuncParam));
+        memcpy(new_params, params, param_count * sizeof(FuncParam));
+        params = new_params;
       }
 
       Token param_name =
           parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+
+      if (parser_check(parser, TOKEN_COMMA)) {
+        size_t current_param_count = param_count;
+
+        params[param_count++].name = param_name.lexeme;
+
+        while (parser_match(parser, TOKEN_COMMA)) {
+          if (param_count >= param_capacity) {
+            param_capacity *= 2;
+            FuncParam *new_params =
+                arena_alloc(&long_lived, param_capacity * sizeof(FuncParam));
+            memcpy(new_params, params, param_count * sizeof(FuncParam));
+            params = new_params;
+          }
+
+          Token param_name = parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+          params[param_count++].name = param_name.lexeme;
+        }
+
+        AstNode *param_type = parse_type_expression(parser);
+
+        for (size_t i = current_param_count; i < param_count; i++) {
+          params[i].type = param_type;
+        }
+
+        continue;
+      }
+          
       AstNode *param_type = parse_type_expression(parser);
 
       params[param_count].name =
