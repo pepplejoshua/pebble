@@ -1,8 +1,8 @@
 #include "alloc.h"
 #include "checker.h"
 #include "codegen.h"
-#include "parser.h"
 #include "options.h"
+#include "parser.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,19 +126,31 @@ static bool compile_file(const char *filename) {
   printf("Compilation successful!\n");
 
   Codegen cg;
-  FILE *output = fopen("output.c", "w");
+  const char *c_filename = compiler_opts.output_c_name;
+  FILE *output = fopen(c_filename, "w");
   codegen_init(&cg, output);
   // codegen_init(&cg, stdout);
   emit_program(&cg);
   // printf("\n");
   fclose(output);
-  printf("Generated output.c\n");
+  printf("Generated %s\n", c_filename);
 
   int gcc_result = 0;
-  const char* default_compiler_args = "output.c -Wall -Wextra -Wno-discarded-qualifiers";
+  // Conditional defaults
+  char default_compiler_args[256];
+  bool is_gcc = (strstr(compiler_opts.compiler, "gcc") != NULL);
+  if (is_gcc) {
+    snprintf(default_compiler_args, sizeof(default_compiler_args),
+             "%s -Wall -Wextra -Wno-discarded-qualifiers", c_filename);
+  } else {
+    snprintf(default_compiler_args, sizeof(default_compiler_args),
+             "%s -Wall -Wextra", c_filename);
+  }
 
   char compiler_args[1024];
-  snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s", compiler_opts.compiler, default_compiler_args, compiler_opts.output_name, release_mode_string());
+  snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
+           compiler_opts.compiler, default_compiler_args,
+           compiler_opts.output_exe_name, release_mode_string());
 
   if (compiler_opts.freestanding) {
     char buffer[2048];
@@ -154,10 +166,12 @@ static bool compile_file(const char *filename) {
   }
 
   if (!compiler_opts.keep_c_file) {
-    system("rm output.c");
+    char rm_cmd[512];
+    snprintf(rm_cmd, sizeof(rm_cmd), "rm %s", c_filename);
+    system(rm_cmd);
   }
 
-  printf("Compiled to output executable\n");
+  printf("Compiled to %s executable\n", compiler_opts.output_exe_name);
 
   return true;
 }
