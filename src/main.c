@@ -2,6 +2,8 @@
 #include "checker.h"
 #include "codegen.h"
 #include "parser.h"
+#include "options.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,12 +134,29 @@ static bool compile_file(const char *filename) {
   fclose(output);
   printf("Generated output.c\n");
 
-  // Compile with GCC
-  int gcc_result = system("gcc output.c -o output -Wall -Wextra");
+  int gcc_result = 0;
+  const char* default_compiler_args = "output.c -Wall -Wextra -Wno-discarded-qualifiers";
+
+  char compiler_args[1024];
+  snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s", compiler_opts.compiler, default_compiler_args, compiler_opts.output_name, release_mode_string());
+
+  if (compiler_opts.freestanding) {
+    char buffer[2048];
+    snprintf(buffer, sizeof(buffer), "%s -ffreestanding", compiler_args);
+    gcc_result = system(buffer);
+  } else {
+    // Compile with GCC
+    gcc_result = system(compiler_args);
+  }
   if (gcc_result != 0) {
     printf("GCC compilation failed\n");
     return false;
   }
+
+  if (!compiler_opts.keep_c_file) {
+    system("rm output.c");
+  }
+
   printf("Compiled to output executable\n");
 
   return true;
@@ -147,27 +166,36 @@ int main(int argc, char **argv) {
   // Initialize compiler systems
   arena_init(&long_lived, 256 * 1024);
 
-  // Handle command-line arguments
-  if (argc > 1) {
-    // Compile a source file
-    // printf("Compiling: %s\n", argv[1]);
-    if (!compile_file(argv[1])) {
-      return 1;
-    }
-  } else {
-    printf("Pebble Compiler\n");
-    printf("Usage: %s <source_file>\n", argv[0]);
-    printf("       %s --test\n", argv[0]);
-    printf("       %s --test-lexer\n", argv[0]);
-    printf("       %s --test-parser\n", argv[0]);
-    printf("       %s --test-checker\n", argv[0]);
-    printf("       %s --test-all\n", argv[0]);
+  if (argc == 1) {
+    print_usage(argv[0]);
+    return 0;
+  }
+
+  initialise_args();
+
+  // Try to parse arguments
+  if (!parse_args(argc, argv)) {
+    return 1;
+  }
+
+  // Check if we have an input file
+  if (compiler_opts.input_file == NULL) {
+    fprintf(stderr, "Error: No input file specified\n");
+    print_usage(argv[0]);
+    return 1;
+  }
+
+  // Compile the source file
+  if (!compile_file(compiler_opts.input_file)) {
+    return 1;
   }
 
   // Report memory usage
-  printf("Memory used: %zu bytes (%.2f KB) out of %zu bytes (%.2f KB)\n",
-         long_lived.used, long_lived.used / 1024.0, long_lived.capacity,
-         long_lived.capacity / 1024.0);
+  if (compiler_opts.verbose) {
+    printf("Memory used: %zu bytes (%.2f KB) out of %zu bytes (%.2f KB)\n",
+           long_lived.used, long_lived.used / 1024.0, long_lived.capacity,
+           long_lived.capacity / 1024.0);
+  }
 
   // Cleanup
   arena_free(&long_lived);

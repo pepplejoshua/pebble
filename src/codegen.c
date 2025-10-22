@@ -3,6 +3,7 @@
 #include "ast.h"
 #include "symbol.h"
 #include "type.h"
+#include "options.h"
 #include <stddef.h>
 #include <stdio.h>
 
@@ -57,9 +58,14 @@ void codegen_init(Codegen *cg, FILE *output) {
   cg->defs_len = 0;
   cg->defs_cap = 0;
 
-  // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
-  cg->preamble =
-      "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
+  if (!compiler_opts.freestanding) {
+    // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
+    cg->preamble =
+    "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
+  } else {
+    // Freestanding has basic default includes
+    cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
+  }
 
   // Init uthash sets to empty
   cg->declared_types = NULL;
@@ -157,10 +163,14 @@ void emit_program(Codegen *cg) {
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       emit_string(cg, sym->name);
-      if (sym->kind == SYMBOL_VARIABLE && sym->decl &&
-          sym->decl->data.var_decl.init) {
+      if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
         emit_string(cg, " = ");
-        emit_expr(cg, sym->decl->data.var_decl.init);
+        
+        if (sym->decl->data.var_decl.init) {
+          emit_expr(cg, sym->decl->data.var_decl.init);
+        } else {
+          emit_string(cg, "{0}");
+        }
       } else if (sym->kind == SYMBOL_CONSTANT && sym->decl &&
                  sym->decl->data.const_decl.value) {
         emit_string(cg, " = ");
@@ -477,7 +487,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     } else if (type->kind == TYPE_U16) {
       emit_string(cg, "printf(\"%hu\\n\", ");
     } else if (type->kind == TYPE_U32) {
-      emit_string(cg, "printf(\"%u\\n\", ");
+      emit_string(cg, "printf(\"%lu\\n\", ");
     } else if (type->kind == TYPE_U64) {
       emit_string(cg, "printf(\"%llu\\n\", ");
     } else if (type->kind == TYPE_USIZE) {
@@ -671,6 +681,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
+    } else {
+      emit_string(cg, " = {0}");
     }
     emit_string(cg, ";\n");
     break;

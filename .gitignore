@@ -1,6 +1,9 @@
 peb
 output
 output.c
+temp
+*.vsix
+node_modules
 
 # Prerequisites
 *.d

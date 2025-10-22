@@ -1,0 +1,128 @@
+{
+    "name": "pebble",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#function-call"
+        },
+        {
+            "include": "#function-name"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#field-access"
+        },
+        {
+            "include": "#identifiers"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#strings"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "begin": "//",
+                    "end": "\n",
+                    "name": "comment.line.double-slash"
+                }
+            ]
+        },
+        "function-name": {
+            "patterns": [
+                {
+                    "name": "entity.name.function",
+                    "match": "(?<=(fn ))([a-zA-Z0-9_]+)"
+                }
+            ]
+        },
+        "function-call": {
+            "patterns": [
+                {
+                    "name": "support.function",
+                    "match": "([a-zA-Z0-9_]+)(?=\\s*\\()"
+                }
+            ]
+        },
+        "field-access": {
+            "patterns": [
+                {
+                    "match": "([a-zA-Z0-9_]+)(?=\\.)",
+                    "captures": {
+                        "1": {
+                            "name": "variable.object.property"
+                        }
+                    }
+                },
+                {
+                    "match": "(?<=\\.)([a-zA-Z0-9_]+)",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.property"
+                        }
+                    }
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.pebble",
+                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return)\\b"
+                },
+                {
+                    "name": "keyword.types.pebble",
+                    "match": "\\b(void|bool|int|float|double|str|char|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize|struct)\\b"
+                }
+            ]
+        },
+        "identifiers": {
+            "patterns": [
+                {
+                    "match": "([[:alpha:]_][[:alnum:]_]*)",
+                    "captures": {
+                        "0": {
+                            "name": "variable.other.pebble"
+                        }
+                    }
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.hex.pebble",
+                    "match": "\\b0[xX][0-9a-fA-F]+\\b"
+                },
+                {
+                    "name": "constant.numeric.float.pebble",
+                    "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+                },
+                {
+                    "name": "constant.numeric.integer.pebble",
+                    "match": "\\b[0-9]+([eE][+-]?[0-9]+)?\\b"
+                }
+            ]
+        },
+        "strings": {
+            "name": "string.quoted.double.pebble",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.pebble",
+                    "match": "\\\\(n|r|t|\\\\|\"|'|0|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})"
+                }
+            ]
+        }
+    },
+    "scopeName": "source.pebble"
+}
