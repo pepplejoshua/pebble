@@ -89,8 +89,9 @@ void parser_error_at_previous(Parser *parser, const char *message) {
 
 void parser_synchronize(Parser *parser) {
   parser->panic_mode = false;
+  int skips = 0;
 
-  while (parser->current.type != TOKEN_EOF) {
+  while (parser->current.type != TOKEN_EOF && skips++ < 100) {
     if (parser->previous.type == TOKEN_SEMICOLON)
       return;
 
@@ -103,6 +104,32 @@ void parser_synchronize(Parser *parser) {
     case TOKEN_LOOP:
     case TOKEN_FOR:
     case TOKEN_RETURN:
+    case TOKEN_PRINT:
+    case TOKEN_BREAK:
+    case TOKEN_CONTINUE:
+    case TOKEN_TYPE:
+    case TOKEN_EXTERN:
+    case TOKEN_COMMA:
+    case TOKEN_SEMICOLON:
+    case TOKEN_LPAREN:
+    case TOKEN_RPAREN:
+    case TOKEN_LBRACKET:
+    case TOKEN_RBRACKET:
+    case TOKEN_LBRACE:
+    case TOKEN_RBRACE:
+    // Common binops
+    case TOKEN_PLUS:
+    case TOKEN_MINUS:
+    case TOKEN_STAR:
+    case TOKEN_SLASH:
+    case TOKEN_GT:
+    case TOKEN_LT:
+    case TOKEN_GE:
+    case TOKEN_LE:
+    case TOKEN_AND:
+    case TOKEN_OR:
+    case TOKEN_EQUAL:
+
       return;
     default:
       break;
@@ -110,6 +137,8 @@ void parser_synchronize(Parser *parser) {
 
     parser_advance(parser);
   }
+  if (skips >= 100)
+    parser_error(parser, "Too many tokens skipped; input may be malformed");
 }
 
 void parser_error(Parser *parser, const char *message) {
