@@ -48,6 +48,17 @@ void checker_error(Location loc, const char *fmt, ...) {
   checker_state.error_count++;
 }
 
+void checker_warning(Location loc, const char *fmt, ...) {
+  fprintf(stderr, "%s:%d:%d: warning: ", loc.file, loc.line, loc.column);
+
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+
+  fprintf(stderr, "\n");
+}
+
 static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type);
 
 //=============================================================================
@@ -876,8 +887,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
   }
 
   case AST_TYPE_STRUCT: {
-    // Resolve all field types and create struct type
     size_t field_count = type_expr->data.type_struct.field_count;
+    if (field_count == 0) {
+      checker_warning(type_expr->loc, "Struct was declared without any members");
+      return type_create_struct(NULL, NULL, field_count);
+    }
+
+    // Resolve all field types and create struct type
     char **field_names = type_expr->data.type_struct.field_names;
     AstNode **field_type_exprs = type_expr->data.type_struct.field_types;
 
