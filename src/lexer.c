@@ -332,8 +332,30 @@ static Token lexer_scan_char(Lexer *lexer) {
 }
 
 static Token lexer_scan_number(Lexer *lexer) {
+  size_t start = lexer->start;
   while (is_digit(lexer_peek(lexer))) {
     lexer_advance(lexer);
+  }
+
+  // Check if single number 0 and next is 'x' or 'X' for hex
+  if (lexer->current - start == 1 && lexer->source[start] == '0') {
+    if (lexer_peek(lexer) == 'x' || lexer_peek(lexer) == 'X') {
+      lexer_advance(lexer); // consume 'x'
+      // Scan hex digits
+      while (true) {
+        char c = lexer_peek(lexer);
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+            (c >= 'A' && c <= 'F')) {
+          lexer_advance(lexer);
+        } else {
+          break;
+        }
+      }
+      Token token = lexer_make_token(lexer, TOKEN_INT);
+      // Parse hex value
+      token.value.int_val = strtoll(&lexer->source[start], NULL, 16);
+      return token;
+    }
   }
 
   bool is_float = false;
