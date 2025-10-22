@@ -133,7 +133,7 @@ static bool compile_file(const char *filename) {
   printf("Generated output.c\n");
 
   // Compile with GCC
-  int gcc_result = system("gcc output.c -o output -Wall -Wextra");
+  int gcc_result = system("gcc output.c -o output -Wall -Wextra -Wno-discarded-qualifiers");
   if (gcc_result != 0) {
     printf("GCC compilation failed\n");
     return false;
