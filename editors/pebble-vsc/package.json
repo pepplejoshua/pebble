@@ -1,0 +1,39 @@
+{
+    "name": "pebble",
+    "displayName": "Pebble Language",
+    "description": "A systems language",
+    "author": {
+        "name": "Caleb",
+        "url": "https://github.com/pepplejoshua/pebble"
+    },
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.77.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "repository": {},
+    "contributes": {
+        "languages": [
+            {
+                "id": "pebble",
+                "aliases": [
+                    "Pebble",
+                    "pebble"
+                ],
+                "extensions": [
+                    ".peb"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "pebble",
+                "scopeName": "source.pebble",
+                "path": "./syntaxes/pebble.tmLanguage.json"
+            }
+        ]
+    }
+}
