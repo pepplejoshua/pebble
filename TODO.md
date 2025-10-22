@@ -5,6 +5,7 @@
 ### Ideas from discussions with Caleb
 - extern can take a lib name. the compiler cli can take -L (lib location) and -l (lib name)
 - `if let` to safely work with pointers.
+- Add bitwise operators
 - In range loop, allow the user specify the binding name for their loop variable
 - Allow multiple variable declarations:
 ```go
@@ -67,7 +68,193 @@ int main() {
     return 0;
 }
 ```
-- `const` type modifier
+
+# Const Type Modifier Feature Specification
+
+## Purpose
+`const` is a type qualifier that prevents writes to memory while allowing reads. It applies only to reference types (slices, pointers) where memory access occurs.
+
+## Syntax
+```go
+[]const T    // Slice of const elements
+*const T     // Pointer to const data
+```
+
+## Semantics
+
+### Slice Elements
+`[]const T` allows reading elements but prevents writes to the underlying array memory.
+
+```go
+var arr []const int = [1, 2, 3];
+print arr[0];     // ✓ Read allowed
+arr[0] = 99;      // ✗ Error: cannot assign to const element
+
+let data []const char = "hello";
+print data[0];    // ✓ Read 'h'
+data[0] = 'H';    // ✗ Error: cannot modify const element
+```
+
+### Pointers
+`*const T` allows dereferencing to read but prevents writes through the pointer.
+
+```go
+var x int = 42;
+var p *const int = &x;
+print *p;         // ✓ Read allowed
+*p = 99;          // ✗ Error: cannot assign through const pointer
+p = &y;           // ✓ Reassigning pointer itself is allowed
+```
+
+### Type Propagation
+Operations on const types yield const results.
+
+```go
+var arr []const int = [1, 2, 3];
+var sub = arr[0..2];  // sub is []const int (const propagates)
+sub[0] = 5;           // ✗ Error: sub's elements are const
+```
+
+### String Literals
+String literals are `[]const char`, preventing modification of string data.
+
+```go
+type str = []const char;
+
+var s str = "hello";
+print s[0];       // ✓ Read 'h'
+s[0] = 'H';       // ✗ Error: string elements are const
+
+var sub = s[0..3]; // sub is []const char
+```
+
+**Codegen:** String literals emit as static global arrays:
+```c
+static const char _str_1[] = "hello";
+// Usage wraps in slice struct
+```
+
+### Subtyping (Future)
+Eventually support safe widening: `T → const T`
+
+```go
+fn read_only(data []const int) { ... }
+
+var arr []int = [1, 2, 3];
+read_only(arr);   // Future: []int → []const int (safe widening)
+```
+
+Narrowing `const T → T` remains disallowed (unsafe).
+
+## What We Don't Support
+
+### No const on Primitives in Variables
+`const` on primitive variables is meaningless since variables are reassigned, not mutated:
+
+```go
+var x const int = 5;  // ✗ Disallow: const on primitive variable is meaningless
+x = 10;               // This is reassignment, not mutation
+
+// Use 'let' for immutable binding:
+let x int = 5;        // ✓ Correct way to prevent reassignment
+```
+
+### No const Slice Itself
+`const []T` syntax is confusing and redundant:
+
+```go
+const []int   // ✗ Disallow: unclear if slice or elements are const
+[]const int   // ✓ Use this: clearly elements are const
+```
+
+### No const Pointer Itself
+`const *T` (const pointer, mutable data) overlaps with `let`:
+
+```go
+const *int ptr;  // ✗ Disallow: use 'let' for immutable binding
+let ptr *int;    // ✓ Pointer binding cannot be reassigned
+```
+
+### No Struct Fields (For Now)
+Const on struct fields is deferred:
+
+```go
+type Point = struct {
+    x const int,  // ✗ Not supported yet
+    y int
+};
+```
+
+### No Const Widening Initially
+Implicit conversion `T → const T` is deferred:
+
+```go
+var arr []int = [1, 2, 3];
+var readonly []const int = arr;  // ✗ Not supported initially (requires cast)
+```
+
+## Implementation Summary
+
+**Type Representation:**
+- Add `is_const` flag to Type
+- For `[]const T`: set `element_type->is_const = true`
+- For `*const T`: set `base_type->is_const = true`
+
+**Canonical Names:**
+- Include const in canonicalization
+- `[]const int` → `"slice_const_int"`
+- `[]int` → `"slice_int"`
+
+**Type Checking:**
+- Block writes through const references (indexing, dereferencing)
+- Allow reads
+- Propagate const through operations (slicing, etc.)
+
+**Codegen:**
+- Emit `const` in C types
+- `[]const char` → `const char *`
+- `*const int` → `const int *`
+- String literals → `static const char[]` arrays
+
+## Examples
+
+**File reading returns immutable buffer:**
+```go
+fn read_file(path str) []const char {
+    // ... read file ...
+    return buffer;  // Caller can read but not modify
+}
+
+var contents = read_file("data.txt");
+print contents[0];        // ✓ Read
+contents[0] = 'X';        // ✗ Cannot modify const data
+```
+
+**Pointer to const for safe APIs:**
+```go
+fn compute(data *const int, len usize) int {
+    var sum = 0;
+    for i = 0; i < len; i = i + 1 {
+        sum = sum + *(data + i);  // ✓ Read through const pointer
+    }
+    // *(data + 0) = 0;           // ✗ Would error: can't write
+    return sum;
+}
+```
+
+**Working with strings:**
+```go
+fn count_vowels(s str) int {  // str is []const char
+    var count = 0;
+    for i = 0; i < len(s); i = i + 1 {
+        var c = s[i];             // ✓ Read char
+        if is_vowel(c) {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+```
 
 ### Statements
 - [ ] **Switch/match statements** - If desired
@@ -82,117 +269,11 @@ int main() {
 - [ ] **Generic types** - Future (complex)
 
 ### File Input and Processing
-- [ ] **Command-line argument parsing**
-  - Accept source file path: `./peb file.peb`
-  - Multiple files: `./peb main.peb lib.peb`
-  - Flags: `--output`, `--verbose`, `--help`, etc.
-
-- [ ] **File reading**
-  - Read source file into memory
-  - Handle file not found errors
-  - Handle read errors gracefully
-  - Support stdin: `./peb -` or `cat file.peb | ./peb`
-
 - [ ] **Error reporting with file context**
   - Show filename in error messages
   - Display source line with error
   - Point to exact column with `^`
   - Support multiple files in error messages
-
-- [ ] **Output file generation**
-  - Write generated C to output file
-  - Default: `input.peb` → `output.c`
-  - Custom: `./peb input.peb -o custom.c`
-  - Only output the files: `./peb input.peb -o`
-  - Option to write to stdout for piping
-
-### Basic C FFI (Foreign Function Interface)
-- [ ] **Parse `extern` declarations**
-  - `extern fn c_function(params) return_type;`
-  - Mark symbols as external (don't codegen body)
-
-- [ ] **Codegen for extern functions**
-  - Emit C declarations (or `#include` directives)
-  - No type conversions - direct passthrough
-
-- [ ] **Type restrictions for extern**
-  - Allow: `int`, `float`, `bool`, `void`, `*T`
-  - Disallow (for now): `str`, `[]T`, tuples, structs
-  - Error if invalid type used in extern signature
-
-- [ ] **Test with standard C library**
-  - `extern fn printf(fmt *char) int;`
-  - `extern fn malloc(size uint) *void;`
-  - `extern fn strlen(s *char) int;`
-  - Verify generated C compiles and links
-
-
-## 🔨 Code Generation (Next Major Phase)
-
-### Build System Integration
-- [ ] **Compilation pipeline**
-  - Pebble → C translation
-  - Invoke C compiler (gcc/clang)
-  - Handle intermediate files
-  - Link object files
-
-- [ ] **Runtime library** (if needed)
-  - String operations
-  - Array/slice operations
-  - Memory management helpers
-
-## 🧪 Testing & Quality
-
-### More Tests
-- [ ] **Struct tests**
-  - Struct type resolution
-  - Struct literals
-  - Field access
-  - Nested structs
-
-- [ ] **Array/slice tests**
-  - Bounds checking (compile-time if possible)
-  - Multi-dimensional arrays
-
-- [ ] **Error message quality**
-  - Add more context to error messages
-  - Suggest fixes where possible
-  - Show source code snippets
-
-- [ ] **Integration tests**
-  - Full programs that compile and run
-  - Test against expected output
-
-### Code Quality
-- [ ] **Refactoring**
-  - Clean up any messy code
-  - Improve naming consistency
-  - Add comments to complex logic
-
-- [ ] **Performance**
-  - Profile compilation speed
-  - Optimize hot paths if needed
-
-- [ ] **Memory safety**
-  - Ensure no leaks (or document arena usage)
-  - Verify bounds checking
-
-## 📚 Documentation
-
-- [ ] **Language specification**
-  - Formal grammar
-  - Type system rules
-  - Semantics documentation
-
-- [ ] **User guide**
-  - Getting started
-  - Language tour
-  - Examples
-
-- [ ] **Implementation notes**
-  - Architecture overview
-  - Adding new features guide
-  - Compiler internals
 
 ## 🎯 Nice-to-Have Features
 
@@ -220,11 +301,3 @@ int main() {
 - [ ] Tail call optimization
 
 ## 🚀 Immediate Next Steps
-
-**Recommended order:**
-1. ✅ Struct types (most important missing feature)
-2. ✅ Struct literals and field access
-3. ✅ Function type parsing
-4. ✅ Basic codegen (simple programs first)
-5. ✅ Expand codegen to handle all features
-6. ✅ Integration testing with real C compilation
