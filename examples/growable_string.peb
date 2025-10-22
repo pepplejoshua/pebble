@@ -5,9 +5,9 @@ extern fn memcpy(dst *void, src *void, n usize) *void;
 extern fn strlen(s str) usize;
 
 type String = struct {
-    data *char,
-    length usize,
-    capacity usize
+    data *char;
+    length usize;
+    capacity usize;
 };
 
 fn string_new() *String {

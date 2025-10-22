@@ -1420,7 +1420,6 @@ AstNode *parse_type_expression(Parser *parser) {
     // Allow empty struct
     if (!parser_check(parser, TOKEN_RBRACE)) {
       do {
-        // Allow trailing comma
         if (parser_check(parser, TOKEN_RBRACE)) {
           break;
         }
@@ -1496,7 +1495,7 @@ AstNode *parse_type_expression(Parser *parser) {
         }
         count++;
 
-      } while (parser_match(parser, TOKEN_COMMA));
+      } while (parser_match(parser, TOKEN_SEMICOLON));
     }
 
     parser_consume(parser, TOKEN_RBRACE, "Expected '}' after struct fields");
