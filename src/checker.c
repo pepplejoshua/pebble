@@ -47,6 +47,8 @@ void checker_error(Location loc, const char *fmt, ...) {
   checker_state.error_count++;
 }
 
+static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type);
+
 //=============================================================================
 // PASS 2: COLLECT GLOBALS
 //============================================================================
@@ -677,6 +679,18 @@ static void check_global_variables(void) {
 
     // Verify types match if both are present
     if (explicit_type && inferred_type) {
+      // Allow casting ints to pointers for global vars
+      if (explicit_type->kind == TYPE_POINTER &&
+          inferred_type->kind == TYPE_INT) {
+        sym->type = explicit_type;
+        sym->decl->resolved_type = explicit_type;
+
+        sym->decl->data.var_decl.init =
+            maybe_insert_cast(init, inferred_type, explicit_type);
+
+        continue;
+      }
+
       if (!type_equals(explicit_type, inferred_type)) {
         checker_error(init->loc, "variable initializer type mismatch");
         continue;
@@ -964,7 +978,7 @@ static bool is_lvalue(AstNode *expr) {
 
 // Insert implicit cast if needed, returns the (possibly wrapped) expression
 // Returns NULL if types are incompatible
-static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
+AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
                                   Type *target_type) {
   if (type_equals(expr_type, target_type)) {
     return expr; // No cast needed
@@ -982,6 +996,14 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
       cast->data.implicit_cast.target_type = target_type;
       return cast;
     }
+  } else if (expr_type->kind == TYPE_INT && target_type->kind == TYPE_POINTER) {
+    // *T to int (for FFI)
+    AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+    cast->kind = AST_EXPR_IMPLICIT_CAST;
+    cast->loc = expr->loc;
+    cast->data.implicit_cast.expr = expr;
+    cast->data.implicit_cast.target_type = target_type;
+    return cast;
   } else if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_SLICE) {
     // Array [N]T can convert to slice []T
     if (type_equals(expr_type->data.array.element,
@@ -1625,8 +1647,8 @@ Type *check_expression(AstNode *expr) {
     // Handle array or slice member access
     else if (base_type->kind == TYPE_ARRAY || base_type->kind == TYPE_SLICE) {
       if (strcmp(field_name, "len") == 0) {
-        expr->resolved_type = type_int;
-        return type_int;
+        expr->resolved_type = type_u32;
+        return type_u32;
       } else {
         const char *type_name =
             base_type->kind == TYPE_ARRAY ? "array" : "slice";
