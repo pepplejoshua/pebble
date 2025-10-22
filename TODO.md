@@ -24,38 +24,6 @@ fn main() void {
 var arr [5]int = [1,2,3,4,5];
 var [a, b, ...rest] = arr; // 1, 2, [3,4,5]
 ```
-- Consider Go-like syntax for methods:
-```go
-type Foo = struct {
-  value int
-};
-
-fn (f *Foo) mult(m int) int {
-  return f.value * m;
-}
-
-fn main() int {
-  var f *Foo = malloc(sizeo Foo);
-  f.value = 20;
-  print f.mult(2);
-  free(f);
-  return 0;
-}
-```
-compiling to:
-```c
-int Foo_method_mult(Foo *f, int m) {
-  return f->value * m;
-}
-
-int main() {
-  Foo *f = malloc(sizeof(Foo));
-  f->value = 20;
-  printf("%d\n", Foo_method_mult(f, 2));
-  free(f);
-  return 0;
-}
-```
 - Consider UFCS instead of method syntax, since it just works:
 ```go
 fn mult(a int, b int) int => a * b;
