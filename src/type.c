@@ -128,8 +128,12 @@ Type *type_create_array(Type *element, size_t size, bool canonicalize) {
 // Create struct type
 Type *type_create_struct(char **field_names, Type **field_types,
                          size_t field_count) {
-  assert(field_names && field_types && field_count > 0);
   Type *type = type_create(TYPE_STRUCT);
+
+  if (field_count == 0) {
+    type->data.struct_data.field_count = field_count;
+    return type;
+  }
 
   // Duplicate field names into arena
   char **names = arena_alloc(&long_lived, field_count * sizeof(char *));

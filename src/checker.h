@@ -32,4 +32,6 @@ bool checker_has_errors(void);
 // Error reporting
 void checker_error(Location loc, const char *fmt, ...);
 
+void checker_warning(Location loc, const char *fmt, ...);
+
 #endif
