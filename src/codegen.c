@@ -157,10 +157,14 @@ void emit_program(Codegen *cg) {
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       emit_string(cg, sym->name);
-      if (sym->kind == SYMBOL_VARIABLE && sym->decl &&
-          sym->decl->data.var_decl.init) {
+      if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
         emit_string(cg, " = ");
-        emit_expr(cg, sym->decl->data.var_decl.init);
+        
+        if (sym->decl->data.var_decl.init) {
+          emit_expr(cg, sym->decl->data.var_decl.init);
+        } else {
+          emit_string(cg, "{0}");
+        }
       } else if (sym->kind == SYMBOL_CONSTANT && sym->decl &&
                  sym->decl->data.const_decl.value) {
         emit_string(cg, " = ");
@@ -477,7 +481,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     } else if (type->kind == TYPE_U16) {
       emit_string(cg, "printf(\"%hu\\n\", ");
     } else if (type->kind == TYPE_U32) {
-      emit_string(cg, "printf(\"%u\\n\", ");
+      emit_string(cg, "printf(\"%lu\\n\", ");
     } else if (type->kind == TYPE_U64) {
       emit_string(cg, "printf(\"%llu\\n\", ");
     } else if (type->kind == TYPE_USIZE) {
@@ -671,6 +675,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
+    } else {
+      emit_string(cg, " = {0}");
     }
     emit_string(cg, ";\n");
     break;
