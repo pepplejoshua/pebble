@@ -16,15 +16,17 @@ typedef struct CompilerOptions
   bool freestanding;
   bool verbose;
   bool keep_c_file;
-  bool release_mode;
+  ReleaseMode release_mode;
   const char *compiler;
-  const char *output_name;
+  const char *output_exe_name;
+  const char *output_c_name;
   const char *input_file;
 } CompilerOptions;
 
 // Global compiler options
 extern CompilerOptions compiler_opts;
 
+void auto_detect_compiler(void);
 void initialise_args();
 char* release_mode_string();
 void print_usage(const char *program_name);
