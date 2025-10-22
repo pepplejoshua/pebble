@@ -4,6 +4,7 @@
 #include "symbol.h"
 #include "type.h"
 #include "uthash.h"
+#include "options.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -1901,6 +1902,11 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
   }
 
   case AST_STMT_PRINT: {
+    // FIXME: we can maybe setup a user function that can takeover in freestanding cases
+    if (compiler_opts.freestanding) {
+      checker_error(stmt->loc, "cannot use print in freestanding mode");
+    }
+
     AstNode *expr = stmt->data.print_stmt.expr;
     Type *expr_type = check_expression(expr);
     if (!expr_type) {

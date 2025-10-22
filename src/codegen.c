@@ -3,6 +3,7 @@
 #include "ast.h"
 #include "symbol.h"
 #include "type.h"
+#include "options.h"
 #include <stddef.h>
 #include <stdio.h>
 
@@ -57,9 +58,14 @@ void codegen_init(Codegen *cg, FILE *output) {
   cg->defs_len = 0;
   cg->defs_cap = 0;
 
-  // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
-  cg->preamble =
-      "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
+  if (!compiler_opts.freestanding) {
+    // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
+    cg->preamble =
+    "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
+  } else {
+    // Freestanding has basic default includes
+    cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
+  }
 
   // Init uthash sets to empty
   cg->declared_types = NULL;
