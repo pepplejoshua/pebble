@@ -608,6 +608,18 @@ static void check_global_constants(void) {
         continue; // Error already reported
       }
 
+      // Allow casting ints to pointers for global constants
+      if (explicit_type->kind == TYPE_POINTER &&
+          inferred_type->kind == TYPE_INT) {
+        sym->type = explicit_type;
+        sym->decl->resolved_type = explicit_type;
+
+        sym->decl->data.var_decl.init =
+            maybe_insert_cast(value, inferred_type, explicit_type);
+
+        continue;
+      }
+
       if (!type_equals(explicit_type, inferred_type)) {
         checker_error(value->loc, "constant initializer type mismatch");
         continue;
