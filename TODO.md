@@ -5,9 +5,7 @@
 ### Ideas from discussions with Caleb
 - extern can take a lib name. the compiler cli can take -L (lib location) and -l (lib name)
 - `if let` to safely work with pointers.
-- When a variable is declared without init, auto init with {0} in the c code.
 - In range loop, allow the user specify the binding name for their loop variable
-- Parser errors trigger a lot of segfaults
 - Allow multiple variable declarations:
 ```go
 fn main() void {
