@@ -17,6 +17,7 @@ typedef struct CompilerOptions
   bool verbose;
   bool keep_c_file;
   bool release_mode;
+  const char *compiler;
   const char *output_name;
   const char *input_file;
 } CompilerOptions;

@@ -11,6 +11,7 @@ void initialise_args()
     // Initialize defaults
     compiler_opts.freestanding = false;
     compiler_opts.release_mode = RELEASE_DEBUG;
+    compiler_opts.compiler = "gcc";
     compiler_opts.verbose = false;
     compiler_opts.keep_c_file = true;
     compiler_opts.output_name = "output";
@@ -45,6 +46,7 @@ void print_usage(const char *program_name)
     printf("  -v, --verbose        Enable verbose output\n");
     printf("  --keep-c             Keep generated C file (default)\n");
     printf("  --no-keep-c          Remove generated C file after compilation\n");
+    printf("  --compiler           Specify the compiler used when compiling C (default: gcc)\n");
     printf("  -o <name>            Specify output executable name (default: output)\n");
     printf("  --test               Run all tests\n");
     printf("  --test-lexer         Run lexer tests\n");
@@ -87,6 +89,15 @@ bool parse_args(int argc, char **argv)
                 return false;
             }
             compiler_opts.output_name = argv[++i];
+        }
+        else if (strcmp(argv[i], "--compiler") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                fprintf(stderr, "Error: --compiler requires an argument\n");
+                return false;
+            }
+            compiler_opts.compiler = argv[++i];
         }
         else if (strcmp(argv[i], "--debug") == 0)
         {

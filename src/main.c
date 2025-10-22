@@ -135,10 +135,10 @@ static bool compile_file(const char *filename) {
   printf("Generated output.c\n");
 
   int gcc_result = 0;
-  const char* default_compiler_args = "gcc output.c -Wall -Wextra -Wno-discarded-qualifiers";
+  const char* default_compiler_args = "output.c -Wall -Wextra -Wno-discarded-qualifiers";
 
   char compiler_args[1024];
-  snprintf(compiler_args, sizeof(compiler_args), "%s -o %s %s", default_compiler_args, compiler_opts.output_name, release_mode_string());
+  snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s", compiler_opts.compiler, default_compiler_args, compiler_opts.output_name, release_mode_string());
 
   if (compiler_opts.freestanding) {
     char buffer[2048];
