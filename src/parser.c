@@ -89,8 +89,9 @@ void parser_error_at_previous(Parser *parser, const char *message) {
 
 void parser_synchronize(Parser *parser) {
   parser->panic_mode = false;
+  int skips = 0;
 
-  while (parser->current.type != TOKEN_EOF) {
+  while (parser->current.type != TOKEN_EOF && skips++ < 100) {
     if (parser->previous.type == TOKEN_SEMICOLON)
       return;
 
@@ -103,6 +104,32 @@ void parser_synchronize(Parser *parser) {
     case TOKEN_LOOP:
     case TOKEN_FOR:
     case TOKEN_RETURN:
+    case TOKEN_PRINT:
+    case TOKEN_BREAK:
+    case TOKEN_CONTINUE:
+    case TOKEN_TYPE:
+    case TOKEN_EXTERN:
+    case TOKEN_COMMA:
+    case TOKEN_SEMICOLON:
+    case TOKEN_LPAREN:
+    case TOKEN_RPAREN:
+    case TOKEN_LBRACKET:
+    case TOKEN_RBRACKET:
+    case TOKEN_LBRACE:
+    case TOKEN_RBRACE:
+    // Common binops
+    case TOKEN_PLUS:
+    case TOKEN_MINUS:
+    case TOKEN_STAR:
+    case TOKEN_SLASH:
+    case TOKEN_GT:
+    case TOKEN_LT:
+    case TOKEN_GE:
+    case TOKEN_LE:
+    case TOKEN_AND:
+    case TOKEN_OR:
+    case TOKEN_EQUAL:
+
       return;
     default:
       break;
@@ -110,6 +137,8 @@ void parser_synchronize(Parser *parser) {
 
     parser_advance(parser);
   }
+  if (skips >= 100)
+    parser_error(parser, "Too many tokens skipped; input may be malformed");
 }
 
 void parser_error(Parser *parser, const char *message) {
@@ -288,6 +317,10 @@ AstNode *parse_function_decl(Parser *parser) {
   if (parser_match(parser, TOKEN_FAT_ARROW)) {
     // Expression function: fn name(...) type => expr
     AstNode *expr = parse_expression(parser);
+    if (!expr) {
+      parser_synchronize(parser);
+      return NULL;
+    }
     // Wrap the expression in a return statement, then in a block
     AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
     ret_stmt->data.return_stmt.expr = expr;
@@ -595,6 +628,10 @@ AstNode *parse_for_stmt(Parser *parser) {
     parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop init");
     AstNode *init_rhs = parse_expression(parser);
     parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after for loop init");
+    if (!init_lhs || !init_rhs) {
+      parser_synchronize(parser);
+      return NULL;
+    }
 
     init = alloc_node(AST_STMT_ASSIGN, init_lhs->loc);
     init->data.assign_stmt.lhs = init_lhs;
@@ -611,6 +648,10 @@ AstNode *parse_for_stmt(Parser *parser) {
   parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
   AstNode *rhs = parse_expression(parser);
 
+  if (!lhs || !rhs) {
+    parser_synchronize(parser);
+    return NULL;
+  }
   AstNode *update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
   update->data.assign_stmt.lhs = lhs;
   update->data.assign_stmt.rhs = rhs;
@@ -671,6 +712,10 @@ AstNode *parse_assignment_stmt(Parser *parser) {
   } else {
     // Not an assignment, it's an expression statement
     parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after expression");
+    if (!lhs) {
+      parser_synchronize(parser);
+      return NULL;
+    }
 
     AstNode *expr_stmt = alloc_node(AST_STMT_EXPR, lhs->loc);
     expr_stmt->data.expr_stmt.expr = lhs;
@@ -824,6 +869,11 @@ AstNode *parse_unary(Parser *parser) {
 
 AstNode *parse_postfix(Parser *parser) {
   AstNode *expr = parse_primary(parser);
+
+  if (!expr) {
+    parser_synchronize(parser);
+    return NULL;
+  }
 
   while (true) {
     if (parser_match(parser, TOKEN_LPAREN)) {
