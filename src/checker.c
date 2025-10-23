@@ -70,6 +70,7 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
 static void collect_declaration(AstNode *decl) {
   char *name = NULL;
   SymbolKind kind;
+  Location loc;
   bool is_opaque_type = false;
 
   // Extract name and kind based on declaration type
@@ -77,27 +78,33 @@ static void collect_declaration(AstNode *decl) {
   case AST_DECL_FUNCTION:
     name = decl->data.func_decl.name;
     kind = SYMBOL_FUNCTION;
+    loc = decl->loc;
     break;
   case AST_DECL_EXTERN_FUNC:
     name = decl->data.extern_func.name;
     kind = SYMBOL_EXTERN_FUNCTION;
+    loc = decl->loc;
     break;
   case AST_DECL_EXTERN_TYPE:
     name = decl->data.extern_type.name;
     kind = SYMBOL_TYPE;
     is_opaque_type = true;
+    loc = decl->loc;
     break;
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
     kind = SYMBOL_VARIABLE;
+    loc = decl->loc;
     break;
   case AST_DECL_CONSTANT:
     name = decl->data.const_decl.name;
     kind = SYMBOL_CONSTANT;
+    loc = decl->loc;
     break;
   case AST_DECL_TYPE:
     name = decl->data.type_decl.name;
     kind = SYMBOL_TYPE;
+    loc = decl->loc;
     break;
   default:
     return; // Not a declaration
@@ -117,7 +124,7 @@ static void collect_declaration(AstNode *decl) {
     symbol->data.var.is_global = true;
   }
   if (is_opaque_type) {
-    symbol->type = type_create(TYPE_OPAQUE);
+    symbol->type = type_create(TYPE_OPAQUE, loc);
     symbol->type->declared_name = symbol->name;
     symbol->type->canonical_name = symbol->name;
   }
@@ -172,7 +179,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   switch (type->kind) {
   case TYPE_POINTER:
     if (canonicalize_type_internal(&type->data.ptr.base, visited)) {
-      cycle_detected = true;
+      cycle_detected = false;
     }
     break;
 
@@ -350,8 +357,16 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   case TYPE_TUPLE: {
     // If cyclic, must use nominal name
     if (cycle_detected) {
+      checker_error(
+          type->loc,
+          "recursive type '%s' has infinite size (use pointer for indirection)",
+          type->declared_name);
+      canonical_name = str_dup(type->declared_name);
+    } else if (type->declared_name) {
       canonical_name = str_dup(type->declared_name);
     } else {
+      if (type->declared_name)
+        return type->declared_name;
       // Non-cyclic tuple - structural name
       size_t capacity = 256;
       canonical_name = arena_alloc(&long_lived, capacity);
@@ -379,7 +394,13 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
 
   case TYPE_STRUCT: {
     // Structs are always nominal (use declared name)
-    if (type->declared_name) {
+    if (cycle_detected) {
+      checker_error(
+          type->loc,
+          "recursive type '%s' has infinite size (use pointer for indirection)",
+          type->declared_name);
+      canonical_name = str_dup(type->declared_name);
+    } else if (type->declared_name) {
       canonical_name = str_dup(type->declared_name);
     } else {
       // Anonymous struct - build structural name
@@ -515,7 +536,7 @@ static void check_type_declarations(void) {
   // PHASE 1: Pre-register all type names as placeholders
   for (size_t i = 0; i < worklist_size; i++) {
     sym = worklist[i];
-    Type *placeholder = type_create(TYPE_UNRESOLVED);
+    Type *placeholder = type_create(TYPE_UNRESOLVED, sym->decl->loc);
     type_register(sym->name, placeholder);
   }
 
@@ -770,8 +791,9 @@ static void check_function_signatures(void) {
     }
 
     // Create function type
-    sym->type = type_create_function(param_types, param_count, return_type,
-                                     !checker_state.in_type_resolution);
+    sym->type =
+        type_create_function(param_types, param_count, return_type,
+                             !checker_state.in_type_resolution, sym->decl->loc);
 
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
@@ -822,6 +844,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     return NULL;
   }
 
+  Location loc = type_expr->loc;
+
   switch (type_expr->kind) {
   case AST_TYPE_NAMED: {
     // Look up named type in type table
@@ -850,7 +874,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!base) {
       return NULL;
     }
-    return type_create_pointer(base, !checker_state.in_type_resolution);
+    return type_create_pointer(base, !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_ARRAY: {
@@ -867,7 +891,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
     size_t size = type_expr->data.type_array.size;
-    return type_create_array(element, size, !checker_state.in_type_resolution);
+    return type_create_array(element, size, !checker_state.in_type_resolution,
+                             loc);
   }
 
   case AST_TYPE_SLICE: {
@@ -884,7 +909,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
                     element->canonical_name);
       return NULL;
     }
-    return type_create_slice(element, !checker_state.in_type_resolution);
+    return type_create_slice(element, !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_STRUCT: {
@@ -892,7 +917,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (field_count == 0) {
       checker_warning(type_expr->loc,
                       "Struct was declared without any members");
-      return type_create_struct(NULL, NULL, field_count);
+      return type_create_struct(NULL, NULL, field_count, loc);
     }
 
     // Resolve all field types and create struct type
@@ -916,7 +941,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
     }
 
-    return type_create_struct(field_names, field_types, field_count);
+    return type_create_struct(field_names, field_types, field_count, loc);
   }
 
   case AST_TYPE_FUNCTION: {
@@ -940,7 +965,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
 
     return type_create_function(param_types, param_count, return_type,
-                                !checker_state.in_type_resolution);
+                                !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -966,7 +991,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
 
     return type_create_tuple(element_types, element_count,
-                             !checker_state.in_type_resolution);
+                             !checker_state.in_type_resolution, loc);
   }
 
   default:
@@ -1119,9 +1144,11 @@ Type *check_expression(AstNode *expr) {
     return NULL;
   }
 
+  Location loc = expr->loc;
+
   switch (expr->kind) {
   case AST_EXPR_LITERAL_NIL: {
-    Type *void_ptr = type_create_pointer(type_void, true);
+    Type *void_ptr = type_create_pointer(type_void, true, loc);
     expr->resolved_type = void_ptr;
     return void_ptr;
   }
@@ -1425,7 +1452,7 @@ Type *check_expression(AstNode *expr) {
         return NULL;
       }
       Type *ptr =
-          type_create_pointer(operand, !checker_state.in_type_resolution);
+          type_create_pointer(operand, !checker_state.in_type_resolution, loc);
       expr->resolved_type = ptr;
       return ptr;
     }
@@ -1625,7 +1652,7 @@ Type *check_expression(AstNode *expr) {
 
     // Return slice type
     Type *slice =
-        type_create_slice(element_type, !checker_state.in_type_resolution);
+        type_create_slice(element_type, !checker_state.in_type_resolution, loc);
     expr->resolved_type = slice;
     return slice;
   }
@@ -1725,7 +1752,7 @@ Type *check_expression(AstNode *expr) {
 
     // Create and return tuple type
     Type *tuple = type_create_tuple(element_types, element_count,
-                                    !checker_state.in_type_resolution);
+                                    !checker_state.in_type_resolution, loc);
     expr->data.tuple_expr.resolved_type = tuple;
     return tuple;
   }
@@ -1781,12 +1808,15 @@ Type *check_expression(AstNode *expr) {
             return NULL; // Error already reported
           }
 
-          if (!type_equals(value_type, expected_types[j])) {
-            checker_error(field_values[i]->loc,
-                          "field '%s' has type mismatch in struct literal",
+          AstNode *converted_init =
+              maybe_insert_cast(field_values[i], value_type, expected_types[j]);
+
+          if (!converted_init) {
+            checker_error(expr->loc, "field '%s' has initializer type mismatch",
                           field_names[i]);
             return NULL;
           }
+
           break;
         }
       }
@@ -1834,7 +1864,7 @@ Type *check_expression(AstNode *expr) {
 
     // Create and return array type with inferred element type and size
     Type *array = type_create_array(element_type, element_count,
-                                    !checker_state.in_type_resolution);
+                                    !checker_state.in_type_resolution, loc);
     expr->resolved_type = array;
     return array;
   }
@@ -1850,8 +1880,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Create array type with the element type and count
-    Type *array_type =
-        type_create_array(value_type, count, !checker_state.in_type_resolution);
+    Type *array_type = type_create_array(
+        value_type, count, !checker_state.in_type_resolution, loc);
     expr->resolved_type = array_type;
     return array_type;
   }
@@ -2329,16 +2359,17 @@ bool check_function_bodies(void) {
 }
 
 // Verify that the entry point exists and has the correct signature
-// - If entry_point is "main": must exist with signature (void) -> int OR (int, []str) -> int
+// - If entry_point is "main": must exist with signature (void) -> int OR (int,
+// []str) -> int
 // - If entry_point is NOT "main": must exist with signature () -> void
 // - If --no-main is set: skip verification entirely
 bool verify_entry_point(void) {
   const char *entry_name = compiler_opts.entry_point;
   bool is_main = strcmp(entry_name, "main") == 0;
-  
+
   // Look up the entry point function in global scope
   Symbol *entry_sym = scope_lookup(global_scope, entry_name);
-  
+
   if (!entry_sym) {
     // This is fine
     if (!compiler_opts.has_main) {
@@ -2348,31 +2379,31 @@ bool verify_entry_point(void) {
     fprintf(stderr, "error: entry point '%s' not found\n", entry_name);
     return false;
   }
-  
+
   if (entry_sym->kind != SYMBOL_FUNCTION) {
     fprintf(stderr, "error: entry point '%s' is not a function\n", entry_name);
     return false;
   }
-  
+
   // Get the function's type
   Type *func_type = entry_sym->type;
   if (!func_type || func_type->kind != TYPE_FUNCTION) {
     fprintf(stderr, "error: entry point '%s' has invalid type\n", entry_name);
     return false;
   }
-  
+
   Type *return_type = func_type->data.func.return_type;
   size_t param_count = func_type->data.func.param_count;
   Type **param_types = func_type->data.func.param_types;
-  
+
   if (is_main) {
     // main must return int
     if (return_type->kind != TYPE_INT) {
-      fprintf(stderr, "error: main function must return int, not '%s'\n", 
+      fprintf(stderr, "error: main function must return int, not '%s'\n",
               return_type->canonical_name);
       return false;
     }
-    
+
     // main can have 0 or 2 parameters
     // 2 params: fn main(argc int, argv []str) -> int
     if (param_count == 2) {
@@ -2382,28 +2413,31 @@ bool verify_entry_point(void) {
                 param_types[0]->canonical_name);
         return false;
       }
-      
+
       // TODO: Would be nice if this were just []str instead
-      
+
       // Check second param is *str (argv)
       // Array of char*
       Type *argv_type = param_types[1];
       if (argv_type->kind != TYPE_POINTER) {
-        fprintf(stderr, "error: main's second parameter must be *str, not '%s'\n",
+        fprintf(stderr,
+                "error: main's second parameter must be *str, not '%s'\n",
                 argv_type->canonical_name);
         return false;
       }
-      
+
       Type *inner_type = argv_type->data.ptr.base;
       if (inner_type->kind != TYPE_STRING) {
-        fprintf(stderr, "error: main's second parameter must be *str (got %s)\n",
+        fprintf(stderr,
+                "error: main's second parameter must be *str (got %s)\n",
                 argv_type->canonical_name);
         return false;
       }
-      
+
       return true;
     } else if (param_count != 0) {
-      fprintf(stderr, "error: main function must have 0 or 2 parameters, has %zu\n",
+      fprintf(stderr,
+              "error: main function must have 0 or 2 parameters, has %zu\n",
               param_count);
       return false;
     }
@@ -2414,9 +2448,10 @@ bool verify_entry_point(void) {
               entry_name, return_type->canonical_name);
       return false;
     }
-    
+
     if (param_count != 0) {
-      fprintf(stderr, "error: entry point '%s' must take no parameters, has %zu\n",
+      fprintf(stderr,
+              "error: entry point '%s' must take no parameters, has %zu\n",
               entry_name, param_count);
       return false;
     }
@@ -2424,7 +2459,9 @@ bool verify_entry_point(void) {
 
   // Check for no-main (libraries will do this)
   if (!compiler_opts.has_main) {
-    fprintf(stderr, "error: cannot have entry point '%s' when compiling for a library or without an entry point\n",
+    fprintf(stderr,
+            "error: cannot have entry point '%s' when compiling for a library "
+            "or without an entry point\n",
             entry_name);
     return false;
   }

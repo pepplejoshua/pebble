@@ -1,3 +1,17 @@
-type NamedSlice = []int;
+type Node = struct {
+    data int;
+    next *Node;
+};
 
-fn main() int => 0
+type Pair = (int, *Pair);
+
+type IntNode = (int, *IntNode);
+
+fn main() int {
+    var n = Node.{
+        data = 0,
+        next = nil,
+    };
+
+    return 0;
+}
