@@ -10,6 +10,13 @@ typedef enum ReleaseMode
   RELEASE_DEFAULT,
 } ReleaseMode;
 
+typedef enum LibraryType
+{
+  LIBRARY_NONE,
+  LIBRARY_SHARED,
+  LIBRARY_STATIC, // TODO
+} LibraryType;
+
 // Compiler options
 typedef struct CompilerOptions
 {
@@ -22,6 +29,7 @@ typedef struct CompilerOptions
   const char *output_c_name;
   const char *input_file;
   bool has_main;
+  LibraryType library;
   const char *entry_point;
 } CompilerOptions;
 

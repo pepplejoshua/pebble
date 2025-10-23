@@ -2331,11 +2331,6 @@ bool check_function_bodies(void) {
 // - If entry_point is NOT "main": must exist with signature () -> void
 // - If --no-main is set: skip verification entirely
 bool verify_entry_point(void) {
-  // Skip verification if --no-main is set
-  if (!compiler_opts.has_main) {
-    return true;
-  }
-
   const char *entry_name = compiler_opts.entry_point;
   bool is_main = strcmp(entry_name, "main") == 0;
   
@@ -2343,6 +2338,11 @@ bool verify_entry_point(void) {
   Symbol *entry_sym = scope_lookup(global_scope, entry_name);
   
   if (!entry_sym) {
+    // This is fine
+    if (!compiler_opts.has_main) {
+      return true;
+    }
+
     fprintf(stderr, "error: entry point '%s' not found\n", entry_name);
     return false;
   }
@@ -2372,12 +2372,8 @@ bool verify_entry_point(void) {
     }
     
     // main can have 0 or 2 parameters
-    // 0 params: fn main() -> int
     // 2 params: fn main(argc int, argv []str) -> int
-    if (param_count == 0) {
-      // Valid: fn main() -> int
-      return true;
-    } else if (param_count == 2) {
+    if (param_count == 2) {
       // Check first param is int (argc)
       if (param_types[0]->kind != TYPE_INT) {
         fprintf(stderr, "error: main's first parameter must be int, not '%s'\n",
@@ -2404,7 +2400,7 @@ bool verify_entry_point(void) {
       }
       
       return true;
-    } else {
+    } else if (param_count != 0) {
       fprintf(stderr, "error: main function must have 0 or 2 parameters, has %zu\n",
               param_count);
       return false;
@@ -2422,7 +2418,14 @@ bool verify_entry_point(void) {
               entry_name, param_count);
       return false;
     }
-    
-    return true;
   }
+
+  // Check for no-main (libraries will do this)
+  if (!compiler_opts.has_main) {
+    fprintf(stderr, "error: cannot have entry point '%s' when compiling for a library or without an entry point\n",
+            entry_name);
+    return false;
+  }
+
+  return true;
 }

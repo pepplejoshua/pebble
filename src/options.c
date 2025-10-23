@@ -69,6 +69,7 @@ void initialise_args() {
   compiler_opts.output_exe_name = "output";
   compiler_opts.output_c_name = "output.c";
   compiler_opts.has_main = true;
+  compiler_opts.library = LIBRARY_NONE;
   compiler_opts.entry_point = "main";
   compiler_opts.input_file = NULL;
 
@@ -127,6 +128,7 @@ void print_usage(const char *program_name) {
   printf("  --freestanding       Generate freestanding code (no standard "
          "library)\n");
   printf("  --entry-point        Entry point of your code (default main)\n");
+  printf("  --shared             Compile as a shared library\n");
   printf("\nRelease Options:\n");
   printf("  --debug              Compile in debug mode\n");
   printf("  --release-small      Compile for a smaller binary\n");
@@ -172,6 +174,9 @@ bool parse_args(int argc, char **argv) {
       }
       compiler_opts.entry_point = argv[++i];
     } else if (strcmp(argv[i], "--no-main") == 0) {
+      compiler_opts.has_main = false;
+    } else if (strcmp(argv[i], "--shared") == 0) {
+      compiler_opts.library = LIBRARY_SHARED;
       compiler_opts.has_main = false;
     } else if (strcmp(argv[i], "--debug") == 0) {
       compiler_opts.release_mode = RELEASE_DEBUG;

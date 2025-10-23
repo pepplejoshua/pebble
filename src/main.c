@@ -153,20 +153,43 @@ static bool compile_file(const char *filename) {
              "%s -Wall -Wextra", c_filename);
   }
 
-  char compiler_args[1024];
+  char compiler_args[2048];
 
   if (!compiler_opts.has_main) {
     // Compile to object file (.o) instead of executable
-    char obj_filename[512];
+    char obj_filename[256];
     snprintf(obj_filename, sizeof(obj_filename), "%s.o", 
              compiler_opts.output_exe_name);
     
-    // Use -c flag to compile to object file
-    snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
-             compiler_opts.compiler,
-             default_compiler_args,
-             obj_filename,
-             release_mode_string());
+    switch (compiler_opts.library) {
+      case LIBRARY_NONE:
+      {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
+                 compiler_opts.compiler,
+                 default_compiler_args,
+                 obj_filename,
+                 release_mode_string());
+        break;
+      }
+
+      case LIBRARY_SHARED:
+      {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s",
+                 compiler_opts.compiler,
+                 default_compiler_args,
+                 obj_filename,
+                 release_mode_string());
+        break;
+      }
+
+      case LIBRARY_STATIC:
+      {
+        // TODO
+        break;
+      }
+    }
     
     if (compiler_opts.verbose) {
       printf("Compiling to object file: %s\n", compiler_args);
@@ -179,7 +202,7 @@ static bool compile_file(const char *filename) {
     }
     
     if (!compiler_opts.keep_c_file) {
-      char rm_cmd[512];
+      char rm_cmd[256];
       snprintf(rm_cmd, sizeof(rm_cmd), "rm %s", c_filename);
       system(rm_cmd);
     }
