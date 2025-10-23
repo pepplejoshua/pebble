@@ -116,9 +116,10 @@ static Token lexer_error_token(Lexer *lexer, const char *message) {
 }
 
 // Keyword lookup table
-static TokenType lexer_check_keyword(const char *start, size_t length,
-                                     const char *rest, TokenType type) {
-  return (strlen(rest) == length && memcmp(start, rest, length) == 0)
+static TokenType lexer_check_keyword(Lexer *lexer, size_t length,
+                                     const char *keyword, TokenType type) {
+  return (lexer->current - lexer->start == length &&
+          memcmp(&lexer->source[lexer->start], keyword, length) == 0)
              ? type
              : TOKEN_IDENTIFIER;
 }
@@ -130,77 +131,77 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   switch (start[0]) {
   case 'a':
     if (length == 2)
-      return lexer_check_keyword(start, 2, "as", TOKEN_AS);
+      return lexer_check_keyword(lexer, 2, "as", TOKEN_AS);
     break;
   case 'b':
     if (length == 4)
-      return lexer_check_keyword(start, 4, "bool", TOKEN_BOOL_TYPE);
+      return lexer_check_keyword(lexer, 4, "bool", TOKEN_BOOL_TYPE);
     if (length == 5)
-      return lexer_check_keyword(start, 5, "break", TOKEN_BREAK);
+      return lexer_check_keyword(lexer, 5, "break", TOKEN_BREAK);
     break;
   case 'e':
     if (length == 4)
-      return lexer_check_keyword(start, 4, "else", TOKEN_ELSE);
+      return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);
     if (length == 6)
-      return lexer_check_keyword(start, 6, "extern", TOKEN_EXTERN);
+      return lexer_check_keyword(lexer, 6, "extern", TOKEN_EXTERN);
     break;
   case 'n':
     if (length == 3)
-      return lexer_check_keyword(start, 3, "nil", TOKEN_NIL);
+      return lexer_check_keyword(lexer, 3, "nil", TOKEN_NIL);
     break;
   case 'f':
     if (length > 1) {
       switch (start[1]) {
       case 'a':
-        return lexer_check_keyword(start, 5, "false", TOKEN_FALSE);
+        return lexer_check_keyword(lexer, 5, "false", TOKEN_FALSE);
       case 'l':
-        return lexer_check_keyword(start, 5, "float", TOKEN_FLOAT_TYPE);
+        return lexer_check_keyword(lexer, 5, "float", TOKEN_FLOAT_TYPE);
       case 'n':
-        return lexer_check_keyword(start, 2, "fn", TOKEN_FN);
+        return lexer_check_keyword(lexer, 2, "fn", TOKEN_FN);
       case 'o':
-        return lexer_check_keyword(start, 3, "for", TOKEN_FOR);
+        return lexer_check_keyword(lexer, 3, "for", TOKEN_FOR);
       }
     }
     break;
   case 'i':
     if (length == 2) {
       if (start[1] == 'f')
-        return lexer_check_keyword(start, 2, "if", TOKEN_IF);
+        return lexer_check_keyword(lexer, 2, "if", TOKEN_IF);
       if (start[1] == '8')
-        return lexer_check_keyword(start, 2, "i8", TOKEN_I8_TYPE);
+        return lexer_check_keyword(lexer, 2, "i8", TOKEN_I8_TYPE);
     }
     if (length == 3) {
       if (start[1] == 'n' && start[2] == 't')
-        return lexer_check_keyword(start, 3, "int", TOKEN_INT_TYPE);
+        return lexer_check_keyword(lexer, 3, "int", TOKEN_INT_TYPE);
       if (start[1] == '1' && start[2] == '6')
-        return lexer_check_keyword(start, 3, "i16", TOKEN_I16_TYPE);
+        return lexer_check_keyword(lexer, 3, "i16", TOKEN_I16_TYPE);
       if (start[1] == '3' && start[2] == '2')
-        return lexer_check_keyword(start, 3, "i32", TOKEN_I32_TYPE);
+        return lexer_check_keyword(lexer, 3, "i32", TOKEN_I32_TYPE);
       if (start[1] == '6' && start[2] == '4')
-        return lexer_check_keyword(start, 3, "i64", TOKEN_I64_TYPE);
+        return lexer_check_keyword(lexer, 3, "i64", TOKEN_I64_TYPE);
     }
     if (length == 5)
-      return lexer_check_keyword(start, 5, "isize", TOKEN_ISIZE_TYPE);
+      return lexer_check_keyword(lexer, 5, "isize", TOKEN_ISIZE_TYPE);
     break;
   case 'l':
     if (length == 3)
-      return lexer_check_keyword(start, 3, "let", TOKEN_LET);
+      return lexer_check_keyword(lexer, 3, "let", TOKEN_LET);
     if (length == 4)
-      return lexer_check_keyword(start, 4, "loop", TOKEN_LOOP);
+      return lexer_check_keyword(lexer, 4, "loop", TOKEN_LOOP);
     break;
   case 'r':
     if (length == 6)
-      return lexer_check_keyword(start, 6, "return", TOKEN_RETURN);
+      return lexer_check_keyword(lexer, 6, "return", TOKEN_RETURN);
     break;
   case 's':
     if (length == 3)
-      return lexer_check_keyword(start, 3, "str", TOKEN_STR_TYPE);
+      return lexer_check_keyword(lexer, 3, "str", TOKEN_STR_TYPE);
     if (length == 6) {
       if (start[1] == 't' && start[2] == 'r') {
-        return lexer_check_keyword(start, 6, "struct", TOKEN_STRUCT);
+        return lexer_check_keyword(lexer, 6, "struct", TOKEN_STRUCT);
       }
       if (start[1] == 'i' && start[2] == 'z') {
-        return lexer_check_keyword(start, 6, "sizeof", TOKEN_SIZEOF);
+        return lexer_check_keyword(lexer, 6, "sizeof", TOKEN_SIZEOF);
       }
     }
     break;
@@ -208,49 +209,49 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     if (length > 1) {
       switch (start[1]) {
       case 'r':
-        return lexer_check_keyword(start, 4, "true", TOKEN_TRUE);
+        return lexer_check_keyword(lexer, 4, "true", TOKEN_TRUE);
       case 'y':
-        return lexer_check_keyword(start, 4, "type", TOKEN_TYPE);
+        return lexer_check_keyword(lexer, 4, "type", TOKEN_TYPE);
       }
     }
     break;
   case 'u':
     if (length == 2)
-      return lexer_check_keyword(start, 2, "u8", TOKEN_U8_TYPE);
+      return lexer_check_keyword(lexer, 2, "u8", TOKEN_U8_TYPE);
     if (length == 3) {
       if (start[1] == '1' && start[2] == '6')
-        return lexer_check_keyword(start, 3, "u16", TOKEN_U16_TYPE);
+        return lexer_check_keyword(lexer, 3, "u16", TOKEN_U16_TYPE);
       if (start[1] == '3' && start[2] == '2')
-        return lexer_check_keyword(start, 3, "u32", TOKEN_U32_TYPE);
+        return lexer_check_keyword(lexer, 3, "u32", TOKEN_U32_TYPE);
       if (start[1] == '6' && start[2] == '4')
-        return lexer_check_keyword(start, 3, "u64", TOKEN_U64_TYPE);
+        return lexer_check_keyword(lexer, 3, "u64", TOKEN_U64_TYPE);
     }
     if (length == 5)
-      return lexer_check_keyword(start, 5, "usize", TOKEN_USIZE_TYPE);
+      return lexer_check_keyword(lexer, 5, "usize", TOKEN_USIZE_TYPE);
     break;
   case 'v':
     if (length == 3)
-      return lexer_check_keyword(start, 3, "var", TOKEN_VAR);
+      return lexer_check_keyword(lexer, 3, "var", TOKEN_VAR);
     if (length == 4)
-      return lexer_check_keyword(start, 4, "void", TOKEN_VOID_TYPE);
+      return lexer_check_keyword(lexer, 4, "void", TOKEN_VOID_TYPE);
     break;
   case 'w':
     if (length == 5)
-      return lexer_check_keyword(start, 5, "while", TOKEN_WHILE);
+      return lexer_check_keyword(lexer, 5, "while", TOKEN_WHILE);
     break;
   case 'p':
     if (length == 5)
-      return lexer_check_keyword(start, 5, "print", TOKEN_PRINT);
+      return lexer_check_keyword(lexer, 5, "print", TOKEN_PRINT);
     break;
   case 'c':
     if (length == 8)
-      return lexer_check_keyword(start, 8, "continue", TOKEN_CONTINUE);
+      return lexer_check_keyword(lexer, 8, "continue", TOKEN_CONTINUE);
     if (length == 4)
-      return lexer_check_keyword(start, 4, "char", TOKEN_CHAR_TYPE);
+      return lexer_check_keyword(lexer, 4, "char", TOKEN_CHAR_TYPE);
     break;
   case 'd':
     if (length == 6)
-      return lexer_check_keyword(start, 6, "double", TOKEN_DOUBLE_TYPE);
+      return lexer_check_keyword(lexer, 6, "double", TOKEN_DOUBLE_TYPE);
     break;
   }
 
