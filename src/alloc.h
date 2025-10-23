@@ -12,7 +12,6 @@ typedef struct Slab {
 
 // Arena structure
 typedef struct Arena {
-  Slab *first;      // Head of slab list
   Slab *current;    // Current slab we're allocating from
   size_t slab_size; // Default size for new slabs
 } Arena;

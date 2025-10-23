@@ -18,7 +18,6 @@ void arena_init(Arena *arena, size_t initial_capacity) {
   slab->next = NULL;
 
   // Initialize arena
-  arena->first = slab;
   arena->current = slab;
   arena->slab_size = initial_capacity;
 }
@@ -71,7 +70,7 @@ void *arena_alloc(Arena *arena, size_t size) {
 }
 
 void arena_free(Arena *arena) {
-  Slab *current = arena->first;
+  Slab *current = arena->current;
 
   // Walk the linked list and free each slab
   while (current != NULL) {
@@ -82,7 +81,6 @@ void arena_free(Arena *arena) {
   }
 
   // Reset arena to empty state
-  arena->first = NULL;
   arena->current = NULL;
   arena->slab_size = 0;
 }
@@ -91,7 +89,7 @@ void arena_get_stats(Arena *arena, size_t *used, size_t *capacity) {
   *used = 0;
   *capacity = 0;
 
-  Slab *slab = arena->first;
+  Slab *slab = arena->current;
   while (slab != NULL) {
     *used += slab->used;
     *capacity += slab->capacity;
