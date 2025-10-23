@@ -1,6 +1,6 @@
 name = "Pebble"
 grammar = "pebble"
-path_suffixes = ["peb"]  # or whatever your file extension is
+path_suffixes = ["peb"]
 line_comments = ["//"]
 tab_size = 4
 hard_tabs = false

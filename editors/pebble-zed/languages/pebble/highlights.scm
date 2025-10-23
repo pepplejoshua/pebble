@@ -40,10 +40,6 @@
   "false"
 ] @boolean
 
-; ✗ REMOVE THIS:
-; "nil" @constant
-
-; ✓ ADD THIS INSTEAD:
 (nil_literal) @constant
 
 ; Function declarations
