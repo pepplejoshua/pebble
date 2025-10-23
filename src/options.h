@@ -21,6 +21,8 @@ typedef struct CompilerOptions
   const char *output_exe_name;
   const char *output_c_name;
   const char *input_file;
+  bool has_main;
+  const char *entry_point;
 } CompilerOptions;
 
 // Global compiler options

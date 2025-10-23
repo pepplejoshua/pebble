@@ -68,6 +68,8 @@ void initialise_args() {
   compiler_opts.keep_c_file = true;
   compiler_opts.output_exe_name = "output";
   compiler_opts.output_c_name = "output.c";
+  compiler_opts.has_main = true;
+  compiler_opts.entry_point = "main";
   compiler_opts.input_file = NULL;
 
   auto_detect_compiler();
@@ -106,13 +108,12 @@ void print_usage(const char *program_name) {
   printf("Pebble Compiler\n");
   printf("Usage: %s [options] <source_file>\n\n", program_name);
   printf("Options:\n");
-  printf("  --freestanding       Generate freestanding code (no standard "
-         "library)\n");
   printf("  -v, --verbose        Enable verbose output\n");
   printf("  --keep-c             Keep generated C file (default)\n");
   printf("  --no-keep-c          Remove generated C file after compilation\n");
   printf("  --compiler           Specify the compiler used when compiling C "
          "(autodetects gcc/clang/cc depending on your computer)\n");
+  printf("  --no-main            No entry point to the program. Compiles to an object only.\n");
   printf("  -o <name>            Specify output executable name (default: "
          "output)\n");
   printf("  -c <name>            Specify output c file name (default: "
@@ -122,6 +123,10 @@ void print_usage(const char *program_name) {
   printf("  --test-parser        Run parser tests\n");
   printf("  --test-checker       Run checker tests\n");
   printf("  --test-all           Run all tests\n");
+  printf("\nFreestanding Options:\n");
+  printf("  --freestanding       Generate freestanding code (no standard "
+         "library)\n");
+  printf("  --entry-point        Entry point of your code (default main)\n");
   printf("\nRelease Options:\n");
   printf("  --debug              Compile in debug mode\n");
   printf("  --release-small      Compile for a smaller binary\n");
@@ -160,6 +165,14 @@ bool parse_args(int argc, char **argv) {
         return false;
       }
       compiler_opts.compiler = argv[++i];
+    } else if (strcmp(argv[i], "--entry-point") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --entry-point requires an argument\n");
+        return false;
+      }
+      compiler_opts.entry_point = argv[++i];
+    } else if (strcmp(argv[i], "--no-main") == 0) {
+      compiler_opts.has_main = false;
     } else if (strcmp(argv[i], "--debug") == 0) {
       compiler_opts.release_mode = RELEASE_DEBUG;
     } else if (strcmp(argv[i], "--release-small") == 0) {
