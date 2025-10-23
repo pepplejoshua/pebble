@@ -501,6 +501,17 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           emit_string(cg, ";");
           emit_string(cg, "\n");
         }
+      } else if (type->kind == TYPE_TUPLE) {
+        for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+          emit_indent_spaces(cg);
+          emit_type_name(cg, type->data.tuple.element_types[i]);
+          emit_string(cg, " _");
+          // NOTE: This will break past 10 elements 0-9
+          char idx_str[2] = {'0' + (char)i, '\0'};
+          emit_string(cg, idx_str);
+          emit_string(cg, ";");
+          emit_string(cg, "\n");
+        }
       }
       emit_dedent(cg);
       emit_indent_spaces(cg);
