@@ -235,6 +235,11 @@ void emit_program(Codegen *cg) {
 
   // Emit sections
   emit_sections(cg);
+
+  // Free global symbol and type tables
+  HASH_CLEAR(hh, global_scope->symbols);
+  HASH_CLEAR(hh, type_table);
+  HASH_CLEAR(hh, canonical_type_table);
 }
 
 void emit_type_name(Codegen *cg, Type *type) {
@@ -359,7 +364,7 @@ void emit_sections(Codegen *cg) {
     cg->defs = NULL;
   }
 
-  // Clear uthash sets (if uthash.h defines HASH_CLEAR)
+  // Clear uthash sets
   HASH_CLEAR(hh, cg->declared_types);
   HASH_CLEAR(hh, cg->defined_types);
   HASH_CLEAR(hh, cg->declared_vars);

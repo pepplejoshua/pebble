@@ -1,10 +1,10 @@
 #include "checker.h"
 #include "alloc.h"
 #include "ast.h"
+#include "options.h"
 #include "symbol.h"
 #include "type.h"
 #include "uthash.h"
-#include "options.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -59,7 +59,8 @@ void checker_warning(Location loc, const char *fmt, ...) {
   fprintf(stderr, "\n");
 }
 
-static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type);
+static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
+                                  Type *target_type);
 
 //=============================================================================
 // PASS 2: COLLECT GLOBALS
@@ -889,7 +890,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_STRUCT: {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
-      checker_warning(type_expr->loc, "Struct was declared without any members");
+      checker_warning(type_expr->loc,
+                      "Struct was declared without any members");
       return type_create_struct(NULL, NULL, field_count);
     }
 
@@ -1007,8 +1009,7 @@ static bool is_lvalue(AstNode *expr) {
 
 // Insert implicit cast if needed, returns the (possibly wrapped) expression
 // Returns NULL if types are incompatible
-AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
-                                  Type *target_type) {
+AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   if (type_equals(expr_type, target_type)) {
     return expr; // No cast needed
   }
@@ -1918,7 +1919,8 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
   }
 
   case AST_STMT_PRINT: {
-    // FIXME: we can maybe setup a user function that can takeover in freestanding cases
+    // FIXME: we can maybe setup a user function that can takeover in
+    // freestanding cases
     if (compiler_opts.freestanding) {
       checker_error(stmt->loc, "cannot use print in freestanding mode");
     }
