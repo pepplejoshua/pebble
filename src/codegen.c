@@ -598,6 +598,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_dedent(cg);
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
+    } else {
+      emit_string(cg, "\n");
     }
     break;
   }
