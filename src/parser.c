@@ -318,7 +318,8 @@ AstNode *parse_function_decl(Parser *parser) {
             params = new_params;
           }
 
-          Token param_name = parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+          Token param_name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                            "Expected parameter name");
           params[param_count++].name = param_name.lexeme;
         }
 
@@ -330,7 +331,7 @@ AstNode *parse_function_decl(Parser *parser) {
 
         continue;
       }
-          
+
       AstNode *param_type = parse_type_expression(parser);
 
       params[param_count].name =
@@ -934,6 +935,9 @@ AstNode *parse_postfix(Parser *parser) {
         // Allow empty struct literal
         if (!parser_check(parser, TOKEN_RBRACE)) {
           do {
+            if (parser_check(parser, TOKEN_RBRACE)) {
+              break;
+            }
             // Grow arrays if needed
             if (count >= capacity) {
               capacity *= 2;
@@ -1450,7 +1454,7 @@ AstNode *parse_type_expression(Parser *parser) {
 
           field_names[count++] = str_dup(field_name.lexeme);
 
-          while(parser_match(parser, TOKEN_COMMA)) {
+          while (parser_match(parser, TOKEN_COMMA)) {
             if (!parser_check(parser, TOKEN_IDENTIFIER)) {
               parser_error(parser, "Expected field name");
               return NULL;
@@ -1478,7 +1482,6 @@ AstNode *parse_type_expression(Parser *parser) {
           if (!field_types[current_count]) {
             return NULL;
           }
-
 
           // Copy type to all fields
           for (size_t i = current_count + 1; i < count; i++) {
