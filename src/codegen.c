@@ -154,18 +154,23 @@ void emit_program(Codegen *cg) {
   // Declare array/slice types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type* type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE) {
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE || type->kind == TYPE_TUPLE) {
       const char *canonical = type->canonical_name;
 
-      emit_string(cg, "typedef struct ");
-      emit_string(cg, canonical);
-      emit_string(cg, " ");
-      emit_string(cg, canonical);
-      emit_string(cg, ";\n");
+      CodegenTypeEntry *decl_entry;
+      HASH_FIND_STR(cg->declared_types, canonical, decl_entry);
+      if (!decl_entry) {
 
-      CodegenTypeEntry *decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
-      decl_entry->key = str_dup(canonical); // Persist key
-      HASH_ADD_STR(cg->declared_types, key, decl_entry);
+          emit_string(cg, "typedef struct ");
+          emit_string(cg, canonical);
+          emit_string(cg, " ");
+          emit_string(cg, canonical);
+          emit_string(cg, ";\n");
+
+          CodegenTypeEntry *decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
+          decl_entry->key = str_dup(canonical); // Persist key
+          HASH_ADD_STR(cg->declared_types, key, decl_entry);
+      }
     }
   }
 
@@ -174,40 +179,56 @@ void emit_program(Codegen *cg) {
   // Define array/slice types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type* type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE) {
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE || type->kind == TYPE_TUPLE) {
       const char *canonical = type->canonical_name;
 
-      emit_string(cg, "struct ");
-      emit_string(cg, canonical);
-      emit_string(cg, " {");
-      emit_string(cg, "\n");
-      emit_indent(cg);
-      if (type->kind == TYPE_ARRAY) {
-        emit_indent_spaces(cg);
-        emit_type_name(cg, type->data.array.element);
-        char buf[32];
-        sprintf(buf, " data[%zu];", type->data.array.size);
-        emit_string(cg, buf);
-        emit_string(cg, "\n");
-        emit_indent_spaces(cg);
-        emit_string(cg, "size_t len;\n");
-      } else if (type->kind == TYPE_SLICE) {
-        emit_indent_spaces(cg);
-        emit_type_name(cg, type->data.slice.element);
-        emit_string(cg, "* data;");
-        emit_string(cg, "\n");
-        emit_indent_spaces(cg);
-        emit_string(cg, "size_t len;");
-        emit_string(cg, "\n");
-      }
-      emit_dedent(cg);
-      emit_indent_spaces(cg);
-      emit_string(cg, "};");
-      emit_string(cg, "\n\n");
+      CodegenTypeEntry *def_entry;
+      HASH_FIND_STR(cg->defined_types, canonical, def_entry);
+      if (!def_entry) {
 
-      CodegenTypeEntry *decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
-      decl_entry->key = str_dup(canonical); // Persist key
-      HASH_ADD_STR(cg->defined_types, key, decl_entry);
+        emit_string(cg, "struct ");
+        emit_string(cg, canonical);
+        emit_string(cg, " {");
+        emit_string(cg, "\n");
+        emit_indent(cg);
+        if (type->kind == TYPE_ARRAY) {
+          emit_indent_spaces(cg);
+          emit_type_name(cg, type->data.array.element);
+          char buf[32];
+          sprintf(buf, " data[%zu];", type->data.array.size);
+          emit_string(cg, buf);
+          emit_string(cg, "\n");
+          emit_indent_spaces(cg);
+          emit_string(cg, "size_t len;\n");
+        } else if (type->kind == TYPE_SLICE) {
+          emit_indent_spaces(cg);
+          emit_type_name(cg, type->data.slice.element);
+          emit_string(cg, "* data;");
+          emit_string(cg, "\n");
+          emit_indent_spaces(cg);
+          emit_string(cg, "size_t len;");
+          emit_string(cg, "\n");
+        } else if (type->kind == TYPE_TUPLE) {
+          for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+            emit_indent_spaces(cg);
+            emit_type_name(cg, type->data.tuple.element_types[i]);
+            emit_string(cg, " _");
+            // NOTE: This will break past 10 elements 0-9
+            char idx_str[2] = {'0' + (char)i, '\0'};
+            emit_string(cg, idx_str);
+            emit_string(cg, ";");
+            emit_string(cg, "\n");
+          }
+        }
+        emit_dedent(cg);
+        emit_indent_spaces(cg);
+        emit_string(cg, "};");
+        emit_string(cg, "\n\n");
+
+        CodegenTypeEntry *decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
+        decl_entry->key = str_dup(canonical); // Persist key
+        HASH_ADD_STR(cg->defined_types, key, decl_entry);
+      }
     }
   }
 
@@ -477,16 +498,6 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           emit_type_name(cg, type->data.struct_data.field_types[i]);
           emit_string(cg, " ");
           emit_string(cg, type->data.struct_data.field_names[i]);
-          emit_string(cg, ";");
-          emit_string(cg, "\n");
-        }
-      } else { // TYPE_TUPLE
-        for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-          emit_indent_spaces(cg);
-          emit_type_name(cg, type->data.tuple.element_types[i]);
-          emit_string(cg, " _");
-          char idx_str[2] = {'0' + (char)i, '\0'};
-          emit_string(cg, idx_str);
           emit_string(cg, ";");
           emit_string(cg, "\n");
         }
