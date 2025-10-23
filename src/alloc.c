@@ -57,10 +57,9 @@ void *arena_alloc(Arena *arena, size_t size) {
 
   new_slab->capacity = new_slab_size;
   new_slab->used = 0;
-  new_slab->next = NULL;
+  new_slab->next = arena->current;
 
   // Link new slab and make it current
-  arena->current->next = new_slab;
   arena->current = new_slab;
 
   // Allocate from new slab (it's empty so alignment is already satisfied)
