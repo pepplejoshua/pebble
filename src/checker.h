@@ -20,6 +20,9 @@ bool check_globals(void);
 // Returns true if successful, false if there were errors
 bool check_function_bodies(void);
 
+// Pass 5: Validate entry point
+bool verify_entry_point(void);
+
 // Helper: Resolve a type expression AST node to a Type object
 Type *resolve_type_expression(AstNode *type_expr);
 
