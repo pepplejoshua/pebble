@@ -40,6 +40,5 @@ char *str_dup(const char *str) {
   size_t len = strlen(str) + 1;
   char *copy = arena_alloc(&long_lived, len);
   memcpy(copy, str, len);
-  copy[len] = '\0';
   return copy;
 }

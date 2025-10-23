@@ -1,9 +1,9 @@
 #include "codegen.h"
 #include "alloc.h"
 #include "ast.h"
+#include "options.h"
 #include "symbol.h"
 #include "type.h"
-#include "options.h"
 #include <stddef.h>
 #include <stdio.h>
 
@@ -64,7 +64,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble =
-    "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
+        "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -85,7 +85,7 @@ void emit_string(Codegen *cg, const char *str) {
 
 static void emit_indent_spaces(Codegen *cg) {
   for (int i = 0; i < cg->indent_level; i++) {
-    emit_string(cg, "    ");
+    emit_string(cg, "  ");
   }
 }
 
@@ -168,7 +168,7 @@ void emit_program(Codegen *cg) {
       emit_string(cg, sym->name);
       if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
         emit_string(cg, " = ");
-        
+
         if (sym->decl->data.var_decl.init) {
           emit_expr(cg, sym->decl->data.var_decl.init);
         } else {
