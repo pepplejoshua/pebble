@@ -4,6 +4,7 @@ output.c
 temp
 *.vsix
 node_modules
+target
 
 # Prerequisites
 *.d
