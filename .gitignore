@@ -5,6 +5,7 @@ temp
 *.vsix
 node_modules
 target
+.vscode
 
 # Prerequisites
 *.d
