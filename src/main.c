@@ -206,9 +206,10 @@ int main(int argc, char **argv) {
 
   // Report memory usage
   if (compiler_opts.verbose) {
+    size_t used, capacity;
+    arena_get_stats(&long_lived, &used, &capacity);
     printf("Memory used: %zu bytes (%.2f KB) out of %zu bytes (%.2f KB)\n",
-           long_lived.used, long_lived.used / 1024.0, long_lived.capacity,
-           long_lived.capacity / 1024.0);
+           used, used / 1024.0, capacity, capacity / 1024.0);
   }
 
   // Cleanup
