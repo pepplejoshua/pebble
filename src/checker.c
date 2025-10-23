@@ -2384,7 +2384,7 @@ bool verify_entry_point(void) {
       // TODO: Would be nice if this were just []str instead
       
       // Check second param is *str (argv)
-      // This is a slice of slices of bytes
+      // Array of char*
       Type *argv_type = param_types[1];
       if (argv_type->kind != TYPE_POINTER) {
         fprintf(stderr, "error: main's second parameter must be *str, not '%s'\n",
