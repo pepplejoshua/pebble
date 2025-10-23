@@ -120,6 +120,12 @@ static bool compile_file(const char *filename) {
     return false;
   }
 
+  // Pass 5: Verify entry point exists and has correct signature
+  if (!verify_entry_point()) {
+    printf("Compilation failed during entry point verification\n");
+    return false;
+  }
+
   // Debug: Print type information
   // debug_print_type_table();
 
@@ -148,18 +154,57 @@ static bool compile_file(const char *filename) {
   }
 
   char compiler_args[1024];
-  snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
-           compiler_opts.compiler, default_compiler_args,
-           compiler_opts.output_exe_name, release_mode_string());
+
+  if (!compiler_opts.has_main) {
+    // Compile to object file (.o) instead of executable
+    char obj_filename[512];
+    snprintf(obj_filename, sizeof(obj_filename), "%s.o", 
+             compiler_opts.output_exe_name);
+    
+    // Use -c flag to compile to object file
+    snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
+             compiler_opts.compiler,
+             default_compiler_args,
+             obj_filename,
+             release_mode_string());
+    
+    if (compiler_opts.verbose) {
+      printf("Compiling to object file: %s\n", compiler_args);
+    }
+    
+    int result = system(compiler_args);
+    if (result != 0) {
+      printf("Compilation to object file failed\n");
+      return false;
+    }
+    
+    if (!compiler_opts.keep_c_file) {
+      char rm_cmd[512];
+      snprintf(rm_cmd, sizeof(rm_cmd), "rm %s", c_filename);
+      system(rm_cmd);
+    }
+    
+    printf("Compiled to object file: %s\n", obj_filename);
+    return true;
+  }
 
   if (compiler_opts.freestanding) {
-    char buffer[2048];
-    snprintf(buffer, sizeof(buffer), "%s -ffreestanding", compiler_args);
-    gcc_result = system(buffer);
+    // Compile as freestanding, which compiles to an object
+    snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s -ffreestanding",
+            compiler_opts.compiler, default_compiler_args,
+            compiler_opts.output_exe_name, release_mode_string());
+    
+    gcc_result = system(compiler_args);
   } else {
-    // Compile with GCC
+    // Compile as executable
+    snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
+            compiler_opts.compiler, default_compiler_args,
+            compiler_opts.output_exe_name, release_mode_string());
+
+    // Compile
     gcc_result = system(compiler_args);
   }
+
   if (gcc_result != 0) {
     printf("GCC compilation failed\n");
     return false;
@@ -171,7 +216,7 @@ static bool compile_file(const char *filename) {
     system(rm_cmd);
   }
 
-  printf("Compiled to %s executable\n", compiler_opts.output_exe_name);
+  printf("Compiled to %s\n", compiler_opts.output_exe_name);
 
   return true;
 }
