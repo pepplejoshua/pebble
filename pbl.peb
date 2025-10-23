@@ -1,18 +1,3 @@
-extern fn malloc(size usize) *void;
-extern fn free(ptr *void) void;
+type NamedSlice = []int;
 
-fn main() int {
-    var arr_1 *int = malloc(10 * sizeof int);
-    var slice []int = arr_1[:10];
-
-    loop 0..10 {
-        slice[iter] = iter;
-    }
-
-    loop 0..10 {
-        print slice[iter];
-    }
-
-    free(arr_1);
-    return 0;
-}
+fn main() int => 0

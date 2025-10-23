@@ -121,5 +121,6 @@ void scope_push(Scope *scope) {
 // Pop back to parent scope
 void scope_pop(void) {
   assert(current_scope && current_scope->parent);
+  HASH_CLEAR(hh, current_scope->symbols);
   current_scope = current_scope->parent;
 }
