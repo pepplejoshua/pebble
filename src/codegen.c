@@ -739,7 +739,33 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       return;
     }
 
-    emit_expr(cg, stmt->data.print_stmt.expr);
+    if (type->kind == TYPE_STRING) {
+      emit_string(cg, "({ ");
+
+      AstNode *expr = stmt->data.print_stmt.expr;
+
+      char buffer[64];
+      char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+      emit_type_name(cg, expr->resolved_type);
+      emit_string(cg, " ");
+      emit_string(cg, temporary_name);
+      
+      emit_string(cg, " = ");
+      emit_expr(cg, expr);
+      emit_string(cg, ";\n");
+
+      emit_string(cg, "(");
+      emit_string(cg, temporary_name);
+      emit_string(cg, ") ? ");
+      emit_string(cg, temporary_name);
+      emit_string(cg, " : \"\";\n");
+
+      emit_string(cg, " })");
+    } else {
+      emit_expr(cg, stmt->data.print_stmt.expr);
+    }
+
     emit_string(cg, ");\n");
     break;
   }
