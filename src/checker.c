@@ -265,10 +265,6 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     canonical_name = type_int->canonical_name;
     break;
 
-  case TYPE_FLOAT:
-    canonical_name = type_float->canonical_name;
-    break;
-
   case TYPE_BOOL:
     canonical_name = type_bool->canonical_name;
     break;
@@ -331,10 +327,6 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
 
   case TYPE_CHAR:
     canonical_name = type_char->canonical_name;
-    break;
-
-  case TYPE_DOUBLE:
-    canonical_name = type_double->canonical_name;
     break;
 
   case TYPE_POINTER: {
@@ -609,16 +601,8 @@ static bool type_is_int(Type *type) {
   return type->kind == TYPE_INT || type->kind == TYPE_I32;
 }
 
-static bool type_is_float(Type *type) {
-  return type->kind == TYPE_FLOAT || TYPE_F32;
-}
-
-static bool type_is_double(Type *type) {
-  return type->kind == TYPE_DOUBLE || TYPE_F64;
-}
-
 static bool type_is_floating(Type *type) {
-  return type_is_float(type) || type_is_double(type);
+  return type->kind == TYPE_F32 || type->kind == TYPE_F64;
 }
 
 // Sub-pass 3b: Check constant declarations
@@ -1095,9 +1079,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       return cast;
     }
   } else if (expr_type->kind == TYPE_INT &&
-             (target_type->kind == TYPE_FLOAT ||
-              target_type->kind == TYPE_DOUBLE ||
-              target_type->kind == TYPE_F32 ||
+             (target_type->kind == TYPE_F32 ||
               target_type->kind == TYPE_F64)) {
     // Promote int to float
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
@@ -1120,8 +1102,8 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     return cast;
-  } else if ((type_is_float(expr_type) && type_is_double(target_type))
-    || (type_is_double(expr_type) && type_is_float(target_type))) {
+  } else if ((expr_type->kind == TYPE_F32 && target_type->kind == TYPE_F64)
+    || (expr_type->kind == TYPE_F64 && target_type->kind == TYPE_F32)) {
     // float -> double
     // double -> float
     return expr;
@@ -1186,10 +1168,6 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_LITERAL_INT:
     expr->resolved_type = type_int;
     return type_int;
-
-  case AST_EXPR_LITERAL_FLOAT:
-    expr->resolved_type = type_float;
-    return type_float;
 
   case AST_EXPR_LITERAL_STRING:
     expr->resolved_type = type_string;

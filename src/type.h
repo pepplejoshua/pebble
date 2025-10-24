@@ -13,7 +13,6 @@ typedef struct TypeEntry TypeEntry;
 // Type kinds
 typedef enum {
   TYPE_INT,
-  TYPE_FLOAT,
   TYPE_BOOL,
   TYPE_STRING,
   TYPE_VOID,
@@ -30,7 +29,6 @@ typedef enum {
   TYPE_I64,
   TYPE_ISIZE,
   TYPE_CHAR,
-  TYPE_DOUBLE,
   TYPE_POINTER,
   TYPE_ARRAY,
   TYPE_SLICE,
@@ -90,7 +88,6 @@ struct TypeEntry {
 
 // Built-in types
 extern Type *type_int;
-extern Type *type_float;
 extern Type *type_bool;
 extern Type *type_string;
 extern Type *type_void;
@@ -107,7 +104,6 @@ extern Type *type_i32;
 extern Type *type_i64;
 extern Type *type_isize;
 extern Type *type_char;
-extern Type *type_double;
 
 // Type table (global hash map of named types)
 extern TypeEntry *type_table;

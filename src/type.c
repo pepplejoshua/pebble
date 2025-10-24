@@ -12,7 +12,6 @@ extern Arena long_lived;
 
 // Built-in type globals
 Type *type_int = NULL;
-Type *type_float = NULL;
 Type *type_bool = NULL;
 Type *type_string = NULL;
 Type *type_void = NULL;
@@ -29,7 +28,6 @@ Type *type_i32 = NULL;
 Type *type_i64 = NULL;
 Type *type_isize = NULL;
 Type *type_char = NULL;
-Type *type_double = NULL;
 
 // Type table (hash map of name => type entries)
 TypeEntry *type_table = NULL;
@@ -289,14 +287,13 @@ bool type_equals(Type *a, Type *b) {
 
 // Check if type is numeric (int or float)
 bool type_is_numeric(Type *type) {
-  return type && (type->kind == TYPE_INT || type->kind == TYPE_FLOAT ||
+  return type && (type->kind == TYPE_INT ||
                   type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
                   type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
                   type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
                   type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
                   type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
-                  type->kind == TYPE_DOUBLE || type->kind == TYPE_F32 ||
-                  type->kind == TYPE_F64);
+                  type->kind == TYPE_F32 || type->kind == TYPE_F64);
 }
 
 // Initialize the type system
@@ -308,7 +305,6 @@ void type_system_init(void) {
   };
   // Create built-in types
   type_int = type_create(TYPE_INT, loc);
-  type_float = type_create(TYPE_FLOAT, loc);
   type_bool = type_create(TYPE_BOOL, loc);
   type_string = type_create(TYPE_STRING, loc);
   type_void = type_create(TYPE_VOID, loc);
@@ -325,11 +321,9 @@ void type_system_init(void) {
   type_i64 = type_create(TYPE_I64, loc);
   type_isize = type_create(TYPE_ISIZE, loc);
   type_char = type_create(TYPE_CHAR, loc);
-  type_double = type_create(TYPE_DOUBLE, loc);
 
   // Set canonical names for built-in types
   type_int->canonical_name = "int";
-  type_float->canonical_name = "float";
   type_bool->canonical_name = "bool";
   type_string->canonical_name = "str";
   type_void->canonical_name = "void";
@@ -346,11 +340,9 @@ void type_system_init(void) {
   type_i64->canonical_name = "i64";
   type_isize->canonical_name = "isize";
   type_char->canonical_name = "char";
-  type_double->canonical_name = "double";
 
   // Register built-in types in type table
   type_register("int", type_int);
-  type_register("float", type_float);
   type_register("bool", type_bool);
   type_register("str", type_string);
   type_register("void", type_void);
@@ -367,11 +359,9 @@ void type_system_init(void) {
   type_register("i64", type_i64);
   type_register("isize", type_isize);
   type_register("char", type_char);
-  type_register("double", type_double);
 
   // Register built-ins in canonical type table
   canonical_register("int", type_int);
-  canonical_register("float", type_float);
   canonical_register("bool", type_bool);
   canonical_register("str", type_string);
   canonical_register("void", type_void);
@@ -388,7 +378,6 @@ void type_system_init(void) {
   canonical_register("i64", type_i64);
   canonical_register("isize", type_isize);
   canonical_register("char", type_char);
-  canonical_register("double", type_double);
 }
 
 // Compute canonical name for a type (with cycle detection)
@@ -399,7 +388,6 @@ char *compute_canonical_name(Type *type) {
 
   switch (type->kind) {
   case TYPE_INT:
-  case TYPE_FLOAT:
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_VOID:
@@ -416,7 +404,6 @@ char *compute_canonical_name(Type *type) {
   case TYPE_I64:
   case TYPE_ISIZE:
   case TYPE_CHAR:
-  case TYPE_DOUBLE:
   case TYPE_OPAQUE:
     result = type->canonical_name;
     break;
@@ -526,7 +513,6 @@ static size_t num_digits(uint64_t n) {
 char *type_name(Type *type) {
   switch (type->kind) {
   case TYPE_INT:
-  case TYPE_FLOAT:
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_VOID:
@@ -543,7 +529,6 @@ char *type_name(Type *type) {
   case TYPE_I64:
   case TYPE_ISIZE:
   case TYPE_CHAR:
-  case TYPE_DOUBLE:
     return type->canonical_name;
   case TYPE_STRUCT:
     return type->declared_name;
