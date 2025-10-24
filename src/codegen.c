@@ -791,7 +791,18 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     
     switch (cond_type->kind) {
       case TYPE_CHAR:
-      case TYPE_INT: {
+      case TYPE_INT:
+      case TYPE_U8:
+      case TYPE_U32:
+      case TYPE_USIZE:
+      case TYPE_I16:
+      case TYPE_I64:
+      case TYPE_U16:
+      case TYPE_U64:
+      case TYPE_I8:
+      case TYPE_I32:
+      case TYPE_ISIZE:
+      {
         emit_string(cg, "switch (");
         emit_expr(cg, cond);
         emit_string(cg, ") {\n");
