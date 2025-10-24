@@ -18,6 +18,8 @@
   "extern"
   "as"
   "print"
+  "switch"
+  "case"
 ] @keyword
 
 ; Types
@@ -25,8 +27,6 @@
   "void"
   "bool"
   "int"
-  "float"
-  "double"
   "str"
   "char"
   "f32" "f64"
