@@ -1,17 +1,18 @@
-type Node = struct {
-    data int;
-    next *Node;
+type Header = struct {
+    type_of int;
 };
 
-type Pair = (int, *Pair);
+type Foo = struct {
+    header Header;
+    value int;
+    l []char;
+};
 
-type IntNode = (int, *IntNode);
+type Bar = struct {
+    header Header;
+    value float;
+};
 
 fn main() int {
-    var n = Node.{
-        data = 0,
-        next = nil,
-    };
-
-    return 0;
+  return 0;
 }

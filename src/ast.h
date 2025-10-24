@@ -234,7 +234,6 @@ struct AstNode {
     struct {
       AstNode **elements;
       size_t element_count;
-      Type *resolved_type;
     } tuple_expr;
     struct {
       char *type_name;        // "Point"
