@@ -1124,12 +1124,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     || (type_is_double(expr_type) && type_is_float(target_type))) {
     // float -> double
     // double -> float
-    AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
-    cast->kind = AST_EXPR_IMPLICIT_CAST;
-    cast->loc = expr->loc;
-    cast->data.implicit_cast.expr = expr;
-    cast->data.implicit_cast.target_type = target_type;
-    return cast;
+    return expr;
   }
 
   // No valid conversion
