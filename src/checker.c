@@ -2007,6 +2007,44 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     return then_returns && else_returns;
   }
 
+  case AST_STMT_SWITCH: {
+    AstNode *cond = stmt->data.switch_stmt.condition;
+    AstNode **cases = stmt->data.switch_stmt.cases;
+    AstNode *default_case = stmt->data.switch_stmt.default_case;
+
+    // Check condition is numeric or string
+    Type *cond_type = check_expression(cond);
+    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING) {
+      checker_error(cond->loc, "switch condition must be numeric (int or float) or string");
+    }
+
+    for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+      check_statement(cases[i], expected_return_type);
+    }
+
+    bool else_returns = default_case
+                            ? check_statement(default_case, expected_return_type)
+                            : false;
+
+    return else_returns;
+  }
+
+  case AST_STMT_CASE: {
+    AstNode *cond = stmt->data.case_stmt.condition;
+    AstNode *switch_cond = stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
+
+    Type *cond_type = check_expression(cond);
+    if (cond_type && cond_type->kind != switch_cond->resolved_type->kind) {
+      checker_error(
+        cond->loc,
+        "switch case condition doesn't match switch condition type '%s'",
+        switch_cond->resolved_type->canonical_name
+      );
+    }
+
+    return check_statement(stmt->data.case_stmt.body, expected_return_type);
+  }
+
   case AST_STMT_WHILE: {
     AstNode *cond = stmt->data.while_stmt.cond;
     AstNode *body = stmt->data.while_stmt.body;
