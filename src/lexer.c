@@ -139,6 +139,17 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     if (length == 5)
       return lexer_check_keyword(lexer, 5, "break", TOKEN_BREAK);
     break;
+  case 'c':
+    if (length == 8)
+      return lexer_check_keyword(lexer, 8, "continue", TOKEN_CONTINUE);
+    if (length == 4) {
+      if (start[1] == 'a')
+        return lexer_check_keyword(lexer, 4, "case", TOKEN_CASE);
+
+      if (start[1] == 'h')
+        return lexer_check_keyword(lexer, 4, "char", TOKEN_CHAR_TYPE);
+    }
+    break;
   case 'e':
     if (length == 4)
       return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);
@@ -201,6 +212,9 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
       if (start[1] == 'i' && start[2] == 'z') {
         return lexer_check_keyword(lexer, 6, "sizeof", TOKEN_SIZEOF);
       }
+      if (start[1] == 'w' && start[2] == 'i') {
+        return lexer_check_keyword(lexer, 6, "switch", TOKEN_SWITCH);
+      }
     }
     break;
   case 't':
@@ -240,12 +254,6 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   case 'p':
     if (length == 5)
       return lexer_check_keyword(lexer, 5, "print", TOKEN_PRINT);
-    break;
-  case 'c':
-    if (length == 8)
-      return lexer_check_keyword(lexer, 8, "continue", TOKEN_CONTINUE);
-    if (length == 4)
-      return lexer_check_keyword(lexer, 4, "char", TOKEN_CHAR_TYPE);
     break;
   }
 

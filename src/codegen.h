@@ -34,6 +34,9 @@ typedef struct {
   CodegenTypeEntry *declared_types;
   CodegenTypeEntry *defined_types;
   CodegenTypeEntry *declared_vars;
+
+  // Temporaries
+  size_t temporary_count;
 } Codegen;
 
 // Core functions

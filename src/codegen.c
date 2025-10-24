@@ -6,6 +6,7 @@
 #include "type.h"
 #include <stddef.h>
 #include <stdio.h>
+#include <assert.h>
 
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
@@ -65,7 +66,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble =
-        "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n\n";
+        "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include<string.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -75,6 +76,18 @@ void codegen_init(Codegen *cg, FILE *output) {
   cg->declared_types = NULL;
   cg->defined_types = NULL;
   cg->declared_vars = NULL;
+
+  // Init temporary
+  cg->temporary_count = 0;
+}
+
+char *get_temporary_name(Codegen *cg, char *buffer, size_t size) {
+  assert(size >= 32);
+  memset(buffer, 0, size);
+  sprintf(buffer, "__temporary_var_%ld", cg->temporary_count);
+
+  cg->temporary_count++;
+  return buffer;
 }
 
 void emit_string(Codegen *cg, const char *str) {
@@ -628,6 +641,148 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     } else {
       emit_string(cg, "\n");
     }
+    break;
+  }
+  case AST_STMT_SWITCH: {
+    AstNode *cond = stmt->data.switch_stmt.condition;
+
+    Type *cond_type = cond->resolved_type;
+    AstNode **cases = stmt->data.switch_stmt.cases;
+
+    emit_indent_spaces(cg);
+    
+    switch (cond_type->kind) {
+      case TYPE_INT: {
+        emit_string(cg, "switch (");
+        emit_expr(cg, cond);
+        emit_string(cg, ") {\n");
+
+        for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+          emit_string(cg, "case ");
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ":\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "break;\n");
+        }
+
+        if (stmt->data.switch_stmt.default_case) {
+          emit_string(cg, "default:\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+
+          emit_string(cg, "break;\n");
+        }
+
+        emit_indent_spaces(cg);
+        emit_string(cg, "}\n");
+        break;
+      }
+
+      case TYPE_F32:
+      case TYPE_F64: {
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+        emit_string(cg, " ");
+        emit_string(cg, temporary_name);
+
+        emit_string(cg, " = ");
+        emit_expr(cg, cond);
+        emit_string(cg, ";\n");
+
+        for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+          if (i == 0) {
+            emit_string(cg, "if (");
+          } else {
+            emit_string(cg, "else if (");
+          }
+
+          emit_string(cg, temporary_name);
+          emit_string(cg, " == ");
+
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ") {\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        if (stmt->data.switch_stmt.default_case) {
+          emit_string(cg, " else {\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        emit_string(cg, "\n");
+        break;
+      }
+
+      case TYPE_STRING: {
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+        emit_string(cg, " ");
+        emit_string(cg, temporary_name);
+
+        emit_string(cg, " = ");
+        emit_expr(cg, cond);
+        emit_string(cg, ";\n");
+
+        for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+          if (i == 0) {
+            emit_string(cg, "if (");
+          } else {
+            emit_string(cg, " else if (");
+          }
+
+          emit_string(cg, "strcmp(");
+
+          emit_string(cg, temporary_name);
+          emit_string(cg, ", ");
+
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ") == 0) {\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        if (stmt->data.switch_stmt.default_case) {
+          emit_string(cg, " else {\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        emit_string(cg, "\n");
+        break;
+      }
+
+      default:
+        break;
+    }
+
     break;
   }
   case AST_STMT_WHILE: {
