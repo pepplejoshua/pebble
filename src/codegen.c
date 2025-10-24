@@ -684,8 +684,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         break;
       }
 
-      case TYPE_FLOAT:
-      case TYPE_DOUBLE: {
+      case TYPE_F32:
+      case TYPE_F64: {
         char buffer[64];
         char *temporary_name = get_temporary_name(cg, buffer, 64);
 

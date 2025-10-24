@@ -1169,6 +1169,10 @@ Type *check_expression(AstNode *expr) {
     expr->resolved_type = type_int;
     return type_int;
 
+  case AST_EXPR_LITERAL_FLOAT:
+    expr->resolved_type = type_f32;
+    return type_f32;
+
   case AST_EXPR_LITERAL_STRING:
     expr->resolved_type = type_string;
     return type_string;
