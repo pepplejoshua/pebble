@@ -2073,8 +2073,8 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
-    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING) {
-      checker_error(cond->loc, "switch condition must be numeric (int or float) or string");
+    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR) {
+      checker_error(cond->loc, "switch condition must be numeric (int or float), char or string");
     }
 
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {

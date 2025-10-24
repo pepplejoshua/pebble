@@ -790,6 +790,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     
     switch (cond_type->kind) {
+      case TYPE_CHAR:
       case TYPE_INT: {
         emit_string(cg, "switch (");
         emit_expr(cg, cond);
