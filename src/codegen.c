@@ -162,6 +162,9 @@ void collect_dependencies(Type *t, const char *self_name,
   if (!t)
     return;
 
+  if (t->canonical_name && strcmp(t->canonical_name, self_name))
+    return;
+
   // Check if this type's canonical name matches a declared type
   if (t->canonical_name && strcmp(t->canonical_name, self_name) != 0) {
     if (is_declared_type(t->canonical_name, all_types)) {
@@ -176,7 +179,7 @@ void collect_dependencies(Type *t, const char *self_name,
         *dep_capacity = (*dep_capacity == 0) ? 4 : *dep_capacity * 2;
         *deps = realloc(*deps, *dep_capacity * sizeof(char *));
       }
-      (*deps)[(*dep_count)++] = strdup(t->canonical_name);
+      (*deps)[(*dep_count)++] = str_dup(t->canonical_name);
     }
   }
 
@@ -248,27 +251,70 @@ bool topo_visit(TypeDepNode *all_types, TypeDepNode *node, char ***result,
 void emit_program(Codegen *cg) {
   TypeDepNode *dep_graph = NULL;
   Symbol *sym, *tmp;
-
+  
+  TypeEntry *entry, *type_tmp;
+  
   // Pass 1: Create nodes for all declared types
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
-      TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
-      node->name = sym->name;
+  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
+    Type *type = entry->type;
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE || 
+        type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT) {
+      TypeDepNode *node = malloc(sizeof(TypeDepNode));
+      node->name = type->canonical_name;
       node->depends_on = NULL;
       node->dep_count = 0;
+
       HASH_ADD_KEYPTR(hh, dep_graph, node->name, strlen(node->name), node);
     }
   }
 
   // Pass 2: Build dependency lists
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
-      TypeDepNode *node = NULL;
-      HASH_FIND_STR(dep_graph, sym->name, node);
+  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
+    Type *type = entry->type;
+    TypeDepNode *node = NULL;
+    HASH_FIND_STR(dep_graph, type->canonical_name, node);
+    size_t dep_capacity = 0;
 
-      size_t dep_capacity = 0;
-      collect_dependencies(sym->type, sym->name, dep_graph, &node->depends_on,
-                           &node->dep_count, &dep_capacity);
+    switch (type->kind) {
+      case TYPE_ARRAY:
+      {
+        collect_dependencies(type->data.array.element, type->canonical_name,
+                             dep_graph, &node->depends_on, &node->dep_count,
+                             &dep_capacity);
+        break;
+      }
+
+      case TYPE_TUPLE:
+      {
+        for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+          collect_dependencies(type->data.tuple.element_types[i],
+                               type->canonical_name, dep_graph,
+                               &node->depends_on, &node->dep_count,
+                               &dep_capacity);
+        }
+        break;
+      }
+
+      case TYPE_SLICE:
+      {
+        collect_dependencies(type->data.slice.element, type->canonical_name,
+                             dep_graph, &node->depends_on, &node->dep_count,
+                             &dep_capacity);
+        break;
+      }
+
+      case TYPE_STRUCT:
+      {
+        for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+          collect_dependencies(type->data.struct_data.field_types[i],
+                               type->canonical_name, dep_graph,
+                               &node->depends_on, &node->dep_count,
+                               &dep_capacity);
+        }
+        break;
+      }
+      default:
+        break;
     }
   }
 
@@ -290,13 +336,12 @@ void emit_program(Codegen *cg) {
   // Emit types in sorted order
   cg->current_section = "forward_types";
   for (size_t i = 0; i < sorted_count; i++) {
-    Symbol *type_sym = NULL;
-    HASH_FIND_STR(global_scope->symbols, sorted_types[i], type_sym);
-    if (type_sym) {
-      Type *t = type_lookup(type_sym->name);
-      if (t) {
-        emit_type_if_needed(cg, t);
-      }
+    // Check for array/tuple type is in canonical type table
+    TypeEntry *entry = NULL;
+    HASH_FIND_STR(canonical_type_table, sorted_types[i], entry);
+    if (entry && (entry->type->kind == TYPE_ARRAY ||  entry->type->kind == TYPE_TUPLE
+       || entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT)) {
+      emit_type_if_needed(cg, entry->type);
     }
   }
 
@@ -310,91 +355,6 @@ void emit_program(Codegen *cg) {
     free(node);
   }
   free(sorted_types);
-
-  TypeEntry *entry, *type_tmp;
-
-  // Declare array/slice/tuple types
-  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
-    Type *type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-        type->kind == TYPE_TUPLE) {
-      const char *canonical = type->canonical_name;
-
-      CodegenTypeEntry *decl_entry;
-      HASH_FIND_STR(cg->declared_types, canonical, decl_entry);
-      if (!decl_entry) {
-        emit_string(cg, "typedef struct ");
-        emit_string(cg, canonical);
-        emit_string(cg, " ");
-        emit_string(cg, canonical);
-        emit_string(cg, ";\n");
-
-        CodegenTypeEntry *decl_entry =
-            arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
-        decl_entry->key = str_dup(canonical); // Persist key
-        HASH_ADD_STR(cg->declared_types, key, decl_entry);
-      }
-    }
-  }
-
-  emit_string(cg, "\n");
-
-  // Define array/slice/tuple types
-  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
-    Type *type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-        type->kind == TYPE_TUPLE) {
-      const char *canonical = type->canonical_name;
-
-      CodegenTypeEntry *def_entry;
-      HASH_FIND_STR(cg->defined_types, canonical, def_entry);
-      if (!def_entry) {
-        emit_string(cg, "struct ");
-        emit_string(cg, canonical);
-        emit_string(cg, " {");
-        emit_string(cg, "\n");
-        emit_indent(cg);
-        if (type->kind == TYPE_ARRAY) {
-          emit_indent_spaces(cg);
-          emit_type_name(cg, type->data.array.element);
-          char buf[32];
-          sprintf(buf, " data[%zu];", type->data.array.size);
-          emit_string(cg, buf);
-          emit_string(cg, "\n");
-          emit_indent_spaces(cg);
-          emit_string(cg, "size_t len;\n");
-        } else if (type->kind == TYPE_SLICE) {
-          emit_indent_spaces(cg);
-          emit_type_name(cg, type->data.slice.element);
-          emit_string(cg, "* data;");
-          emit_string(cg, "\n");
-          emit_indent_spaces(cg);
-          emit_string(cg, "size_t len;");
-          emit_string(cg, "\n");
-        } else if (type->kind == TYPE_TUPLE) {
-          for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-            emit_indent_spaces(cg);
-            emit_type_name(cg, type->data.tuple.element_types[i]);
-            emit_string(cg, " _");
-            // NOTE: This will break past 10 elements 0-9
-            char idx_str[2] = {'0' + (char)i, '\0'};
-            emit_string(cg, idx_str);
-            emit_string(cg, ";");
-            emit_string(cg, "\n");
-          }
-        }
-        emit_dedent(cg);
-        emit_indent_spaces(cg);
-        emit_string(cg, "};");
-        emit_string(cg, "\n\n");
-
-        CodegenTypeEntry *decl_entry =
-            arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
-        decl_entry->key = str_dup(canonical); // Persist key
-        HASH_ADD_STR(cg->defined_types, key, decl_entry);
-      }
-    }
-  }
 
   // Emit forwards/defs for vars/constants
   cg->current_section = "forward_vars_funcs";
@@ -648,7 +608,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   }
 
   // Check if already defined (full struct/tuple)
-  if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE) {
+  if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE || type->kind == TYPE_ARRAY || 
+      type->kind == TYPE_SLICE) {
     CodegenTypeEntry *def_entry;
     HASH_FIND_STR(cg->defined_types, canonical, def_entry);
     if (!def_entry) {
@@ -681,6 +642,23 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           emit_string(cg, ";");
           emit_string(cg, "\n");
         }
+      } else if (type->kind == TYPE_ARRAY) {
+        emit_indent_spaces(cg);
+        emit_type_name(cg, type->data.array.element);
+        char buf[32];
+        sprintf(buf, " data[%zu];", type->data.array.size);
+        emit_string(cg, buf);
+        emit_string(cg, "\n");
+        emit_indent_spaces(cg);
+        emit_string(cg, "size_t len;\n");
+      } else if (type->kind == TYPE_SLICE) {
+        emit_indent_spaces(cg);
+        emit_type_name(cg, type->data.slice.element);
+        emit_string(cg, "* data;");
+        emit_string(cg, "\n");
+        emit_indent_spaces(cg);
+        emit_string(cg, "size_t len;");
+        emit_string(cg, "\n");
       }
       emit_dedent(cg);
       emit_indent_spaces(cg);
