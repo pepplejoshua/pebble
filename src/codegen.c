@@ -6,6 +6,7 @@
 #include "type.h"
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
@@ -137,49 +138,142 @@ void emit_indent(Codegen *cg) { cg->indent_level++; }
 
 void emit_dedent(Codegen *cg) { cg->indent_level--; }
 
+// Structure to track type dependencies
+typedef struct TypeDep {
+  char *name;
+  size_t dep_count; // Number of OTHER types this depends on
+} TypeDep;
+
+// Count dependencies for a type (excluding self-references)
+size_t count_type_dependencies(Type *t, const char *self_name) {
+  if (!t)
+    return 0;
+
+  if (strcmp(t->canonical_name, self_name))
+    return 0;
+
+  size_t count = 0;
+
+  switch (t->kind) {
+  case TYPE_STRUCT:
+    for (size_t i = 0; i < t->data.struct_data.field_count; i++) {
+      count += count_type_dependencies(t->data.struct_data.field_types[i],
+                                       self_name);
+    }
+    break;
+
+  case TYPE_TUPLE:
+    for (size_t i = 0; i < t->data.tuple.element_count; i++) {
+      count +=
+          count_type_dependencies(t->data.tuple.element_types[i], self_name);
+    }
+    break;
+
+  case TYPE_POINTER:
+    count += count_type_dependencies(t->data.ptr.base, self_name);
+    break;
+
+  case TYPE_ARRAY:
+    count += count_type_dependencies(t->data.array.element, self_name);
+    break;
+
+  default:
+    break;
+  }
+
+  return count;
+}
+
+// Comparison function for qsort
+int compare_type_deps(const void *a, const void *b) {
+  const TypeDep *dep_a = (const TypeDep *)a;
+  const TypeDep *dep_b = (const TypeDep *)b;
+
+  // Sort by dependency count (ascending)
+  if (dep_a->dep_count != dep_b->dep_count) {
+    return dep_a->dep_count - dep_b->dep_count;
+  }
+
+  // Stable sort by name if counts are equal
+  return strcmp(dep_a->name, dep_b->name);
+}
+
 void emit_program(Codegen *cg) {
-  // Emit forwards and defs for types
-  cg->current_section = "forward_types"; // For typedefs
+  // Collect all types and their dependency counts
+  size_t type_count = 0;
   Symbol *sym, *tmp;
+
+  // First pass: count types
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
-      Type *t = type_lookup(sym->name);
-      if (t)
-        emit_type_if_needed(cg, t); // Emits typedef and def if struct/tuple
+      type_count++;
     }
   }
+
+  // Build array of type dependencies
+  TypeDep *type_deps = malloc(type_count * sizeof(TypeDep));
+  size_t idx = 0;
+
+  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
+      type_deps[idx].name = sym->name;
+      type_deps[idx].dep_count = count_type_dependencies(sym->type, sym->name);
+      idx++;
+    }
+  }
+
+  // Sort by dependency count
+  qsort(type_deps, type_count, sizeof(TypeDep), compare_type_deps);
+
+  // Emit types in sorted order
+  cg->current_section = "forward_types";
+  for (size_t i = 0; i < type_count; i++) {
+    Symbol *type_sym = NULL;
+    HASH_FIND_STR(global_scope->symbols, type_deps[i].name, type_sym);
+    if (type_sym) {
+      Type *t = type_lookup(type_sym->name);
+      if (t) {
+        emit_type_if_needed(cg, t);
+      }
+    }
+  }
+
+  free(type_deps);
 
   TypeEntry *entry, *type_tmp;
 
   // Declare array/slice types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
-    Type* type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE || type->kind == TYPE_TUPLE) {
+    Type *type = entry->type;
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+        type->kind == TYPE_TUPLE) {
       const char *canonical = type->canonical_name;
 
       CodegenTypeEntry *decl_entry;
       HASH_FIND_STR(cg->declared_types, canonical, decl_entry);
       if (!decl_entry) {
 
-          emit_string(cg, "typedef struct ");
-          emit_string(cg, canonical);
-          emit_string(cg, " ");
-          emit_string(cg, canonical);
-          emit_string(cg, ";\n");
+        emit_string(cg, "typedef struct ");
+        emit_string(cg, canonical);
+        emit_string(cg, " ");
+        emit_string(cg, canonical);
+        emit_string(cg, ";\n");
 
-          CodegenTypeEntry *decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
-          decl_entry->key = str_dup(canonical); // Persist key
-          HASH_ADD_STR(cg->declared_types, key, decl_entry);
+        CodegenTypeEntry *decl_entry =
+            arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
+        decl_entry->key = str_dup(canonical); // Persist key
+        HASH_ADD_STR(cg->declared_types, key, decl_entry);
       }
     }
   }
 
   emit_string(cg, "\n");
-  
+
   // Define array/slice types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
-    Type* type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE || type->kind == TYPE_TUPLE) {
+    Type *type = entry->type;
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+        type->kind == TYPE_TUPLE) {
       const char *canonical = type->canonical_name;
 
       CodegenTypeEntry *def_entry;
@@ -225,7 +319,8 @@ void emit_program(Codegen *cg) {
         emit_string(cg, "};");
         emit_string(cg, "\n\n");
 
-        CodegenTypeEntry *decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
+        CodegenTypeEntry *decl_entry =
+            arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
         decl_entry->key = str_dup(canonical); // Persist key
         HASH_ADD_STR(cg->defined_types, key, decl_entry);
       }
