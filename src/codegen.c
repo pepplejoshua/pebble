@@ -177,6 +177,10 @@ size_t count_type_dependencies(Type *t, const char *self_name) {
     count += count_type_dependencies(t->data.array.element, self_name);
     break;
 
+  case TYPE_SLICE:
+    count += count_type_dependencies(t->data.slice.element, self_name);
+    break;
+
   default:
     break;
   }
