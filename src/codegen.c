@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
@@ -452,8 +453,8 @@ void emit_program(Codegen *cg) {
 }
 
 void emit_type_name(Codegen *cg, Type *type) {
-  if (!type)
-    return;
+  assert(type);
+  
   switch (type->kind) {
   case TYPE_INT:
     emit_string(cg, "int");
@@ -1269,7 +1270,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_TUPLE: {
     emit_string(cg, "(");
-    emit_type_name(cg, expr->data.tuple_expr.resolved_type);
+    emit_type_name(cg, expr->resolved_type);
     emit_string(cg, ") {");
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
       if (i > 0)

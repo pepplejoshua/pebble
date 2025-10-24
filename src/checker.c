@@ -1095,6 +1095,53 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     return cast;
+  } else if (expr_type->kind == TYPE_TUPLE && target_type->kind == TYPE_TUPLE) {
+    // Check if tuples have the same number of elements
+    if (expr_type->data.tuple.element_count != target_type->data.tuple.element_count) {
+      return NULL; // Different tuple sizes, no conversion possible
+    }
+    
+    // Check if all elements match or can be converted
+    bool needs_conversion = false;
+    for (size_t i = 0; i < expr_type->data.tuple.element_count; i++) {
+      if (!type_equals(expr_type->data.tuple.element_types[i], 
+                       target_type->data.tuple.element_types[i])) {
+        needs_conversion = true;
+        break;
+      }
+    }
+    
+    // If all elements match exactly, no cast needed
+    if (!needs_conversion) {
+      return expr;
+    }
+    
+    // Create a new tuple expression with recursively casted elements
+    AstNode *new_tuple = arena_alloc(&long_lived, sizeof(AstNode));
+    new_tuple->kind = AST_EXPR_TUPLE;
+    new_tuple->loc = expr->loc;
+    new_tuple->data.tuple_expr.element_count = target_type->data.tuple.element_count;
+    new_tuple->data.tuple_expr.elements = arena_alloc(&long_lived, 
+      sizeof(AstNode *) * target_type->data.tuple.element_count);
+    
+    // Recursively cast each element
+    for (size_t i = 0; i < expr_type->data.tuple.element_count; i++) {
+      AstNode *casted_elem = maybe_insert_cast(
+        expr->data.tuple_expr.elements[i],
+        expr_type->data.tuple.element_types[i],
+        target_type->data.tuple.element_types[i]
+      );
+      
+      if (!casted_elem) {
+        return NULL; // Element conversion failed
+      }
+      
+      new_tuple->data.tuple_expr.elements[i] = casted_elem;
+    }
+    
+    new_tuple->resolved_type = target_type;
+    
+    return new_tuple;
   }
 
   // No valid conversion
@@ -1753,7 +1800,7 @@ Type *check_expression(AstNode *expr) {
     // Create and return tuple type
     Type *tuple = type_create_tuple(element_types, element_count,
                                     !checker_state.in_type_resolution, loc);
-    expr->data.tuple_expr.resolved_type = tuple;
+    expr->resolved_type = tuple;
     return tuple;
   }
 
