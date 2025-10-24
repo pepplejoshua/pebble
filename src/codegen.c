@@ -260,7 +260,7 @@ void emit_program(Codegen *cg) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT) {
-      TypeDepNode *node = malloc(sizeof(TypeDepNode));
+      TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
       node->dep_count = 0;
