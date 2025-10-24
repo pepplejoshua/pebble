@@ -295,7 +295,8 @@ bool type_is_numeric(Type *type) {
                   type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
                   type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
                   type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
-                  type->kind == TYPE_DOUBLE);
+                  type->kind == TYPE_DOUBLE || type->kind == TYPE_F32 ||
+                  type->kind == TYPE_F64);
 }
 
 // Initialize the type system
