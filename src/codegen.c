@@ -4,10 +4,10 @@
 #include "options.h"
 #include "symbol.h"
 #include "type.h"
+#include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
@@ -163,7 +163,7 @@ void collect_dependencies(Type *t, const char *self_name,
   if (!t)
     return;
 
-  if (t->canonical_name && strcmp(t->canonical_name, self_name))
+  if (t->canonical_name && strcmp(t->canonical_name, self_name) == 0)
     return;
 
   // Check if this type's canonical name matches a declared type
@@ -180,7 +180,7 @@ void collect_dependencies(Type *t, const char *self_name,
         *dep_capacity = (*dep_capacity == 0) ? 4 : *dep_capacity * 2;
         *deps = realloc(*deps, *dep_capacity * sizeof(char *));
       }
-      (*deps)[(*dep_count)++] = str_dup(t->canonical_name);
+      (*deps)[(*dep_count)++] = strdup(t->canonical_name);
     }
   }
 
@@ -252,13 +252,13 @@ bool topo_visit(TypeDepNode *all_types, TypeDepNode *node, char ***result,
 void emit_program(Codegen *cg) {
   TypeDepNode *dep_graph = NULL;
   Symbol *sym, *tmp;
-  
+
   TypeEntry *entry, *type_tmp;
-  
+
   // Pass 1: Create nodes for all declared types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type *type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE || 
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT) {
       TypeDepNode *node = malloc(sizeof(TypeDepNode));
       node->name = type->canonical_name;
@@ -277,45 +277,39 @@ void emit_program(Codegen *cg) {
     size_t dep_capacity = 0;
 
     switch (type->kind) {
-      case TYPE_ARRAY:
-      {
-        collect_dependencies(type->data.array.element, type->canonical_name,
-                             dep_graph, &node->depends_on, &node->dep_count,
-                             &dep_capacity);
-        break;
-      }
+    case TYPE_ARRAY: {
+      collect_dependencies(type->data.array.element, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
+      break;
+    }
 
-      case TYPE_TUPLE:
-      {
-        for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-          collect_dependencies(type->data.tuple.element_types[i],
-                               type->canonical_name, dep_graph,
-                               &node->depends_on, &node->dep_count,
-                               &dep_capacity);
-        }
-        break;
+    case TYPE_TUPLE: {
+      for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+        collect_dependencies(type->data.tuple.element_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
       }
+      break;
+    }
 
-      case TYPE_SLICE:
-      {
-        collect_dependencies(type->data.slice.element, type->canonical_name,
-                             dep_graph, &node->depends_on, &node->dep_count,
-                             &dep_capacity);
-        break;
-      }
+    case TYPE_SLICE: {
+      collect_dependencies(type->data.slice.element, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
+      break;
+    }
 
-      case TYPE_STRUCT:
-      {
-        for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
-          collect_dependencies(type->data.struct_data.field_types[i],
-                               type->canonical_name, dep_graph,
-                               &node->depends_on, &node->dep_count,
-                               &dep_capacity);
-        }
-        break;
+    case TYPE_STRUCT: {
+      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+        collect_dependencies(type->data.struct_data.field_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
       }
-      default:
-        break;
+      break;
+    }
+    default:
+      break;
     }
   }
 
@@ -340,8 +334,9 @@ void emit_program(Codegen *cg) {
     // Check for array/tuple type is in canonical type table
     TypeEntry *entry = NULL;
     HASH_FIND_STR(canonical_type_table, sorted_types[i], entry);
-    if (entry && (entry->type->kind == TYPE_ARRAY ||  entry->type->kind == TYPE_TUPLE
-       || entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT)) {
+    if (entry &&
+        (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
+         entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -454,7 +449,7 @@ void emit_program(Codegen *cg) {
 
 void emit_type_name(Codegen *cg, Type *type) {
   assert(type);
-  
+
   switch (type->kind) {
   case TYPE_INT:
     emit_string(cg, "int");
@@ -609,8 +604,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   }
 
   // Check if already defined (full struct/tuple)
-  if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE || type->kind == TYPE_ARRAY || 
-      type->kind == TYPE_SLICE) {
+  if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
+      type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE) {
     CodegenTypeEntry *def_entry;
     HASH_FIND_STR(cg->defined_types, canonical, def_entry);
     if (!def_entry) {
