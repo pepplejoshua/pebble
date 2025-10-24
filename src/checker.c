@@ -2329,16 +2329,17 @@ bool check_function_bodies(void) {
 }
 
 // Verify that the entry point exists and has the correct signature
-// - If entry_point is "main": must exist with signature (void) -> int OR (int, []str) -> int
+// - If entry_point is "main": must exist with signature (void) -> int OR (int,
+// []str) -> int
 // - If entry_point is NOT "main": must exist with signature () -> void
 // - If --no-main is set: skip verification entirely
 bool verify_entry_point(void) {
   const char *entry_name = compiler_opts.entry_point;
   bool is_main = strcmp(entry_name, "main") == 0;
-  
+
   // Look up the entry point function in global scope
   Symbol *entry_sym = scope_lookup(global_scope, entry_name);
-  
+
   if (!entry_sym) {
     // This is fine
     if (!compiler_opts.has_main) {
@@ -2348,31 +2349,31 @@ bool verify_entry_point(void) {
     fprintf(stderr, "error: entry point '%s' not found\n", entry_name);
     return false;
   }
-  
+
   if (entry_sym->kind != SYMBOL_FUNCTION) {
     fprintf(stderr, "error: entry point '%s' is not a function\n", entry_name);
     return false;
   }
-  
+
   // Get the function's type
   Type *func_type = entry_sym->type;
   if (!func_type || func_type->kind != TYPE_FUNCTION) {
     fprintf(stderr, "error: entry point '%s' has invalid type\n", entry_name);
     return false;
   }
-  
+
   Type *return_type = func_type->data.func.return_type;
   size_t param_count = func_type->data.func.param_count;
   Type **param_types = func_type->data.func.param_types;
-  
+
   if (is_main) {
     // main must return int
     if (return_type->kind != TYPE_INT) {
-      fprintf(stderr, "error: main function must return int, not '%s'\n", 
+      fprintf(stderr, "error: main function must return int, not '%s'\n",
               return_type->canonical_name);
       return false;
     }
-    
+
     // main can have 0 or 2 parameters
     // 2 params: fn main(argc int, argv []str) -> int
     if (param_count == 2) {
@@ -2382,28 +2383,31 @@ bool verify_entry_point(void) {
                 param_types[0]->canonical_name);
         return false;
       }
-      
+
       // TODO: Would be nice if this were just []str instead
-      
+
       // Check second param is *str (argv)
       // Array of char*
       Type *argv_type = param_types[1];
       if (argv_type->kind != TYPE_POINTER) {
-        fprintf(stderr, "error: main's second parameter must be *str, not '%s'\n",
+        fprintf(stderr,
+                "error: main's second parameter must be *str, not '%s'\n",
                 argv_type->canonical_name);
         return false;
       }
-      
+
       Type *inner_type = argv_type->data.ptr.base;
       if (inner_type->kind != TYPE_STRING) {
-        fprintf(stderr, "error: main's second parameter must be *str (got %s)\n",
+        fprintf(stderr,
+                "error: main's second parameter must be *str (got %s)\n",
                 argv_type->canonical_name);
         return false;
       }
-      
+
       return true;
     } else if (param_count != 0) {
-      fprintf(stderr, "error: main function must have 0 or 2 parameters, has %zu\n",
+      fprintf(stderr,
+              "error: main function must have 0 or 2 parameters, has %zu\n",
               param_count);
       return false;
     }
@@ -2414,9 +2418,10 @@ bool verify_entry_point(void) {
               entry_name, return_type->canonical_name);
       return false;
     }
-    
+
     if (param_count != 0) {
-      fprintf(stderr, "error: entry point '%s' must take no parameters, has %zu\n",
+      fprintf(stderr,
+              "error: entry point '%s' must take no parameters, has %zu\n",
               entry_name, param_count);
       return false;
     }
@@ -2424,7 +2429,9 @@ bool verify_entry_point(void) {
 
   // Check for no-main (libraries will do this)
   if (!compiler_opts.has_main) {
-    fprintf(stderr, "error: cannot have entry point '%s' when compiling for a library or without an entry point\n",
+    fprintf(stderr,
+            "error: cannot have entry point '%s' when compiling for a library "
+            "or without an entry point\n",
             entry_name);
     return false;
   }

@@ -1,3 +1,15 @@
-type NamedSlice = []int;
+type FooPair = (Foo, Foo);
 
-fn main() int => 0
+type Foo = struct {
+  item Bar;
+  data int;
+  self *Foo;
+};
+
+type Bar = struct {
+  a int;
+};
+
+fn main() int {
+  return 0;
+}
