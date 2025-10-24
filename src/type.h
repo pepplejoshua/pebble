@@ -17,6 +17,8 @@ typedef enum {
   TYPE_BOOL,
   TYPE_STRING,
   TYPE_VOID,
+  TYPE_F32,
+  TYPE_F64,
   TYPE_U8,
   TYPE_U16,
   TYPE_U32,
@@ -92,6 +94,8 @@ extern Type *type_float;
 extern Type *type_bool;
 extern Type *type_string;
 extern Type *type_void;
+extern Type *type_f32;
+extern Type *type_f64;
 extern Type *type_u8;
 extern Type *type_u16;
 extern Type *type_u32;

@@ -346,6 +346,12 @@ void emit_type_name(Codegen *cg, Type *type) {
   case TYPE_VOID:
     emit_string(cg, "void");
     break;
+  case TYPE_F32:
+    emit_string(cg, "float");
+    break;
+  case TYPE_F64:
+    emit_string(cg, "double");
+    break;
   case TYPE_U8:
     emit_string(cg, "unsigned char");
     break;
@@ -571,7 +577,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "printf(\"%zu\\n\", ");
     } else if (type->kind == TYPE_CHAR) {
       emit_string(cg, "printf(\"%c\\n\", ");
-    } else if (type->kind == TYPE_FLOAT || type->kind == TYPE_DOUBLE) {
+    } else if (type->kind == TYPE_FLOAT || type->kind == TYPE_DOUBLE || type->kind == TYPE_F32
+      || type->kind == TYPE_F64) {
       emit_string(cg, "printf(\"%f\\n\", ");
     } else if (type->kind == TYPE_STRING) {
       emit_string(cg, "printf(\"%s\\n\", ");

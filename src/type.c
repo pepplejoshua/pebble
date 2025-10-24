@@ -16,6 +16,8 @@ Type *type_float = NULL;
 Type *type_bool = NULL;
 Type *type_string = NULL;
 Type *type_void = NULL;
+Type *type_f32 = NULL;
+Type *type_f64 = NULL;
 Type *type_u8 = NULL;
 Type *type_u16 = NULL;
 Type *type_u32 = NULL;
@@ -309,6 +311,8 @@ void type_system_init(void) {
   type_bool = type_create(TYPE_BOOL, loc);
   type_string = type_create(TYPE_STRING, loc);
   type_void = type_create(TYPE_VOID, loc);
+  type_f32 = type_create(TYPE_F32, loc);
+  type_f64 = type_create(TYPE_F64, loc);
   type_u8 = type_create(TYPE_U8, loc);
   type_u16 = type_create(TYPE_U16, loc);
   type_u32 = type_create(TYPE_U32, loc);
@@ -328,6 +332,8 @@ void type_system_init(void) {
   type_bool->canonical_name = "bool";
   type_string->canonical_name = "str";
   type_void->canonical_name = "void";
+  type_f32->canonical_name = "f32";
+  type_f64->canonical_name = "f64";
   type_u8->canonical_name = "u8";
   type_u16->canonical_name = "u16";
   type_u32->canonical_name = "u32";
@@ -347,6 +353,8 @@ void type_system_init(void) {
   type_register("bool", type_bool);
   type_register("str", type_string);
   type_register("void", type_void);
+  type_register("f32", type_f32);
+  type_register("f64", type_f64);
   type_register("u8", type_u8);
   type_register("u16", type_u16);
   type_register("u32", type_u32);
@@ -366,6 +374,8 @@ void type_system_init(void) {
   canonical_register("bool", type_bool);
   canonical_register("str", type_string);
   canonical_register("void", type_void);
+  canonical_register("f32", type_f32);
+  canonical_register("f64", type_f64);
   canonical_register("u8", type_u8);
   canonical_register("u16", type_u16);
   canonical_register("u32", type_u32);
@@ -392,6 +402,8 @@ char *compute_canonical_name(Type *type) {
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_VOID:
+  case TYPE_F32:
+  case TYPE_F64:
   case TYPE_U8:
   case TYPE_U16:
   case TYPE_U32:
@@ -517,6 +529,8 @@ char *type_name(Type *type) {
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_VOID:
+  case TYPE_F32:
+  case TYPE_F64:
   case TYPE_U8:
   case TYPE_U16:
   case TYPE_U32:
