@@ -265,10 +265,6 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     canonical_name = type_int->canonical_name;
     break;
 
-  case TYPE_FLOAT:
-    canonical_name = type_float->canonical_name;
-    break;
-
   case TYPE_BOOL:
     canonical_name = type_bool->canonical_name;
     break;
@@ -279,6 +275,14 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
 
   case TYPE_VOID:
     canonical_name = type_void->canonical_name;
+    break;
+
+  case TYPE_F32:
+    canonical_name = type_f32->canonical_name;
+    break;
+
+  case TYPE_F64:
+    canonical_name = type_f64->canonical_name;
     break;
 
   case TYPE_U8:
@@ -323,10 +327,6 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
 
   case TYPE_CHAR:
     canonical_name = type_char->canonical_name;
-    break;
-
-  case TYPE_DOUBLE:
-    canonical_name = type_double->canonical_name;
     break;
 
   case TYPE_POINTER: {
@@ -597,6 +597,14 @@ static void check_type_declarations(void) {
   canonicalize_types();
 }
 
+static bool type_is_int(Type *type) {
+  return type->kind == TYPE_INT || type->kind == TYPE_I32;
+}
+
+static bool type_is_floating(Type *type) {
+  return type->kind == TYPE_F32 || type->kind == TYPE_F64;
+}
+
 // Sub-pass 3b: Check constant declarations
 static void check_global_constants(void) {
   Symbol *sym, *tmp;
@@ -643,8 +651,7 @@ static void check_global_constants(void) {
       }
 
       // Allow casting ints to pointers for global constants
-      if (explicit_type->kind == TYPE_POINTER &&
-          inferred_type->kind == TYPE_INT) {
+      if (explicit_type->kind == TYPE_POINTER && type_is_int(inferred_type)) {
         sym->type = explicit_type;
         sym->decl->resolved_type = explicit_type;
 
@@ -727,7 +734,7 @@ static void check_global_variables(void) {
     if (explicit_type && inferred_type) {
       // Allow casting ints to pointers for global vars
       if (explicit_type->kind == TYPE_POINTER &&
-          inferred_type->kind == TYPE_INT) {
+          type_is_int(inferred_type)) {
         sym->type = explicit_type;
         sym->decl->resolved_type = explicit_type;
 
@@ -1051,7 +1058,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       cast->data.implicit_cast.target_type = target_type;
       return cast;
     }
-  } else if (expr_type->kind == TYPE_INT && target_type->kind == TYPE_POINTER) {
+  } else if (type_is_int(expr_type) && target_type->kind == TYPE_POINTER) {
     // *T to int (for FFI)
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
@@ -1072,8 +1079,8 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       return cast;
     }
   } else if (expr_type->kind == TYPE_INT &&
-             (target_type->kind == TYPE_FLOAT ||
-              target_type->kind == TYPE_DOUBLE)) {
+             (target_type->kind == TYPE_F32 ||
+              target_type->kind == TYPE_F64)) {
     // Promote int to float
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
@@ -1142,6 +1149,11 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_tuple->resolved_type = target_type;
     
     return new_tuple;
+  } else if ((expr_type->kind == TYPE_F32 && target_type->kind == TYPE_F64)
+    || (expr_type->kind == TYPE_F64 && target_type->kind == TYPE_F32)) {
+    // float -> double
+    // double -> float
+    return expr;
   }
 
   // No valid conversion
@@ -1205,8 +1217,8 @@ Type *check_expression(AstNode *expr) {
     return type_int;
 
   case AST_EXPR_LITERAL_FLOAT:
-    expr->resolved_type = type_float;
-    return type_float;
+    expr->resolved_type = type_f32;
+    return type_f32;
 
   case AST_EXPR_LITERAL_STRING:
     expr->resolved_type = type_string;
@@ -1325,11 +1337,11 @@ Type *check_expression(AstNode *expr) {
       // Handle type promotion: int + float -> float,
       // int + sized_int -> sized_int
       if (!type_equals(left, right)) {
-        if (left->kind == TYPE_INT && right->kind == TYPE_FLOAT) {
+        if (type_is_int(left) && type_is_floating(right)) {
           expr->data.binop.left =
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right; // Now both float
-        } else if (left->kind == TYPE_FLOAT && right->kind == TYPE_INT) {
+        } else if (type_is_floating(left) && type_is_int(right)) {
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
@@ -1370,11 +1382,11 @@ Type *check_expression(AstNode *expr) {
       }
       // Handle type promotion for consistency
       if (!type_equals(left, right)) {
-        if (left->kind == TYPE_INT && right->kind == TYPE_FLOAT) {
+        if (type_is_int(left) && type_is_floating(right)) {
           expr->data.binop.left =
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right;
-        } else if (left->kind == TYPE_FLOAT && right->kind == TYPE_INT) {
+        } else if (type_is_floating(left) && type_is_int(right)) {
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
@@ -1609,7 +1621,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Verify index is an integer
-    if (index_type->kind != TYPE_INT) {
+    if (!type_is_int(index_type)) {
       checker_error(index_expr->loc, "array index must be an integer");
       return NULL;
     }
@@ -1679,7 +1691,7 @@ Type *check_expression(AstNode *expr) {
       if (!start_type) {
         return NULL;
       }
-      if (start_type->kind != TYPE_INT) {
+      if (!type_is_int(start_type)) {
         checker_error(start_expr->loc, "slice start index must be an integer");
         return NULL;
       }
@@ -1691,7 +1703,7 @@ Type *check_expression(AstNode *expr) {
       if (!end_type) {
         return NULL;
       }
-      if (end_type->kind != TYPE_INT) {
+      if (!type_is_int(end_type)) {
         checker_error(end_expr->loc, "slice end index must be an integer");
         return NULL;
       }
@@ -2054,6 +2066,44 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     return then_returns && else_returns;
   }
 
+  case AST_STMT_SWITCH: {
+    AstNode *cond = stmt->data.switch_stmt.condition;
+    AstNode **cases = stmt->data.switch_stmt.cases;
+    AstNode *default_case = stmt->data.switch_stmt.default_case;
+
+    // Check condition is numeric or string
+    Type *cond_type = check_expression(cond);
+    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING) {
+      checker_error(cond->loc, "switch condition must be numeric (int or float) or string");
+    }
+
+    for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+      check_statement(cases[i], expected_return_type);
+    }
+
+    bool else_returns = default_case
+                            ? check_statement(default_case, expected_return_type)
+                            : false;
+
+    return else_returns;
+  }
+
+  case AST_STMT_CASE: {
+    AstNode *cond = stmt->data.case_stmt.condition;
+    AstNode *switch_cond = stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
+
+    Type *cond_type = check_expression(cond);
+    if (cond_type && cond_type->kind != switch_cond->resolved_type->kind) {
+      checker_error(
+        cond->loc,
+        "switch case condition doesn't match switch condition type '%s'",
+        switch_cond->resolved_type->canonical_name
+      );
+    }
+
+    return check_statement(stmt->data.case_stmt.body, expected_return_type);
+  }
+
   case AST_STMT_WHILE: {
     AstNode *cond = stmt->data.while_stmt.cond;
     AstNode *body = stmt->data.while_stmt.body;
@@ -2086,7 +2136,7 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check end is an integer (can be variable or expression)
     Type *end_type = check_expression(end);
-    if (end_type && end_type->kind != TYPE_INT) {
+    if (end_type && !type_is_int(end_type)) {
       checker_error(end->loc, "loop range end must be an integer");
     }
 
@@ -2445,7 +2495,7 @@ bool verify_entry_point(void) {
 
   if (is_main) {
     // main must return int
-    if (return_type->kind != TYPE_INT) {
+    if (!type_is_int(return_type)) {
       fprintf(stderr, "error: main function must return int, not '%s'\n",
               return_type->canonical_name);
       return false;
@@ -2455,7 +2505,7 @@ bool verify_entry_point(void) {
     // 2 params: fn main(argc int, argv []str) -> int
     if (param_count == 2) {
       // Check first param is int (argc)
-      if (param_types[0]->kind != TYPE_INT) {
+      if (!type_is_int(param_types[0])) {
         fprintf(stderr, "error: main's first parameter must be int, not '%s'\n",
                 param_types[0]->canonical_name);
         return false;
