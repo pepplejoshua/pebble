@@ -76,11 +76,11 @@
             "patterns": [
                 {
                     "name": "keyword.control.pebble",
-                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return)\\b"
+                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return|switch|case)\\b"
                 },
                 {
                     "name": "keyword.types.pebble",
-                    "match": "\\b(void|bool|int|float|double|str|char|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize|struct)\\b"
+                    "match": "\\b(void|bool|int|str|char|f32|f64|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize|struct)\\b"
                 }
             ]
         },

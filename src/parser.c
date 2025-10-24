@@ -536,6 +536,52 @@ AstNode *parse_break_continue_stmt(Parser *parser) {
   return node;
 }
 
+AstNode *parse_switch_stmt(Parser *parser) {
+  // switch <expr> { case COND1: BODY1; ... (else: BODY) }
+
+  Location loc = parser->previous.location;
+
+  AstNode *stmt = alloc_node(AST_STMT_SWITCH, loc);
+  stmt->data.switch_stmt.condition = parse_expression(parser);
+
+  parser_consume(parser, TOKEN_LBRACE, "Expect '{' after switch condition");
+
+  size_t count = 0, capacity = 2;
+  AstNode **cases = malloc(capacity * sizeof(AstNode *));
+
+  // Parse all cases
+  while (parser_match(parser, TOKEN_CASE)) {
+    if (count >= capacity) {
+      capacity *= 2;
+      AstNode **new_cases = malloc(capacity * sizeof(AstNode *));
+      memcpy(new_cases, cases, count);
+      cases = new_cases;
+    }
+
+    AstNode *_case = alloc_node(AST_STMT_CASE, parser->previous.location);
+    _case->data.case_stmt.switch_stmt = stmt;
+    _case->data.case_stmt.condition = parse_expression(parser);
+
+    parser_consume(parser, TOKEN_COLON, "Expect ':' after switch case condition");
+    _case->data.case_stmt.body = parse_statement(parser);
+
+    cases[count++] = _case;
+  }
+
+  stmt->data.switch_stmt.cases = cases;
+  stmt->data.switch_stmt.case_count = count;
+
+  // Parse default
+  if (parser_match(parser, TOKEN_ELSE)) {
+    parser_consume(parser, TOKEN_COLON, "Expect ':' after switch case else");
+    stmt->data.switch_stmt.default_case = parse_statement(parser);
+  }
+
+  parser_consume(parser, TOKEN_RBRACE, "Expect '}' after switch cases");
+
+  return stmt;
+}
+
 // ============================================================================
 // STATEMENT PARSING
 // ============================================================================
@@ -568,6 +614,9 @@ AstNode *parse_statement(Parser *parser) {
   if (parser_match(parser, TOKEN_BREAK) ||
       parser_match(parser, TOKEN_CONTINUE)) {
     return parse_break_continue_stmt(parser);
+  }
+  if (parser_match(parser, TOKEN_SWITCH)) {
+    return parse_switch_stmt(parser);
   }
 
   return parse_assignment_stmt(parser);
@@ -1517,12 +1566,6 @@ AstNode *parse_type_expression(Parser *parser) {
     return type;
   }
 
-  if (parser_match(parser, TOKEN_FLOAT_TYPE)) {
-    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
-    type->data.type_named.name = str_dup("float");
-    return type;
-  }
-
   if (parser_match(parser, TOKEN_BOOL_TYPE)) {
     type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
     type->data.type_named.name = str_dup("bool");
@@ -1604,12 +1647,6 @@ AstNode *parse_type_expression(Parser *parser) {
   if (parser_match(parser, TOKEN_CHAR_TYPE)) {
     type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
     type->data.type_named.name = str_dup("char");
-    return type;
-  }
-
-  if (parser_match(parser, TOKEN_DOUBLE_TYPE)) {
-    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
-    type->data.type_named.name = str_dup("double");
     return type;
   }
 
