@@ -613,6 +613,14 @@ static bool type_is_float(Type *type) {
   return type->kind == TYPE_FLOAT || TYPE_F32;
 }
 
+static bool type_is_double(Type *type) {
+  return type->kind == TYPE_DOUBLE || TYPE_F64;
+}
+
+static bool type_is_floating(Type *type) {
+  return type_is_float(type) || type_is_double(type);
+}
+
 // Sub-pass 3b: Check constant declarations
 static void check_global_constants(void) {
   Symbol *sym, *tmp;
@@ -1295,11 +1303,11 @@ Type *check_expression(AstNode *expr) {
       // Handle type promotion: int + float -> float,
       // int + sized_int -> sized_int
       if (!type_equals(left, right)) {
-        if (type_is_int(left) && type_is_float(right)) {
+        if (type_is_int(left) && type_is_floating(right)) {
           expr->data.binop.left =
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right; // Now both float
-        } else if (type_is_float(left) && type_is_int(right)) {
+        } else if (type_is_floating(left) && type_is_int(right)) {
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
@@ -1340,11 +1348,11 @@ Type *check_expression(AstNode *expr) {
       }
       // Handle type promotion for consistency
       if (!type_equals(left, right)) {
-        if (type_is_int(left) && type_is_float(right)) {
+        if (type_is_int(left) && type_is_floating(right)) {
           expr->data.binop.left =
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right;
-        } else if (type_is_float(left) && type_is_int(right)) {
+        } else if (type_is_floating(left) && type_is_int(right)) {
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
