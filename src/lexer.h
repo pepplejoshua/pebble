@@ -41,7 +41,6 @@ typedef enum {
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"
-  TOKEN_FLOAT_TYPE,  // "float"
   TOKEN_BOOL_TYPE,   // "bool"
   TOKEN_STR_TYPE,    // "str"
   TOKEN_VOID_TYPE,   // "void"
@@ -56,7 +55,6 @@ typedef enum {
   TOKEN_I64_TYPE,    // "i64"
   TOKEN_ISIZE_TYPE,  // "isize"
   TOKEN_CHAR_TYPE,   // "char"
-  TOKEN_DOUBLE_TYPE, // "double"
 
   // Operators
   TOKEN_PLUS,      // +

@@ -150,10 +150,6 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
         return lexer_check_keyword(lexer, 4, "char", TOKEN_CHAR_TYPE);
     }
     break;
-  case 'd':
-    if (length == 6)
-      return lexer_check_keyword(lexer, 6, "double", TOKEN_DOUBLE_TYPE);
-    break;
   case 'e':
     if (length == 4)
       return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);
@@ -169,8 +165,6 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
       switch (start[1]) {
       case 'a':
         return lexer_check_keyword(lexer, 5, "false", TOKEN_FALSE);
-      case 'l':
-        return lexer_check_keyword(lexer, 5, "float", TOKEN_FLOAT_TYPE);
       case 'n':
         return lexer_check_keyword(lexer, 2, "fn", TOKEN_FN);
       case 'o':
@@ -558,8 +552,6 @@ const char *token_type_name(TokenType type) {
     return "AS";
   case TOKEN_INT_TYPE:
     return "INT_TYPE";
-  case TOKEN_FLOAT_TYPE:
-    return "FLOAT_TYPE";
   case TOKEN_BOOL_TYPE:
     return "BOOL_TYPE";
   case TOKEN_STR_TYPE:
@@ -588,8 +580,6 @@ const char *token_type_name(TokenType type) {
     return "ISIZE_TYPE";
   case TOKEN_CHAR_TYPE:
     return "CHAR_TYPE";
-  case TOKEN_DOUBLE_TYPE:
-    return "DOUBLE_TYPE";
   case TOKEN_PLUS:
     return "PLUS";
   case TOKEN_MINUS:

@@ -1566,12 +1566,6 @@ AstNode *parse_type_expression(Parser *parser) {
     return type;
   }
 
-  if (parser_match(parser, TOKEN_FLOAT_TYPE)) {
-    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
-    type->data.type_named.name = str_dup("float");
-    return type;
-  }
-
   if (parser_match(parser, TOKEN_BOOL_TYPE)) {
     type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
     type->data.type_named.name = str_dup("bool");
@@ -1653,12 +1647,6 @@ AstNode *parse_type_expression(Parser *parser) {
   if (parser_match(parser, TOKEN_CHAR_TYPE)) {
     type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
     type->data.type_named.name = str_dup("char");
-    return type;
-  }
-
-  if (parser_match(parser, TOKEN_DOUBLE_TYPE)) {
-    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
-    type->data.type_named.name = str_dup("double");
     return type;
   }
 
