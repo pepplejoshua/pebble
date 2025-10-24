@@ -138,102 +138,160 @@ void emit_indent(Codegen *cg) { cg->indent_level++; }
 
 void emit_dedent(Codegen *cg) { cg->indent_level--; }
 
-// Structure to track type dependencies
-typedef struct TypeDep {
+// Dependency graph node
+typedef struct TypeDepNode {
   char *name;
-  size_t dep_count; // Number of OTHER types this depends on
-} TypeDep;
+  char **depends_on; // Array of type names this depends on
+  size_t dep_count;
+  bool visited;
+  bool in_stack;
+  UT_hash_handle hh;
+} TypeDepNode;
 
-// Count dependencies for a type (excluding self-references)
-size_t count_type_dependencies(Type *t, const char *self_name) {
+// Check if a canonical name matches any declared type
+bool is_declared_type(const char *canonical_name, TypeDepNode *all_types) {
+  TypeDepNode *node = NULL;
+  HASH_FIND_STR(all_types, canonical_name, node);
+  return node != NULL;
+}
+
+// Collect dependencies by checking canonical names against declared types
+void collect_dependencies(Type *t, const char *self_name,
+                          TypeDepNode *all_types, char ***deps,
+                          size_t *dep_count, size_t *dep_capacity) {
   if (!t)
-    return 0;
+    return;
 
-  if (strcmp(t->canonical_name, self_name))
-    return 0;
+  // Check if this type's canonical name matches a declared type
+  if (t->canonical_name && strcmp(t->canonical_name, self_name) != 0) {
+    if (is_declared_type(t->canonical_name, all_types)) {
+      // Check if we already added this dependency
+      for (size_t i = 0; i < *dep_count; i++) {
+        if (strcmp((*deps)[i], t->canonical_name) == 0) {
+          return; // Already have it
+        }
+      }
+      // Add dependency
+      if (*dep_count >= *dep_capacity) {
+        *dep_capacity = (*dep_capacity == 0) ? 4 : *dep_capacity * 2;
+        *deps = realloc(*deps, *dep_capacity * sizeof(char *));
+      }
+      (*deps)[(*dep_count)++] = strdup(t->canonical_name);
+    }
+  }
 
-  size_t count = 0;
-
+  // Recurse into compound types
   switch (t->kind) {
   case TYPE_STRUCT:
     for (size_t i = 0; i < t->data.struct_data.field_count; i++) {
-      count += count_type_dependencies(t->data.struct_data.field_types[i],
-                                       self_name);
+      collect_dependencies(t->data.struct_data.field_types[i], self_name,
+                           all_types, deps, dep_count, dep_capacity);
     }
     break;
-
   case TYPE_TUPLE:
     for (size_t i = 0; i < t->data.tuple.element_count; i++) {
-      count +=
-          count_type_dependencies(t->data.tuple.element_types[i], self_name);
+      collect_dependencies(t->data.tuple.element_types[i], self_name, all_types,
+                           deps, dep_count, dep_capacity);
     }
     break;
-
   case TYPE_POINTER:
-    count += count_type_dependencies(t->data.ptr.base, self_name);
+    collect_dependencies(t->data.ptr.base, self_name, all_types, deps,
+                         dep_count, dep_capacity);
     break;
-
   case TYPE_ARRAY:
-    count += count_type_dependencies(t->data.array.element, self_name);
+    collect_dependencies(t->data.array.element, self_name, all_types, deps,
+                         dep_count, dep_capacity);
     break;
-
   case TYPE_SLICE:
-    count += count_type_dependencies(t->data.slice.element, self_name);
+    collect_dependencies(t->data.slice.element, self_name, all_types, deps,
+                         dep_count, dep_capacity);
     break;
-
   default:
     break;
   }
-
-  return count;
 }
 
-// Comparison function for qsort
-int compare_type_deps(const void *a, const void *b) {
-  const TypeDep *dep_a = (const TypeDep *)a;
-  const TypeDep *dep_b = (const TypeDep *)b;
-
-  // Sort by dependency count (ascending)
-  if (dep_a->dep_count != dep_b->dep_count) {
-    return dep_a->dep_count - dep_b->dep_count;
+// Topological sort DFS visit
+bool topo_visit(TypeDepNode *all_types, TypeDepNode *node, char ***result,
+                size_t *result_count) {
+  if (node->in_stack) {
+    fprintf(stderr, "Error: Circular type dependency involving '%s'\n",
+            node->name);
+    return false;
   }
 
-  // Stable sort by name if counts are equal
-  return strcmp(dep_a->name, dep_b->name);
+  if (node->visited) {
+    return true;
+  }
+
+  node->visited = true;
+  node->in_stack = true;
+
+  // Visit dependencies first
+  for (size_t i = 0; i < node->dep_count; i++) {
+    TypeDepNode *dep = NULL;
+    HASH_FIND_STR(all_types, node->depends_on[i], dep);
+    if (dep) {
+      if (!topo_visit(all_types, dep, result, result_count)) {
+        return false;
+      }
+    }
+  }
+
+  node->in_stack = false;
+
+  // Add to result
+  (*result)[(*result_count)++] = node->name;
+  return true;
 }
 
 void emit_program(Codegen *cg) {
-  // Collect all types and their dependency counts
-  size_t type_count = 0;
+  TypeDepNode *dep_graph = NULL;
   Symbol *sym, *tmp;
 
-  // First pass: count types
+  // Pass 1: Create nodes for all declared types
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
-      type_count++;
+      TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
+      node->name = sym->name;
+      node->depends_on = NULL;
+      node->dep_count = 0;
+      HASH_ADD_KEYPTR(hh, dep_graph, node->name, strlen(node->name), node);
     }
   }
 
-  // Build array of type dependencies
-  TypeDep *type_deps = malloc(type_count * sizeof(TypeDep));
-  size_t idx = 0;
-
+  // Pass 2: Build dependency lists
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_OPAQUE) {
-      type_deps[idx].name = sym->name;
-      type_deps[idx].dep_count = count_type_dependencies(sym->type, sym->name);
-      idx++;
+      TypeDepNode *node = NULL;
+      HASH_FIND_STR(dep_graph, sym->name, node);
+
+      size_t dep_capacity = 0;
+      collect_dependencies(sym->type, sym->name, dep_graph, &node->depends_on,
+                           &node->dep_count, &dep_capacity);
     }
   }
 
-  // Sort by dependency count
-  qsort(type_deps, type_count, sizeof(TypeDep), compare_type_deps);
+  // Pass 3: Topological sort
+  size_t type_count = HASH_COUNT(dep_graph);
+  char **sorted_types = malloc(type_count * sizeof(char *));
+  size_t sorted_count = 0;
+
+  TypeDepNode *node, *node_tmp;
+  HASH_ITER(hh, dep_graph, node, node_tmp) {
+    if (!node->visited) {
+      if (!topo_visit(dep_graph, node, &sorted_types, &sorted_count)) {
+        fprintf(stderr, "Failed to sort global types\n");
+        exit(1);
+      }
+    }
+  }
 
   // Emit types in sorted order
   cg->current_section = "forward_types";
-  for (size_t i = 0; i < type_count; i++) {
+  for (size_t i = 0; i < sorted_count; i++) {
     Symbol *type_sym = NULL;
-    HASH_FIND_STR(global_scope->symbols, type_deps[i].name, type_sym);
+    HASH_FIND_STR(global_scope->symbols, sorted_types[i], type_sym);
     if (type_sym) {
       Type *t = type_lookup(type_sym->name);
       if (t) {
@@ -242,11 +300,20 @@ void emit_program(Codegen *cg) {
     }
   }
 
-  free(type_deps);
+  // Cleanup dependency graph
+  HASH_ITER(hh, dep_graph, node, node_tmp) {
+    HASH_DEL(dep_graph, node);
+    for (size_t i = 0; i < node->dep_count; i++) {
+      free(node->depends_on[i]);
+    }
+    free(node->depends_on);
+    free(node);
+  }
+  free(sorted_types);
 
   TypeEntry *entry, *type_tmp;
 
-  // Declare array/slice types
+  // Declare array/slice/tuple types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
@@ -256,7 +323,6 @@ void emit_program(Codegen *cg) {
       CodegenTypeEntry *decl_entry;
       HASH_FIND_STR(cg->declared_types, canonical, decl_entry);
       if (!decl_entry) {
-
         emit_string(cg, "typedef struct ");
         emit_string(cg, canonical);
         emit_string(cg, " ");
@@ -273,7 +339,7 @@ void emit_program(Codegen *cg) {
 
   emit_string(cg, "\n");
 
-  // Define array/slice types
+  // Define array/slice/tuple types
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
@@ -283,7 +349,6 @@ void emit_program(Codegen *cg) {
       CodegenTypeEntry *def_entry;
       HASH_FIND_STR(cg->defined_types, canonical, def_entry);
       if (!def_entry) {
-
         emit_string(cg, "struct ");
         emit_string(cg, canonical);
         emit_string(cg, " {");

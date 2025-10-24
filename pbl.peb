@@ -1,13 +1,16 @@
-type FooPair = (Foo, Foo);
+type Header = struct {
+    type_of int;
+};
 
 type Foo = struct {
-  item Bar;
-  data int;
-  self *Foo;
+    header Header;
+    value int;
+    l []char;
 };
 
 type Bar = struct {
-  a int;
+    header Header;
+    value float;
 };
 
 fn main() int {
