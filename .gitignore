@@ -6,6 +6,7 @@ temp
 node_modules
 target
 .vscode
+grammars
 
 # Prerequisites
 *.d

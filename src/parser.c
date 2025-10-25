@@ -582,6 +582,15 @@ AstNode *parse_switch_stmt(Parser *parser) {
   return stmt;
 }
 
+AstNode *parse_defer_stmt(Parser *parser) {
+  Location loc = parser->previous.location;
+
+  AstNode *stmt = alloc_node(AST_STMT_DEFER, loc);
+  stmt->data.defer_stmt.stmt = parse_statement(parser);
+
+  return stmt;
+}
+
 // ============================================================================
 // STATEMENT PARSING
 // ============================================================================
@@ -617,6 +626,9 @@ AstNode *parse_statement(Parser *parser) {
   }
   if (parser_match(parser, TOKEN_SWITCH)) {
     return parse_switch_stmt(parser);
+  }
+  if (parser_match(parser, TOKEN_DEFER)) {
+    return parse_defer_stmt(parser);
   }
 
   return parse_assignment_stmt(parser);
