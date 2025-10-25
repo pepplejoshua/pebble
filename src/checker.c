@@ -1098,13 +1098,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     return cast;
-  } else if (expr_type->kind == TYPE_INT &&
-             (target_type->kind == TYPE_U8 || target_type->kind == TYPE_U16 ||
-              target_type->kind == TYPE_U32 || target_type->kind == TYPE_U64 ||
-              target_type->kind == TYPE_USIZE || target_type->kind == TYPE_I8 ||
-              target_type->kind == TYPE_I16 || target_type->kind == TYPE_I32 ||
-              target_type->kind == TYPE_I64 ||
-              target_type->kind == TYPE_ISIZE)) {
+  } else if (type_is_integral(expr_type) && type_is_integral(target_type)) {
     // Allow int literals to convert to sized integer types
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
