@@ -175,6 +175,16 @@ BinaryOp token_to_binary_op(TokenType type) {
     return BINOP_AND;
   case TOKEN_OR:
     return BINOP_OR;
+  case TOKEN_AMPERSAND:
+    return BINOP_BIT_AND;
+  case TOKEN_PIPE:
+    return BINOP_BIT_OR;
+  case TOKEN_CARET:
+    return BINOP_BIT_XOR;
+  case TOKEN_LSHIFT:
+    return BINOP_BIT_SHL;
+  case TOKEN_RSHIFT:
+    return BINOP_BIT_SHR;
   default:
     // This should never happen if called correctly
     fprintf(stderr, "Invalid binary operator token: %d\n", type);
@@ -192,6 +202,8 @@ UnaryOp token_to_unary_op(TokenType type) {
     return UNOP_ADDR;
   case TOKEN_STAR:
     return UNOP_DEREF;
+  case TOKEN_TILDE:
+    return UNOP_BIT_NOT;
   default:
     // This should never happen if called correctly
     fprintf(stderr, "Invalid unary operator token: %d\n", type);
@@ -843,14 +855,65 @@ AstNode *parse_or_expr(Parser *parser) {
 }
 
 AstNode *parse_and_expr(Parser *parser) {
-  AstNode *left = parse_equality(parser);
+  AstNode *left = parse_bit_or_expr(parser);
 
   while (parser_match(parser, TOKEN_AND)) {
     Location loc = parser->previous.location;
-    AstNode *right = parse_equality(parser);
+    AstNode *right = parse_bit_or_expr(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, loc);
     binop->data.binop.op = BINOP_AND;
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+AstNode *parse_bit_or_expr(Parser *parser) {
+  AstNode *left = parse_bit_xor_expr(parser);
+
+  while (parser_match(parser, TOKEN_PIPE)) {
+    Token op = parser->previous;
+    AstNode *right = parse_bit_xor_expr(parser);
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = BINOP_BIT_OR;
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+AstNode *parse_bit_xor_expr(Parser *parser) {
+  AstNode *left = parse_bit_and_expr(parser);
+
+  while (parser_match(parser, TOKEN_CARET)) {
+    Token op = parser->previous;
+    AstNode *right = parse_bit_and_expr(parser);
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = BINOP_BIT_XOR;
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+AstNode *parse_bit_and_expr(Parser *parser) {
+  AstNode *left = parse_equality(parser);
+
+  while (parser_match(parser, TOKEN_AMPERSAND)) {
+    Token op = parser->previous;
+    AstNode *right = parse_equality(parser);
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = BINOP_BIT_AND;
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -877,10 +940,27 @@ AstNode *parse_equality(Parser *parser) {
 }
 
 AstNode *parse_comparison(Parser *parser) {
-  AstNode *left = parse_cast(parser);
+  AstNode *left = parse_shift(parser);
 
   while (parser_match(parser, TOKEN_LT) || parser_match(parser, TOKEN_LE) ||
          parser_match(parser, TOKEN_GT) || parser_match(parser, TOKEN_GE)) {
+    Token op = parser->previous;
+    AstNode *right = parse_shift(parser);
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+AstNode *parse_shift(Parser *parser) {
+  AstNode *left = parse_cast(parser);
+
+  while (parser_match(parser, TOKEN_LSHIFT) || parser_match(parser, TOKEN_RSHIFT)) {
     Token op = parser->previous;
     AstNode *right = parse_cast(parser);
 
@@ -947,9 +1027,9 @@ AstNode *parse_factor(Parser *parser) {
 }
 
 AstNode *parse_unary(Parser *parser) {
-  if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT) ||
-      parser_match(parser, TOKEN_AMPERSAND) ||
-      parser_match(parser, TOKEN_STAR)) {
+  if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT)
+    || parser_match(parser, TOKEN_AMPERSAND) || parser_match(parser, TOKEN_STAR)
+    || parser_match(parser, TOKEN_TILDE)) {
     Token op = parser->previous;
     AstNode *operand =
         parse_unary(parser); // Right-associative (allow chaining)

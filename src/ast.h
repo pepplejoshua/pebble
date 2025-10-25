@@ -85,10 +85,15 @@ typedef enum {
   BINOP_GT,
   BINOP_GE,
   BINOP_AND,
-  BINOP_OR
+  BINOP_OR,
+  BINOP_BIT_AND,
+  BINOP_BIT_OR,
+  BINOP_BIT_XOR,
+  BINOP_BIT_SHL,
+  BINOP_BIT_SHR,
 } BinaryOp;
 
-typedef enum { UNOP_NEG, UNOP_NOT, UNOP_ADDR, UNOP_DEREF } UnaryOp;
+typedef enum { UNOP_NEG, UNOP_NOT, UNOP_ADDR, UNOP_DEREF, UNOP_BIT_NOT } UnaryOp;
 
 typedef struct {
   char *name;

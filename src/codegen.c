@@ -1425,6 +1425,21 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     case BINOP_OR:
       emit_string(cg, "||");
       break;
+    case BINOP_BIT_AND:
+      emit_string(cg, "&");
+      break;
+    case BINOP_BIT_OR:
+      emit_string(cg, "|");
+      break;
+    case BINOP_BIT_XOR:
+      emit_string(cg, "^");
+      break;
+    case BINOP_BIT_SHL:
+      emit_string(cg, "<<");
+      break;
+    case BINOP_BIT_SHR:
+      emit_string(cg, ">>");
+      break;
     default:
       emit_string(cg, "/* ? */");
     }
@@ -1447,6 +1462,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       break;
     case UNOP_DEREF:
       emit_string(cg, "*");
+      break;
+    case UNOP_BIT_NOT:
+      emit_string(cg, "~");
       break;
     default:
       emit_string(cg, "/* ? */");
