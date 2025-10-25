@@ -211,14 +211,8 @@ static bool compile_file(const char *filename) {
     return true;
   }
 
-  if (compiler_opts.freestanding) {
-    // Compile as freestanding, which compiles to an object
-    snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s -ffreestanding",
-            compiler_opts.compiler, default_compiler_args,
-            compiler_opts.output_exe_name, release_mode_string());
-    
-    gcc_result = system(compiler_args);
-  } else {
+  // Free standing should not be compiled at all
+  if (!compiler_opts.freestanding) {
     // Compile as executable
     snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
             compiler_opts.compiler, default_compiler_args,
@@ -239,7 +233,9 @@ static bool compile_file(const char *filename) {
     system(rm_cmd);
   }
 
-  printf("Compiled to %s\n", compiler_opts.output_exe_name);
+  if (!compiler_opts.freestanding) {
+    printf("Compiled to %s\n", compiler_opts.output_exe_name);
+  }
 
   return true;
 }
