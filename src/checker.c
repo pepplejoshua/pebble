@@ -1463,6 +1463,42 @@ Type *check_expression(AstNode *expr) {
       return type_bool;
     }
 
+    // Bitwise: &, |, ^, <<, >>
+    if (op == BINOP_BIT_AND || op == BINOP_BIT_OR || op == BINOP_BIT_XOR ||
+        op == BINOP_BIT_SHL || op == BINOP_BIT_SHR) {
+      if (!type_is_int(left) || !type_is_int(right)) {
+        checker_error(expr->loc, "bitwise operation requires integer operands");
+        return NULL;
+      }
+      // Handle type promotion for sized integers
+      if (!type_equals(left, right)) {
+        if (left->kind == TYPE_INT &&
+            (right->kind == TYPE_U8 || right->kind == TYPE_U16 ||
+             right->kind == TYPE_U32 || right->kind == TYPE_U64 ||
+             right->kind == TYPE_USIZE || right->kind == TYPE_I8 ||
+             right->kind == TYPE_I16 || right->kind == TYPE_I32 ||
+             right->kind == TYPE_I64 || right->kind == TYPE_ISIZE)) {
+          expr->data.binop.left =
+              maybe_insert_cast(expr->data.binop.left, left, right);
+          left = right;
+        } else if (right->kind == TYPE_INT &&
+                   (left->kind == TYPE_U8 || left->kind == TYPE_U16 ||
+                    left->kind == TYPE_U32 || left->kind == TYPE_U64 ||
+                    left->kind == TYPE_USIZE || left->kind == TYPE_I8 ||
+                    left->kind == TYPE_I16 || left->kind == TYPE_I32 ||
+                    left->kind == TYPE_I64 || left->kind == TYPE_ISIZE)) {
+          expr->data.binop.right =
+              maybe_insert_cast(expr->data.binop.right, right, left);
+          right = left;
+        } else {
+          checker_error(expr->loc, "incompatible types in bitwise operation");
+          return NULL;
+        }
+      }
+      expr->resolved_type = left;
+      return left;
+    }
+
     // Logical: &&, ||
     if (op == BINOP_AND || op == BINOP_OR) {
       if (left->kind != TYPE_BOOL || right->kind != TYPE_BOOL) {
@@ -1501,6 +1537,15 @@ Type *check_expression(AstNode *expr) {
       }
       expr->resolved_type = type_bool;
       return type_bool;
+    }
+
+    if (op == UNOP_BIT_NOT) {
+      if (!type_is_int(operand)) {
+        checker_error(expr->loc, "bitwise not requires integer operand");
+        return NULL;
+      }
+      expr->resolved_type = operand;
+      return operand;
     }
 
     if (op == UNOP_ADDR) {

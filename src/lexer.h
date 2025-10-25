@@ -72,6 +72,11 @@ typedef enum {
   TOKEN_OR,        // ||
   TOKEN_NOT,       // !
   TOKEN_AMPERSAND, // &
+  TOKEN_PIPE,      // |
+  TOKEN_CARET,     // ^
+  TOKEN_TILDE,     // ~
+  TOKEN_LSHIFT,    // <<
+  TOKEN_RSHIFT,    // >>
 
   // Punctuation
   TOKEN_SEMICOLON, // ;

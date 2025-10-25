@@ -479,9 +479,15 @@ Token lexer_next_token(Lexer *lexer) {
       return lexer_make_token(lexer, TOKEN_EQUAL);
     }
   case '<':
+    if (lexer_match(lexer, '<')) {
+      return lexer_make_token(lexer, TOKEN_LSHIFT);
+    }
     return lexer_make_token(lexer,
                             lexer_match(lexer, '=') ? TOKEN_LE : TOKEN_LT);
   case '>':
+    if (lexer_match(lexer, '>')) {
+      return lexer_make_token(lexer, TOKEN_RSHIFT);
+    }
     return lexer_make_token(lexer,
                             lexer_match(lexer, '=') ? TOKEN_GE : TOKEN_GT);
   case '&':
@@ -494,7 +500,11 @@ Token lexer_next_token(Lexer *lexer) {
     if (lexer_match(lexer, '|')) {
       return lexer_make_token(lexer, TOKEN_OR);
     }
-    break;
+    return lexer_make_token(lexer, TOKEN_PIPE);
+  case '^':
+    return lexer_make_token(lexer, TOKEN_CARET);
+  case '~':
+    return lexer_make_token(lexer, TOKEN_TILDE);
   }
 
   return lexer_error_token(lexer, "Unexpected character");
@@ -610,6 +620,16 @@ const char *token_type_name(TokenType type) {
     return "NOT";
   case TOKEN_AMPERSAND:
     return "AMPERSAND";
+  case TOKEN_PIPE:
+    return "PIPE";
+  case TOKEN_CARET:
+    return "CARET";
+  case TOKEN_TILDE:
+    return "TILDE";
+  case TOKEN_LSHIFT:
+    return "LSHIFT";
+  case TOKEN_RSHIFT:
+    return "RSHIFT";
   case TOKEN_SEMICOLON:
     return "SEMICOLON";
   case TOKEN_COMMA:
