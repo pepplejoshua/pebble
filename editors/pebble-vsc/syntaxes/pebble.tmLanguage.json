@@ -76,7 +76,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.pebble",
-                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return|switch|case)\\b"
+                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return|switch|case|defer)\\b"
                 },
                 {
                     "name": "keyword.types.pebble",

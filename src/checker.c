@@ -20,6 +20,7 @@ typedef struct {
   int error_count;
   bool in_type_resolution;
   bool in_loop;
+  bool in_defer;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -2042,6 +2043,11 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
           converted; // Replace with cast node if needed
     }
 
+    // Cannot return with defer statements
+    if (checker_state.in_defer) {
+      checker_error(stmt->loc, "cannot return within defer statements");
+    }
+
     return true;
   }
 
@@ -2102,6 +2108,16 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     }
 
     return check_statement(stmt->data.case_stmt.body, expected_return_type);
+  }
+
+  case AST_STMT_DEFER: {
+    bool last_in_defer = checker_state.in_defer;
+    checker_state.in_defer = true;
+
+    check_statement(stmt->data.defer_stmt.stmt, expected_return_type);
+
+    checker_state.in_defer = last_in_defer;
+    return false;
   }
 
   case AST_STMT_WHILE: {

@@ -46,6 +46,111 @@ static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   *len += str_len;
 }
 
+static DeferStack *defer_stack_create(DeferStack *parent, DeferScopeType scope_type) {
+  DeferStack *stack = arena_alloc(&long_lived, sizeof(DeferStack));
+  stack->defers = NULL;
+  stack->count = 0;
+  stack->capacity = 0;
+  stack->scope_type = scope_type;
+  stack->parent = parent;
+
+  return stack;
+}
+
+static void defer_stack_push(Codegen *cg, AstNode *defer_stmt) {
+  DeferStack *stack = cg->defer_stack;
+  assert(stack);
+
+  if (stack->count >= stack->capacity) {
+    bool is_empty = stack->capacity == 0;
+    AstNode **old_buffer = stack->defers;
+
+    stack->capacity = is_empty ? 2 : stack->capacity * 2;
+    stack->defers = arena_alloc(&long_lived, stack->capacity * sizeof(AstNode *));
+    if (!is_empty) {
+      memcpy(stack->defers, old_buffer, stack->count * sizeof(AstNode *));
+    }
+  }
+
+  stack->defers[stack->count++] = defer_stmt;
+}
+
+// Emit all defers in the current scope only (LIFO)
+static void defer_stack_emit_current_scope(Codegen *cg, bool lock) {
+  DeferStack *stack = cg->defer_stack;
+  if (!stack || stack->locked) return;
+
+  stack->locked = lock;
+
+  cg->in_defer = true;
+  
+  // Emit in reverse order (most recent first)
+  for (int i = stack->count - 1; i >= 0; i--) {
+    emit_string(cg, "{ /* defer */\n");
+    emit_stmt(cg, stack->defers[i]);
+    emit_string(cg, "}\n");
+  }
+
+  cg->in_defer = false;
+}
+
+// Emit defers from current scope up to (but not including) a target scope type
+// This is used for break/continue to emit defers up to the loop boundary
+static void defer_stack_emit_until(Codegen *cg, DeferScopeType target_scope, bool lock) {
+  DeferStack *stack = cg->defer_stack;
+  if (!stack || stack->locked) return;
+
+  stack->locked = lock;
+
+  cg->in_defer = true;
+  
+  while (stack && stack->scope_type != target_scope) {
+    // Emit all defers in this scope (reverse order)
+    for (int i = stack->count - 1; i >= 0; i--) {
+      emit_string(cg, "{ /* defer */\n");
+      emit_stmt(cg, stack->defers[i]);
+      emit_string(cg, "}\n");
+    }
+    stack = stack->parent;
+  }
+
+  cg->in_defer = false;
+}
+
+// Emit all defers from current scope up through and including all parent scopes
+// This is used for return statements
+static void defer_stack_emit_all(Codegen *cg, bool lock) {
+  DeferStack *stack = cg->defer_stack;
+  if (!stack || stack->locked) return;
+
+  stack->locked = lock;
+
+  cg->in_defer = true;
+  
+  while (stack) {
+    // Emit all defers in this scope (reverse order)
+    for (int i = stack->count - 1; i >= 0; i--) {
+      emit_string(cg, "{ /* defer */\n");
+      emit_stmt(cg, stack->defers[i]);
+      emit_string(cg, "}\n");
+    }
+    stack = stack->parent;
+  }
+
+  cg->in_defer = false;
+}
+
+// Enter a new defer scope
+static void defer_scope_enter(Codegen *cg, DeferScopeType scope_type) {
+  cg->defer_stack = defer_stack_create(cg->defer_stack, scope_type);
+}
+
+static void defer_scope_exit(Codegen *cg) {
+  defer_stack_emit_current_scope(cg, false);
+  DeferStack *old = cg->defer_stack;
+  cg->defer_stack = old ? old->parent : NULL;
+}
+
 void codegen_init(Codegen *cg, FILE *output) {
   cg->output = output;
   cg->indent_level = 0;
@@ -68,7 +173,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble =
-        "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include<string.h>\n\n";
+        "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <string.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -78,6 +183,9 @@ void codegen_init(Codegen *cg, FILE *output) {
   cg->declared_types = NULL;
   cg->defined_types = NULL;
   cg->declared_vars = NULL;
+
+  cg->defer_stack = false;
+  cg->defer_stack = NULL;
 
   // Init temporary
   cg->temporary_count = 0;
@@ -444,8 +552,16 @@ void emit_program(Codegen *cg) {
       emit_string(cg, ") ");
       emit_string(cg, "{\n");
       emit_indent(cg);
+
+      // Enter function scope
+      defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
+
       // Emit body (minimal traversal)
       emit_stmt(cg, func->data.func_decl.body);
+
+      // Exit function scope (though returns should have handled this already)
+      defer_scope_exit(cg);
+
       emit_dedent(cg);
       emit_string(cg, "}\n");
     }
@@ -689,10 +805,16 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     return;
   switch (stmt->kind) {
   case AST_STMT_BREAK:
+    // Emit all defers up to (but not including) the loop scope
+    defer_stack_emit_until(cg, DEFER_SCOPE_LOOP, true);
+
     emit_indent_spaces(cg);
     emit_string(cg, "break;\n");
     break;
   case AST_STMT_CONTINUE:
+    // Emit all defers up to (but not including) the loop scope
+    defer_stack_emit_until(cg, DEFER_SCOPE_LOOP, true);
+    
     emit_indent_spaces(cg);
     emit_string(cg, "continue;\n");
     break;
@@ -770,6 +892,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     break;
   }
   case AST_STMT_RETURN:
+    // Emit all current defers
+    defer_stack_emit_all(cg, true);
+
     emit_indent_spaces(cg);
     emit_string(cg, "return");
     if (stmt->data.return_stmt.expr) {
@@ -778,9 +903,24 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     emit_string(cg, ";\n");
     break;
+  case AST_STMT_DEFER:
+  {
+    // Emit held stmt to defer stack
+    defer_stack_push(cg, stmt->data.defer_stmt.stmt);
+    break;
+  }
   case AST_STMT_BLOCK:
+    if (!cg->in_defer) {
+      // Enter new regular block scope
+      defer_scope_enter(cg, DEFER_SCOPE_BLOCK);
+    }
+
     for (size_t i = 0; i < stmt->data.block_stmt.stmt_count; i++) {
       emit_stmt(cg, stmt->data.block_stmt.stmts[i]);
+    }
+
+    if (!cg->in_defer) {
+      defer_scope_exit(cg);
     }
     break;
   case AST_STMT_IF: {
@@ -986,7 +1126,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, ") ");
     emit_string(cg, "{\n");
     emit_indent(cg);
+
+    // Enter LOOP scope - break/continue target this
+    defer_scope_enter(cg, DEFER_SCOPE_LOOP);
+
     emit_stmt(cg, stmt->data.while_stmt.body);
+    
+    // Exit loop scope (emits defers at end of each iteration)
+    defer_scope_exit(cg);
+
     emit_dedent(cg);
     emit_indent_spaces(cg);
     emit_string(cg, "}\n");
@@ -1025,7 +1173,14 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, loop_var);
     emit_string(cg, ";\n");
 
+    // Enter LOOP scope
+    defer_scope_enter(cg, DEFER_SCOPE_LOOP);
+
     emit_stmt(cg, stmt->data.loop_stmt.body);
+
+    // Exit loop scope
+    defer_scope_exit(cg);
+
     emit_dedent(cg);
     emit_indent_spaces(cg);
     emit_string(cg, "}\n");
@@ -1052,7 +1207,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
       emit_string(cg, ") {\n");
       emit_indent(cg);
+
+      // Enter LOOP scope for the body
+      defer_scope_enter(cg, DEFER_SCOPE_LOOP);
+
       emit_stmt(cg, stmt->data.for_stmt.body);
+
+      // Exit loop scope
+      defer_scope_exit(cg);
+
       emit_dedent(cg);
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
@@ -1076,7 +1239,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
       emit_string(cg, ") {\n");
       emit_indent(cg);
+
+      // Enter LOOP scope
+      defer_scope_enter(cg, DEFER_SCOPE_LOOP);
+
       emit_stmt(cg, stmt->data.for_stmt.body);
+
+      // Exit loop scope
+      defer_scope_exit(cg);
+
       emit_dedent(cg);
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
