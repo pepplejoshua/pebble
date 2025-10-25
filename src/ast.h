@@ -38,6 +38,7 @@ typedef enum {
   AST_STMT_CONTINUE,
   AST_STMT_CASE,
   AST_STMT_SWITCH,
+  AST_STMT_DEFER,
 
   AST_EXPR_LITERAL_INT,
   AST_EXPR_LITERAL_FLOAT,
@@ -189,6 +190,9 @@ struct AstNode {
       // Optional
       AstNode *default_case;
     } switch_stmt;
+    struct {
+      AstNode *stmt;
+    } defer_stmt;
 
     // Expressions
     struct {

@@ -150,6 +150,10 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
         return lexer_check_keyword(lexer, 4, "char", TOKEN_CHAR_TYPE);
     }
     break;
+  case 'd':
+    if (length == 5)
+      return lexer_check_keyword(lexer, 5, "defer", TOKEN_DEFER);
+    break;
   case 'e':
     if (length == 4)
       return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);

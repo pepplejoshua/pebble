@@ -20,6 +20,7 @@
   "print"
   "switch"
   "case"
+  "defer"
 ] @keyword
 
 ; Types

@@ -14,6 +14,21 @@ typedef struct {
   UT_hash_handle hh;
 } CodegenTypeEntry;
 
+typedef enum {
+  DEFER_SCOPE_BLOCK,      // Regular block
+  DEFER_SCOPE_LOOP,       // Loop body (where break/continue target)
+  DEFER_SCOPE_FUNCTION    // Function body (where return targets)
+} DeferScopeType;
+
+typedef struct DeferStack {
+  AstNode **defers;      // Array of deferred statements
+  size_t count;          // Number of deferred statements
+  size_t capacity;       // Allocated capacity
+  DeferScopeType scope_type;
+  struct DeferStack *parent;  // For nested scopes
+  bool locked;
+} DeferStack;
+
 typedef struct {
   FILE *output;
   int indent_level;
@@ -34,6 +49,10 @@ typedef struct {
   CodegenTypeEntry *declared_types;
   CodegenTypeEntry *defined_types;
   CodegenTypeEntry *declared_vars;
+
+  // Misc / tracking
+  bool in_defer;
+  DeferStack *defer_stack;
 
   // Temporaries
   size_t temporary_count;
