@@ -602,6 +602,15 @@ static bool type_is_int(Type *type) {
   return type->kind == TYPE_INT || type->kind == TYPE_I32;
 }
 
+static bool type_is_integral(Type *type) {
+  return type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
+          type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
+          type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
+          type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
+          type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
+          type->kind == TYPE_INT;
+}
+
 static bool type_is_floating(Type *type) {
   return type->kind == TYPE_F32 || type->kind == TYPE_F64;
 }
@@ -1467,27 +1476,17 @@ Type *check_expression(AstNode *expr) {
     // Bitwise: &, |, ^, <<, >>
     if (op == BINOP_BIT_AND || op == BINOP_BIT_OR || op == BINOP_BIT_XOR ||
         op == BINOP_BIT_SHL || op == BINOP_BIT_SHR) {
-      if (!type_is_int(left) || !type_is_int(right)) {
+      if (!type_is_integral(left) || !type_is_integral(right)) {
         checker_error(expr->loc, "bitwise operation requires integer operands");
         return NULL;
       }
       // Handle type promotion for sized integers
       if (!type_equals(left, right)) {
-        if (left->kind == TYPE_INT &&
-            (right->kind == TYPE_U8 || right->kind == TYPE_U16 ||
-             right->kind == TYPE_U32 || right->kind == TYPE_U64 ||
-             right->kind == TYPE_USIZE || right->kind == TYPE_I8 ||
-             right->kind == TYPE_I16 || right->kind == TYPE_I32 ||
-             right->kind == TYPE_I64 || right->kind == TYPE_ISIZE)) {
+        if (type_is_integral(left) && type_is_integral(right)) {
           expr->data.binop.left =
               maybe_insert_cast(expr->data.binop.left, left, right);
           left = right;
-        } else if (right->kind == TYPE_INT &&
-                   (left->kind == TYPE_U8 || left->kind == TYPE_U16 ||
-                    left->kind == TYPE_U32 || left->kind == TYPE_U64 ||
-                    left->kind == TYPE_USIZE || left->kind == TYPE_I8 ||
-                    left->kind == TYPE_I16 || left->kind == TYPE_I32 ||
-                    left->kind == TYPE_I64 || left->kind == TYPE_ISIZE)) {
+        } else if (type_is_integral(right) && type_is_integral(left)) {
           expr->data.binop.right =
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
