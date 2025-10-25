@@ -1176,10 +1176,18 @@ static bool is_valid_cast(Type *from, Type *to) {
   }
 
   // Int <-> Pointer (for FFI)
-  if (type_is_numeric(from) && to->kind == TYPE_POINTER) {
+  if (type_is_int(from) && to->kind == TYPE_POINTER) {
     return true;
   }
-  if (from->kind == TYPE_POINTER && type_is_numeric(to)) {
+  if (from->kind == TYPE_POINTER && type_is_int(to)) {
+    return true;
+  }
+
+  // char <-> integral
+  if (type_is_integral(from) && to->kind == TYPE_CHAR) {
+    return true;
+  }
+  if (from->kind == TYPE_CHAR && type_is_integral(to)) {
     return true;
   }
 
@@ -1660,8 +1668,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Verify index is an integer
-    if (!type_is_int(index_type)) {
-      checker_error(index_expr->loc, "array index must be an integer");
+    if (!type_is_int(index_type) && index_type->kind != TYPE_USIZE) {
+      checker_error(index_expr->loc, "array index must be an integer or usize");
       return NULL;
     }
 
