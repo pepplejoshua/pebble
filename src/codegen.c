@@ -380,7 +380,8 @@ void emit_program(Codegen *cg) {
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
-        type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT) {
+        type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
+        type->kind == TYPE_ENUM) {
       TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
@@ -457,7 +458,8 @@ void emit_program(Codegen *cg) {
     HASH_FIND_STR(canonical_type_table, sorted_types[i], entry);
     if (entry &&
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
-         entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT)) {
+         entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
+         entry->type->kind == TYPE_ENUM)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -640,6 +642,7 @@ void emit_type_name(Codegen *cg, Type *type) {
     break;
   case TYPE_STRUCT:
   case TYPE_TUPLE:
+  case TYPE_ENUM:
     emit_string(cg, type->canonical_name); // Just "Node" or "tuple_int_int",
                                            // not "struct ..."
     break;
@@ -719,7 +722,13 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     // Emit forward decl (to forward_types, preserving section)
     char *old_section = cg->current_section;
     cg->current_section = "forward_types";
-    emit_string(cg, "typedef struct ");
+
+    if (type->kind == TYPE_ENUM) {
+      emit_string(cg, "typedef enum ");
+    } else {
+      emit_string(cg, "typedef struct ");
+    }
+    
     emit_string(cg, canonical);
     emit_string(cg, " ");
     emit_string(cg, canonical);
@@ -730,6 +739,41 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     decl_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
     decl_entry->key = str_dup(canonical); // Persist key
     HASH_ADD_STR(cg->declared_types, key, decl_entry);
+  }
+
+  if (type->kind == TYPE_ENUM) {
+    CodegenTypeEntry *def_entry;
+    HASH_FIND_STR(cg->defined_types, canonical, def_entry);
+
+    if (!def_entry) {
+      // Emit full def
+      char *old_section = cg->current_section;
+      cg->current_section = "type_defs";
+
+      emit_string(cg, "enum ");
+      emit_string(cg, canonical);
+      emit_string(cg, " {");
+      emit_string(cg, "\n");
+      emit_indent(cg);
+
+      for (size_t i = 0; i < type->data.enum_data.variant_count; i++) {
+        emit_indent_spaces(cg);
+        emit_string(cg, canonical);
+        emit_string(cg, "_");
+        emit_string(cg, type->data.enum_data.variant_names[i]);
+        emit_string(cg, ",\n");
+      }
+
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
+      emit_string(cg, "};\n");
+      cg->current_section = old_section;
+
+      // Insert into defined_types hash to prevent duplicates
+      def_entry = arena_alloc(&long_lived, sizeof(CodegenTypeEntry));
+      def_entry->key = str_dup(canonical); // Persist key
+      HASH_ADD_STR(cg->defined_types, key, def_entry);
+    }
   }
 
   // Check if already defined (full struct/tuple)
@@ -822,7 +866,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     Type *type = stmt->data.print_stmt.expr->resolved_type;
 
     emit_indent_spaces(cg);
-    if (type->kind == TYPE_INT || type->kind == TYPE_I32) {
+    if (type->kind == TYPE_INT || type->kind == TYPE_I32 || type->kind == TYPE_ENUM) {
       emit_string(cg, "printf(\"%d\\n\", ");
     } else if (type->kind == TYPE_I8) {
       emit_string(cg, "printf(\"%hhd\\n\", ");
@@ -968,6 +1012,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       case TYPE_I8:
       case TYPE_I32:
       case TYPE_ISIZE:
+      case TYPE_ENUM:
       {
         emit_string(cg, "switch (");
         emit_expr(cg, cond);
@@ -1682,6 +1727,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Get the type of the object expression
     Type *object_type = object_expr->resolved_type;
+
+    // Enums require their name prefixed to variant name
+    if (object_type->kind == TYPE_ENUM) {
+      emit_string(cg, object_type->canonical_name);
+      emit_string(cg, "_");
+      emit_string(cg, member);
+      break;
+    }
 
     // Check if the object is a pointer and prepare the operator
     if (object_type && object_type->kind == TYPE_POINTER) {

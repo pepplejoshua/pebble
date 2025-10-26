@@ -33,6 +33,7 @@ typedef enum {
   TYPE_ARRAY,
   TYPE_SLICE,
   TYPE_STRUCT,
+  TYPE_ENUM,
   TYPE_FUNCTION,
   TYPE_TUPLE,
   TYPE_UNRESOLVED,
@@ -65,6 +66,11 @@ struct Type {
       Type **field_types; // Array of field types
       size_t field_count; // Number of fields
     } struct_data;
+
+    struct {
+      char **variant_names; // Array of variant names
+      size_t variant_count; // Number of variants
+    } enum_data;
 
     struct {
       Type **param_types; // Parameter types
@@ -119,6 +125,7 @@ Type *type_create_slice(Type *element, bool canonicalize, Location loc);
 Type *type_create_array(Type *element, size_t size, bool canonicalize, Location loc);
 Type *type_create_struct(char **field_names, Type **field_types,
                          size_t field_count, Location loc);
+Type *type_create_enum(char **variant_names, size_t variant_count, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
 Type *type_create_function(Type **param_types, size_t param_count,
@@ -139,5 +146,6 @@ char *type_name(Type *type);
 // Type checking utilities
 bool type_equals(Type *a, Type *b);
 bool type_is_numeric(Type *type);
+bool type_is_ord(Type *type);
 
 #endif

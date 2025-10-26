@@ -155,8 +155,13 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
       return lexer_check_keyword(lexer, 5, "defer", TOKEN_DEFER);
     break;
   case 'e':
-    if (length == 4)
-      return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);
+    if (length == 4) {
+      if (start[1] == 'l')
+        return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);
+        
+      if (start[1] == 'n')
+        return lexer_check_keyword(lexer, 4, "enum", TOKEN_ENUM);
+    }
     if (length == 6)
       return lexer_check_keyword(lexer, 6, "extern", TOKEN_EXTERN);
     break;
@@ -564,6 +569,16 @@ const char *token_type_name(TokenType type) {
     return "SIZEOF";
   case TOKEN_AS:
     return "AS";
+  case TOKEN_EXTERN:
+    return "EXTERN";
+  case TOKEN_SWITCH:
+    return "SWITCH";
+  case TOKEN_CASE:
+    return "CASE";
+  case TOKEN_DEFER:
+    return "DEFER";
+  case TOKEN_ENUM:
+    return "ENUM";
   case TOKEN_INT_TYPE:
     return "INT_TYPE";
   case TOKEN_BOOL_TYPE:

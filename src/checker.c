@@ -432,6 +432,35 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     break;
   }
 
+  case TYPE_ENUM: {
+    if (type->declared_name) {
+      canonical_name = str_dup(type->declared_name);
+    } else {
+      // Anonymous enum - build structural name
+      size_t capacity = 256;
+      canonical_name = arena_alloc(&long_lived, capacity);
+      size_t offset = 0;
+
+      offset += snprintf(canonical_name + offset, capacity - offset, "enum");
+
+      for (size_t i = 0; i < type->data.enum_data.variant_count; i++) {
+        char *variant = type->data.enum_data.variant_names[i];
+
+        size_t needed =
+            offset + 1 + strlen(variant) + 1;
+        if (needed > capacity) {
+          capacity = needed * 2;
+          char *new_buf = arena_alloc(&long_lived, capacity);
+          memcpy(new_buf, canonical_name, offset);
+          canonical_name = new_buf;
+        }
+
+        offset += snprintf(canonical_name + offset, capacity - offset, "_%s", variant);
+      }
+    }
+    break;
+  }
+
   case TYPE_FUNCTION: {
     size_t total_len = strlen("func");
     for (size_t i = 0; i < type->data.func.param_count; i++) {
@@ -561,7 +590,8 @@ static void check_type_declarations(void) {
         }
 
         if (placeholder->kind == TYPE_STRUCT ||
-            placeholder->kind == TYPE_TUPLE) {
+            placeholder->kind == TYPE_TUPLE ||
+            placeholder->kind == TYPE_ENUM) {
           placeholder->declared_name = str_dup(sym->name);
         }
 
@@ -943,9 +973,33 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     Type **field_types = arena_alloc(&long_lived, sizeof(Type *) * field_count);
 
+    // Check duplicate field names
+    typedef struct {
+      char *name;
+      UT_hash_handle hh;
+    } variant_entry;
+    variant_entry *seen = NULL;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
     for (size_t i = 0; i < field_count; i++) {
+      // Check field name collisions
+      variant_entry *entry;
+      HASH_FIND_STR(seen, field_names[i], entry);
+      if (entry) {
+        checker_error(type_expr->loc, "Duplicate struct member '%s'", field_names[i]);
+      } else {
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
+        entry->name = field_names[i];
+        HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
+      }
+
+      // Check types
       field_types[i] = resolve_type_expression(field_type_exprs[i]);
       if (!field_types[i]) {
+        HASH_CLEAR(hh, seen);
+        arena_free(&temp_arena);
         return NULL;
       }
 
@@ -954,11 +1008,56 @@ Type *resolve_type_expression(AstNode *type_expr) {
                       "Cannot have field of opaque type '%s' in struct (use "
                       "pointer instead)",
                       field_types[i]->canonical_name);
+
+        HASH_CLEAR(hh, seen);
+        arena_free(&temp_arena);
         return NULL;
       }
     }
 
+    HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
+
     return type_create_struct(field_names, field_types, field_count, loc);
+  }
+
+  case AST_TYPE_ENUM: {
+    size_t variant_count = type_expr->data.type_enum.variant_count;
+    if (variant_count == 0) {
+      checker_warning(type_expr->loc,
+                      "Enum was declared without any members");
+      return type_create_enum(NULL, variant_count, loc);
+    }
+
+    // Resolve all field types and create struct type
+    char **variant_names = type_expr->data.type_enum.variant_names;
+
+    // Check duplicate variants
+    typedef struct {
+      char *name;
+      UT_hash_handle hh;
+    } variant_entry;
+    variant_entry *seen = NULL;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
+    for (size_t i = 0; i < variant_count; i++) {
+      variant_entry *entry;
+      HASH_FIND_STR(seen, variant_names[i], entry);
+      if (entry) {
+        checker_error(type_expr->loc, "Duplicate enum variant '%s'", variant_names[i]);
+      } else {
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
+        entry->name = variant_names[i];
+        HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
+      }
+    }
+    
+    HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
+
+    return type_create_enum(variant_names, variant_count, loc);
   }
 
   case AST_TYPE_FUNCTION: {
@@ -1030,6 +1129,7 @@ static bool type_is_comparable(Type *type) {
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_POINTER:
+  case TYPE_ENUM:
     return true;
   default:
     return false;
@@ -1197,6 +1297,11 @@ static bool is_valid_cast(Type *from, Type *to) {
     return true;
   }
 
+  // enum -> integral
+  if (from->kind == TYPE_ENUM && type_is_integral(to)) {
+    return true;
+  }
+
   // *char to str (which is const char *)
   if (from->kind == TYPE_POINTER && from->data.ptr.base == type_char &&
       to == type_string) {
@@ -1288,14 +1393,14 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Types are not values
-    if (sym->kind == SYMBOL_TYPE) {
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM) {
       checker_error(expr->loc, "'%s' is a type, not a value", name);
       return NULL;
     }
 
     // Only variables, constants and functions can be used as values
     if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CONSTANT &&
-        sym->kind != SYMBOL_FUNCTION) {
+        sym->kind != SYMBOL_FUNCTION && (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
       checker_error(expr->loc, "'%s' cannot be used as a value", name);
       return NULL;
     }
@@ -1388,8 +1493,8 @@ Type *check_expression(AstNode *expr) {
 
     // Comparison: <, >, <=, >=
     if (op == BINOP_LT || op == BINOP_GT || op == BINOP_LE || op == BINOP_GE) {
-      if (!type_is_numeric(left) || !type_is_numeric(right)) {
-        checker_error(expr->loc, "comparison requires numeric operands");
+      if (!type_is_ord(left) || !type_is_ord(right)) {
+        checker_error(expr->loc, "comparison requires numeric or enum operands");
         return NULL;
       }
       // Handle type promotion for consistency
@@ -1834,8 +1939,21 @@ Type *check_expression(AstNode *expr) {
 
       checker_error(expr->loc, "struct has no field named '%s'", field_name);
       return NULL;
+    } else if (base_type->kind == TYPE_ENUM) {
+      char **variant_names = base_type->data.enum_data.variant_names;
+      size_t variant_count = base_type->data.enum_data.variant_count;
+
+      for (size_t i = 0; i < variant_count; i++) {
+        if (strcmp(variant_names[i], field_name) == 0) {
+          expr->resolved_type = base_type;
+          return base_type;
+        }
+      }
+
+      checker_error(expr->loc, "enum has no variant named '%s'", field_name);
+      return NULL;
     } else {
-      checker_error(object_expr->loc, "member access requires struct, array, "
+      checker_error(object_expr->loc, "member access requires struct, enum, array, "
                                       "slice, or pointer to one of these");
       return NULL;
     }
@@ -2125,8 +2243,9 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
-    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR) {
-      checker_error(cond->loc, "switch condition must be numeric (int or float), char or string");
+    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR
+        && cond_type->kind != TYPE_ENUM) {
+      checker_error(cond->loc, "switch condition must be numeric (int or float), char, enum or string");
     }
 
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
@@ -2145,7 +2264,7 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *switch_cond = stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
 
     Type *cond_type = check_expression(cond);
-    if (cond_type && cond_type->kind != switch_cond->resolved_type->kind) {
+    if (cond_type && switch_cond->resolved_type && cond_type->kind != switch_cond->resolved_type->kind) {
       checker_error(
         cond->loc,
         "switch case condition doesn't match switch condition type '%s'",

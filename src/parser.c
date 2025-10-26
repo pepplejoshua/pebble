@@ -559,13 +559,13 @@ AstNode *parse_switch_stmt(Parser *parser) {
   parser_consume(parser, TOKEN_LBRACE, "Expect '{' after switch condition");
 
   size_t count = 0, capacity = 2;
-  AstNode **cases = malloc(capacity * sizeof(AstNode *));
+  AstNode **cases = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
 
   // Parse all cases
   while (parser_match(parser, TOKEN_CASE)) {
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_cases = malloc(capacity * sizeof(AstNode *));
+      AstNode **new_cases = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
       memcpy(new_cases, cases, count);
       cases = new_cases;
     }
@@ -1648,6 +1648,55 @@ AstNode *parse_type_expression(Parser *parser) {
     type->data.type_struct.field_names = field_names;
     type->data.type_struct.field_types = field_types;
     type->data.type_struct.field_count = count;
+    return type;
+  }
+
+  // Enum type: enum { variant, ... }
+  if (parser_match(parser, TOKEN_ENUM)) {
+    Location loc = parser->previous.location;
+
+    parser_consume(parser, TOKEN_LBRACE, "Expected '{' after 'enum'");
+
+    // Parse fields
+    char **variant_names = NULL;
+    size_t count = 0;
+    size_t capacity = 2;
+
+    variant_names = arena_alloc(&long_lived, capacity * sizeof(char *));
+
+    // Allow empty enum
+    if (!parser_check(parser, TOKEN_RBRACE)) {
+      do {
+        if (parser_check(parser, TOKEN_RBRACE)) {
+          break;
+        }
+
+        // Grow arrays if needed
+        if (count >= capacity) {
+          capacity *= 2;
+          char **new_variants =
+              arena_alloc(&long_lived, capacity * sizeof(char *));
+          memcpy(new_variants, variant_names, count * sizeof(char *));
+          variant_names = new_variants;
+        }
+
+        // Parse variant: IDENTIFIER (, IDENTIFIER ...)
+        if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+          parser_error(parser, "Expected enum variant name");
+          return NULL;
+        }
+        parser_advance(parser);
+        
+        Token variant_name = parser->previous;
+        variant_names[count++] = str_dup(variant_name.lexeme);
+      } while (parser_match(parser, TOKEN_COMMA));
+    }
+
+    parser_consume(parser, TOKEN_RBRACE, "Expected '}' after enum variants");
+
+    type = alloc_node(AST_TYPE_ENUM, loc);
+    type->data.type_enum.variant_names = variant_names;
+    type->data.type_enum.variant_count = count;
     return type;
   }
 
