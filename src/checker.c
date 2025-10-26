@@ -1156,6 +1156,17 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     return expr; // No cast needed
   }
 
+  // Cast integer literals
+  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(expr_type) && type_is_integral(target_type)) {
+    AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+    cast->kind = AST_EXPR_IMPLICIT_CAST;
+    cast->loc = expr->loc;
+    cast->data.implicit_cast.expr = expr;
+    cast->data.implicit_cast.target_type = target_type;
+    cast->resolved_type = target_type;
+    return cast;
+  }
+
   // Check if implicit conversion is allowed
   if (expr_type->kind == TYPE_POINTER && target_type->kind == TYPE_POINTER) {
     // *void to *T || *T to *void
@@ -1188,7 +1199,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       cast->data.implicit_cast.target_type = target_type;
       return cast;
     }
-  } else if (expr_type->kind == TYPE_INT &&
+  } else if (type_is_integral(expr_type) &&
              (target_type->kind == TYPE_F32 ||
               target_type->kind == TYPE_F64)) {
     // Promote int to float
@@ -1313,6 +1324,158 @@ static bool is_valid_cast(Type *from, Type *to) {
 
 static bool is_nil_type(Type *type) {
   return type->kind == TYPE_POINTER && type->data.ptr.base->kind == TYPE_VOID;
+}
+
+static bool is_constant_known(AstNode *node) {
+  // Enum values are always constant
+  if (node->resolved_type->kind == TYPE_ENUM) {
+    return true;
+  }
+
+  switch (node->kind) {
+    // All simple literals are constant
+    case AST_EXPR_LITERAL_BOOL:
+    case AST_EXPR_LITERAL_CHAR:
+    case AST_EXPR_LITERAL_FLOAT:
+    case AST_EXPR_LITERAL_INT:
+    case AST_EXPR_LITERAL_NIL:
+    case AST_EXPR_LITERAL_STRING:
+      return true;
+
+    default:
+      break;
+  }
+
+  return false;
+}
+
+static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
+  assert(node->kind == AST_STMT_SWITCH);
+  // Default case will make it pass exhaustive check
+  if (node->data.switch_stmt.default_case) {
+    return;
+  }
+
+  // A lot of types are not feasible to check exhaustiveness for one reason or another.
+  // - strings
+  // - ints (larger than 8 bit)
+  // - floats
+  
+  if (switch_type->kind == TYPE_U8 || switch_type->kind == TYPE_I8) {
+    const int size = 256;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, size);
+
+    bool *covered = arena_alloc(&temp_arena, size);
+
+    for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
+      AstNode *_case = node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+
+      if (_case->kind == AST_EXPR_LITERAL_INT) {
+        long long value = _case->data.int_lit.value;
+
+        if (switch_type->kind == TYPE_U8) {
+          if (value < 0 || value >= size) {
+            continue;
+          }
+
+          // Check u8
+          unsigned char b = value;
+          if (covered[b]) {
+            checker_error(node->loc, "Switch case %d has already covered its condition in a "
+              "previous case.", i + 1);
+          }
+
+          covered[b] = true;
+        } else {
+          // Check i8
+          if (value < -128 || value >= 128) {
+            continue;
+          }
+
+          char b = value;
+          if (covered[b + 128]) {
+            checker_error(node->loc, "Switch case %d has already covered its condition in a "
+              "previous case.", i + 1);
+          }
+
+          // NOTE: Reusing array which is 0-255 so if b was below zero, like -128,
+          // we need to offset it
+          covered[b + 128] = true;
+        }
+      }
+    }
+
+    size_t missing_items = 0;
+    
+    // Check for uncovered values
+    for (int i = 0; i < size; i++) {
+      // This would not be ideal to log all cases so we just count it
+      if (!covered[i]) {
+        missing_items++;
+      }
+    }
+
+    if (missing_items > 0) {
+      checker_error(node->loc, "Switch is non-exhaustive and is missing %d values(s) of type %s. Use \"else\" "
+              "if you need a default branch.", missing_items, switch_type->canonical_name);
+    }
+
+    arena_free(&temp_arena);
+  }
+
+  // Check exhaustiveness of enums
+  if (switch_type->kind == TYPE_ENUM) {
+    size_t variant_count = switch_type->data.enum_data.variant_count;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, variant_count);
+
+    bool *covered = arena_alloc(&temp_arena, variant_count);
+    
+    // Mark covered values
+    for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
+      AstNode *_case = node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+
+      if (_case->kind == AST_EXPR_MEMBER) {
+        const char *variant_name = _case->data.member_expr.member;
+          
+        // Find which enum value this is
+        for (size_t j = 0; j < variant_count; j++) {
+          if (strcmp(variant_name, switch_type->data.enum_data.variant_names[j]) == 0) {
+            if (covered[j]) {
+              if (covered[j]) {
+                checker_error(node->loc, "Switch case %d has already covered the variant \"%s\" in a "
+                  "previous case.", i + 1, variant_name);
+              }
+            }
+
+            covered[j] = true;
+            break;
+          }
+        }
+      }
+    }
+
+    size_t missing_items = 0;
+    
+    // Check for uncovered values
+    for (size_t i = 0; i < variant_count; i++) {
+      if (!covered[i]) {
+        missing_items++;
+        checker_error(node->loc, "Switch not exhaustive: missing case for '%s.%s'", 
+              switch_type->canonical_name, switch_type->data.enum_data.variant_names[i]);
+      }
+    }
+
+    if (missing_items > 0) {
+      checker_error(node->loc, "Switch is non-exhaustive and is missing %d variant(s) of type %s. Use \"else\" "
+              "if you need a default branch.", missing_items, switch_type->canonical_name);
+    }
+
+    arena_free(&temp_arena);
+  }
 }
 
 Type *check_expression(AstNode *expr) {
@@ -2243,6 +2406,10 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
+    if (cond_type && cond_type->kind == TYPE_BOOL) {
+      checker_error(cond->loc, "switch cases cannot be used with boolean types. please use if statements instead.");
+    }
+    
     if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR
         && cond_type->kind != TYPE_ENUM) {
       checker_error(cond->loc, "switch condition must be numeric (int or float), char, enum or string");
@@ -2251,6 +2418,8 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
       check_statement(cases[i], expected_return_type);
     }
+
+    check_switch_is_exhaustive(stmt, cond->resolved_type);
 
     bool else_returns = default_case
                             ? check_statement(default_case, expected_return_type)
@@ -2264,11 +2433,26 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *switch_cond = stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
 
     Type *cond_type = check_expression(cond);
-    if (cond_type && switch_cond->resolved_type && cond_type->kind != switch_cond->resolved_type->kind) {
+    AstNode *casted_cond = maybe_insert_cast(
+      cond,
+      cond_type,
+      switch_cond->resolved_type
+    );
+
+    if (casted_cond && switch_cond->resolved_type && !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
       checker_error(
         cond->loc,
-        "switch case condition doesn't match switch condition type '%s'",
+        "switch case condition '%s' doesn't match switch condition type '%s'",
+        cond->resolved_type->canonical_name,
         switch_cond->resolved_type->canonical_name
+      );
+    }
+
+    // Check that condition is constant
+    if (!is_constant_known(cond)) {
+      checker_error(
+        cond->loc,
+        "switch case condition must be a constant"
       );
     }
 

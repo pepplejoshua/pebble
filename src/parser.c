@@ -566,7 +566,7 @@ AstNode *parse_switch_stmt(Parser *parser) {
     if (count >= capacity) {
       capacity *= 2;
       AstNode **new_cases = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-      memcpy(new_cases, cases, count);
+      memcpy(new_cases, cases, count * sizeof(AstNode *));
       cases = new_cases;
     }
 

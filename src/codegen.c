@@ -1030,17 +1030,16 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, "break;\n");
         }
 
-        if (stmt->data.switch_stmt.default_case) {
-          emit_string(cg, "default: {\n");
+        emit_string(cg, "default: {\n");
 
+        if (stmt->data.switch_stmt.default_case) {
           emit_indent(cg);
           emit_stmt(cg, stmt->data.switch_stmt.default_case);
           emit_dedent(cg);
-
-          emit_string(cg, "}\n");
-
-          emit_string(cg, "break;\n");
         }
+
+        emit_string(cg, "}\n");
+        emit_string(cg, "break;\n");
 
         emit_indent_spaces(cg);
         emit_string(cg, "}\n");
