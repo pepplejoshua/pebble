@@ -1315,6 +1315,29 @@ static bool is_nil_type(Type *type) {
   return type->kind == TYPE_POINTER && type->data.ptr.base->kind == TYPE_VOID;
 }
 
+static bool is_constant_known(AstNode *node) {
+  // Enum values are always constant
+  if (node->resolved_type->kind == TYPE_ENUM) {
+    return true;
+  }
+
+  switch (node->kind) {
+    // All simple literals are constant
+    case AST_EXPR_LITERAL_BOOL:
+    case AST_EXPR_LITERAL_CHAR:
+    case AST_EXPR_LITERAL_FLOAT:
+    case AST_EXPR_LITERAL_INT:
+    case AST_EXPR_LITERAL_NIL:
+    case AST_EXPR_LITERAL_STRING:
+      return true;
+
+    default:
+      break;
+  }
+
+  return false;
+}
+
 Type *check_expression(AstNode *expr) {
   if (!expr) {
     return NULL;
@@ -2269,6 +2292,14 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
         cond->loc,
         "switch case condition doesn't match switch condition type '%s'",
         switch_cond->resolved_type->canonical_name
+      );
+    }
+
+    // Check that condition is constant
+    if (!is_constant_known(cond)) {
+      checker_error(
+        cond->loc,
+        "switch case condition must be a constant"
       );
     }
 
