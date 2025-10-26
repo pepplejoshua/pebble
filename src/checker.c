@@ -1129,6 +1129,7 @@ static bool type_is_comparable(Type *type) {
   case TYPE_BOOL:
   case TYPE_STRING:
   case TYPE_POINTER:
+  case TYPE_ENUM:
     return true;
   default:
     return false;
