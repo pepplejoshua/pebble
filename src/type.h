@@ -146,5 +146,6 @@ char *type_name(Type *type);
 // Type checking utilities
 bool type_equals(Type *a, Type *b);
 bool type_is_numeric(Type *type);
+bool type_is_ord(Type *type);
 
 #endif

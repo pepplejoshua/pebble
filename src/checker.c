@@ -1493,8 +1493,8 @@ Type *check_expression(AstNode *expr) {
 
     // Comparison: <, >, <=, >=
     if (op == BINOP_LT || op == BINOP_GT || op == BINOP_LE || op == BINOP_GE) {
-      if (!type_is_numeric(left) || !type_is_numeric(right)) {
-        checker_error(expr->loc, "comparison requires numeric operands");
+      if (!type_is_ord(left) || !type_is_ord(right)) {
+        checker_error(expr->loc, "comparison requires numeric or enum operands");
         return NULL;
       }
       // Handle type promotion for consistency

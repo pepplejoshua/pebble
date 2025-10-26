@@ -317,6 +317,10 @@ bool type_is_numeric(Type *type) {
                   type->kind == TYPE_F32 || type->kind == TYPE_F64);
 }
 
+bool type_is_ord(Type *type) {
+  return type_is_numeric(type) || type->kind == TYPE_ENUM;
+}
+
 // Initialize the type system
 void type_system_init(void) {
   Location loc = {
