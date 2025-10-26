@@ -381,7 +381,7 @@ void emit_program(Codegen *cg) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
-        type->kind == TYPE_ENUM) {
+        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION) {
       TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
@@ -430,6 +430,16 @@ void emit_program(Codegen *cg) {
       }
       break;
     }
+    case TYPE_FUNCTION: {
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        collect_dependencies(type->data.func.param_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      collect_dependencies(type->data.func.return_type, type->canonical_name,
+          dep_graph, &node->depends_on, &node->dep_count, &dep_capacity);
+      break;
+    }
     default:
       break;
     }
@@ -459,7 +469,7 @@ void emit_program(Codegen *cg) {
     if (entry &&
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
-         entry->type->kind == TYPE_ENUM)) {
+         entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -535,8 +545,58 @@ void emit_program(Codegen *cg) {
     }
   }
 
+  // Emit anonymous functions declarations
+  HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
+    Type *func = sym->type;
+    // Emit prototype
+    emit_type_name(cg, func->data.func.return_type);
+    emit_string(cg, " ");
+    emit_string(cg, sym->name);
+    emit_string(cg, "(");
+    for (size_t i = 0; i < func->data.func.param_count; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+      emit_type_name(cg, func->data.func.param_types[i]);
+      emit_string(cg, " ");
+      emit_string(cg, sym->decl->data.func_expr.params[i].name);
+    }
+    emit_string(cg, ")");
+    emit_string(cg, ";\n");
+  }
+
   // Emit func definitions
   cg->current_section = "defs";
+  // Emit anonymous functions
+  HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
+    AstNode *func = sym->decl; // Func decl AST node
+    emit_type_name(cg, sym->type->data.func.return_type);
+    emit_string(cg, " ");
+    emit_string(cg, func->data.func_expr.symbol);
+    emit_string(cg, "(");
+    for (size_t i = 0; i < sym->type->data.func.param_count; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+      emit_type_name(cg, sym->type->data.func.param_types[i]);
+      emit_string(cg, " ");
+      emit_string(cg, func->data.func_expr.params[i].name);
+    }
+    emit_string(cg, ") ");
+    emit_string(cg, "{\n");
+    emit_indent(cg);
+
+    // Enter function scope
+    defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
+
+    // Emit body (minimal traversal)
+    emit_stmt(cg, func->data.func_expr.body);
+
+    // Exit function scope (though returns should have handled this already)
+    defer_scope_exit(cg);
+
+    emit_dedent(cg);
+    emit_string(cg, "}\n");
+  }
+  
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
       AstNode *func = sym->decl; // Func decl AST node
@@ -576,6 +636,7 @@ void emit_program(Codegen *cg) {
   HASH_CLEAR(hh, global_scope->symbols);
   HASH_CLEAR(hh, type_table);
   HASH_CLEAR(hh, canonical_type_table);
+  HASH_CLEAR(hh, anonymous_funcs->symbols);
 }
 
 void emit_type_name(Codegen *cg, Type *type) {
@@ -723,16 +784,42 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     char *old_section = cg->current_section;
     cg->current_section = "forward_types";
 
-    if (type->kind == TYPE_ENUM) {
-      emit_string(cg, "typedef enum ");
+    if (type->kind == TYPE_FUNCTION) {
+      emit_string(cg, "typedef ");
+
+      emit_type_name(cg, type->data.func.return_type);
+
+      emit_string(cg, " (*");
+      emit_string(cg, canonical);
+      emit_string(cg, ")(");
+
+      if (type->data.func.param_count == 0) {
+        emit_string(cg, "void");
+      } else {
+        for (size_t i = 0; i < type->data.func.param_count; i++) {
+          if (i > 0) {
+            emit_string(cg, ", ");
+          }
+          emit_type_name(cg, type->data.func.param_types[i]);
+        }
+      }
+
+      emit_string(cg, ")");
+
+      emit_string(cg, ";\n");
     } else {
-      emit_string(cg, "typedef struct ");
+      if (type->kind == TYPE_ENUM) {
+        emit_string(cg, "typedef enum ");
+      } else {
+        emit_string(cg, "typedef struct ");
+      }
+      
+      emit_string(cg, canonical);
+      emit_string(cg, " ");
+      emit_string(cg, canonical);
+      emit_string(cg, ";\n");
     }
-    
-    emit_string(cg, canonical);
-    emit_string(cg, " ");
-    emit_string(cg, canonical);
-    emit_string(cg, ";\n");
+
     cg->current_section = old_section;
 
     // Insert into declared_types hash
@@ -1778,6 +1865,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_expr(cg, expr->data.struct_literal.field_values[i]);
     }
     emit_string(cg, "}");
+    break;
+  }
+
+  case AST_EXPR_FUNCTION: {
+    emit_string(cg, expr->data.func_expr.symbol);
     break;
   }
 

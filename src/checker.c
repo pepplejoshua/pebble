@@ -21,6 +21,7 @@ typedef struct {
   bool in_type_resolution;
   bool in_loop;
   bool in_defer;
+  size_t anonymous_functions;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -30,7 +31,16 @@ void checker_init(void) {
   checker_state.error_count = 0;
   checker_state.in_type_resolution = false;
   checker_state.in_loop = false;
+  checker_state.anonymous_functions = 0;
   symbol_table_init(); // Create fresh global scope
+}
+
+static char *next_anonymous_function_name() {
+  char buffer[32];
+  memset(buffer, 0, 32);
+
+  sprintf(buffer, "__anonymous_function_%ld", checker_state.anonymous_functions++);
+  return str_dup(buffer);
 }
 
 bool checker_has_errors(void) { return checker_state.has_errors; }
@@ -62,6 +72,8 @@ void checker_warning(Location loc, const char *fmt, ...) {
 
 static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
                                   Type *target_type);
+
+static bool check_statement(AstNode *stmt, Type *expected_return_type);
 
 //=============================================================================
 // PASS 2: COLLECT GLOBALS
@@ -870,6 +882,93 @@ static void check_function_signatures(void) {
       }
     }
   }
+}
+
+bool check_anonymous_functions(void) {
+  Symbol *sym, *tmp;
+
+  // Check signatures of anonymous functions
+  HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
+    assert(sym->kind == SYMBOL_ANON_FUNCTION);
+
+    AstNode *decl = sym->decl;
+    FuncParam *params = decl->data.func_expr.params;
+    size_t param_count = decl->data.func_expr.param_count;
+    AstNode *return_type_expr = decl->data.func_expr.return_type;
+
+    // Resolve parameter types
+    Type **param_types = NULL;
+    if (param_count > 0) {
+      param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
+      for (size_t i = 0; i < param_count; i++) {
+        param_types[i] = resolve_type_expression(params[i].type);
+        if (!param_types[i]) {
+          // Error already reported, but keep going to check other params
+          param_types[i] = type_int; // Use placeholder to continue
+        }
+      }
+    }
+
+    // Resolve return type
+    Type *return_type = resolve_type_expression(return_type_expr);
+    if (!return_type) {
+      continue; // Error already reported
+    }
+
+    // Add parameters as symbols in the function scope
+    // Create function's local scope with global as parent
+    Scope *func_scope = scope_create(global_scope);
+    sym->data.func.local_scope = func_scope;
+    for (size_t i = 0; i < param_count; i++) {
+      if (!param_types[i]) {
+        continue; // Skip if type resolution failed
+      }
+
+      // Create parameter symbol
+      Symbol *param_sym =
+          symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
+      param_sym->type = param_types[i];
+      param_sym->data.var.is_global = false; // Parameters are local
+
+      // Check for duplicate parameter names
+      Symbol *existing = scope_lookup_local(func_scope, params[i].name);
+      if (existing) {
+        checker_error(decl->loc, "duplicate parameter name '%s'",
+                      params[i].name);
+        continue;
+      }
+
+      scope_add_symbol(func_scope, param_sym);
+    }
+  }
+
+  // Check anonymous functions
+  HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
+    assert(sym->kind == SYMBOL_ANON_FUNCTION);
+
+    // Get function details
+    AstNode *decl = sym->decl;
+    AstNode *body = decl->data.func_expr.body;
+    Type *func_type = sym->type;
+    Type *return_type = func_type->data.func.return_type;
+
+    // Push function's local scope (contains parameters)
+    scope_push(sym->data.func.local_scope);
+
+    // Check the function body
+    bool definitely_returns = check_statement(body, return_type);
+
+    // If non-void, ensure all paths return
+    if (return_type->kind != TYPE_VOID && !definitely_returns) {
+      checker_error(decl->loc,
+                    "anonymous function may not return a value on all paths");
+    }
+
+    // Pop back to global scope
+    scope_pop();
+  }
+
+  return !checker_has_errors();
 }
 
 // Main entry point for Pass 3
@@ -1857,28 +1956,15 @@ Type *check_expression(AstNode *expr) {
     AstNode **args = expr->data.call.args;
     size_t arg_count = expr->data.call.arg_count;
 
-    // Function expression must be an identifier (for now)
-    if (func_expr->kind != AST_EXPR_IDENTIFIER) {
-      checker_error(func_expr->loc, "function calls must use identifiers");
-      return NULL;
-    }
-
-    // Look up the function symbol
-    const char *func_name = func_expr->data.ident.name;
-    Symbol *func_sym = scope_lookup(current_scope, func_name);
-    if (!func_sym) {
-      checker_error(func_expr->loc, "undefined function '%s'", func_name);
-      return NULL;
-    }
+    Type *call_type = check_expression(func_expr);
 
     // Verify it's actually a function
-    if (func_sym->kind != SYMBOL_FUNCTION &&
-        func_sym->kind != SYMBOL_EXTERN_FUNCTION) {
-      checker_error(func_expr->loc, "'%s' is not a function", func_name);
+    if (call_type->kind != TYPE_FUNCTION) {
+      checker_error(func_expr->loc, "'%s' is not a function", type_name(call_type));
       return NULL;
     }
 
-    Type *func_type = func_sym->type;
+    Type *func_type = call_type;
     size_t param_count = func_type->data.func.param_count;
     Type **param_types = func_type->data.func.param_types;
     Type *return_type = func_type->data.func.return_type;
@@ -1886,7 +1972,7 @@ Type *check_expression(AstNode *expr) {
     // Check argument count
     if (arg_count != param_count) {
       checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
-                    func_name, param_count, arg_count);
+                    type_name(expr->resolved_type), param_count, arg_count);
       return NULL;
     }
 
@@ -1900,8 +1986,8 @@ Type *check_expression(AstNode *expr) {
       AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
       if (!converted) {
         checker_error(args[i]->loc,
-                      "argument %zu type mismatch in call to '%s'", i + 1,
-                      func_name);
+                      "argument %zu type could not be casted '%s', expected %s got %s", i + 1,
+                      type_name(expr->resolved_type), type_name(param_types[i]), type_name(arg_type));
       } else {
         args[i] = converted;
       }
@@ -2273,6 +2359,41 @@ Type *check_expression(AstNode *expr) {
     return array_type;
   }
 
+  case AST_EXPR_FUNCTION: {
+    // Resolve parameter types and return type
+    size_t param_count = expr->data.func_expr.param_count;
+    FuncParam *params = expr->data.func_expr.params;
+    AstNode *return_type_expr = expr->data.func_expr.return_type;
+
+    Type **param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
+
+    for (size_t i = 0; i < param_count; i++) {
+      param_types[i] = resolve_type_expression(params[i].type);
+      if (!param_types[i]) {
+        return NULL;
+      }
+    }
+
+    Type *return_type = resolve_type_expression(return_type_expr);
+    if (!return_type) {
+      return NULL;
+    }
+
+    // Add function as symbol
+    Type *fn_type = type_create_function(param_types, param_count, return_type,
+        !checker_state.in_type_resolution, loc);
+
+    char *fn_symbol_name = next_anonymous_function_name();
+    Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
+    symbol->type = fn_type;
+    scope_add_symbol(anonymous_funcs, symbol);
+
+    expr->data.func_expr.symbol = fn_symbol_name;
+    
+    // Will check function body with other functions
+    return fn_type;
+  }
+
   case AST_EXPR_IMPLICIT_CAST: {
     // The cast was already validated when inserted
     // Just return the target type
@@ -2308,7 +2429,8 @@ Type *check_expression(AstNode *expr) {
 
   default:
     checker_error(expr->loc,
-                  "unsupported expression type in expression type checking");
+                  "unsupported expression type in expression type checking %d",
+                  expr->kind);
     return NULL;
   }
 }
@@ -2319,7 +2441,7 @@ Type *check_expression(AstNode *expr) {
 
 // Statement checking
 // Returns false if statement does not return and true if it does
-static bool check_statement(AstNode *stmt, Type *expected_return_type) {
+bool check_statement(AstNode *stmt, Type *expected_return_type) {
   if (!stmt) {
     return false;
   }

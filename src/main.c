@@ -120,6 +120,11 @@ static bool compile_file(const char *filename) {
     return false;
   }
 
+  if (!check_anonymous_functions()) {
+    printf("Compilation failed during anonymous function body checking\n");
+    return false;
+  }
+
   // Pass 5: Verify entry point exists and has correct signature
   if (!verify_entry_point()) {
     printf("Compilation failed during entry point verification\n");

@@ -282,12 +282,9 @@ AstNode *parse_declaration(Parser *parser) {
   return NULL;
 }
 
-AstNode *parse_function_decl(Parser *parser) {
-  // fn name(params) return_type { body }
-  // fn name(params) return_type => expr
-
-  Token name =
-      parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
+static AstNode *parse_function(Parser *parser, Location location, char *name) {
+  // (params) return_type { body }
+  // (params) return_type => expr
 
   parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
 
@@ -382,13 +379,36 @@ AstNode *parse_function_decl(Parser *parser) {
     body = parse_block_stmt(parser);
   }
 
-  AstNode *func = alloc_node(AST_DECL_FUNCTION, name.location);
-  func->data.func_decl.name = str_dup(name.lexeme);
-  func->data.func_decl.params = params;
-  func->data.func_decl.param_count = param_count;
-  func->data.func_decl.return_type = return_type;
-  func->data.func_decl.body = body;
+  AstNode *func = NULL;
+
+  if (name) {
+    // Named function
+    func = alloc_node(AST_DECL_FUNCTION, location);
+    func->data.func_decl.name = str_dup(name);
+    func->data.func_decl.params = params;
+    func->data.func_decl.param_count = param_count;
+    func->data.func_decl.return_type = return_type;
+    func->data.func_decl.body = body;
+  } else {
+    // Anonymous function
+    func = alloc_node(AST_EXPR_FUNCTION, location);
+    func->data.func_expr.params = params;
+    func->data.func_expr.param_count = param_count;
+    func->data.func_expr.return_type = return_type;
+    func->data.func_expr.body = body;
+  }
+
   return func;
+}
+
+AstNode *parse_function_decl(Parser *parser) {
+  // fn name(params) return_type { body }
+  // fn name(params) return_type => expr
+
+  Token name =
+      parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
+
+  return parse_function(parser, name.location, name.lexeme);
 }
 
 AstNode *parse_extern(Parser *parser) {
@@ -1402,6 +1422,11 @@ AstNode *parse_primary(Parser *parser) {
     AstNode *sizeof_expr = alloc_node(AST_EXPR_SIZEOF, loc);
     sizeof_expr->data.sizeof_expr.type_expr = type_ast;
     return sizeof_expr;
+  }
+
+  // Function literal
+  if (parser_match(parser, TOKEN_FN)) {
+    return parse_function(parser, parser->previous.location, NULL);
   }
 
   parser_error(parser, "Expected expression");
