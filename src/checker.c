@@ -1011,19 +1011,23 @@ Type *resolve_type_expression(AstNode *type_expr) {
     } variant_entry;
     variant_entry *seen = NULL;
 
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
     for (size_t i = 0; i < variant_count; i++) {
       variant_entry *entry;
       HASH_FIND_STR(seen, variant_names[i], entry);
       if (entry) {
         checker_error(type_expr->loc, "Duplicate enum variant '%s'", variant_names[i]);
       } else {
-        entry = malloc(sizeof(variant_entry));
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
         entry->name = variant_names[i];
         HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
       }
     }
     
     HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
 
     return type_create_enum(variant_names, variant_count, loc);
   }
