@@ -866,7 +866,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     Type *type = stmt->data.print_stmt.expr->resolved_type;
 
     emit_indent_spaces(cg);
-    if (type->kind == TYPE_INT || type->kind == TYPE_I32) {
+    if (type->kind == TYPE_INT || type->kind == TYPE_I32 || type->kind == TYPE_ENUM) {
       emit_string(cg, "printf(\"%d\\n\", ");
     } else if (type->kind == TYPE_I8) {
       emit_string(cg, "printf(\"%hhd\\n\", ");
