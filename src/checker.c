@@ -1956,27 +1956,15 @@ Type *check_expression(AstNode *expr) {
     AstNode **args = expr->data.call.args;
     size_t arg_count = expr->data.call.arg_count;
 
-    // Function expression must be an identifier (for now)
-    if (func_expr->kind != AST_EXPR_IDENTIFIER) {
-      checker_error(func_expr->loc, "function calls must use identifiers");
-      return NULL;
-    }
-
-    // Look up the function symbol
-    const char *func_name = func_expr->data.ident.name;
-    Symbol *func_sym = scope_lookup(current_scope, func_name);
-    if (!func_sym) {
-      checker_error(func_expr->loc, "undefined function '%s'", func_name);
-      return NULL;
-    }
+    Type *call_type = check_expression(func_expr);
 
     // Verify it's actually a function
-    if (func_sym->type->kind != TYPE_FUNCTION) {
-      checker_error(func_expr->loc, "'%s' is not a function %d", func_name, func_sym->kind);
+    if (call_type->kind != TYPE_FUNCTION) {
+      checker_error(func_expr->loc, "'%s' is not a function", type_name(call_type));
       return NULL;
     }
 
-    Type *func_type = func_sym->type;
+    Type *func_type = call_type;
     size_t param_count = func_type->data.func.param_count;
     Type **param_types = func_type->data.func.param_types;
     Type *return_type = func_type->data.func.return_type;
@@ -1984,7 +1972,7 @@ Type *check_expression(AstNode *expr) {
     // Check argument count
     if (arg_count != param_count) {
       checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
-                    func_name, param_count, arg_count);
+                    type_name(expr->resolved_type), param_count, arg_count);
       return NULL;
     }
 
@@ -1999,7 +1987,7 @@ Type *check_expression(AstNode *expr) {
       if (!converted) {
         checker_error(args[i]->loc,
                       "argument %zu type could not be casted '%s', expected %s got %s", i + 1,
-                      func_name, type_name(param_types[i]), type_name(arg_type));
+                      type_name(expr->resolved_type), type_name(param_types[i]), type_name(arg_type));
       } else {
         args[i] = converted;
       }
@@ -2441,7 +2429,8 @@ Type *check_expression(AstNode *expr) {
 
   default:
     checker_error(expr->loc,
-                  "unsupported expression type in expression type checking");
+                  "unsupported expression type in expression type checking %d",
+                  expr->kind);
     return NULL;
   }
 }
