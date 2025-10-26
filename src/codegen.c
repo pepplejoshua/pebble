@@ -789,7 +789,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 
       emit_type_name(cg, type->data.func.return_type);
 
-      emit_string(cg, " (");
+      emit_string(cg, " (*");
       emit_string(cg, canonical);
       emit_string(cg, ")(");
 
