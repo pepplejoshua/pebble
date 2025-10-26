@@ -1245,6 +1245,11 @@ static bool is_valid_cast(Type *from, Type *to) {
     return true;
   }
 
+  // enum -> integral
+  if (from->kind == TYPE_ENUM && type_is_integral(to)) {
+    return true;
+  }
+
   // *char to str (which is const char *)
   if (from->kind == TYPE_POINTER && from->data.ptr.base == type_char &&
       to == type_string) {
