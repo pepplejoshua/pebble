@@ -2406,6 +2406,10 @@ static bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
+    if (cond_type && cond_type->kind == TYPE_BOOL) {
+      checker_error(cond->loc, "switch cases cannot be used with boolean types. please use if statements instead.");
+    }
+    
     if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR
         && cond_type->kind != TYPE_ENUM) {
       checker_error(cond->loc, "switch condition must be numeric (int or float), char, enum or string");
