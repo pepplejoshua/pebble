@@ -552,6 +552,7 @@ char *type_name(Type *type) {
   case TYPE_CHAR:
     return type->canonical_name;
   case TYPE_STRUCT:
+  case TYPE_ENUM:
     return type->declared_name;
   case TYPE_POINTER: {
     char *base_ty_name = type_name(type->data.ptr.base);
