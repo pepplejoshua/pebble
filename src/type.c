@@ -153,6 +153,27 @@ Type *type_create_struct(char **field_names, Type **field_types,
   return type;
 }
 
+// Create enum type
+Type *type_create_enum(char **variant_names, size_t variant_count,
+                        Location loc) {
+  Type *type = type_create(TYPE_ENUM, loc);
+
+  if (variant_count == 0) {
+    type->data.enum_data.variant_count = variant_count;
+    return type;
+  }
+
+  // Duplicate field names into arena
+  char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
+  for (size_t i = 0; i < variant_count; i++) {
+    names[i] = str_dup(variant_names[i]);
+  }
+
+  type->data.enum_data.variant_names = names;
+  type->data.enum_data.variant_count = variant_count;
+  return type;
+}
+
 // Create tuple type (no caching)
 // Create tuple type (with deduplication)
 Type *type_create_tuple(Type **element_types, size_t element_count,

@@ -70,6 +70,7 @@ typedef enum {
   AST_TYPE_STRUCT,   // struct { ... }
   AST_TYPE_FUNCTION, // fn(T1, T2) R
   AST_TYPE_TUPLE,    // (T1, T2, T3)
+  AST_TYPE_ENUM,     // enum { IDENT*, ... }
 } AstKind;
 
 // Binary/unary ops
@@ -292,6 +293,10 @@ struct AstNode {
       AstNode **field_types;
       size_t field_count;
     } type_struct;
+    struct {
+      char **variant_names;
+      size_t variant_count;
+    } type_enum;
     struct {
       AstNode **param_types;
       size_t param_count;
