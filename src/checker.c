@@ -1418,7 +1418,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc, "Switch didn't cover %d values(s) of type %s. Use \"else\" "
+      checker_error(node->loc, "Switch is non-exhaustive and is missing %d values(s) of type %s. Use \"else\" "
               "if you need a default branch.", missing_items, switch_type->canonical_name);
     }
 
@@ -1470,7 +1470,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc, "Switch didn't cover %d variant(s) of type %s. Use \"else\" "
+      checker_error(node->loc, "Switch is non-exhaustive and is missing %d variant(s) of type %s. Use \"else\" "
               "if you need a default branch.", missing_items, switch_type->canonical_name);
     }
 
