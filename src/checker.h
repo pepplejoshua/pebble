@@ -20,6 +20,8 @@ bool check_globals(void);
 // Returns true if successful, false if there were errors
 bool check_function_bodies(void);
 
+bool check_anonymous_functions(void);
+
 // Pass 5: Validate entry point
 bool verify_entry_point(void);
 

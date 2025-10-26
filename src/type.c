@@ -297,11 +297,30 @@ bool type_equals(Type *a, Type *b) {
     return true; // Same pointer
   if (!a || !b)
     return false;
+
+  // Function comparisons
+  if (a->kind == TYPE_FUNCTION && b->kind == TYPE_FUNCTION) {
+    if (a->data.func.param_count != b->data.func.param_count) {
+      return false;
+    }
+
+    // Compare parameter types
+    for (size_t i = 0; i < a->data.func.param_count; i++) {
+      if (!type_equals(a->data.func.param_types[i], b->data.func.param_types[i])) {
+        return false;
+      }
+    }
+
+    // Compare return types
+    return type_equals(a->data.func.return_type, b->data.func.return_type);
+  }
+
   if (!a->canonical_name || !b->canonical_name) {
     // Fallback to pointer equality if canonical names not set yet
     // (shouldn't happen after canonicalization, but safety check)
     return false;
   }
+
   // Compare canonical names
   return strcmp(a->canonical_name, b->canonical_name) == 0;
 }
@@ -430,6 +449,7 @@ char *compute_canonical_name(Type *type) {
   case TYPE_ISIZE:
   case TYPE_CHAR:
   case TYPE_OPAQUE:
+  case TYPE_ENUM:
     result = type->canonical_name;
     break;
 
@@ -536,6 +556,8 @@ static size_t num_digits(uint64_t n) {
 }
 
 char *type_name(Type *type) {
+  assert(type && "Type is null");
+
   switch (type->kind) {
   case TYPE_INT:
   case TYPE_BOOL:

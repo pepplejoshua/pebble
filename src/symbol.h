@@ -14,6 +14,7 @@ typedef struct Type Type;
 typedef enum {
   SYMBOL_FUNCTION,
   SYMBOL_EXTERN_FUNCTION,
+  SYMBOL_ANON_FUNCTION,
   SYMBOL_VARIABLE,
   SYMBOL_CONSTANT,
   SYMBOL_TYPE
@@ -77,6 +78,7 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl);
 
 // Global scope management
 extern Scope *global_scope;
+extern Scope *anonymous_funcs;
 extern Scope *current_scope;
 
 void symbol_table_init(void);

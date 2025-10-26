@@ -9,6 +9,7 @@ extern Arena long_lived;
 
 // Global variables
 Scope *global_scope = NULL;
+Scope *anonymous_funcs = NULL;
 Scope *current_scope = NULL;
 
 // Create a new scope
@@ -109,6 +110,7 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl) {
 // Initialize the symbol table system
 void symbol_table_init(void) {
   global_scope = scope_create(NULL); // No parent
+  anonymous_funcs = scope_create(NULL);
   current_scope = global_scope;
 }
 
