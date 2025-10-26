@@ -973,11 +973,33 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     Type **field_types = arena_alloc(&long_lived, sizeof(Type *) * field_count);
 
-    // FIXME: check for duplicate member names
+    // Check duplicate field names
+    typedef struct {
+      char *name;
+      UT_hash_handle hh;
+    } variant_entry;
+    variant_entry *seen = NULL;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
 
     for (size_t i = 0; i < field_count; i++) {
+      // Check field name collisions
+      variant_entry *entry;
+      HASH_FIND_STR(seen, field_names[i], entry);
+      if (entry) {
+        checker_error(type_expr->loc, "Duplicate struct member '%s'", field_names[i]);
+      } else {
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
+        entry->name = field_names[i];
+        HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
+      }
+
+      // Check types
       field_types[i] = resolve_type_expression(field_type_exprs[i]);
       if (!field_types[i]) {
+        HASH_CLEAR(hh, seen);
+        arena_free(&temp_arena);
         return NULL;
       }
 
@@ -986,9 +1008,15 @@ Type *resolve_type_expression(AstNode *type_expr) {
                       "Cannot have field of opaque type '%s' in struct (use "
                       "pointer instead)",
                       field_types[i]->canonical_name);
+
+        HASH_CLEAR(hh, seen);
+        arena_free(&temp_arena);
         return NULL;
       }
     }
+
+    HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
 
     return type_create_struct(field_names, field_types, field_count, loc);
   }

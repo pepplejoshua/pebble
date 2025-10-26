@@ -559,13 +559,13 @@ AstNode *parse_switch_stmt(Parser *parser) {
   parser_consume(parser, TOKEN_LBRACE, "Expect '{' after switch condition");
 
   size_t count = 0, capacity = 2;
-  AstNode **cases = malloc(capacity * sizeof(AstNode *));
+  AstNode **cases = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
 
   // Parse all cases
   while (parser_match(parser, TOKEN_CASE)) {
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_cases = malloc(capacity * sizeof(AstNode *));
+      AstNode **new_cases = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
       memcpy(new_cases, cases, count);
       cases = new_cases;
     }
