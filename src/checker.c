@@ -829,11 +829,23 @@ static void check_function_signatures(void) {
     size_t param_count = decl->data.func_decl.param_count;
     AstNode *return_type_expr = decl->data.func_decl.return_type;
 
+    int is_variadic = -1;
+
     // Resolve parameter types
     Type **param_types = NULL;
     if (param_count > 0) {
       param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
       for (size_t i = 0; i < param_count; i++) {
+        if (is_variadic != -1) {
+          checker_error(decl->loc,
+            "Parameter '%s' is marked as variadic but parameter '%s' is already variadic",
+            params[i].name, params[is_variadic].name);
+        }
+
+        if (params[i].is_variadic) {
+          is_variadic = (int)i;
+        }
+
         param_types[i] = resolve_type_expression(params[i].type);
         if (!param_types[i]) {
           // Error already reported, but keep going to check other params
@@ -851,7 +863,8 @@ static void check_function_signatures(void) {
     // Create function type
     sym->type =
         type_create_function(param_types, param_count, return_type,
-                             !checker_state.in_type_resolution, sym->decl->loc);
+                             is_variadic != -1, !checker_state.in_type_resolution,
+                             sym->decl->loc);
 
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
@@ -1179,7 +1192,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
 
     return type_create_function(param_types, param_count, return_type,
-                                !checker_state.in_type_resolution, loc);
+                                false, !checker_state.in_type_resolution,
+                                loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -1992,30 +2006,78 @@ Type *check_expression(AstNode *expr) {
     size_t param_count = func_type->data.func.param_count;
     Type **param_types = func_type->data.func.param_types;
     Type *return_type = func_type->data.func.return_type;
+    bool is_variadic = func_type->data.func.is_variadic;
 
-    // Check argument count
-    if (arg_count != param_count) {
-      checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
-                    type_name(expr->resolved_type), param_count, arg_count);
-      return NULL;
-    }
+    // Handle variadic functions
+    if (is_variadic) {
+      size_t required_params = param_count - 1;
 
-    // Check each argument type
-    for (size_t i = 0; i < arg_count; i++) {
-      Type *arg_type = check_expression(args[i]);
-      if (!arg_type) {
-        continue; // Error already reported
+      // Must have at least required_params arguments
+      if (arg_count < required_params) {
+        checker_error(expr->loc,
+                      "variadic function expects at least %zu arguments, got %zu",
+                      required_params, arg_count);
+        return NULL;
       }
 
-      AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
-      if (!converted) {
-        checker_error(
-            args[i]->loc,
-            "argument %zu type could not be casted '%s', expected %s got %s",
-            i + 1, type_name(expr->resolved_type), type_name(param_types[i]),
-            type_name(arg_type));
-      } else {
-        args[i] = converted;
+      // Check fixed parameters
+      for (size_t i = 0; i < required_params; i++) {
+        Type *arg_type = check_expression(args[i]);
+        if (!arg_type) continue;
+
+        AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
+        if (!converted) {
+          checker_error(args[i]->loc,
+                        "argument %zu type mismatch: expected %s, got %s",
+                        i + 1, type_name(param_types[i]), type_name(arg_type));
+        } else {
+          args[i] = converted;
+        }
+      }
+
+      // Check variadic arguments match slice element type
+      Type *variadic_slice_type = param_types[required_params];
+      Type *elem_type = variadic_slice_type->data.slice.element;
+
+      for (size_t i = required_params; i < arg_count; i++) {
+        Type *arg_type = check_expression(args[i]);
+        if (!arg_type) continue;
+
+        AstNode *converted = maybe_insert_cast(args[i], arg_type, elem_type);
+        if (!converted) {
+          checker_error(args[i]->loc,
+                        "variadic argument %zu type mismatch: expected %s, got %s",
+                        i - required_params + 1, type_name(elem_type), type_name(arg_type));
+        } else {
+          args[i] = converted;
+        }
+      }
+
+    } else {
+      // Non-variadic function
+      
+      // Check argument count
+      if (arg_count != param_count) {
+        checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
+                      type_name(expr->resolved_type), param_count, arg_count);
+        return NULL;
+      }
+
+      // Check each argument type
+      for (size_t i = 0; i < arg_count; i++) {
+        Type *arg_type = check_expression(args[i]);
+        if (!arg_type) {
+          continue; // Error already reported
+        }
+
+        AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
+        if (!converted) {
+          checker_error(args[i]->loc,
+                        "argument %zu type mismatch: expected %s, got %s",
+                        i + 1, type_name(param_types[i]), type_name(arg_type));
+        } else {
+          args[i] = converted;
+        }
       }
     }
 
@@ -2393,8 +2455,18 @@ Type *check_expression(AstNode *expr) {
     AstNode *return_type_expr = expr->data.func_expr.return_type;
 
     Type **param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
+    int is_variadic = -1;
 
     for (size_t i = 0; i < param_count; i++) {
+      if (is_variadic != -1) {
+        checker_error(expr->loc,
+          "Parameter '%s' is marked as variadic but parameter '%s' is already variadic",
+          params[i].name, params[is_variadic].name);
+      }
+
+      if (params[i].is_variadic) {
+        is_variadic = (int)i;
+      }
       param_types[i] = resolve_type_expression(params[i].type);
       if (!param_types[i]) {
         return NULL;
@@ -2409,7 +2481,8 @@ Type *check_expression(AstNode *expr) {
     // Add function as symbol
     Type *fn_type =
         type_create_function(param_types, param_count, return_type,
-                             !checker_state.in_type_resolution, loc);
+                             is_variadic != -1, !checker_state.in_type_resolution,
+                             loc);
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
@@ -2417,6 +2490,11 @@ Type *check_expression(AstNode *expr) {
     scope_add_symbol(anonymous_funcs, symbol);
 
     expr->data.func_expr.symbol = fn_symbol_name;
+
+    if (is_variadic != -1) {
+      checker_error(expr->loc,
+        "variadic parameters in anonymous functions aren't currently supported");
+    }
 
     // Will check function body with other functions
     return fn_type;

@@ -310,6 +310,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
         params = new_params;
       }
 
+      bool is_variadic = parser_match(parser, TOKEN_ELLIPSIS);
+
       Token param_name =
           parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
 
@@ -346,6 +348,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
       params[param_count].name =
           param_name.lexeme; // Already allocated by lexer
       params[param_count].type = param_type;
+      params[param_count].is_variadic = is_variadic;
       param_count++;
 
     } while (parser_match(parser, TOKEN_COMMA));
@@ -1173,22 +1176,33 @@ AstNode *parse_call(Parser *parser, AstNode *func) {
   // Parse arguments
   AstNode **args = NULL;
   size_t arg_count = 0;
+  size_t arg_capacity = 4;
+
+  AstNode *call = alloc_node(AST_EXPR_CALL, loc);
 
   if (!parser_check(parser, TOKEN_RPAREN)) {
-    args = arena_alloc(&long_lived, 16 * sizeof(AstNode *)); // Max 16 args
+    // FIXME
+    args = arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *)); // Max 16 args
 
     do {
-      if (arg_count >= 16) {
-        parser_error(parser, "Too many arguments (max 16)");
+      if (arg_count >= 64) {
+        parser_error(parser, "Too many arguments (max 64)");
         break;
       }
+
+      if (arg_count >= arg_capacity) {
+        arg_capacity *= 2;
+        AstNode **new_args = arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *));
+        memcpy(new_args, args, arg_count * sizeof(AstNode *));
+        args = new_args;
+      }
+      
       args[arg_count++] = parse_expression(parser);
     } while (parser_match(parser, TOKEN_COMMA));
   }
 
   parser_consume(parser, TOKEN_RPAREN, "Expected ')' after arguments");
 
-  AstNode *call = alloc_node(AST_EXPR_CALL, loc);
   call->data.call.func = func;
   call->data.call.args = args;
   call->data.call.arg_count = arg_count;

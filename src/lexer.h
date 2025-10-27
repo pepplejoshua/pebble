@@ -86,6 +86,7 @@ typedef enum {
   TOKEN_DOT,       // .
   TOKEN_DOTDOT,    // ..
   TOKEN_DOTDOTEQ,  // ..=
+  TOKEN_ELLIPSIS,  // ...
   TOKEN_LPAREN,    // (
   TOKEN_RPAREN,    // )
   TOKEN_LBRACE,    // {

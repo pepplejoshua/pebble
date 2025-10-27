@@ -100,6 +100,7 @@ typedef enum { UNOP_NEG, UNOP_NOT, UNOP_ADDR, UNOP_DEREF, UNOP_BIT_NOT } UnaryOp
 typedef struct {
   char *name;
   AstNode *type;
+  bool is_variadic;
 } FuncParam;
 
 // The AST node struct
