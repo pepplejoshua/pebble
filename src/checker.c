@@ -39,7 +39,8 @@ static char *next_anonymous_function_name() {
   char buffer[32];
   memset(buffer, 0, 32);
 
-  sprintf(buffer, "__anonymous_function_%ld", checker_state.anonymous_functions++);
+  sprintf(buffer, "__anonymous_function_%ld",
+          checker_state.anonymous_functions++);
   return str_dup(buffer);
 }
 
@@ -458,8 +459,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
       for (size_t i = 0; i < type->data.enum_data.variant_count; i++) {
         char *variant = type->data.enum_data.variant_names[i];
 
-        size_t needed =
-            offset + 1 + strlen(variant) + 1;
+        size_t needed = offset + 1 + strlen(variant) + 1;
         if (needed > capacity) {
           capacity = needed * 2;
           char *new_buf = arena_alloc(&long_lived, capacity);
@@ -467,7 +467,8 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
           canonical_name = new_buf;
         }
 
-        offset += snprintf(canonical_name + offset, capacity - offset, "_%s", variant);
+        offset += snprintf(canonical_name + offset, capacity - offset, "_%s",
+                           variant);
       }
     }
     break;
@@ -602,8 +603,7 @@ static void check_type_declarations(void) {
         }
 
         if (placeholder->kind == TYPE_STRUCT ||
-            placeholder->kind == TYPE_TUPLE ||
-            placeholder->kind == TYPE_ENUM) {
+            placeholder->kind == TYPE_TUPLE || placeholder->kind == TYPE_ENUM) {
           placeholder->declared_name = str_dup(sym->name);
         }
 
@@ -646,11 +646,11 @@ static bool type_is_int(Type *type) {
 
 static bool type_is_integral(Type *type) {
   return type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
-          type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
-          type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
-          type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
-          type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
-          type->kind == TYPE_INT;
+         type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
+         type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
+         type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
+         type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
+         type->kind == TYPE_INT;
 }
 
 static bool type_is_floating(Type *type) {
@@ -785,8 +785,7 @@ static void check_global_variables(void) {
     // Verify types match if both are present
     if (explicit_type && inferred_type) {
       // Allow casting ints to pointers for global vars
-      if (explicit_type->kind == TYPE_POINTER &&
-          type_is_int(inferred_type)) {
+      if (explicit_type->kind == TYPE_POINTER && type_is_int(inferred_type)) {
         sym->type = explicit_type;
         sym->decl->resolved_type = explicit_type;
 
@@ -925,8 +924,7 @@ bool check_anonymous_functions(void) {
       }
 
       // Create parameter symbol
-      Symbol *param_sym =
-          symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
+      Symbol *param_sym = symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
       param_sym->type = param_types[i];
       param_sym->data.var.is_global = false; // Parameters are local
 
@@ -1087,7 +1085,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, field_names[i], entry);
       if (entry) {
-        checker_error(type_expr->loc, "Duplicate struct member '%s'", field_names[i]);
+        checker_error(type_expr->loc, "Duplicate struct member '%s'",
+                      field_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
         entry->name = field_names[i];
@@ -1123,8 +1122,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_ENUM: {
     size_t variant_count = type_expr->data.type_enum.variant_count;
     if (variant_count == 0) {
-      checker_warning(type_expr->loc,
-                      "Enum was declared without any members");
+      checker_warning(type_expr->loc, "Enum was declared without any members");
       return type_create_enum(NULL, variant_count, loc);
     }
 
@@ -1145,14 +1143,15 @@ Type *resolve_type_expression(AstNode *type_expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, variant_names[i], entry);
       if (entry) {
-        checker_error(type_expr->loc, "Duplicate enum variant '%s'", variant_names[i]);
+        checker_error(type_expr->loc, "Duplicate enum variant '%s'",
+                      variant_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
         entry->name = variant_names[i];
         HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
       }
     }
-    
+
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
@@ -1256,7 +1255,8 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   }
 
   // Cast integer literals
-  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(expr_type) && type_is_integral(target_type)) {
+  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(expr_type) &&
+      type_is_integral(target_type)) {
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
     cast->loc = expr->loc;
@@ -1299,8 +1299,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       return cast;
     }
   } else if (type_is_integral(expr_type) &&
-             (target_type->kind == TYPE_F32 ||
-              target_type->kind == TYPE_F64)) {
+             (target_type->kind == TYPE_F32 || target_type->kind == TYPE_F64)) {
     // Promote int to float
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
@@ -1318,53 +1317,54 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     return cast;
   } else if (expr_type->kind == TYPE_TUPLE && target_type->kind == TYPE_TUPLE) {
     // Check if tuples have the same number of elements
-    if (expr_type->data.tuple.element_count != target_type->data.tuple.element_count) {
+    if (expr_type->data.tuple.element_count !=
+        target_type->data.tuple.element_count) {
       return NULL; // Different tuple sizes, no conversion possible
     }
-    
+
     // Check if all elements match or can be converted
     bool needs_conversion = false;
     for (size_t i = 0; i < expr_type->data.tuple.element_count; i++) {
-      if (!type_equals(expr_type->data.tuple.element_types[i], 
+      if (!type_equals(expr_type->data.tuple.element_types[i],
                        target_type->data.tuple.element_types[i])) {
         needs_conversion = true;
         break;
       }
     }
-    
+
     // If all elements match exactly, no cast needed
     if (!needs_conversion) {
       return expr;
     }
-    
+
     // Create a new tuple expression with recursively casted elements
     AstNode *new_tuple = arena_alloc(&long_lived, sizeof(AstNode));
     new_tuple->kind = AST_EXPR_TUPLE;
     new_tuple->loc = expr->loc;
-    new_tuple->data.tuple_expr.element_count = target_type->data.tuple.element_count;
-    new_tuple->data.tuple_expr.elements = arena_alloc(&long_lived, 
-      sizeof(AstNode *) * target_type->data.tuple.element_count);
-    
+    new_tuple->data.tuple_expr.element_count =
+        target_type->data.tuple.element_count;
+    new_tuple->data.tuple_expr.elements = arena_alloc(
+        &long_lived, sizeof(AstNode *) * target_type->data.tuple.element_count);
+
     // Recursively cast each element
     for (size_t i = 0; i < expr_type->data.tuple.element_count; i++) {
-      AstNode *casted_elem = maybe_insert_cast(
-        expr->data.tuple_expr.elements[i],
-        expr_type->data.tuple.element_types[i],
-        target_type->data.tuple.element_types[i]
-      );
-      
+      AstNode *casted_elem =
+          maybe_insert_cast(expr->data.tuple_expr.elements[i],
+                            expr_type->data.tuple.element_types[i],
+                            target_type->data.tuple.element_types[i]);
+
       if (!casted_elem) {
         return NULL; // Element conversion failed
       }
-      
+
       new_tuple->data.tuple_expr.elements[i] = casted_elem;
     }
-    
+
     new_tuple->resolved_type = target_type;
-    
+
     return new_tuple;
-  } else if ((expr_type->kind == TYPE_F32 && target_type->kind == TYPE_F64)
-    || (expr_type->kind == TYPE_F64 && target_type->kind == TYPE_F32)) {
+  } else if ((expr_type->kind == TYPE_F32 && target_type->kind == TYPE_F64) ||
+             (expr_type->kind == TYPE_F64 && target_type->kind == TYPE_F32)) {
     // float -> double
     // double -> float
     return expr;
@@ -1432,17 +1432,17 @@ static bool is_constant_known(AstNode *node) {
   }
 
   switch (node->kind) {
-    // All simple literals are constant
-    case AST_EXPR_LITERAL_BOOL:
-    case AST_EXPR_LITERAL_CHAR:
-    case AST_EXPR_LITERAL_FLOAT:
-    case AST_EXPR_LITERAL_INT:
-    case AST_EXPR_LITERAL_NIL:
-    case AST_EXPR_LITERAL_STRING:
-      return true;
+  // All simple literals are constant
+  case AST_EXPR_LITERAL_BOOL:
+  case AST_EXPR_LITERAL_CHAR:
+  case AST_EXPR_LITERAL_FLOAT:
+  case AST_EXPR_LITERAL_INT:
+  case AST_EXPR_LITERAL_NIL:
+  case AST_EXPR_LITERAL_STRING:
+    return true;
 
-    default:
-      break;
+  default:
+    break;
   }
 
   return false;
@@ -1455,11 +1455,12 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     return;
   }
 
-  // A lot of types are not feasible to check exhaustiveness for one reason or another.
+  // A lot of types are not feasible to check exhaustiveness for one reason or
+  // another.
   // - strings
   // - ints (larger than 8 bit)
   // - floats
-  
+
   if (switch_type->kind == TYPE_U8 || switch_type->kind == TYPE_I8) {
     const int size = 256;
 
@@ -1469,7 +1470,8 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     bool *covered = arena_alloc(&temp_arena, size);
 
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *_case = node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+      AstNode *_case =
+          node->data.switch_stmt.cases[i]->data.case_stmt.condition;
 
       if (_case->kind == AST_EXPR_LITERAL_INT) {
         long long value = _case->data.int_lit.value;
@@ -1482,8 +1484,11 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
           // Check u8
           unsigned char b = value;
           if (covered[b]) {
-            checker_error(node->loc, "Switch case %d has already covered its condition in a "
-              "previous case.", i + 1);
+            checker_error(
+                node->loc,
+                "Switch case %d has already covered its condition in a "
+                "previous case.",
+                i + 1);
           }
 
           covered[b] = true;
@@ -1495,19 +1500,22 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
           char b = value;
           if (covered[b + 128]) {
-            checker_error(node->loc, "Switch case %d has already covered its condition in a "
-              "previous case.", i + 1);
+            checker_error(
+                node->loc,
+                "Switch case %d has already covered its condition in a "
+                "previous case.",
+                i + 1);
           }
 
-          // NOTE: Reusing array which is 0-255 so if b was below zero, like -128,
-          // we need to offset it
+          // NOTE: Reusing array which is 0-255 so if b was below zero, like
+          // -128, we need to offset it
           covered[b + 128] = true;
         }
       }
     }
 
     size_t missing_items = 0;
-    
+
     // Check for uncovered values
     for (int i = 0; i < size; i++) {
       // This would not be ideal to log all cases so we just count it
@@ -1517,8 +1525,11 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc, "Switch is non-exhaustive and is missing %d values(s) of type %s. Use \"else\" "
-              "if you need a default branch.", missing_items, switch_type->canonical_name);
+      checker_error(node->loc,
+                    "Switch is non-exhaustive and is missing %d values(s) of "
+                    "type %s. Use \"else\" "
+                    "if you need a default branch.",
+                    missing_items, switch_type->canonical_name);
     }
 
     arena_free(&temp_arena);
@@ -1532,21 +1543,26 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     arena_init(&temp_arena, variant_count);
 
     bool *covered = arena_alloc(&temp_arena, variant_count);
-    
+
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *_case = node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+      AstNode *_case =
+          node->data.switch_stmt.cases[i]->data.case_stmt.condition;
 
       if (_case->kind == AST_EXPR_MEMBER) {
         const char *variant_name = _case->data.member_expr.member;
-          
+
         // Find which enum value this is
         for (size_t j = 0; j < variant_count; j++) {
-          if (strcmp(variant_name, switch_type->data.enum_data.variant_names[j]) == 0) {
+          if (strcmp(variant_name,
+                     switch_type->data.enum_data.variant_names[j]) == 0) {
             if (covered[j]) {
               if (covered[j]) {
-                checker_error(node->loc, "Switch case %d has already covered the variant \"%s\" in a "
-                  "previous case.", i + 1, variant_name);
+                checker_error(node->loc,
+                              "Switch case %d has already covered the variant "
+                              "\"%s\" in a "
+                              "previous case.",
+                              i + 1, variant_name);
               }
             }
 
@@ -1558,19 +1574,24 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     size_t missing_items = 0;
-    
+
     // Check for uncovered values
     for (size_t i = 0; i < variant_count; i++) {
       if (!covered[i]) {
         missing_items++;
-        checker_error(node->loc, "Switch not exhaustive: missing case for '%s.%s'", 
-              switch_type->canonical_name, switch_type->data.enum_data.variant_names[i]);
+        checker_error(node->loc,
+                      "Switch not exhaustive: missing case for '%s.%s'",
+                      switch_type->canonical_name,
+                      switch_type->data.enum_data.variant_names[i]);
       }
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc, "Switch is non-exhaustive and is missing %d variant(s) of type %s. Use \"else\" "
-              "if you need a default branch.", missing_items, switch_type->canonical_name);
+      checker_error(node->loc,
+                    "Switch is non-exhaustive and is missing %d variant(s) of "
+                    "type %s. Use \"else\" "
+                    "if you need a default branch.",
+                    missing_items, switch_type->canonical_name);
     }
 
     arena_free(&temp_arena);
@@ -1662,7 +1683,8 @@ Type *check_expression(AstNode *expr) {
 
     // Only variables, constants and functions can be used as values
     if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CONSTANT &&
-        sym->kind != SYMBOL_FUNCTION && (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
+        sym->kind != SYMBOL_FUNCTION &&
+        (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
       checker_error(expr->loc, "'%s' cannot be used as a value", name);
       return NULL;
     }
@@ -1756,7 +1778,8 @@ Type *check_expression(AstNode *expr) {
     // Comparison: <, >, <=, >=
     if (op == BINOP_LT || op == BINOP_GT || op == BINOP_LE || op == BINOP_GE) {
       if (!type_is_ord(left) || !type_is_ord(right)) {
-        checker_error(expr->loc, "comparison requires numeric or enum operands");
+        checker_error(expr->loc,
+                      "comparison requires numeric or enum operands");
         return NULL;
       }
       // Handle type promotion for consistency
@@ -1960,7 +1983,8 @@ Type *check_expression(AstNode *expr) {
 
     // Verify it's actually a function
     if (call_type->kind != TYPE_FUNCTION) {
-      checker_error(func_expr->loc, "'%s' is not a function", type_name(call_type));
+      checker_error(func_expr->loc, "'%s' is not a function",
+                    type_name(call_type));
       return NULL;
     }
 
@@ -1985,9 +2009,11 @@ Type *check_expression(AstNode *expr) {
 
       AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
       if (!converted) {
-        checker_error(args[i]->loc,
-                      "argument %zu type could not be casted '%s', expected %s got %s", i + 1,
-                      type_name(expr->resolved_type), type_name(param_types[i]), type_name(arg_type));
+        checker_error(
+            args[i]->loc,
+            "argument %zu type could not be casted '%s', expected %s got %s",
+            i + 1, type_name(expr->resolved_type), type_name(param_types[i]),
+            type_name(arg_type));
       } else {
         args[i] = converted;
       }
@@ -2202,8 +2228,9 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "enum has no variant named '%s'", field_name);
       return NULL;
     } else {
-      checker_error(object_expr->loc, "member access requires struct, enum, array, "
-                                      "slice, or pointer to one of these");
+      checker_error(object_expr->loc,
+                    "member access requires struct, enum, array, "
+                    "slice, or pointer to one of these");
       return NULL;
     }
   }
@@ -2380,8 +2407,9 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Add function as symbol
-    Type *fn_type = type_create_function(param_types, param_count, return_type,
-        !checker_state.in_type_resolution, loc);
+    Type *fn_type =
+        type_create_function(param_types, param_count, return_type,
+                             !checker_state.in_type_resolution, loc);
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
@@ -2389,7 +2417,7 @@ Type *check_expression(AstNode *expr) {
     scope_add_symbol(anonymous_funcs, symbol);
 
     expr->data.func_expr.symbol = fn_symbol_name;
-    
+
     // Will check function body with other functions
     return fn_type;
   }
@@ -2529,12 +2557,15 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
     if (cond_type && cond_type->kind == TYPE_BOOL) {
-      checker_error(cond->loc, "switch cases cannot be used with boolean types. please use if statements instead.");
+      checker_error(cond->loc, "switch cases cannot be used with boolean "
+                               "types. please use if statements instead.");
     }
-    
-    if (cond_type && !type_is_numeric(cond_type) && cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR
-        && cond_type->kind != TYPE_ENUM) {
-      checker_error(cond->loc, "switch condition must be numeric (int or float), char, enum or string");
+
+    if (cond_type && !type_is_numeric(cond_type) &&
+        cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
+        cond_type->kind != TYPE_ENUM) {
+      checker_error(cond->loc, "switch condition must be numeric (int or "
+                               "float), char, enum or string");
     }
 
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
@@ -2543,39 +2574,34 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     check_switch_is_exhaustive(stmt, cond->resolved_type);
 
-    bool else_returns = default_case
-                            ? check_statement(default_case, expected_return_type)
-                            : false;
+    bool else_returns =
+        default_case ? check_statement(default_case, expected_return_type)
+                     : false;
 
     return else_returns;
   }
 
   case AST_STMT_CASE: {
     AstNode *cond = stmt->data.case_stmt.condition;
-    AstNode *switch_cond = stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
+    AstNode *switch_cond =
+        stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
 
     Type *cond_type = check_expression(cond);
-    AstNode *casted_cond = maybe_insert_cast(
-      cond,
-      cond_type,
-      switch_cond->resolved_type
-    );
+    AstNode *casted_cond =
+        maybe_insert_cast(cond, cond_type, switch_cond->resolved_type);
 
-    if (casted_cond && switch_cond->resolved_type && !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
+    if (casted_cond && switch_cond->resolved_type &&
+        !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
       checker_error(
-        cond->loc,
-        "switch case condition '%s' doesn't match switch condition type '%s'",
-        cond->resolved_type->canonical_name,
-        switch_cond->resolved_type->canonical_name
-      );
+          cond->loc,
+          "switch case condition '%s' doesn't match switch condition type '%s'",
+          cond->resolved_type->canonical_name,
+          switch_cond->resolved_type->canonical_name);
     }
 
     // Check that condition is constant
     if (!is_constant_known(cond)) {
-      checker_error(
-        cond->loc,
-        "switch case condition must be a constant"
-      );
+      checker_error(cond->loc, "switch case condition must be a constant");
     }
 
     return check_statement(stmt->data.case_stmt.body, expected_return_type);
@@ -2615,6 +2641,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *start = stmt->data.loop_stmt.start;
     AstNode *end = stmt->data.loop_stmt.end;
     AstNode *body = stmt->data.loop_stmt.body;
+    AstNode *iterator_name = stmt->data.loop_stmt.iterator_name;
 
     // Check start is an integer literal (not a variable)
     if (start->kind != AST_EXPR_LITERAL_INT) {
@@ -2631,15 +2658,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     Scope *loop_scope = scope_create(current_scope);
     scope_push(loop_scope);
 
-    // Register 'iter' as a const variable of type int
-    Symbol *iter_sym = scope_lookup_local(current_scope, "iter");
-    if (iter_sym) {
-      checker_error(stmt->loc, "'iter' is already defined in this scope");
-    } else {
-      Symbol *new_sym = symbol_create("iter", SYMBOL_CONSTANT, NULL);
-      new_sym->type = type_int;
-      scope_add_symbol(current_scope, new_sym);
-    }
+    // Register loop iterator name or 'iter' as a const variable of type int
+    Symbol *new_sym =
+        symbol_create(iterator_name ? iterator_name->data.ident.name : "iter",
+                      SYMBOL_CONSTANT, NULL);
+    new_sym->type = type_int;
+    scope_add_symbol(current_scope, new_sym);
 
     bool old_in_loop = checker_state.in_loop;
     checker_state.in_loop = true;
