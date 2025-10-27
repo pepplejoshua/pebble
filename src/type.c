@@ -35,6 +35,8 @@ TypeEntry *type_table = NULL;
 // Canonical type table (hash map of canonical_name => type entries)
 TypeEntry *canonical_type_table = NULL;
 
+bool type_is_func(Type *type);
+
 // Create a basic type
 Type *type_create(TypeKind kind, Location loc) {
   Type *type = arena_alloc(&long_lived, sizeof(Type));
@@ -215,12 +217,12 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
 
 // Create function type (no caching)
 // Create function type (with deduplication)
-Type *type_create_function(Type **param_types, size_t param_count,
+Type *type_create_function(bool is_closure, Type **param_types, size_t param_count,
                            Type *return_type, bool canonicalize, Location loc) {
   assert(return_type);
 
   if (canonicalize) {
-    Type temp = {.kind = TYPE_FUNCTION,
+    Type temp = {.kind = is_closure ? TYPE_CLOSURE : TYPE_FUNCTION,
                  .data.func.param_types = param_types,
                  .data.func.param_count = param_count,
                  .data.func.return_type = return_type,
@@ -238,7 +240,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_FUNCTION, loc);
+    Type *type = type_create(is_closure ? TYPE_CLOSURE : TYPE_FUNCTION, loc);
     if (param_count > 0) {
       assert(param_types);
       Type **types = arena_alloc(&long_lived, param_count * sizeof(Type *));
@@ -299,7 +301,7 @@ bool type_equals(Type *a, Type *b) {
     return false;
 
   // Function comparisons
-  if (a->kind == TYPE_FUNCTION && b->kind == TYPE_FUNCTION) {
+  if (type_is_func(a) && type_is_func(b)) {
     if (a->data.func.param_count != b->data.func.param_count) {
       return false;
     }
@@ -338,6 +340,10 @@ bool type_is_numeric(Type *type) {
 
 bool type_is_ord(Type *type) {
   return type_is_numeric(type) || type->kind == TYPE_ENUM;
+}
+
+bool type_is_func(Type *type) {
+  return type->kind == TYPE_FUNCTION || type->kind == TYPE_CLOSURE;
 }
 
 // Initialize the type system
@@ -507,6 +513,38 @@ char *compute_canonical_name(Type *type) {
 
   case TYPE_FUNCTION: {
     // Compute param names
+    size_t total_len = strlen("closure");
+    char **param_names = NULL;
+    if (type->data.func.param_count > 0) {
+      param_names = arena_alloc(&long_lived,
+                                type->data.func.param_count * sizeof(char *));
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        param_names[i] = compute_canonical_name(type->data.func.param_types[i]);
+        total_len += strlen(param_names[i]) + 1;
+      }
+    }
+
+    // Return type
+    char *ret_name = compute_canonical_name(type->data.func.return_type);
+    total_len += strlen("_ret_") + strlen(ret_name);
+
+    result = arena_alloc(&long_lived, total_len + 1);
+    strcpy(result, "closure");
+
+    if (type->data.func.param_count > 0) {
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        strcat(result, "_");
+        strcat(result, param_names[i]);
+      }
+    }
+
+    strcat(result, "_ret_");
+    strcat(result, ret_name);
+    break;
+  }
+
+  case TYPE_CLOSURE: {
+    // Compute param names
     size_t total_len = strlen("func");
     char **param_names = NULL;
     if (type->data.func.param_count > 0) {
@@ -626,6 +664,40 @@ char *type_name(Type *type) {
     // Step 2: Build the string
     char *fn_str = arena_alloc(&long_lived, len);
     strcpy(fn_str, "fn (");
+    size_t offset = 4;
+    for (size_t i = 0; i < num_params; i++) {
+      size_t param_len = strlen(param_ty_names[i]);
+      memcpy(fn_str + offset, param_ty_names[i], param_len);
+      offset += param_len;
+      if (i < num_params - 1) {
+        fn_str[offset++] = ',';
+        fn_str[offset++] = ' ';
+      }
+    }
+    fn_str[offset++] = ')';
+    fn_str[offset++] = ' ';
+    strcpy(fn_str + offset, ret_ty_name);
+    return fn_str;
+  }
+  case TYPE_CLOSURE: {
+    // Step 1: Cache parameter and return type names
+    size_t num_params = type->data.func.param_count;
+    char **param_ty_names =
+        arena_alloc(&long_lived, num_params * sizeof(char *));
+    size_t len = 9; // "closure ("
+    for (size_t i = 0; i < num_params; i++) {
+      param_ty_names[i] = type_name(type->data.func.param_types[i]);
+      len += strlen(param_ty_names[i]);
+      if (i < num_params - 1)
+        len += 2; // ", "
+    }
+    len += 2; // ") "
+    char *ret_ty_name = type_name(type->data.func.return_type);
+    len += strlen(ret_ty_name) + 1; // Return type + null terminator
+
+    // Step 2: Build the string
+    char *fn_str = arena_alloc(&long_lived, len);
+    strcpy(fn_str, "closure (");
     size_t offset = 4;
     for (size_t i = 0; i < num_params; i++) {
       size_t param_len = strlen(param_ty_names[i]);

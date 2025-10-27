@@ -22,6 +22,7 @@ typedef struct {
   bool in_loop;
   bool in_defer;
   size_t anonymous_functions;
+  size_t closure_env_index;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -32,6 +33,7 @@ void checker_init(void) {
   checker_state.in_type_resolution = false;
   checker_state.in_loop = false;
   checker_state.anonymous_functions = 0;
+  checker_state.closure_env_index = 0;
   symbol_table_init(); // Create fresh global scope
 }
 
@@ -228,6 +230,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     break;
 
   case TYPE_FUNCTION:
+  case TYPE_CLOSURE:
     for (size_t i = 0; i < type->data.func.param_count; i++) {
       if (canonicalize_type_internal(&type->data.func.param_types[i],
                                      visited)) {
@@ -474,7 +477,8 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     break;
   }
 
-  case TYPE_FUNCTION: {
+  case TYPE_FUNCTION:
+  case TYPE_CLOSURE: {
     size_t total_len = strlen("func");
     for (size_t i = 0; i < type->data.func.param_count; i++) {
       char *param_name = GET_COMPONENT_NAME(type->data.func.param_types[i]);
@@ -838,6 +842,8 @@ static void check_function_signatures(void) {
         if (!param_types[i]) {
           // Error already reported, but keep going to check other params
           param_types[i] = type_int; // Use placeholder to continue
+        } else if (param_types[i]->kind == TYPE_FUNCTION) {
+          param_types[i]->kind = TYPE_CLOSURE;
         }
       }
     }
@@ -850,7 +856,7 @@ static void check_function_signatures(void) {
 
     // Create function type
     sym->type =
-        type_create_function(param_types, param_count, return_type,
+        type_create_function(false, param_types, param_count, return_type,
                              !checker_state.in_type_resolution, sym->decl->loc);
 
     // Add parameters as symbols in the function scope
@@ -904,6 +910,8 @@ bool check_anonymous_functions(void) {
         if (!param_types[i]) {
           // Error already reported, but keep going to check other params
           param_types[i] = type_int; // Use placeholder to continue
+        } else if (param_types[i]->kind == TYPE_FUNCTION) {
+          param_types[i]->kind = TYPE_CLOSURE;
         }
       }
     }
@@ -940,14 +948,29 @@ bool check_anonymous_functions(void) {
       scope_add_symbol(func_scope, param_sym);
     }
 
-    // Add captures to scope
     AstNode **captures = decl->data.func_expr.captures;
+    size_t capture_count = decl->data.func_expr.capture_count;
+
+    // Resolve capture types
+    Type **capture_types = NULL;
+    if (capture_count > 0) {
+      capture_types = arena_alloc(&long_lived, capture_count * sizeof(Type *));
+      for (size_t i = 0; i < capture_count; i++) {
+        capture_types[i] = sym->data.func.captures[i]->type;
+        if (!capture_types[i]) {
+          // Error already reported, but keep going to check other params
+          capture_types[i] = type_int; // Use placeholder to continue
+        }
+      }
+    }
+
+    // Add captures to scope
     for (size_t i = 0; i < decl->data.func_expr.capture_count; i++) {
       char *name = captures[i]->data.ident.name;
-      // Create parameter symbol
-      Symbol *param_sym = symbol_create(name, SYMBOL_VARIABLE, decl);
-      param_sym->type = param_types[i];
-      param_sym->data.var.is_global = false; // Parameters are local
+      // Create capture symbol
+      Symbol *capture_sym = symbol_create(name, SYMBOL_CAPTURED_VARIABLE, decl);
+      capture_sym->data.var.is_global = false;
+      capture_sym->type = capture_types[i];
 
       // Check for duplicate
       Symbol *existing = scope_lookup_local(func_scope, name);
@@ -956,7 +979,7 @@ bool check_anonymous_functions(void) {
         continue;
       }
 
-      scope_add_symbol(func_scope, param_sym);
+      scope_add_symbol(func_scope, capture_sym);
     }
   }
 
@@ -1198,7 +1221,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
 
-    return type_create_function(param_types, param_count, return_type,
+    return type_create_function(false, param_types, param_count, return_type,
                                 !checker_state.in_type_resolution, loc);
   }
 
@@ -1702,8 +1725,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Only variables, constants and functions can be used as values
-    if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CONSTANT &&
-        sym->kind != SYMBOL_FUNCTION &&
+    if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CAPTURED_VARIABLE &&
+        sym->kind != SYMBOL_CONSTANT && sym->kind != SYMBOL_FUNCTION &&
         (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
       checker_error(expr->loc, "'%s' cannot be used as a value", name);
       return NULL;
@@ -1713,6 +1736,12 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "name '%s' used before type is resolved", name);
       return NULL;
     }
+    
+    if (sym->kind == SYMBOL_CAPTURED_VARIABLE) {
+      expr->data.ident.is_captured = true;
+      sym->decl = expr;
+    }
+
     // expr->resolved_type = sym->type;
     expr->resolved_type = sym->type;
     return sym->type;
@@ -2002,7 +2031,7 @@ Type *check_expression(AstNode *expr) {
     Type *call_type = check_expression(func_expr);
 
     // Verify it's actually a function
-    if (call_type->kind != TYPE_FUNCTION) {
+    if (call_type->kind != TYPE_FUNCTION && call_type->kind != TYPE_CLOSURE) {
       checker_error(func_expr->loc, "'%s' is not a function",
                     type_name(call_type));
       return NULL;
@@ -2412,14 +2441,24 @@ Type *check_expression(AstNode *expr) {
     FuncParam *params = expr->data.func_expr.params;
     AstNode *return_type_expr = expr->data.func_expr.return_type;
 
+    Symbol **capture_symbols = NULL;
     size_t capture_count = expr->data.func_expr.capture_count;
-    // Verify arguments captured (if any)
-    for (size_t i = 0; i < capture_count; i++) {
-      AstNode *item = expr->data.func_expr.captures[i];
-      Symbol *sym = scope_lookup(current_scope, item->data.ident.name);
-      if (!sym) {
-        checker_error(item->loc, "Cannot capture unknown variable \"%s\"",
+
+    if (capture_count > 0) {
+      capture_symbols = arena_alloc(&long_lived, capture_count * sizeof(Symbol *));
+
+      // Verify arguments captured (if any)
+      for (size_t i = 0; i < capture_count; i++) {
+        AstNode *item = expr->data.func_expr.captures[i];
+        Symbol *sym = scope_lookup(current_scope, item->data.ident.name);
+        if (!sym) {
+          checker_error(item->loc, "Cannot capture unknown variable \"%s\"",
           item->data.ident.name);
+        }
+        
+        // Clone symbol for closures
+        capture_symbols[i] = symbol_create(sym->name, sym->kind, sym->decl);
+        capture_symbols[i]->type = sym->type;
       }
     }
 
@@ -2439,15 +2478,28 @@ Type *check_expression(AstNode *expr) {
 
     // Add function as symbol
     Type *fn_type =
-        type_create_function(param_types, param_count, return_type,
+        type_create_function(capture_count > 0, param_types, param_count, return_type,
                              !checker_state.in_type_resolution, loc);
+
+    if (capture_count > 0) {
+      // Also create function variant
+      type_create_function(false, param_types, param_count, return_type,
+                             !checker_state.in_type_resolution, loc);
+    }
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
     symbol->type = fn_type;
+    symbol->data.func.captures = capture_symbols;
+    symbol->data.func.capture_count = capture_count;
+    symbol->data.func.env_index = checker_state.closure_env_index++;
+
+    fn_type->data.func.closure_env_idx = symbol->data.func.env_index;
+
     scope_add_symbol(anonymous_funcs, symbol);
 
     expr->data.func_expr.symbol = fn_symbol_name;
+    expr->resolved_type = fn_type;
 
     // Will check function body with other functions
     return fn_type;

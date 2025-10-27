@@ -93,6 +93,8 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl) {
   case SYMBOL_EXTERN_FUNCTION:
   case SYMBOL_ANON_FUNCTION:
     symbol->data.func.local_scope = NULL; // Created later
+    symbol->data.func.capture_count = 0;
+    symbol->data.func.captures = NULL;
     break;
   case SYMBOL_VARIABLE:
     symbol->data.var.is_global = false; // Set by caller
@@ -102,6 +104,9 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl) {
     break;
   case SYMBOL_TYPE:
     // Nothing to initialize
+    break;
+
+  case SYMBOL_CAPTURED_VARIABLE:
     break;
   }
 

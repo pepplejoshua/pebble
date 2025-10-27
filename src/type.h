@@ -11,7 +11,8 @@ typedef struct Type Type;
 typedef struct TypeEntry TypeEntry;
 
 // Type kinds
-typedef enum {
+typedef enum
+{
   TYPE_INT,
   TYPE_BOOL,
   TYPE_STRING,
@@ -35,50 +36,61 @@ typedef enum {
   TYPE_STRUCT,
   TYPE_ENUM,
   TYPE_FUNCTION,
+  TYPE_CLOSURE,
   TYPE_TUPLE,
   TYPE_UNRESOLVED,
   TYPE_OPAQUE,
 } TypeKind;
 
 // Type structure
-struct Type {
+struct Type
+{
   TypeKind kind;
   char *canonical_name;
   char *declared_name;
   Location loc;
 
-  union {
-    struct {
+  union
+  {
+    struct
+    {
       Type *base; // Base type for pointer
     } ptr;
 
-    struct {
+    struct
+    {
       Type *element; // Element type
       size_t size;   // Array size
     } array;
 
-    struct {
+    struct
+    {
       Type *element; // Element type
     } slice;
 
-    struct {
+    struct
+    {
       char **field_names; // Array of field names
       Type **field_types; // Array of field types
       size_t field_count; // Number of fields
     } struct_data;
 
-    struct {
+    struct
+    {
       char **variant_names; // Array of variant names
       size_t variant_count; // Number of variants
     } enum_data;
 
-    struct {
+    struct
+    {
       Type **param_types; // Parameter types
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
+      size_t closure_env_idx;
     } func;
 
-    struct {
+    struct
+    {
       Type **element_types; // Tuple element types
       size_t element_count; // Number of elements
     } tuple;
@@ -86,7 +98,8 @@ struct Type {
 };
 
 // Type table entry (name -> type mapping)
-struct TypeEntry {
+struct TypeEntry
+{
   char *name;        // Key for hash table
   Type *type;        // Pointer to the type
   UT_hash_handle hh; // Hash handle
@@ -128,7 +141,7 @@ Type *type_create_struct(char **field_names, Type **field_types,
 Type *type_create_enum(char **variant_names, size_t variant_count, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
-Type *type_create_function(Type **param_types, size_t param_count,
+Type *type_create_function(bool is_closure, Type **param_types, size_t param_count,
                            Type *return_type, bool canonicalize, Location loc);
 
 // Type lookup and registration
@@ -147,5 +160,6 @@ char *type_name(Type *type);
 bool type_equals(Type *a, Type *b);
 bool type_is_numeric(Type *type);
 bool type_is_ord(Type *type);
+bool type_is_func(Type *type);
 
 #endif

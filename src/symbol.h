@@ -17,6 +17,7 @@ typedef enum {
   SYMBOL_ANON_FUNCTION,
   SYMBOL_VARIABLE,
   SYMBOL_CONSTANT,
+  SYMBOL_CAPTURED_VARIABLE,
   SYMBOL_TYPE
 } SymbolKind;
 
@@ -31,6 +32,9 @@ struct Symbol {
   union {
     struct {
       Scope *local_scope; // Function's local scope
+      Symbol **captures;
+      size_t capture_count;
+      size_t env_index;
     } func;
 
     struct {

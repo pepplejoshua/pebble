@@ -215,6 +215,7 @@ struct AstNode {
     } bool_lit;
     struct {
       char *name;
+      bool is_captured;
     } ident;
     struct {
       BinaryOp op;

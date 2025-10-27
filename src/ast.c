@@ -73,6 +73,7 @@ AstNode *ast_int_literal(Location loc, long long value) {
 AstNode *ast_identifier(Location loc, const char *name) {
   AstNode *node = ast_node_create(AST_EXPR_IDENTIFIER, loc);
   node->data.ident.name = str_dup(name);
+  node->data.ident.is_captured = false;
   return node;
 }
 

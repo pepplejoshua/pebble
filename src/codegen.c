@@ -386,7 +386,8 @@ void emit_program(Codegen *cg) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
-        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION) {
+        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION ||
+        type->kind == TYPE_CLOSURE) {
       TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
@@ -435,7 +436,8 @@ void emit_program(Codegen *cg) {
       }
       break;
     }
-    case TYPE_FUNCTION: {
+    case TYPE_FUNCTION:
+    case TYPE_CLOSURE: {
       for (size_t i = 0; i < type->data.func.param_count; i++) {
         collect_dependencies(type->data.func.param_types[i],
                              type->canonical_name, dep_graph, &node->depends_on,
@@ -475,8 +477,7 @@ void emit_program(Codegen *cg) {
     if (entry &&
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
-         entry->type->kind == TYPE_ENUM ||
-         entry->type->kind == TYPE_FUNCTION)) {
+         entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION || entry->type->kind == TYPE_CLOSURE)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -555,13 +556,42 @@ void emit_program(Codegen *cg) {
   // Emit anonymous functions declarations
   HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
     Type *func = sym->type;
+
+    char env_name[32];
+    if (sym->type->kind == TYPE_CLOSURE) {
+      // Emit environment struct
+      sprintf(env_name, "__closure_env_%ld", sym->data.func.env_index);
+
+      emit_string(cg, "typedef struct ");
+      emit_string(cg, env_name);
+      emit_string(cg, " {\n");
+      
+      for (size_t i = 0; i < sym->data.func.capture_count; i++) {
+        Symbol *capture = sym->data.func.captures[i];
+        emit_type_name(cg, capture->type);
+        emit_string(cg, " ");
+        emit_string(cg, capture->name);
+        emit_string(cg, ";\n");
+      }
+      
+      emit_string(cg, "} ");
+      emit_string(cg, env_name);
+      emit_string(cg, ";\n");
+    }
+
     // Emit prototype
     emit_type_name(cg, func->data.func.return_type);
     emit_string(cg, " ");
     emit_string(cg, sym->name);
     emit_string(cg, "(");
+
+    if (sym->type->kind == TYPE_CLOSURE) {
+      emit_string(cg, env_name);
+      emit_string(cg, " *__closure_ctx");
+    }
+
     for (size_t i = 0; i < func->data.func.param_count; i++) {
-      if (i > 0)
+      if (sym->type->kind == TYPE_CLOSURE || i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, func->data.func.param_types[i]);
       emit_string(cg, " ");
@@ -580,8 +610,18 @@ void emit_program(Codegen *cg) {
     emit_string(cg, " ");
     emit_string(cg, func->data.func_expr.symbol);
     emit_string(cg, "(");
+
+    if (sym->type->kind == TYPE_CLOSURE) {
+      char env_name[32];
+      // Emit environment struct
+      sprintf(env_name, "__closure_env_%ld", sym->data.func.env_index);
+      emit_string(cg, env_name);
+      emit_string(cg, " *__closure_ctx");
+    }
+    
+    
     for (size_t i = 0; i < sym->type->data.func.param_count; i++) {
-      if (i > 0)
+      if (sym->type->kind == TYPE_CLOSURE || i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, sym->type->data.func.param_types[i]);
       emit_string(cg, " ");
@@ -731,6 +771,11 @@ void emit_type_name(Codegen *cg, Type *type) {
     break;
   }
 
+  case TYPE_FUNCTION:
+  case TYPE_CLOSURE:
+    emit_string(cg, "pebble_rt_closure *");
+    break;
+
   default:
     emit_string(cg, type->canonical_name);
     break;
@@ -746,39 +791,23 @@ void emit_sections(Codegen *cg) {
   if (!compiler_opts.freestanding) {
     // Emit closure runtime code
     fputs(
-      "typedef struct pebble_rt_closure_t {\n"
+      "typedef struct pebble_rt_closure {\n"
       "  void* func;\n"
       "  void* env;\n"
-      "  struct pebble_rt_closure_t* next;\n"
-      "} pebble_rt_closure_t;\n\n"
+      "  struct pebble_rt_closure* next;\n"
+      "} pebble_rt_closure;\n\n"
       
-      "typedef struct pebble_rt_closure_link {\n"
-      "  pebble_rt_closure_link *last;\n"
-      "  pebble_rt_closure *closure;\n"
-      "} pebble_rt_closure_link;\n\n"
-
-      "pebble_rt_closure_t *__pebble_rt_closure_list_head = NULL;\n"
-      "pebble_rt_closure_link __pebble_rt_current_closure = {0};\n\n"
-
-      "pebble_rt_closure_t *__pebble_rt_new_closure(void *env, void *fn) {\n"
-      "  pebble_rt_closure_t* closure = malloc(sizeof(pebble_rt_closure_t));\n"
-      "  closure->func = fn;\n"
-      "  closure->env = env;\n"
-      "  closure->next = __pebble_rt_closure_list_head;\n"
-      "  __pebble_rt_closure_list_head = closure;\n"
-      "  return closure;\n"
-      "}\n\n"
+      "pebble_rt_closure *__pebble_rt_closure_list_head = NULL;\n\n"
 
       "void __pebble_rt_cleanup_closures(void) {\n"
-      "  pebble_rt_closure_t* current = __pebble_rt_closure_list_head;\n"
+      "  pebble_rt_closure* current = __pebble_rt_closure_list_head;\n"
       "  while (current != NULL) {\n"
-      "    pebble_rt_closure_t* next = current->next;\n"
+      "    pebble_rt_closure* next = current->next;\n"
       "    free(current->env);\n"
       "    free(current);\n"
       "    current = next;\n"
       "  }\n"
       "  __pebble_rt_closure_list_head = NULL;\n"
-      "  __pebble_rt_current_closure = {0};\n"
       "}\n\n", cg->output);
   }
 
@@ -846,6 +875,26 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           if (i > 0) {
             emit_string(cg, ", ");
           }
+          emit_type_name(cg, type->data.func.param_types[i]);
+        }
+      }
+
+      emit_string(cg, ")");
+
+      emit_string(cg, ";\n");
+    } else if (type->kind == TYPE_CLOSURE) {
+      emit_string(cg, "typedef ");
+
+      emit_type_name(cg, type->data.func.return_type);
+
+      emit_string(cg, " (*");
+      emit_string(cg, canonical);
+      emit_string(cg, ")(");
+
+      emit_string(cg, "void *");
+      if (type->data.func.param_count > 0) {
+        for (size_t i = 0; i < type->data.func.param_count; i++) {
+          emit_string(cg, ", ");
           emit_type_name(cg, type->data.func.param_types[i]);
         }
       }
@@ -1493,6 +1542,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     break;
 
   case AST_EXPR_IDENTIFIER:
+    if (expr->data.ident.is_captured) {
+      emit_string(cg, "__closure_ctx->");
+    }
     emit_string(cg, expr->data.ident.name);
     break;
 
@@ -1833,14 +1885,66 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_CALL: {
-    emit_expr(cg, expr->data.call.func);
-    emit_string(cg, "(");
-    for (size_t i = 0; i < expr->data.call.arg_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
-      emit_expr(cg, expr->data.call.args[i]);
+    if (expr->data.call.func->resolved_type->kind == TYPE_CLOSURE) {
+      // Closure call
+      char buffer[64];
+      const char *temp_name = get_temporary_name(cg, buffer, 64);
+
+      char *fn_type_name = expr->data.call.func->resolved_type->canonical_name;
+
+      emit_string(cg, "({\n");
+      emit_string(cg, "pebble_rt_closure *");
+      emit_string(cg, temp_name);
+      
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.call.func);
+      emit_string(cg, ";\n");
+
+      emit_string(cg, "(");
+      emit_string(cg, temp_name);
+      emit_string(cg, "->env) ? ((");
+      emit_string(cg, fn_type_name);
+      emit_string(cg, ")");
+
+      emit_string(cg, temp_name);
+
+      emit_string(cg, "->func)(");
+      emit_string(cg, temp_name);
+      emit_string(cg, "->env, ");
+      for (size_t i = 0; i < expr->data.call.arg_count; i++) {
+        if (i > 0)
+          emit_string(cg, ", ");
+        emit_expr(cg, expr->data.call.args[i]);
+      }
+      emit_string(cg, ")");
+
+      emit_string(cg, " : ((");
+      emit_string(cg, fn_type_name);
+      emit_string(cg, ")");
+
+      emit_string(cg, temp_name);
+
+      emit_string(cg, "->func)(");
+      for (size_t i = 0; i < expr->data.call.arg_count; i++) {
+        if (i > 0)
+          emit_string(cg, ", ");
+        emit_expr(cg, expr->data.call.args[i]);
+      }
+      emit_string(cg, ");\n");
+
+      emit_string(cg, "})\n");
+      
+    } else {
+      // Normal call
+      emit_expr(cg, expr->data.call.func);
+      emit_string(cg, "(");
+      for (size_t i = 0; i < expr->data.call.arg_count; i++) {
+        if (i > 0)
+          emit_string(cg, ", ");
+        emit_expr(cg, expr->data.call.args[i]);
+      }
+      emit_string(cg, ")");
     }
-    emit_string(cg, ")");
     break;
   }
 
@@ -1919,7 +2023,50 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_FUNCTION: {
+    emit_string(cg, "({\n");
+    
+    char buffer[64];
+    char *closure_temp = get_temporary_name(cg, buffer, 64);
+    emit_string(cg, "pebble_rt_closure *");
+    emit_string(cg, closure_temp);
+    emit_string(cg,  " = malloc(sizeof(pebble_rt_closure));\n");
+
+    emit_string(cg, closure_temp);
+    emit_string(cg, "->next = __pebble_rt_closure_list_head;\n");
+    emit_string(cg, "__pebble_rt_closure_list_head = ");
+    emit_string(cg, closure_temp);
+    emit_string(cg, ";\n");
+
+    char env_name[64];
+    assert(expr && expr->resolved_type);
+    sprintf(env_name, "__closure_env_%ld", expr->resolved_type->data.func.closure_env_idx);
+
+    emit_string(cg, env_name);
+    emit_string(cg,  " *env = malloc(sizeof(");
+    emit_string(cg, env_name);
+    emit_string(cg,  "));\n");
+
+    for (size_t i = 0; i < expr->data.func_expr.capture_count; i++) {
+      char *name = expr->data.func_expr.captures[i]->data.ident.name;
+      emit_string(cg, "env->");
+      emit_string(cg, name);
+      emit_string(cg, " = ");
+      emit_string(cg, name);
+      emit_string(cg, ";\n");
+    }
+
+    emit_string(cg, "*");
+    emit_string(cg, closure_temp);
+    emit_string(cg, " = ");
+
+    emit_string(cg, "(pebble_rt_closure){ .env = env, .func = ");
     emit_string(cg, expr->data.func_expr.symbol);
+    emit_string(cg, " };\n");
+    
+    emit_string(cg, closure_temp);
+    emit_string(cg, ";\n");
+    
+    emit_string(cg, "})\n");
     break;
   }
 
