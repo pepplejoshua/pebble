@@ -5,8 +5,6 @@
 ### Ideas from discussions with Caleb
 - extern can take a lib name. the compiler cli can take -L (lib location) and -l (lib name)
 - `if let` to safely work with pointers.
-- Add bitwise operators
-- In range loop, allow the user specify the binding name for their loop variable
 - Allow multiple variable declarations:
 ```go
 fn main() void {
@@ -255,11 +253,6 @@ fn count_vowels(s str) int {  // str is []const char
     return count;
 }
 ```
-
-### Statements
-- [ ] **Switch/match statements** - If desired
-
-- [ ] **Defer statements** - If desired (Go-style)
 
 ### Type System Enhancements
 - [ ] **Const evaluation** - Evaluate constant expressions

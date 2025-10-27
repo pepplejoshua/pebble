@@ -585,7 +585,8 @@ AstNode *parse_switch_stmt(Parser *parser) {
   while (parser_match(parser, TOKEN_CASE)) {
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_cases = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+      AstNode **new_cases =
+          arena_alloc(&long_lived, capacity * sizeof(AstNode *));
       memcpy(new_cases, cases, count * sizeof(AstNode *));
       cases = new_cases;
     }
@@ -594,7 +595,8 @@ AstNode *parse_switch_stmt(Parser *parser) {
     _case->data.case_stmt.switch_stmt = stmt;
     _case->data.case_stmt.condition = parse_expression(parser);
 
-    parser_consume(parser, TOKEN_COLON, "Expect ':' after switch case condition");
+    parser_consume(parser, TOKEN_COLON,
+                   "Expect ':' after switch case condition");
     _case->data.case_stmt.body = parse_statement(parser);
 
     cases[count++] = _case;
@@ -732,6 +734,15 @@ AstNode *parse_loop_stmt(Parser *parser) {
   // Parse end expression
   AstNode *end = parse_expression(parser);
 
+  AstNode *iterator_name = NULL;
+  if (parser_match(parser, TOKEN_COLON)) {
+    iterator_name = parse_primary(parser);
+    if (iterator_name->kind != AST_EXPR_IDENTIFIER) {
+      parser_error(parser,
+                   "Expected an identifier to name the iterator of the loop.");
+    }
+  }
+
   // Parse loop body
   AstNode *body = parse_statement(parser);
 
@@ -739,6 +750,7 @@ AstNode *parse_loop_stmt(Parser *parser) {
   stmt->data.loop_stmt.start = start;
   stmt->data.loop_stmt.end = end;
   stmt->data.loop_stmt.inclusive = inclusive;
+  stmt->data.loop_stmt.iterator_name = iterator_name;
   stmt->data.loop_stmt.body = body;
   return stmt;
 }
@@ -980,7 +992,8 @@ AstNode *parse_comparison(Parser *parser) {
 AstNode *parse_shift(Parser *parser) {
   AstNode *left = parse_cast(parser);
 
-  while (parser_match(parser, TOKEN_LSHIFT) || parser_match(parser, TOKEN_RSHIFT)) {
+  while (parser_match(parser, TOKEN_LSHIFT) ||
+         parser_match(parser, TOKEN_RSHIFT)) {
     Token op = parser->previous;
     AstNode *right = parse_cast(parser);
 
@@ -1047,9 +1060,9 @@ AstNode *parse_factor(Parser *parser) {
 }
 
 AstNode *parse_unary(Parser *parser) {
-  if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT)
-    || parser_match(parser, TOKEN_AMPERSAND) || parser_match(parser, TOKEN_STAR)
-    || parser_match(parser, TOKEN_TILDE)) {
+  if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT) ||
+      parser_match(parser, TOKEN_AMPERSAND) ||
+      parser_match(parser, TOKEN_STAR) || parser_match(parser, TOKEN_TILDE)) {
     Token op = parser->previous;
     AstNode *operand =
         parse_unary(parser); // Right-associative (allow chaining)
@@ -1711,7 +1724,7 @@ AstNode *parse_type_expression(Parser *parser) {
           return NULL;
         }
         parser_advance(parser);
-        
+
         Token variant_name = parser->previous;
         variant_names[count++] = str_dup(variant_name.lexeme);
       } while (parser_match(parser, TOKEN_COMMA));

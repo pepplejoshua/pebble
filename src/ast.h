@@ -158,6 +158,7 @@ struct AstNode {
       AstNode *start;
       AstNode *end;
       bool inclusive;
+      AstNode *iterator_name;
       AstNode *body;
     } loop_stmt;
     struct {

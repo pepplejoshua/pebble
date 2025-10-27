@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
@@ -46,7 +45,8 @@ static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   *len += str_len;
 }
 
-static DeferStack *defer_stack_create(DeferStack *parent, DeferScopeType scope_type) {
+static DeferStack *defer_stack_create(DeferStack *parent,
+                                      DeferScopeType scope_type) {
   DeferStack *stack = arena_alloc(&long_lived, sizeof(DeferStack));
   stack->defers = NULL;
   stack->count = 0;
@@ -66,7 +66,8 @@ static void defer_stack_push(Codegen *cg, AstNode *defer_stmt) {
     AstNode **old_buffer = stack->defers;
 
     stack->capacity = is_empty ? 2 : stack->capacity * 2;
-    stack->defers = arena_alloc(&long_lived, stack->capacity * sizeof(AstNode *));
+    stack->defers =
+        arena_alloc(&long_lived, stack->capacity * sizeof(AstNode *));
     if (!is_empty) {
       memcpy(stack->defers, old_buffer, stack->count * sizeof(AstNode *));
     }
@@ -78,12 +79,13 @@ static void defer_stack_push(Codegen *cg, AstNode *defer_stmt) {
 // Emit all defers in the current scope only (LIFO)
 static void defer_stack_emit_current_scope(Codegen *cg, bool lock) {
   DeferStack *stack = cg->defer_stack;
-  if (!stack || stack->locked) return;
+  if (!stack || stack->locked)
+    return;
 
   stack->locked = lock;
 
   cg->in_defer = true;
-  
+
   // Emit in reverse order (most recent first)
   for (int i = stack->count - 1; i >= 0; i--) {
     emit_string(cg, "{ /* defer */\n");
@@ -96,14 +98,16 @@ static void defer_stack_emit_current_scope(Codegen *cg, bool lock) {
 
 // Emit defers from current scope up to (but not including) a target scope type
 // This is used for break/continue to emit defers up to the loop boundary
-static void defer_stack_emit_until(Codegen *cg, DeferScopeType target_scope, bool lock) {
+static void defer_stack_emit_until(Codegen *cg, DeferScopeType target_scope,
+                                   bool lock) {
   DeferStack *stack = cg->defer_stack;
-  if (!stack || stack->locked) return;
+  if (!stack || stack->locked)
+    return;
 
   stack->locked = lock;
 
   cg->in_defer = true;
-  
+
   while (stack && stack->scope_type != target_scope) {
     // Emit all defers in this scope (reverse order)
     for (int i = stack->count - 1; i >= 0; i--) {
@@ -121,12 +125,13 @@ static void defer_stack_emit_until(Codegen *cg, DeferScopeType target_scope, boo
 // This is used for return statements
 static void defer_stack_emit_all(Codegen *cg, bool lock) {
   DeferStack *stack = cg->defer_stack;
-  if (!stack || stack->locked) return;
+  if (!stack || stack->locked)
+    return;
 
   stack->locked = lock;
 
   cg->in_defer = true;
-  
+
   while (stack) {
     // Emit all defers in this scope (reverse order)
     for (int i = stack->count - 1; i >= 0; i--) {
@@ -172,8 +177,8 @@ void codegen_init(Codegen *cg, FILE *output) {
 
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
-    cg->preamble =
-        "#include <stdlib.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <string.h>\n\n";
+    cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
+                   "<stdio.h>\n#include <string.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -437,7 +442,8 @@ void emit_program(Codegen *cg) {
                              &node->dep_count, &dep_capacity);
       }
       collect_dependencies(type->data.func.return_type, type->canonical_name,
-          dep_graph, &node->depends_on, &node->dep_count, &dep_capacity);
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
       break;
     }
     default:
@@ -469,7 +475,8 @@ void emit_program(Codegen *cg) {
     if (entry &&
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
-         entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION)) {
+         entry->type->kind == TYPE_ENUM ||
+         entry->type->kind == TYPE_FUNCTION)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -596,7 +603,7 @@ void emit_program(Codegen *cg) {
     emit_dedent(cg);
     emit_string(cg, "}\n");
   }
-  
+
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
       AstNode *func = sym->decl; // Func decl AST node
@@ -813,7 +820,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       } else {
         emit_string(cg, "typedef struct ");
       }
-      
+
       emit_string(cg, canonical);
       emit_string(cg, " ");
       emit_string(cg, canonical);
@@ -945,7 +952,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   case AST_STMT_CONTINUE:
     // Emit all defers up to (but not including) the loop scope
     defer_stack_emit_until(cg, DEFER_SCOPE_LOOP, true);
-    
+
     emit_indent_spaces(cg);
     emit_string(cg, "continue;\n");
     break;
@@ -953,7 +960,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     Type *type = stmt->data.print_stmt.expr->resolved_type;
 
     emit_indent_spaces(cg);
-    if (type->kind == TYPE_INT || type->kind == TYPE_I32 || type->kind == TYPE_ENUM) {
+    if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
+        type->kind == TYPE_ENUM) {
       emit_string(cg, "printf(\"%d\\n\", ");
     } else if (type->kind == TYPE_I8) {
       emit_string(cg, "printf(\"%hhd\\n\", ");
@@ -1003,7 +1011,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_type_name(cg, expr->resolved_type);
       emit_string(cg, " ");
       emit_string(cg, temporary_name);
-      
+
       emit_string(cg, " = ");
       emit_expr(cg, expr);
       emit_string(cg, ";\n");
@@ -1034,8 +1042,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     emit_string(cg, ";\n");
     break;
-  case AST_STMT_DEFER:
-  {
+  case AST_STMT_DEFER: {
     // Emit held stmt to defer stack
     defer_stack_push(cg, stmt->data.defer_stmt.stmt);
     break;
@@ -1085,167 +1092,166 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     AstNode **cases = stmt->data.switch_stmt.cases;
 
     emit_indent_spaces(cg);
-    
+
     switch (cond_type->kind) {
-      case TYPE_CHAR:
-      case TYPE_INT:
-      case TYPE_U8:
-      case TYPE_U32:
-      case TYPE_USIZE:
-      case TYPE_I16:
-      case TYPE_I64:
-      case TYPE_U16:
-      case TYPE_U64:
-      case TYPE_I8:
-      case TYPE_I32:
-      case TYPE_ISIZE:
-      case TYPE_ENUM:
-      {
-        emit_string(cg, "switch (");
+    case TYPE_CHAR:
+    case TYPE_INT:
+    case TYPE_U8:
+    case TYPE_U32:
+    case TYPE_USIZE:
+    case TYPE_I16:
+    case TYPE_I64:
+    case TYPE_U16:
+    case TYPE_U64:
+    case TYPE_I8:
+    case TYPE_I32:
+    case TYPE_ISIZE:
+    case TYPE_ENUM: {
+      emit_string(cg, "switch (");
+      emit_expr(cg, cond);
+      emit_string(cg, ") {\n");
+
+      for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+        emit_string(cg, "case ");
+        emit_expr(cg, cases[i]->data.case_stmt.condition);
+        emit_string(cg, ":\n");
+
+        emit_indent(cg);
+        emit_stmt(cg, cases[i]->data.case_stmt.body);
+        emit_dedent(cg);
+
+        emit_string(cg, "break;\n");
+      }
+
+      emit_string(cg, "default: {\n");
+
+      if (stmt->data.switch_stmt.default_case) {
+        emit_indent(cg);
+        emit_stmt(cg, stmt->data.switch_stmt.default_case);
+        emit_dedent(cg);
+      }
+
+      emit_string(cg, "}\n");
+      emit_string(cg, "break;\n");
+
+      emit_indent_spaces(cg);
+      emit_string(cg, "}\n");
+      break;
+    }
+
+    case TYPE_F32:
+    case TYPE_F64: {
+      char buffer[64];
+      char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+      size_t case_count = stmt->data.switch_stmt.case_count;
+
+      if (case_count > 0) {
+        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+        emit_string(cg, " ");
+        emit_string(cg, temporary_name);
+
+        emit_string(cg, " = ");
         emit_expr(cg, cond);
+        emit_string(cg, ";\n");
+      }
+
+      for (size_t i = 0; i < case_count; i++) {
+        if (i == 0) {
+          emit_string(cg, "if (");
+        } else {
+          emit_string(cg, "else if (");
+        }
+
+        emit_string(cg, temporary_name);
+        emit_string(cg, " == ");
+
+        emit_expr(cg, cases[i]->data.case_stmt.condition);
         emit_string(cg, ") {\n");
 
-        for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
-          emit_string(cg, "case ");
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ":\n");
+        emit_indent(cg);
+        emit_stmt(cg, cases[i]->data.case_stmt.body);
+        emit_dedent(cg);
 
-          emit_indent(cg);
-          emit_stmt(cg, cases[i]->data.case_stmt.body);
-          emit_dedent(cg);
-
-          emit_string(cg, "break;\n");
-        }
-
-        emit_string(cg, "default: {\n");
-
-        if (stmt->data.switch_stmt.default_case) {
-          emit_indent(cg);
-          emit_stmt(cg, stmt->data.switch_stmt.default_case);
-          emit_dedent(cg);
-        }
-
-        emit_string(cg, "}\n");
-        emit_string(cg, "break;\n");
-
-        emit_indent_spaces(cg);
-        emit_string(cg, "}\n");
-        break;
+        emit_string(cg, "}");
       }
 
-      case TYPE_F32:
-      case TYPE_F64: {
-        char buffer[64];
-        char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-        size_t case_count = stmt->data.switch_stmt.case_count;
-
+      if (stmt->data.switch_stmt.default_case) {
         if (case_count > 0) {
-          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-          emit_string(cg, " ");
-          emit_string(cg, temporary_name);
-          
-          emit_string(cg, " = ");
-          emit_expr(cg, cond);
-          emit_string(cg, ";\n");
-        }
-          
-        for (size_t i = 0; i < case_count; i++) {
-          if (i == 0) {
-            emit_string(cg, "if (");
-          } else {
-            emit_string(cg, "else if (");
-          }
-
-          emit_string(cg, temporary_name);
-          emit_string(cg, " == ");
-
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ") {\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, cases[i]->data.case_stmt.body);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
+          emit_string(cg, " else ");
         }
 
-        if (stmt->data.switch_stmt.default_case) {
-          if (case_count > 0) {
-            emit_string(cg, " else ");
-          }
+        emit_string(cg, "{\n");
 
-          emit_string(cg, "{\n");
+        emit_indent(cg);
+        emit_stmt(cg, stmt->data.switch_stmt.default_case);
+        emit_dedent(cg);
 
-          emit_indent(cg);
-          emit_stmt(cg, stmt->data.switch_stmt.default_case);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        emit_string(cg, "\n");
-        break;
+        emit_string(cg, "}");
       }
 
-      case TYPE_STRING: {
-        char buffer[64];
-        char *temporary_name = get_temporary_name(cg, buffer, 64);
+      emit_string(cg, "\n");
+      break;
+    }
 
-        size_t case_count = stmt->data.switch_stmt.case_count;
+    case TYPE_STRING: {
+      char buffer[64];
+      char *temporary_name = get_temporary_name(cg, buffer, 64);
 
+      size_t case_count = stmt->data.switch_stmt.case_count;
+
+      if (case_count > 0) {
+        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+        emit_string(cg, " ");
+        emit_string(cg, temporary_name);
+
+        emit_string(cg, " = ");
+        emit_expr(cg, cond);
+        emit_string(cg, ";\n");
+      }
+
+      for (size_t i = 0; i < case_count; i++) {
+        if (i == 0) {
+          emit_string(cg, "if (");
+        } else {
+          emit_string(cg, " else if (");
+        }
+
+        emit_string(cg, "strcmp(");
+
+        emit_string(cg, temporary_name);
+        emit_string(cg, ", ");
+
+        emit_expr(cg, cases[i]->data.case_stmt.condition);
+        emit_string(cg, ") == 0) {\n");
+
+        emit_indent(cg);
+        emit_stmt(cg, cases[i]->data.case_stmt.body);
+        emit_dedent(cg);
+
+        emit_string(cg, "}");
+      }
+
+      if (stmt->data.switch_stmt.default_case) {
         if (case_count > 0) {
-          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-          emit_string(cg, " ");
-          emit_string(cg, temporary_name);
-          
-          emit_string(cg, " = ");
-          emit_expr(cg, cond);
-          emit_string(cg, ";\n");
+          emit_string(cg, " else ");
         }
 
-        for (size_t i = 0; i < case_count; i++) {
-          if (i == 0) {
-            emit_string(cg, "if (");
-          } else {
-            emit_string(cg, " else if (");
-          }
+        emit_string(cg, "{\n");
 
-          emit_string(cg, "strcmp(");
+        emit_indent(cg);
+        emit_stmt(cg, stmt->data.switch_stmt.default_case);
+        emit_dedent(cg);
 
-          emit_string(cg, temporary_name);
-          emit_string(cg, ", ");
-
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ") == 0) {\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, cases[i]->data.case_stmt.body);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        if (stmt->data.switch_stmt.default_case) {
-          if (case_count > 0) {
-            emit_string(cg, " else ");
-          }
-
-          emit_string(cg, "{\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, stmt->data.switch_stmt.default_case);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        emit_string(cg, "\n");
-        break;
+        emit_string(cg, "}");
       }
 
-      default:
-        break;
+      emit_string(cg, "\n");
+      break;
+    }
+
+    default:
+      break;
     }
 
     break;
@@ -1262,7 +1268,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     defer_scope_enter(cg, DEFER_SCOPE_LOOP);
 
     emit_stmt(cg, stmt->data.while_stmt.body);
-    
+
     // Exit loop scope (emits defers at end of each iteration)
     defer_scope_exit(cg);
 
@@ -1281,7 +1287,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     snprintf(loop_var, sizeof(loop_var), "_loop_i%d", loop_counter++);
 
     emit_indent_spaces(cg);
-    emit_string(cg, "for (long long ");
+    emit_string(cg, "for (int ");
     emit_string(cg, loop_var);
     emit_string(cg, " = ");
     emit_expr(cg, stmt->data.loop_stmt.start);
@@ -1300,7 +1306,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     // Emit const iter = _loop_i
     emit_indent_spaces(cg);
-    emit_string(cg, "const long long iter = ");
+    AstNode *iter_name = stmt->data.loop_stmt.iterator_name;
+    char *iterator_name = iter_name ? iter_name->data.ident.name : "iter";
+    char c_iter_access[64];
+    snprintf(c_iter_access, sizeof(c_iter_access),
+             "const int %s = ", iterator_name);
+    emit_string(cg, c_iter_access);
     emit_string(cg, loop_var);
     emit_string(cg, ";\n");
 
