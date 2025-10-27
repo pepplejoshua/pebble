@@ -595,9 +595,8 @@ void emit_program(Codegen *cg) {
     emit_string(cg, ";\n");
   }
 
-  // Emit func definitions
-  cg->current_section = "defs";
   // Emit anonymous functions
+  cg->current_section = "defs";
   HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
     AstNode *func = sym->decl; // Func decl AST node
     emit_type_name(cg, sym->type->data.func.return_type);
@@ -632,26 +631,35 @@ void emit_program(Codegen *cg) {
       Type *slice_type = sym->type->data.func.param_types[fixed_params];
       Type *elem_type = slice_type->data.slice.element;
       char *param_name = func->data.func_expr.params[fixed_params].name;
-      
+
       // Allocate array for variadic args
+      emit_indent_spaces(cg);
       emit_type_name(cg, elem_type);
-      emit_string(cg, "* __variadic_data = alloca(__variadic_count * sizeof(");
+      emit_string(cg, " *__variadic_data = alloca(__variadic_count * sizeof(");
       emit_type_name(cg, elem_type);
       emit_string(cg, "));\n");
-      
+
       // Copy from va_list
+      emit_indent_spaces(cg);
       emit_string(cg, "va_list __args;\n");
+      emit_indent_spaces(cg);
       emit_string(cg, "va_start(__args, __variadic_count);\n");
-      emit_string(cg, "for (size_t __i = 0; __i < __variadic_count; __i++) {\n");
+      emit_indent_spaces(cg);
+      emit_string(cg,
+                  "for (size_t __i = 0; __i < __variadic_count; __i++) {\n");
       emit_indent(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "__variadic_data[__i] = va_arg(__args, ");
       emit_type_name(cg, elem_type);
       emit_string(cg, ");\n");
       emit_dedent(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "}\n");
+      emit_indent_spaces(cg);
       emit_string(cg, "va_end(__args);\n");
-      
+
       // Create slice
+      emit_indent_spaces(cg);
       emit_type_name(cg, slice_type);
       emit_string(cg, " ");
       emit_string(cg, param_name);
@@ -671,6 +679,7 @@ void emit_program(Codegen *cg) {
     emit_string(cg, "}\n");
   }
 
+  // Emit func definitions
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
       AstNode *func = sym->decl; // Func decl AST node
@@ -706,26 +715,36 @@ void emit_program(Codegen *cg) {
         Type *slice_type = sym->type->data.func.param_types[fixed_params];
         Type *elem_type = slice_type->data.slice.element;
         char *param_name = func->data.func_decl.params[fixed_params].name;
-        
+
         // Allocate array for variadic args
+        emit_indent_spaces(cg);
         emit_type_name(cg, elem_type);
-        emit_string(cg, "* __variadic_data = alloca(__variadic_count * sizeof(");
+        emit_string(cg,
+                    " *__variadic_data = alloca(__variadic_count * sizeof(");
         emit_type_name(cg, elem_type);
         emit_string(cg, "));\n");
-        
+
         // Copy from va_list
+        emit_indent_spaces(cg);
         emit_string(cg, "va_list __args;\n");
+        emit_indent_spaces(cg);
         emit_string(cg, "va_start(__args, __variadic_count);\n");
-        emit_string(cg, "for (size_t __i = 0; __i < __variadic_count; __i++) {\n");
+        emit_indent_spaces(cg);
+        emit_string(cg,
+                    "for (size_t __i = 0; __i < __variadic_count; __i++) {\n");
         emit_indent(cg);
+        emit_indent_spaces(cg);
         emit_string(cg, "__variadic_data[__i] = va_arg(__args, ");
         emit_type_name(cg, elem_type);
         emit_string(cg, ");\n");
         emit_dedent(cg);
+        emit_indent_spaces(cg);
         emit_string(cg, "}\n");
+        emit_indent_spaces(cg);
         emit_string(cg, "va_end(__args);\n");
-        
+
         // Create slice
+        emit_indent_spaces(cg);
         emit_type_name(cg, slice_type);
         emit_string(cg, " ");
         emit_string(cg, param_name);
@@ -1908,26 +1927,26 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     emit_expr(cg, expr->data.call.func);
     emit_string(cg, "(");
-    
+
     if (func_type->data.func.is_variadic) {
       size_t param_count = func_type->data.func.param_count;
       size_t fixed_params = param_count - 1;
       size_t variadic_count = expr->data.call.arg_count - fixed_params;
-      
+
       // Emit fixed arguments
       for (size_t i = 0; i < fixed_params; i++) {
         if (i > 0)
           emit_string(cg, ", ");
         emit_expr(cg, expr->data.call.args[i]);
       }
-      
+
       // Emit variadic count
       if (fixed_params > 0)
         emit_string(cg, ", ");
       char count_buf[32];
       snprintf(count_buf, sizeof(count_buf), "%zu", variadic_count);
       emit_string(cg, count_buf);
-      
+
       // Emit variadic arguments
       for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
         emit_string(cg, ", ");
