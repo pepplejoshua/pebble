@@ -918,6 +918,7 @@ bool check_anonymous_functions(void) {
     // Create function's local scope with global as parent
     Scope *func_scope = scope_create(global_scope);
     sym->data.func.local_scope = func_scope;
+
     for (size_t i = 0; i < param_count; i++) {
       if (!param_types[i]) {
         continue; // Skip if type resolution failed
@@ -933,6 +934,25 @@ bool check_anonymous_functions(void) {
       if (existing) {
         checker_error(decl->loc, "duplicate parameter name '%s'",
                       params[i].name);
+        continue;
+      }
+
+      scope_add_symbol(func_scope, param_sym);
+    }
+
+    // Add captures to scope
+    AstNode **captures = decl->data.func_expr.captures;
+    for (size_t i = 0; i < decl->data.func_expr.capture_count; i++) {
+      char *name = captures[i]->data.ident.name;
+      // Create parameter symbol
+      Symbol *param_sym = symbol_create(name, SYMBOL_VARIABLE, decl);
+      param_sym->type = param_types[i];
+      param_sym->data.var.is_global = false; // Parameters are local
+
+      // Check for duplicate
+      Symbol *existing = scope_lookup_local(func_scope, name);
+      if (existing) {
+        checker_error(decl->loc, "could not declare capture '%s' as it shares a name of another capture or parameter", name);
         continue;
       }
 
@@ -2391,6 +2411,17 @@ Type *check_expression(AstNode *expr) {
     size_t param_count = expr->data.func_expr.param_count;
     FuncParam *params = expr->data.func_expr.params;
     AstNode *return_type_expr = expr->data.func_expr.return_type;
+
+    size_t capture_count = expr->data.func_expr.capture_count;
+    // Verify arguments captured (if any)
+    for (size_t i = 0; i < capture_count; i++) {
+      AstNode *item = expr->data.func_expr.captures[i];
+      Symbol *sym = scope_lookup(current_scope, item->data.ident.name);
+      if (!sym) {
+        checker_error(item->loc, "Cannot capture unknown variable \"%s\"",
+          item->data.ident.name);
+      }
+    }
 
     Type **param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
 

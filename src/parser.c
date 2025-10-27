@@ -285,6 +285,34 @@ AstNode *parse_declaration(Parser *parser) {
 static AstNode *parse_function(Parser *parser, Location location, char *name) {
   // (params) return_type { body }
   // (params) return_type => expr
+  AstNode **captures = NULL;
+  size_t capture_count = 0;
+
+  // Function capture group
+  if (parser_match(parser, TOKEN_LBRACKET)) {
+    size_t capacity = 2;
+    captures = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+    // Try parse initial capture
+    do {
+      if (capture_count >= capacity) {
+        capacity *= 2;
+        AstNode **new_captures =
+            arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+        memcpy(new_captures, captures, capture_count * sizeof(AstNode *));
+        captures = new_captures;
+      }
+
+      Token token = parser_consume(parser, TOKEN_IDENTIFIER,
+        "Expect identifier in function capture list");
+
+      AstNode *node = alloc_node(AST_EXPR_IDENTIFIER, token.location);
+      node->data.ident.name = str_dup(token.lexeme);
+      captures[capture_count++] = node;
+    } while (parser_match(parser, TOKEN_COMMA));
+
+    parser_consume(parser, TOKEN_RBRACKET, "Expect ']' after capture list");
+  }
 
   parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
 
@@ -380,7 +408,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
   }
 
   AstNode *func = NULL;
-
+  
   if (name) {
     // Named function
     func = alloc_node(AST_DECL_FUNCTION, location);
@@ -395,6 +423,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
     func->data.func_expr.params = params;
     func->data.func_expr.param_count = param_count;
     func->data.func_expr.return_type = return_type;
+    func->data.func_expr.captures = captures;
+    func->data.func_expr.capture_count = capture_count;
     func->data.func_expr.body = body;
   }
 

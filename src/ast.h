@@ -262,6 +262,8 @@ struct AstNode {
       size_t count;   // How many times (from integer literal)
     } array_repeat;
     struct {
+      AstNode **captures;
+      size_t capture_count;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;

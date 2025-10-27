@@ -743,6 +743,45 @@ void emit_sections(Codegen *cg) {
     fputs(cg->preamble, cg->output);
   }
 
+  if (!compiler_opts.freestanding) {
+    // Emit closure runtime code
+    fputs(
+      "typedef struct pebble_rt_closure_t {\n"
+      "  void* func;\n"
+      "  void* env;\n"
+      "  struct pebble_rt_closure_t* next;\n"
+      "} pebble_rt_closure_t;\n\n"
+      
+      "typedef struct pebble_rt_closure_link {\n"
+      "  pebble_rt_closure_link *last;\n"
+      "  pebble_rt_closure *closure;\n"
+      "} pebble_rt_closure_link;\n\n"
+
+      "pebble_rt_closure_t *__pebble_rt_closure_list_head = NULL;\n"
+      "pebble_rt_closure_link __pebble_rt_current_closure = {0};\n\n"
+
+      "pebble_rt_closure_t *__pebble_rt_new_closure(void *env, void *fn) {\n"
+      "  pebble_rt_closure_t* closure = malloc(sizeof(pebble_rt_closure_t));\n"
+      "  closure->func = fn;\n"
+      "  closure->env = env;\n"
+      "  closure->next = __pebble_rt_closure_list_head;\n"
+      "  __pebble_rt_closure_list_head = closure;\n"
+      "  return closure;\n"
+      "}\n\n"
+
+      "void __pebble_rt_cleanup_closures(void) {\n"
+      "  pebble_rt_closure_t* current = __pebble_rt_closure_list_head;\n"
+      "  while (current != NULL) {\n"
+      "    pebble_rt_closure_t* next = current->next;\n"
+      "    free(current->env);\n"
+      "    free(current);\n"
+      "    current = next;\n"
+      "  }\n"
+      "  __pebble_rt_closure_list_head = NULL;\n"
+      "  __pebble_rt_current_closure = {0};\n"
+      "}\n\n", cg->output);
+  }
+
   // Emit sections (if they have content), then free buffers
   if (cg->forward_types) {
     fputs(cg->forward_types, cg->output);
