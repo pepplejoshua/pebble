@@ -76,6 +76,7 @@ struct Type {
       Type **param_types; // Parameter types
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
+      bool is_variadic;
     } func;
 
     struct {
@@ -129,7 +130,8 @@ Type *type_create_enum(char **variant_names, size_t variant_count, Location loc)
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
 Type *type_create_function(Type **param_types, size_t param_count,
-                           Type *return_type, bool canonicalize, Location loc);
+                           Type *return_type, bool is_variadic,
+                           bool canonicalize, Location loc);
 
 // Type lookup and registration
 Type *type_lookup(const char *name);

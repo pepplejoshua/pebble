@@ -455,6 +455,9 @@ Token lexer_next_token(Lexer *lexer) {
     return lexer_make_token(lexer, TOKEN_COMMA);
   case '.':
     if (lexer_match(lexer, '.')) {
+      if (lexer_match(lexer, '.')) {
+        return lexer_make_token(lexer, TOKEN_ELLIPSIS);
+      }
       if (lexer_match(lexer, '=')) {
         return lexer_make_token(lexer, TOKEN_DOTDOTEQ);
       }

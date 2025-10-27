@@ -310,6 +310,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
         params = new_params;
       }
 
+      bool is_variadic = parser_match(parser, TOKEN_ELLIPSIS);
+
       Token param_name =
           parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
 
@@ -346,6 +348,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
       params[param_count].name =
           param_name.lexeme; // Already allocated by lexer
       params[param_count].type = param_type;
+      params[param_count].is_variadic = is_variadic;
       param_count++;
 
     } while (parser_match(parser, TOKEN_COMMA));

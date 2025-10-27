@@ -216,7 +216,8 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
 // Create function type (no caching)
 // Create function type (with deduplication)
 Type *type_create_function(Type **param_types, size_t param_count,
-                           Type *return_type, bool canonicalize, Location loc) {
+                           Type *return_type, bool is_variadic,
+                           bool canonicalize, Location loc) {
   assert(return_type);
 
   if (canonicalize) {
@@ -224,6 +225,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
                  .data.func.param_types = param_types,
                  .data.func.param_count = param_count,
                  .data.func.return_type = return_type,
+                 .data.func.is_variadic = is_variadic,
                  .canonical_name = NULL};
 
     char *canonical_name = compute_canonical_name(&temp);
@@ -245,6 +247,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
       memcpy(types, param_types, param_count * sizeof(Type *));
       type->data.func.param_types = types;
     }
+    type->data.func.is_variadic = is_variadic;
     type->data.func.param_count = param_count;
     type->data.func.return_type = return_type;
     return type;
