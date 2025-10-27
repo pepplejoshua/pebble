@@ -1179,10 +1179,6 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     Type **param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
 
-    bool is_variadic = false;
-
-    // FIXME: Allow variadic type signature
-
     for (size_t i = 0; i < param_count; i++) {
       param_types[i] = resolve_type_expression(param_type_exprs[i]);
       if (!param_types[i]) {
@@ -1196,7 +1192,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
 
     return type_create_function(param_types, param_count, return_type,
-                                is_variadic, !checker_state.in_type_resolution,
+                                false, !checker_state.in_type_resolution,
                                 loc);
   }
 
@@ -2010,20 +2006,25 @@ Type *check_expression(AstNode *expr) {
     size_t param_count = func_type->data.func.param_count;
     Type **param_types = func_type->data.func.param_types;
     Type *return_type = func_type->data.func.return_type;
+    bool is_variadic = func_type->data.func.is_variadic;
 
-    if (func_type->data.func.is_variadic) {
+    // Handle variadic functions
+    if (is_variadic) {
       size_t required_params = param_count - 1;
+
+      // Must have at least required_params arguments
       if (arg_count < required_params) {
-        checker_error(expr->loc, "function expects at least %zu arguments, got %zu",
+        checker_error(expr->loc,
+                      "variadic function expects at least %zu arguments, got %zu",
                       required_params, arg_count);
         return NULL;
       }
-      
+
       // Check fixed parameters
       for (size_t i = 0; i < required_params; i++) {
         Type *arg_type = check_expression(args[i]);
         if (!arg_type) continue;
-        
+
         AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
         if (!converted) {
           checker_error(args[i]->loc,
@@ -2033,15 +2034,15 @@ Type *check_expression(AstNode *expr) {
           args[i] = converted;
         }
       }
-      
+
       // Check variadic arguments match slice element type
       Type *variadic_slice_type = param_types[required_params];
       Type *elem_type = variadic_slice_type->data.slice.element;
-      
+
       for (size_t i = required_params; i < arg_count; i++) {
         Type *arg_type = check_expression(args[i]);
         if (!arg_type) continue;
-        
+
         AstNode *converted = maybe_insert_cast(args[i], arg_type, elem_type);
         if (!converted) {
           checker_error(args[i]->loc,
@@ -2051,7 +2052,10 @@ Type *check_expression(AstNode *expr) {
           args[i] = converted;
         }
       }
+
     } else {
+      // Non-variadic function
+      
       // Check argument count
       if (arg_count != param_count) {
         checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
@@ -2068,11 +2072,9 @@ Type *check_expression(AstNode *expr) {
 
         AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
         if (!converted) {
-          checker_error(
-              args[i]->loc,
-              "argument %zu type could not be casted '%s', expected %s got %s",
-              i + 1, type_name(expr->resolved_type), type_name(param_types[i]),
-              type_name(arg_type));
+          checker_error(args[i]->loc,
+                        "argument %zu type mismatch: expected %s, got %s",
+                        i + 1, type_name(param_types[i]), type_name(arg_type));
         } else {
           args[i] = converted;
         }
