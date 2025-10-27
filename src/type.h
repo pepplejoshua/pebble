@@ -87,6 +87,7 @@ struct Type
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
       size_t closure_env_idx;
+      Type *raw_function;
     } func;
 
     struct

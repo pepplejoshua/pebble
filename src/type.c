@@ -221,8 +221,10 @@ Type *type_create_function(bool is_closure, Type **param_types, size_t param_cou
                            Type *return_type, bool canonicalize, Location loc) {
   assert(return_type);
 
+  TypeKind kind = is_closure ? TYPE_CLOSURE : TYPE_FUNCTION;
+
   if (canonicalize) {
-    Type temp = {.kind = is_closure ? TYPE_CLOSURE : TYPE_FUNCTION,
+    Type temp = {.kind = kind,
                  .data.func.param_types = param_types,
                  .data.func.param_count = param_count,
                  .data.func.return_type = return_type,
@@ -240,7 +242,7 @@ Type *type_create_function(bool is_closure, Type **param_types, size_t param_cou
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(is_closure ? TYPE_CLOSURE : TYPE_FUNCTION, loc);
+    Type *type = type_create(kind, loc);
     if (param_count > 0) {
       assert(param_types);
       Type **types = arena_alloc(&long_lived, param_count * sizeof(Type *));
@@ -513,38 +515,6 @@ char *compute_canonical_name(Type *type) {
 
   case TYPE_FUNCTION: {
     // Compute param names
-    size_t total_len = strlen("closure");
-    char **param_names = NULL;
-    if (type->data.func.param_count > 0) {
-      param_names = arena_alloc(&long_lived,
-                                type->data.func.param_count * sizeof(char *));
-      for (size_t i = 0; i < type->data.func.param_count; i++) {
-        param_names[i] = compute_canonical_name(type->data.func.param_types[i]);
-        total_len += strlen(param_names[i]) + 1;
-      }
-    }
-
-    // Return type
-    char *ret_name = compute_canonical_name(type->data.func.return_type);
-    total_len += strlen("_ret_") + strlen(ret_name);
-
-    result = arena_alloc(&long_lived, total_len + 1);
-    strcpy(result, "closure");
-
-    if (type->data.func.param_count > 0) {
-      for (size_t i = 0; i < type->data.func.param_count; i++) {
-        strcat(result, "_");
-        strcat(result, param_names[i]);
-      }
-    }
-
-    strcat(result, "_ret_");
-    strcat(result, ret_name);
-    break;
-  }
-
-  case TYPE_CLOSURE: {
-    // Compute param names
     size_t total_len = strlen("func");
     char **param_names = NULL;
     if (type->data.func.param_count > 0) {
@@ -562,6 +532,38 @@ char *compute_canonical_name(Type *type) {
 
     result = arena_alloc(&long_lived, total_len + 1);
     strcpy(result, "func");
+
+    if (type->data.func.param_count > 0) {
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        strcat(result, "_");
+        strcat(result, param_names[i]);
+      }
+    }
+
+    strcat(result, "_ret_");
+    strcat(result, ret_name);
+    break;
+  }
+
+  case TYPE_CLOSURE: {
+    // Compute param names
+    size_t total_len = strlen("closure");
+    char **param_names = NULL;
+    if (type->data.func.param_count > 0) {
+      param_names = arena_alloc(&long_lived,
+                                type->data.func.param_count * sizeof(char *));
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        param_names[i] = compute_canonical_name(type->data.func.param_types[i]);
+        total_len += strlen(param_names[i]) + 1;
+      }
+    }
+
+    // Return type
+    char *ret_name = compute_canonical_name(type->data.func.return_type);
+    total_len += strlen("_ret_") + strlen(ret_name);
+
+    result = arena_alloc(&long_lived, total_len + 1);
+    strcpy(result, "closure");
 
     if (type->data.func.param_count > 0) {
       for (size_t i = 0; i < type->data.func.param_count; i++) {

@@ -842,8 +842,6 @@ static void check_function_signatures(void) {
         if (!param_types[i]) {
           // Error already reported, but keep going to check other params
           param_types[i] = type_int; // Use placeholder to continue
-        } else if (param_types[i]->kind == TYPE_FUNCTION) {
-          param_types[i]->kind = TYPE_CLOSURE;
         }
       }
     }
@@ -910,8 +908,6 @@ bool check_anonymous_functions(void) {
         if (!param_types[i]) {
           // Error already reported, but keep going to check other params
           param_types[i] = type_int; // Use placeholder to continue
-        } else if (param_types[i]->kind == TYPE_FUNCTION) {
-          param_types[i]->kind = TYPE_CLOSURE;
         }
       }
     }
@@ -1220,6 +1216,9 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!return_type) {
       return NULL;
     }
+
+    type_create_function(true, param_types, param_count, return_type,
+                                !checker_state.in_type_resolution, loc);
 
     return type_create_function(false, param_types, param_count, return_type,
                                 !checker_state.in_type_resolution, loc);
@@ -2045,7 +2044,7 @@ Type *check_expression(AstNode *expr) {
     // Check argument count
     if (arg_count != param_count) {
       checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
-                    type_name(expr->resolved_type), param_count, arg_count);
+                    type_name(func_type), param_count, arg_count);
       return NULL;
     }
 
@@ -2481,20 +2480,22 @@ Type *check_expression(AstNode *expr) {
         type_create_function(capture_count > 0, param_types, param_count, return_type,
                              !checker_state.in_type_resolution, loc);
 
-    if (capture_count > 0) {
-      // Also create function variant
-      type_create_function(false, param_types, param_count, return_type,
-                             !checker_state.in_type_resolution, loc);
-    }
-
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
     symbol->type = fn_type;
     symbol->data.func.captures = capture_symbols;
     symbol->data.func.capture_count = capture_count;
-    symbol->data.func.env_index = checker_state.closure_env_index++;
-
-    fn_type->data.func.closure_env_idx = symbol->data.func.env_index;
+    
+    if (capture_count > 0) {
+      symbol->data.func.env_index = checker_state.closure_env_index++;
+      fn_type->data.func.closure_env_idx = symbol->data.func.env_index;
+      // Also create function variant
+      fn_type->data.func.raw_function = type_create_function(false, param_types, param_count,
+                                            return_type, !checker_state.in_type_resolution, loc);
+    } else {
+      fn_type->data.func.raw_function = type_create_function(true, param_types, param_count, return_type,
+                             !checker_state.in_type_resolution, loc);
+    }
 
     scope_add_symbol(anonymous_funcs, symbol);
 
