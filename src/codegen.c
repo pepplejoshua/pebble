@@ -572,13 +572,25 @@ void emit_program(Codegen *cg) {
     emit_string(cg, " ");
     emit_string(cg, sym->name);
     emit_string(cg, "(");
-    for (size_t i = 0; i < func->data.func.param_count; i++) {
+
+    size_t param_count = func->data.func.param_count;
+    bool is_variadic = func->data.func.is_variadic;
+    size_t fixed_params = is_variadic ? param_count - 1 : param_count;
+
+    for (size_t i = 0; i < fixed_params; i++) {
       if (i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, func->data.func.param_types[i]);
       emit_string(cg, " ");
       emit_string(cg, sym->decl->data.func_expr.params[i].name);
     }
+
+    if (is_variadic) {
+      if (fixed_params > 0)
+        emit_string(cg, ", ");
+      emit_string(cg, "size_t __variadic_count, ...");
+    }
+
     emit_string(cg, ")");
     emit_string(cg, ";\n");
   }
@@ -619,7 +631,7 @@ void emit_program(Codegen *cg) {
     if (is_variadic) {
       Type *slice_type = sym->type->data.func.param_types[fixed_params];
       Type *elem_type = slice_type->data.slice.element;
-      char *param_name = func->data.func_decl.params[fixed_params].name;
+      char *param_name = func->data.func_expr.params[fixed_params].name;
       
       // Allocate array for variadic args
       emit_type_name(cg, elem_type);

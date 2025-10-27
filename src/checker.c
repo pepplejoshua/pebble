@@ -2491,6 +2491,11 @@ Type *check_expression(AstNode *expr) {
 
     expr->data.func_expr.symbol = fn_symbol_name;
 
+    if (is_variadic != -1) {
+      checker_error(expr->loc,
+        "variadic parameters in anonymous functions aren't currently supported");
+    }
+
     // Will check function body with other functions
     return fn_type;
   }
