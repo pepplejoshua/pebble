@@ -1385,16 +1385,42 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // double -> float
     return expr;
   } else if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_ARRAY) {
-    // Invalid element counts
+    // Check if arrays have the same number of elements
     if (expr_type->data.array.size != target_type->data.array.size) {
-      return NULL;
+      return NULL; // Different array sizes, no conversion possible
     }
 
-    // If the element type can be casted, set its resolved
-    if (is_valid_cast(expr_type->data.array.element, target_type->data.array.element)) {
-      expr->resolved_type = target_type;
+    // If all elements match exactly, no cast needed
+    if (type_equals(expr_type->data.array.element, target_type->data.array.element)) {
       return expr;
-    }    
+    }
+
+    // Create a new tuple expression with recursively casted elements
+    AstNode *new_array = arena_alloc(&long_lived, sizeof(AstNode));
+    new_array->kind = AST_EXPR_ARRAY_LITERAL;
+    new_array->loc = expr->loc;
+    new_array->data.array_literal.element_count =
+        target_type->data.array.size;
+    new_array->data.array_literal.elements = arena_alloc(
+        &long_lived, sizeof(AstNode *) * target_type->data.array.size);
+
+    // Recursively cast each element
+    for (size_t i = 0; i < expr_type->data.array.size; i++) {
+      AstNode *casted_elem =
+          maybe_insert_cast(expr->data.array_literal.elements[i],
+                            expr_type->data.array.element,
+                            target_type->data.array.element);
+
+      if (!casted_elem) {
+        return NULL; // Element conversion failed
+      }
+
+      new_array->data.array_literal.elements[i] = casted_elem;
+    }
+
+    new_array->resolved_type = target_type;
+
+    return new_array;
   }
 
   // No valid conversion
@@ -2456,11 +2482,18 @@ Type *check_expression(AstNode *expr) {
         return NULL; // Error already reported
       }
 
-      if (!type_equals(elem_type, element_type)) {
+      AstNode *element = maybe_insert_cast(elements[i],
+                          elem_type,
+                          element_type);
+
+      if (!element) {
         checker_error(elements[i]->loc,
-                      "array literal elements must all have the same type");
+                      "array literal elements must all have the same type '%s' != '%s'",
+                      type_name(elem_type), type_name(element_type));
         return NULL;
       }
+
+      elements[i] = element;
     }
 
     // Create and return array type with inferred element type and size
