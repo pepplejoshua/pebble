@@ -2039,20 +2039,46 @@ Type *check_expression(AstNode *expr) {
       Type *variadic_slice_type = param_types[required_params];
       Type *elem_type = variadic_slice_type->data.slice.element;
 
-      for (size_t i = required_params; i < arg_count; i++) {
-        Type *arg_type = check_expression(args[i]);
-        if (!arg_type) continue;
+      if (arg_count == required_params + 1) {
+        // Single argument - could be slice or single element
+        Type *arg_type = check_expression(args[required_params]);
+        if (!arg_type) return NULL;
 
-        AstNode *converted = maybe_insert_cast(args[i], arg_type, elem_type);
-        if (!converted) {
-          checker_error(args[i]->loc,
-                        "variadic argument %zu type mismatch: expected %s, got %s",
-                        i - required_params + 1, type_name(elem_type), type_name(arg_type));
+        if (arg_type->kind == TYPE_SLICE) {
+          // Passing slice directly
+          if (!type_equals(arg_type->data.slice.element, elem_type)) {
+              checker_error(args[required_params]->loc,
+                            "slice element type mismatch: expected %s, got %s",
+                            type_name(elem_type), type_name(arg_type->data.slice.element));
+            return NULL;
+          }
         } else {
-          args[i] = converted;
+          // Single element
+          AstNode *converted = maybe_insert_cast(args[required_params], arg_type, elem_type);
+          if (!converted) {
+            checker_error(args[required_params]->loc,
+                          "variadic argument type mismatch: expected %s, got %s",
+                          type_name(elem_type), type_name(arg_type));
+          } else {
+            args[required_params] = converted;
+          }
+        }
+      } else {
+        // Many elements
+        for (size_t i = required_params; i < arg_count; i++) {
+          Type *arg_type = check_expression(args[i]);
+          if (!arg_type) continue;
+
+          AstNode *converted = maybe_insert_cast(args[i], arg_type, elem_type);
+          if (!converted) {
+            checker_error(args[i]->loc,
+                          "variadic argument %zu type mismatch: expected %s, got %s",
+                          i - required_params + 1, type_name(elem_type), type_name(arg_type));
+          } else {
+            args[i] = converted;
+          }
         }
       }
-
     } else {
       // Non-variadic function
       
@@ -2490,11 +2516,6 @@ Type *check_expression(AstNode *expr) {
     scope_add_symbol(anonymous_funcs, symbol);
 
     expr->data.func_expr.symbol = fn_symbol_name;
-
-    if (is_variadic != -1) {
-      checker_error(expr->loc,
-        "variadic parameters in anonymous functions aren't currently supported");
-    }
 
     // Will check function body with other functions
     return fn_type;

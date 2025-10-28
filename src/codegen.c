@@ -178,7 +178,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
-                   "<stdio.h>\n#include <string.h>\n#include <stdarg.h>\n\n";
+                   "<stdio.h>\n#include <string.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -542,21 +542,13 @@ void emit_program(Codegen *cg) {
       emit_string(cg, "(");
 
       size_t param_count = func->data.func.param_count;
-      bool is_variadic = func->data.func.is_variadic;
-      size_t fixed_params = is_variadic ? param_count - 1 : param_count;
 
-      for (size_t i = 0; i < fixed_params; i++) {
+      for (size_t i = 0; i < param_count; i++) {
         if (i > 0)
           emit_string(cg, ", ");
         emit_type_name(cg, func->data.func.param_types[i]);
         emit_string(cg, " ");
         emit_string(cg, sym->decl->data.func_decl.params[i].name);
-      }
-
-      if (is_variadic) {
-        if (fixed_params > 0)
-          emit_string(cg, ", ");
-        emit_string(cg, "size_t __variadic_count, ...");
       }
 
       emit_string(cg, ")");
@@ -573,22 +565,12 @@ void emit_program(Codegen *cg) {
     emit_string(cg, sym->name);
     emit_string(cg, "(");
 
-    size_t param_count = func->data.func.param_count;
-    bool is_variadic = func->data.func.is_variadic;
-    size_t fixed_params = is_variadic ? param_count - 1 : param_count;
-
-    for (size_t i = 0; i < fixed_params; i++) {
+    for (size_t i = 0; i < func->data.func.param_count; i++) {
       if (i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, func->data.func.param_types[i]);
       emit_string(cg, " ");
       emit_string(cg, sym->decl->data.func_expr.params[i].name);
-    }
-
-    if (is_variadic) {
-      if (fixed_params > 0)
-        emit_string(cg, ", ");
-      emit_string(cg, "size_t __variadic_count, ...");
     }
 
     emit_string(cg, ")");
@@ -605,10 +587,8 @@ void emit_program(Codegen *cg) {
     emit_string(cg, "(");
 
     size_t param_count = sym->type->data.func.param_count;
-    bool is_variadic = sym->type->data.func.is_variadic;
-    size_t fixed_params = is_variadic ? param_count - 1 : param_count;
 
-    for (size_t i = 0; i < fixed_params; i++) {
+    for (size_t i = 0; i < param_count; i++) {
       if (i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, sym->type->data.func.param_types[i]);
@@ -616,55 +596,9 @@ void emit_program(Codegen *cg) {
       emit_string(cg, func->data.func_expr.params[i].name);
     }
 
-    if (is_variadic) {
-      if (fixed_params > 0)
-        emit_string(cg, ", ");
-      emit_string(cg, "size_t __variadic_count, ...");
-    }
-
     emit_string(cg, ") ");
     emit_string(cg, "{\n");
     emit_indent(cg);
-
-    // If variadic, build the slice from va_args
-    if (is_variadic) {
-      Type *slice_type = sym->type->data.func.param_types[fixed_params];
-      Type *elem_type = slice_type->data.slice.element;
-      char *param_name = func->data.func_expr.params[fixed_params].name;
-
-      // Allocate array for variadic args
-      emit_indent_spaces(cg);
-      emit_type_name(cg, elem_type);
-      emit_string(cg, " *__variadic_data = alloca(__variadic_count * sizeof(");
-      emit_type_name(cg, elem_type);
-      emit_string(cg, "));\n");
-
-      // Copy from va_list
-      emit_indent_spaces(cg);
-      emit_string(cg, "va_list __args;\n");
-      emit_indent_spaces(cg);
-      emit_string(cg, "va_start(__args, __variadic_count);\n");
-      emit_indent_spaces(cg);
-      emit_string(cg,
-                  "for (size_t __i = 0; __i < __variadic_count; __i++) {\n");
-      emit_indent(cg);
-      emit_indent_spaces(cg);
-      emit_string(cg, "__variadic_data[__i] = va_arg(__args, ");
-      emit_type_name(cg, elem_type);
-      emit_string(cg, ");\n");
-      emit_dedent(cg);
-      emit_indent_spaces(cg);
-      emit_string(cg, "}\n");
-      emit_indent_spaces(cg);
-      emit_string(cg, "va_end(__args);\n");
-
-      // Create slice
-      emit_indent_spaces(cg);
-      emit_type_name(cg, slice_type);
-      emit_string(cg, " ");
-      emit_string(cg, param_name);
-      emit_string(cg, " = {__variadic_data, __variadic_count};\n");
-    }
 
     // Enter function scope
     defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
@@ -689,10 +623,8 @@ void emit_program(Codegen *cg) {
       emit_string(cg, "(");
 
       size_t param_count = sym->type->data.func.param_count;
-      bool is_variadic = sym->type->data.func.is_variadic;
-      size_t fixed_params = is_variadic ? param_count - 1 : param_count;
 
-      for (size_t i = 0; i < fixed_params; i++) {
+      for (size_t i = 0; i < param_count; i++) {
         if (i > 0)
           emit_string(cg, ", ");
         emit_type_name(cg, sym->type->data.func.param_types[i]);
@@ -700,56 +632,9 @@ void emit_program(Codegen *cg) {
         emit_string(cg, func->data.func_decl.params[i].name);
       }
 
-      if (is_variadic) {
-        if (fixed_params > 0)
-          emit_string(cg, ", ");
-        emit_string(cg, "size_t __variadic_count, ...");
-      }
-
       emit_string(cg, ") ");
       emit_string(cg, "{\n");
       emit_indent(cg);
-
-      // If variadic, build the slice from va_args
-      if (is_variadic) {
-        Type *slice_type = sym->type->data.func.param_types[fixed_params];
-        Type *elem_type = slice_type->data.slice.element;
-        char *param_name = func->data.func_decl.params[fixed_params].name;
-
-        // Allocate array for variadic args
-        emit_indent_spaces(cg);
-        emit_type_name(cg, elem_type);
-        emit_string(cg,
-                    " *__variadic_data = alloca(__variadic_count * sizeof(");
-        emit_type_name(cg, elem_type);
-        emit_string(cg, "));\n");
-
-        // Copy from va_list
-        emit_indent_spaces(cg);
-        emit_string(cg, "va_list __args;\n");
-        emit_indent_spaces(cg);
-        emit_string(cg, "va_start(__args, __variadic_count);\n");
-        emit_indent_spaces(cg);
-        emit_string(cg,
-                    "for (size_t __i = 0; __i < __variadic_count; __i++) {\n");
-        emit_indent(cg);
-        emit_indent_spaces(cg);
-        emit_string(cg, "__variadic_data[__i] = va_arg(__args, ");
-        emit_type_name(cg, elem_type);
-        emit_string(cg, ");\n");
-        emit_dedent(cg);
-        emit_indent_spaces(cg);
-        emit_string(cg, "}\n");
-        emit_indent_spaces(cg);
-        emit_string(cg, "va_end(__args);\n");
-
-        // Create slice
-        emit_indent_spaces(cg);
-        emit_type_name(cg, slice_type);
-        emit_string(cg, " ");
-        emit_string(cg, param_name);
-        emit_string(cg, " = {__variadic_data, __variadic_count};\n");
-      }
 
       // Enter function scope
       defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
@@ -1929,9 +1814,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "(");
 
     if (func_type->data.func.is_variadic) {
+      size_t arg_count = expr->data.call.arg_count;
       size_t param_count = func_type->data.func.param_count;
       size_t fixed_params = param_count - 1;
-      size_t variadic_count = expr->data.call.arg_count - fixed_params;
+      size_t variadic_count = arg_count - fixed_params;
 
       // Emit fixed arguments
       for (size_t i = 0; i < fixed_params; i++) {
@@ -1941,16 +1827,70 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
 
       // Emit variadic count
-      if (fixed_params > 0)
+      if (fixed_params > 0) {
         emit_string(cg, ", ");
-      char count_buf[32];
-      snprintf(count_buf, sizeof(count_buf), "%zu", variadic_count);
-      emit_string(cg, count_buf);
+      }
 
-      // Emit variadic arguments
-      for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
-        emit_string(cg, ", ");
-        emit_expr(cg, expr->data.call.args[i]);
+      Type **param_types = func_type->data.func.param_types;
+      Type *variadic_type = param_types[fixed_params];
+      
+      if (arg_count == fixed_params + 1 && variadic_type->kind == TYPE_SLICE) {
+        emit_expr(cg, expr->data.call.args[fixed_params]);        
+      } else {
+        Type *inner_type = variadic_type->data.slice.element;
+
+        if (variadic_count > 0) {
+          emit_string(cg, "({\n");
+          emit_indent_spaces(cg);
+          emit_indent_spaces(cg);
+
+          char count_buf[8] = {0};
+          snprintf(count_buf, sizeof(count_buf), "%zu", variadic_count);
+          
+          emit_string(cg, "size_t __argc = ");
+          emit_string(cg, count_buf);
+          emit_string(cg, ";\n");
+
+          emit_indent_spaces(cg);
+          emit_indent_spaces(cg);
+
+          emit_type_name(cg, inner_type);
+          emit_string(cg, " *__args = alloca(sizeof(");
+          emit_type_name(cg, inner_type);
+          emit_string(cg, ") * __argc);\n");
+
+          // Emit variadic arguments
+          for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
+            char index_buff[8] = {0};
+            snprintf(index_buff, sizeof(index_buff), "%zu", i);
+
+            emit_indent_spaces(cg);
+            emit_indent_spaces(cg);
+
+            emit_string(cg, "__args[");
+            emit_string(cg, index_buff);
+            emit_string(cg, "] = ");
+
+            emit_expr(cg, expr->data.call.args[i]);
+
+            emit_string(cg, ";\n");
+          }
+
+          emit_indent_spaces(cg);
+          emit_indent_spaces(cg);
+
+          emit_string(cg, "(");
+          emit_type_name(cg, variadic_type);
+          emit_string(cg, "){ __args, __argc };\n");
+          
+          emit_indent_spaces(cg);
+          emit_string(cg, "})");
+        } else {
+          // No elements
+          emit_string(cg, "(");
+          emit_type_name(cg, variadic_type);
+          emit_string(cg, "){ NULL, 0 }");
+        }
       }
     } else {
       for (size_t i = 0; i < expr->data.call.arg_count; i++) {
