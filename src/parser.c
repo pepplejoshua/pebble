@@ -542,14 +542,30 @@ AstNode *parse_print_stmt(Parser *parser) {
   // print expr;
 
   Location loc = parser->previous.location;
-  AstNode *expr = parse_expression(parser);
+  size_t count = 0, capacity = 2;
+
+  AstNode **exprs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+  exprs[count++] = parse_expression(parser);
+
+  while (parser_match(parser, TOKEN_COMMA)) {
+    if (count >= capacity) {
+      capacity *= 2;
+      AstNode **new_exprs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+      memcpy(new_exprs, exprs, count * sizeof(AstNode *));
+      exprs = new_exprs;
+    }
+
+    exprs[count++] = parse_expression(parser);
+  }
+
   parser_consume(parser, TOKEN_SEMICOLON,
                  "Expected ';' after print statement.");
 
   AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
   node->kind = AST_STMT_PRINT;
   node->loc = loc;
-  node->data.print_stmt.expr = expr;
+  node->data.print_stmt.exprs = exprs;
+  node->data.print_stmt.expr_count = count;
 
   return node;
 }

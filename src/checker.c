@@ -2570,10 +2570,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       checker_error(stmt->loc, "cannot use print in freestanding mode");
     }
 
-    AstNode *expr = stmt->data.print_stmt.expr;
-    Type *expr_type = check_expression(expr);
-    if (!expr_type) {
-      return false; // Error already reported
+    for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
+      AstNode *expr = stmt->data.print_stmt.exprs[i];
+      Type *expr_type = check_expression(expr);
+      if (!expr_type) {
+        return false; // Error already reported
+      }
     }
 
     return false;
