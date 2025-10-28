@@ -74,6 +74,8 @@ void checker_warning(Location loc, const char *fmt, ...) {
 static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
                                   Type *target_type);
 
+static bool is_valid_cast(Type *from, Type *to);
+
 static bool check_statement(AstNode *stmt, Type *expected_return_type);
 
 //=============================================================================
@@ -1382,13 +1384,24 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // float -> double
     // double -> float
     return expr;
+  } else if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_ARRAY) {
+    // Invalid element counts
+    if (expr_type->data.array.size != target_type->data.array.size) {
+      return NULL;
+    }
+
+    // If the element type can be casted, set its resolved
+    if (is_valid_cast(expr_type->data.array.element, target_type->data.array.element)) {
+      expr->resolved_type = target_type;
+      return expr;
+    }    
   }
 
   // No valid conversion
   return NULL;
 }
 
-static bool is_valid_cast(Type *from, Type *to) {
+bool is_valid_cast(Type *from, Type *to) {
   // Numeric types can convert to each other
   if (type_is_numeric(from) && type_is_numeric(to)) {
     return true;
@@ -2924,7 +2937,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         // Type is specified, check compatibility and insert cast if needed
         AstNode *converted = maybe_insert_cast(init, init_type, var_type);
         if (!converted) {
-          checker_error(init->loc, "initializer type mismatch");
+          checker_error(init->loc, "initializer type mismatch '%s' != '%s'",
+            type_name(var_type), type_name(init_type));
           return false;
         }
         stmt->data.var_decl.init =

@@ -1865,7 +1865,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_indent_spaces(cg);
           emit_indent_spaces(cg);
 
-          char count_buf[8] = {0};
+          char count_buf[24] = {0};
           snprintf(count_buf, sizeof(count_buf), "%zu", variadic_count);
           
           emit_string(cg, "size_t __argc = ");
@@ -1882,7 +1882,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           // Emit variadic arguments
           for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
-            char index_buff[8] = {0};
+            char index_buff[24] = {0};
             snprintf(index_buff, sizeof(index_buff), "%zu", i);
 
             emit_indent_spaces(cg);
