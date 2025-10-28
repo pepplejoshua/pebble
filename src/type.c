@@ -28,6 +28,7 @@ Type *type_i32 = NULL;
 Type *type_i64 = NULL;
 Type *type_isize = NULL;
 Type *type_char = NULL;
+Type *type_none = NULL;
 
 // Type table (hash map of name => type entries)
 TypeEntry *type_table = NULL;
@@ -66,6 +67,34 @@ Type *type_create_pointer(Type *base, bool canonicalize, Location loc) {
     // Just create type without canonicalization
     Type *type = type_create(TYPE_POINTER, loc);
     type->data.ptr.base = base;
+    return type;
+  }
+}
+
+// Create pointer type (conditional canonicalization)
+Type *type_create_optional(Type *base, bool canonicalize, Location loc) {
+  assert(base);
+
+  if (canonicalize) {
+    // Create temp pointer type to compute canonical name
+    Type temp = {.kind = TYPE_OPTIONAL,
+                 .data.optional.base = base,
+                 .canonical_name = NULL};
+    char *canonical_name = compute_canonical_name(&temp);
+    Type *existing = canonical_lookup(canonical_name);
+    if (existing)
+      return existing;
+
+    Type *type = arena_alloc(&long_lived, sizeof(Type));
+    type->kind = TYPE_OPTIONAL;
+    type->data.optional.base = base;
+    type->canonical_name = canonical_name;
+    canonical_register(canonical_name, type);
+    return type;
+  } else {
+    // Just create type without canonicalization
+    Type *type = type_create(TYPE_OPTIONAL, loc);
+    type->data.optional.base = base;
     return type;
   }
 }
@@ -155,7 +184,7 @@ Type *type_create_struct(char **field_names, Type **field_types,
 
 // Create enum type
 Type *type_create_enum(char **variant_names, size_t variant_count,
-                        Location loc) {
+                       Location loc) {
   Type *type = type_create(TYPE_ENUM, loc);
 
   if (variant_count == 0) {
@@ -309,7 +338,8 @@ bool type_equals(Type *a, Type *b) {
 
     // Compare parameter types
     for (size_t i = 0; i < a->data.func.param_count; i++) {
-      if (!type_equals(a->data.func.param_types[i], b->data.func.param_types[i])) {
+      if (!type_equals(a->data.func.param_types[i],
+                       b->data.func.param_types[i])) {
         return false;
       }
     }
@@ -330,13 +360,13 @@ bool type_equals(Type *a, Type *b) {
 
 // Check if type is numeric (int or float)
 bool type_is_numeric(Type *type) {
-  return type && (type->kind == TYPE_INT ||
-                  type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
-                  type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
-                  type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
-                  type->kind == TYPE_I16 || type->kind == TYPE_I32 ||
-                  type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
-                  type->kind == TYPE_F32 || type->kind == TYPE_F64);
+  return type && (type->kind == TYPE_INT || type->kind == TYPE_U8 ||
+                  type->kind == TYPE_U16 || type->kind == TYPE_U32 ||
+                  type->kind == TYPE_U64 || type->kind == TYPE_USIZE ||
+                  type->kind == TYPE_I8 || type->kind == TYPE_I16 ||
+                  type->kind == TYPE_I32 || type->kind == TYPE_I64 ||
+                  type->kind == TYPE_ISIZE || type->kind == TYPE_F32 ||
+                  type->kind == TYPE_F64);
 }
 
 bool type_is_ord(Type *type) {
@@ -368,6 +398,7 @@ void type_system_init(void) {
   type_i64 = type_create(TYPE_I64, loc);
   type_isize = type_create(TYPE_ISIZE, loc);
   type_char = type_create(TYPE_CHAR, loc);
+  type_none = type_create(TYPE_NONE, loc);
 
   // Set canonical names for built-in types
   type_int->canonical_name = "int";
@@ -387,6 +418,7 @@ void type_system_init(void) {
   type_i64->canonical_name = "i64";
   type_isize->canonical_name = "isize";
   type_char->canonical_name = "char";
+  type_none->canonical_name = "none";
 
   // Register built-in types in type table
   type_register("int", type_int);
@@ -452,6 +484,7 @@ char *compute_canonical_name(Type *type) {
   case TYPE_ISIZE:
   case TYPE_CHAR:
   case TYPE_OPAQUE:
+  case TYPE_NONE:
   case TYPE_ENUM:
     result = type->canonical_name;
     break;
@@ -461,6 +494,14 @@ char *compute_canonical_name(Type *type) {
     size_t len = strlen("ptr_") + strlen(base_name) + 1;
     result = arena_alloc(&long_lived, len);
     snprintf(result, len, "ptr_%s", base_name);
+    break;
+  }
+
+  case TYPE_OPTIONAL: {
+    char *base_name = compute_canonical_name(type->data.ptr.base);
+    size_t len = strlen("optional_") + strlen(base_name) + 1;
+    result = arena_alloc(&long_lived, len);
+    snprintf(result, len, "optional_%s", base_name);
     break;
   }
 
@@ -579,6 +620,7 @@ char *type_name(Type *type) {
   case TYPE_I64:
   case TYPE_ISIZE:
   case TYPE_CHAR:
+  case TYPE_NONE:
     return type->canonical_name;
   case TYPE_STRUCT:
   case TYPE_ENUM:
@@ -588,6 +630,14 @@ char *type_name(Type *type) {
     size_t len = strlen(base_ty_name) + 2;
     char *ptr_str = arena_alloc(&long_lived, len);
     ptr_str[0] = '*';
+    memcpy(ptr_str + 1, base_ty_name, strlen(base_ty_name) + 1);
+    return ptr_str;
+  }
+  case TYPE_OPTIONAL: {
+    char *base_ty_name = type_name(type->data.ptr.base);
+    size_t len = strlen(base_ty_name) + 2;
+    char *ptr_str = arena_alloc(&long_lived, len);
+    ptr_str[0] = '?';
     memcpy(ptr_str + 1, base_ty_name, strlen(base_ty_name) + 1);
     return ptr_str;
   }

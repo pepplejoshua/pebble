@@ -38,6 +38,8 @@ typedef enum {
   TYPE_TUPLE,
   TYPE_UNRESOLVED,
   TYPE_OPAQUE,
+  TYPE_OPTIONAL,
+  TYPE_NONE,
 } TypeKind;
 
 // Type structure
@@ -83,6 +85,10 @@ struct Type {
       Type **element_types; // Tuple element types
       size_t element_count; // Number of elements
     } tuple;
+
+    struct {
+      Type *base;
+    } optional;
   } data;
 };
 
@@ -111,6 +117,7 @@ extern Type *type_i32;
 extern Type *type_i64;
 extern Type *type_isize;
 extern Type *type_char;
+extern Type *type_none;
 
 // Type table (global hash map of named types)
 extern TypeEntry *type_table;
@@ -122,6 +129,7 @@ extern TypeEntry *canonical_type_table;
 void type_system_init(void);
 Type *type_create(TypeKind kind, Location loc);
 Type *type_create_pointer(Type *base, bool canonicalize, Location loc);
+Type *type_create_optional(Type *base, bool canonicalize, Location loc);
 Type *type_create_slice(Type *element, bool canonicalize, Location loc);
 Type *type_create_array(Type *element, size_t size, bool canonicalize, Location loc);
 Type *type_create_struct(char **field_names, Type **field_types,
