@@ -1,4 +1,3 @@
-
 #ifndef AST_H
 #define AST_H
 
@@ -62,10 +61,14 @@ typedef enum {
   AST_EXPR_SIZEOF,
   AST_EXPR_EXPLICIT_CAST,
   AST_EXPR_GROUPED_EXPR,
+  AST_EXPR_SOME,          // some expr
+  AST_EXPR_LITERAL_NONE,  // none
+  AST_EXPR_FORCE_UNWRAP,  // expr!
 
   // Type expressions
   AST_TYPE_NAMED,    // int, float, CustomType
   AST_TYPE_POINTER,  // *T
+  AST_TYPE_OPTIONAL, // ?T
   AST_TYPE_ARRAY,    // [N]T
   AST_TYPE_SLICE,    // []T
   AST_TYPE_STRUCT,   // struct { ... }
@@ -284,6 +287,12 @@ struct AstNode {
     struct {
       AstNode *inner_expr;
     } grouped_expr;
+    struct {
+        AstNode *value;  // Expression being wrapped
+    } some_expr;
+    struct {
+        AstNode *operand;  // Optional being unwrapped
+    } force_unwrap;
 
     // Type expressions
     struct {
@@ -292,6 +301,9 @@ struct AstNode {
     struct {
       AstNode *base;
     } type_pointer;
+    struct {
+      AstNode *base;
+    } type_optional;
     struct {
       AstNode *element;
       size_t size;
