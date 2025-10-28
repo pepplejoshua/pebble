@@ -178,7 +178,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
-                   "<stdio.h>\n#include <string.h>\n#include <stdarg.h>\n\n";
+                   "<stdio.h>\n#include <string.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
