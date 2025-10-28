@@ -971,74 +971,95 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, "continue;\n");
     break;
   case AST_STMT_PRINT: {
-    Type *type = stmt->data.print_stmt.expr->resolved_type;
-
     emit_indent_spaces(cg);
-    if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
+    emit_string(cg, "printf(\"");
+
+    // Emit type qualifiers
+    for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
+      Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
+
+      if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
         type->kind == TYPE_ENUM) {
-      emit_string(cg, "printf(\"%d\\n\", ");
-    } else if (type->kind == TYPE_I8) {
-      emit_string(cg, "printf(\"%hhd\\n\", ");
-    } else if (type->kind == TYPE_I16) {
-      emit_string(cg, "printf(\"%hd\\n\", ");
-    } else if (type->kind == TYPE_I64) {
-      emit_string(cg, "printf(\"%lld\\n\", ");
-    } else if (type->kind == TYPE_ISIZE) {
-      emit_string(cg, "printf(\"%td\\n\", ");
-    } else if (type->kind == TYPE_U8) {
-      emit_string(cg, "printf(\"%hhu\\n\", ");
-    } else if (type->kind == TYPE_U16) {
-      emit_string(cg, "printf(\"%hu\\n\", ");
-    } else if (type->kind == TYPE_U32) {
-      emit_string(cg, "printf(\"%lu\\n\", ");
-    } else if (type->kind == TYPE_U64) {
-      emit_string(cg, "printf(\"%llu\\n\", ");
-    } else if (type->kind == TYPE_USIZE) {
-      emit_string(cg, "printf(\"%zu\\n\", ");
-    } else if (type->kind == TYPE_CHAR) {
-      emit_string(cg, "printf(\"%c\\n\", ");
-    } else if (type->kind == TYPE_F32 || type->kind == TYPE_F64) {
-      emit_string(cg, "printf(\"%f\\n\", ");
-    } else if (type->kind == TYPE_STRING) {
-      emit_string(cg, "printf(\"%s\\n\", ");
-    } else if (type->kind == TYPE_BOOL) {
-      emit_string(cg, "printf(\"%s\\n\", ");
-      emit_expr(cg, stmt->data.print_stmt.expr);
-      emit_string(cg, " ? \"true\" : \"false\"");
-      emit_string(cg, ");\n");
-      return;
-    } else {
-      emit_string(cg, "printf(\"");
-      emit_string(cg, type_name(stmt->data.print_stmt.expr->resolved_type));
-      emit_string(cg, "\\n\");\n");
-      return;
+        emit_string(cg, "%d");
+      } else if (type->kind == TYPE_I8) {
+        emit_string(cg, "%hhd");
+      } else if (type->kind == TYPE_I16) {
+        emit_string(cg, "%hd");
+      } else if (type->kind == TYPE_I64) {
+        emit_string(cg, "%lld");
+      } else if (type->kind == TYPE_ISIZE) {
+        emit_string(cg, "%td");
+      } else if (type->kind == TYPE_U8) {
+        emit_string(cg, "%hhu");
+      } else if (type->kind == TYPE_U16) {
+        emit_string(cg, "%hu");
+      } else if (type->kind == TYPE_U32) {
+        emit_string(cg, "%lu");
+      } else if (type->kind == TYPE_U64) {
+        emit_string(cg, "%llu");
+      } else if (type->kind == TYPE_USIZE) {
+        emit_string(cg, "%zu");
+      } else if (type->kind == TYPE_CHAR) {
+        emit_string(cg, "%c");
+      } else if (type->kind == TYPE_F32 || type->kind == TYPE_F64) {
+        emit_string(cg, "%f");
+      } else if (type->kind == TYPE_STRING) {
+        emit_string(cg, "%s");
+      } else {
+        emit_string(cg, "%s");
+      }
     }
 
-    if (type->kind == TYPE_STRING) {
-      emit_string(cg, "({ ");
+    emit_string(cg, "\\n\", ");
 
-      AstNode *expr = stmt->data.print_stmt.expr;
+    // Emit expressions
+    for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
+      Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
 
-      char buffer[64];
-      char *temporary_name = get_temporary_name(cg, buffer, 64);
+      if (i > 0) {
+        emit_string(cg, ", ");
+      }
 
-      emit_type_name(cg, expr->resolved_type);
-      emit_string(cg, " ");
-      emit_string(cg, temporary_name);
+      if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
+        type->kind == TYPE_ENUM || type->kind == TYPE_I8 ||
+        type->kind == TYPE_I16 || type->kind == TYPE_I64 ||
+        type->kind == TYPE_ISIZE || type->kind == TYPE_U8 ||
+        type->kind == TYPE_U16 || type->kind == TYPE_U32 ||
+        type->kind == TYPE_U64 || type->kind == TYPE_USIZE ||
+        type->kind == TYPE_CHAR || type->kind == TYPE_F32 ||
+        type->kind == TYPE_F64) {
+        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
+      } else if (type->kind == TYPE_BOOL) {
+        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
+        emit_string(cg, " ? \"true\" : \"false\"");
+      } else if (type->kind == TYPE_STRING) {
+        emit_string(cg, "({ ");
 
-      emit_string(cg, " = ");
-      emit_expr(cg, expr);
-      emit_string(cg, ";\n");
+        AstNode *expr = stmt->data.print_stmt.exprs[i];
 
-      emit_string(cg, "(");
-      emit_string(cg, temporary_name);
-      emit_string(cg, ") ? ");
-      emit_string(cg, temporary_name);
-      emit_string(cg, " : \"\";\n");
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
 
-      emit_string(cg, " })");
-    } else {
-      emit_expr(cg, stmt->data.print_stmt.expr);
+        emit_type_name(cg, expr->resolved_type);
+        emit_string(cg, " ");
+        emit_string(cg, temporary_name);
+
+        emit_string(cg, " = ");
+        emit_expr(cg, expr);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "(");
+        emit_string(cg, temporary_name);
+        emit_string(cg, ") ? ");
+        emit_string(cg, temporary_name);
+        emit_string(cg, " : \"\";\n");
+
+        emit_string(cg, " })");
+      } else {
+        emit_string(cg, "\"");
+        emit_string(cg, type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+        emit_string(cg, "\"");
+      }
     }
 
     emit_string(cg, ");\n");

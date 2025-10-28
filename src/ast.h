@@ -180,7 +180,8 @@ struct AstNode {
       AstNode *rhs;
     } assign_stmt;
     struct {
-      AstNode *expr;
+      AstNode **exprs;
+      size_t expr_count;
     } print_stmt;
     struct {
       AstNode *switch_stmt; // Associated switch stmt
