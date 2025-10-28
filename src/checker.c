@@ -2790,16 +2790,25 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *body = stmt->data.loop_stmt.body;
     AstNode *iterator_name = stmt->data.loop_stmt.iterator_name;
 
-    // Check start is an integer literal (not a variable)
-    if (start->kind != AST_EXPR_LITERAL_INT) {
-      checker_error(start->loc, "loop range start must be an integer literal");
+    // Check start is an integer (can be variable or expression)
+    Type *start_type = check_expression(start);
+    if (start_type && !type_is_integral(start_type)) {
+      checker_error(start->loc, "loop range start must be an integer");
     }
 
     // Check end is an integer (can be variable or expression)
     Type *end_type = check_expression(end);
-    if (end_type && !type_is_int(end_type)) {
+    if (end_type && !type_is_integral(end_type)) {
       checker_error(end->loc, "loop range end must be an integer");
     }
+
+    AstNode *new_end = maybe_insert_cast(end, end_type, start_type);
+    if (!new_end) {
+      checker_error(end->loc, "loop range end doesn't match start type '%s' != '%s'",
+        type_name(end_type), type_name(start_type));
+    }
+
+    stmt->data.loop_stmt.end = new_end;
 
     // Create a scope for the loop body and register 'iter' as a constant
     Scope *loop_scope = scope_create(current_scope);
