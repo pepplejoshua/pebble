@@ -74,6 +74,8 @@ void checker_warning(Location loc, const char *fmt, ...) {
 static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
                                   Type *target_type);
 
+static bool is_valid_cast(Type *from, Type *to);
+
 static bool check_statement(AstNode *stmt, Type *expected_return_type);
 
 //=============================================================================
@@ -1382,13 +1384,50 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // float -> double
     // double -> float
     return expr;
+  } else if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_ARRAY) {
+    // Check if arrays have the same number of elements
+    if (expr_type->data.array.size != target_type->data.array.size) {
+      return NULL; // Different array sizes, no conversion possible
+    }
+
+    // If all elements match exactly, no cast needed
+    if (type_equals(expr_type->data.array.element, target_type->data.array.element)) {
+      return expr;
+    }
+
+    // Create a new tuple expression with recursively casted elements
+    AstNode *new_array = arena_alloc(&long_lived, sizeof(AstNode));
+    new_array->kind = AST_EXPR_ARRAY_LITERAL;
+    new_array->loc = expr->loc;
+    new_array->data.array_literal.element_count =
+        target_type->data.array.size;
+    new_array->data.array_literal.elements = arena_alloc(
+        &long_lived, sizeof(AstNode *) * target_type->data.array.size);
+
+    // Recursively cast each element
+    for (size_t i = 0; i < expr_type->data.array.size; i++) {
+      AstNode *casted_elem =
+          maybe_insert_cast(expr->data.array_literal.elements[i],
+                            expr_type->data.array.element,
+                            target_type->data.array.element);
+
+      if (!casted_elem) {
+        return NULL; // Element conversion failed
+      }
+
+      new_array->data.array_literal.elements[i] = casted_elem;
+    }
+
+    new_array->resolved_type = target_type;
+
+    return new_array;
   }
 
   // No valid conversion
   return NULL;
 }
 
-static bool is_valid_cast(Type *from, Type *to) {
+bool is_valid_cast(Type *from, Type *to) {
   // Numeric types can convert to each other
   if (type_is_numeric(from) && type_is_numeric(to)) {
     return true;
@@ -2443,11 +2482,18 @@ Type *check_expression(AstNode *expr) {
         return NULL; // Error already reported
       }
 
-      if (!type_equals(elem_type, element_type)) {
+      AstNode *element = maybe_insert_cast(elements[i],
+                          elem_type,
+                          element_type);
+
+      if (!element) {
         checker_error(elements[i]->loc,
-                      "array literal elements must all have the same type");
+                      "array literal elements must all have the same type '%s' != '%s'",
+                      type_name(elem_type), type_name(element_type));
         return NULL;
       }
+
+      elements[i] = element;
     }
 
     // Create and return array type with inferred element type and size
@@ -2744,16 +2790,25 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *body = stmt->data.loop_stmt.body;
     AstNode *iterator_name = stmt->data.loop_stmt.iterator_name;
 
-    // Check start is an integer literal (not a variable)
-    if (start->kind != AST_EXPR_LITERAL_INT) {
-      checker_error(start->loc, "loop range start must be an integer literal");
+    // Check start is an integer (can be variable or expression)
+    Type *start_type = check_expression(start);
+    if (start_type && !type_is_integral(start_type)) {
+      checker_error(start->loc, "loop range start must be an integer");
     }
 
     // Check end is an integer (can be variable or expression)
     Type *end_type = check_expression(end);
-    if (end_type && !type_is_int(end_type)) {
+    if (end_type && !type_is_integral(end_type)) {
       checker_error(end->loc, "loop range end must be an integer");
     }
+
+    AstNode *new_end = maybe_insert_cast(end, end_type, start_type);
+    if (!new_end) {
+      checker_error(end->loc, "loop range end doesn't match start type '%s' != '%s'",
+        type_name(end_type), type_name(start_type));
+    }
+
+    stmt->data.loop_stmt.end = new_end;
 
     // Create a scope for the loop body and register 'iter' as a constant
     Scope *loop_scope = scope_create(current_scope);
@@ -2924,7 +2979,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         // Type is specified, check compatibility and insert cast if needed
         AstNode *converted = maybe_insert_cast(init, init_type, var_type);
         if (!converted) {
-          checker_error(init->loc, "initializer type mismatch");
+          checker_error(init->loc, "initializer type mismatch '%s' != '%s'",
+            type_name(var_type), type_name(init_type));
           return false;
         }
         stmt->data.var_decl.init =
