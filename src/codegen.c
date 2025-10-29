@@ -1686,11 +1686,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_FORCE_UNWRAP: {
     // emit assert on has_value
     // <emit operand>.value
-    emit_string(cg, "({ assert(");
+    emit_string(cg, "({ ");
+    emit_type_name(cg, expr->data.force_unwrap.operand->resolved_type);
+    emit_string(cg, " __opt = ");
     emit_expr(cg, expr->data.force_unwrap.operand);
-    emit_string(cg, ".has_value); ");
-    emit_expr(cg, expr->data.force_unwrap.operand);
-    emit_string(cg, ".value; })");
+    emit_string(cg, "; assert(__opt.has_value); __opt.value; })");
     break;
   }
 
