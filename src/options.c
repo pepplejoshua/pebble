@@ -98,7 +98,17 @@ void cleanup_args(void) {
   library_set = NULL;
 }
 
-void append_library_string(char *library) {
+void append_library_string(char *str) {
+  char *library = str;
+
+  char str_buffer[512] = {0};
+
+  size_t len = strlen(library);
+  if (len >= 2 && library[0] != '"' && library[len-1] != '"') {
+    sprintf(str_buffer, "\"%s\"", library);
+    library = str_buffer;
+  }
+
   LibraryEntry *entry;
   HASH_FIND_STR(library_set, library, entry);
   
@@ -119,10 +129,10 @@ void append_library_string(char *library) {
     compiler_opts.linked_libraries = new_libraries;
   }
 
-  compiler_opts.linked_libraries[compiler_opts.linked_libraries_count++] = library;
+  compiler_opts.linked_libraries[compiler_opts.linked_libraries_count++] = str_dup(library);
 
   entry = arena_alloc(&long_lived, sizeof(LibraryEntry));
-  entry->name = library;
+  entry->name = str_dup(library);
   HASH_ADD_KEYPTR(hh, library_set, entry->name, strlen(entry->name), entry);
 }
 
@@ -253,6 +263,7 @@ bool parse_args(int argc, char **argv) {
         return false;
       }
       
+      // skip "-l"
       append_library_string(argv[i] + 2);
     } else if (strcmp(argv[i], "-c") == 0) {
       if (i + 1 >= argc) {
