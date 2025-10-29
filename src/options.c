@@ -173,7 +173,8 @@ char *release_mode_string(void) {
   case RELEASE_DEBUG: {
     // Debug flags same for both
     if (is_clang_like) {
-      return "-g3 -O0 -Wall -Wextra -Wpedantic ";
+      return "-g3 -O0 -Wall -Wextra -Wpedantic "
+             "-fsanitize=address,undefined";
     } else {
       return "-g3 -O0 -Wall -Wextra -Wpedantic "
              "-fsanitize=address,leak,undefined";
