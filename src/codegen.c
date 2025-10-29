@@ -1950,7 +1950,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < strlen(__item)); __item[__index]; })");
+        emit_string(cg, "; assert(__index >= 0 && __index < (int)strlen(__item)); __item[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, "[");
@@ -1968,7 +1968,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_type_name(cg, array_expr->resolved_type);
         emit_string(cg, " __item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < __item.len); __item.data[__index]; })");
+        emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); __item.data[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, ".data[");
