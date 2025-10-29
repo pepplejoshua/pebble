@@ -550,7 +550,17 @@ void emit_program(Codegen *cg) {
         if (sym->decl->data.var_decl.init) {
           emit_expr(cg, sym->decl->data.var_decl.init);
         } else {
-          emit_string(cg, "{0}");
+          Type *init_t = sym->decl->resolved_type;
+
+          if (init_t->kind == TYPE_ARRAY) {
+            emit_string(cg, " {{0}, ");
+            char len_buffer[32] = {0};
+            sprintf(len_buffer, "%zu", init_t->data.array.size);
+            emit_string(cg, len_buffer);
+            emit_string(cg, "}");
+          } else {
+            emit_string(cg, "{0}");
+          }
         }
       } else if (sym->kind == SYMBOL_CONSTANT && sym->decl &&
                  sym->decl->data.const_decl.value) {
