@@ -40,6 +40,8 @@ typedef enum {
   TOKEN_CASE,
   TOKEN_DEFER,
   TOKEN_ENUM,
+  TOKEN_SOME,
+  TOKEN_NONE,
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"
@@ -73,6 +75,7 @@ typedef enum {
   TOKEN_AND,       // &&
   TOKEN_OR,        // ||
   TOKEN_NOT,       // !
+  TOKEN_QUESTION,  // ?
   TOKEN_AMPERSAND, // &
   TOKEN_PIPE,      // |
   TOKEN_CARET,     // ^

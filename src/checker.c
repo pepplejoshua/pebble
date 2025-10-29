@@ -199,6 +199,12 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     }
     break;
 
+  case TYPE_OPTIONAL:
+    if (canonicalize_type_internal(&type->data.optional.base, visited)) {
+      cycle_detected = true;
+    }
+    break;
+
   case TYPE_SLICE:
     if (canonicalize_type_internal(&type->data.slice.element, visited)) {
       cycle_detected = true;
@@ -345,11 +351,23 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     canonical_name = type_char->canonical_name;
     break;
 
+  case TYPE_NONE:
+    canonical_name = type_none->canonical_name;
+    break;
+
   case TYPE_POINTER: {
     char *base_name = GET_COMPONENT_NAME(type->data.ptr.base);
     size_t len = strlen("ptr_") + strlen(base_name) + 1;
     canonical_name = arena_alloc(&long_lived, len);
     snprintf(canonical_name, len, "ptr_%s", base_name);
+    break;
+  }
+
+  case TYPE_OPTIONAL: {
+    char *base_name = GET_COMPONENT_NAME(type->data.ptr.base);
+    size_t len = strlen("optional_") + strlen(base_name) + 1;
+    canonical_name = arena_alloc(&long_lived, len);
+    snprintf(canonical_name, len, "optional_%s", base_name);
     break;
   }
 
@@ -840,8 +858,9 @@ static void check_function_signatures(void) {
       for (size_t i = 0; i < param_count; i++) {
         if (is_variadic != -1) {
           checker_error(decl->loc,
-            "Parameter '%s' is marked as variadic but parameter '%s' is already variadic",
-            params[i].name, params[is_variadic].name);
+                        "Parameter '%s' is marked as variadic but parameter "
+                        "'%s' is already variadic",
+                        params[i].name, params[is_variadic].name);
         }
 
         if (params[i].is_variadic) {
@@ -863,10 +882,9 @@ static void check_function_signatures(void) {
     }
 
     // Create function type
-    sym->type =
-        type_create_function(param_types, param_count, return_type,
-                             is_variadic != -1, !checker_state.in_type_resolution,
-                             sym->decl->loc);
+    sym->type = type_create_function(
+        param_types, param_count, return_type, is_variadic != -1,
+        !checker_state.in_type_resolution, sym->decl->loc);
 
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
@@ -1036,6 +1054,15 @@ Type *resolve_type_expression(AstNode *type_expr) {
     return type_create_pointer(base, !checker_state.in_type_resolution, loc);
   }
 
+  case AST_TYPE_OPTIONAL: {
+    // Resolve base type and create pointer type
+    Type *base = resolve_type_expression(type_expr->data.type_optional.base);
+    if (!base) {
+      return NULL;
+    }
+    return type_create_optional(base, !checker_state.in_type_resolution, loc);
+  }
+
   case AST_TYPE_ARRAY: {
     // Resolve element type and create array type
     Type *element = resolve_type_expression(type_expr->data.type_array.element);
@@ -1193,9 +1220,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
 
-    return type_create_function(param_types, param_count, return_type,
-                                false, !checker_state.in_type_resolution,
-                                loc);
+    return type_create_function(param_types, param_count, return_type, false,
+                                !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -1353,6 +1379,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       return expr;
     }
 
+    // Determine if we are dealing a literal, so we can try to perform
+    // implicit casts on its elements
+    if (expr->kind != AST_EXPR_TUPLE) {
+      return NULL;
+    }
+
     // Create a new tuple expression with recursively casted elements
     AstNode *new_tuple = arena_alloc(&long_lived, sizeof(AstNode));
     new_tuple->kind = AST_EXPR_TUPLE;
@@ -1391,25 +1423,30 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     }
 
     // If all elements match exactly, no cast needed
-    if (type_equals(expr_type->data.array.element, target_type->data.array.element)) {
+    if (type_equals(expr_type->data.array.element,
+                    target_type->data.array.element)) {
       return expr;
     }
 
-    // Create a new tuple expression with recursively casted elements
+    // Determine if we are dealing a literal, so we can try to perform
+    // implicit casts on its elements
+    if (expr->kind != AST_EXPR_ARRAY_LITERAL) {
+      return NULL;
+    }
+
+    // Create a new array expression with recursively casted elements
     AstNode *new_array = arena_alloc(&long_lived, sizeof(AstNode));
     new_array->kind = AST_EXPR_ARRAY_LITERAL;
     new_array->loc = expr->loc;
-    new_array->data.array_literal.element_count =
-        target_type->data.array.size;
+    new_array->data.array_literal.element_count = target_type->data.array.size;
     new_array->data.array_literal.elements = arena_alloc(
         &long_lived, sizeof(AstNode *) * target_type->data.array.size);
 
     // Recursively cast each element
     for (size_t i = 0; i < expr_type->data.array.size; i++) {
-      AstNode *casted_elem =
-          maybe_insert_cast(expr->data.array_literal.elements[i],
-                            expr_type->data.array.element,
-                            target_type->data.array.element);
+      AstNode *casted_elem = maybe_insert_cast(
+          expr->data.array_literal.elements[i], expr_type->data.array.element,
+          target_type->data.array.element);
 
       if (!casted_elem) {
         return NULL; // Element conversion failed
@@ -1421,6 +1458,41 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_array->resolved_type = target_type;
 
     return new_array;
+  } else if (expr_type->kind == TYPE_NONE &&
+             target_type->kind == TYPE_OPTIONAL) {
+    // Allow implicit case of none to any type ?T
+    return expr;
+  } else if (expr_type->kind == TYPE_OPTIONAL &&
+             target_type->kind == TYPE_OPTIONAL) {
+
+    // If all elements match exactly, no cast needed
+    if (type_equals(expr_type->data.optional.base,
+                    target_type->data.optional.base)) {
+      return expr;
+    }
+
+    // Determine if we are dealing a literal, so we can try to perform
+    // an implicit cast on its element
+    if (expr->kind != AST_EXPR_SOME) {
+      return NULL;
+    }
+
+    AstNode *new_some = arena_alloc(&long_lived, sizeof(AstNode));
+    new_some->kind = AST_EXPR_SOME;
+    new_some->loc = expr->loc;
+
+    // Attempt to cast the inner expression
+    AstNode *casted_value = maybe_insert_cast(expr->data.some_expr.value,
+                                              expr_type->data.optional.base,
+                                              target_type->data.optional.base);
+
+    if (!casted_value) {
+      return NULL; // Cast failed
+    }
+
+    new_some->data.some_expr.value = casted_value;
+    new_some->resolved_type = target_type;
+    return new_some;
   }
 
   // No valid conversion
@@ -1718,6 +1790,48 @@ Type *check_expression(AstNode *expr) {
     // sizeof always returns int
     expr->resolved_type = type_int;
     return type_usize;
+  }
+
+  case AST_EXPR_LITERAL_NONE:
+    expr->resolved_type = type_none;
+    return type_none;
+
+  case AST_EXPR_SOME: {
+    AstNode *value = expr->data.some_expr.value;
+
+    // Typecheck value
+    Type *val_ty = check_expression(value);
+
+    if (!val_ty) {
+      return NULL;
+    }
+
+    Type *optional =
+        type_create_optional(val_ty, !checker_state.in_type_resolution, loc);
+    expr->resolved_type = optional;
+    return optional;
+  }
+
+  case AST_EXPR_FORCE_UNWRAP: {
+    AstNode *value = expr->data.force_unwrap.operand;
+
+    // Typecheck value
+    Type *val_ty = check_expression(value);
+
+    if (!val_ty) {
+      return NULL;
+    }
+
+    if (val_ty->kind != TYPE_OPTIONAL) {
+      checker_error(
+          expr->loc,
+          "'%s' is not an optional type and cannot be force unwrapped.",
+          type_name(val_ty));
+      return NULL;
+    }
+
+    expr->resolved_type = val_ty->data.optional.base;
+    return val_ty->data.optional.base;
   }
 
   case AST_EXPR_IDENTIFIER: {
@@ -2053,18 +2167,21 @@ Type *check_expression(AstNode *expr) {
 
       // Must have at least required_params arguments
       if (arg_count < required_params) {
-        checker_error(expr->loc,
-                      "variadic function expects at least %zu arguments, got %zu",
-                      required_params, arg_count);
+        checker_error(
+            expr->loc,
+            "variadic function expects at least %zu arguments, got %zu",
+            required_params, arg_count);
         return NULL;
       }
 
       // Check fixed parameters
       for (size_t i = 0; i < required_params; i++) {
         Type *arg_type = check_expression(args[i]);
-        if (!arg_type) continue;
+        if (!arg_type)
+          continue;
 
-        AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
+        AstNode *converted =
+            maybe_insert_cast(args[i], arg_type, param_types[i]);
         if (!converted) {
           checker_error(args[i]->loc,
                         "argument %zu type mismatch: expected %s, got %s",
@@ -2081,23 +2198,27 @@ Type *check_expression(AstNode *expr) {
       if (arg_count == required_params + 1) {
         // Single argument - could be slice or single element
         Type *arg_type = check_expression(args[required_params]);
-        if (!arg_type) return NULL;
+        if (!arg_type)
+          return NULL;
 
         if (arg_type->kind == TYPE_SLICE) {
           // Passing slice directly
           if (!type_equals(arg_type->data.slice.element, elem_type)) {
-              checker_error(args[required_params]->loc,
-                            "slice element type mismatch: expected %s, got %s",
-                            type_name(elem_type), type_name(arg_type->data.slice.element));
+            checker_error(args[required_params]->loc,
+                          "slice element type mismatch: expected %s, got %s",
+                          type_name(elem_type),
+                          type_name(arg_type->data.slice.element));
             return NULL;
           }
         } else {
           // Single element
-          AstNode *converted = maybe_insert_cast(args[required_params], arg_type, elem_type);
+          AstNode *converted =
+              maybe_insert_cast(args[required_params], arg_type, elem_type);
           if (!converted) {
-            checker_error(args[required_params]->loc,
-                          "variadic argument type mismatch: expected %s, got %s",
-                          type_name(elem_type), type_name(arg_type));
+            checker_error(
+                args[required_params]->loc,
+                "variadic argument type mismatch: expected %s, got %s",
+                type_name(elem_type), type_name(arg_type));
           } else {
             args[required_params] = converted;
           }
@@ -2106,13 +2227,16 @@ Type *check_expression(AstNode *expr) {
         // Many elements
         for (size_t i = required_params; i < arg_count; i++) {
           Type *arg_type = check_expression(args[i]);
-          if (!arg_type) continue;
+          if (!arg_type)
+            continue;
 
           AstNode *converted = maybe_insert_cast(args[i], arg_type, elem_type);
           if (!converted) {
-            checker_error(args[i]->loc,
-                          "variadic argument %zu type mismatch: expected %s, got %s",
-                          i - required_params + 1, type_name(elem_type), type_name(arg_type));
+            checker_error(
+                args[i]->loc,
+                "variadic argument %zu type mismatch: expected %s, got %s",
+                i - required_params + 1, type_name(elem_type),
+                type_name(arg_type));
           } else {
             args[i] = converted;
           }
@@ -2120,7 +2244,7 @@ Type *check_expression(AstNode *expr) {
       }
     } else {
       // Non-variadic function
-      
+
       // Check argument count
       if (arg_count != param_count) {
         checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
@@ -2135,7 +2259,8 @@ Type *check_expression(AstNode *expr) {
           continue; // Error already reported
         }
 
-        AstNode *converted = maybe_insert_cast(args[i], arg_type, param_types[i]);
+        AstNode *converted =
+            maybe_insert_cast(args[i], arg_type, param_types[i]);
         if (!converted) {
           checker_error(args[i]->loc,
                         "argument %zu type mismatch: expected %s, got %s",
@@ -2325,6 +2450,14 @@ Type *check_expression(AstNode *expr) {
         checker_error(expr->loc, "%s has only 'len' field", type_name);
         return NULL;
       }
+    } else if (base_type->kind == TYPE_OPTIONAL) {
+      if (strcmp(field_name, "is_some") == 0) {
+        expr->resolved_type = type_bool;
+        return type_bool;
+      }
+      checker_error(expr->loc, "%s has only 'is_some' field",
+                    type_name(base_type));
+      return NULL;
     }
     // Handle struct member access
     else if (base_type->kind == TYPE_STRUCT) {
@@ -2482,14 +2615,14 @@ Type *check_expression(AstNode *expr) {
         return NULL; // Error already reported
       }
 
-      AstNode *element = maybe_insert_cast(elements[i],
-                          elem_type,
-                          element_type);
+      AstNode *element =
+          maybe_insert_cast(elements[i], elem_type, element_type);
 
       if (!element) {
-        checker_error(elements[i]->loc,
-                      "array literal elements must all have the same type '%s' != '%s'",
-                      type_name(elem_type), type_name(element_type));
+        checker_error(
+            elements[i]->loc,
+            "array literal elements must all have the same type '%s' != '%s'",
+            type_name(elem_type), type_name(element_type));
         return NULL;
       }
 
@@ -2532,8 +2665,9 @@ Type *check_expression(AstNode *expr) {
     for (size_t i = 0; i < param_count; i++) {
       if (is_variadic != -1) {
         checker_error(expr->loc,
-          "Parameter '%s' is marked as variadic but parameter '%s' is already variadic",
-          params[i].name, params[is_variadic].name);
+                      "Parameter '%s' is marked as variadic but parameter '%s' "
+                      "is already variadic",
+                      params[i].name, params[is_variadic].name);
       }
 
       if (params[i].is_variadic) {
@@ -2551,10 +2685,9 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Add function as symbol
-    Type *fn_type =
-        type_create_function(param_types, param_count, return_type,
-                             is_variadic != -1, !checker_state.in_type_resolution,
-                             loc);
+    Type *fn_type = type_create_function(
+        param_types, param_count, return_type, is_variadic != -1,
+        !checker_state.in_type_resolution, loc);
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
@@ -2739,11 +2872,11 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     if (casted_cond && switch_cond->resolved_type &&
         !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
-      checker_error(
-          cond->loc,
-          "switch case condition '%s' doesn't match switch condition type '%s'",
-          cond->resolved_type->canonical_name,
-          switch_cond->resolved_type->canonical_name);
+      checker_error(cond->loc,
+                    "switch case condition '%s' doesn't match switch "
+                    "condition type '%s'",
+                    cond->resolved_type->canonical_name,
+                    switch_cond->resolved_type->canonical_name);
     }
 
     // Check that condition is constant
@@ -2804,8 +2937,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     AstNode *new_end = maybe_insert_cast(end, end_type, start_type);
     if (!new_end) {
-      checker_error(end->loc, "loop range end doesn't match start type '%s' != '%s'",
-        type_name(end_type), type_name(start_type));
+      checker_error(end->loc,
+                    "loop range end doesn't match start type '%s' != '%s'",
+                    type_name(end_type), type_name(start_type));
     }
 
     stmt->data.loop_stmt.end = new_end;
@@ -2980,12 +3114,20 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         AstNode *converted = maybe_insert_cast(init, init_type, var_type);
         if (!converted) {
           checker_error(init->loc, "initializer type mismatch '%s' != '%s'",
-            type_name(var_type), type_name(init_type));
+                        type_name(var_type), type_name(init_type));
           return false;
         }
         stmt->data.var_decl.init =
             converted; // Replace with cast node if needed
       } else {
+        // Prevent using `none` without a specified type
+        if (init_type->kind == TYPE_NONE) {
+          checker_error(
+              init->loc,
+              "cannot infer type from none. use explicit type annotation");
+          return false;
+        }
+
         // No type specified, infer from initializer
         var_type = init_type;
       }
@@ -3052,6 +3194,14 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       stmt->data.const_decl.value =
           converted; // Replace with cast node if needed
     } else {
+      // Prevent using `none` without a specified type
+      if (value_type->kind == TYPE_NONE) {
+        checker_error(
+            value_type->loc,
+            "cannot infer type from none. use explicit type annotation");
+        return false;
+      }
+
       // No type specified, infer from value
       const_type = value_type;
     }
@@ -3124,7 +3274,8 @@ bool check_function_bodies(void) {
 }
 
 // Verify that the entry point exists and has the correct signature
-// - If entry_point is "main": must exist with signature (void) -> int OR (int,
+// - If entry_point is "main": must exist with signature (void) -> int OR
+// (int,
 // []str) -> int
 // - If entry_point is NOT "main": must exist with signature () -> void
 // - If --no-main is set: skip verification entirely

@@ -158,7 +158,7 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     if (length == 4) {
       if (start[1] == 'l')
         return lexer_check_keyword(lexer, 4, "else", TOKEN_ELSE);
-        
+
       if (start[1] == 'n')
         return lexer_check_keyword(lexer, 4, "enum", TOKEN_ENUM);
     }
@@ -168,6 +168,8 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   case 'n':
     if (length == 3)
       return lexer_check_keyword(lexer, 3, "nil", TOKEN_NIL);
+    if (length == 4)
+      return lexer_check_keyword(lexer, 4, "none", TOKEN_NONE);
     break;
   case 'f':
     if (length > 1) {
@@ -214,6 +216,8 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   case 's':
     if (length == 3)
       return lexer_check_keyword(lexer, 3, "str", TOKEN_STR_TYPE);
+    if (length == 4)
+      return lexer_check_keyword(lexer, 4, "some", TOKEN_SOME);
     if (length == 6) {
       if (start[1] == 't' && start[2] == 'r') {
         return lexer_check_keyword(lexer, 6, "struct", TOKEN_STRUCT);
@@ -478,6 +482,8 @@ Token lexer_next_token(Lexer *lexer) {
     return lexer_scan_string(lexer);
   case '\'':
     return lexer_scan_char(lexer);
+  case '?':
+    return lexer_make_token(lexer, TOKEN_QUESTION);
 
   case '!':
     return lexer_make_token(lexer,

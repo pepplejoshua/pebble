@@ -178,7 +178,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
-                   "<stdio.h>\n#include <string.h>\n\n";
+                   "<stdio.h>\n#include <string.h>\n#include <stddef.h>\n#include <assert.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -386,7 +386,8 @@ void emit_program(Codegen *cg) {
     Type *type = entry->type;
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
-        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION) {
+        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION ||
+        type->kind == TYPE_OPTIONAL) {
       TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
@@ -419,6 +420,11 @@ void emit_program(Codegen *cg) {
       }
       break;
     }
+
+    case TYPE_OPTIONAL:
+      collect_dependencies(type->data.optional.base, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
 
     case TYPE_SLICE: {
       collect_dependencies(type->data.slice.element, type->canonical_name,
@@ -475,8 +481,8 @@ void emit_program(Codegen *cg) {
     if (entry &&
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
-         entry->type->kind == TYPE_ENUM ||
-         entry->type->kind == TYPE_FUNCTION)) {
+         entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION ||
+         entry->type->kind == TYPE_OPTIONAL)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -724,9 +730,9 @@ void emit_type_name(Codegen *cg, Type *type) {
     break;
   case TYPE_STRUCT:
   case TYPE_TUPLE:
+  case TYPE_OPTIONAL:
   case TYPE_ENUM:
-    emit_string(cg, type->canonical_name); // Just "Node" or "tuple_int_int",
-                                           // not "struct ..."
+    emit_string(cg, type->canonical_name); // Just "Node" or "tuple_int_int"
     break;
   case TYPE_ARRAY: {
     int old_indent = cg->indent_level;
@@ -886,7 +892,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 
   // Check if already defined (full struct/tuple)
   if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
-      type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE) {
+      type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+      type->kind == TYPE_OPTIONAL) {
     CodegenTypeEntry *def_entry;
     HASH_FIND_STR(cg->defined_types, canonical, def_entry);
     if (!def_entry) {
@@ -936,6 +943,14 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
         emit_indent_spaces(cg);
         emit_string(cg, "size_t len;");
         emit_string(cg, "\n");
+      } else if (type->kind == TYPE_OPTIONAL) {
+        emit_indent_spaces(cg);
+        emit_type_name(cg, type->data.optional.base);
+        emit_string(cg, " value;");
+        emit_string(cg, "\n");
+        emit_indent_spaces(cg);
+        emit_string(cg, "bool has_value;");
+        emit_string(cg, "\n");
       }
       emit_dedent(cg);
       emit_indent_spaces(cg);
@@ -979,7 +994,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
 
       if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
-        type->kind == TYPE_ENUM) {
+          type->kind == TYPE_ENUM) {
         emit_string(cg, "%d");
       } else if (type->kind == TYPE_I8) {
         emit_string(cg, "%hhd");
@@ -1021,43 +1036,47 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       }
 
       if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
-        type->kind == TYPE_ENUM || type->kind == TYPE_I8 ||
-        type->kind == TYPE_I16 || type->kind == TYPE_I64 ||
-        type->kind == TYPE_ISIZE || type->kind == TYPE_U8 ||
-        type->kind == TYPE_U16 || type->kind == TYPE_U32 ||
-        type->kind == TYPE_U64 || type->kind == TYPE_USIZE ||
-        type->kind == TYPE_CHAR || type->kind == TYPE_F32 ||
-        type->kind == TYPE_F64) {
+          type->kind == TYPE_ENUM || type->kind == TYPE_I8 ||
+          type->kind == TYPE_I16 || type->kind == TYPE_I64 ||
+          type->kind == TYPE_ISIZE || type->kind == TYPE_U8 ||
+          type->kind == TYPE_U16 || type->kind == TYPE_U32 ||
+          type->kind == TYPE_U64 || type->kind == TYPE_USIZE ||
+          type->kind == TYPE_CHAR || type->kind == TYPE_F32 ||
+          type->kind == TYPE_F64) {
         emit_expr(cg, stmt->data.print_stmt.exprs[i]);
       } else if (type->kind == TYPE_BOOL) {
         emit_expr(cg, stmt->data.print_stmt.exprs[i]);
         emit_string(cg, " ? \"true\" : \"false\"");
       } else if (type->kind == TYPE_STRING) {
-        emit_string(cg, "({ ");
-
         AstNode *expr = stmt->data.print_stmt.exprs[i];
+        if (stmt->data.print_stmt.exprs[i]->kind != AST_EXPR_LITERAL_STRING) {
+          emit_string(cg, "({ ");
 
-        char buffer[64];
-        char *temporary_name = get_temporary_name(cg, buffer, 64);
+          char buffer[64];
+          char *temporary_name = get_temporary_name(cg, buffer, 64);
 
-        emit_type_name(cg, expr->resolved_type);
-        emit_string(cg, " ");
-        emit_string(cg, temporary_name);
+          emit_type_name(cg, expr->resolved_type);
+          emit_string(cg, " ");
+          emit_string(cg, temporary_name);
 
-        emit_string(cg, " = ");
-        emit_expr(cg, expr);
-        emit_string(cg, ";\n");
+          emit_string(cg, " = ");
+          emit_expr(cg, expr);
+          emit_string(cg, ";\n");
 
-        emit_string(cg, "(");
-        emit_string(cg, temporary_name);
-        emit_string(cg, ") ? ");
-        emit_string(cg, temporary_name);
-        emit_string(cg, " : \"\";\n");
+          emit_string(cg, "(");
+          emit_string(cg, temporary_name);
+          emit_string(cg, ") ? ");
+          emit_string(cg, temporary_name);
+          emit_string(cg, " : \"\";\n");
 
-        emit_string(cg, " })");
+          emit_string(cg, " })");
+        } else {
+          emit_expr(cg, expr);
+        }
       } else {
         emit_string(cg, "\"");
-        emit_string(cg, type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+        emit_string(cg,
+                    type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
         emit_string(cg, "\"");
       }
     }
@@ -1484,6 +1503,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
+  case AST_EXPR_LITERAL_NONE:
+    emit_string(cg, "{0}");
+    break;
+
   case AST_EXPR_LITERAL_NIL:
     emit_string(cg, "NULL");
     break;
@@ -1647,6 +1670,27 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, "/* ? */");
     }
     emit_expr(cg, expr->data.unop.operand);
+    break;
+  }
+
+  case AST_EXPR_SOME: {
+    // (optional_T){<emit wrapped expression>, true}
+    emit_string(cg, "(");
+    emit_type_name(cg, expr->resolved_type);
+    emit_string(cg, "){");
+    emit_expr(cg, expr->data.some_expr.value);
+    emit_string(cg, ", true}");
+    break;
+  }
+
+  case AST_EXPR_FORCE_UNWRAP: {
+    // emit assert on has_value
+    // <emit operand>.value
+    emit_string(cg, "({ assert(");
+    emit_expr(cg, expr->data.force_unwrap.operand);
+    emit_string(cg, ".has_value); ");
+    emit_expr(cg, expr->data.force_unwrap.operand);
+    emit_string(cg, ".value; })");
     break;
   }
 
@@ -1854,9 +1898,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       Type **param_types = func_type->data.func.param_types;
       Type *variadic_type = param_types[fixed_params];
-      
+
       if (arg_count == fixed_params + 1 && variadic_type->kind == TYPE_SLICE) {
-        emit_expr(cg, expr->data.call.args[fixed_params]);        
+        emit_expr(cg, expr->data.call.args[fixed_params]);
       } else {
         Type *inner_type = variadic_type->data.slice.element;
 
@@ -1867,7 +1911,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           char count_buf[24] = {0};
           snprintf(count_buf, sizeof(count_buf), "%zu", variadic_count);
-          
+
           emit_string(cg, "size_t __argc = ");
           emit_string(cg, count_buf);
           emit_string(cg, ";\n");
@@ -1903,7 +1947,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, "(");
           emit_type_name(cg, variadic_type);
           emit_string(cg, "){ __args, __argc };\n");
-          
+
           emit_indent_spaces(cg);
           emit_string(cg, "})");
         } else {
@@ -1944,6 +1988,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Get the type of the object expression
     Type *object_type = object_expr->resolved_type;
+
+    if (object_type->kind == TYPE_OPTIONAL) {
+      emit_expr(cg, object_expr);
+      emit_string(cg, ".");
+      emit_string(cg, "has_value");
+      break;
+    }
 
     // Enums require their name prefixed to variant name
     if (object_type->kind == TYPE_ENUM) {

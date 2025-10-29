@@ -550,7 +550,8 @@ AstNode *parse_print_stmt(Parser *parser) {
   while (parser_match(parser, TOKEN_COMMA)) {
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_exprs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+      AstNode **new_exprs =
+          arena_alloc(&long_lived, capacity * sizeof(AstNode *));
       memcpy(new_exprs, exprs, count * sizeof(AstNode *));
       exprs = new_exprs;
     }
@@ -1104,7 +1105,12 @@ AstNode *parse_postfix(Parser *parser) {
   }
 
   while (true) {
-    if (parser_match(parser, TOKEN_LPAREN)) {
+    if (parser_match(parser, TOKEN_NOT)) {
+      Location loc = parser->previous.location;
+      AstNode *force_unwrap = alloc_node(AST_EXPR_FORCE_UNWRAP, loc);
+      force_unwrap->data.force_unwrap.operand = expr;
+      expr = force_unwrap;
+    } else if (parser_match(parser, TOKEN_LPAREN)) {
       expr = parse_call(parser, expr);
     } else if (parser_match(parser, TOKEN_LBRACKET)) {
       expr = parse_index(parser, expr);
@@ -1198,7 +1204,8 @@ AstNode *parse_call(Parser *parser, AstNode *func) {
 
   if (!parser_check(parser, TOKEN_RPAREN)) {
     // FIXME
-    args = arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *)); // Max 16 args
+    args = arena_alloc(&long_lived,
+                       arg_capacity * sizeof(AstNode *)); // Max 16 args
 
     do {
       if (arg_count >= 64) {
@@ -1208,11 +1215,12 @@ AstNode *parse_call(Parser *parser, AstNode *func) {
 
       if (arg_count >= arg_capacity) {
         arg_capacity *= 2;
-        AstNode **new_args = arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *));
+        AstNode **new_args =
+            arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *));
         memcpy(new_args, args, arg_count * sizeof(AstNode *));
         args = new_args;
       }
-      
+
       args[arg_count++] = parse_expression(parser);
     } while (parser_match(parser, TOKEN_COMMA));
   }
@@ -1467,6 +1475,24 @@ AstNode *parse_primary(Parser *parser) {
     return sizeof_expr;
   }
 
+  // Optional expression (some expression)
+  if (parser_match(parser, TOKEN_SOME)) {
+    Location loc = parser->previous.location;
+    AstNode *inner_expr = parse_expression(parser);
+
+    AstNode *some_expr = alloc_node(AST_EXPR_SOME, loc);
+    some_expr->data.some_expr.value = inner_expr;
+    return some_expr;
+  }
+
+  // Optional none expression
+  if (parser_match(parser, TOKEN_NONE)) {
+    Location loc = parser->previous.location;
+
+    AstNode *none_expr = alloc_node(AST_EXPR_LITERAL_NONE, loc);
+    return none_expr;
+  }
+
   // Function literal
   if (parser_match(parser, TOKEN_FN)) {
     return parse_function(parser, parser->previous.location, NULL);
@@ -1581,6 +1607,16 @@ AstNode *parse_type_expression(Parser *parser) {
 
     type = alloc_node(AST_TYPE_POINTER, loc);
     type->data.type_pointer.base = base;
+    return type;
+  }
+
+  // Optional type: ?T
+  if (parser_match(parser, TOKEN_QUESTION)) {
+    Location loc = parser->previous.location;
+    AstNode *base = parse_type_expression(parser);
+
+    type = alloc_node(AST_TYPE_OPTIONAL, loc);
+    type->data.type_optional.base = base;
     return type;
   }
 
