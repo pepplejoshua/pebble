@@ -178,7 +178,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
-                   "<stdio.h>\n#include <string.h>\n#include <stddef.h>\n\n";
+                   "<stdio.h>\n#include <string.h>\n#include <stddef.h>\n#include <assert.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -1684,9 +1684,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_FORCE_UNWRAP: {
+    // emit assert on has_value
     // <emit operand>.value
+    emit_string(cg, "({ assert(");
     emit_expr(cg, expr->data.force_unwrap.operand);
-    emit_string(cg, ".value");
+    emit_string(cg, ".has_value); ");
+    emit_expr(cg, expr->data.force_unwrap.operand);
+    emit_string(cg, ".value; })");
     break;
   }
 
