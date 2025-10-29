@@ -107,6 +107,17 @@ static void collect_declaration(AstNode *decl) {
     is_opaque_type = true;
     loc = decl->loc;
     break;
+  case AST_DECL_EXTERN_BLOCK:
+    size_t count = decl->data.extern_block.decls_count;
+    if (count == 0) {
+      return;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+      collect_declaration(decl->data.extern_block.decls[i]);
+    }
+
+    return;
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
     kind = SYMBOL_VARIABLE;
@@ -138,6 +149,16 @@ static void collect_declaration(AstNode *decl) {
   Symbol *symbol = symbol_create(name, kind, decl);
   if (kind == SYMBOL_VARIABLE) {
     symbol->data.var.is_global = true;
+  }
+  if (kind == SYMBOL_EXTERN_FUNCTION) {
+    AstNode *lib_name = decl->data.extern_func.lib_name;
+    if (lib_name) {
+      symbol->data.external.lib_name = lib_name->data.str_lit.value;
+
+      // Add as library
+      // FIXME: Might need to strip the quotes
+      append_library_string(lib_name->data.str_lit.value);
+    }
   }
   if (is_opaque_type) {
     symbol->type = type_create(TYPE_OPAQUE, loc);
@@ -843,11 +864,21 @@ static void check_function_signatures(void) {
     if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_EXTERN_FUNCTION) {
       continue;
     }
-
+    
     AstNode *decl = sym->decl;
-    FuncParam *params = decl->data.func_decl.params;
-    size_t param_count = decl->data.func_decl.param_count;
-    AstNode *return_type_expr = decl->data.func_decl.return_type;
+    FuncParam *params;
+    size_t param_count;
+    AstNode *return_type_expr;
+
+    if (decl->kind == AST_DECL_FUNCTION) {
+      params = decl->data.func_decl.params;
+      param_count = decl->data.func_decl.param_count;
+      return_type_expr = decl->data.func_decl.return_type;
+    } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
+      params = decl->data.extern_func.params;
+      param_count = decl->data.extern_func.param_count;
+      return_type_expr = decl->data.extern_func.return_type;
+    }
 
     int is_variadic = -1;
 
@@ -1320,14 +1351,6 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       cast->data.implicit_cast.target_type = target_type;
       return cast;
     }
-  } else if (type_is_int(expr_type) && target_type->kind == TYPE_POINTER) {
-    // *T to int (for FFI)
-    AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
-    cast->kind = AST_EXPR_IMPLICIT_CAST;
-    cast->loc = expr->loc;
-    cast->data.implicit_cast.expr = expr;
-    cast->data.implicit_cast.target_type = target_type;
-    return cast;
   } else if (expr_type->kind == TYPE_ARRAY && target_type->kind == TYPE_SLICE) {
     // Array [N]T can convert to slice []T
     if (type_equals(expr_type->data.array.element,
@@ -1461,6 +1484,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   } else if (expr_type->kind == TYPE_NONE &&
              target_type->kind == TYPE_OPTIONAL) {
     // Allow implicit case of none to any type ?T
+    expr->resolved_type = target_type;
     return expr;
   } else if (expr_type->kind == TYPE_OPTIONAL &&
              target_type->kind == TYPE_OPTIONAL) {
@@ -1493,7 +1517,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
-  }
+  } 
 
   // No valid conversion
   return NULL;
@@ -1721,6 +1745,9 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
     arena_free(&temp_arena);
   }
+
+  checker_error(node->loc,
+                  "Switch is non-exhaustive. If you need a default branch.");
 }
 
 Type *check_expression(AstNode *expr) {
@@ -1832,6 +1859,31 @@ Type *check_expression(AstNode *expr) {
 
     expr->resolved_type = val_ty->data.optional.base;
     return val_ty->data.optional.base;
+  }
+
+  case AST_EXPR_POSTFIX_INC: {
+    AstNode *operand = expr->data.postfix_inc.operand;
+    Type *operand_ty = check_expression(operand);
+    
+    if (!operand_ty) {
+      return NULL;
+    }
+    
+    // Check if operand is an lvalue
+    if (!is_lvalue(operand)) {
+      checker_error(expr->loc, "operand of '++' must be an lvalue");
+      return NULL;
+    }
+    
+    // Only works on integer types
+    if (!type_is_integral(operand_ty)) {
+      checker_error(expr->loc, "'++' requires integral type, got '%s'", 
+                   type_name(operand_ty));
+      return NULL;
+    }
+    
+    expr->resolved_type = operand_ty;
+    return operand_ty;
   }
 
   case AST_EXPR_IDENTIFIER: {
@@ -2147,6 +2199,9 @@ Type *check_expression(AstNode *expr) {
     size_t arg_count = expr->data.call.arg_count;
 
     Type *call_type = check_expression(func_expr);
+    if (call_type == NULL) {
+      return NULL;
+    }
 
     // Verify it's actually a function
     if (call_type->kind != TYPE_FUNCTION) {
@@ -2834,11 +2889,14 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode **cases = stmt->data.switch_stmt.cases;
     AstNode *default_case = stmt->data.switch_stmt.default_case;
 
+    bool had_error = false;
+
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
     if (cond_type && cond_type->kind == TYPE_BOOL) {
       checker_error(cond->loc, "switch cases cannot be used with boolean "
                                "types. please use if statements instead.");
+      had_error = true;
     }
 
     if (cond_type && !type_is_numeric(cond_type) &&
@@ -2846,13 +2904,16 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         cond_type->kind != TYPE_ENUM) {
       checker_error(cond->loc, "switch condition must be numeric (int or "
                                "float), char, enum or string");
+      had_error = true;                         
     }
 
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
       check_statement(cases[i], expected_return_type);
     }
 
-    check_switch_is_exhaustive(stmt, cond->resolved_type);
+    if (!had_error) {
+      check_switch_is_exhaustive(stmt, cond->resolved_type);
+    }
 
     bool else_returns =
         default_case ? check_statement(default_case, expected_return_type)
@@ -3073,6 +3134,11 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       }
     }
     return false;
+  }
+
+  case AST_EXPR_POSTFIX_INC: {
+    AstNode *lhs = stmt->data.postfix_inc.operand;
+    return check_expression(lhs);
   }
 
   case AST_STMT_EXPR: {

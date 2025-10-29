@@ -20,6 +20,7 @@ typedef enum {
   AST_DECL_FUNCTION,
   AST_DECL_EXTERN_FUNC,
   AST_DECL_EXTERN_TYPE,
+  AST_DECL_EXTERN_BLOCK,
   AST_DECL_VARIABLE,
   AST_DECL_CONSTANT,
   AST_DECL_TYPE,
@@ -64,6 +65,7 @@ typedef enum {
   AST_EXPR_SOME,          // some expr
   AST_EXPR_LITERAL_NONE,  // none
   AST_EXPR_FORCE_UNWRAP,  // expr!
+  AST_EXPR_POSTFIX_INC,   // expr++
 
   // Type expressions
   AST_TYPE_NAMED,    // int, float, CustomType
@@ -123,6 +125,7 @@ struct AstNode {
     } func_decl;
     struct {
       char *name;
+      AstNode *lib_name;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;
@@ -130,6 +133,11 @@ struct AstNode {
     struct {
       char *name;
     } extern_type;
+    struct {
+      AstNode *lib_name;
+      AstNode **decls;
+      size_t decls_count;
+    } extern_block;
     struct {
       char *name;
       AstNode *type_expr;
@@ -179,6 +187,7 @@ struct AstNode {
       AstNode *expr;
     } expr_stmt;
     struct {
+      BinaryOp op;
       AstNode *lhs;
       AstNode *rhs;
     } assign_stmt;
@@ -243,6 +252,9 @@ struct AstNode {
       AstNode *object;
       char *member;
     } member_expr;
+    struct {
+      AstNode *operand;
+    } postfix_inc;
     struct {
       AstNode *array;
       AstNode *start;

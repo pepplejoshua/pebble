@@ -2,6 +2,7 @@
 #define PEBBLE_OPTIONS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef enum ReleaseMode
 {
@@ -23,6 +24,7 @@ typedef struct CompilerOptions
   bool freestanding;
   bool verbose;
   bool keep_c_file;
+  bool generate_only;
   ReleaseMode release_mode;
   const char *compiler;
   const char *output_exe_name;
@@ -31,14 +33,21 @@ typedef struct CompilerOptions
   bool has_main;
   LibraryType library;
   const char *entry_point;
+  
+  char **linked_libraries;
+  size_t linked_libraries_count;
+  size_t linked_libraries_capacity;
 } CompilerOptions;
 
 // Global compiler options
 extern CompilerOptions compiler_opts;
 
 void auto_detect_compiler(void);
-void initialise_args();
-char* release_mode_string();
+void initialise_args(void);
+void cleanup_args(void);
+void append_library_string(char *library);
+char *flatten_library_strings(void);
+char* release_mode_string(void);
 void print_usage(const char *program_name);
 bool parse_args(int argc, char **argv);
 

@@ -423,8 +423,8 @@ void emit_program(Codegen *cg) {
 
     case TYPE_OPTIONAL: {
       collect_dependencies(type->data.optional.base, type->canonical_name,
-        dep_graph, &node->depends_on, &node->dep_count,
-        &dep_capacity);
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
       break;
     }
 
@@ -510,6 +510,31 @@ void emit_program(Codegen *cg) {
       emit_string(cg, " ");
       emit_string(cg, sym->name);
       emit_string(cg, ";\n");
+    } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+      Type *func_type = sym->type;
+      if (!sym->data.external.lib_name) {
+        continue;
+      }
+      
+      emit_string(cg, "/* ");
+      emit_string(cg, sym->data.external.lib_name);
+      emit_string(cg, " */\n");
+
+      emit_string(cg, "extern ");
+      emit_type_name(cg, func_type->data.func.return_type);
+      emit_string(cg, " ");
+      emit_string(cg, sym->name);
+
+      emit_string(cg, "(");
+
+      for (size_t i = 0; i < func_type->data.func.param_count; i++) {
+        if (i > 0) {
+          emit_string(cg, ", ");
+        }
+        emit_type_name(cg, func_type->data.func.param_types[i]);
+      }
+
+      emit_string(cg, ");\n");
     }
   }
 
@@ -525,7 +550,17 @@ void emit_program(Codegen *cg) {
         if (sym->decl->data.var_decl.init) {
           emit_expr(cg, sym->decl->data.var_decl.init);
         } else {
-          emit_string(cg, "{0}");
+          Type *init_t = sym->decl->resolved_type;
+
+          if (init_t->kind == TYPE_ARRAY) {
+            emit_string(cg, " {{0}, ");
+            char len_buffer[32] = {0};
+            sprintf(len_buffer, "%zu", init_t->data.array.size);
+            emit_string(cg, len_buffer);
+            emit_string(cg, "}");
+          } else {
+            emit_string(cg, "{0}");
+          }
         }
       } else if (sym->kind == SYMBOL_CONSTANT && sym->decl &&
                  sym->decl->data.const_decl.value) {
@@ -1400,9 +1435,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "; ");
       emit_expr(cg, stmt->data.for_stmt.cond);
       emit_string(cg, "; ");
-      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.lhs);
-      emit_string(cg, " = ");
-      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
+      
+      AstNode *update = stmt->data.for_stmt.update;
+      if (update->kind == AST_STMT_ASSIGN) {
+        emit_expr(cg, update->data.assign_stmt.lhs);
+        emit_string(cg, " = ");
+        emit_expr(cg, update->data.assign_stmt.rhs);
+      } else {
+        emit_expr(cg, update);
+      }
       emit_string(cg, ") {\n");
       emit_indent(cg);
 
@@ -1465,7 +1506,34 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
     emit_expr(cg, stmt->data.assign_stmt.lhs);
-    emit_string(cg, " = ");
+
+    switch (stmt->data.assign_stmt.op) {
+      case BINOP_ADD: {
+        emit_string(cg, " += ");
+        break;
+      }
+
+      case BINOP_SUB: {
+        emit_string(cg, " -= ");
+        break;
+      }
+
+      case BINOP_MUL: {
+        emit_string(cg, " *= ");
+        break;
+      }
+
+      case BINOP_DIV: {
+        emit_string(cg, " /= ");
+        break;
+      }
+
+      default: {
+        emit_string(cg, " = ");
+        break;
+      }
+    }
+
     emit_expr(cg, stmt->data.assign_stmt.rhs);
     emit_string(cg, ";\n");
     break;
@@ -1479,7 +1547,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
     } else {
-      emit_string(cg, " = {0}");
+      if (stmt->resolved_type->kind == TYPE_ARRAY) {
+        emit_string(cg, " = {{0}, ");
+        char len_buffer[32] = {0};
+        sprintf(len_buffer, "%zu", stmt->resolved_type->data.array.size);
+        emit_string(cg, len_buffer);
+        emit_string(cg, "}");
+      } else {
+        emit_string(cg, " = {0}");
+      }
     }
     emit_string(cg, ";\n");
     break;
@@ -1506,6 +1582,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
   case AST_EXPR_LITERAL_NONE:
+    emit_string(cg, "(");
+    emit_type_name(cg, expr->resolved_type);
+    emit_string(cg, ")");
     emit_string(cg, "{0}");
     break;
 
@@ -1693,6 +1772,12 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, " __opt = ");
     emit_expr(cg, expr->data.force_unwrap.operand);
     emit_string(cg, "; assert(__opt.has_value); __opt.value; })");
+    break;
+  }
+
+  case AST_EXPR_POSTFIX_INC: {
+    emit_expr(cg, expr->data.postfix_inc.operand);
+    emit_string(cg, "++");
     break;
   }
 

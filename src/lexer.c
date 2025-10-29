@@ -471,13 +471,22 @@ Token lexer_next_token(Lexer *lexer) {
   case ':':
     return lexer_make_token(lexer, TOKEN_COLON);
   case '+':
+    if (lexer_match(lexer, '=')) {
+      return lexer_make_token(lexer, TOKEN_PLUS_EQUAL);
+    }
+    if (lexer_match(lexer, '+')) {
+      return lexer_make_token(lexer, TOKEN_PLUS_PLUS);
+    }
     return lexer_make_token(lexer, TOKEN_PLUS);
   case '-':
-    return lexer_make_token(lexer, TOKEN_MINUS);
+    return lexer_make_token(lexer,
+      lexer_match(lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
   case '*':
-    return lexer_make_token(lexer, TOKEN_STAR);
+    return lexer_make_token(lexer,
+      lexer_match(lexer, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
   case '/':
-    return lexer_make_token(lexer, TOKEN_SLASH);
+    return lexer_make_token(lexer,
+      lexer_match(lexer, '=') ? TOKEN_SLASH_EQUAL : TOKEN_SLASH);
   case '"':
     return lexer_scan_string(lexer);
   case '\'':

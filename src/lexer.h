@@ -61,27 +61,32 @@ typedef enum {
   TOKEN_CHAR_TYPE,   // "char"
 
   // Operators
-  TOKEN_PLUS,      // +
-  TOKEN_MINUS,     // -
-  TOKEN_STAR,      // *
-  TOKEN_SLASH,     // /
-  TOKEN_EQUAL,     // =
-  TOKEN_EQ,        // ==
-  TOKEN_NE,        // !=
-  TOKEN_LT,        // <
-  TOKEN_LE,        // <=
-  TOKEN_GT,        // >
-  TOKEN_GE,        // >=
-  TOKEN_AND,       // &&
-  TOKEN_OR,        // ||
-  TOKEN_NOT,       // !
-  TOKEN_QUESTION,  // ?
-  TOKEN_AMPERSAND, // &
-  TOKEN_PIPE,      // |
-  TOKEN_CARET,     // ^
-  TOKEN_TILDE,     // ~
-  TOKEN_LSHIFT,    // <<
-  TOKEN_RSHIFT,    // >>
+  TOKEN_PLUS,             // +
+  TOKEN_MINUS,            // -
+  TOKEN_STAR,             // *
+  TOKEN_SLASH,            // /
+  TOKEN_PLUS_PLUS,        // ++
+  TOKEN_PLUS_EQUAL,       // +=
+  TOKEN_MINUS_EQUAL,      // -=
+  TOKEN_STAR_EQUAL,       // *=
+  TOKEN_SLASH_EQUAL,      // /=
+  TOKEN_EQUAL,            // =
+  TOKEN_EQ,               // ==
+  TOKEN_NE,               // !=
+  TOKEN_LT,               // <
+  TOKEN_LE,               // <=
+  TOKEN_GT,               // >
+  TOKEN_GE,               // >=
+  TOKEN_AND,              // &&
+  TOKEN_OR,               // ||
+  TOKEN_NOT,              // !
+  TOKEN_QUESTION,         // ?
+  TOKEN_AMPERSAND,        // &
+  TOKEN_PIPE,             // |
+  TOKEN_CARET,            // ^
+  TOKEN_TILDE,            // ~
+  TOKEN_LSHIFT,           // <<
+  TOKEN_RSHIFT,           // >>
 
   // Punctuation
   TOKEN_SEMICOLON, // ;

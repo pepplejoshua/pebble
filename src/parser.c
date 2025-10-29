@@ -65,7 +65,8 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "[line %d] Error", token->location.line);
+  fprintf(stderr, "%s:%d:%d: Error", token->location.file,
+    token->location.line, token->location.column);
 
   if (token->type == TOKEN_EOF) {
     fprintf(stderr, " at end");
@@ -77,6 +78,8 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
 
   fprintf(stderr, ": %s\n", message);
   parser->had_error = true;
+
+  parser_synchronize(parser);
 }
 
 void parser_error_at_current(Parser *parser, const char *message) {
@@ -88,12 +91,14 @@ void parser_error_at_previous(Parser *parser, const char *message) {
 }
 
 void parser_synchronize(Parser *parser) {
-  parser->panic_mode = false;
-  int skips = 0;
+  int skips = 0, allowed_skips = 3;
 
-  while (parser->current.type != TOKEN_EOF && skips++ < 100) {
-    if (parser->previous.type == TOKEN_SEMICOLON)
+  while (parser->current.type != TOKEN_EOF && skips++ < allowed_skips) {
+    if (parser->previous.type == TOKEN_SEMICOLON) {
+      parser_advance(parser);
+      parser->panic_mode = false;
       return;
+    }
 
     switch (parser->current.type) {
     case TOKEN_FN:
@@ -129,16 +134,19 @@ void parser_synchronize(Parser *parser) {
     case TOKEN_AND:
     case TOKEN_OR:
     case TOKEN_EQUAL:
-
+      parser_advance(parser);
       return;
+
     default:
       break;
     }
 
     parser_advance(parser);
   }
-  if (skips >= 100)
+
+  if (skips >= allowed_skips) {
     parser_error(parser, "Too many tokens skipped; input may be malformed");
+  }
 }
 
 void parser_error(Parser *parser, const char *message) {
@@ -242,6 +250,8 @@ AstNode *parse_program(Parser *parser) {
     AstNode *decl = parse_declaration(parser);
     if (decl != NULL) {
       decls[decl_count++] = decl;
+    } else if (parser->had_error) {
+      parser_synchronize(parser);
     }
 
     // If we had an error and didn't make progress, break to avoid infinite loop
@@ -278,7 +288,6 @@ AstNode *parse_declaration(Parser *parser) {
   }
 
   parser_error(parser, "Expected declaration");
-  parser_synchronize(parser);
   return NULL;
 }
 
@@ -415,8 +424,100 @@ AstNode *parse_function_decl(Parser *parser) {
 }
 
 AstNode *parse_extern(Parser *parser) {
+  Location extern_loc = parser->previous.location;
+
   // extern fn name(params) return_type;
-  if (parser_match(parser, TOKEN_FN)) {
+  AstNode *lib_name = NULL;
+  if (parser_match(parser, TOKEN_STRING)) {
+    lib_name = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
+    lib_name->data.str_lit.value = str_dup(parser->previous.lexeme);
+  }
+
+  if (parser_match(parser, TOKEN_LBRACE)) {
+    // Extern block
+    size_t count = 0, capacity = 2;
+    AstNode **externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+    // fn ..., type IDENT
+    while (parser_check(parser, TOKEN_FN) || parser_check(parser, TOKEN_TYPE)) {
+      if (count >= capacity) {
+        capacity *= 2;
+        AstNode **new_externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+        memcpy(new_externs, externs, count * sizeof(AstNode *));
+        externs = new_externs;
+      }
+
+      if (parser_match(parser, TOKEN_FN)) {
+        Token name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                    "Expected extern function name");
+
+        parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
+
+        // Parse parameters
+        FuncParam *params = NULL;
+        size_t param_count = 0;
+
+        if (!parser_check(parser, TOKEN_RPAREN)) {
+          // We have parameters
+          // For now, allocate space for up to 16 parameters (we'll improve this
+          // later)
+          params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+
+          do {
+            if (param_count >= 16) {
+              parser_error(parser, "Too many parameters (max 16)");
+              break;
+            }
+
+            Token param_name =
+                parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+            AstNode *param_type = parse_type_expression(parser);
+
+            params[param_count].name =
+                param_name.lexeme; // Already allocated by lexer
+            params[param_count].type = param_type;
+            param_count++;
+
+          } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after parameters");
+
+        // Return type
+        AstNode *return_type = parse_type_expression(parser);
+        parser_consume(parser, TOKEN_SEMICOLON,
+                      "Expected ';' after extern function declaration");
+
+        AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+        func->data.extern_func.name = str_dup(name.lexeme);
+        func->data.extern_func.params = params;
+        func->data.extern_func.param_count = param_count;
+        func->data.extern_func.return_type = return_type;
+        func->data.extern_func.lib_name = lib_name;
+        
+        externs[count++] = func;
+      } else if (parser_match(parser, TOKEN_TYPE)) {
+        Token name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                    "Expected extern function name");
+        parser_consume(parser, TOKEN_SEMICOLON,
+                      "Expected ';' after extern type declaration");
+
+        AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+        opaque_type->data.extern_type.name = str_dup(name.lexeme);
+        
+        externs[count++] = opaque_type;
+      }
+    }
+
+    parser_consume(parser, TOKEN_RBRACE, "Expect '}' after extern block");
+
+    AstNode *extern_block = alloc_node(AST_DECL_EXTERN_BLOCK, extern_loc);
+    extern_block->data.extern_block.lib_name = lib_name;
+    extern_block->data.extern_block.decls = externs;
+    extern_block->data.extern_block.decls_count = count;
+
+    return extern_block;
+  } else if (parser_match(parser, TOKEN_FN)) {
     Token name = parser_consume(parser, TOKEN_IDENTIFIER,
                                 "Expected extern function name");
 
@@ -458,10 +559,11 @@ AstNode *parse_extern(Parser *parser) {
                    "Expected ';' after extern function declaration");
 
     AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
-    func->data.func_decl.name = str_dup(name.lexeme);
-    func->data.func_decl.params = params;
-    func->data.func_decl.param_count = param_count;
-    func->data.func_decl.return_type = return_type;
+    func->data.extern_func.name = str_dup(name.lexeme);
+    func->data.extern_func.params = params;
+    func->data.extern_func.param_count = param_count;
+    func->data.extern_func.return_type = return_type;
+    func->data.extern_func.lib_name = lib_name;
     return func;
   } else if (parser_match(parser, TOKEN_TYPE)) {
     Token name = parser_consume(parser, TOKEN_IDENTIFIER,
@@ -794,6 +896,7 @@ AstNode *parse_for_stmt(Parser *parser) {
     }
 
     init = alloc_node(AST_STMT_ASSIGN, init_lhs->loc);
+    init->data.assign_stmt.op = -1;
     init->data.assign_stmt.lhs = init_lhs;
     init->data.assign_stmt.rhs = init_rhs;
   }
@@ -805,16 +908,22 @@ AstNode *parse_for_stmt(Parser *parser) {
 
   // Parse update (assignment without semicolon)
   AstNode *lhs = parse_expression(parser);
-  parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
-  AstNode *rhs = parse_expression(parser);
+  AstNode *update = lhs;
 
-  if (!lhs || !rhs) {
-    parser_synchronize(parser);
-    return NULL;
+  if (lhs->kind != AST_EXPR_POSTFIX_INC) {
+    parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
+    AstNode *rhs = parse_expression(parser);
+    
+    if (!lhs || !rhs) {
+      parser_synchronize(parser);
+      return NULL;
+    }
+
+    update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
+    update->data.assign_stmt.op = -1;
+    update->data.assign_stmt.lhs = lhs;
+    update->data.assign_stmt.rhs = rhs;
   }
-  AstNode *update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
-  update->data.assign_stmt.lhs = lhs;
-  update->data.assign_stmt.rhs = rhs;
 
   // Parse body
   AstNode *body = parse_statement(parser);
@@ -860,12 +969,43 @@ AstNode *parse_assignment_stmt(Parser *parser) {
   // We know current token is identifier
   AstNode *lhs = parse_expression(parser); // This will parse the identifier
 
+  // Handle compound assignments
+  TokenType compound_op = TOKEN_EOF;
+  BinaryOp binop;
+  
+  if (parser_match(parser, TOKEN_PLUS_EQUAL)) {
+    compound_op = TOKEN_PLUS_EQUAL;
+    binop = BINOP_ADD;
+  } else if (parser_match(parser, TOKEN_MINUS_EQUAL)) {
+    compound_op = TOKEN_MINUS_EQUAL;
+    binop = BINOP_SUB;
+  } else if (parser_match(parser, TOKEN_STAR_EQUAL)) {
+    compound_op = TOKEN_STAR_EQUAL;
+    binop = BINOP_MUL;
+  } else if (parser_match(parser, TOKEN_SLASH_EQUAL)) {
+    compound_op = TOKEN_SLASH_EQUAL;
+    binop = BINOP_DIV;
+  }
+  
+  if (compound_op != TOKEN_EOF) {
+    Location loc = parser->previous.location;
+    AstNode *rhs = parse_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after compound assignment");
+    
+    AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    assign->data.assign_stmt.op = binop;
+    assign->data.assign_stmt.lhs = lhs;
+    assign->data.assign_stmt.rhs = rhs;
+    return assign;
+  }
+
   if (parser_match(parser, TOKEN_EQUAL)) {
     Location loc = parser->previous.location;
     AstNode *rhs = parse_expression(parser);
     parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after assignment");
 
     AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    assign->data.assign_stmt.op = -1;
     assign->data.assign_stmt.lhs = lhs;
     assign->data.assign_stmt.rhs = rhs;
     return assign;
@@ -1105,7 +1245,13 @@ AstNode *parse_postfix(Parser *parser) {
   }
 
   while (true) {
-    if (parser_match(parser, TOKEN_NOT)) {
+    if (parser_match(parser, TOKEN_PLUS_PLUS)) {
+      // Postfix increment: expr++
+      Location loc = parser->previous.location;
+      AstNode *postfix = alloc_node(AST_EXPR_POSTFIX_INC, loc);
+      postfix->data.postfix_inc.operand = expr;
+      expr = postfix;
+    } else if (parser_match(parser, TOKEN_NOT)) {
       Location loc = parser->previous.location;
       AstNode *force_unwrap = alloc_node(AST_EXPR_FORCE_UNWRAP, loc);
       force_unwrap->data.force_unwrap.operand = expr;
@@ -1153,7 +1299,8 @@ AstNode *parse_postfix(Parser *parser) {
             // Parse field: IDENTIFIER = EXPR
             if (!parser_check(parser, TOKEN_IDENTIFIER)) {
               parser_error(parser, "Expected field name in struct literal");
-              return NULL;
+              parser_synchronize(parser);
+              continue;
             }
             parser_advance(parser);
             Token field_name = parser->previous;
@@ -1164,7 +1311,8 @@ AstNode *parse_postfix(Parser *parser) {
             field_names[count] = str_dup(field_name.lexeme);
             field_values[count] = parse_expression(parser);
             if (!field_values[count]) {
-              return NULL;
+              parser_synchronize(parser);
+              continue;
             }
             count++;
 
