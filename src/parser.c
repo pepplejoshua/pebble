@@ -65,7 +65,8 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "[line %d] Error", token->location.line);
+  fprintf(stderr, "%s:%d:%d: Error", token->location.file,
+    token->location.line, token->location.column);
 
   if (token->type == TOKEN_EOF) {
     fprintf(stderr, " at end");
@@ -77,6 +78,8 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
 
   fprintf(stderr, ": %s\n", message);
   parser->had_error = true;
+
+  parser_synchronize(parser);
 }
 
 void parser_error_at_current(Parser *parser, const char *message) {
@@ -88,12 +91,14 @@ void parser_error_at_previous(Parser *parser, const char *message) {
 }
 
 void parser_synchronize(Parser *parser) {
-  parser->panic_mode = false;
-  int skips = 0;
+  int skips = 0, allowed_skips = 3;
 
-  while (parser->current.type != TOKEN_EOF && skips++ < 100) {
-    if (parser->previous.type == TOKEN_SEMICOLON)
+  while (parser->current.type != TOKEN_EOF && skips++ < allowed_skips) {
+    if (parser->previous.type == TOKEN_SEMICOLON) {
+      parser_advance(parser);
+      parser->panic_mode = false;
       return;
+    }
 
     switch (parser->current.type) {
     case TOKEN_FN:
@@ -129,16 +134,19 @@ void parser_synchronize(Parser *parser) {
     case TOKEN_AND:
     case TOKEN_OR:
     case TOKEN_EQUAL:
-
+      parser_advance(parser);
       return;
+
     default:
       break;
     }
 
     parser_advance(parser);
   }
-  if (skips >= 100)
+
+  if (skips >= allowed_skips) {
     parser_error(parser, "Too many tokens skipped; input may be malformed");
+  }
 }
 
 void parser_error(Parser *parser, const char *message) {
@@ -242,6 +250,8 @@ AstNode *parse_program(Parser *parser) {
     AstNode *decl = parse_declaration(parser);
     if (decl != NULL) {
       decls[decl_count++] = decl;
+    } else if (parser->had_error) {
+      parser_synchronize(parser);
     }
 
     // If we had an error and didn't make progress, break to avoid infinite loop
@@ -278,7 +288,7 @@ AstNode *parse_declaration(Parser *parser) {
   }
 
   parser_error(parser, "Expected declaration");
-  parser_synchronize(parser);
+  // parser_synchronize(parser);
   return NULL;
 }
 
@@ -1160,7 +1170,8 @@ AstNode *parse_postfix(Parser *parser) {
             // Parse field: IDENTIFIER = EXPR
             if (!parser_check(parser, TOKEN_IDENTIFIER)) {
               parser_error(parser, "Expected field name in struct literal");
-              return NULL;
+              parser_synchronize(parser);
+              continue;
             }
             parser_advance(parser);
             Token field_name = parser->previous;
@@ -1171,7 +1182,8 @@ AstNode *parse_postfix(Parser *parser) {
             field_names[count] = str_dup(field_name.lexeme);
             field_values[count] = parse_expression(parser);
             if (!field_values[count]) {
-              return NULL;
+              parser_synchronize(parser);
+              continue;
             }
             count++;
 
