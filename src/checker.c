@@ -140,7 +140,10 @@ static void collect_declaration(AstNode *decl) {
     symbol->data.var.is_global = true;
   }
   if (kind == SYMBOL_EXTERN_FUNCTION) {
-    symbol->data.external.lib_name = decl->data.extern_func.lib_name->data.str_lit.value;
+    AstNode *lib_name = decl->data.extern_func.lib_name;
+    if (lib_name) {
+      symbol->data.external.lib_name = lib_name->data.str_lit.value;
+    }
   }
   if (is_opaque_type) {
     symbol->type = type_create(TYPE_OPAQUE, loc);
@@ -844,11 +847,6 @@ static void check_function_signatures(void) {
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     // Only process function declarations
     if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_EXTERN_FUNCTION) {
-      continue;
-    }
-    
-    // Omit libc extern functions
-    if (sym->kind == SYMBOL_EXTERN_FUNCTION && !sym->data.external.lib_name) {
       continue;
     }
     

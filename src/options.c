@@ -66,6 +66,7 @@ void initialise_args() {
   compiler_opts.compiler = NULL;
   compiler_opts.verbose = false;
   compiler_opts.keep_c_file = true;
+  compiler_opts.generate_only = false;
   compiler_opts.output_exe_name = "output";
   compiler_opts.output_c_name = "output.c";
   compiler_opts.has_main = true;
@@ -73,7 +74,59 @@ void initialise_args() {
   compiler_opts.entry_point = "main";
   compiler_opts.input_file = NULL;
 
+  // linked libraries
+  compiler_opts.linked_libraries = NULL;
+  compiler_opts.linked_libraries_count = 0;
+  compiler_opts.linked_libraries_capacity = 0;
+
   auto_detect_compiler();
+}
+
+void append_library_string(char *library) {
+  if (compiler_opts.linked_libraries_count >= compiler_opts.linked_libraries_capacity) {
+    size_t new_cap = compiler_opts.linked_libraries_capacity;
+    new_cap = new_cap == 0 ? 4 : new_cap * 2;
+
+    char **new_libraries = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    memcpy(new_libraries,
+        compiler_opts.linked_libraries,
+        compiler_opts.linked_libraries_count * sizeof(char *)
+    );
+
+    compiler_opts.linked_libraries = new_libraries;
+  }
+
+  compiler_opts.linked_libraries[compiler_opts.linked_libraries_count++] = library;
+}
+
+char *flatten_library_strings() {
+  size_t total_length = compiler_opts.linked_libraries_count * 3; // account for "-l" and " "
+  for (size_t i = 0; i < compiler_opts.linked_libraries_count; i++) {
+    total_length += strlen(compiler_opts.linked_libraries[i]);
+  }
+  
+  char *result = arena_alloc(&long_lived, total_length + 1);
+  if (result == NULL) {
+    return NULL;
+  }
+  
+  memset(result, 0, total_length + 1);
+
+  char *ptr = result;
+
+  // Copy strings into result
+  for (size_t i = 0; i < compiler_opts.linked_libraries_count; i++) {
+     *ptr++ = '-';
+    *ptr++ = 'l';
+        
+    size_t len = strlen(compiler_opts.linked_libraries[i]);
+    memcpy(ptr, compiler_opts.linked_libraries[i], len);
+    ptr += len;
+    
+    *ptr++ = ' ';
+  }
+  
+  return result;
 }
 
 char *release_mode_string() {
@@ -83,8 +136,7 @@ char *release_mode_string() {
   switch (compiler_opts.release_mode) {
   case RELEASE_DEBUG:
     // Debug flags same for both
-    return "-g3 -O0 -Wall -Wextra -Wpedantic -fsanitize=address "
-           "-fsanitize=undefined";
+    return "-g3 -O0 -Wall -Wextra -Wpedantic -fsanitize=address,leak,undefined";
 
   case RELEASE_SMALL:
     if (is_clang_like) {
@@ -112,6 +164,7 @@ void print_usage(const char *program_name) {
   printf("  -v, --verbose        Enable verbose output\n");
   printf("  --keep-c             Keep generated C file (default)\n");
   printf("  --no-keep-c          Remove generated C file after compilation\n");
+  printf("  --generate-only      Only generate the C source without compiling\n");
   printf("  --compiler           Specify the compiler used when compiling C "
          "(autodetects gcc/clang/cc depending on your computer)\n");
   printf("  --no-main            No entry point to the program. Compiles to an object only.\n");
@@ -149,12 +202,31 @@ bool parse_args(int argc, char **argv) {
       compiler_opts.keep_c_file = true;
     } else if (strcmp(argv[i], "--no-keep-c") == 0) {
       compiler_opts.keep_c_file = false;
+    } else if (strcmp(argv[i], "--generate-only") == 0) {
+      compiler_opts.keep_c_file = true;
+      compiler_opts.generate_only = true;
     } else if (strcmp(argv[i], "-o") == 0) {
       if (i + 1 >= argc) {
         fprintf(stderr, "Error: -o requires an argument\n");
         return false;
       }
       compiler_opts.output_exe_name = argv[++i];
+    } else if (strcmp(argv[i], "-l") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: -l requires an argument\n");
+        return false;
+      }
+      
+      append_library_string(argv[++i]);
+    } else if (strncmp(argv[i], "-l", 2) == 0) {
+      // allow -l<lib> variant where lib immediately
+      size_t len = strlen(argv[i]) - 2;
+      if (len == 0) {
+        fprintf(stderr, "Error: -l requires an argument\n");
+        return false;
+      }
+      
+      append_library_string(argv[i] + 2);
     } else if (strcmp(argv[i], "-c") == 0) {
       if (i + 1 >= argc) {
         fprintf(stderr, "Error: -c requires an argument\n");

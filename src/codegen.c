@@ -512,7 +512,10 @@ void emit_program(Codegen *cg) {
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
       Type *func_type = sym->type;
-
+      if (!sym->data.external.lib_name) {
+        continue;
+      }
+      
       emit_string(cg, "/* ");
       emit_string(cg, sym->data.external.lib_name);
       emit_string(cg, " */\n");

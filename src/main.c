@@ -146,6 +146,10 @@ static bool compile_file(const char *filename) {
   fclose(output);
   printf("Generated %s\n", c_filename);
 
+  if (compiler_opts.generate_only) {
+    return true;
+  }
+
   int gcc_result = 0;
   // Conditional defaults
   char default_compiler_args[256];
@@ -160,6 +164,8 @@ static bool compile_file(const char *filename) {
 
   char compiler_args[2048];
 
+  char *libraries = flatten_library_strings();
+
   if (!compiler_opts.has_main) {
     // Compile to object file (.o) instead of executable
     char obj_filename[256];
@@ -169,23 +175,42 @@ static bool compile_file(const char *filename) {
     switch (compiler_opts.library) {
       case LIBRARY_NONE:
       {
-        // Use -c flag to compile to object file
-        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
-                 compiler_opts.compiler,
-                 default_compiler_args,
-                 obj_filename,
-                 release_mode_string());
+        if (libraries) {
+          snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s %s",
+                    compiler_opts.compiler,
+                    default_compiler_args,
+                    obj_filename,
+                    release_mode_string(),
+                    libraries);
+        } else {
+          // Use -c flag to compile to object file
+          snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
+                    compiler_opts.compiler,
+                    default_compiler_args,
+                    obj_filename,
+                    release_mode_string());
+        }
         break;
       }
 
       case LIBRARY_SHARED:
       {
-        // Use -c flag to compile to object file
-        snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s",
-                 compiler_opts.compiler,
-                 default_compiler_args,
-                 obj_filename,
-                 release_mode_string());
+        if (libraries) {
+          // Use -c flag to compile to object file
+          snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s %s",
+                   compiler_opts.compiler,
+                   default_compiler_args,
+                   obj_filename,
+                   release_mode_string(),
+                   libraries);
+        } else {
+          // Use -c flag to compile to object file
+          snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s",
+                   compiler_opts.compiler,
+                   default_compiler_args,
+                   obj_filename,
+                   release_mode_string());
+        }
         break;
       }
 
@@ -218,10 +243,22 @@ static bool compile_file(const char *filename) {
 
   // Free standing should not be compiled at all
   if (!compiler_opts.freestanding) {
-    // Compile as executable
-    snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
-            compiler_opts.compiler, default_compiler_args,
-            compiler_opts.output_exe_name, release_mode_string());
+    if (libraries) {
+      // Compile as executable
+      snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s %s",
+              compiler_opts.compiler, default_compiler_args,
+              compiler_opts.output_exe_name, release_mode_string(),
+              libraries);
+    } else {
+      // Compile as executable
+      snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
+              compiler_opts.compiler, default_compiler_args,
+              compiler_opts.output_exe_name, release_mode_string());
+    }
+
+    if (compiler_opts.verbose) {
+      printf("Compiling C: %s\n", compiler_args);
+    }
 
     // Compile
     gcc_result = system(compiler_args);
