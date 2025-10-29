@@ -1961,9 +1961,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       // For arrays/slices, use .data
       if (compiler_opts.release_mode == RELEASE_DEBUG) {
         // Bounds checking
-        emit_string(cg, "({ ");
-        emit_type_name(cg, expr->resolved_type);
-        emit_string(cg, " __index = ");
+        emit_string(cg, "({ size_t __index = ");
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; ");
 
