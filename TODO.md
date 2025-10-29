@@ -4,14 +4,13 @@
 
 ### Ideas from discussions with Caleb
 - extern can take a lib name. the compiler cli can take -L (lib location) and -l (lib name)
-- `if let` to safely work with pointers.
+- `if let` to safely work with pointers and optional types.
 - Allow multiple variable declarations:
 ```go
 fn main() void {
     var f int, i int;
 }
 ```
-- Improve `print` to take multiple arguments. Remove default '\n' at the end of `print`.
 - Maybe add `println` with default `print`.
 - Add bounds checks for index access on arrays and slices.
 - Module system would be great. Call modules "pebbles".

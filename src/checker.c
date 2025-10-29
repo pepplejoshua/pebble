@@ -107,7 +107,8 @@ static void collect_declaration(AstNode *decl) {
     is_opaque_type = true;
     loc = decl->loc;
     break;
-  case AST_DECL_EXTERN_BLOCK:
+  case AST_DECL_EXTERN_BLOCK: {
+
     size_t count = decl->data.extern_block.decls_count;
     if (count == 0) {
       return;
@@ -118,6 +119,7 @@ static void collect_declaration(AstNode *decl) {
     }
 
     return;
+  }
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
     kind = SYMBOL_VARIABLE;
@@ -864,10 +866,10 @@ static void check_function_signatures(void) {
     if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_EXTERN_FUNCTION) {
       continue;
     }
-    
+
     AstNode *decl = sym->decl;
     FuncParam *params;
-    size_t param_count;
+    size_t param_count = 0;
     AstNode *return_type_expr;
 
     if (decl->kind == AST_DECL_FUNCTION) {
@@ -1517,7 +1519,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
-  } 
+  }
 
   // No valid conversion
   return NULL;
@@ -1747,7 +1749,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
   }
 
   checker_error(node->loc,
-                  "Switch is non-exhaustive. If you need a default branch.");
+                "Switch is non-exhaustive. If you need a default branch.");
 }
 
 Type *check_expression(AstNode *expr) {
@@ -1864,24 +1866,24 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_POSTFIX_INC: {
     AstNode *operand = expr->data.postfix_inc.operand;
     Type *operand_ty = check_expression(operand);
-    
+
     if (!operand_ty) {
       return NULL;
     }
-    
+
     // Check if operand is an lvalue
     if (!is_lvalue(operand)) {
       checker_error(expr->loc, "operand of '++' must be an lvalue");
       return NULL;
     }
-    
+
     // Only works on integer types
     if (!type_is_integral(operand_ty)) {
-      checker_error(expr->loc, "'++' requires integral type, got '%s'", 
-                   type_name(operand_ty));
+      checker_error(expr->loc, "'++' requires integral type, got '%s'",
+                    type_name(operand_ty));
       return NULL;
     }
-    
+
     expr->resolved_type = operand_ty;
     return operand_ty;
   }
@@ -2904,7 +2906,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         cond_type->kind != TYPE_ENUM) {
       checker_error(cond->loc, "switch condition must be numeric (int or "
                                "float), char, enum or string");
-      had_error = true;                         
+      had_error = true;
     }
 
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
