@@ -1946,9 +1946,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     if (array_type->kind == TYPE_STRING) {
       // For str, index directly
       if (compiler_opts.release_mode == RELEASE_DEBUG) {
-        emit_string(cg, "({ ");
-        emit_type_name(cg, expr->resolved_type);
-        emit_string(cg, " __index = ");
+        emit_string(cg, "({ size_t __index = ");
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
