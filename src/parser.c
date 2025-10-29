@@ -425,14 +425,100 @@ AstNode *parse_function_decl(Parser *parser) {
 }
 
 AstNode *parse_extern(Parser *parser) {
+  Location extern_loc = parser->previous.location;
+
   // extern fn name(params) return_type;
   AstNode *lib_name = NULL;
   if (parser_match(parser, TOKEN_STRING)) {
     lib_name = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
     lib_name->data.str_lit.value = str_dup(parser->previous.lexeme);
   }
-  
-  if (parser_match(parser, TOKEN_FN)) {
+
+  if (parser_match(parser, TOKEN_LBRACE)) {
+    // Extern block
+    size_t count = 0, capacity = 2;
+    AstNode **externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+    // fn ..., type IDENT
+    while (parser_check(parser, TOKEN_FN) || parser_check(parser, TOKEN_TYPE)) {
+      if (count >= capacity) {
+        capacity *= 2;
+        AstNode **new_externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+        memcpy(new_externs, externs, count * sizeof(AstNode *));
+        externs = new_externs;
+      }
+
+      if (parser_match(parser, TOKEN_FN)) {
+        Token name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                    "Expected extern function name");
+
+        parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
+
+        // Parse parameters
+        FuncParam *params = NULL;
+        size_t param_count = 0;
+
+        if (!parser_check(parser, TOKEN_RPAREN)) {
+          // We have parameters
+          // For now, allocate space for up to 16 parameters (we'll improve this
+          // later)
+          params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+
+          do {
+            if (param_count >= 16) {
+              parser_error(parser, "Too many parameters (max 16)");
+              break;
+            }
+
+            Token param_name =
+                parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+            AstNode *param_type = parse_type_expression(parser);
+
+            params[param_count].name =
+                param_name.lexeme; // Already allocated by lexer
+            params[param_count].type = param_type;
+            param_count++;
+
+          } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after parameters");
+
+        // Return type
+        AstNode *return_type = parse_type_expression(parser);
+        parser_consume(parser, TOKEN_SEMICOLON,
+                      "Expected ';' after extern function declaration");
+
+        AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+        func->data.extern_func.name = str_dup(name.lexeme);
+        func->data.extern_func.params = params;
+        func->data.extern_func.param_count = param_count;
+        func->data.extern_func.return_type = return_type;
+        func->data.extern_func.lib_name = lib_name;
+        
+        externs[count++] = func;
+      } else if (parser_match(parser, TOKEN_TYPE)) {
+        Token name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                    "Expected extern function name");
+        parser_consume(parser, TOKEN_SEMICOLON,
+                      "Expected ';' after extern type declaration");
+
+        AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+        opaque_type->data.extern_type.name = str_dup(name.lexeme);
+        
+        externs[count++] = opaque_type;
+      }
+    }
+
+    parser_consume(parser, TOKEN_RBRACE, "Expect '}' after extern block");
+
+    AstNode *extern_block = alloc_node(AST_DECL_EXTERN_BLOCK, extern_loc);
+    extern_block->data.extern_block.lib_name = lib_name;
+    extern_block->data.extern_block.decls = externs;
+    extern_block->data.extern_block.decls_count = count;
+
+    return extern_block;
+  } else if (parser_match(parser, TOKEN_FN)) {
     Token name = parser_consume(parser, TOKEN_IDENTIFIER,
                                 "Expected extern function name");
 

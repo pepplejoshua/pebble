@@ -2155,6 +2155,9 @@ Type *check_expression(AstNode *expr) {
     size_t arg_count = expr->data.call.arg_count;
 
     Type *call_type = check_expression(func_expr);
+    if (call_type == NULL) {
+      return NULL;
+    }
 
     // Verify it's actually a function
     if (call_type->kind != TYPE_FUNCTION) {
