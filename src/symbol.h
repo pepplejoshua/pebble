@@ -39,6 +39,10 @@ struct Symbol {
     } var;
 
     struct {
+      char *lib_name;
+    } external;
+
+    struct {
       bool is_evaluated; // Whether constant value is computed
       union {
         long long int_val;

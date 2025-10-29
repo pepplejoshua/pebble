@@ -123,6 +123,7 @@ struct AstNode {
     } func_decl;
     struct {
       char *name;
+      AstNode *lib_name;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;

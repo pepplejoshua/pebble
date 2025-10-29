@@ -416,6 +416,12 @@ AstNode *parse_function_decl(Parser *parser) {
 
 AstNode *parse_extern(Parser *parser) {
   // extern fn name(params) return_type;
+  AstNode *lib_name = NULL;
+  if (parser_match(parser, TOKEN_STRING)) {
+    lib_name = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
+    lib_name->data.str_lit.value = str_dup(parser->previous.lexeme);
+  }
+  
   if (parser_match(parser, TOKEN_FN)) {
     Token name = parser_consume(parser, TOKEN_IDENTIFIER,
                                 "Expected extern function name");
@@ -458,10 +464,11 @@ AstNode *parse_extern(Parser *parser) {
                    "Expected ';' after extern function declaration");
 
     AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
-    func->data.func_decl.name = str_dup(name.lexeme);
-    func->data.func_decl.params = params;
-    func->data.func_decl.param_count = param_count;
-    func->data.func_decl.return_type = return_type;
+    func->data.extern_func.name = str_dup(name.lexeme);
+    func->data.extern_func.params = params;
+    func->data.extern_func.param_count = param_count;
+    func->data.extern_func.return_type = return_type;
+    func->data.extern_func.lib_name = lib_name;
     return func;
   } else if (parser_match(parser, TOKEN_TYPE)) {
     Token name = parser_consume(parser, TOKEN_IDENTIFIER,

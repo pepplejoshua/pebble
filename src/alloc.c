@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 // Arena implementation
 void arena_init(Arena *arena, size_t initial_capacity) {
@@ -53,6 +54,7 @@ void *arena_alloc(Arena *arena, size_t size) {
   assert(new_slab && "Slab allocation failed");
 
   new_slab->buffer = malloc(new_slab_size);
+  printf("new slab = %ld\n", new_slab_size);
   assert(new_slab->buffer && "Slab buffer allocation failed");
 
   new_slab->capacity = new_slab_size;

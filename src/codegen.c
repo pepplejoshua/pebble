@@ -423,8 +423,8 @@ void emit_program(Codegen *cg) {
 
     case TYPE_OPTIONAL: {
       collect_dependencies(type->data.optional.base, type->canonical_name,
-        dep_graph, &node->depends_on, &node->dep_count,
-        &dep_capacity);
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
       break;
     }
 
@@ -510,6 +510,28 @@ void emit_program(Codegen *cg) {
       emit_string(cg, " ");
       emit_string(cg, sym->name);
       emit_string(cg, ";\n");
+    } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+      Type *func_type = sym->type;
+
+      emit_string(cg, "/* ");
+      emit_string(cg, sym->data.external.lib_name);
+      emit_string(cg, " */\n");
+
+      emit_string(cg, "extern ");
+      emit_type_name(cg, func_type->data.func.return_type);
+      emit_string(cg, " ");
+      emit_string(cg, sym->name);
+
+      emit_string(cg, "(");
+
+      for (size_t i = 0; i < func_type->data.func.param_count; i++) {
+        if (i > 0) {
+          emit_string(cg, ", ");
+        }
+        emit_type_name(cg, func_type->data.func.param_types[i]);
+      }
+
+      emit_string(cg, ");\n");
     }
   }
 
