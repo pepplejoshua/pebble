@@ -421,10 +421,12 @@ void emit_program(Codegen *cg) {
       break;
     }
 
-    case TYPE_OPTIONAL:
+    case TYPE_OPTIONAL: {
       collect_dependencies(type->data.optional.base, type->canonical_name,
-                           dep_graph, &node->depends_on, &node->dep_count,
-                           &dep_capacity);
+        dep_graph, &node->depends_on, &node->dep_count,
+        &dep_capacity);
+      break;
+    }
 
     case TYPE_SLICE: {
       collect_dependencies(type->data.slice.element, type->canonical_name,
