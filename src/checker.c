@@ -107,6 +107,17 @@ static void collect_declaration(AstNode *decl) {
     is_opaque_type = true;
     loc = decl->loc;
     break;
+  case AST_DECL_EXTERN_BLOCK:
+    size_t count = decl->data.extern_block.decls_count;
+    if (count == 0) {
+      return;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+      collect_declaration(decl->data.extern_block.decls[i]);
+    }
+
+    return;
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
     kind = SYMBOL_VARIABLE;
@@ -143,6 +154,9 @@ static void collect_declaration(AstNode *decl) {
     AstNode *lib_name = decl->data.extern_func.lib_name;
     if (lib_name) {
       symbol->data.external.lib_name = lib_name->data.str_lit.value;
+
+      // Add as library
+      append_library_string(lib_name->data.str_lit.value);
     }
   }
   if (is_opaque_type) {
@@ -1729,6 +1743,9 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
     arena_free(&temp_arena);
   }
+
+  checker_error(node->loc,
+                  "Switch is non-exhaustive. If you need a default branch.");
 }
 
 Type *check_expression(AstNode *expr) {
@@ -2845,11 +2862,14 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode **cases = stmt->data.switch_stmt.cases;
     AstNode *default_case = stmt->data.switch_stmt.default_case;
 
+    bool had_error = false;
+
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
     if (cond_type && cond_type->kind == TYPE_BOOL) {
       checker_error(cond->loc, "switch cases cannot be used with boolean "
                                "types. please use if statements instead.");
+      had_error = true;
     }
 
     if (cond_type && !type_is_numeric(cond_type) &&
@@ -2857,13 +2877,16 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         cond_type->kind != TYPE_ENUM) {
       checker_error(cond->loc, "switch condition must be numeric (int or "
                                "float), char, enum or string");
+      had_error = true;                         
     }
 
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
       check_statement(cases[i], expected_return_type);
     }
 
-    check_switch_is_exhaustive(stmt, cond->resolved_type);
+    if (!had_error) {
+      check_switch_is_exhaustive(stmt, cond->resolved_type);
+    }
 
     bool else_returns =
         default_case ? check_statement(default_case, expected_return_type)

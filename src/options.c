@@ -1,6 +1,7 @@
 #include "options.h"
 
 #include "alloc.h"
+#include "uthash.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +60,14 @@ void auto_detect_compiler(void) {
       str_dup(detected); // Use your str_dup; assumes it copies to arena/global
 }
 
-void initialise_args() {
+typedef struct {
+    char *name;
+    UT_hash_handle hh;
+} LibraryEntry;
+
+static LibraryEntry *library_set = NULL;
+
+void initialise_args(void) {
   // Initialize defaults
   compiler_opts.freestanding = false;
   compiler_opts.release_mode = RELEASE_DEBUG;
@@ -82,7 +90,22 @@ void initialise_args() {
   auto_detect_compiler();
 }
 
+void cleanup_args(void) {
+  LibraryEntry *entry, *tmp;
+  HASH_ITER(hh, library_set, entry, tmp) {
+    HASH_DEL(library_set, entry);
+  }
+  library_set = NULL;
+}
+
 void append_library_string(char *library) {
+  LibraryEntry *entry;
+  HASH_FIND_STR(library_set, library, entry);
+  
+  if (entry) {
+    return;
+  }
+
   if (compiler_opts.linked_libraries_count >= compiler_opts.linked_libraries_capacity) {
     size_t new_cap = compiler_opts.linked_libraries_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
@@ -97,9 +120,13 @@ void append_library_string(char *library) {
   }
 
   compiler_opts.linked_libraries[compiler_opts.linked_libraries_count++] = library;
+
+  entry = arena_alloc(&long_lived, sizeof(LibraryEntry));
+  entry->name = library;
+  HASH_ADD_KEYPTR(hh, library_set, entry->name, strlen(entry->name), entry);
 }
 
-char *flatten_library_strings() {
+char *flatten_library_strings(void) {
   size_t total_length = compiler_opts.linked_libraries_count * 3; // account for "-l" and " "
   for (size_t i = 0; i < compiler_opts.linked_libraries_count; i++) {
     total_length += strlen(compiler_opts.linked_libraries[i]);
@@ -129,7 +156,7 @@ char *flatten_library_strings() {
   return result;
 }
 
-char *release_mode_string() {
+char *release_mode_string(void) {
   bool is_clang_like = (strstr(compiler_opts.compiler, "clang") != NULL ||
                         strcmp(compiler_opts.compiler, "cc") == 0);
 

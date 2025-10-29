@@ -296,6 +296,7 @@ int main(int argc, char **argv) {
 
   // Try to parse arguments
   if (!parse_args(argc, argv)) {
+    cleanup_args();
     arena_free(&long_lived);
     return 1;
   }
@@ -304,12 +305,14 @@ int main(int argc, char **argv) {
   if (compiler_opts.input_file == NULL) {
     fprintf(stderr, "Error: No input file specified\n");
     print_usage(argv[0]);
+    cleanup_args();
     arena_free(&long_lived);
     return 1;
   }
 
   // Compile the source file
   if (!compile_file(compiler_opts.input_file)) {
+    cleanup_args();
     arena_free(&long_lived);
     return 1;
   }
@@ -323,6 +326,7 @@ int main(int argc, char **argv) {
   }
 
   // Cleanup
+  cleanup_args();
   arena_free(&long_lived);
   return 0;
 }

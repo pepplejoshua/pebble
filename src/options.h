@@ -43,10 +43,11 @@ typedef struct CompilerOptions
 extern CompilerOptions compiler_opts;
 
 void auto_detect_compiler(void);
-void initialise_args();
+void initialise_args(void);
+void cleanup_args(void);
 void append_library_string(char *library);
-char *flatten_library_strings();
-char* release_mode_string();
+char *flatten_library_strings(void);
+char* release_mode_string(void);
 void print_usage(const char *program_name);
 bool parse_args(int argc, char **argv);
 
