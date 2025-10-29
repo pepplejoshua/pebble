@@ -1537,7 +1537,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
     } else {
-      emit_string(cg, " = {0}");
+      if (stmt->resolved_type->kind == TYPE_ARRAY) {
+        emit_string(cg, " = {{0}, ");
+        char len_buffer[32] = {0};
+        sprintf(len_buffer, "%zu", stmt->resolved_type->data.array.size);
+        emit_string(cg, len_buffer);
+        emit_string(cg, "}");
+      } else {
+        emit_string(cg, " = {0}");
+      }
     }
     emit_string(cg, ";\n");
     break;
