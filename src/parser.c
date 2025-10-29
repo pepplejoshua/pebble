@@ -897,6 +897,7 @@ AstNode *parse_for_stmt(Parser *parser) {
     }
 
     init = alloc_node(AST_STMT_ASSIGN, init_lhs->loc);
+    init->data.assign_stmt.op = -1;
     init->data.assign_stmt.lhs = init_lhs;
     init->data.assign_stmt.rhs = init_rhs;
   }
@@ -920,6 +921,7 @@ AstNode *parse_for_stmt(Parser *parser) {
     }
 
     update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
+    update->data.assign_stmt.op = -1;
     update->data.assign_stmt.lhs = lhs;
     update->data.assign_stmt.rhs = rhs;
   }
@@ -1004,6 +1006,7 @@ AstNode *parse_assignment_stmt(Parser *parser) {
     parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after assignment");
 
     AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    assign->data.assign_stmt.op = -1;
     assign->data.assign_stmt.lhs = lhs;
     assign->data.assign_stmt.rhs = rhs;
     return assign;

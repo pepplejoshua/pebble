@@ -1564,6 +1564,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
   case AST_EXPR_LITERAL_NONE:
+    emit_string(cg, "(");
+    emit_type_name(cg, expr->resolved_type);
+    emit_string(cg, ")");
     emit_string(cg, "{0}");
     break;
 

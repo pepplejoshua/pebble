@@ -1484,6 +1484,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   } else if (expr_type->kind == TYPE_NONE &&
              target_type->kind == TYPE_OPTIONAL) {
     // Allow implicit case of none to any type ?T
+    expr->resolved_type = target_type;
     return expr;
   } else if (expr_type->kind == TYPE_OPTIONAL &&
              target_type->kind == TYPE_OPTIONAL) {
@@ -1516,7 +1517,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
-  }
+  } 
 
   // No valid conversion
   return NULL;
