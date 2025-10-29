@@ -156,6 +156,7 @@ static void collect_declaration(AstNode *decl) {
       symbol->data.external.lib_name = lib_name->data.str_lit.value;
 
       // Add as library
+      // FIXME: Might need to strip the quotes
       append_library_string(lib_name->data.str_lit.value);
     }
   }
