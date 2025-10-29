@@ -65,6 +65,7 @@ typedef enum {
   AST_EXPR_SOME,          // some expr
   AST_EXPR_LITERAL_NONE,  // none
   AST_EXPR_FORCE_UNWRAP,  // expr!
+  AST_EXPR_POSTFIX_INC,   // expr++
 
   // Type expressions
   AST_TYPE_NAMED,    // int, float, CustomType
@@ -186,6 +187,7 @@ struct AstNode {
       AstNode *expr;
     } expr_stmt;
     struct {
+      BinaryOp op;
       AstNode *lhs;
       AstNode *rhs;
     } assign_stmt;
@@ -250,6 +252,9 @@ struct AstNode {
       AstNode *object;
       char *member;
     } member_expr;
+    struct {
+      AstNode *operand;
+    } postfix_inc;
     struct {
       AstNode *array;
       AstNode *start;

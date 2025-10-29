@@ -1859,6 +1859,31 @@ Type *check_expression(AstNode *expr) {
     return val_ty->data.optional.base;
   }
 
+  case AST_EXPR_POSTFIX_INC: {
+    AstNode *operand = expr->data.postfix_inc.operand;
+    Type *operand_ty = check_expression(operand);
+    
+    if (!operand_ty) {
+      return NULL;
+    }
+    
+    // Check if operand is an lvalue
+    if (!is_lvalue(operand)) {
+      checker_error(expr->loc, "operand of '++' must be an lvalue");
+      return NULL;
+    }
+    
+    // Only works on integer types
+    if (!type_is_integral(operand_ty)) {
+      checker_error(expr->loc, "'++' requires integral type, got '%s'", 
+                   type_name(operand_ty));
+      return NULL;
+    }
+    
+    expr->resolved_type = operand_ty;
+    return operand_ty;
+  }
+
   case AST_EXPR_IDENTIFIER: {
     const char *name = expr->data.ident.name;
     Symbol *sym = scope_lookup(current_scope, name);
@@ -3107,6 +3132,11 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       }
     }
     return false;
+  }
+
+  case AST_EXPR_POSTFIX_INC: {
+    AstNode *lhs = stmt->data.postfix_inc.operand;
+    return check_expression(lhs);
   }
 
   case AST_STMT_EXPR: {

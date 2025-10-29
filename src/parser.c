@@ -908,16 +908,21 @@ AstNode *parse_for_stmt(Parser *parser) {
 
   // Parse update (assignment without semicolon)
   AstNode *lhs = parse_expression(parser);
-  parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
-  AstNode *rhs = parse_expression(parser);
+  AstNode *update = lhs;
 
-  if (!lhs || !rhs) {
-    parser_synchronize(parser);
-    return NULL;
+  if (lhs->kind != AST_EXPR_POSTFIX_INC) {
+    parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
+    AstNode *rhs = parse_expression(parser);
+    
+    if (!lhs || !rhs) {
+      parser_synchronize(parser);
+      return NULL;
+    }
+
+    update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
+    update->data.assign_stmt.lhs = lhs;
+    update->data.assign_stmt.rhs = rhs;
   }
-  AstNode *update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
-  update->data.assign_stmt.lhs = lhs;
-  update->data.assign_stmt.rhs = rhs;
 
   // Parse body
   AstNode *body = parse_statement(parser);
@@ -962,6 +967,36 @@ AstNode *parse_block_stmt(Parser *parser) {
 AstNode *parse_assignment_stmt(Parser *parser) {
   // We know current token is identifier
   AstNode *lhs = parse_expression(parser); // This will parse the identifier
+
+  // Handle compound assignments
+  TokenType compound_op = TOKEN_EOF;
+  BinaryOp binop;
+  
+  if (parser_match(parser, TOKEN_PLUS_EQUAL)) {
+    compound_op = TOKEN_PLUS_EQUAL;
+    binop = BINOP_ADD;
+  } else if (parser_match(parser, TOKEN_MINUS_EQUAL)) {
+    compound_op = TOKEN_MINUS_EQUAL;
+    binop = BINOP_SUB;
+  } else if (parser_match(parser, TOKEN_STAR_EQUAL)) {
+    compound_op = TOKEN_STAR_EQUAL;
+    binop = BINOP_MUL;
+  } else if (parser_match(parser, TOKEN_SLASH_EQUAL)) {
+    compound_op = TOKEN_SLASH_EQUAL;
+    binop = BINOP_DIV;
+  }
+  
+  if (compound_op != TOKEN_EOF) {
+    Location loc = parser->previous.location;
+    AstNode *rhs = parse_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after compound assignment");
+    
+    AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    assign->data.assign_stmt.op = binop;
+    assign->data.assign_stmt.lhs = lhs;
+    assign->data.assign_stmt.rhs = rhs;
+    return assign;
+  }
 
   if (parser_match(parser, TOKEN_EQUAL)) {
     Location loc = parser->previous.location;
@@ -1208,7 +1243,13 @@ AstNode *parse_postfix(Parser *parser) {
   }
 
   while (true) {
-    if (parser_match(parser, TOKEN_NOT)) {
+    if (parser_match(parser, TOKEN_PLUS_PLUS)) {
+      // Postfix increment: expr++
+      Location loc = parser->previous.location;
+      AstNode *postfix = alloc_node(AST_EXPR_POSTFIX_INC, loc);
+      postfix->data.postfix_inc.operand = expr;
+      expr = postfix;
+    } else if (parser_match(parser, TOKEN_NOT)) {
       Location loc = parser->previous.location;
       AstNode *force_unwrap = alloc_node(AST_EXPR_FORCE_UNWRAP, loc);
       force_unwrap->data.force_unwrap.operand = expr;

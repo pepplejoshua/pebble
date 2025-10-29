@@ -1425,9 +1425,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "; ");
       emit_expr(cg, stmt->data.for_stmt.cond);
       emit_string(cg, "; ");
-      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.lhs);
-      emit_string(cg, " = ");
-      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
+      
+      AstNode *update = stmt->data.for_stmt.update;
+      if (update->kind == AST_STMT_ASSIGN) {
+        emit_expr(cg, update->data.assign_stmt.lhs);
+        emit_string(cg, " = ");
+        emit_expr(cg, update->data.assign_stmt.rhs);
+      } else {
+        emit_expr(cg, update);
+      }
       emit_string(cg, ") {\n");
       emit_indent(cg);
 
@@ -1490,7 +1496,34 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
     emit_expr(cg, stmt->data.assign_stmt.lhs);
-    emit_string(cg, " = ");
+
+    switch (stmt->data.assign_stmt.op) {
+      case BINOP_ADD: {
+        emit_string(cg, " += ");
+        break;
+      }
+
+      case BINOP_SUB: {
+        emit_string(cg, " -= ");
+        break;
+      }
+
+      case BINOP_MUL: {
+        emit_string(cg, " *= ");
+        break;
+      }
+
+      case BINOP_DIV: {
+        emit_string(cg, " /= ");
+        break;
+      }
+
+      default: {
+        emit_string(cg, " = ");
+        break;
+      }
+    }
+
     emit_expr(cg, stmt->data.assign_stmt.rhs);
     emit_string(cg, ";\n");
     break;
@@ -1718,6 +1751,12 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, " __opt = ");
     emit_expr(cg, expr->data.force_unwrap.operand);
     emit_string(cg, "; assert(__opt.has_value); __opt.value; })");
+    break;
+  }
+
+  case AST_EXPR_POSTFIX_INC: {
+    emit_expr(cg, expr->data.postfix_inc.operand);
+    emit_string(cg, "++");
     break;
   }
 
