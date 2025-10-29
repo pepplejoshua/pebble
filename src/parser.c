@@ -288,7 +288,6 @@ AstNode *parse_declaration(Parser *parser) {
   }
 
   parser_error(parser, "Expected declaration");
-  // parser_synchronize(parser);
   return NULL;
 }
 
