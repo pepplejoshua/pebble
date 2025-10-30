@@ -23,6 +23,7 @@ typedef struct {
   bool in_loop;
   bool in_defer;
   size_t anonymous_functions;
+  CallingConvention current_convention;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -78,6 +79,51 @@ static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
 static bool is_valid_cast(Type *from, Type *to);
 
 static bool check_statement(AstNode *stmt, Type *expected_return_type);
+
+static bool check_convention(AstNode *conv) {
+  if (!conv) {
+    // Assumes "pebble"
+    return true;
+  }
+
+  // NOTE: string includes quotes
+
+  assert(conv->kind == AST_EXPR_LITERAL_STRING);
+  if (strcmp("\"c\"", conv->data.str_lit.value) == 0 ||
+      strcmp("\"C\"", conv->data.str_lit.value) == 0) {
+    return true;
+  }
+  if (strcmp("\"pebble\"", conv->data.str_lit.value) == 0) {
+    return true;
+  }
+
+  checker_error(
+    conv->loc,
+    "unknown calling convention %s, expect \"c\" or \"pebble\" (default)",
+    conv->data.str_lit.value
+  );
+  return false;
+}
+
+static CallingConvention convention_from_node(AstNode *conv) {
+  if (!conv) {
+    return CALL_CONV_PEBBLE;
+  }
+
+  // NOTE: string includes quotes
+
+  assert(conv->kind == AST_EXPR_LITERAL_STRING);
+  if (strcmp("\"c\"", conv->data.str_lit.value) == 0 ||
+      strcmp("\"C\"", conv->data.str_lit.value) == 0) {
+    return CALL_CONV_C;
+  }
+  if (strcmp("\"pebble\"", conv->data.str_lit.value) == 0) {
+    return CALL_CONV_PEBBLE;
+  }
+
+  // Error would've been reported, just assume pebble
+  return CALL_CONV_PEBBLE;
+}
 
 //=============================================================================
 // PASS 2: COLLECT GLOBALS
@@ -872,15 +918,21 @@ static void check_function_signatures(void) {
     FuncParam *params;
     size_t param_count = 0;
     AstNode *return_type_expr;
+    CallingConvention convention = CALL_CONV_C;
 
     if (decl->kind == AST_DECL_FUNCTION) {
       params = decl->data.func_decl.params;
       param_count = decl->data.func_decl.param_count;
       return_type_expr = decl->data.func_decl.return_type;
+
+      check_convention(decl->data.func_decl.convention);
+
+      convention = convention_from_node(decl->data.func_decl.convention);
     } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
       params = decl->data.extern_func.params;
       param_count = decl->data.extern_func.param_count;
       return_type_expr = decl->data.extern_func.return_type;
+      // NOTE: extern functions cannot define a convention
     }
 
     int is_variadic = -1;
@@ -918,7 +970,7 @@ static void check_function_signatures(void) {
     // Create function type
     sym->type = type_create_function(
         param_types, param_count, return_type, is_variadic != -1,
-        !checker_state.in_type_resolution, sym->decl->loc);
+        !checker_state.in_type_resolution, convention, sym->decl->loc);
 
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
@@ -961,6 +1013,8 @@ bool check_anonymous_functions(void) {
     FuncParam *params = decl->data.func_expr.params;
     size_t param_count = decl->data.func_expr.param_count;
     AstNode *return_type_expr = decl->data.func_expr.return_type;
+
+    check_convention(decl->data.func_expr.convention);
 
     // Resolve parameter types
     Type **param_types = NULL;
@@ -1019,6 +1073,8 @@ bool check_anonymous_functions(void) {
 
     // Push function's local scope (contains parameters)
     scope_push(sym->data.func.local_scope);
+
+    checker_state.current_convention = func_type->data.func.convention;
 
     // Check the function body
     bool definitely_returns = check_statement(body, return_type);
@@ -1142,7 +1198,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (field_count == 0) {
       checker_warning(type_expr->loc,
                       "Struct was declared without any members");
-      return type_create_struct(NULL, NULL, field_count, loc);
+      return type_create_struct(NULL, NULL, field_count, false, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1197,7 +1253,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_struct(field_names, field_types, field_count, loc);
+    return type_create_struct(field_names, field_types, field_count, false, loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -1259,8 +1315,12 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
 
+    check_convention(type_expr->data.type_function.convention);
+
+    CallingConvention convention = convention_from_node(type_expr->data.type_function.convention);
+
     return type_create_function(param_types, param_count, return_type, false,
-                                !checker_state.in_type_resolution, loc);
+                                !checker_state.in_type_resolution, convention, loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -2224,10 +2284,20 @@ Type *check_expression(AstNode *expr) {
     }
 
     Type *func_type = call_type;
+    CallingConvention callee_conv = func_type->data.func.convention;
     size_t param_count = func_type->data.func.param_count;
     Type **param_types = func_type->data.func.param_types;
     Type *return_type = func_type->data.func.return_type;
     bool is_variadic = func_type->data.func.is_variadic;
+
+    // TODO: Allow passing in a context manually constructed
+    // C convention cannot call Pebble convention directly
+    if (callee_conv == CALL_CONV_PEBBLE && checker_state.current_convention == CALL_CONV_C) {
+      checker_error(expr->loc,
+        "cannot call Pebble convention function from C convention function");
+    }
+
+    expr->resolved_type = func_type;
 
     // Handle variadic functions
     if (is_variadic) {
@@ -2794,10 +2864,12 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    CallingConvention convention = convention_from_node(expr->data.func_expr.convention);
+
     // Add function as symbol
     Type *fn_type = type_create_function(
         param_types, param_count, return_type, is_variadic != -1,
-        !checker_state.in_type_resolution, loc);
+        !checker_state.in_type_resolution, convention, loc);
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
@@ -2841,6 +2913,15 @@ Type *check_expression(AstNode *expr) {
     // Result type is the target type
     expr->resolved_type = target_type;
     return target_type;
+  }
+  case AST_EXPR_CONTEXT: {
+    if (checker_state.current_convention == CALL_CONV_C) {
+      checker_error(expr->loc,
+        "cannot use \"context\" in functions with C calling convention");
+    }
+
+    expr->resolved_type = type_context;
+    return type_context;
   }
 
   default:
@@ -3383,6 +3464,8 @@ bool check_function_bodies(void) {
     // Push function's local scope (contains parameters)
     scope_push(sym->data.func.local_scope);
 
+    checker_state.current_convention = func_type->data.func.convention;
+
     // Check the function body
     bool definitely_returns = check_statement(body, return_type);
 
@@ -3447,43 +3530,79 @@ bool verify_entry_point(void) {
       return false;
     }
 
-    // main can have 0 or 2 parameters
-    // 2 params: fn main(argc int, argv []str) -> int
-    if (param_count == 2) {
-      // Check first param is int (argc)
-      if (!type_is_int(param_types[0])) {
-        fprintf(stderr, "error: main's first parameter must be int, not '%s'\n",
-                param_types[0]->canonical_name);
-        return false;
-      }
-
-      // TODO: Would be nice if this were just []str instead
-
-      // Check second param is *str (argv)
-      // Array of char*
-      Type *argv_type = param_types[1];
-      if (argv_type->kind != TYPE_POINTER) {
-        fprintf(stderr,
-                "error: main's second parameter must be *str, not '%s'\n",
-                argv_type->canonical_name);
-        return false;
-      }
-
-      Type *inner_type = argv_type->data.ptr.base;
-      if (inner_type->kind != TYPE_STRING) {
-        fprintf(stderr,
-                "error: main's second parameter must be *str (got %s)\n",
-                argv_type->canonical_name);
-        return false;
-      }
-
-      return true;
-    } else if (param_count != 0) {
+    if (func_type->data.func.convention != CALL_CONV_PEBBLE) {
       fprintf(stderr,
-              "error: main function must have 0 or 2 parameters, has %zu\n",
-              param_count);
+              "error: main must use pebble calling convention\n");
       return false;
     }
+
+    // main can have 0, 1 or 2 parameters
+    switch (param_count) {
+      // 0 params: fn main() -> int
+      case 0: {
+        // void
+        break;
+      }
+
+      // 1 param: fn main(argv []str) -> int
+      case 1: {
+        // Array of char*
+        Type *argv_type = param_types[0];
+        if (argv_type->kind != TYPE_SLICE) {
+          fprintf(stderr,
+                  "error: main's second parameter must be []str (got '%s')\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+
+        Type *inner_type = argv_type->data.slice.element;
+        if (inner_type->kind != TYPE_STRING) {
+          fprintf(stderr,
+                  "error: main's second parameter must be []str (got %s)\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+        break;
+      }
+
+      // 2 params: fn main(argc int, argv []str) -> int
+      case 2: {
+        // Check first param is int (argc)
+        if (!type_is_int(param_types[0])) {
+          fprintf(stderr, "error: main's first parameter must be int (got '%s')\n",
+                  param_types[0]->canonical_name);
+          return false;
+        }
+
+        // Check second param is *str (argv)
+        // Array of char*
+        Type *argv_type = param_types[1];
+        if (argv_type->kind != TYPE_POINTER) {
+          fprintf(stderr,
+                  "error: main's second parameter must be *str, not '%s'\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+
+        Type *inner_type = argv_type->data.ptr.base;
+        if (inner_type->kind != TYPE_STRING) {
+          fprintf(stderr,
+                  "error: main's second parameter must be *str (got %s)\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+
+        return true;
+      }
+
+      default: {
+        fprintf(stderr,
+              "error: main function must have 0 or 2 parameters, has %zu\n",
+              param_count);
+        return false;
+      }
+    }
+
   } else {
     // Non-main entry points must return void and take no parameters
     if (return_type->kind != TYPE_VOID) {
@@ -3496,6 +3615,12 @@ bool verify_entry_point(void) {
       fprintf(stderr,
               "error: entry point '%s' must take no parameters, has %zu\n",
               entry_name, param_count);
+      return false;
+    }
+
+    if (func_type->data.func.convention != CALL_CONV_C) {
+      fprintf(stderr,
+              "error: main must use c calling convention\n");
       return false;
     }
   }

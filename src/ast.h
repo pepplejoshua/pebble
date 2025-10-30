@@ -41,6 +41,7 @@ typedef enum {
   AST_STMT_SWITCH,
   AST_STMT_DEFER,
 
+  AST_EXPR_CONTEXT,
   AST_EXPR_LITERAL_INT,
   AST_EXPR_LITERAL_FLOAT,
   AST_EXPR_LITERAL_STRING,
@@ -120,6 +121,7 @@ struct AstNode {
   union {
     // Declarations
     struct {
+      AstNode *convention;
       char *name;
       char *qualified_name;
       FuncParam *params;
@@ -296,6 +298,7 @@ struct AstNode {
       size_t count;   // How many times (from integer literal)
     } array_repeat;
     struct {
+      AstNode *convention;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;
@@ -354,6 +357,7 @@ struct AstNode {
       size_t variant_count;
     } type_enum;
     struct {
+      AstNode *convention;
       AstNode **param_types;
       size_t param_count;
       AstNode *return_type;

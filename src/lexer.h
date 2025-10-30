@@ -43,6 +43,7 @@ typedef enum {
   TOKEN_SOME,
   TOKEN_NONE,
   TOKEN_IMPORT,
+  TOKEN_CONTEXT,
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"
