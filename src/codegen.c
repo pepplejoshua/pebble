@@ -838,8 +838,8 @@ void emit_sections(Codegen *cg) {
     "typedef struct __pebble_context __pebble_context;\n\n"
     "typedef struct Allocator {\n"
     "  void *ptr;\n"
-    "  void *(*alloc)(__pebble_context, size_t);\n"
-    "  void (*free)(__pebble_context, void *);\n"
+    "  void *(*alloc)(__pebble_context, void *, size_t);\n"
+    "  void (*free)(__pebble_context, void *, void *);\n"
     "} Allocator;\n\n"
     "struct __pebble_context {\n"
     "  Allocator default_allocator;\n"
@@ -850,11 +850,11 @@ void emit_sections(Codegen *cg) {
 
   if (!compiler_opts.freestanding) {
     fputs(
-      "void *__pebble_c_alloc(__pebble_context, size_t size) {\n"
+      "void *__pebble_c_alloc(__pebble_context, void *ptr, size_t size) {\n"
       "  return malloc(size);\n"
       "}\n\n"
-      "void __pebble_c_free(__pebble_context, void *ptr) {\n"
-      "  free(ptr);\n"
+      "void __pebble_c_free(__pebble_context, void *ptr, void *data) {\n"
+      "  free(data);\n"
       "}\n\n"
       "\n"
       ,

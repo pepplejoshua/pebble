@@ -458,14 +458,16 @@ void type_system_init(void) {
   type_context = type_create_struct(NULL, NULL, 0, true, loc);
   type_context->canonical_name = "__pebble_context";
 
-  Type **alloc_param_types = arena_alloc(&long_lived, 1 * sizeof(Type *));
-  alloc_param_types[0] = type_usize;
-  Type *alloc_fn_t = type_create_function(alloc_param_types, 1, void_ptr,
+  Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
+  alloc_param_types[0] = void_ptr;
+  alloc_param_types[1] = type_usize;
+  Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr,
                                           false, true, CALL_CONV_PEBBLE, loc);
 
-  Type **free_param_types = arena_alloc(&long_lived, 1 * sizeof(Type *));
+  Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   free_param_types[0] = void_ptr;
-  Type *free_fn_t = type_create_function(free_param_types, 1, type_void,
+  free_param_types[1] = void_ptr;
+  Type *free_fn_t = type_create_function(free_param_types, 2, type_void,
                                           false, true, CALL_CONV_PEBBLE, loc);
   
   char **allocator_field_names = arena_alloc(&long_lived, 3 * sizeof(char *));
