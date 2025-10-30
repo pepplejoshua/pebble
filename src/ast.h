@@ -336,6 +336,7 @@ struct AstNode {
       size_t variant_count;
     } type_enum;
     struct {
+      AstNode *convention;
       AstNode **param_types;
       size_t param_count;
       AstNode *return_type;

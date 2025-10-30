@@ -1681,6 +1681,12 @@ AstNode *parse_type_expression(Parser *parser) {
   if (parser_match(parser, TOKEN_FN)) {
     Location loc = parser->previous.location;
 
+    AstNode *convention = NULL;
+    if (parser_match(parser, TOKEN_STRING)) {
+      convention = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
+      convention->data.str_lit.value = str_dup(parser->previous.lexeme);
+    }
+
     parser_consume(parser, TOKEN_LPAREN, "Expected '(' after 'fn'");
 
     // Parse parameter types
@@ -1715,6 +1721,7 @@ AstNode *parse_type_expression(Parser *parser) {
     }
 
     type = alloc_node(AST_TYPE_FUNCTION, loc);
+    type->data.type_function.convention = convention;
     type->data.type_function.param_types = param_types;
     type->data.type_function.param_count = count;
     type->data.type_function.return_type = return_type;

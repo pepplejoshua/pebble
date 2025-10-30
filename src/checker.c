@@ -1308,9 +1308,12 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
 
-    // FIXME: Allow convention in function type signature?
+    check_convention(type_expr->data.type_function.convention);
+
+    CallingConvention convention = convention_from_node(type_expr->data.type_function.convention);
+
     return type_create_function(param_types, param_count, return_type, false,
-                                !checker_state.in_type_resolution, CALL_CONV_PEBBLE, loc);
+                                !checker_state.in_type_resolution, convention, loc);
   }
 
   case AST_TYPE_TUPLE: {

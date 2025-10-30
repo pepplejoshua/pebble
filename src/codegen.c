@@ -849,7 +849,7 @@ void emit_sections(Codegen *cg) {
       "  return malloc(size);\n"
       "}\n\n"
       "void __pebble_c_free(void *, void *ptr) {\n"
-      "  return free(ptr);\n"
+      "  free(ptr);\n"
       "}\n\n"
       "\n"
       ,
