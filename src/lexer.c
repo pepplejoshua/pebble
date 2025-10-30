@@ -140,6 +140,9 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
       return lexer_check_keyword(lexer, 5, "break", TOKEN_BREAK);
     break;
   case 'c':
+    if (length == 7) {
+      return lexer_check_keyword(lexer, 7, "context", TOKEN_CONTEXT);
+    }
     if (length == 8)
       return lexer_check_keyword(lexer, 8, "continue", TOKEN_CONTINUE);
     if (length == 4) {
@@ -597,6 +600,8 @@ const char *token_type_name(TokenType type) {
     return "DEFER";
   case TOKEN_ENUM:
     return "ENUM";
+  case TOKEN_CONTEXT:
+    return "context";
   case TOKEN_INT_TYPE:
     return "INT_TYPE";
   case TOKEN_BOOL_TYPE:

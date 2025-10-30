@@ -291,7 +291,8 @@ AstNode *parse_declaration(Parser *parser) {
   return NULL;
 }
 
-static AstNode *parse_function(Parser *parser, Location location, char *name) {
+static AstNode *parse_function(Parser *parser, Location location,
+                               char *name, AstNode *convention) {
   // (params) return_type { body }
   // (params) return_type => expr
 
@@ -401,6 +402,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
     func->data.func_decl.param_count = param_count;
     func->data.func_decl.return_type = return_type;
     func->data.func_decl.body = body;
+    func->data.func_decl.convention = convention;
   } else {
     // Anonymous function
     func = alloc_node(AST_EXPR_FUNCTION, location);
@@ -408,6 +410,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name) {
     func->data.func_expr.param_count = param_count;
     func->data.func_expr.return_type = return_type;
     func->data.func_expr.body = body;
+    func->data.func_expr.convention = convention;
   }
 
   return func;
@@ -417,10 +420,16 @@ AstNode *parse_function_decl(Parser *parser) {
   // fn name(params) return_type { body }
   // fn name(params) return_type => expr
 
+  AstNode *convention = NULL;
+  if (parser_match(parser, TOKEN_STRING)) {
+    convention = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
+    convention->data.str_lit.value = str_dup(parser->previous.lexeme);
+  }
+
   Token name =
       parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
 
-  return parse_function(parser, name.location, name.lexeme);
+  return parse_function(parser, name.location, name.lexeme, convention);
 }
 
 AstNode *parse_extern(Parser *parser) {
@@ -1643,7 +1652,13 @@ AstNode *parse_primary(Parser *parser) {
 
   // Function literal
   if (parser_match(parser, TOKEN_FN)) {
-    return parse_function(parser, parser->previous.location, NULL);
+    AstNode *convention = NULL;
+    if (parser_match(parser, TOKEN_STRING)) {
+      convention = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
+      convention->data.str_lit.value = str_dup(parser->previous.lexeme);
+    }
+
+    return parse_function(parser, parser->previous.location, NULL, convention);
   }
 
   parser_error(parser, "Expected expression");

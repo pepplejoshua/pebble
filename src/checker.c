@@ -78,6 +78,45 @@ static bool is_valid_cast(Type *from, Type *to);
 
 static bool check_statement(AstNode *stmt, Type *expected_return_type);
 
+static bool check_convention(AstNode *conv) {
+  if (!conv) {
+    // Assumes "pebble"
+    return true;
+  }
+
+  assert(conv->kind == AST_EXPR_LITERAL_STRING);
+  if (strcmp("\"c\"", conv->data.str_lit.value) == 0) {
+    return true;
+  }
+  if (strcmp("\"pebble\"", conv->data.str_lit.value) == 0) {
+    return true;
+  }
+
+  checker_error(
+    conv->loc,
+    "unknown calling convention %s, expect \"c\" or \"pebble\" (default)",
+    conv->data.str_lit.value
+  );
+  return false;
+}
+
+static CallingConvention convention_from_node(AstNode *conv) {
+  if (!conv) {
+    return CALL_CONV_PEBBLE;
+  }
+
+  assert(conv->kind == AST_EXPR_LITERAL_STRING);
+  if (strcmp("\"c\"", conv->data.str_lit.value) == 0) {
+    return CALL_CONV_C;
+  }
+  if (strcmp("\"pebble\"", conv->data.str_lit.value) == 0) {
+    return CALL_CONV_PEBBLE;
+  }
+
+  // Error would've been reported, just assume pebble
+  return CALL_CONV_PEBBLE;
+}
+
 //=============================================================================
 // PASS 2: COLLECT GLOBALS
 //============================================================================
@@ -876,10 +915,13 @@ static void check_function_signatures(void) {
       params = decl->data.func_decl.params;
       param_count = decl->data.func_decl.param_count;
       return_type_expr = decl->data.func_decl.return_type;
+
+      check_convention(decl->data.func_decl.convention);
     } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
       params = decl->data.extern_func.params;
       param_count = decl->data.extern_func.param_count;
       return_type_expr = decl->data.extern_func.return_type;
+      // NOTE: extern functions cannot define a convention
     }
 
     int is_variadic = -1;
@@ -914,10 +956,12 @@ static void check_function_signatures(void) {
       continue; // Error already reported
     }
 
+    CallingConvention convention = convention_from_node(decl->data.func_decl.convention);
+
     // Create function type
     sym->type = type_create_function(
         param_types, param_count, return_type, is_variadic != -1,
-        !checker_state.in_type_resolution, sym->decl->loc);
+        !checker_state.in_type_resolution, convention, sym->decl->loc);
 
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
@@ -960,6 +1004,8 @@ bool check_anonymous_functions(void) {
     FuncParam *params = decl->data.func_expr.params;
     size_t param_count = decl->data.func_expr.param_count;
     AstNode *return_type_expr = decl->data.func_expr.return_type;
+
+    check_convention(decl->data.func_expr.convention);
 
     // Resolve parameter types
     Type **param_types = NULL;
@@ -1253,8 +1299,9 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
 
+    // FIXME: Allow convention in function type?
     return type_create_function(param_types, param_count, return_type, false,
-                                !checker_state.in_type_resolution, loc);
+                                !checker_state.in_type_resolution, CALL_CONV_PEBBLE, loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -2741,10 +2788,12 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    CallingConvention convention = convention_from_node(expr->data.func_expr.convention);
+
     // Add function as symbol
     Type *fn_type = type_create_function(
         param_types, param_count, return_type, is_variadic != -1,
-        !checker_state.in_type_resolution, loc);
+        !checker_state.in_type_resolution, convention, loc);
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
@@ -3425,6 +3474,13 @@ bool verify_entry_point(void) {
               param_count);
       return false;
     }
+
+    if (func_type->data.func.convention != CALL_CONV_PEBBLE) {
+      fprintf(stderr,
+              "error: main must use pebble calling convention\n");
+      return false;
+    }
+
   } else {
     // Non-main entry points must return void and take no parameters
     if (return_type->kind != TYPE_VOID) {
@@ -3437,6 +3493,12 @@ bool verify_entry_point(void) {
       fprintf(stderr,
               "error: entry point '%s' must take no parameters, has %zu\n",
               entry_name, param_count);
+      return false;
+    }
+
+    if (func_type->data.func.convention != CALL_CONV_C) {
+      fprintf(stderr,
+              "error: main must use c calling convention\n");
       return false;
     }
   }

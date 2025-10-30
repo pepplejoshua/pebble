@@ -509,6 +509,7 @@ void emit_program(Codegen *cg) {
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       emit_string(cg, sym->name);
+
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
       Type *func_type = sym->type;
@@ -581,13 +582,22 @@ void emit_program(Codegen *cg) {
       // Emit prototype
       emit_type_name(cg, func->data.func.return_type);
       emit_string(cg, " ");
-      emit_string(cg, sym->name);
+      if (strcmp("main", sym->name) == 0) {
+        emit_string(cg, "__user_main");
+      } else {
+        emit_string(cg, sym->name);
+      }
       emit_string(cg, "(");
 
       size_t param_count = func->data.func.param_count;
 
+      CallingConvention conv = func->data.func.convention;
+      if (conv == CALL_CONV_PEBBLE) {
+        emit_string(cg, "__pebble_context context");
+      }
+
       for (size_t i = 0; i < param_count; i++) {
-        if (i > 0)
+        if (conv == CALL_CONV_PEBBLE || i > 0)
           emit_string(cg, ", ");
         emit_type_name(cg, func->data.func.param_types[i]);
         emit_string(cg, " ");
@@ -608,8 +618,15 @@ void emit_program(Codegen *cg) {
     emit_string(cg, sym->name);
     emit_string(cg, "(");
 
+    CallingConvention conv = func->data.func.convention;
+    if (conv == CALL_CONV_PEBBLE) {
+      emit_string(cg, "__pebble_context");
+    } else if (func->data.func.param_count == 0) {
+      emit_string(cg, "void");
+    }
+
     for (size_t i = 0; i < func->data.func.param_count; i++) {
-      if (i > 0)
+      if (conv == CALL_CONV_PEBBLE || i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, func->data.func.param_types[i]);
       emit_string(cg, " ");
@@ -631,8 +648,15 @@ void emit_program(Codegen *cg) {
 
     size_t param_count = sym->type->data.func.param_count;
 
+    CallingConvention conv = sym->type->data.func.convention;
+    if (conv == CALL_CONV_PEBBLE) {
+      emit_string(cg, "__pebble_context context");
+    } else if (param_count == 0) {
+      emit_string(cg, "void");
+    }
+
     for (size_t i = 0; i < param_count; i++) {
-      if (i > 0)
+      if (conv == CALL_CONV_PEBBLE || i > 0)
         emit_string(cg, ", ");
       emit_type_name(cg, sym->type->data.func.param_types[i]);
       emit_string(cg, " ");
@@ -662,13 +686,22 @@ void emit_program(Codegen *cg) {
       AstNode *func = sym->decl; // Func decl AST node
       emit_type_name(cg, sym->type->data.func.return_type);
       emit_string(cg, " ");
-      emit_string(cg, func->data.func_decl.name);
+      if (strcmp("main", sym->name) == 0) {
+        emit_string(cg, "__user_main");
+      } else {
+        emit_string(cg, func->data.func_decl.name);
+      }
       emit_string(cg, "(");
 
       size_t param_count = sym->type->data.func.param_count;
 
+      CallingConvention conv = sym->type->data.func.convention;
+      if (conv == CALL_CONV_PEBBLE) {
+        emit_string(cg, "__pebble_context context");
+      }
+
       for (size_t i = 0; i < param_count; i++) {
-        if (i > 0)
+        if (conv == CALL_CONV_PEBBLE || i > 0)
           emit_string(cg, ", ");
         emit_type_name(cg, sym->type->data.func.param_types[i]);
         emit_string(cg, " ");
@@ -800,6 +833,17 @@ void emit_sections(Codegen *cg) {
     fputs(cg->preamble, cg->output);
   }
 
+  if (!compiler_opts.freestanding) {
+    fputs(
+      "typedef struct {\n"
+      "    \n"
+      "} __pebble_context;\n"
+      "\n"
+      ,
+      cg->output
+    );
+  }
+
   // Emit sections (if they have content), then free buffers
   if (cg->forward_types) {
     fputs(cg->forward_types, cg->output);
@@ -824,6 +868,29 @@ void emit_sections(Codegen *cg) {
     fputc('\n', cg->output);
     free(cg->defs);
     cg->defs = NULL;
+  }
+
+  // Emit main function
+  const char *entry_name = compiler_opts.entry_point;
+  bool is_main = strcmp(entry_name, "main") == 0;
+
+  if (is_main) {
+    // Look up the entry point function in global scope
+    Symbol *entry_sym = scope_lookup(global_scope, entry_name);
+    
+    fputs(
+      "int main(int argc, const char **argv) {\n"
+      "  __pebble_context context = {0};\n"
+      "  return __user_main(context"
+      ,
+      cg->output
+    );
+
+    if (entry_sym->type->data.func.param_count == 2) {
+      fputs(", argc, argv", cg->output);
+    }
+
+    fputs(");\n}\n", cg->output);
   }
 
   // Clear uthash sets
@@ -857,15 +924,16 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       emit_string(cg, canonical);
       emit_string(cg, ")(");
 
-      if (type->data.func.param_count == 0) {
-        emit_string(cg, "void");
-      } else {
-        for (size_t i = 0; i < type->data.func.param_count; i++) {
-          if (i > 0) {
-            emit_string(cg, ", ");
-          }
-          emit_type_name(cg, type->data.func.param_types[i]);
+      CallingConvention conv = type->data.func.convention;
+      if (conv == CALL_CONV_PEBBLE) {
+        emit_string(cg, "__pebble_context");
+      }
+
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        if (conv == CALL_CONV_PEBBLE || i > 0) {
+          emit_string(cg, ", ");
         }
+        emit_type_name(cg, type->data.func.param_types[i]);
       }
 
       emit_string(cg, ")");

@@ -246,11 +246,13 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
 // Create function type (with deduplication)
 Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
-                           bool canonicalize, Location loc) {
+                           bool canonicalize, CallingConvention convention,
+                           Location loc) {
   assert(return_type);
 
   if (canonicalize) {
     Type temp = {.kind = TYPE_FUNCTION,
+                 .data.func.convention = convention,
                  .data.func.param_types = param_types,
                  .data.func.param_count = param_count,
                  .data.func.return_type = return_type,
@@ -276,6 +278,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
       memcpy(types, param_types, param_count * sizeof(Type *));
       type->data.func.param_types = types;
     }
+    type->data.func.convention = convention;
     type->data.func.is_variadic = is_variadic;
     type->data.func.param_count = param_count;
     type->data.func.return_type = return_type;
@@ -552,6 +555,17 @@ char *compute_canonical_name(Type *type) {
   case TYPE_FUNCTION: {
     // Compute param names
     size_t total_len = strlen("func");
+
+    switch (type->data.func.convention) {
+    case CALL_CONV_C:
+      total_len += 3;
+      break;
+
+    case CALL_CONV_PEBBLE:
+      total_len += 8;
+      break;
+    }
+
     char **param_names = NULL;
     if (type->data.func.param_count > 0) {
       param_names = arena_alloc(&long_lived,
@@ -568,6 +582,16 @@ char *compute_canonical_name(Type *type) {
 
     result = arena_alloc(&long_lived, total_len + 1);
     strcpy(result, "func");
+
+    switch (type->data.func.convention) {
+    case CALL_CONV_C:
+      strcat(result, "_c_");
+      break;
+
+    case CALL_CONV_PEBBLE:
+      strcat(result, "_pebble_");
+      break;
+    }
 
     if (type->data.func.param_count > 0) {
       for (size_t i = 0; i < type->data.func.param_count; i++) {
