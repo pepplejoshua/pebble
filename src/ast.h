@@ -121,6 +121,7 @@ struct AstNode {
     // Declarations
     struct {
       char *name;
+      char *qualified_name;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;
@@ -128,6 +129,7 @@ struct AstNode {
     } func_decl;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *lib_name;
       FuncParam *params;
       size_t param_count;
@@ -135,6 +137,7 @@ struct AstNode {
     } extern_func;
     struct {
       char *name;
+      char *qualified_name;
     } extern_type;
     struct {
       AstNode *lib_name;
@@ -143,16 +146,19 @@ struct AstNode {
     } extern_block;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *type_expr;
       AstNode *init;
     } var_decl;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *type_expr;
       AstNode *value;
     } const_decl;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *type_expr;
     } type_decl;
 
@@ -235,6 +241,7 @@ struct AstNode {
     } bool_lit;
     struct {
       char *name;
+      char *qualified_name;
     } ident;
     struct {
       BinaryOp op;
