@@ -835,32 +835,28 @@ void emit_sections(Codegen *cg) {
     fputs(cg->preamble, cg->output);
   }
 
-  fputs(
-    "typedef struct __pebble_context __pebble_context;\n\n"
-    "typedef struct Allocator {\n"
-    "  void *ptr;\n"
-    "  void *(*alloc)(__pebble_context, void *, size_t);\n"
-    "  void (*free)(__pebble_context, void *, void *);\n"
-    "} Allocator;\n\n"
-    "struct __pebble_context {\n"
-    "  Allocator default_allocator;\n"
-    "};\n\n"
-    ,
-    cg->output
-  );
+  fputs("typedef struct __pebble_context __pebble_context;\n\n"
+        "typedef struct Allocator {\n"
+        "  void *ptr;\n"
+        "  void *(*alloc)(__pebble_context, void *, size_t);\n"
+        "  void (*free)(__pebble_context, void *, void *);\n"
+        "} Allocator;\n\n"
+        "struct __pebble_context {\n"
+        "  Allocator default_allocator;\n"
+        "};\n\n",
+        cg->output);
 
   if (!compiler_opts.freestanding) {
-    fputs(
-      "void *__pebble_c_alloc(__pebble_context, void *ptr, size_t size) {\n"
-      "  return malloc(size);\n"
-      "}\n\n"
-      "void __pebble_c_free(__pebble_context, void *ptr, void *data) {\n"
-      "  free(data);\n"
-      "}\n\n"
-      "\n"
-      ,
-      cg->output
-    );
+    fputs("void *__pebble_c_alloc(__pebble_context __unused, void *ptr, size_t "
+          "size) {\n"
+          "  return malloc(size);\n"
+          "}\n\n"
+          "void __pebble_c_free(__pebble_context __unused, void *ptr, void "
+          "*data) {\n"
+          "  free(data);\n"
+          "}\n\n"
+          "\n",
+          cg->output);
   }
 
   // Emit sections (if they have content), then free buffers
@@ -895,42 +891,29 @@ void emit_sections(Codegen *cg) {
 
   if (is_main) {
     // Look up the entry point function in global scope
-    Symbol *entry_sym = scope_lookup(global_scope, entry_name);
-    
-    fputs(
-      "int main(int argc, const char **argv) {\n"
-      ,
-      cg->output
-    );
+    Symbol *entry_sym = scope_lookup_local(global_scope, entry_name);
+
+    fputs("int main(int argc, const char **argv) {\n", cg->output);
 
     if (compiler_opts.freestanding) {
-      fputs(
-        "  // Freestanding has an empty context\n"
-        "  __pebble_context context = {0};\n"
-        ,
-        cg->output
-      );
+      fputs("  // Freestanding has an empty context\n"
+            "  __pebble_context context = {0};\n",
+            cg->output);
     } else {
-      fputs(
-        "  __pebble_context context = {\n"
-        "    .default_allocator = (Allocator){\n"
-        "      .ptr = NULL,\n"
-        "      .alloc = __pebble_c_alloc,\n"
-        "      .free = __pebble_c_free,\n"
-        "    },\n"
-        "  };\n"
-        ,
-        cg->output
-      );
+      fputs("  __pebble_context context = {\n"
+            "    .default_allocator = (Allocator){\n"
+            "      .ptr = NULL,\n"
+            "      .alloc = __pebble_c_alloc,\n"
+            "      .free = __pebble_c_free,\n"
+            "    },\n"
+            "  };\n",
+            cg->output);
     }
 
     if (entry_sym->type->data.func.param_count == 1) {
-      fputs(
-        "  slice_str __argv = { argv, argc };\n"
-        "  return __user_main(context, __argv);\n"
-        ,
-        cg->output
-      );
+      fputs("  slice_str __argv = { argv, argc };\n"
+            "  return __user_main(context, __argv);\n",
+            cg->output);
     } else if (entry_sym->type->data.func.param_count == 2) {
       fputs("  return __user_main(context, argc, argv);\n", cg->output);
     }
@@ -1048,7 +1031,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
       type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
       type->kind == TYPE_OPTIONAL) {
-    
+
     if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
       return;
     }
@@ -1059,7 +1042,6 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       // Emit full def
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
-
 
       emit_string(cg, "struct ");
       emit_string(cg, canonical);
