@@ -510,7 +510,10 @@ void emit_program(Codegen *cg) {
       emit_string(cg, "extern ");
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
-      emit_string(cg, sym->name);
+      if (sym->kind == SYMBOL_VARIABLE)
+        emit_string(cg, sym->decl->data.var_decl.qualified_name);
+      if (sym->kind == SYMBOL_CONSTANT)
+        emit_string(cg, sym->decl->data.const_decl.qualified_name);
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
@@ -546,7 +549,12 @@ void emit_program(Codegen *cg) {
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
-      emit_string(cg, sym->name);
+
+      if (sym->kind == SYMBOL_VARIABLE)
+        emit_string(cg, sym->decl->data.var_decl.qualified_name);
+      if (sym->kind == SYMBOL_CONSTANT)
+        emit_string(cg, sym->decl->data.const_decl.qualified_name);
+
       if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
         emit_string(cg, " = ");
 
@@ -587,7 +595,7 @@ void emit_program(Codegen *cg) {
       if (strcmp("main", sym->name) == 0) {
         emit_string(cg, "__user_main");
       } else {
-        emit_string(cg, sym->name);
+        emit_string(cg, sym->decl->data.func_decl.qualified_name);
       }
       emit_string(cg, "(");
 
@@ -691,7 +699,7 @@ void emit_program(Codegen *cg) {
       if (strcmp("main", sym->name) == 0) {
         emit_string(cg, "__user_main");
       } else {
-        emit_string(cg, func->data.func_decl.name);
+        emit_string(cg, func->data.func_decl.qualified_name);
       }
       emit_string(cg, "(");
 
@@ -916,6 +924,8 @@ void emit_sections(Codegen *cg) {
             cg->output);
     } else if (entry_sym->type->data.func.param_count == 2) {
       fputs("  return __user_main(context, argc, argv);\n", cg->output);
+    } else {
+      fputs("  return __user_main(context);\n", cg->output);
     }
 
     fputs("}\n", cg->output);
@@ -1534,7 +1544,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "for (");
       emit_type_name(cg, init->resolved_type);
       emit_string(cg, " ");
-      emit_string(cg, init->data.var_decl.name);
+      emit_string(cg, init->data.var_decl.qualified_name);
       emit_string(cg, " = ");
       emit_expr(cg, init->data.var_decl.init);
       emit_string(cg, "; ");
@@ -1647,7 +1657,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_type_name(cg, stmt->resolved_type); // Resolved type?
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.var_decl.name);
+    emit_string(cg, stmt->data.var_decl.qualified_name);
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
@@ -1670,7 +1680,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, "const ");
     emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.const_decl.name);
+    emit_string(cg, stmt->data.const_decl.qualified_name);
     emit_string(cg, " = ");
     emit_expr(cg, stmt->data.const_decl.value);
     emit_string(cg, ";\n");
@@ -1702,7 +1712,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     break;
 
   case AST_EXPR_IDENTIFIER:
-    emit_string(cg, expr->data.ident.name);
+    emit_string(cg, expr->data.ident.qualified_name);
     break;
 
   case AST_EXPR_MODULE_MEMBER:
@@ -2266,7 +2276,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_STRUCT_LITERAL: {
     emit_string(cg, "(");
-    emit_string(cg, expr->data.struct_literal.type_name);
+    emit_string(cg, expr->data.struct_literal.qualified_type_name);
     emit_string(cg, "){");
     for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
       if (i > 0)

@@ -244,7 +244,7 @@ void qualify_globals_in_module(Module *mod) {
         continue;
       }
       char *prefix = prepend(mod->name, "__");
-      node->data.func_decl.name = prepend(prefix, cur_name);
+      node->data.func_decl.qualified_name = prepend(prefix, cur_name);
       break;
     }
     case AST_DECL_EXTERN_FUNC:
@@ -254,19 +254,19 @@ void qualify_globals_in_module(Module *mod) {
     case AST_DECL_VARIABLE: {
       char *cur_name = node->data.var_decl.name;
       char *prefix = prepend(mod->name, "__");
-      node->data.var_decl.name = prepend(prefix, cur_name);
+      node->data.var_decl.qualified_name = prepend(prefix, cur_name);
       break;
     }
     case AST_DECL_CONSTANT: {
       char *cur_name = node->data.const_decl.name;
       char *prefix = prepend(mod->name, "__");
-      node->data.const_decl.name = prepend(prefix, cur_name);
+      node->data.const_decl.qualified_name = prepend(prefix, cur_name);
       break;
     }
     case AST_DECL_TYPE: {
       char *cur_name = node->data.type_decl.name;
       char *prefix = prepend(mod->name, "__");
-      node->data.type_decl.name = prepend(prefix, cur_name);
+      node->data.type_decl.qualified_name = prepend(prefix, cur_name);
       break;
     }
     default:

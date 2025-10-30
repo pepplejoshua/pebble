@@ -98,10 +98,9 @@ static bool check_convention(AstNode *conv) {
   }
 
   checker_error(
-    conv->loc,
-    "unknown calling convention %s, expect \"c\" or \"pebble\" (default)",
-    conv->data.str_lit.value
-  );
+      conv->loc,
+      "unknown calling convention %s, expect \"c\" or \"pebble\" (default)",
+      conv->data.str_lit.value);
   return false;
 }
 
@@ -132,6 +131,7 @@ static CallingConvention convention_from_node(AstNode *conv) {
 // Collect a single declaration into the global scope
 static void collect_declaration(AstNode *decl) {
   char *name = NULL;
+  char *qualified_name = NULL;
   SymbolKind kind;
   Location loc;
   bool is_opaque_type = false;
@@ -140,6 +140,7 @@ static void collect_declaration(AstNode *decl) {
   switch (decl->kind) {
   case AST_DECL_FUNCTION:
     name = decl->data.func_decl.name;
+    qualified_name = decl->data.func_decl.qualified_name;
     kind = SYMBOL_FUNCTION;
     loc = decl->loc;
     break;
@@ -169,16 +170,19 @@ static void collect_declaration(AstNode *decl) {
   }
   case AST_DECL_VARIABLE:
     name = decl->data.var_decl.name;
+    qualified_name = decl->data.var_decl.qualified_name;
     kind = SYMBOL_VARIABLE;
     loc = decl->loc;
     break;
   case AST_DECL_CONSTANT:
     name = decl->data.const_decl.name;
+    qualified_name = decl->data.const_decl.qualified_name;
     kind = SYMBOL_CONSTANT;
     loc = decl->loc;
     break;
   case AST_DECL_TYPE:
     name = decl->data.type_decl.name;
+    qualified_name = decl->data.type_decl.qualified_name;
     kind = SYMBOL_TYPE;
     loc = decl->loc;
     break;
@@ -187,7 +191,7 @@ static void collect_declaration(AstNode *decl) {
   }
 
   // Check for duplicates
-  Symbol *existing = scope_lookup_local(global_scope, name);
+  Symbol *existing = scope_lookup_local(global_scope, qualified_name);
   if (existing) {
     checker_error(decl->loc, "duplicate declaration of '%s'", name);
     checker_error(existing->decl->loc, "previous declaration was here");
@@ -195,7 +199,7 @@ static void collect_declaration(AstNode *decl) {
   }
 
   // Create and add symbol
-  Symbol *symbol = symbol_create(name, kind, decl);
+  Symbol *symbol = symbol_create(qualified_name, kind, decl);
   if (kind == SYMBOL_VARIABLE) {
     symbol->data.var.is_global = true;
   }
@@ -1118,6 +1122,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Look up named type in type table
     char *name = type_expr->data.type_named.name;
     Type *type = type_lookup(name, loc.file);
+
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
       if (checker_state.in_type_resolution) { // ADD THIS CHECK
@@ -1125,11 +1130,6 @@ Type *resolve_type_expression(AstNode *type_expr) {
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
-        }
-
-        if (strcmp(sym->name, name)) {
-          // The name got qualified, so we should update the reference to it
-          type_expr->data.type_named.name = sym->name;
         }
       }
 
@@ -1253,7 +1253,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_struct(field_names, field_types, field_count, false, loc);
+    return type_create_struct(field_names, field_types, field_count, false,
+                              loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -1317,10 +1318,12 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     check_convention(type_expr->data.type_function.convention);
 
-    CallingConvention convention = convention_from_node(type_expr->data.type_function.convention);
+    CallingConvention convention =
+        convention_from_node(type_expr->data.type_function.convention);
 
     return type_create_function(param_types, param_count, return_type, false,
-                                !checker_state.in_type_resolution, convention, loc);
+                                !checker_state.in_type_resolution, convention,
+                                loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -1964,7 +1967,7 @@ Type *check_expression(AstNode *expr) {
 
     if (strcmp(name, sym->name)) {
       // The name got qualified, so we should update the reference to it
-      expr->data.ident.name = sym->name;
+      expr->data.ident.qualified_name = sym->name;
     }
 
     // Types are not values
@@ -2292,9 +2295,11 @@ Type *check_expression(AstNode *expr) {
 
     // TODO: Allow passing in a context manually constructed
     // C convention cannot call Pebble convention directly
-    if (callee_conv == CALL_CONV_PEBBLE && checker_state.current_convention == CALL_CONV_C) {
-      checker_error(expr->loc,
-        "cannot call Pebble convention function from C convention function");
+    if (callee_conv == CALL_CONV_PEBBLE &&
+        checker_state.current_convention == CALL_CONV_C) {
+      checker_error(
+          expr->loc,
+          "cannot call Pebble convention function from C convention function");
     }
 
     expr->resolved_type = func_type;
@@ -2707,7 +2712,7 @@ Type *check_expression(AstNode *expr) {
 
     if (strcmp(type_name, type_sym->name)) {
       // The name got qualified, so we should update the reference to it
-      expr->data.struct_literal.type_name = type_sym->name;
+      expr->data.struct_literal.qualified_type_name = type_sym->name;
     }
 
     if (type_sym->kind != SYMBOL_TYPE) {
@@ -2864,7 +2869,8 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    CallingConvention convention = convention_from_node(expr->data.func_expr.convention);
+    CallingConvention convention =
+        convention_from_node(expr->data.func_expr.convention);
 
     // Add function as symbol
     Type *fn_type = type_create_function(
@@ -2916,8 +2922,9 @@ Type *check_expression(AstNode *expr) {
   }
   case AST_EXPR_CONTEXT: {
     if (checker_state.current_convention == CALL_CONV_C) {
-      checker_error(expr->loc,
-        "cannot use \"context\" in functions with C calling convention");
+      checker_error(
+          expr->loc,
+          "cannot use \"context\" in functions with C calling convention");
     }
 
     expr->resolved_type = type_context;
@@ -3146,9 +3153,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     scope_push(loop_scope);
 
     // Register loop iterator name or 'iter' as a const variable of type int
-    Symbol *new_sym =
-        symbol_create(iterator_name ? iterator_name->data.ident.name : "iter",
-                      SYMBOL_CONSTANT, NULL);
+    const char *iter_name =
+        iterator_name ? iterator_name->data.ident.name : "iter";
+    Symbol *new_sym = symbol_create(iter_name, SYMBOL_CONSTANT, NULL);
     new_sym->type = type_int;
     scope_add_symbol(current_scope, new_sym);
 
@@ -3248,7 +3255,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
       if (strcmp(lhs->data.ident.name, sym->name)) {
         // The name got qualified, so we should update the reference to it
-        lhs->data.ident.name = sym->name;
+        lhs->data.ident.qualified_name = sym->name;
       }
     }
 
@@ -3531,76 +3538,76 @@ bool verify_entry_point(void) {
     }
 
     if (func_type->data.func.convention != CALL_CONV_PEBBLE) {
-      fprintf(stderr,
-              "error: main must use pebble calling convention\n");
+      fprintf(stderr, "error: main must use pebble calling convention\n");
       return false;
     }
 
     // main can have 0, 1 or 2 parameters
     switch (param_count) {
-      // 0 params: fn main() -> int
-      case 0: {
-        // void
-        break;
-      }
+    // 0 params: fn main() -> int
+    case 0: {
+      // void
+      break;
+    }
 
-      // 1 param: fn main(argv []str) -> int
-      case 1: {
-        // Array of char*
-        Type *argv_type = param_types[0];
-        if (argv_type->kind != TYPE_SLICE) {
-          fprintf(stderr,
-                  "error: main's second parameter must be []str (got '%s')\n",
-                  argv_type->canonical_name);
-          return false;
-        }
-
-        Type *inner_type = argv_type->data.slice.element;
-        if (inner_type->kind != TYPE_STRING) {
-          fprintf(stderr,
-                  "error: main's second parameter must be []str (got %s)\n",
-                  argv_type->canonical_name);
-          return false;
-        }
-        break;
-      }
-
-      // 2 params: fn main(argc int, argv []str) -> int
-      case 2: {
-        // Check first param is int (argc)
-        if (!type_is_int(param_types[0])) {
-          fprintf(stderr, "error: main's first parameter must be int (got '%s')\n",
-                  param_types[0]->canonical_name);
-          return false;
-        }
-
-        // Check second param is *str (argv)
-        // Array of char*
-        Type *argv_type = param_types[1];
-        if (argv_type->kind != TYPE_POINTER) {
-          fprintf(stderr,
-                  "error: main's second parameter must be *str, not '%s'\n",
-                  argv_type->canonical_name);
-          return false;
-        }
-
-        Type *inner_type = argv_type->data.ptr.base;
-        if (inner_type->kind != TYPE_STRING) {
-          fprintf(stderr,
-                  "error: main's second parameter must be *str (got %s)\n",
-                  argv_type->canonical_name);
-          return false;
-        }
-
-        return true;
-      }
-
-      default: {
+    // 1 param: fn main(argv []str) -> int
+    case 1: {
+      // Array of char*
+      Type *argv_type = param_types[0];
+      if (argv_type->kind != TYPE_SLICE) {
         fprintf(stderr,
-              "error: main function must have 0 or 2 parameters, has %zu\n",
-              param_count);
+                "error: main's second parameter must be []str (got '%s')\n",
+                argv_type->canonical_name);
         return false;
       }
+
+      Type *inner_type = argv_type->data.slice.element;
+      if (inner_type->kind != TYPE_STRING) {
+        fprintf(stderr,
+                "error: main's second parameter must be []str (got %s)\n",
+                argv_type->canonical_name);
+        return false;
+      }
+      break;
+    }
+
+    // 2 params: fn main(argc int, argv []str) -> int
+    case 2: {
+      // Check first param is int (argc)
+      if (!type_is_int(param_types[0])) {
+        fprintf(stderr,
+                "error: main's first parameter must be int (got '%s')\n",
+                param_types[0]->canonical_name);
+        return false;
+      }
+
+      // Check second param is *str (argv)
+      // Array of char*
+      Type *argv_type = param_types[1];
+      if (argv_type->kind != TYPE_POINTER) {
+        fprintf(stderr,
+                "error: main's second parameter must be *str, not '%s'\n",
+                argv_type->canonical_name);
+        return false;
+      }
+
+      Type *inner_type = argv_type->data.ptr.base;
+      if (inner_type->kind != TYPE_STRING) {
+        fprintf(stderr,
+                "error: main's second parameter must be *str (got %s)\n",
+                argv_type->canonical_name);
+        return false;
+      }
+
+      return true;
+    }
+
+    default: {
+      fprintf(stderr,
+              "error: main function must have 0 or 2 parameters, has %zu\n",
+              param_count);
+      return false;
+    }
     }
 
   } else {
@@ -3619,8 +3626,7 @@ bool verify_entry_point(void) {
     }
 
     if (func_type->data.func.convention != CALL_CONV_C) {
-      fprintf(stderr,
-              "error: main must use c calling convention\n");
+      fprintf(stderr, "error: main must use c calling convention\n");
       return false;
     }
   }

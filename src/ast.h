@@ -284,9 +284,10 @@ struct AstNode {
       size_t element_count;
     } tuple_expr;
     struct {
-      char *type_name;        // "Point"
-      char **field_names;     // ["x", "y"]
-      AstNode **field_values; // [10, 20]
+      char *type_name;             // "Point"
+      char *qualified_type_name;   // "main__Point"
+      char **field_names;          // ["x", "y"]
+      AstNode **field_values;      // [10, 20]
       size_t field_count;
     } struct_literal;
     struct {

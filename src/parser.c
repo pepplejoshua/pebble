@@ -1369,6 +1369,7 @@ AstNode *parse_postfix(Parser *parser) {
 
         expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
         expr->data.struct_literal.type_name = type_name;
+        expr->data.struct_literal.qualified_type_name = type_name;
         expr->data.struct_literal.field_names = field_names;
         expr->data.struct_literal.field_values = field_values;
         expr->data.struct_literal.field_count = count;
