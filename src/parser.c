@@ -423,6 +423,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     // Named function
     func = alloc_node(AST_DECL_FUNCTION, location);
     func->data.func_decl.name = str_dup(name);
+    func->data.func_decl.qualified_name = str_dup(name);
     func->data.func_decl.params = params;
     func->data.func_decl.param_count = param_count;
     func->data.func_decl.return_type = return_type;
@@ -526,6 +527,7 @@ AstNode *parse_extern(Parser *parser) {
 
         AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
         func->data.extern_func.name = str_dup(name.lexeme);
+        func->data.extern_func.qualified_name = str_dup(name.lexeme);
         func->data.extern_func.params = params;
         func->data.extern_func.param_count = param_count;
         func->data.extern_func.return_type = return_type;
@@ -540,6 +542,7 @@ AstNode *parse_extern(Parser *parser) {
 
         AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
         opaque_type->data.extern_type.name = str_dup(name.lexeme);
+        opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
 
         externs[count++] = opaque_type;
       }
@@ -596,6 +599,7 @@ AstNode *parse_extern(Parser *parser) {
 
     AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
     func->data.extern_func.name = str_dup(name.lexeme);
+    func->data.extern_func.qualified_name = str_dup(name.lexeme);
     func->data.extern_func.params = params;
     func->data.extern_func.param_count = param_count;
     func->data.extern_func.return_type = return_type;
@@ -609,6 +613,7 @@ AstNode *parse_extern(Parser *parser) {
 
     AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
     opaque_type->data.extern_type.name = str_dup(name.lexeme);
+    opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
     return opaque_type;
   }
   parser_error(
@@ -645,12 +650,14 @@ AstNode *parse_variable_decl(Parser *parser) {
   if (is_mutable) {
     AstNode *var = alloc_node(AST_DECL_VARIABLE, name.location);
     var->data.var_decl.name = str_dup(name.lexeme);
+    var->data.var_decl.qualified_name = str_dup(name.lexeme);
     var->data.var_decl.type_expr = type_expr;
     var->data.var_decl.init = init;
     return var;
   } else {
     AstNode *const_var = alloc_node(AST_DECL_CONSTANT, name.location);
     const_var->data.const_decl.name = str_dup(name.lexeme);
+    const_var->data.const_decl.qualified_name = str_dup(name.lexeme);
     const_var->data.const_decl.type_expr = type_expr;
     const_var->data.const_decl.value = init;
     return const_var;
@@ -671,6 +678,7 @@ AstNode *parse_type_decl(Parser *parser) {
   node->kind = AST_DECL_TYPE;
   node->loc = name.location;
   node->data.type_decl.name = str_dup(name.lexeme);
+  node->data.type_decl.qualified_name = str_dup(name.lexeme);
   node->data.type_decl.type_expr = type_expr;
 
   return node;
@@ -1552,6 +1560,7 @@ AstNode *parse_primary(Parser *parser) {
     Token ident = parser->previous;
     AstNode *id = alloc_node(AST_EXPR_IDENTIFIER, ident.location);
     id->data.ident.name = str_dup(ident.lexeme);
+    id->data.ident.qualified_name = str_dup(ident.lexeme);
     return id;
   }
 
