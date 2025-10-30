@@ -42,6 +42,7 @@ typedef enum {
   TOKEN_ENUM,
   TOKEN_SOME,
   TOKEN_NONE,
+  TOKEN_IMPORT,
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"
@@ -103,6 +104,7 @@ typedef enum {
   TOKEN_RBRACKET,  // ]
   TOKEN_FAT_ARROW, // =>
   TOKEN_COLON,     // :
+  TOKEN_MOD_SCOPE, // ::
 
   // Special
   TOKEN_EOF,

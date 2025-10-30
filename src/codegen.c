@@ -178,7 +178,8 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
-                   "<stdio.h>\n#include <string.h>\n#include <stddef.h>\n#include <assert.h>\n\n";
+                   "<stdio.h>\n#include <string.h>\n#include "
+                   "<stddef.h>\n#include <assert.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -515,7 +516,7 @@ void emit_program(Codegen *cg) {
       if (!sym->data.external.lib_name) {
         continue;
       }
-      
+
       emit_string(cg, "/* ");
       emit_string(cg, sym->data.external.lib_name);
       emit_string(cg, " */\n");
@@ -1435,7 +1436,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "; ");
       emit_expr(cg, stmt->data.for_stmt.cond);
       emit_string(cg, "; ");
-      
+
       AstNode *update = stmt->data.for_stmt.update;
       if (update->kind == AST_STMT_ASSIGN) {
         emit_expr(cg, update->data.assign_stmt.lhs);
@@ -1508,30 +1509,30 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_expr(cg, stmt->data.assign_stmt.lhs);
 
     switch (stmt->data.assign_stmt.op) {
-      case BINOP_ADD: {
-        emit_string(cg, " += ");
-        break;
-      }
+    case BINOP_ADD: {
+      emit_string(cg, " += ");
+      break;
+    }
 
-      case BINOP_SUB: {
-        emit_string(cg, " -= ");
-        break;
-      }
+    case BINOP_SUB: {
+      emit_string(cg, " -= ");
+      break;
+    }
 
-      case BINOP_MUL: {
-        emit_string(cg, " *= ");
-        break;
-      }
+    case BINOP_MUL: {
+      emit_string(cg, " *= ");
+      break;
+    }
 
-      case BINOP_DIV: {
-        emit_string(cg, " /= ");
-        break;
-      }
+    case BINOP_DIV: {
+      emit_string(cg, " /= ");
+      break;
+    }
 
-      default: {
-        emit_string(cg, " = ");
-        break;
-      }
+    default: {
+      emit_string(cg, " = ");
+      break;
+    }
     }
 
     emit_expr(cg, stmt->data.assign_stmt.rhs);
@@ -1594,6 +1595,12 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_IDENTIFIER:
     emit_string(cg, expr->data.ident.name);
+    break;
+
+  case AST_EXPR_MODULE_MEMBER:
+    emit_expr(cg, expr->data.mod_member_expr.module);
+    emit_string(cg, "__");
+    emit_string(cg, expr->data.mod_member_expr.member);
     break;
 
   case AST_EXPR_LITERAL_INT: {
@@ -1950,7 +1957,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < (int)strlen(__item)); __item[__index]; })");
+        emit_string(cg, "; assert(__index >= 0 && __index < "
+                        "(int)strlen(__item)); __item[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, "[");
@@ -1968,7 +1976,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_type_name(cg, array_expr->resolved_type);
         emit_string(cg, " __item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); __item.data[__index]; })");
+        emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
+                        "__item.data[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, ".data[");
@@ -2077,9 +2086,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_TUPLE: {
-    emit_string(cg, "(");
-    emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, ") {");
+    // emit_string(cg, "(");
+    // emit_type_name(cg, expr->resolved_type);
+    // emit_string(cg, ") {");
+    emit_string(cg, "{");
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
       if (i > 0)
         emit_string(cg, ", ");

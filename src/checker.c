@@ -1,6 +1,7 @@
 #include "checker.h"
 #include "alloc.h"
 #include "ast.h"
+#include "module.h"
 #include "options.h"
 #include "symbol.h"
 #include "type.h"
@@ -639,6 +640,7 @@ static void check_type_declarations(void) {
 
       if (resolved) {
         Type *placeholder = type_lookup(sym->name);
+        Type *placeholder = type_lookup(sym->name, sym->decl->loc.file);
 
         // Always mutate placeholder in place
         if (placeholder && placeholder->kind == TYPE_UNRESOLVED) {
@@ -1061,13 +1063,20 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Look up named type in type table
     const char *name = type_expr->data.type_named.name;
     Type *type = type_lookup(name);
+    char *name = type_expr->data.type_named.name;
+    Type *type = type_lookup(name, loc.file);
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
       if (checker_state.in_type_resolution) { // ADD THIS CHECK
-        Symbol *sym = scope_lookup_local(global_scope, name);
+        Symbol *sym = scope_lookup(global_scope, name, type_expr->loc.file);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
+        }
+
+        if (strcmp(sym->name, name)) {
+          // The name got qualified, so we should update the reference to it
+          type_expr->data.type_named.name = sym->name;
         }
       }
 
@@ -1891,9 +1900,16 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_IDENTIFIER: {
     const char *name = expr->data.ident.name;
     Symbol *sym = scope_lookup(current_scope, name);
+    char *name = expr->data.ident.name;
+    Symbol *sym = scope_lookup(current_scope, name, expr->loc.file);
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s'", name);
       return NULL;
+    }
+
+    if (strcmp(name, sym->name)) {
+      // The name got qualified, so we should update the reference to it
+      expr->data.ident.name = sym->name;
     }
 
     // Types are not values
@@ -2552,6 +2568,42 @@ Type *check_expression(AstNode *expr) {
     }
   }
 
+  case AST_EXPR_MODULE_MEMBER: {
+    AstNode *module_expr = expr->data.mod_member_expr.module;
+    const char *member_name = expr->data.mod_member_expr.member;
+
+    // We need to convert these 2 into a qualifed string to perform a
+    // name lookup
+    char *prefix = prepend(module_expr->data.ident.name, "__");
+    char *qualified_name = prepend(prefix, member_name);
+
+    Symbol *sym = scope_lookup_local(global_scope, qualified_name);
+    if (!sym) {
+      checker_error(expr->loc, "undefined name '%s::%s'",
+                    module_expr->data.ident.name, member_name);
+      return NULL;
+    }
+
+    // Types are not values
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM) {
+      checker_error(expr->loc, "'%s::%s' is a type, not a value",
+                    module_expr->data.ident.name, member_name);
+      return NULL;
+    }
+
+    // Only variables, constants and functions can be used as values
+    if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CONSTANT &&
+        sym->kind != SYMBOL_FUNCTION &&
+        (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
+      checker_error(expr->loc, "'%s::%s' cannot be used as a value",
+                    module_expr->data.ident.name, member_name);
+      return NULL;
+    }
+
+    expr->resolved_type = sym->type;
+    return sym->type;
+  }
+
   case AST_EXPR_TUPLE: {
     // Type-check all tuple elements
     size_t element_count = expr->data.tuple_expr.element_count;
@@ -2575,16 +2627,22 @@ Type *check_expression(AstNode *expr) {
   }
 
   case AST_EXPR_STRUCT_LITERAL: {
-    const char *type_name = expr->data.struct_literal.type_name;
+    char *type_name = expr->data.struct_literal.type_name;
+    const char *type_mod_name = expr->loc.file;
     char **field_names = expr->data.struct_literal.field_names;
     AstNode **field_values = expr->data.struct_literal.field_values;
     size_t field_count = expr->data.struct_literal.field_count;
 
     // Look up the type
-    Symbol *type_sym = scope_lookup(current_scope, type_name);
+    Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
     if (!type_sym) {
       checker_error(expr->loc, "undefined type '%s'", type_name);
       return NULL;
+    }
+
+    if (strcmp(type_name, type_sym->name)) {
+      // The name got qualified, so we should update the reference to it
+      expr->data.struct_literal.type_name = type_sym->name;
     }
 
     if (type_sym->kind != SYMBOL_TYPE) {
@@ -3105,10 +3163,16 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // If LHS is an identifier, check if it's a constant
     if (lhs->kind == AST_EXPR_IDENTIFIER) {
-      Symbol *sym = scope_lookup(current_scope, lhs->data.ident.name);
+      Symbol *sym =
+          scope_lookup(current_scope, lhs->data.ident.name, lhs->loc.file);
       if (sym && sym->kind == SYMBOL_CONSTANT) {
         checker_error(lhs->loc, "cannot assign to constant");
         return false;
+      }
+
+      if (strcmp(lhs->data.ident.name, sym->name)) {
+        // The name got qualified, so we should update the reference to it
+        lhs->data.ident.name = sym->name;
       }
     }
 
@@ -3352,7 +3416,7 @@ bool verify_entry_point(void) {
   bool is_main = strcmp(entry_name, "main") == 0;
 
   // Look up the entry point function in global scope
-  Symbol *entry_sym = scope_lookup(global_scope, entry_name);
+  Symbol *entry_sym = scope_lookup_local(global_scope, entry_name);
 
   if (!entry_sym) {
     // This is fine

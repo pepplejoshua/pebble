@@ -24,6 +24,7 @@ typedef enum {
   AST_DECL_VARIABLE,
   AST_DECL_CONSTANT,
   AST_DECL_TYPE,
+  AST_DECL_IMPORT,
 
   AST_STMT_RETURN,
   AST_STMT_IF,
@@ -53,6 +54,7 @@ typedef enum {
   AST_EXPR_INDEX,
   AST_EXPR_SLICE,
   AST_EXPR_MEMBER,
+  AST_EXPR_MODULE_MEMBER,
   AST_EXPR_TUPLE,
   AST_EXPR_STRUCT_LITERAL,
   AST_EXPR_ARRAY_LITERAL,
@@ -210,6 +212,9 @@ struct AstNode {
     struct {
       AstNode *stmt;
     } defer_stmt;
+    struct {
+      AstNode *path_str;
+    } import_stmt;
 
     // Expressions
     struct {
@@ -252,6 +257,10 @@ struct AstNode {
       AstNode *object;
       char *member;
     } member_expr;
+    struct {
+      AstNode *module;
+      char *member;
+    } mod_member_expr;
     struct {
       AstNode *operand;
     } postfix_inc;
