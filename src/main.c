@@ -169,74 +169,62 @@ static bool compile_file(const char *filename) {
   if (!compiler_opts.has_main) {
     // Compile to object file (.o) instead of executable
     char obj_filename[256];
-    snprintf(obj_filename, sizeof(obj_filename), "%s.o", 
+    snprintf(obj_filename, sizeof(obj_filename), "%s.o",
              compiler_opts.output_exe_name);
-    
+
     switch (compiler_opts.library) {
-      case LIBRARY_NONE:
-      {
-        if (libraries) {
-          snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s %s",
-                    compiler_opts.compiler,
-                    default_compiler_args,
-                    obj_filename,
-                    release_mode_string(),
-                    libraries);
-        } else {
-          // Use -c flag to compile to object file
-          snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
-                    compiler_opts.compiler,
-                    default_compiler_args,
-                    obj_filename,
-                    release_mode_string());
-        }
-        break;
+    case LIBRARY_NONE: {
+      if (libraries) {
+        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s %s",
+                 compiler_opts.compiler, default_compiler_args, obj_filename,
+                 release_mode_string(), libraries);
+      } else {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
+                 compiler_opts.compiler, default_compiler_args, obj_filename,
+                 release_mode_string());
       }
-
-      case LIBRARY_SHARED:
-      {
-        if (libraries) {
-          // Use -c flag to compile to object file
-          snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s %s",
-                   compiler_opts.compiler,
-                   default_compiler_args,
-                   obj_filename,
-                   release_mode_string(),
-                   libraries);
-        } else {
-          // Use -c flag to compile to object file
-          snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s",
-                   compiler_opts.compiler,
-                   default_compiler_args,
-                   obj_filename,
-                   release_mode_string());
-        }
-        break;
-      }
-
-      case LIBRARY_STATIC:
-      {
-        // TODO
-        break;
-      }
+      break;
     }
-    
+
+    case LIBRARY_SHARED: {
+      if (libraries) {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args),
+                 "%s -shared -fPIC -c %s -o %s %s %s", compiler_opts.compiler,
+                 default_compiler_args, obj_filename, release_mode_string(),
+                 libraries);
+      } else {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args),
+                 "%s -shared -fPIC -c %s -o %s %s", compiler_opts.compiler,
+                 default_compiler_args, obj_filename, release_mode_string());
+      }
+      break;
+    }
+
+    case LIBRARY_STATIC: {
+      // TODO
+      break;
+    }
+    }
+
     if (compiler_opts.verbose) {
       printf("Compiling to object file: %s\n", compiler_args);
     }
-    
+
     int result = system(compiler_args);
     if (result != 0) {
       printf("Compilation to object file failed\n");
       return false;
     }
-    
+
     if (!compiler_opts.keep_c_file) {
       char rm_cmd[256];
       snprintf(rm_cmd, sizeof(rm_cmd), "rm %s", c_filename);
       system(rm_cmd);
     }
-    
+
     printf("Compiled to object file: %s\n", obj_filename);
     return true;
   }
@@ -246,14 +234,13 @@ static bool compile_file(const char *filename) {
     if (libraries) {
       // Compile as executable
       snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s %s",
-              compiler_opts.compiler, default_compiler_args,
-              compiler_opts.output_exe_name, release_mode_string(),
-              libraries);
+               compiler_opts.compiler, default_compiler_args,
+               compiler_opts.output_exe_name, release_mode_string(), libraries);
     } else {
       // Compile as executable
       snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
-              compiler_opts.compiler, default_compiler_args,
-              compiler_opts.output_exe_name, release_mode_string());
+               compiler_opts.compiler, default_compiler_args,
+               compiler_opts.output_exe_name, release_mode_string());
     }
 
     if (compiler_opts.verbose) {
