@@ -900,16 +900,22 @@ void emit_sections(Codegen *cg) {
       "      .free = __pebble_c_free,\n"
       "    },\n"
       "  };\n"
-      "  return __user_main(context"
       ,
       cg->output
     );
 
-    if (entry_sym->type->data.func.param_count == 2) {
-      fputs(", argc, argv", cg->output);
+    if (entry_sym->type->data.func.param_count == 1) {
+      fputs(
+        "  slice_str __argv = { argv, argc };\n"
+        "  return __user_main(context, __argv);\n"
+        ,
+        cg->output
+      );
+    } else if (entry_sym->type->data.func.param_count == 2) {
+      fputs("  return __user_main(context, argc, argv);\n", cg->output);
     }
 
-    fputs(");\n}\n", cg->output);
+    fputs("}\n", cg->output);
   }
 
   // Clear uthash sets

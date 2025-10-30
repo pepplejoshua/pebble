@@ -3462,48 +3462,77 @@ bool verify_entry_point(void) {
       return false;
     }
 
-    // main can have 0 or 2 parameters
-    // 2 params: fn main(argc int, argv []str) -> int
-    if (param_count == 2) {
-      // Check first param is int (argc)
-      if (!type_is_int(param_types[0])) {
-        fprintf(stderr, "error: main's first parameter must be int, not '%s'\n",
-                param_types[0]->canonical_name);
-        return false;
-      }
-
-      // TODO: Would be nice if this were just []str instead
-
-      // Check second param is *str (argv)
-      // Array of char*
-      Type *argv_type = param_types[1];
-      if (argv_type->kind != TYPE_POINTER) {
-        fprintf(stderr,
-                "error: main's second parameter must be *str, not '%s'\n",
-                argv_type->canonical_name);
-        return false;
-      }
-
-      Type *inner_type = argv_type->data.ptr.base;
-      if (inner_type->kind != TYPE_STRING) {
-        fprintf(stderr,
-                "error: main's second parameter must be *str (got %s)\n",
-                argv_type->canonical_name);
-        return false;
-      }
-
-      return true;
-    } else if (param_count != 0) {
-      fprintf(stderr,
-              "error: main function must have 0 or 2 parameters, has %zu\n",
-              param_count);
-      return false;
-    }
-
     if (func_type->data.func.convention != CALL_CONV_PEBBLE) {
       fprintf(stderr,
               "error: main must use pebble calling convention\n");
       return false;
+    }
+
+    // main can have 0, 1 or 2 parameters
+    switch (param_count) {
+      // 0 params: fn main() -> int
+      case 0: {
+        // void
+        break;
+      }
+
+      // 1 param: fn main(argv []str) -> int
+      case 1: {
+        // Array of char*
+        Type *argv_type = param_types[0];
+        if (argv_type->kind != TYPE_SLICE) {
+          fprintf(stderr,
+                  "error: main's second parameter must be []str (got '%s')\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+
+        Type *inner_type = argv_type->data.slice.element;
+        if (inner_type->kind != TYPE_STRING) {
+          fprintf(stderr,
+                  "error: main's second parameter must be []str (got %s)\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+        break;
+      }
+
+      // 2 params: fn main(argc int, argv []str) -> int
+      case 2: {
+        // Check first param is int (argc)
+        if (!type_is_int(param_types[0])) {
+          fprintf(stderr, "error: main's first parameter must be int (got '%s')\n",
+                  param_types[0]->canonical_name);
+          return false;
+        }
+
+        // Check second param is *str (argv)
+        // Array of char*
+        Type *argv_type = param_types[1];
+        if (argv_type->kind != TYPE_POINTER) {
+          fprintf(stderr,
+                  "error: main's second parameter must be *str, not '%s'\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+
+        Type *inner_type = argv_type->data.ptr.base;
+        if (inner_type->kind != TYPE_STRING) {
+          fprintf(stderr,
+                  "error: main's second parameter must be *str (got %s)\n",
+                  argv_type->canonical_name);
+          return false;
+        }
+
+        return true;
+      }
+
+      default: {
+        fprintf(stderr,
+              "error: main function must have 0 or 2 parameters, has %zu\n",
+              param_count);
+        return false;
+      }
     }
 
   } else {
