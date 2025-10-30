@@ -1,8 +1,8 @@
 #include "alloc.h"
 #include "checker.h"
 #include "codegen.h"
+#include "module.h"
 #include "options.h"
-#include "parser.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,36 +10,6 @@
 
 // Global allocators
 Arena long_lived;
-
-static char *read_file(const char *path) {
-  FILE *file = fopen(path, "rb");
-  if (!file) {
-    fprintf(stderr, "Could not open file '%s'\n", path);
-    return NULL;
-  }
-
-  fseek(file, 0L, SEEK_END);
-  size_t file_size = ftell(file);
-  rewind(file);
-
-  char *buffer = arena_alloc(&long_lived, file_size + 1);
-  if (!buffer) {
-    fprintf(stderr, "Not enough memory to read file '%s'\n", path);
-    fclose(file);
-    return NULL;
-  }
-
-  size_t bytes_read = fread(buffer, sizeof(char), file_size, file);
-  if (bytes_read < file_size) {
-    fprintf(stderr, "Could not read file '%s'\n", path);
-    fclose(file);
-    return NULL;
-  }
-
-  buffer[bytes_read] = '\0';
-  fclose(file);
-  return buffer;
-}
 
 // Debug function to print type table
 // static void debug_print_type_table(void) {
@@ -79,30 +49,38 @@ static char *read_file(const char *path) {
 
 // Function to compile a source file
 static bool compile_file(const char *filename) {
-  // Read the source file
-  char *source = read_file(filename);
-  if (!source) {
-    return false;
-  }
-
   printf("Compiling: %s\n", filename);
 
-  // Phase 1 and 2: Lexical analysis and Parsing
-  Parser parser;
-  parser_init(&parser, source, filename);
-  AstNode *program = parse_program(&parser);
+  Module *main_mod = new_module(filename);
+  main_mod->is_main = true;
+  bool module_had_error = parse_module(main_mod);
 
-  if (parser.had_error) {
-    printf("Compilation failed due to parse errors\n");
+  if (module_had_error) {
+    printf("Compilation failed due to parse errors in %s.\n",
+           main_mod->filename);
     return false;
   }
+
+  // track the main module
+  track_module(main_mod);
+
+  if (!collect_all_modules(main_mod)) {
+    module_table_cleanup();
+    return false;
+  }
+
+  qualify_globals_in_module(main_mod);
+
+  AstNode *project = combine_modules();
+
+  module_table_cleanup();
 
   // Phase 3: Type checking
   checker_init();
 
   // Pass 2: Collect globals
-  if (!collect_globals(program->data.block_stmt.stmts,
-                       program->data.block_stmt.stmt_count)) {
+  if (!collect_globals(project->data.block_stmt.stmts,
+                       project->data.block_stmt.stmt_count)) {
     printf("Compilation failed during symbol collection\n");
     return false;
   }

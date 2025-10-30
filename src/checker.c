@@ -639,7 +639,6 @@ static void check_type_declarations(void) {
       Type *resolved = resolve_type_expression(type_expr);
 
       if (resolved) {
-        Type *placeholder = type_lookup(sym->name);
         Type *placeholder = type_lookup(sym->name, sym->decl->loc.file);
 
         // Always mutate placeholder in place
@@ -1061,8 +1060,6 @@ Type *resolve_type_expression(AstNode *type_expr) {
   switch (type_expr->kind) {
   case AST_TYPE_NAMED: {
     // Look up named type in type table
-    const char *name = type_expr->data.type_named.name;
-    Type *type = type_lookup(name);
     char *name = type_expr->data.type_named.name;
     Type *type = type_lookup(name, loc.file);
     if (!type) {
@@ -1898,8 +1895,6 @@ Type *check_expression(AstNode *expr) {
   }
 
   case AST_EXPR_IDENTIFIER: {
-    const char *name = expr->data.ident.name;
-    Symbol *sym = scope_lookup(current_scope, name);
     char *name = expr->data.ident.name;
     Symbol *sym = scope_lookup(current_scope, name, expr->loc.file);
     if (!sym) {

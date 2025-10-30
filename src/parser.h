@@ -25,6 +25,7 @@ AstNode *parse_extern(Parser *parser);
 AstNode *parse_variable_decl(Parser *parser); // Handles both let/var
 AstNode *parse_type_decl(Parser *parser);
 AstNode *parse_print_stmt(Parser *parser);
+AstNode *parse_import_stmt(Parser *parser);
 
 // Statements
 AstNode *parse_statement(Parser *parser);
@@ -55,6 +56,7 @@ AstNode *parse_postfix(Parser *parser);    // calls, indexing, member access
 AstNode *parse_call(Parser *parser, AstNode *func);     // func(arg1, arg2)
 AstNode *parse_index(Parser *parser, AstNode *array);   // array[index]
 AstNode *parse_member(Parser *parser, AstNode *object); // object.member
+AstNode *parse_module_member(Parser *parser, AstNode *object); // module::member
 AstNode *parse_primary(Parser *parser); // literals, identifiers, grouping
 
 // Type expressions

@@ -65,8 +65,8 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "%s:%d:%d: Error", token->location.file,
-    token->location.line, token->location.column);
+  fprintf(stderr, "%s:%d:%d: Error", token->location.file, token->location.line,
+          token->location.column);
 
   if (token->type == TOKEN_EOF) {
     fprintf(stderr, " at end");
@@ -287,8 +287,33 @@ AstNode *parse_declaration(Parser *parser) {
     return parse_type_decl(parser);
   }
 
+  if (parser_match(parser, TOKEN_IMPORT)) {
+    return parse_import_stmt(parser);
+  }
+
   parser_error(parser, "Expected declaration");
   return NULL;
+}
+
+AstNode *parse_import_stmt(Parser *parser) {
+  Location loc = parser->previous.location;
+
+  Token path_str = parser_consume(parser, TOKEN_STRING,
+                                  "Expected a string for import path.");
+
+  AstNode *import_path = NULL;
+
+  if (path_str.type == TOKEN_STRING) {
+    import_path = alloc_node(AST_EXPR_LITERAL_STRING, path_str.location);
+    import_path->data.str_lit.value = str_dup(path_str.value.str_val);
+  }
+
+  parser_consume(parser, TOKEN_SEMICOLON,
+                 "Expected ';' after import declaration");
+
+  AstNode *import_stmt = alloc_node(AST_DECL_IMPORT, loc);
+  import_stmt->data.import_stmt.path_str = import_path;
+  return import_stmt;
 }
 
 static AstNode *parse_function(Parser *parser, Location location, char *name) {
@@ -442,7 +467,8 @@ AstNode *parse_extern(Parser *parser) {
     while (parser_check(parser, TOKEN_FN) || parser_check(parser, TOKEN_TYPE)) {
       if (count >= capacity) {
         capacity *= 2;
-        AstNode **new_externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+        AstNode **new_externs =
+            arena_alloc(&long_lived, capacity * sizeof(AstNode *));
         memcpy(new_externs, externs, count * sizeof(AstNode *));
         externs = new_externs;
       }
@@ -451,7 +477,8 @@ AstNode *parse_extern(Parser *parser) {
         Token name = parser_consume(parser, TOKEN_IDENTIFIER,
                                     "Expected extern function name");
 
-        parser_consume(parser, TOKEN_LPAREN, "Expected '(' after function name");
+        parser_consume(parser, TOKEN_LPAREN,
+                       "Expected '(' after function name");
 
         // Parse parameters
         FuncParam *params = NULL;
@@ -469,8 +496,8 @@ AstNode *parse_extern(Parser *parser) {
               break;
             }
 
-            Token param_name =
-                parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+            Token param_name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                              "Expected parameter name");
             AstNode *param_type = parse_type_expression(parser);
 
             params[param_count].name =
@@ -486,7 +513,7 @@ AstNode *parse_extern(Parser *parser) {
         // Return type
         AstNode *return_type = parse_type_expression(parser);
         parser_consume(parser, TOKEN_SEMICOLON,
-                      "Expected ';' after extern function declaration");
+                       "Expected ';' after extern function declaration");
 
         AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
         func->data.extern_func.name = str_dup(name.lexeme);
@@ -494,17 +521,17 @@ AstNode *parse_extern(Parser *parser) {
         func->data.extern_func.param_count = param_count;
         func->data.extern_func.return_type = return_type;
         func->data.extern_func.lib_name = lib_name;
-        
+
         externs[count++] = func;
       } else if (parser_match(parser, TOKEN_TYPE)) {
         Token name = parser_consume(parser, TOKEN_IDENTIFIER,
                                     "Expected extern function name");
         parser_consume(parser, TOKEN_SEMICOLON,
-                      "Expected ';' after extern type declaration");
+                       "Expected ';' after extern type declaration");
 
         AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
         opaque_type->data.extern_type.name = str_dup(name.lexeme);
-        
+
         externs[count++] = opaque_type;
       }
     }
@@ -913,7 +940,7 @@ AstNode *parse_for_stmt(Parser *parser) {
   if (lhs->kind != AST_EXPR_POSTFIX_INC) {
     parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
     AstNode *rhs = parse_expression(parser);
-    
+
     if (!lhs || !rhs) {
       parser_synchronize(parser);
       return NULL;
@@ -972,7 +999,7 @@ AstNode *parse_assignment_stmt(Parser *parser) {
   // Handle compound assignments
   TokenType compound_op = TOKEN_EOF;
   BinaryOp binop;
-  
+
   if (parser_match(parser, TOKEN_PLUS_EQUAL)) {
     compound_op = TOKEN_PLUS_EQUAL;
     binop = BINOP_ADD;
@@ -986,12 +1013,13 @@ AstNode *parse_assignment_stmt(Parser *parser) {
     compound_op = TOKEN_SLASH_EQUAL;
     binop = BINOP_DIV;
   }
-  
+
   if (compound_op != TOKEN_EOF) {
     Location loc = parser->previous.location;
     AstNode *rhs = parse_expression(parser);
-    parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after compound assignment");
-    
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after compound assignment");
+
     AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
     assign->data.assign_stmt.op = binop;
     assign->data.assign_stmt.lhs = lhs;
@@ -1332,6 +1360,9 @@ AstNode *parse_postfix(Parser *parser) {
         // Regular member access
         expr = parse_member(parser, expr);
       }
+    } else if (parser_match(parser, TOKEN_MOD_SCOPE)) {
+      // Module member access
+      expr = parse_module_member(parser, expr);
     } else {
       break;
     }
@@ -1441,6 +1472,22 @@ AstNode *parse_member(Parser *parser, AstNode *object) {
   }
 
   return mem;
+}
+
+AstNode *parse_module_member(Parser *parser, AstNode *object) {
+  if (object->kind != AST_EXPR_IDENTIFIER) {
+    parser_error_at_previous(parser, "Module name must be an identifier.");
+  }
+
+  Location loc = parser->previous.location;
+  AstNode *mod_mem = alloc_node(AST_EXPR_MODULE_MEMBER, loc);
+  mod_mem->data.mod_member_expr.module = object;
+
+  Token member = parser_consume(parser, TOKEN_IDENTIFIER,
+                                "Expected module member name after '::'");
+  mod_mem->data.mod_member_expr.member = str_dup(member.lexeme);
+
+  return mod_mem;
 }
 
 AstNode *parse_primary(Parser *parser) {
@@ -2045,8 +2092,19 @@ AstNode *parse_type_expression(Parser *parser) {
 
   // Custom/named types
   if (parser_match(parser, TOKEN_IDENTIFIER)) {
-    type = alloc_node(AST_TYPE_NAMED, parser->previous.location);
-    type->data.type_named.name = str_dup(parser->previous.lexeme);
+    Token name = parser->previous;
+
+    if (parser_match(parser, TOKEN_MOD_SCOPE)) {
+      Token mod_type_name = parser_consume(parser, TOKEN_IDENTIFIER,
+                                           "Expected an identifier after '::'");
+      type = alloc_node(AST_TYPE_QUALIFIED_NAMED, mod_type_name.location);
+      type->data.type_qualified_named.mod_name = name.lexeme;
+      type->data.type_qualified_named.mem_name = mod_type_name.lexeme;
+      return type;
+    }
+
+    type = alloc_node(AST_TYPE_NAMED, name.location);
+    type->data.type_named.name = str_dup(name.lexeme);
     return type;
   }
 

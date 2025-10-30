@@ -71,6 +71,7 @@ typedef enum {
 
   // Type expressions
   AST_TYPE_NAMED,    // int, float, CustomType
+  AST_TYPE_QUALIFIED_NAMED, // std::string
   AST_TYPE_POINTER,  // *T
   AST_TYPE_OPTIONAL, // ?T
   AST_TYPE_ARRAY,    // [N]T
@@ -319,6 +320,10 @@ struct AstNode {
     struct {
       char *name;
     } type_named;
+    struct {
+      char *mod_name;
+      char *mem_name;
+    } type_qualified_named;
     struct {
       AstNode *base;
     } type_pointer;
