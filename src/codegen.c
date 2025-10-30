@@ -834,17 +834,22 @@ void emit_sections(Codegen *cg) {
     fputs(cg->preamble, cg->output);
   }
 
+  fputs(
+    "typedef struct __pebble_context __pebble_context;\n\n"
+    "typedef struct Allocator {\n"
+    "  void *ptr;\n"
+    "  void *(*alloc)(__pebble_context, size_t);\n"
+    "  void (*free)(__pebble_context, void *);\n"
+    "} Allocator;\n\n"
+    "struct __pebble_context {\n"
+    "  Allocator default_allocator;\n"
+    "};\n\n"
+    ,
+    cg->output
+  );
+
   if (!compiler_opts.freestanding) {
     fputs(
-      "typedef struct __pebble_context __pebble_context;\n\n"
-      "typedef struct Allocator {\n"
-      "  void *ptr;\n"
-      "  void *(*alloc)(__pebble_context, size_t);\n"
-      "  void (*free)(__pebble_context, void *);\n"
-      "} Allocator;\n\n"
-      "struct __pebble_context {\n"
-      "  Allocator default_allocator;\n"
-      "};\n\n"
       "void *__pebble_c_alloc(__pebble_context, size_t size) {\n"
       "  return malloc(size);\n"
       "}\n\n"
@@ -893,16 +898,30 @@ void emit_sections(Codegen *cg) {
     
     fputs(
       "int main(int argc, const char **argv) {\n"
-      "  __pebble_context context = {\n"
-      "    .default_allocator = (Allocator){\n"
-      "      .ptr = NULL,\n"
-      "      .alloc = __pebble_c_alloc,\n"
-      "      .free = __pebble_c_free,\n"
-      "    },\n"
-      "  };\n"
       ,
       cg->output
     );
+
+    if (compiler_opts.freestanding) {
+      fputs(
+        "  // Freestanding has an empty context\n"
+        "  __pebble_context context = {0};\n"
+        ,
+        cg->output
+      );
+    } else {
+      fputs(
+        "  __pebble_context context = {\n"
+        "    .default_allocator = (Allocator){\n"
+        "      .ptr = NULL,\n"
+        "      .alloc = __pebble_c_alloc,\n"
+        "      .free = __pebble_c_free,\n"
+        "    },\n"
+        "  };\n"
+        ,
+        cg->output
+      );
+    }
 
     if (entry_sym->type->data.func.param_count == 1) {
       fputs(
