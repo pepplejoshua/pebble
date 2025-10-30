@@ -22,6 +22,7 @@ typedef struct {
   bool in_loop;
   bool in_defer;
   size_t anonymous_functions;
+  CallingConvention current_convention;
 } CheckerState;
 
 static CheckerState checker_state;
@@ -1068,6 +1069,8 @@ bool check_anonymous_functions(void) {
     // Check the function body
     bool definitely_returns = check_statement(body, return_type);
 
+    checker_state.current_convention = func_type->data.func.convention;
+
     // If non-void, ensure all paths return
     if (return_type->kind != TYPE_VOID && !definitely_returns) {
       checker_error(decl->loc,
@@ -1182,7 +1185,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (field_count == 0) {
       checker_warning(type_expr->loc,
                       "Struct was declared without any members");
-      return type_create_struct(NULL, NULL, field_count, loc);
+      return type_create_struct(NULL, NULL, field_count, false, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1237,7 +1240,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_struct(field_names, field_types, field_count, loc);
+    return type_create_struct(field_names, field_types, field_count, false, loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -1299,7 +1302,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
 
-    // FIXME: Allow convention in function type?
+    // FIXME: Allow convention in function type signature?
     return type_create_function(param_types, param_count, return_type, false,
                                 !checker_state.in_type_resolution, CALL_CONV_PEBBLE, loc);
   }
@@ -2265,6 +2268,8 @@ Type *check_expression(AstNode *expr) {
     Type *return_type = func_type->data.func.return_type;
     bool is_variadic = func_type->data.func.is_variadic;
 
+    expr->resolved_type = func_type;
+
     // Handle variadic functions
     if (is_variadic) {
       size_t required_params = param_count - 1;
@@ -2838,6 +2843,15 @@ Type *check_expression(AstNode *expr) {
     expr->resolved_type = target_type;
     return target_type;
   }
+  case AST_EXPR_CONTEXT: {
+    if (checker_state.current_convention == CALL_CONV_C) {
+      checker_error(expr->loc,
+        "cannot use \"context\" in functions with C calling convention");
+    }
+
+    expr->resolved_type = type_context;
+    return type_context;
+  }
 
   default:
     checker_error(expr->loc,
@@ -3372,6 +3386,8 @@ bool check_function_bodies(void) {
 
     // Push function's local scope (contains parameters)
     scope_push(sym->data.func.local_scope);
+
+    checker_state.current_convention = func_type->data.func.convention;
 
     // Check the function body
     bool definitely_returns = check_statement(body, return_type);

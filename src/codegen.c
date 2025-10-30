@@ -393,6 +393,7 @@ void emit_program(Codegen *cg) {
       node->depends_on = NULL;
       node->dep_count = 0;
 
+      assert(node->name && "Node does not have a name.");
       HASH_ADD_KEYPTR(hh, dep_graph, node->name, strlen(node->name), node);
     }
   }
@@ -838,16 +839,16 @@ void emit_sections(Codegen *cg) {
       "typedef struct __pebble_context __pebble_context;\n\n"
       "typedef struct Allocator {\n"
       "  void *ptr;\n"
-      "  void *(*alloc)(__pebble_context, size_t);\n"
-      "  void (*free)(__pebble_context, void *);\n"
+      "  void *(*alloc)(void *, size_t);\n"
+      "  void (*free)(void *, void *);\n"
       "} Allocator;\n\n"
       "struct __pebble_context {\n"
       "  Allocator default_allocator;\n"
       "};\n\n"
-      "void *__pebble_c_alloc(__pebble_context, size_t size) {\n"
+      "void *__pebble_c_alloc(void *, size_t size) {\n"
       "  return malloc(size);\n"
       "}\n\n"
-      "void __pebble_c_free(__pebble_context, void *ptr) {\n"
+      "void __pebble_c_free(void *, void *ptr) {\n"
       "  return free(ptr);\n"
       "}\n\n"
       "\n"
@@ -1017,12 +1018,18 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
       type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
       type->kind == TYPE_OPTIONAL) {
+    
+    if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
+      return;
+    }
+
     CodegenTypeEntry *def_entry;
     HASH_FIND_STR(cg->defined_types, canonical, def_entry);
     if (!def_entry) {
       // Emit full def
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
+
 
       emit_string(cg, "struct ");
       emit_string(cg, canonical);
@@ -1667,6 +1674,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
+  case AST_EXPR_CONTEXT:
+    emit_string(cg, "context");
+    break;
+
   case AST_EXPR_LITERAL_NONE:
     emit_string(cg, "(");
     emit_type_name(cg, expr->resolved_type);
@@ -2071,6 +2082,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_expr(cg, expr->data.call.func);
     emit_string(cg, "(");
 
+    CallingConvention conv = func_type->data.func.convention;
+    if (conv == CALL_CONV_PEBBLE) {
+      emit_string(cg, "context");
+    }
+
     if (func_type->data.func.is_variadic) {
       size_t arg_count = expr->data.call.arg_count;
       size_t param_count = func_type->data.func.param_count;
@@ -2079,7 +2095,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       // Emit fixed arguments
       for (size_t i = 0; i < fixed_params; i++) {
-        if (i > 0)
+        if (conv == CALL_CONV_PEBBLE || i > 0)
           emit_string(cg, ", ");
         emit_expr(cg, expr->data.call.args[i]);
       }
@@ -2152,7 +2168,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       for (size_t i = 0; i < expr->data.call.arg_count; i++) {
-        if (i > 0)
+        if (conv == CALL_CONV_PEBBLE || i > 0)
           emit_string(cg, ", ");
         emit_expr(cg, expr->data.call.args[i]);
       }

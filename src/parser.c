@@ -1494,6 +1494,11 @@ AstNode *parse_primary(Parser *parser) {
     AstNode *lit = alloc_node(AST_EXPR_LITERAL_NIL, nil_tok.location);
     return lit;
   }
+  
+  // Context
+  if (parser_match(parser, TOKEN_CONTEXT)) {
+    return alloc_node(AST_EXPR_CONTEXT, parser->previous.location);
+  }
 
   // Identifier
   if (parser_match(parser, TOKEN_IDENTIFIER)) {

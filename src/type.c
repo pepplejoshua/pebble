@@ -29,6 +29,7 @@ Type *type_i64 = NULL;
 Type *type_isize = NULL;
 Type *type_char = NULL;
 Type *type_none = NULL;
+Type *type_context = NULL;
 
 // Type table (hash map of name => type entries)
 TypeEntry *type_table = NULL;
@@ -158,7 +159,7 @@ Type *type_create_array(Type *element, size_t size, bool canonicalize,
 
 // Create struct type
 Type *type_create_struct(char **field_names, Type **field_types,
-                         size_t field_count, Location loc) {
+                         size_t field_count, bool builtin, Location loc) {
   Type *type = type_create(TYPE_STRUCT, loc);
 
   if (field_count == 0) {
@@ -179,6 +180,7 @@ Type *type_create_struct(char **field_names, Type **field_types,
   type->data.struct_data.field_names = names;
   type->data.struct_data.field_types = types;
   type->data.struct_data.field_count = field_count;
+  type->data.struct_data.builtin = builtin;
   return type;
 }
 
@@ -335,6 +337,12 @@ bool type_equals(Type *a, Type *b) {
 
   // Function comparisons
   if (a->kind == TYPE_FUNCTION && b->kind == TYPE_FUNCTION) {
+    // Incorrect calling convention
+    if (a->data.func.convention != b->data.func.convention) {
+      return false;
+    }
+
+    // Incorrect arity
     if (a->data.func.param_count != b->data.func.param_count) {
       return false;
     }
@@ -447,46 +455,48 @@ void type_system_init(void) {
 
   // NOTE: Context needs to be a dummy type, then patched
   //       after allocator as it requires it.
-  Type *context_t = type_create_struct(NULL, NULL, 0, loc);
+  type_context = type_create_struct(NULL, NULL, 0, true, loc);
+  type_context->canonical_name = "__pebble_context";
 
   Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
-  alloc_param_types[0] = context_t;
+  alloc_param_types[0] = void_ptr;
   alloc_param_types[1] = type_usize;
   Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr,
-                                          false, false, CALL_CONV_PEBBLE, loc);
+                                          false, true, CALL_CONV_C, loc);
 
   Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
-  alloc_param_types[0] = context_t;
-  alloc_param_types[1] = void_ptr;
+  free_param_types[0] = void_ptr;
+  free_param_types[1] = void_ptr;
   Type *free_fn_t = type_create_function(free_param_types, 2, type_void,
-                                          false, false, CALL_CONV_PEBBLE, loc);
+                                          false, true, CALL_CONV_C, loc);
   
   char **allocator_field_names = arena_alloc(&long_lived, 3 * sizeof(char *));
-  allocator_field_names[0] = str_dup("ptr");
-  allocator_field_names[1] = str_dup("alloc");
-  allocator_field_names[2] = str_dup("free");
+  allocator_field_names[0] = "ptr";
+  allocator_field_names[1] = "alloc";
+  allocator_field_names[2] = "free";
 
   Type **allocator_types = arena_alloc(&long_lived, 3 * sizeof(Type *));
   allocator_types[0] = void_ptr;
   allocator_types[1] = alloc_fn_t;
   allocator_types[2] = free_fn_t;
   Type *allocator_t = type_create_struct(
-      allocator_field_names, allocator_types, 3, loc);
+      allocator_field_names, allocator_types, 3, true, loc);
+  allocator_t->canonical_name = "Allocator";
 
   // Patch context
   char **context_field_names = arena_alloc(&long_lived, 1 * sizeof(char *));
-  context_field_names[0] = str_dup("default_allocator");
+  context_field_names[0] = "default_allocator";
 
   Type **context_types = arena_alloc(&long_lived, 1 * sizeof(Type *));
-  allocator_types[0] = allocator_t;
+  context_types[0] = allocator_t;
 
-  context_t->data.struct_data.field_names = context_field_names;
-  context_t->data.struct_data.field_types = context_types;
-  context_t->data.struct_data.field_count = 1;
+  type_context->data.struct_data.field_names = context_field_names;
+  type_context->data.struct_data.field_types = context_types;
+  type_context->data.struct_data.field_count = 1;
 
   // Register all needed types
   type_register("Allocator", allocator_t);
-  type_register("PebbleContext", context_t);
+  type_register("__pebble_context", type_context);
 
   // Register built-ins in canonical type table
   canonical_register("int", type_int);
@@ -506,6 +516,8 @@ void type_system_init(void) {
   canonical_register("i64", type_i64);
   canonical_register("isize", type_isize);
   canonical_register("char", type_char);
+  canonical_register("Allocator", allocator_t);
+  canonical_register("__pebble_context", type_context);
 }
 
 // Compute canonical name for a type (with cycle detection)
@@ -736,6 +748,12 @@ char *type_name(Type *type) {
     char **param_ty_names =
         arena_alloc(&long_lived, num_params * sizeof(char *));
     size_t len = 4; // "fn ("
+    
+    CallingConvention conv = type->data.func.convention;
+    if (conv == CALL_CONV_C) {
+      len += 4; // "c" + space 
+    }
+
     for (size_t i = 0; i < num_params; i++) {
       param_ty_names[i] = type_name(type->data.func.param_types[i]);
       len += strlen(param_ty_names[i]);
@@ -748,8 +766,13 @@ char *type_name(Type *type) {
 
     // Step 2: Build the string
     char *fn_str = arena_alloc(&long_lived, len);
-    strcpy(fn_str, "fn (");
     size_t offset = 4;
+    if (conv == CALL_CONV_C) {
+      strcpy(fn_str, "fn \"c\" (");
+      offset = 8;
+    } else {
+      strcpy(fn_str, "fn (");
+    }
     for (size_t i = 0; i < num_params; i++) {
       size_t param_len = strlen(param_ty_names[i]);
       memcpy(fn_str + offset, param_ty_names[i], param_len);
