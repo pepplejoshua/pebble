@@ -161,6 +161,7 @@ Type *type_create_array(Type *element, size_t size, bool canonicalize,
 Type *type_create_struct(char **field_names, Type **field_types,
                          size_t field_count, bool builtin, Location loc) {
   Type *type = type_create(TYPE_STRUCT, loc);
+  type->data.struct_data.builtin = builtin;
 
   if (field_count == 0) {
     type->data.struct_data.field_count = field_count;
@@ -180,7 +181,6 @@ Type *type_create_struct(char **field_names, Type **field_types,
   type->data.struct_data.field_names = names;
   type->data.struct_data.field_types = types;
   type->data.struct_data.field_count = field_count;
-  type->data.struct_data.builtin = builtin;
   return type;
 }
 

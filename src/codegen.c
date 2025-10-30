@@ -930,6 +930,10 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   CodegenTypeEntry *decl_entry;
   HASH_FIND_STR(cg->declared_types, canonical, decl_entry);
   if (!decl_entry) {
+    if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
+      return;
+    }
+
     // Emit forward decl (to forward_types, preserving section)
     char *old_section = cg->current_section;
     cg->current_section = "forward_types";
