@@ -917,6 +917,7 @@ static void check_function_signatures(void) {
     FuncParam *params;
     size_t param_count = 0;
     AstNode *return_type_expr;
+    CallingConvention convention = CALL_CONV_C;
 
     if (decl->kind == AST_DECL_FUNCTION) {
       params = decl->data.func_decl.params;
@@ -924,6 +925,8 @@ static void check_function_signatures(void) {
       return_type_expr = decl->data.func_decl.return_type;
 
       check_convention(decl->data.func_decl.convention);
+
+      convention = convention_from_node(decl->data.func_decl.convention);
     } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
       params = decl->data.extern_func.params;
       param_count = decl->data.extern_func.param_count;
@@ -962,8 +965,6 @@ static void check_function_signatures(void) {
     if (!return_type) {
       continue; // Error already reported
     }
-
-    CallingConvention convention = convention_from_node(decl->data.func_decl.convention);
 
     // Create function type
     sym->type = type_create_function(
@@ -1072,10 +1073,10 @@ bool check_anonymous_functions(void) {
     // Push function's local scope (contains parameters)
     scope_push(sym->data.func.local_scope);
 
+    checker_state.current_convention = func_type->data.func.convention;
+
     // Check the function body
     bool definitely_returns = check_statement(body, return_type);
-
-    checker_state.current_convention = func_type->data.func.convention;
 
     // If non-void, ensure all paths return
     if (return_type->kind != TYPE_VOID && !definitely_returns) {
@@ -2272,10 +2273,18 @@ Type *check_expression(AstNode *expr) {
     }
 
     Type *func_type = call_type;
+    CallingConvention callee_conv = func_type->data.func.convention;
     size_t param_count = func_type->data.func.param_count;
     Type **param_types = func_type->data.func.param_types;
     Type *return_type = func_type->data.func.return_type;
     bool is_variadic = func_type->data.func.is_variadic;
+
+    // TODO: Allow passing in a context manually constructed
+    // C convention cannot call Pebble convention directly
+    if (callee_conv == CALL_CONV_PEBBLE && checker_state.current_convention == CALL_CONV_C) {
+      checker_error(expr->loc,
+        "cannot call Pebble convention function from C convention function");
+    }
 
     expr->resolved_type = func_type;
 
