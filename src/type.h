@@ -42,6 +42,12 @@ typedef enum {
   TYPE_NONE,
 } TypeKind;
 
+typedef enum {
+  CALL_CONV_C,
+  // has "context" as first arg
+  CALL_CONV_PEBBLE,
+} CallingConvention;
+
 // Type structure
 struct Type {
   TypeKind kind;
@@ -67,6 +73,7 @@ struct Type {
       char **field_names; // Array of field names
       Type **field_types; // Array of field types
       size_t field_count; // Number of fields
+      bool builtin;
     } struct_data;
 
     struct {
@@ -75,6 +82,7 @@ struct Type {
     } enum_data;
 
     struct {
+      CallingConvention convention;
       Type **param_types; // Parameter types
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
@@ -118,6 +126,7 @@ extern Type *type_i64;
 extern Type *type_isize;
 extern Type *type_char;
 extern Type *type_none;
+extern Type *type_context;
 
 // Type table (global hash map of named types)
 extern TypeEntry *type_table;
@@ -133,13 +142,14 @@ Type *type_create_optional(Type *base, bool canonicalize, Location loc);
 Type *type_create_slice(Type *element, bool canonicalize, Location loc);
 Type *type_create_array(Type *element, size_t size, bool canonicalize, Location loc);
 Type *type_create_struct(char **field_names, Type **field_types,
-                         size_t field_count, Location loc);
+                         size_t field_count, bool builtin, Location loc);
 Type *type_create_enum(char **variant_names, size_t variant_count, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
 Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
-                           bool canonicalize, Location loc);
+                           bool canonicalize, CallingConvention convention,
+                           Location loc);
 
 // Type lookup and registration
 Type *type_lookup(const char *name);
