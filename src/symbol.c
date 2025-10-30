@@ -1,6 +1,8 @@
 #include "symbol.h"
 #include "alloc.h"
+#include "module.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -53,9 +55,21 @@ void scope_add_child(Scope *parent, Scope *child) {
 }
 
 // Look up symbol in this scope and parent scopes
-Symbol *scope_lookup(Scope *scope, const char *name) {
+Symbol *scope_lookup(Scope *scope, char *name, const char *sym_mod_name) {
   while (scope) {
-    Symbol *symbol = scope_lookup_local(scope, name);
+    Symbol *symbol;
+    if (scope == global_scope) {
+      char *prefix = prepend(get_basename(sym_mod_name, true), "__");
+      char *qualified_name = prepend(prefix, name);
+      // printf("Qualified lookup for %s using %s\n", name, qualified_name);
+      symbol = scope_lookup_local(scope, qualified_name);
+      if (!symbol) {
+        symbol = scope_lookup_local(scope, name);
+      }
+
+    } else {
+      symbol = scope_lookup_local(scope, name);
+    }
     if (symbol)
       return symbol;
     scope = scope->parent;
