@@ -85,8 +85,11 @@ static bool check_convention(AstNode *conv) {
     return true;
   }
 
+  // NOTE: string includes quotes
+
   assert(conv->kind == AST_EXPR_LITERAL_STRING);
-  if (strcmp("\"c\"", conv->data.str_lit.value) == 0) {
+  if (strcmp("\"c\"", conv->data.str_lit.value) == 0 ||
+      strcmp("\"C\"", conv->data.str_lit.value) == 0) {
     return true;
   }
   if (strcmp("\"pebble\"", conv->data.str_lit.value) == 0) {
@@ -106,8 +109,11 @@ static CallingConvention convention_from_node(AstNode *conv) {
     return CALL_CONV_PEBBLE;
   }
 
+  // NOTE: string includes quotes
+
   assert(conv->kind == AST_EXPR_LITERAL_STRING);
-  if (strcmp("\"c\"", conv->data.str_lit.value) == 0) {
+  if (strcmp("\"c\"", conv->data.str_lit.value) == 0 ||
+      strcmp("\"C\"", conv->data.str_lit.value) == 0) {
     return CALL_CONV_C;
   }
   if (strcmp("\"pebble\"", conv->data.str_lit.value) == 0) {
