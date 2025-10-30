@@ -442,6 +442,52 @@ void type_system_init(void) {
   type_register("isize", type_isize);
   type_register("char", type_char);
 
+  // Create types for context and allocator
+  Type *void_ptr = type_create_pointer(type_void, true, loc);
+
+  // NOTE: Context needs to be a dummy type, then patched
+  //       after allocator as it requires it.
+  Type *context_t = type_create_struct(NULL, NULL, 0, loc);
+
+  Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
+  alloc_param_types[0] = context_t;
+  alloc_param_types[1] = type_usize;
+  Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr,
+                                          false, false, CALL_CONV_PEBBLE, loc);
+
+  Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
+  alloc_param_types[0] = context_t;
+  alloc_param_types[1] = void_ptr;
+  Type *free_fn_t = type_create_function(free_param_types, 2, type_void,
+                                          false, false, CALL_CONV_PEBBLE, loc);
+  
+  char **allocator_field_names = arena_alloc(&long_lived, 3 * sizeof(char *));
+  allocator_field_names[0] = str_dup("ptr");
+  allocator_field_names[1] = str_dup("alloc");
+  allocator_field_names[2] = str_dup("free");
+
+  Type **allocator_types = arena_alloc(&long_lived, 3 * sizeof(Type *));
+  allocator_types[0] = void_ptr;
+  allocator_types[1] = alloc_fn_t;
+  allocator_types[2] = free_fn_t;
+  Type *allocator_t = type_create_struct(
+      allocator_field_names, allocator_types, 3, loc);
+
+  // Patch context
+  char **context_field_names = arena_alloc(&long_lived, 1 * sizeof(char *));
+  context_field_names[0] = str_dup("default_allocator");
+
+  Type **context_types = arena_alloc(&long_lived, 1 * sizeof(Type *));
+  allocator_types[0] = allocator_t;
+
+  context_t->data.struct_data.field_names = context_field_names;
+  context_t->data.struct_data.field_types = context_types;
+  context_t->data.struct_data.field_count = 1;
+
+  // Register all needed types
+  type_register("Allocator", allocator_t);
+  type_register("PebbleContext", context_t);
+
   // Register built-ins in canonical type table
   canonical_register("int", type_int);
   canonical_register("bool", type_bool);
