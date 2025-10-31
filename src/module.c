@@ -157,10 +157,8 @@ bool collect_all_modules(Module *cur) {
     // 2. We are not self-importing
     // (report error and return false)
     if (!mod_path) {
-      printf("Mod Path is null for %s\n", path);
       return false;
     }
-
     if (strcmp(mod_path, cur->abs_file_path) == 0) {
       module_error(node->loc, "A module cannot import itself.");
       return false;

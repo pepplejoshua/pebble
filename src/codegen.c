@@ -45,6 +45,8 @@ static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   *len += str_len;
 }
 
+static void emit_indent_spaces(Codegen *cg);
+
 static DeferStack *defer_stack_create(DeferStack *parent,
                                       DeferScopeType scope_type) {
   DeferStack *stack = arena_alloc(&long_lived, sizeof(DeferStack));
@@ -88,8 +90,13 @@ static void defer_stack_emit_current_scope(Codegen *cg, bool lock) {
 
   // Emit in reverse order (most recent first)
   for (int i = stack->count - 1; i >= 0; i--) {
+    emit_indent_spaces(cg);
     emit_string(cg, "{ /* defer */\n");
+    emit_indent(cg);
+    emit_indent_spaces(cg);
     emit_stmt(cg, stack->defers[i]);
+    emit_dedent(cg);
+    emit_indent_spaces(cg);
     emit_string(cg, "}\n");
   }
 
@@ -111,8 +118,13 @@ static void defer_stack_emit_until(Codegen *cg, DeferScopeType target_scope,
   while (stack && stack->scope_type != target_scope) {
     // Emit all defers in this scope (reverse order)
     for (int i = stack->count - 1; i >= 0; i--) {
+      emit_indent_spaces(cg);
       emit_string(cg, "{ /* defer */\n");
+      emit_indent(cg);
+      emit_indent_spaces(cg);
       emit_stmt(cg, stack->defers[i]);
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     }
     stack = stack->parent;
@@ -135,8 +147,13 @@ static void defer_stack_emit_all(Codegen *cg, bool lock) {
   while (stack) {
     // Emit all defers in this scope (reverse order)
     for (int i = stack->count - 1; i >= 0; i--) {
+      emit_indent_spaces(cg);
       emit_string(cg, "{ /* defer */\n");
+      emit_indent(cg);
+      emit_indent_spaces(cg);
       emit_stmt(cg, stack->defers[i]);
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     }
     stack = stack->parent;
