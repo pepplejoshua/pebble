@@ -1,0 +1,170 @@
+// Implementation of basic io operations
+import "./std/string";
+
+extern {
+    // Opaque types (map to struct in C)
+    type FILE;
+    type DIR;
+
+    // Core file ops
+    fn fopen(path str, mode str) *FILE;  // const char* -> str
+    fn fread(buffer *void, size usize, count usize, file *FILE) usize;  // size_t/bytes
+    fn fwrite(data *void, size usize, count usize, file *FILE) usize;
+    fn fclose(file *FILE) i32;  // Returns 0 on success
+    fn feof(file *FILE) i32;  // Non-zero if EOF
+    fn ferror(file *FILE) i32;  // Non-zero if error
+    fn clearerr(file *FILE) void;  // Clears EOF/error flags
+
+    // Seeking/Positioning
+    fn fseek(file *FILE, offset i64, whence i32) i32;  // long -> i64, int -> i32
+    fn ftell(file *FILE) i64;  // long -> i64
+    fn fflush(file *FILE) i32;
+
+    // Path/Stat
+    fn stat(path str, buf *void) i32;  // struct stat* -> *void (user allocates)
+    fn strerror(errnum i32) str;  // For error strings
+
+    // File Management
+    fn remove(path str) i32;
+    fn rename(old str, new str) i32;
+    fn chmod(path str, mode u16) i32;  // mode_t ~ u16/usize
+
+    // Directory
+    fn mkdir(path str, mode u16) i32;
+    fn opendir(path str) *DIR;
+    fn readdir(dir *DIR) *void;  // struct dirent* -> *void (d_name as str field)
+    fn closedir(dir *DIR) i32;
+
+    // For line reads (if implementing read_line)
+    fn fgets(buf *void, size i32, file *FILE) *void;  // char* -> *void, returns buf or null
+}
+
+let SeekStart = 0;
+let SeekCurrent = 1;
+let SeekEnd = 2;
+
+// Basic File Handling
+fn open(path str, mode str) *FILE {
+    // Returns null on error; use ferror() after
+    var file = fopen(path, mode);
+    return file;
+}
+
+fn close(file *FILE) bool {
+    // True if success (fclose == 0)
+    var result = fclose(file);
+    return result == 0;
+}
+
+fn read(file *FILE, buffer *void, max_bytes usize) usize {
+    var bytes_read = fread(buffer, 1, max_bytes, file);
+    // Bytes read (0 on EOF/error)
+    return bytes_read;
+}
+
+fn read_all(file *FILE) *string::String {
+    // Full contents as String (null on error)
+    var pos = ftell(file);
+    if pos == -1 { return nil; }
+
+    // Seek to end to get size
+    var seek_res = fseek(file, 0, SeekEnd);
+    if seek_res != 0 { return nil; }
+
+    var size = ftell(file);
+    if size == -1 {
+        // Restore pos and return nil
+        fseek(file, pos, SeekStart);
+        return nil;
+    }
+
+    // Seek back to start
+    seek_res = fseek(file, 0, SeekStart);
+    if seek_res != 0 { return nil; }
+
+    if size == 0 {
+        // Empty file; restore pos and return empty String
+        fseek(file, pos, SeekStart);
+        return string::new();
+    }
+
+    var s = string::new();
+    var needed usize = size + 1; // +1 for null terminator
+    if needed > s.capacity {
+        string::grow(s, needed);
+    }
+
+    var bytes_read = fread(s.data, 1, size, file);
+    if bytes_read != size as usize {
+        // Partial read; error
+        string::delete(s);
+        fseek(file, pos, SeekStart); // Restore
+        return nil;
+    }
+
+    s.len = bytes_read;
+    *(s.data + s.len) = '\0';
+    fseek(file, pos, SeekStart); // Restore
+
+    return s;
+}
+
+fn read_line(file *FILE) *string::String {
+    var s = string::new();
+    var ch char;
+
+    while true {
+        var bytes = read(file, &ch, 1);
+        if bytes == 0 {
+            if is_eof(file) {
+                if s.len > 0 {
+                    return s;
+                } else {
+                    string::delete(s);
+                    return nil;
+                }
+            } else {
+                // Error (check ferror)
+                string::delete(s);
+                return nil;
+            }
+        }
+
+        string::push_char(s, ch);
+        if ch == '\n' {
+            // strip trailing \n
+            s.len += -1;
+            *(s.data + s.len) = '\0';
+            return s;
+        }
+    }
+
+    return nil;
+}
+
+
+// Write
+//fn write(file *FILE, data str, size usize) usize;  // Bytes written (use data as *void if binary)
+
+// Positioning
+//fn seek(file *FILE, offset i64, whence i32) bool;  // True if success (fseek == 0); whence = SeekStart etc.
+//fn tell(file *FILE) i64;                             // Current position (-1 on error)
+//fn filesize(file *FILE) usize;                       // File size (0 on error); seeks to end
+
+// Control
+//fn flush(file *FILE) bool;                           // True if success (fflush == 0)
+fn is_eof(file *FILE) bool {
+    return feof(file) != 0;
+}
+
+//fn get_error(file *FILE) *string::String;            // strerror(errno) or null
+
+// Path Utilities
+//fn exists(path str) bool;                            // stat success && S_ISREG
+//fn is_dir(path str) bool;                            // stat success && S_ISDIR
+//fn delete(path str) bool;                            // remove success (ignores dirs)
+//fn rename(old str, new str) bool;                   // rename success
+//fn makedir(path str, mode u16) bool;                // mkdir success (mode=0755 default)
+
+// Directory Listing
+//fn list_dir(path: str) *vec::Vec<string::String>;     // Vector of entry names (null on error); use Vec<T> where T = string::String

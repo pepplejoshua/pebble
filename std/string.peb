@@ -1,6 +1,6 @@
+// An implementation of a growable string type
 import "./std/mem";
 
-// An implementation of a growable string type
 extern {
     fn memcpy(dst *void, src *void, n usize) *void;
     fn strlen(s str) usize;
