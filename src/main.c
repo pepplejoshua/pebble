@@ -4,6 +4,7 @@
 #include "module.h"
 #include "options.h"
 
+#include <linux/limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,9 +146,16 @@ static bool compile_file(const char *filename) {
              c_filename);
   }
 
-  char compiler_args[2048];
+  char compiler_args[PATH_MAX * 2] = {0};
 
-  char *libraries = flatten_library_strings();
+  char *libraries = flatten_strings(compiler_opts.linked_libraries,
+      compiler_opts.linked_libraries_count, 'l');
+
+  char *lib_paths = flatten_strings(compiler_opts.lib_paths,
+      compiler_opts.lib_paths_count, 'L');
+
+  char *include_paths = flatten_strings(compiler_opts.include_paths,
+      compiler_opts.include_paths_count, 'I');
 
   if (!compiler_opts.has_main) {
     // Compile to object file (.o) instead of executable
@@ -157,32 +165,17 @@ static bool compile_file(const char *filename) {
 
     switch (compiler_opts.library) {
     case LIBRARY_NONE: {
-      if (libraries) {
-        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s %s",
-                 compiler_opts.compiler, default_compiler_args, obj_filename,
-                 release_mode_string(), libraries);
-      } else {
-        // Use -c flag to compile to object file
-        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
-                 compiler_opts.compiler, default_compiler_args, obj_filename,
-                 release_mode_string());
-      }
+      snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
+                compiler_opts.compiler, default_compiler_args, obj_filename,
+                release_mode_string());
       break;
     }
 
     case LIBRARY_SHARED: {
-      if (libraries) {
-        // Use -c flag to compile to object file
-        snprintf(compiler_args, sizeof(compiler_args),
-                 "%s -shared -fPIC -c %s -o %s %s %s", compiler_opts.compiler,
-                 default_compiler_args, obj_filename, release_mode_string(),
-                 libraries);
-      } else {
-        // Use -c flag to compile to object file
-        snprintf(compiler_args, sizeof(compiler_args),
-                 "%s -shared -fPIC -c %s -o %s %s", compiler_opts.compiler,
-                 default_compiler_args, obj_filename, release_mode_string());
-      }
+      // Use -c flag to compile to object file
+      snprintf(compiler_args, sizeof(compiler_args),
+                "%s -shared -fPIC -c %s -o %s %s", compiler_opts.compiler,
+                default_compiler_args, obj_filename, release_mode_string());
       break;
     }
 
@@ -194,6 +187,21 @@ static bool compile_file(const char *filename) {
 
     if (compiler_opts.verbose) {
       printf("Compiling to object file: %s\n", compiler_args);
+    }
+
+    if (include_paths) {
+      strcat(compiler_args, " ");
+      strcat(compiler_args, include_paths);
+    }
+
+    if (lib_paths) {
+      strcat(compiler_args, " ");
+      strcat(compiler_args, lib_paths);
+    }
+
+    if (libraries) {
+      strcat(compiler_args, " ");
+      strcat(compiler_args, libraries);
     }
 
     int result = system(compiler_args);
@@ -214,16 +222,24 @@ static bool compile_file(const char *filename) {
 
   // Free standing should not be compiled at all
   if (!compiler_opts.freestanding) {
+    // Compile as executable
+    snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
+              compiler_opts.compiler, default_compiler_args,
+              compiler_opts.output_exe_name, release_mode_string());
+
+    if (include_paths) {
+      strcat(compiler_args, " ");
+      strcat(compiler_args, include_paths);
+    }
+
+    if (lib_paths) {
+      strcat(compiler_args, " ");
+      strcat(compiler_args, lib_paths);
+    }
+
     if (libraries) {
-      // Compile as executable
-      snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s %s",
-               compiler_opts.compiler, default_compiler_args,
-               compiler_opts.output_exe_name, release_mode_string(), libraries);
-    } else {
-      // Compile as executable
-      snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
-               compiler_opts.compiler, default_compiler_args,
-               compiler_opts.output_exe_name, release_mode_string());
+      strcat(compiler_args, " ");
+      strcat(compiler_args, libraries);
     }
 
     if (compiler_opts.verbose) {
