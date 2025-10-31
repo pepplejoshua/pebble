@@ -840,6 +840,7 @@ void emit_type_name(Codegen *cg, Type *type) {
 void emit_sections(Codegen *cg) {
   // Emit preamble directly
   if (cg->preamble) {
+    fputs("// PREAMBLE\n", cg->output);
     fputs(cg->preamble, cg->output);
   }
 
@@ -869,24 +870,28 @@ void emit_sections(Codegen *cg) {
 
   // Emit sections (if they have content), then free buffers
   if (cg->forward_types) {
+    fputs("// FORWARD TYPES\n", cg->output);
     fputs(cg->forward_types, cg->output);
     fputc('\n', cg->output);
     free(cg->forward_types);
     cg->forward_types = NULL;
   }
   if (cg->type_defs) {
+    fputs("// TYPE DEFS\n", cg->output);
     fputs(cg->type_defs, cg->output);
     fputc('\n', cg->output);
     free(cg->type_defs);
     cg->type_defs = NULL;
   }
   if (cg->forward_vars_funcs) {
+    fputs("// FORWARD VARS/CONSTS/FUNCS\n", cg->output);
     fputs(cg->forward_vars_funcs, cg->output);
     fputc('\n', cg->output);
     free(cg->forward_vars_funcs);
     cg->forward_vars_funcs = NULL;
   }
   if (cg->defs) {
+    fputs("// VARS/CONSTS/FUNCS DEFS\n", cg->output);
     fputs(cg->defs, cg->output);
     fputc('\n', cg->output);
     free(cg->defs);
@@ -952,6 +957,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
       return;
     }
+
+    printf("emitting %s\n", canonical);
 
     // Emit forward decl (to forward_types, preserving section)
     char *old_section = cg->current_section;

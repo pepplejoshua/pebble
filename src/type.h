@@ -53,6 +53,7 @@ struct Type {
   TypeKind kind;
   char *canonical_name;
   char *declared_name;
+  char *qualified_name; // Used for named types
   Location loc;
 
   union {

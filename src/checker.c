@@ -218,6 +218,9 @@ static void collect_declaration(AstNode *decl) {
     symbol->type->declared_name = symbol->name;
     symbol->type->canonical_name = symbol->name;
   }
+
+  symbol->reg_name = name;
+
   scope_add_symbol(global_scope, symbol);
 }
 
@@ -470,8 +473,8 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
           "recursive type '%s' has infinite size (use pointer for indirection)",
           type->declared_name);
       canonical_name = str_dup(type->declared_name);
-    } else if (type->declared_name) {
-      canonical_name = str_dup(type->declared_name);
+    } else if (type->qualified_name) {
+      canonical_name = str_dup(type->qualified_name);
     } else {
       if (type->declared_name)
         return type->declared_name;
@@ -508,8 +511,8 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
           "recursive type '%s' has infinite size (use pointer for indirection)",
           type->declared_name);
       canonical_name = str_dup(type->declared_name);
-    } else if (type->declared_name) {
-      canonical_name = str_dup(type->declared_name);
+    } else if (type->qualified_name) {
+      canonical_name = str_dup(type->qualified_name);
     } else {
       // Anonymous struct - build structural name
       size_t capacity = 256;
@@ -540,8 +543,8 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   }
 
   case TYPE_ENUM: {
-    if (type->declared_name) {
-      canonical_name = str_dup(type->declared_name);
+    if (type->qualified_name) {
+      canonical_name = str_dup(type->qualified_name);
     } else {
       // Anonymous enum - build structural name
       size_t capacity = 256;
@@ -698,7 +701,8 @@ static void check_type_declarations(void) {
 
         if (placeholder->kind == TYPE_STRUCT ||
             placeholder->kind == TYPE_TUPLE || placeholder->kind == TYPE_ENUM) {
-          placeholder->declared_name = str_dup(sym->name);
+          placeholder->qualified_name = str_dup(sym->name);
+          placeholder->declared_name = str_dup(sym->reg_name);
         }
 
         sym->type = placeholder;

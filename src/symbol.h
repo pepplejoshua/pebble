@@ -23,6 +23,7 @@ typedef enum {
 // Symbol structure
 struct Symbol {
   char *name;      // Symbol name (allocated in arena)
+  char *reg_name;
   SymbolKind kind; // What kind of symbol this is
   AstNode *decl;   // Pointer to declaration AST node
   Type *type;      // Type (NULL initially, filled in pass 3)
