@@ -23,6 +23,7 @@ typedef struct CompilerOptions
 {
   bool freestanding;
   bool verbose;
+  bool warnings;
   bool keep_c_file;
   bool generate_only;
   ReleaseMode release_mode;
@@ -33,7 +34,7 @@ typedef struct CompilerOptions
   bool has_main;
   LibraryType library;
   const char *entry_point;
-  
+
   char **linked_libraries;
   size_t linked_libraries_count;
   size_t linked_libraries_capacity;

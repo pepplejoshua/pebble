@@ -73,6 +73,7 @@ void initialise_args(void) {
   compiler_opts.release_mode = RELEASE_DEBUG;
   compiler_opts.compiler = NULL;
   compiler_opts.verbose = false;
+  compiler_opts.warnings = false;
   compiler_opts.keep_c_file = true;
   compiler_opts.generate_only = false;
   compiler_opts.output_exe_name = "output";
@@ -205,6 +206,7 @@ void print_usage(const char *program_name) {
   printf("Usage: %s [options] <source_file>\n\n", program_name);
   printf("Options:\n");
   printf("  -v, --verbose        Enable verbose output\n");
+  printf("  -w, --warnings       Enable C compiler warnings\n");
   printf("  --keep-c             Keep generated C file (default)\n");
   printf("  --no-keep-c          Remove generated C file after compilation\n");
   printf(
@@ -243,6 +245,9 @@ bool parse_args(int argc, char **argv) {
     } else if (strcmp(argv[i], "-v") == 0 ||
                strcmp(argv[i], "--verbose") == 0) {
       compiler_opts.verbose = true;
+    } else if (strcmp(argv[i], "-w") == 0 ||
+               strcmp(argv[i], "--warnings") == 0) {
+      compiler_opts.warnings = true;
     } else if (strcmp(argv[i], "--keep-c") == 0) {
       compiler_opts.keep_c_file = true;
     } else if (strcmp(argv[i], "--no-keep-c") == 0) {

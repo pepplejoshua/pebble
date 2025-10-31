@@ -132,12 +132,17 @@ static bool compile_file(const char *filename) {
   // Conditional defaults
   char default_compiler_args[256];
   bool is_gcc = (strstr(compiler_opts.compiler, "gcc") != NULL);
-  if (is_gcc) {
-    snprintf(default_compiler_args, sizeof(default_compiler_args),
-             "%s -Wall -Wextra -Wno-discarded-qualifiers", c_filename);
+  if (compiler_opts.warnings) {
+    if (is_gcc) {
+      snprintf(default_compiler_args, sizeof(default_compiler_args),
+               "%s -Wall -Wextra -Wno-discarded-qualifiers", c_filename);
+    } else {
+      snprintf(default_compiler_args, sizeof(default_compiler_args),
+               "%s -Wall -Wextra", c_filename);
+    }
   } else {
-    snprintf(default_compiler_args, sizeof(default_compiler_args),
-             "%s -Wall -Wextra", c_filename);
+    snprintf(default_compiler_args, sizeof(default_compiler_args), "%s -w",
+             c_filename);
   }
 
   char compiler_args[2048];
