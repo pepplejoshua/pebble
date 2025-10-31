@@ -468,15 +468,15 @@ void type_system_init(void) {
   Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   alloc_param_types[0] = void_ptr;
   alloc_param_types[1] = type_usize;
-  Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr,
-                                          false, true, CALL_CONV_PEBBLE, loc);
+  Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr, false,
+                                          true, CALL_CONV_PEBBLE, loc);
 
   Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   free_param_types[0] = void_ptr;
   free_param_types[1] = void_ptr;
-  Type *free_fn_t = type_create_function(free_param_types, 2, type_void,
-                                          false, true, CALL_CONV_PEBBLE, loc);
-  
+  Type *free_fn_t = type_create_function(free_param_types, 2, type_void, false,
+                                         true, CALL_CONV_PEBBLE, loc);
+
   char **allocator_field_names = arena_alloc(&long_lived, 3 * sizeof(char *));
   allocator_field_names[0] = "ptr";
   allocator_field_names[1] = "alloc";
@@ -486,8 +486,8 @@ void type_system_init(void) {
   allocator_types[0] = void_ptr;
   allocator_types[1] = alloc_fn_t;
   allocator_types[2] = free_fn_t;
-  Type *allocator_t = type_create_struct(
-      allocator_field_names, allocator_types, 3, true, loc);
+  Type *allocator_t =
+      type_create_struct(allocator_field_names, allocator_types, 3, true, loc);
   allocator_t->canonical_name = "Allocator";
 
   // Patch context
@@ -713,6 +713,7 @@ char *type_name(Type *type) {
     return type->canonical_name;
   case TYPE_STRUCT:
   case TYPE_ENUM:
+  case TYPE_OPAQUE:
     return type->declared_name;
   case TYPE_POINTER: {
     char *base_ty_name = type_name(type->data.ptr.base);
@@ -755,10 +756,10 @@ char *type_name(Type *type) {
     char **param_ty_names =
         arena_alloc(&long_lived, num_params * sizeof(char *));
     size_t len = 4; // "fn ("
-    
+
     CallingConvention conv = type->data.func.convention;
     if (conv == CALL_CONV_C) {
-      len += 4; // "c" + space 
+      len += 4; // "c" + space
     }
 
     for (size_t i = 0; i < num_params; i++) {

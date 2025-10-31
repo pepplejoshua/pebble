@@ -196,7 +196,7 @@ void codegen_init(Codegen *cg, FILE *output) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
                    "<stdio.h>\n#include <string.h>\n#include "
-                   "<stddef.h>\n#include <assert.h>\n\n";
+                   "<stddef.h>\n#include <assert.h>\n#include <dirent.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";

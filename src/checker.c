@@ -1404,6 +1404,7 @@ static bool type_is_comparable(Type *type) {
   switch (type->kind) {
   case TYPE_BOOL:
   case TYPE_STRING:
+  case TYPE_CHAR:
   case TYPE_POINTER:
   case TYPE_ENUM:
     return true;
