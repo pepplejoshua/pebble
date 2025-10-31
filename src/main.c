@@ -145,16 +145,16 @@ static bool compile_file(const char *filename) {
              c_filename);
   }
 
-  char compiler_args[PATH_MAX * 2] = {0};
+  char compiler_args[1024 * 2] = {0};
 
   char *libraries = flatten_strings(compiler_opts.linked_libraries,
-      compiler_opts.linked_libraries_count, 'l');
+                                    compiler_opts.linked_libraries_count, 'l');
 
   char *lib_paths = flatten_strings(compiler_opts.lib_paths,
-      compiler_opts.lib_paths_count, 'L');
+                                    compiler_opts.lib_paths_count, 'L');
 
   char *include_paths = flatten_strings(compiler_opts.include_paths,
-      compiler_opts.include_paths_count, 'I');
+                                        compiler_opts.include_paths_count, 'I');
 
   if (!compiler_opts.has_main) {
     // Compile to object file (.o) instead of executable
@@ -165,16 +165,16 @@ static bool compile_file(const char *filename) {
     switch (compiler_opts.library) {
     case LIBRARY_NONE: {
       snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
-                compiler_opts.compiler, default_compiler_args, obj_filename,
-                release_mode_string());
+               compiler_opts.compiler, default_compiler_args, obj_filename,
+               release_mode_string());
       break;
     }
 
     case LIBRARY_SHARED: {
       // Use -c flag to compile to object file
       snprintf(compiler_args, sizeof(compiler_args),
-                "%s -shared -fPIC -c %s -o %s %s", compiler_opts.compiler,
-                default_compiler_args, obj_filename, release_mode_string());
+               "%s -shared -fPIC -c %s -o %s %s", compiler_opts.compiler,
+               default_compiler_args, obj_filename, release_mode_string());
       break;
     }
 
@@ -223,8 +223,8 @@ static bool compile_file(const char *filename) {
   if (!compiler_opts.freestanding) {
     // Compile as executable
     snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
-              compiler_opts.compiler, default_compiler_args,
-              compiler_opts.output_exe_name, release_mode_string());
+             compiler_opts.compiler, default_compiler_args,
+             compiler_opts.output_exe_name, release_mode_string());
 
     if (include_paths) {
       strcat(compiler_args, " ");
