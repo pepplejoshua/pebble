@@ -21,6 +21,7 @@
   "switch"
   "case"
   "defer"
+  "import"
 ] @keyword
 
 ; Types
@@ -91,6 +92,7 @@
   "||"
   "!"
   "&"
+  "::"
   ".."
   "..="
   "^"
