@@ -14,6 +14,12 @@
             "include": "#keywords"
         },
         {
+            "include": "#type-annotation"
+        },
+        {
+            "include": "#operators"
+        },
+        {
             "include": "#field-access"
         },
         {
@@ -76,11 +82,113 @@
             "patterns": [
                 {
                     "name": "keyword.control.pebble",
-                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return|switch|case|defer|some|none|context)\\b"
+                    "match": "\\b(type|fn|for|loop|while|if|else|extern|let|var|true|false|nil|print|break|continue|sizeof|as|return|switch|case|defer|some|none|context|import)\\b"
                 },
                 {
                     "name": "keyword.types.pebble",
                     "match": "\\b(void|bool|int|str|char|f32|f64|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize|struct|enum)\\b"
+                }
+            ]
+        },
+        "type-annotation": {
+            "patterns": [
+                {
+                    "comment": "Variable/let declarations with types",
+                    "begin": "\\b(var|let)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s+",
+                    "end": "(?=[=;])",
+                    "beginCaptures": {
+                        "1": {
+                            "name": "keyword.control.pebble"
+                        },
+                        "2": {
+                            "name": "variable.other.pebble"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "match": "\\*|\\?",
+                            "name": "keyword.operator.pebble"
+                        },
+                        {
+                            "match": "\\[|\\]",
+                            "name": "punctuation.bracket.pebble"
+                        },
+                        {
+                            "match": "::",
+                            "name": "keyword.operator.path.pebble"
+                        },
+                        {
+                            "match": "[a-zA-Z_][a-zA-Z0-9_]*",
+                            "name": "entity.name.type.pebble"
+                        }
+                    ]
+                },
+                {
+                    "comment": "Function return types",
+                    "begin": "\\)\\s+",
+                    "end": "(?=\\{)",
+                    "patterns": [
+                        {
+                            "match": "\\*|\\?",
+                            "name": "keyword.operator.pebble"
+                        },
+                        {
+                            "match": "\\[|\\]",
+                            "name": "punctuation.bracket.pebble"
+                        },
+                        {
+                            "match": "::",
+                            "name": "keyword.operator.path.pebble"
+                        },
+                        {
+                            "match": "[a-zA-Z_][a-zA-Z0-9_]*",
+                            "name": "entity.name.type.pebble"
+                        }
+                    ]
+                },
+                {
+                    "comment": "Type after as",
+                    "begin": "\\bas\\s+",
+                    "end": "(?=[^a-zA-Z0-9_:\\[\\]\\*\\?])",
+                    "beginCaptures": {
+                        "0": {
+                            "name": "keyword.control.pebble"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "match": "\\*|\\?",
+                            "name": "keyword.operator.pebble"
+                        },
+                        {
+                            "match": "\\[|\\]",
+                            "name": "punctuation.bracket.pebble"
+                        },
+                        {
+                            "match": "::",
+                            "name": "keyword.operator.path.pebble"
+                        },
+                        {
+                            "match": "[a-zA-Z_][a-zA-Z0-9_]*",
+                            "name": "entity.name.type.pebble"
+                        }
+                    ]
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.optional.pebble",
+                    "match": "\\?"
+                },
+                {
+                    "name": "keyword.operator.variadic.pebble",
+                    "match": "\\.\\.\\."
+                },
+                {
+                    "name": "keyword.operator.path.pebble",
+                    "match": "::"
                 }
             ]
         },
