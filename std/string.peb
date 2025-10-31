@@ -21,9 +21,7 @@ fn new() *String {
 }
 
 fn delete(s *String) void {
-    if s.data != nil {
-        mem::delete(s.data);
-    }
+    mem::delete(s.data);
     mem::delete(s);
 }
 
