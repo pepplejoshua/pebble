@@ -958,8 +958,6 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       return;
     }
 
-    printf("emitting %s\n", canonical);
-
     // Emit forward decl (to forward_types, preserving section)
     char *old_section = cg->current_section;
     cg->current_section = "forward_types";

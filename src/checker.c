@@ -1144,6 +1144,34 @@ Type *resolve_type_expression(AstNode *type_expr) {
     return type;
   }
 
+  case AST_TYPE_QUALIFIED_NAMED: {
+    // Look up qualified named type in type table
+    char *mod = type_expr->data.type_qualified_named.mod_name;
+    char *mem = type_expr->data.type_qualified_named.mem_name;
+
+    char *prefix = prepend(mod, "__");
+    char *qualified_name = prepend(prefix, mem);
+
+    Type *type = type_lookup(qualified_name, loc.file);
+
+    if (!type) {
+      // During type resolution, check if it's an unresolved type decl
+      if (checker_state.in_type_resolution) { // ADD THIS CHECK
+        Symbol *sym = scope_lookup_local(global_scope, qualified_name);
+        if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
+          // It's a forward reference - return NULL to retry later
+          return NULL;
+        }
+      }
+
+      // Otherwise, it's truly undefined
+      checker_error(type_expr->loc, "undefined type '%s::%s'", mod, mem);
+      return NULL;
+    }
+
+    return type;
+  }
+
   case AST_TYPE_POINTER: {
     // Resolve base type and create pointer type
     Type *base = resolve_type_expression(type_expr->data.type_pointer.base);
