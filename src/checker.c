@@ -347,9 +347,9 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
       Visited *_found;                                                         \
       HASH_FIND_PTR(*visited, &_c, _found);                                    \
       if (_found) {                                                            \
-        /* In cycle - use declared name if available */                        \
-        if (_c->declared_name) {                                               \
-          _name = _c->declared_name;                                           \
+        /* In cycle - use qualified name if available */                       \
+        if (_c->qualified_name) {                                              \
+          _name = _c->qualified_name;                                          \
         } else {                                                               \
           _name = "UNRESOLVED";                                                \
         }                                                                      \
