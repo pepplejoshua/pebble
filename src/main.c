@@ -1,8 +1,8 @@
 #include "alloc.h"
 #include "checker.h"
 #include "codegen.h"
+#include "module.h"
 #include "options.h"
-#include "parser.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,36 +10,6 @@
 
 // Global allocators
 Arena long_lived;
-
-static char *read_file(const char *path) {
-  FILE *file = fopen(path, "rb");
-  if (!file) {
-    fprintf(stderr, "Could not open file '%s'\n", path);
-    return NULL;
-  }
-
-  fseek(file, 0L, SEEK_END);
-  size_t file_size = ftell(file);
-  rewind(file);
-
-  char *buffer = arena_alloc(&long_lived, file_size + 1);
-  if (!buffer) {
-    fprintf(stderr, "Not enough memory to read file '%s'\n", path);
-    fclose(file);
-    return NULL;
-  }
-
-  size_t bytes_read = fread(buffer, sizeof(char), file_size, file);
-  if (bytes_read < file_size) {
-    fprintf(stderr, "Could not read file '%s'\n", path);
-    fclose(file);
-    return NULL;
-  }
-
-  buffer[bytes_read] = '\0';
-  fclose(file);
-  return buffer;
-}
 
 // Debug function to print type table
 // static void debug_print_type_table(void) {
@@ -79,30 +49,38 @@ static char *read_file(const char *path) {
 
 // Function to compile a source file
 static bool compile_file(const char *filename) {
-  // Read the source file
-  char *source = read_file(filename);
-  if (!source) {
-    return false;
-  }
-
   printf("Compiling: %s\n", filename);
 
-  // Phase 1 and 2: Lexical analysis and Parsing
-  Parser parser;
-  parser_init(&parser, source, filename);
-  AstNode *program = parse_program(&parser);
+  Module *main_mod = new_module(filename);
+  main_mod->is_main = true;
+  bool module_had_error = parse_module(main_mod);
 
-  if (parser.had_error) {
-    printf("Compilation failed due to parse errors\n");
+  if (module_had_error) {
+    printf("Compilation failed due to parse errors in %s.\n",
+           main_mod->filename);
     return false;
   }
+
+  // track the main module
+  track_module(main_mod);
+
+  if (!collect_all_modules(main_mod)) {
+    module_table_cleanup();
+    return false;
+  }
+
+  qualify_globals_in_module(main_mod);
+
+  AstNode *project = combine_modules();
+
+  module_table_cleanup();
 
   // Phase 3: Type checking
   checker_init();
 
   // Pass 2: Collect globals
-  if (!collect_globals(program->data.block_stmt.stmts,
-                       program->data.block_stmt.stmt_count)) {
+  if (!collect_globals(project->data.block_stmt.stmts,
+                       project->data.block_stmt.stmt_count)) {
     printf("Compilation failed during symbol collection\n");
     return false;
   }
@@ -154,12 +132,17 @@ static bool compile_file(const char *filename) {
   // Conditional defaults
   char default_compiler_args[256];
   bool is_gcc = (strstr(compiler_opts.compiler, "gcc") != NULL);
-  if (is_gcc) {
-    snprintf(default_compiler_args, sizeof(default_compiler_args),
-             "%s -Wall -Wextra -Wno-discarded-qualifiers", c_filename);
+  if (compiler_opts.warnings) {
+    if (is_gcc) {
+      snprintf(default_compiler_args, sizeof(default_compiler_args),
+               "%s -Wall -Wextra -Wno-discarded-qualifiers", c_filename);
+    } else {
+      snprintf(default_compiler_args, sizeof(default_compiler_args),
+               "%s -Wall -Wextra", c_filename);
+    }
   } else {
-    snprintf(default_compiler_args, sizeof(default_compiler_args),
-             "%s -Wall -Wextra", c_filename);
+    snprintf(default_compiler_args, sizeof(default_compiler_args), "%s -w",
+             c_filename);
   }
 
   char compiler_args[2048];
@@ -169,74 +152,62 @@ static bool compile_file(const char *filename) {
   if (!compiler_opts.has_main) {
     // Compile to object file (.o) instead of executable
     char obj_filename[256];
-    snprintf(obj_filename, sizeof(obj_filename), "%s.o", 
+    snprintf(obj_filename, sizeof(obj_filename), "%s.o",
              compiler_opts.output_exe_name);
-    
+
     switch (compiler_opts.library) {
-      case LIBRARY_NONE:
-      {
-        if (libraries) {
-          snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s %s",
-                    compiler_opts.compiler,
-                    default_compiler_args,
-                    obj_filename,
-                    release_mode_string(),
-                    libraries);
-        } else {
-          // Use -c flag to compile to object file
-          snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
-                    compiler_opts.compiler,
-                    default_compiler_args,
-                    obj_filename,
-                    release_mode_string());
-        }
-        break;
+    case LIBRARY_NONE: {
+      if (libraries) {
+        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s %s",
+                 compiler_opts.compiler, default_compiler_args, obj_filename,
+                 release_mode_string(), libraries);
+      } else {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args), "%s -c %s -o %s %s",
+                 compiler_opts.compiler, default_compiler_args, obj_filename,
+                 release_mode_string());
       }
-
-      case LIBRARY_SHARED:
-      {
-        if (libraries) {
-          // Use -c flag to compile to object file
-          snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s %s",
-                   compiler_opts.compiler,
-                   default_compiler_args,
-                   obj_filename,
-                   release_mode_string(),
-                   libraries);
-        } else {
-          // Use -c flag to compile to object file
-          snprintf(compiler_args, sizeof(compiler_args), "%s -shared -fPIC -c %s -o %s %s",
-                   compiler_opts.compiler,
-                   default_compiler_args,
-                   obj_filename,
-                   release_mode_string());
-        }
-        break;
-      }
-
-      case LIBRARY_STATIC:
-      {
-        // TODO
-        break;
-      }
+      break;
     }
-    
+
+    case LIBRARY_SHARED: {
+      if (libraries) {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args),
+                 "%s -shared -fPIC -c %s -o %s %s %s", compiler_opts.compiler,
+                 default_compiler_args, obj_filename, release_mode_string(),
+                 libraries);
+      } else {
+        // Use -c flag to compile to object file
+        snprintf(compiler_args, sizeof(compiler_args),
+                 "%s -shared -fPIC -c %s -o %s %s", compiler_opts.compiler,
+                 default_compiler_args, obj_filename, release_mode_string());
+      }
+      break;
+    }
+
+    case LIBRARY_STATIC: {
+      // TODO
+      break;
+    }
+    }
+
     if (compiler_opts.verbose) {
       printf("Compiling to object file: %s\n", compiler_args);
     }
-    
+
     int result = system(compiler_args);
     if (result != 0) {
       printf("Compilation to object file failed\n");
       return false;
     }
-    
+
     if (!compiler_opts.keep_c_file) {
       char rm_cmd[256];
       snprintf(rm_cmd, sizeof(rm_cmd), "rm %s", c_filename);
       system(rm_cmd);
     }
-    
+
     printf("Compiled to object file: %s\n", obj_filename);
     return true;
   }
@@ -246,14 +217,13 @@ static bool compile_file(const char *filename) {
     if (libraries) {
       // Compile as executable
       snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s %s",
-              compiler_opts.compiler, default_compiler_args,
-              compiler_opts.output_exe_name, release_mode_string(),
-              libraries);
+               compiler_opts.compiler, default_compiler_args,
+               compiler_opts.output_exe_name, release_mode_string(), libraries);
     } else {
       // Compile as executable
       snprintf(compiler_args, sizeof(compiler_args), "%s %s -o %s %s",
-              compiler_opts.compiler, default_compiler_args,
-              compiler_opts.output_exe_name, release_mode_string());
+               compiler_opts.compiler, default_compiler_args,
+               compiler_opts.output_exe_name, release_mode_string());
     }
 
     if (compiler_opts.verbose) {

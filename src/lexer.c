@@ -205,6 +205,8 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     }
     if (length == 5)
       return lexer_check_keyword(lexer, 5, "isize", TOKEN_ISIZE_TYPE);
+    if (length == 6)
+      return lexer_check_keyword(lexer, 6, "import", TOKEN_IMPORT);
     break;
   case 'l':
     if (length == 3)
@@ -472,6 +474,9 @@ Token lexer_next_token(Lexer *lexer) {
     }
     return lexer_make_token(lexer, TOKEN_DOT);
   case ':':
+    if (lexer_match(lexer, ':')) {
+      return lexer_make_token(lexer, TOKEN_MOD_SCOPE);
+    }
     return lexer_make_token(lexer, TOKEN_COLON);
   case '+':
     if (lexer_match(lexer, '=')) {
@@ -482,14 +487,14 @@ Token lexer_next_token(Lexer *lexer) {
     }
     return lexer_make_token(lexer, TOKEN_PLUS);
   case '-':
-    return lexer_make_token(lexer,
-      lexer_match(lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
+    return lexer_make_token(lexer, lexer_match(lexer, '=') ? TOKEN_MINUS_EQUAL
+                                                           : TOKEN_MINUS);
   case '*':
-    return lexer_make_token(lexer,
-      lexer_match(lexer, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
+    return lexer_make_token(lexer, lexer_match(lexer, '=') ? TOKEN_STAR_EQUAL
+                                                           : TOKEN_STAR);
   case '/':
-    return lexer_make_token(lexer,
-      lexer_match(lexer, '=') ? TOKEN_SLASH_EQUAL : TOKEN_SLASH);
+    return lexer_make_token(lexer, lexer_match(lexer, '=') ? TOKEN_SLASH_EQUAL
+                                                           : TOKEN_SLASH);
   case '"':
     return lexer_scan_string(lexer);
   case '\'':

@@ -45,6 +45,8 @@ static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   *len += str_len;
 }
 
+static void emit_indent_spaces(Codegen *cg);
+
 static DeferStack *defer_stack_create(DeferStack *parent,
                                       DeferScopeType scope_type) {
   DeferStack *stack = arena_alloc(&long_lived, sizeof(DeferStack));
@@ -88,8 +90,13 @@ static void defer_stack_emit_current_scope(Codegen *cg, bool lock) {
 
   // Emit in reverse order (most recent first)
   for (int i = stack->count - 1; i >= 0; i--) {
+    emit_indent_spaces(cg);
     emit_string(cg, "{ /* defer */\n");
+    emit_indent(cg);
+    emit_indent_spaces(cg);
     emit_stmt(cg, stack->defers[i]);
+    emit_dedent(cg);
+    emit_indent_spaces(cg);
     emit_string(cg, "}\n");
   }
 
@@ -111,8 +118,13 @@ static void defer_stack_emit_until(Codegen *cg, DeferScopeType target_scope,
   while (stack && stack->scope_type != target_scope) {
     // Emit all defers in this scope (reverse order)
     for (int i = stack->count - 1; i >= 0; i--) {
+      emit_indent_spaces(cg);
       emit_string(cg, "{ /* defer */\n");
+      emit_indent(cg);
+      emit_indent_spaces(cg);
       emit_stmt(cg, stack->defers[i]);
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     }
     stack = stack->parent;
@@ -135,8 +147,13 @@ static void defer_stack_emit_all(Codegen *cg, bool lock) {
   while (stack) {
     // Emit all defers in this scope (reverse order)
     for (int i = stack->count - 1; i >= 0; i--) {
+      emit_indent_spaces(cg);
       emit_string(cg, "{ /* defer */\n");
+      emit_indent(cg);
+      emit_indent_spaces(cg);
       emit_stmt(cg, stack->defers[i]);
+      emit_dedent(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     }
     stack = stack->parent;
@@ -178,7 +195,8 @@ void codegen_init(Codegen *cg, FILE *output) {
   if (!compiler_opts.freestanding) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
-                   "<stdio.h>\n#include <string.h>\n#include <stddef.h>\n#include <assert.h>\n\n";
+                   "<stdio.h>\n#include <string.h>\n#include "
+                   "<stddef.h>\n#include <assert.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -509,7 +527,10 @@ void emit_program(Codegen *cg) {
       emit_string(cg, "extern ");
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
-      emit_string(cg, sym->name);
+      if (sym->kind == SYMBOL_VARIABLE)
+        emit_string(cg, sym->decl->data.var_decl.qualified_name);
+      if (sym->kind == SYMBOL_CONSTANT)
+        emit_string(cg, sym->decl->data.const_decl.qualified_name);
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
@@ -517,7 +538,7 @@ void emit_program(Codegen *cg) {
       if (!sym->data.external.lib_name) {
         continue;
       }
-      
+
       emit_string(cg, "/* ");
       emit_string(cg, sym->data.external.lib_name);
       emit_string(cg, " */\n");
@@ -545,7 +566,12 @@ void emit_program(Codegen *cg) {
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
-      emit_string(cg, sym->name);
+
+      if (sym->kind == SYMBOL_VARIABLE)
+        emit_string(cg, sym->decl->data.var_decl.qualified_name);
+      if (sym->kind == SYMBOL_CONSTANT)
+        emit_string(cg, sym->decl->data.const_decl.qualified_name);
+
       if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
         emit_string(cg, " = ");
 
@@ -586,7 +612,7 @@ void emit_program(Codegen *cg) {
       if (strcmp("main", sym->name) == 0) {
         emit_string(cg, "__user_main");
       } else {
-        emit_string(cg, sym->name);
+        emit_string(cg, sym->decl->data.func_decl.qualified_name);
       }
       emit_string(cg, "(");
 
@@ -690,7 +716,7 @@ void emit_program(Codegen *cg) {
       if (strcmp("main", sym->name) == 0) {
         emit_string(cg, "__user_main");
       } else {
-        emit_string(cg, func->data.func_decl.name);
+        emit_string(cg, func->data.func_decl.qualified_name);
       }
       emit_string(cg, "(");
 
@@ -831,57 +857,58 @@ void emit_type_name(Codegen *cg, Type *type) {
 void emit_sections(Codegen *cg) {
   // Emit preamble directly
   if (cg->preamble) {
+    fputs("// PREAMBLE\n", cg->output);
     fputs(cg->preamble, cg->output);
   }
 
-  fputs(
-    "typedef struct __pebble_context __pebble_context;\n\n"
-    "typedef struct Allocator {\n"
-    "  void *ptr;\n"
-    "  void *(*alloc)(__pebble_context, void *, size_t);\n"
-    "  void (*free)(__pebble_context, void *, void *);\n"
-    "} Allocator;\n\n"
-    "struct __pebble_context {\n"
-    "  Allocator default_allocator;\n"
-    "};\n\n"
-    ,
-    cg->output
-  );
+  fputs("typedef struct __pebble_context __pebble_context;\n\n"
+        "typedef struct Allocator {\n"
+        "  void *ptr;\n"
+        "  void *(*alloc)(__pebble_context, void *, size_t);\n"
+        "  void (*free)(__pebble_context, void *, void *);\n"
+        "} Allocator;\n\n"
+        "struct __pebble_context {\n"
+        "  Allocator default_allocator;\n"
+        "};\n\n",
+        cg->output);
 
   if (!compiler_opts.freestanding) {
-    fputs(
-      "void *__pebble_c_alloc(__pebble_context, void *ptr, size_t size) {\n"
-      "  return malloc(size);\n"
-      "}\n\n"
-      "void __pebble_c_free(__pebble_context, void *ptr, void *data) {\n"
-      "  free(data);\n"
-      "}\n\n"
-      "\n"
-      ,
-      cg->output
-    );
+    fputs("void *__pebble_c_alloc(__pebble_context __unused, void *ptr, size_t "
+          "size) {\n"
+          "  return malloc(size);\n"
+          "}\n\n"
+          "void __pebble_c_free(__pebble_context __unused, void *ptr, void "
+          "*data) {\n"
+          "  free(data);\n"
+          "}\n\n"
+          "\n",
+          cg->output);
   }
 
   // Emit sections (if they have content), then free buffers
   if (cg->forward_types) {
+    fputs("// FORWARD TYPES\n", cg->output);
     fputs(cg->forward_types, cg->output);
     fputc('\n', cg->output);
     free(cg->forward_types);
     cg->forward_types = NULL;
   }
   if (cg->type_defs) {
+    fputs("// TYPE DEFS\n", cg->output);
     fputs(cg->type_defs, cg->output);
     fputc('\n', cg->output);
     free(cg->type_defs);
     cg->type_defs = NULL;
   }
   if (cg->forward_vars_funcs) {
+    fputs("// FORWARD VARS/CONSTS/FUNCS\n", cg->output);
     fputs(cg->forward_vars_funcs, cg->output);
     fputc('\n', cg->output);
     free(cg->forward_vars_funcs);
     cg->forward_vars_funcs = NULL;
   }
   if (cg->defs) {
+    fputs("// VARS/CONSTS/FUNCS DEFS\n", cg->output);
     fputs(cg->defs, cg->output);
     fputc('\n', cg->output);
     free(cg->defs);
@@ -894,44 +921,33 @@ void emit_sections(Codegen *cg) {
 
   if (is_main) {
     // Look up the entry point function in global scope
-    Symbol *entry_sym = scope_lookup(global_scope, entry_name);
-    
-    fputs(
-      "int main(int argc, const char **argv) {\n"
-      ,
-      cg->output
-    );
+    Symbol *entry_sym = scope_lookup_local(global_scope, entry_name);
+
+    fputs("int main(int argc, const char **argv) {\n", cg->output);
 
     if (compiler_opts.freestanding) {
-      fputs(
-        "  // Freestanding has an empty context\n"
-        "  __pebble_context context = {0};\n"
-        ,
-        cg->output
-      );
+      fputs("  // Freestanding has an empty context\n"
+            "  __pebble_context context = {0};\n",
+            cg->output);
     } else {
-      fputs(
-        "  __pebble_context context = {\n"
-        "    .default_allocator = (Allocator){\n"
-        "      .ptr = NULL,\n"
-        "      .alloc = __pebble_c_alloc,\n"
-        "      .free = __pebble_c_free,\n"
-        "    },\n"
-        "  };\n"
-        ,
-        cg->output
-      );
+      fputs("  __pebble_context context = {\n"
+            "    .default_allocator = (Allocator){\n"
+            "      .ptr = NULL,\n"
+            "      .alloc = __pebble_c_alloc,\n"
+            "      .free = __pebble_c_free,\n"
+            "    },\n"
+            "  };\n",
+            cg->output);
     }
 
     if (entry_sym->type->data.func.param_count == 1) {
-      fputs(
-        "  slice_str __argv = { argv, argc };\n"
-        "  return __user_main(context, __argv);\n"
-        ,
-        cg->output
-      );
+      fputs("  slice_str __argv = { argv, argc };\n"
+            "  return __user_main(context, __argv);\n",
+            cg->output);
     } else if (entry_sym->type->data.func.param_count == 2) {
       fputs("  return __user_main(context, argc, argv);\n", cg->output);
+    } else {
+      fputs("  return __user_main(context);\n", cg->output);
     }
 
     fputs("}\n", cg->output);
@@ -1047,7 +1063,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
       type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
       type->kind == TYPE_OPTIONAL) {
-    
+
     if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
       return;
     }
@@ -1058,7 +1074,6 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       // Emit full def
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
-
 
       emit_string(cg, "struct ");
       emit_string(cg, canonical);
@@ -1551,13 +1566,13 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "for (");
       emit_type_name(cg, init->resolved_type);
       emit_string(cg, " ");
-      emit_string(cg, init->data.var_decl.name);
+      emit_string(cg, init->data.var_decl.qualified_name);
       emit_string(cg, " = ");
       emit_expr(cg, init->data.var_decl.init);
       emit_string(cg, "; ");
       emit_expr(cg, stmt->data.for_stmt.cond);
       emit_string(cg, "; ");
-      
+
       AstNode *update = stmt->data.for_stmt.update;
       if (update->kind == AST_STMT_ASSIGN) {
         emit_expr(cg, update->data.assign_stmt.lhs);
@@ -1630,30 +1645,30 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_expr(cg, stmt->data.assign_stmt.lhs);
 
     switch (stmt->data.assign_stmt.op) {
-      case BINOP_ADD: {
-        emit_string(cg, " += ");
-        break;
-      }
+    case BINOP_ADD: {
+      emit_string(cg, " += ");
+      break;
+    }
 
-      case BINOP_SUB: {
-        emit_string(cg, " -= ");
-        break;
-      }
+    case BINOP_SUB: {
+      emit_string(cg, " -= ");
+      break;
+    }
 
-      case BINOP_MUL: {
-        emit_string(cg, " *= ");
-        break;
-      }
+    case BINOP_MUL: {
+      emit_string(cg, " *= ");
+      break;
+    }
 
-      case BINOP_DIV: {
-        emit_string(cg, " /= ");
-        break;
-      }
+    case BINOP_DIV: {
+      emit_string(cg, " /= ");
+      break;
+    }
 
-      default: {
-        emit_string(cg, " = ");
-        break;
-      }
+    default: {
+      emit_string(cg, " = ");
+      break;
+    }
     }
 
     emit_expr(cg, stmt->data.assign_stmt.rhs);
@@ -1664,7 +1679,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_type_name(cg, stmt->resolved_type); // Resolved type?
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.var_decl.name);
+    emit_string(cg, stmt->data.var_decl.qualified_name);
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
@@ -1687,7 +1702,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, "const ");
     emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.const_decl.name);
+    emit_string(cg, stmt->data.const_decl.qualified_name);
     emit_string(cg, " = ");
     emit_expr(cg, stmt->data.const_decl.value);
     emit_string(cg, ";\n");
@@ -1719,7 +1734,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     break;
 
   case AST_EXPR_IDENTIFIER:
-    emit_string(cg, expr->data.ident.name);
+    emit_string(cg, expr->data.ident.qualified_name);
+    break;
+
+  case AST_EXPR_MODULE_MEMBER:
+    emit_expr(cg, expr->data.mod_member_expr.module);
+    emit_string(cg, "__");
+    emit_string(cg, expr->data.mod_member_expr.member);
     break;
 
   case AST_EXPR_LITERAL_INT: {
@@ -2076,7 +2097,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < (int)strlen(__item)); __item[__index]; })");
+        emit_string(cg, "; assert(__index >= 0 && __index < "
+                        "(int)strlen(__item)); __item[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, "[");
@@ -2094,7 +2116,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_type_name(cg, array_expr->resolved_type);
         emit_string(cg, " __item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); __item.data[__index]; })");
+        emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
+                        "__item.data[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, ".data[");
@@ -2208,9 +2231,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_TUPLE: {
-    emit_string(cg, "(");
-    emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, ") {");
+    // emit_string(cg, "(");
+    // emit_type_name(cg, expr->resolved_type);
+    // emit_string(cg, ") {");
+    emit_string(cg, "{");
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
       if (i > 0)
         emit_string(cg, ", ");
@@ -2274,7 +2298,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_STRUCT_LITERAL: {
     emit_string(cg, "(");
-    emit_string(cg, expr->data.struct_literal.type_name);
+    emit_string(cg, expr->data.struct_literal.qualified_type_name);
     emit_string(cg, "){");
     for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
       if (i > 0)

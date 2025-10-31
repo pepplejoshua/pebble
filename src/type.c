@@ -1,6 +1,7 @@
 #include "type.h"
 #include "alloc.h"
 #include "ast.h"
+#include "module.h"
 #include "uthash.h"
 #include <assert.h>
 #include <stdio.h>
@@ -289,12 +290,18 @@ Type *type_create_function(Type **param_types, size_t param_count,
 }
 
 // Look up named type in type table
-Type *type_lookup(const char *name) {
+Type *type_lookup(const char *name, const char *mod_name) {
   if (!name)
     return NULL;
 
   TypeEntry *entry;
   HASH_FIND_STR(type_table, name, entry);
+  if (!entry) {
+    // For qualified type names
+    char *prefix = prepend(get_basename(mod_name, true), "__");
+    char *qualified_name = prepend(prefix, name);
+    HASH_FIND_STR(type_table, qualified_name, entry);
+  }
   return entry ? entry->type : NULL;
 }
 

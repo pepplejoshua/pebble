@@ -23,6 +23,7 @@ typedef enum {
 // Symbol structure
 struct Symbol {
   char *name;      // Symbol name (allocated in arena)
+  char *reg_name;
   SymbolKind kind; // What kind of symbol this is
   AstNode *decl;   // Pointer to declaration AST node
   Type *type;      // Type (NULL initially, filled in pass 3)
@@ -72,7 +73,7 @@ struct Scope {
 // Scope management functions
 Scope *scope_create(Scope *parent);
 void scope_add_child(Scope *parent, Scope *child);
-Symbol *scope_lookup(Scope *scope, const char *name);
+Symbol *scope_lookup(Scope *scope, char *name, const char *sym_mod_name);
 Symbol *scope_lookup_local(Scope *scope,
                            const char *name); // Only in this scope
 void scope_add_symbol(Scope *scope, Symbol *symbol);

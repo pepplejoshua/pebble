@@ -1,9 +1,9 @@
 #include "alloc.h"
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 // Arena implementation
 void arena_init(Arena *arena, size_t initial_capacity) {

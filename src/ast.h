@@ -24,6 +24,7 @@ typedef enum {
   AST_DECL_VARIABLE,
   AST_DECL_CONSTANT,
   AST_DECL_TYPE,
+  AST_DECL_IMPORT,
 
   AST_STMT_RETURN,
   AST_STMT_IF,
@@ -54,6 +55,7 @@ typedef enum {
   AST_EXPR_INDEX,
   AST_EXPR_SLICE,
   AST_EXPR_MEMBER,
+  AST_EXPR_MODULE_MEMBER,
   AST_EXPR_TUPLE,
   AST_EXPR_STRUCT_LITERAL,
   AST_EXPR_ARRAY_LITERAL,
@@ -70,6 +72,7 @@ typedef enum {
 
   // Type expressions
   AST_TYPE_NAMED,    // int, float, CustomType
+  AST_TYPE_QUALIFIED_NAMED, // std::string
   AST_TYPE_POINTER,  // *T
   AST_TYPE_OPTIONAL, // ?T
   AST_TYPE_ARRAY,    // [N]T
@@ -120,6 +123,7 @@ struct AstNode {
     struct {
       AstNode *convention;
       char *name;
+      char *qualified_name;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;
@@ -127,6 +131,7 @@ struct AstNode {
     } func_decl;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *lib_name;
       FuncParam *params;
       size_t param_count;
@@ -134,6 +139,7 @@ struct AstNode {
     } extern_func;
     struct {
       char *name;
+      char *qualified_name;
     } extern_type;
     struct {
       AstNode *lib_name;
@@ -142,16 +148,19 @@ struct AstNode {
     } extern_block;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *type_expr;
       AstNode *init;
     } var_decl;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *type_expr;
       AstNode *value;
     } const_decl;
     struct {
       char *name;
+      char *qualified_name;
       AstNode *type_expr;
     } type_decl;
 
@@ -212,6 +221,9 @@ struct AstNode {
     struct {
       AstNode *stmt;
     } defer_stmt;
+    struct {
+      AstNode *path_str;
+    } import_stmt;
 
     // Expressions
     struct {
@@ -231,6 +243,7 @@ struct AstNode {
     } bool_lit;
     struct {
       char *name;
+      char *qualified_name;
     } ident;
     struct {
       BinaryOp op;
@@ -255,6 +268,10 @@ struct AstNode {
       char *member;
     } member_expr;
     struct {
+      AstNode *module;
+      char *member;
+    } mod_member_expr;
+    struct {
       AstNode *operand;
     } postfix_inc;
     struct {
@@ -267,9 +284,10 @@ struct AstNode {
       size_t element_count;
     } tuple_expr;
     struct {
-      char *type_name;        // "Point"
-      char **field_names;     // ["x", "y"]
-      AstNode **field_values; // [10, 20]
+      char *type_name;             // "Point"
+      char *qualified_type_name;   // "main__Point"
+      char **field_names;          // ["x", "y"]
+      AstNode **field_values;      // [10, 20]
       size_t field_count;
     } struct_literal;
     struct {
@@ -313,6 +331,10 @@ struct AstNode {
     struct {
       char *name;
     } type_named;
+    struct {
+      char *mod_name;
+      char *mem_name;
+    } type_qualified_named;
     struct {
       AstNode *base;
     } type_pointer;

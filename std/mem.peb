@@ -1,0 +1,9 @@
+fn new(size usize) *void {
+    let allocator = context.default_allocator;
+    return allocator.alloc(allocator.ptr, size);
+}
+
+fn delete(ptr *void) void {
+    let allocator = context.default_allocator;
+    allocator.free(allocator.ptr, ptr);
+}

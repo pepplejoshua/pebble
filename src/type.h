@@ -53,6 +53,7 @@ struct Type {
   TypeKind kind;
   char *canonical_name;
   char *declared_name;
+  char *qualified_name; // Used for named types
   Location loc;
 
   union {
@@ -152,7 +153,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
                            Location loc);
 
 // Type lookup and registration
-Type *type_lookup(const char *name);
+Type *type_lookup(const char *name, const char *mod_name);
 void type_register(const char *name, Type *type);
 Type *canonical_lookup(const char *canonical_name);
 void canonical_register(const char *canonical_name, Type *type);

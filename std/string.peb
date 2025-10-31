@@ -1,0 +1,70 @@
+import "./std/mem";
+
+// An implementation of a growable string type
+extern {
+    fn memcpy(dst *void, src *void, n usize) *void;
+    fn strlen(s str) usize;
+}
+
+type String = struct {
+    data *char;
+    len usize;
+    capacity usize;
+};
+
+fn new() *String {
+    var s *String = mem::new(sizeof String);
+    s.capacity = 4;
+    s.len = 0;
+    s.data = mem::new((sizeof char) * 4);
+    return s;
+}
+
+fn delete(s *String) void {
+    mem::delete(s.data);
+    mem::delete(s);
+}
+
+fn grow(s *String, new_cap usize) void {
+    var new_data *char = mem::new((sizeof char) * new_cap);
+    memcpy(new_data, s.data, s.capacity);
+    mem::delete(s.data);
+    s.data = new_data;
+    s.capacity = new_cap;
+}
+
+fn push_char(s *String, c char) void {
+    if s.len + 1 >= s.capacity {
+        grow(s, s.capacity * 2);
+    }
+
+    *(s.data + s.len) = c;
+    s.len++;
+    *(s.data + s.len) = '\0';
+}
+
+fn push_str(s *String, new_str str) void {
+    var len = strlen(new_str);
+
+    // Calculate needed capacity
+    var needed = s.len + len + 1;
+    if needed > s.capacity {
+        var new_cap = s.capacity;
+        while new_cap < needed {
+            new_cap = new_cap * 2;
+        }
+        grow(s, new_cap);
+    }
+
+    // Copy
+    var dst = s.data + s.len;
+    var src = new_str as *void;
+    memcpy(dst, src, len);
+
+    s.len += len;
+    *(s.data + s.len) = '\0';
+}
+
+fn to_str(s *String) str {
+    return s.data as str;
+}
