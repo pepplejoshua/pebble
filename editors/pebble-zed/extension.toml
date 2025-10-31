@@ -8,4 +8,4 @@ repository = "https://github.com/pepplejoshua/pebble"
 
 [grammars.pebble]
 repository = "https://github.com/Caleb-o/pebble-grammar"
-rev = "67ec277ffaae7f60cea269e2642ae004defacf5e"
+rev = "f5e3d4e9aaf026a85fed8ff8b6826edf805ba54a"
