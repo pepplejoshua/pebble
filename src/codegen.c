@@ -861,6 +861,28 @@ void emit_sections(Codegen *cg) {
     fputs(cg->preamble, cg->output);
   }
 
+  if (compiler_opts.local_headers) {
+    char buffer[256] = {0};
+    fputs("// User local headers\n", cg->output);
+    for (size_t i = 0; i < compiler_opts.local_headers_count; i++) {
+      sprintf(buffer, "#include %s\n", compiler_opts.local_headers[i]);
+      fputs(buffer, cg->output);
+      memset(buffer, 0, sizeof(buffer));
+    }
+    fputs("\n", cg->output);
+  }
+
+  if (compiler_opts.system_headers) {
+    char buffer[256] = {0};
+    fputs("// User system headers\n", cg->output);
+    for (size_t i = 0; i < compiler_opts.system_headers_count; i++) {
+      sprintf(buffer, "#include <%s>\n", compiler_opts.system_headers[i]);
+      fputs(buffer, cg->output);
+      memset(buffer, 0, sizeof(buffer));
+    }
+    fputs("\n", cg->output);
+  }
+
   fputs("typedef struct __pebble_context __pebble_context;\n\n"
         "typedef struct Allocator {\n"
         "  void *ptr;\n"

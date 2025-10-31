@@ -63,9 +63,13 @@ void auto_detect_compiler(void) {
 typedef struct {
   char *name;
   UT_hash_handle hh;
-} LibraryEntry;
+} StringEntry;
 
-static LibraryEntry *library_set = NULL;
+static StringEntry *library_set = NULL;
+static StringEntry *library_path_set = NULL;
+static StringEntry *include_path_set = NULL;
+static StringEntry *header_set = NULL;
+static StringEntry *system_header_set = NULL;
 
 void initialise_args(void) {
   // Initialize defaults
@@ -88,13 +92,31 @@ void initialise_args(void) {
   compiler_opts.linked_libraries_count = 0;
   compiler_opts.linked_libraries_capacity = 0;
 
+  compiler_opts.lib_paths = NULL;
+  compiler_opts.lib_paths_count = 0;
+  compiler_opts.lib_paths_capacity = 0;
+
+  compiler_opts.local_headers = NULL;
+  compiler_opts.local_headers_count = 0;
+  compiler_opts.local_headers_capacity = 0;
+
+  compiler_opts.system_headers = NULL;
+  compiler_opts.system_headers_count = 0;
+  compiler_opts.system_headers_capacity = 0;
+
+  compiler_opts.include_paths = NULL;
+  compiler_opts.include_paths_count = 0;
+  compiler_opts.include_paths_capacity = 0;
+
   auto_detect_compiler();
 }
 
 void cleanup_args(void) {
-  LibraryEntry *entry, *tmp;
-  HASH_ITER(hh, library_set, entry, tmp) { HASH_DEL(library_set, entry); }
-  library_set = NULL;
+  HASH_CLEAR(hh, library_set);
+  HASH_CLEAR(hh, library_path_set);
+  HASH_CLEAR(hh, include_path_set);
+  HASH_CLEAR(hh, header_set);
+  HASH_CLEAR(hh, system_header_set);
 }
 
 void append_library_string(char *str) {
@@ -108,7 +130,7 @@ void append_library_string(char *str) {
     library = str_buffer;
   }
 
-  LibraryEntry *entry;
+  StringEntry *entry;
   HASH_FIND_STR(library_set, library, entry);
 
   if (entry) {
@@ -130,16 +152,167 @@ void append_library_string(char *str) {
   compiler_opts.linked_libraries[compiler_opts.linked_libraries_count++] =
       str_dup(library);
 
-  entry = arena_alloc(&long_lived, sizeof(LibraryEntry));
+  entry = arena_alloc(&long_lived, sizeof(StringEntry));
   entry->name = str_dup(library);
   HASH_ADD_KEYPTR(hh, library_set, entry->name, strlen(entry->name), entry);
 }
 
-char *flatten_library_strings(void) {
-  size_t total_length =
-      compiler_opts.linked_libraries_count * 3; // account for "-l" and " "
-  for (size_t i = 0; i < compiler_opts.linked_libraries_count; i++) {
-    total_length += strlen(compiler_opts.linked_libraries[i]);
+void append_library_path_string(char *str) {
+  char *library_path = str;
+
+  char str_buffer[512] = {0};
+
+  size_t len = strlen(library_path);
+  if (len >= 2 && library_path[0] != '"' && library_path[len - 1] != '"') {
+    sprintf(str_buffer, "\"%s\"", library_path);
+    library_path = str_buffer;
+  }
+
+  StringEntry *entry;
+  HASH_FIND_STR(library_path_set, library_path, entry);
+
+  if (entry) {
+    return;
+  }
+
+  if (compiler_opts.lib_paths_count >=
+      compiler_opts.lib_paths_capacity) {
+    size_t new_cap = compiler_opts.lib_paths_capacity;
+    new_cap = new_cap == 0 ? 4 : new_cap * 2;
+
+    char **new_library_paths = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    memcpy(new_library_paths, compiler_opts.lib_paths,
+           compiler_opts.lib_paths_count * sizeof(char *));
+
+    compiler_opts.lib_paths = new_library_paths;
+  }
+
+  compiler_opts.lib_paths[compiler_opts.lib_paths_count++] =
+      str_dup(library_path);
+
+  entry = arena_alloc(&long_lived, sizeof(StringEntry));
+  entry->name = str_dup(library_path);
+  HASH_ADD_KEYPTR(hh, library_path_set, entry->name, strlen(entry->name), entry);
+}
+
+void append_include_path_string(char *str) {
+  char *include = str;
+
+  char str_buffer[512] = {0};
+
+  size_t len = strlen(include);
+  if (len >= 2 && include[0] != '"' && include[len - 1] != '"') {
+    sprintf(str_buffer, "\"%s\"", include);
+    include = str_buffer;
+  }
+
+  StringEntry *entry;
+  HASH_FIND_STR(include_path_set, include, entry);
+
+  if (entry) {
+    return;
+  }
+
+  if (compiler_opts.include_paths_count >=
+      compiler_opts.include_paths_capacity) {
+    size_t new_cap = compiler_opts.include_paths_capacity;
+    new_cap = new_cap == 0 ? 4 : new_cap * 2;
+
+    char **new_include_paths = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    memcpy(new_include_paths, compiler_opts.include_paths,
+           compiler_opts.include_paths_count * sizeof(char *));
+
+    compiler_opts.include_paths = new_include_paths;
+  }
+
+  compiler_opts.include_paths[compiler_opts.include_paths_count++] =
+      str_dup(include);
+
+  entry = arena_alloc(&long_lived, sizeof(StringEntry));
+  entry->name = str_dup(include);
+  HASH_ADD_KEYPTR(hh, library_path_set, entry->name, strlen(entry->name), entry);
+}
+
+void append_header_string(char *str) {
+  char *header = str;
+
+  char str_buffer[512] = {0};
+
+  size_t len = strlen(header);
+  if (len >= 2 && header[0] != '"' && header[len - 1] != '"') {
+    sprintf(str_buffer, "\"%s\"", header);
+    header = str_buffer;
+  }
+
+  StringEntry *entry;
+  HASH_FIND_STR(header_set, header, entry);
+
+  if (entry) {
+    return;
+  }
+
+  if (compiler_opts.local_headers_count >=
+      compiler_opts.local_headers_capacity) {
+    size_t new_cap = compiler_opts.local_headers_capacity;
+    new_cap = new_cap == 0 ? 4 : new_cap * 2;
+
+    char **new_headers = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    memcpy(new_headers, compiler_opts.local_headers,
+           compiler_opts.local_headers_count * sizeof(char *));
+
+    compiler_opts.local_headers = new_headers;
+  }
+
+  compiler_opts.local_headers[compiler_opts.local_headers_count++] =
+      str_dup(header);
+
+  entry = arena_alloc(&long_lived, sizeof(StringEntry));
+  entry->name = str_dup(header);
+  HASH_ADD_KEYPTR(hh, header_set, entry->name, strlen(entry->name), entry);
+}
+
+void append_system_header_string(char *str) {
+  char *header = str;
+
+  char str_buffer[512] = {0};
+
+  size_t len = strlen(header);
+  if (len >= 2 && header[0] == '"' && header[len - 1] == '"') {
+    sprintf(str_buffer, "%s", header);
+    header = str_buffer;
+  }
+
+  StringEntry *entry;
+  HASH_FIND_STR(system_header_set, header, entry);
+
+  if (entry) {
+    return;
+  }
+
+  if (compiler_opts.system_headers_count >=
+      compiler_opts.system_headers_capacity) {
+    size_t new_cap = compiler_opts.system_headers_capacity;
+    new_cap = new_cap == 0 ? 4 : new_cap * 2;
+
+    char **new_headers = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    memcpy(new_headers, compiler_opts.system_headers,
+           compiler_opts.system_headers_count * sizeof(char *));
+
+    compiler_opts.system_headers = new_headers;
+  }
+
+  compiler_opts.system_headers[compiler_opts.system_headers_count++] =
+      str_dup(header);
+
+  entry = arena_alloc(&long_lived, sizeof(StringEntry));
+  entry->name = str_dup(header);
+  HASH_ADD_KEYPTR(hh, system_header_set, entry->name, strlen(entry->name), entry);
+}
+
+char *flatten_strings(char **strings, size_t count, char compiler_arg) {
+  size_t total_length = count * 3; // account for "-<compiler arg>" and " "
+  for (size_t i = 0; i < count; i++) {
+    total_length += strlen(strings[i]);
   }
 
   char *result = arena_alloc(&long_lived, total_length + 1);
@@ -152,12 +325,12 @@ char *flatten_library_strings(void) {
   char *ptr = result;
 
   // Copy strings into result
-  for (size_t i = 0; i < compiler_opts.linked_libraries_count; i++) {
+  for (size_t i = 0; i < count; i++) {
     *ptr++ = '-';
-    *ptr++ = 'l';
+    *ptr++ = compiler_arg;
 
-    size_t len = strlen(compiler_opts.linked_libraries[i]);
-    memcpy(ptr, compiler_opts.linked_libraries[i], len);
+    size_t len = strlen(strings[i]);
+    memcpy(ptr, strings[i], len);
     ptr += len;
 
     *ptr++ = ' ';
@@ -219,6 +392,11 @@ void print_usage(const char *program_name) {
          "output)\n");
   printf("  -c <name>            Specify output c file name (default: "
          "output.c)\n");
+  printf("  -l <library>         Specify library to include\n");
+  printf("  -L <path>            Specify library path to add to path\n");
+  printf("  -I <path>            Specify include path to add to path\n");
+  printf("  --header <name>      Specify header to include in source\n");
+  printf("  --sys-header <name>  Specify system header to include in source\n");
   printf("  --test               Run all tests\n");
   printf("  --test-lexer         Run lexer tests\n");
   printf("  --test-parser        Run parser tests\n");
@@ -278,6 +456,54 @@ bool parse_args(int argc, char **argv) {
 
       // skip "-l"
       append_library_string(argv[i] + 2);
+    } else if (strcmp(argv[i], "-L") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: -L requires an argument\n");
+        return false;
+      }
+
+      append_library_path_string(argv[++i]);
+    } else if (strncmp(argv[i], "-L", 2) == 0) {
+      // allow -L<lib> variant where lib immediately
+      size_t len = strlen(argv[i]) - 2;
+      if (len == 0) {
+        fprintf(stderr, "Error: -L requires an argument\n");
+        return false;
+      }
+
+      // skip "-L"
+      append_library_path_string(argv[i] + 2);
+    } else if (strcmp(argv[i], "-I") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: -I requires an argument\n");
+        return false;
+      }
+
+      append_include_path_string(argv[++i]);
+    } else if (strncmp(argv[i], "-I", 2) == 0) {
+      // allow -I<path> variant
+      size_t len = strlen(argv[i]) - 2;
+      if (len == 0) {
+        fprintf(stderr, "Error: -I requires an argument\n");
+        return false;
+      }
+
+      // skip "-I"
+      append_include_path_string(argv[i] + 2);
+    } else if (strcmp(argv[i], "--header") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --header requires an argument\n");
+        return false;
+      }
+
+      append_header_string(argv[++i]);
+    } else if (strcmp(argv[i], "--sys-header") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --sys-header requires an argument\n");
+        return false;
+      }
+
+      append_system_header_string(argv[++i]);
     } else if (strcmp(argv[i], "-c") == 0) {
       if (i + 1 >= argc) {
         fprintf(stderr, "Error: -c requires an argument\n");

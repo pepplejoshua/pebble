@@ -38,6 +38,22 @@ typedef struct CompilerOptions
   char **linked_libraries;
   size_t linked_libraries_count;
   size_t linked_libraries_capacity;
+
+  char **lib_paths;
+  size_t lib_paths_count;
+  size_t lib_paths_capacity;
+
+  char **local_headers;
+  size_t local_headers_count;
+  size_t local_headers_capacity;
+
+  char **system_headers;
+  size_t system_headers_count;
+  size_t system_headers_capacity;
+
+  char **include_paths;
+  size_t include_paths_count;
+  size_t include_paths_capacity;
 } CompilerOptions;
 
 // Global compiler options
@@ -46,8 +62,14 @@ extern CompilerOptions compiler_opts;
 void auto_detect_compiler(void);
 void initialise_args(void);
 void cleanup_args(void);
+
 void append_library_string(char *library);
-char *flatten_library_strings(void);
+void append_library_path_string(char *str);
+void append_include_path_string(char *str);
+void append_header_string(char *str);
+void append_system_header_string(char *str);
+
+char *flatten_strings(char **strings, size_t count, char compiler_arg);
 char* release_mode_string(void);
 void print_usage(const char *program_name);
 bool parse_args(int argc, char **argv);
