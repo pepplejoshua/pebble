@@ -927,11 +927,11 @@ void emit_sections(Codegen *cg) {
         cg->output);
 
   if (!compiler_opts.freestanding) {
-    fputs("void *__pebble_c_alloc(__pebble_context __unused, void *ptr, size_t "
+    fputs("void *__pebble_c_alloc(__pebble_context ctx, void *ptr, size_t "
           "size) {\n"
           "  return malloc(size);\n"
           "}\n\n"
-          "void __pebble_c_free(__pebble_context __unused, void *ptr, void "
+          "void __pebble_c_free(__pebble_context ctx, void *ptr, void "
           "*data) {\n"
           "  free(data);\n"
           "}\n\n"
