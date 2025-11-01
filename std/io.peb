@@ -221,7 +221,6 @@ fn get_file_error(file *FILE) *string::String {
 
 // Path Utilities
 fn exists(path str) bool {
-    // stat success && S_ISREG
     var buf = mem::new(256);
     defer mem::delete(buf);
     if buf == nil {
@@ -232,10 +231,37 @@ fn exists(path str) bool {
     return res == 0; // 0 = exists (file or dir); -1 = error
 }
 
-//fn is_dir(path str) bool;                            // stat success && S_ISDIR
-//fn delete(path str) bool;                            // remove success (ignores dirs)
-//fn rename(old str, new str) bool;                   // rename success
-//fn makedir(path str, mode u16) bool;                // mkdir success (mode=0755 default)
+fn is_dir(path str) bool {
+    var dir = opendir(path);
+    if dir == nil {
+        return false;  // Not a dir, doesn't exist, or error
+    }
+    closedir(dir);
+    return true;
+}
 
-// Directory Listing
-//fn list_dir(path: str) *vec::Vec<string::String>;     // Vector of entry names (null on error); use Vec<T> where T = string::String
+fn delete(path str) bool{
+    // remove success (ignores dirs)
+    var result = remove(path);
+    return result == 0;
+}
+
+
+fn rename_path(old str, new str) bool {
+    var result = rename(old, new);
+    return result == 0; // rename success
+}
+
+// Common file/dir permissions
+let MODE_DIR_DEFAULT = 0x1ED;   // rwxr-xr-x (0x1ED == 0755 octal: dirs/executables)
+let MODE_FILE_DEFAULT = 0x1A4;  // rw-r--r-- (0x1A4 == 0644 octal: readable by all, writable by owner)
+let MODE_FILE_WRITEABLE = 0x1B6; // rw-rw-rw- (0x1B6 == 0666 octal: shared writes; use cautiously for security)
+
+fn makedir_with_mode(path str, mode u16) bool {
+    var result = mkdir(path, mode);
+    return result == 0;
+}
+
+fn makedir(path str) bool {
+    return makedir_with_mode(path, MODE_DIR_DEFAULT);
+}
