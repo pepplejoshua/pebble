@@ -157,8 +157,19 @@ static void collect_declaration(AstNode *decl) {
     is_opaque_type = true;
     loc = decl->loc;
     break;
+  case AST_DECL_EXTERN_VARIABLE:
+    name = decl->data.extern_var_decl.name;
+    qualified_name = decl->data.extern_var_decl.name;
+    kind = SYMBOL_EXTERN_VARIABLE;
+    loc = decl->loc;
+    break;
+  case AST_DECL_EXTERN_CONSTANT:
+    name = decl->data.extern_const_decl.name;
+    qualified_name = decl->data.extern_const_decl.name;
+    kind = SYMBOL_EXTERN_CONSTANT;
+    loc = decl->loc;
+    break;
   case AST_DECL_EXTERN_BLOCK: {
-
     size_t count = decl->data.extern_block.decls_count;
     if (count == 0) {
       return;
@@ -347,9 +358,9 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
       Visited *_found;                                                         \
       HASH_FIND_PTR(*visited, &_c, _found);                                    \
       if (_found) {                                                            \
-        /* In cycle - use declared name if available */                        \
-        if (_c->declared_name) {                                               \
-          _name = _c->declared_name;                                           \
+        /* In cycle - use qualified name if available */                       \
+        if (_c->qualified_name) {                                              \
+          _name = _c->qualified_name;                                          \
         } else {                                                               \
           _name = "UNRESOLVED";                                                \
         }                                                                      \
@@ -764,66 +775,80 @@ static void check_global_constants(void) {
   // Iterate over all symbols in global scope
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     // Only process constant declarations
-    if (sym->kind != SYMBOL_CONSTANT) {
+    if (sym->kind != SYMBOL_CONSTANT && sym->kind != SYMBOL_EXTERN_CONSTANT) {
       continue;
     }
 
-    AstNode *decl = sym->decl;
-    AstNode *type_expr = decl->data.const_decl.type_expr;
-    AstNode *value = decl->data.const_decl.value;
+    if (sym->kind == SYMBOL_CONSTANT) {
+      AstNode *decl = sym->decl;
+      AstNode *type_expr = decl->data.const_decl.type_expr;
+      AstNode *value = decl->data.const_decl.value;
 
-    // Rule: Constants must have an initializer
-    if (!value) {
-      checker_error(decl->loc, "global constant '%s' must be initialized",
-                    sym->name);
-      continue;
-    }
-
-    // Rule: For now, only allow literal initializers
-    if (value->kind != AST_EXPR_LITERAL_INT &&
-        value->kind != AST_EXPR_LITERAL_FLOAT &&
-        value->kind != AST_EXPR_LITERAL_STRING &&
-        value->kind != AST_EXPR_LITERAL_BOOL) {
-      checker_error(value->loc, "global constant initializer must be a literal "
-                                "(complex expressions not yet supported)");
-      continue;
-    }
-
-    // Check the initializer expression
-    Type *inferred_type = check_expression(value);
-    if (!inferred_type) {
-      continue; // Error already reported
-    }
-
-    // If explicit type is given, resolve and verify it matches
-    if (type_expr) {
-      Type *explicit_type = resolve_type_expression(type_expr);
-      if (!explicit_type) {
-        continue; // Error already reported
-      }
-
-      // Allow casting ints to pointers for global constants
-      if (explicit_type->kind == TYPE_POINTER && type_is_int(inferred_type)) {
-        sym->type = explicit_type;
-        sym->decl->resolved_type = explicit_type;
-
-        sym->decl->data.var_decl.init =
-            maybe_insert_cast(value, inferred_type, explicit_type);
-
+      // Rule: Constants must have an initializer
+      if (!value) {
+        checker_error(decl->loc, "global constant '%s' must be initialized",
+                      sym->name);
         continue;
       }
 
-      if (!type_equals(explicit_type, inferred_type)) {
-        checker_error(value->loc, "constant initializer type mismatch");
+      // Rule: For now, only allow literal initializers
+      if (value->kind != AST_EXPR_LITERAL_INT &&
+          value->kind != AST_EXPR_LITERAL_FLOAT &&
+          value->kind != AST_EXPR_LITERAL_STRING &&
+          value->kind != AST_EXPR_LITERAL_BOOL) {
+        checker_error(value->loc,
+                      "global constant initializer must be a literal "
+                      "(complex expressions not yet supported)");
+        continue;
+      }
+
+      // Check the initializer expression
+      Type *inferred_type = check_expression(value);
+      if (!inferred_type) {
+        continue; // Error already reported
+      }
+
+      // If explicit type is given, resolve and verify it matches
+      if (type_expr) {
+        Type *explicit_type = resolve_type_expression(type_expr);
+        if (!explicit_type) {
+          continue; // Error already reported
+        }
+
+        // Allow casting ints to pointers for global constants
+        if (explicit_type->kind == TYPE_POINTER && type_is_int(inferred_type)) {
+          sym->type = explicit_type;
+          sym->decl->resolved_type = explicit_type;
+
+          sym->decl->data.var_decl.init =
+              maybe_insert_cast(value, inferred_type, explicit_type);
+
+          continue;
+        }
+
+        if (!type_equals(explicit_type, inferred_type)) {
+          checker_error(value->loc, "constant initializer type mismatch");
+          continue;
+        }
+
+        sym->type = explicit_type;
+        sym->decl->resolved_type = explicit_type;
+      } else {
+        // No explicit type, use inferred type
+        sym->type = inferred_type;
+        sym->decl->resolved_type = inferred_type;
+      }
+    } else {
+      AstNode *decl = sym->decl;
+      AstNode *type_expr = decl->data.extern_const_decl.type_expr;
+
+      Type *explicit_type = resolve_type_expression(type_expr);
+      if (!explicit_type) {
         continue;
       }
 
       sym->type = explicit_type;
       sym->decl->resolved_type = explicit_type;
-    } else {
-      // No explicit type, use inferred type
-      sym->type = inferred_type;
-      sym->decl->resolved_type = inferred_type;
     }
   }
 }
@@ -835,80 +860,94 @@ static void check_global_variables(void) {
   // Iterate over all symbols in global scope
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     // Only process variable declarations
-    if (sym->kind != SYMBOL_VARIABLE) {
+    if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_EXTERN_VARIABLE) {
       continue;
     }
 
-    AstNode *decl = sym->decl;
-    AstNode *type_expr = decl->data.var_decl.type_expr;
-    AstNode *init = decl->data.var_decl.init;
+    if (sym->kind == SYMBOL_VARIABLE) {
+      AstNode *decl = sym->decl;
+      AstNode *type_expr = decl->data.var_decl.type_expr;
+      AstNode *init = decl->data.var_decl.init;
 
-    // Rule: Must have type or initializer (or both)
-    if (!type_expr && !init) {
-      checker_error(
-          decl->loc,
-          "variable '%s' must have either a type annotation or an initializer",
-          sym->name);
-      continue;
-    }
-
-    Type *explicit_type = NULL;
-    Type *inferred_type = NULL;
-
-    // Resolve explicit type if provided
-    if (type_expr) {
-      explicit_type = resolve_type_expression(type_expr);
-      if (!explicit_type) {
-        continue; // Error already reported
-      }
-    }
-
-    // Check initializer if provided
-    if (init) {
-      // Rule: For now, only allow literal initializers
-      if (init->kind != AST_EXPR_LITERAL_INT &&
-          init->kind != AST_EXPR_LITERAL_FLOAT &&
-          init->kind != AST_EXPR_LITERAL_STRING &&
-          init->kind != AST_EXPR_LITERAL_BOOL) {
-        checker_error(init->loc,
-                      "global variable initializer must be a literal (complex "
-                      "expressions not yet supported)");
+      // Rule: Must have type or initializer (or both)
+      if (!type_expr && !init) {
+        checker_error(decl->loc,
+                      "variable '%s' must have either a type annotation or an "
+                      "initializer",
+                      sym->name);
         continue;
       }
 
-      inferred_type = check_expression(init);
-      if (!inferred_type) {
-        continue; // Error already reported
-      }
-    }
+      Type *explicit_type = NULL;
+      Type *inferred_type = NULL;
 
-    // Verify types match if both are present
-    if (explicit_type && inferred_type) {
-      // Allow casting ints to pointers for global vars
-      if (explicit_type->kind == TYPE_POINTER && type_is_int(inferred_type)) {
+      // Resolve explicit type if provided
+      if (type_expr) {
+        explicit_type = resolve_type_expression(type_expr);
+        if (!explicit_type) {
+          continue; // Error already reported
+        }
+      }
+
+      // Check initializer if provided
+      if (init) {
+        // Rule: For now, only allow literal initializers
+        if (init->kind != AST_EXPR_LITERAL_INT &&
+            init->kind != AST_EXPR_LITERAL_FLOAT &&
+            init->kind != AST_EXPR_LITERAL_STRING &&
+            init->kind != AST_EXPR_LITERAL_BOOL) {
+          checker_error(
+              init->loc,
+              "global variable initializer must be a literal (complex "
+              "expressions not yet supported)");
+          continue;
+        }
+
+        inferred_type = check_expression(init);
+        if (!inferred_type) {
+          continue; // Error already reported
+        }
+      }
+
+      // Verify types match if both are present
+      if (explicit_type && inferred_type) {
+        // Allow casting ints to pointers for global vars
+        if (explicit_type->kind == TYPE_POINTER && type_is_int(inferred_type)) {
+          sym->type = explicit_type;
+          sym->decl->resolved_type = explicit_type;
+
+          sym->decl->data.var_decl.init =
+              maybe_insert_cast(init, inferred_type, explicit_type);
+
+          continue;
+        }
+
+        if (!type_equals(explicit_type, inferred_type)) {
+          checker_error(init->loc, "variable initializer type mismatch");
+          continue;
+        }
         sym->type = explicit_type;
         sym->decl->resolved_type = explicit_type;
-
-        sym->decl->data.var_decl.init =
-            maybe_insert_cast(init, inferred_type, explicit_type);
-
-        continue;
+      } else if (explicit_type) {
+        // Only explicit type, no initializer
+        sym->type = explicit_type;
+        sym->decl->resolved_type = explicit_type;
+      } else {
+        // Only initializer, infer type
+        sym->type = inferred_type;
+        sym->decl->resolved_type = inferred_type;
       }
-
-      if (!type_equals(explicit_type, inferred_type)) {
-        checker_error(init->loc, "variable initializer type mismatch");
-        continue;
-      }
-      sym->type = explicit_type;
-      sym->decl->resolved_type = explicit_type;
-    } else if (explicit_type) {
-      // Only explicit type, no initializer
-      sym->type = explicit_type;
-      sym->decl->resolved_type = explicit_type;
     } else {
-      // Only initializer, infer type
-      sym->type = inferred_type;
-      sym->decl->resolved_type = inferred_type;
+      AstNode *decl = sym->decl;
+      AstNode *type_expr = decl->data.extern_var_decl.type_expr;
+
+      Type *explicit_type = resolve_type_expression(type_expr);
+      if (!explicit_type) {
+        continue;
+      }
+
+      sym->type = explicit_type;
+      sym->decl->resolved_type = explicit_type;
     }
   }
 }
