@@ -1,6 +1,6 @@
 id = "pebble"
 name = "Pebble"
-version = "0.1.6"
+version = "0.1.7"
 schema_version = 1
 grammar = "pebble"
 authors = ["Caleb Otto", "Joshua Pepple"]
