@@ -560,9 +560,6 @@ void emit_program(Codegen *cg) {
         emit_string(cg, sym->decl->data.var_decl.qualified_name);
       else if (sym->kind == SYMBOL_CONSTANT)
         emit_string(cg, sym->decl->data.const_decl.qualified_name);
-      else {
-        printf("HERE - %d\n", sym->kind);
-      }
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
