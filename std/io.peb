@@ -1,10 +1,13 @@
 // Implementation of basic io operations
 import "./std/string";
+import "./std/mem";
 
 extern {
     // Opaque types (map to struct in C)
     type FILE;
     type DIR;
+
+    var errno i32;
 
     // Core file ops
     fn fopen(path str, mode str) *FILE;  // const char* -> str
@@ -142,25 +145,93 @@ fn read_line(file *FILE) *string::String {
     return nil;
 }
 
+// Write binary
+fn write_bytes(file *FILE, data *void, size usize) usize {
+    return fwrite(data, 1, size, file);
+}
 
 // Write
-//fn write(file *FILE, data str, size usize) usize;  // Bytes written (use data as *void if binary)
+fn write(file *FILE, data str, size usize) usize {
+    // Bytes written (use data as *void if binary)
+    return write_bytes(file, data as *void, size);
+}
 
 // Positioning
-//fn seek(file *FILE, offset i64, whence i32) bool;  // True if success (fseek == 0); whence = SeekStart etc.
-//fn tell(file *FILE) i64;                             // Current position (-1 on error)
-//fn filesize(file *FILE) usize;                       // File size (0 on error); seeks to end
+fn seek(file *FILE, offset i64, whence i32) bool {
+    // True if success (fseek == 0); whence = SeekStart etc.
+    var result = fseek(file, offset, whence);
+    return result == 0;
+}
+
+fn tell(file *FILE) i64 {
+    // Current position (-1 on error)
+    return ftell(file);
+}
+
+fn filesize(file *FILE) usize {
+    // File size (0 on error); seeks to end
+    var orig_pos = tell(file);
+    if orig_pos == -1 { return 0; }
+
+    // Seek to end to get size
+    var seek_success = seek(file, 0, SeekEnd);
+    if !seek_success {
+        // Restore on error
+        seek(file, orig_pos, SeekStart);
+        return 0;
+    }
+
+    var size = tell(file);
+    if size == -1 {
+        // Restore on error
+        seek(file, orig_pos, SeekStart);
+        return 0;
+    }
+
+    seek(file, orig_pos, SeekStart);
+    // Since it is not -1, it is >= 0
+    return size as usize;
+}
 
 // Control
-//fn flush(file *FILE) bool;                           // True if success (fflush == 0)
+fn flush(file *FILE) bool{
+    // True if success (fflush == 0)
+    var result = fflush(file);
+       return result == 0;
+}
+
 fn is_eof(file *FILE) bool {
     return feof(file) != 0;
 }
 
-//fn get_error(file *FILE) *string::String;            // strerror(errno) or null
+fn get_file_error(file *FILE) *string::String {
+    if ferror(file) == 0 {
+        // No error on this file
+        return nil;
+    }
+
+    var err = errno;
+    var err_msg = strerror(err);
+    if strlen(err_msg) == 0 { return nil; }
+
+    var s = string::new();
+    string::push_str(s, err_msg);
+    return s;
+}
 
 // Path Utilities
-//fn exists(path str) bool;                            // stat success && S_ISREG
+fn exists(path str) bool {
+    // stat success && S_ISREG
+    var buf = mem::new(256);
+    defer mem::delete(buf);
+    if buf == nil {
+        return false;
+    }
+
+    var res = stat(path, buf);
+    return res == 0; // 0 = exists (file or dir); -1 = error
+}
+
 //fn is_dir(path str) bool;                            // stat success && S_ISDIR
 //fn delete(path str) bool;                            // remove success (ignores dirs)
 //fn rename(old str, new str) bool;                   // rename success
