@@ -522,15 +522,21 @@ void emit_program(Codegen *cg) {
   // Emit forwards/defs for vars/constants
   cg->current_section = "forward_vars_funcs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
+    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT ||
+        sym->kind == SYMBOL_EXTERN_VARIABLE ||
+        sym->kind == SYMBOL_EXTERN_CONSTANT) {
       // Emit extern decl
       emit_string(cg, "extern ");
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       if (sym->kind == SYMBOL_VARIABLE)
         emit_string(cg, sym->decl->data.var_decl.qualified_name);
+      if (sym->kind == SYMBOL_EXTERN_VARIABLE)
+        emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
       if (sym->kind == SYMBOL_CONSTANT)
         emit_string(cg, sym->decl->data.const_decl.qualified_name);
+      if (sym->kind == SYMBOL_EXTERN_CONSTANT)
+        emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {

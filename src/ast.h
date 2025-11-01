@@ -21,6 +21,8 @@ typedef enum {
   AST_DECL_EXTERN_FUNC,
   AST_DECL_EXTERN_TYPE,
   AST_DECL_EXTERN_BLOCK,
+  AST_DECL_EXTERN_VARIABLE,
+  AST_DECL_EXTERN_CONSTANT,
   AST_DECL_VARIABLE,
   AST_DECL_CONSTANT,
   AST_DECL_TYPE,
@@ -146,6 +148,16 @@ struct AstNode {
       AstNode **decls;
       size_t decls_count;
     } extern_block;
+    struct {
+      char *name;
+      char *qualified_name;
+      AstNode *type_expr;
+    } extern_var_decl;
+    struct {
+      char *name;
+      char *qualified_name;
+      AstNode *type_expr;
+    } extern_const_decl;
     struct {
       char *name;
       char *qualified_name;
