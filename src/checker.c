@@ -216,16 +216,31 @@ static void collect_declaration(AstNode *decl) {
   if (kind == SYMBOL_VARIABLE) {
     symbol->data.var.is_global = true;
   }
-  if (kind == SYMBOL_EXTERN_FUNCTION) {
-    AstNode *lib_name = decl->data.extern_func.lib_name;
-    if (lib_name) {
-      symbol->data.external.lib_name = lib_name->data.str_lit.value;
 
-      // Add as library
-      // FIXME: Might need to strip the quotes
-      append_library_string(lib_name->data.str_lit.value);
-    }
+  AstNode *lib_name = NULL;
+  switch (kind) {
+  case SYMBOL_EXTERN_FUNCTION:
+    lib_name = decl->data.extern_func.lib_name;
+    break;
+
+  case SYMBOL_EXTERN_VARIABLE:
+    lib_name = decl->data.extern_var_decl.lib_name;
+    break;
+
+  case SYMBOL_EXTERN_CONSTANT:
+    lib_name = decl->data.extern_const_decl.lib_name;
+    break;
+
+  default:
+    break;
   }
+
+  if (lib_name) {
+    symbol->data.external.lib_name = lib_name->data.str_lit.value;
+    // Add as library
+    append_library_string(lib_name->data.str_lit.value);
+  }
+
   if (is_opaque_type) {
     symbol->type = type_create(TYPE_OPAQUE, loc);
     symbol->type->declared_name = symbol->name;
@@ -2301,7 +2316,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     if (op == UNOP_BIT_NOT) {
-      if (!type_is_int(operand)) {
+      if (!type_is_integral(operand)) {
         checker_error(expr->loc, "bitwise not requires integer operand");
         return NULL;
       }

@@ -557,6 +557,7 @@ AstNode *parse_extern(Parser *parser) {
         let->data.extern_const_decl.name = str_dup(name.lexeme);
         let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
         let->data.extern_const_decl.type_expr = type_expr;
+        let->data.extern_const_decl.lib_name = lib_name;
         externs[count++] = let;
       } else if (parser_match(parser, TOKEN_VAR)) {
         Token name =
@@ -569,6 +570,7 @@ AstNode *parse_extern(Parser *parser) {
         var->data.extern_var_decl.name = str_dup(name.lexeme);
         var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
         var->data.extern_var_decl.type_expr = type_expr;
+        var->data.extern_var_decl.lib_name = lib_name;
         externs[count++] = var;
       }
     }
@@ -651,6 +653,7 @@ AstNode *parse_extern(Parser *parser) {
     let->data.extern_const_decl.name = str_dup(name.lexeme);
     let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
     let->data.extern_const_decl.type_expr = type_expr;
+    let->data.extern_const_decl.lib_name = lib_name;
     return let;
   } else if (parser_match(parser, TOKEN_VAR)) {
     Token name =
@@ -663,6 +666,7 @@ AstNode *parse_extern(Parser *parser) {
     var->data.extern_var_decl.name = str_dup(name.lexeme);
     var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
     var->data.extern_var_decl.type_expr = type_expr;
+    var->data.extern_var_decl.lib_name = lib_name;
     return var;
   }
   parser_error(parser, "extern is only allowed on function prototypes, opaque "

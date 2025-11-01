@@ -149,11 +149,13 @@ struct AstNode {
       size_t decls_count;
     } extern_block;
     struct {
+      AstNode *lib_name;
       char *name;
       char *qualified_name;
       AstNode *type_expr;
     } extern_var_decl;
     struct {
+      AstNode *lib_name;
       char *name;
       char *qualified_name;
       AstNode *type_expr;
