@@ -2198,7 +2198,11 @@ Type *check_expression(AstNode *expr) {
     if (op == BINOP_BIT_AND || op == BINOP_BIT_OR || op == BINOP_BIT_XOR ||
         op == BINOP_BIT_SHL || op == BINOP_BIT_SHR) {
       if (!type_is_integral(left) || !type_is_integral(right)) {
-        checker_error(expr->loc, "bitwise operation requires integer operands");
+        checker_error(
+          expr->loc,
+          "bitwise operation requires integer operands, got %s",
+          type_name(expr->resolved_type)
+        );
         return NULL;
       }
       // Handle type promotion for sized integers
@@ -2261,7 +2265,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     if (op == UNOP_BIT_NOT) {
-      if (!type_is_int(operand)) {
+      if (!type_is_integral(operand)) {
         checker_error(expr->loc, "bitwise not requires integer operand");
         return NULL;
       }
@@ -3310,7 +3314,11 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (lhs_type && rhs_type) {
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
       if (!converted) {
-        checker_error(stmt->loc, "assignment type mismatch");
+        checker_error(
+          stmt->loc,
+          "assignment type mismatch, '%s' != '%s'",
+          type_name(lhs_type), type_name(rhs_type)
+        );
       } else {
         stmt->data.assign_stmt.rhs =
             converted; // Replace with cast node if needed
