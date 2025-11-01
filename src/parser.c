@@ -474,7 +474,8 @@ AstNode *parse_extern(Parser *parser) {
     AstNode **externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
 
     // fn ..., type IDENT
-    while (parser_check(parser, TOKEN_FN) || parser_check(parser, TOKEN_TYPE)) {
+    while (parser_check(parser, TOKEN_FN) || parser_check(parser, TOKEN_TYPE) ||
+           parser_check(parser, TOKEN_LET) || parser_check(parser, TOKEN_VAR)) {
       if (count >= capacity) {
         capacity *= 2;
         AstNode **new_externs =
@@ -545,6 +546,30 @@ AstNode *parse_extern(Parser *parser) {
         opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
 
         externs[count++] = opaque_type;
+      } else if (parser_match(parser, TOKEN_LET)) {
+        Token name =
+            parser_consume(parser, TOKEN_IDENTIFIER, "Expected constant name");
+        AstNode *type_expr = parse_type_expression(parser);
+        parser_consume(parser, TOKEN_SEMICOLON,
+                       "Expected ';' after constant declaration");
+
+        AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
+        let->data.extern_const_decl.name = str_dup(name.lexeme);
+        let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
+        let->data.extern_const_decl.type_expr = type_expr;
+        externs[count++] = let;
+      } else if (parser_match(parser, TOKEN_VAR)) {
+        Token name =
+            parser_consume(parser, TOKEN_IDENTIFIER, "Expected variable name");
+        AstNode *type_expr = parse_type_expression(parser);
+        parser_consume(parser, TOKEN_SEMICOLON,
+                       "Expected ';' after variable declaration");
+
+        AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
+        var->data.extern_var_decl.name = str_dup(name.lexeme);
+        var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
+        var->data.extern_var_decl.type_expr = type_expr;
+        externs[count++] = var;
       }
     }
 
@@ -615,9 +640,33 @@ AstNode *parse_extern(Parser *parser) {
     opaque_type->data.extern_type.name = str_dup(name.lexeme);
     opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
     return opaque_type;
+  } else if (parser_match(parser, TOKEN_LET)) {
+    Token name =
+        parser_consume(parser, TOKEN_IDENTIFIER, "Expected constant name");
+    AstNode *type_expr = parse_type_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after constant declaration");
+
+    AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
+    let->data.extern_const_decl.name = str_dup(name.lexeme);
+    let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
+    let->data.extern_const_decl.type_expr = type_expr;
+    return let;
+  } else if (parser_match(parser, TOKEN_VAR)) {
+    Token name =
+        parser_consume(parser, TOKEN_IDENTIFIER, "Expected variable name");
+    AstNode *type_expr = parse_type_expression(parser);
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after variable declaration");
+
+    AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
+    var->data.extern_var_decl.name = str_dup(name.lexeme);
+    var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
+    var->data.extern_var_decl.type_expr = type_expr;
+    return var;
   }
-  parser_error(
-      parser, "extern is only allowed on function prototypes or opaque types.");
+  parser_error(parser, "extern is only allowed on function prototypes, opaque "
+                       "types, variables or constants.");
   return NULL;
 }
 

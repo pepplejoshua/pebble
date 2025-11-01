@@ -115,6 +115,8 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl) {
     symbol->data.const_data.is_evaluated = false;
     break;
   case SYMBOL_TYPE:
+  case SYMBOL_EXTERN_CONSTANT:
+  case SYMBOL_EXTERN_VARIABLE:
     // Nothing to initialize
     break;
   }
