@@ -1979,6 +1979,12 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     break;
   }
 
+  case AST_EXPR_POSTFIX_DEC: {
+    emit_expr(cg, expr->data.postfix_dec.operand);
+    emit_string(cg, "--");
+    break;
+  }
+
   case AST_EXPR_IMPLICIT_CAST: {
     Type *target = expr->data.implicit_cast.target_type;
     AstNode *src_expr = expr->data.implicit_cast.expr;

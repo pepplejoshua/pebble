@@ -1007,7 +1007,7 @@ AstNode *parse_for_stmt(Parser *parser) {
   AstNode *lhs = parse_expression(parser);
   AstNode *update = lhs;
 
-  if (lhs->kind != AST_EXPR_POSTFIX_INC) {
+  if (lhs->kind != AST_EXPR_POSTFIX_INC && lhs->kind != AST_EXPR_POSTFIX_DEC) {
     parser_consume(parser, TOKEN_EQUAL, "Expected '=' in for loop update");
     AstNode *rhs = parse_expression(parser);
 
@@ -1348,6 +1348,12 @@ AstNode *parse_postfix(Parser *parser) {
       Location loc = parser->previous.location;
       AstNode *postfix = alloc_node(AST_EXPR_POSTFIX_INC, loc);
       postfix->data.postfix_inc.operand = expr;
+      expr = postfix;
+    } else if (parser_match(parser, TOKEN_MINUS_MINUS)) {
+      // expr--
+      Location loc = parser->previous.location;
+      AstNode *postfix = alloc_node(AST_EXPR_POSTFIX_DEC, loc);
+      postfix->data.postfix_dec.operand = expr;
       expr = postfix;
     } else if (parser_match(parser, TOKEN_NOT)) {
       Location loc = parser->previous.location;

@@ -487,8 +487,13 @@ Token lexer_next_token(Lexer *lexer) {
     }
     return lexer_make_token(lexer, TOKEN_PLUS);
   case '-':
-    return lexer_make_token(lexer, lexer_match(lexer, '=') ? TOKEN_MINUS_EQUAL
-                                                           : TOKEN_MINUS);
+    if (lexer_match(lexer, '=')) {
+      return lexer_make_token(lexer, TOKEN_MINUS_EQUAL);
+    }
+    if (lexer_match(lexer, '-')) {
+      return lexer_make_token(lexer, TOKEN_MINUS_MINUS);
+    }
+    return lexer_make_token(lexer, TOKEN_MINUS);
   case '*':
     return lexer_make_token(lexer, lexer_match(lexer, '=') ? TOKEN_STAR_EQUAL
                                                            : TOKEN_STAR);

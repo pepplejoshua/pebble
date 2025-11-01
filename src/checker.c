@@ -2046,6 +2046,31 @@ Type *check_expression(AstNode *expr) {
     return operand_ty;
   }
 
+  case AST_EXPR_POSTFIX_DEC: {
+    AstNode *operand = expr->data.postfix_dec.operand;
+    Type *operand_ty = check_expression(operand);
+
+    if (!operand_ty) {
+      return NULL;
+    }
+
+    // Check if operand is an lvalue
+    if (!is_lvalue(operand)) {
+      checker_error(expr->loc, "operand of '--' must be an lvalue");
+      return NULL;
+    }
+
+    // Only works on integer types
+    if (!type_is_integral(operand_ty)) {
+      checker_error(expr->loc, "'--' requires integral type, got '%s'",
+                    type_name(operand_ty));
+      return NULL;
+    }
+
+    expr->resolved_type = operand_ty;
+    return operand_ty;
+  }
+
   case AST_EXPR_IDENTIFIER: {
     char *name = expr->data.ident.name;
     Symbol *sym = scope_lookup(current_scope, name, expr->loc.file);
@@ -2253,11 +2278,9 @@ Type *check_expression(AstNode *expr) {
     if (op == BINOP_BIT_AND || op == BINOP_BIT_OR || op == BINOP_BIT_XOR ||
         op == BINOP_BIT_SHL || op == BINOP_BIT_SHR) {
       if (!type_is_integral(left) || !type_is_integral(right)) {
-        checker_error(
-          expr->loc,
-          "bitwise operation requires integer operands, got %s",
-          type_name(expr->resolved_type)
-        );
+        checker_error(expr->loc,
+                      "bitwise operation requires integer operands, got %s",
+                      type_name(expr->resolved_type));
         return NULL;
       }
       // Handle type promotion for sized integers
@@ -3369,11 +3392,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (lhs_type && rhs_type) {
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
       if (!converted) {
-        checker_error(
-          stmt->loc,
-          "assignment type mismatch, '%s' != '%s'",
-          type_name(lhs_type), type_name(rhs_type)
-        );
+        checker_error(stmt->loc, "assignment type mismatch, '%s' != '%s'",
+                      type_name(lhs_type), type_name(rhs_type));
       } else {
         stmt->data.assign_stmt.rhs =
             converted; // Replace with cast node if needed
@@ -3383,8 +3403,21 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
   }
 
   case AST_EXPR_POSTFIX_INC: {
+    // We allow checking postfix ++ as a stmt because of
+    // of for loop update statement
     AstNode *lhs = stmt->data.postfix_inc.operand;
-    return check_expression(lhs);
+    Type *lhs_ty = check_expression(lhs);
+    lhs->resolved_type = lhs_ty;
+    return false;
+  }
+
+  case AST_EXPR_POSTFIX_DEC: {
+    // We allow checking postfix -- as a stmt because
+    // of for loop update statement
+    AstNode *lhs = stmt->data.postfix_dec.operand;
+    Type *lhs_ty = check_expression(lhs);
+    lhs->resolved_type = lhs_ty;
+    return false;
   }
 
   case AST_STMT_EXPR: {
