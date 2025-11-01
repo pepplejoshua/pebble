@@ -196,7 +196,8 @@ void codegen_init(Codegen *cg, FILE *output) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
                    "<stdio.h>\n#include <string.h>\n#include "
-                   "<stddef.h>\n#include <assert.h>\n#include <dirent.h>\n\n";
+                   "<stddef.h>\n#include <assert.h>\n#include "
+                   "<dirent.h>\n#include <errno.h>\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -531,12 +532,8 @@ void emit_program(Codegen *cg) {
       emit_string(cg, " ");
       if (sym->kind == SYMBOL_VARIABLE)
         emit_string(cg, sym->decl->data.var_decl.qualified_name);
-      if (sym->kind == SYMBOL_EXTERN_VARIABLE)
-        emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
       if (sym->kind == SYMBOL_CONSTANT)
         emit_string(cg, sym->decl->data.const_decl.qualified_name);
-      if (sym->kind == SYMBOL_EXTERN_CONSTANT)
-        emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
