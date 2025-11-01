@@ -1,0 +1,276 @@
+// Implementation of basic io operations
+import "./std/string";
+import "./std/mem";
+
+extern {
+    // Opaque types (map to struct in C)
+    type FILE;
+    type DIR;
+
+    var errno i32;
+
+    // Core file ops
+    fn fopen(path str, mode str) *FILE;  // const char* -> str
+    fn fread(buffer *void, size usize, count usize, file *FILE) usize;  // size_t/bytes
+    fn fwrite(data *void, size usize, count usize, file *FILE) usize;
+    fn fclose(file *FILE) i32;  // Returns 0 on success
+    fn feof(file *FILE) i32;  // Non-zero if EOF
+    fn ferror(file *FILE) i32;  // Non-zero if error
+    fn clearerr(file *FILE) void;  // Clears EOF/error flags
+
+    // Seeking/Positioning
+    fn fseek(file *FILE, offset i64, whence i32) i32;  // long -> i64, int -> i32
+    fn ftell(file *FILE) i64;  // long -> i64
+    fn fflush(file *FILE) i32;
+
+    // Path/Stat
+    fn stat(path str, buf *void) i32;  // struct stat* -> *void (user allocates)
+    fn strerror(errnum i32) str;  // For error strings
+
+    // File Management
+    fn remove(path str) i32;
+    fn rename(old str, new str) i32;
+    fn chmod(path str, mode u16) i32;  // mode_t ~ u16/usize
+
+    // Directory
+    fn mkdir(path str, mode u16) i32;
+    fn opendir(path str) *DIR;
+    fn readdir(dir *DIR) *void;  // struct dirent* -> *void (d_name as str field)
+    fn closedir(dir *DIR) i32;
+
+    // For line reads (if implementing read_line)
+    fn fgets(buf *void, size i32, file *FILE) *void;  // char* -> *void, returns buf or null
+}
+
+let SeekStart = 0;
+let SeekCurrent = 1;
+let SeekEnd = 2;
+
+let MODE_READ = "r";             // Text read (default)
+let MODE_WRITE = "w";            // Text write (create/truncate)
+let MODE_APPEND = "a";           // Text append (create if missing)
+let MODE_READ_WRITE = "r+";      // Text read+write (must exist)
+let MODE_READ_BINARY = "rb";     // Binary read
+let MODE_WRITE_BINARY = "wb";    // Binary write (create/truncate)
+let MODE_APPEND_BINARY = "ab";   // Binary append
+let MODE_READ_WRITE_BINARY = "r+b";  // Binary read+write (must exist)
+
+// Basic File Handling
+fn open(path str, mode str) *FILE {
+    // Returns null on error; use ferror() after
+    var file = fopen(path, mode);
+    return file;
+}
+
+fn close(file *FILE) bool {
+    // True if success (fclose == 0)
+    var result = fclose(file);
+    return result == 0;
+}
+
+fn read(file *FILE, buffer *void, max_bytes usize) usize {
+    var bytes_read = fread(buffer, 1, max_bytes, file);
+    // Bytes read (0 on EOF/error)
+    return bytes_read;
+}
+
+fn read_all(file *FILE) *string::String {
+    // Full contents as String (null on error)
+    var pos = ftell(file);
+    if pos == -1 { return nil; }
+
+    // Seek to end to get size
+    var seek_res = fseek(file, 0, SeekEnd);
+    if seek_res != 0 { return nil; }
+
+    var size = ftell(file);
+    if size == -1 {
+        // Restore pos and return nil
+        fseek(file, pos, SeekStart);
+        return nil;
+    }
+
+    // Seek back to start
+    seek_res = fseek(file, 0, SeekStart);
+    if seek_res != 0 { return nil; }
+
+    if size == 0 {
+        // Empty file; restore pos and return empty String
+        fseek(file, pos, SeekStart);
+        return string::new();
+    }
+
+    var s = string::new();
+    var needed usize = size + 1; // +1 for null terminator
+    if needed > s.capacity {
+        string::grow(s, needed);
+    }
+
+    var bytes_read = fread(s.data, 1, size, file);
+    if bytes_read != size as usize {
+        // Partial read; error
+        string::delete(s);
+        fseek(file, pos, SeekStart); // Restore
+        return nil;
+    }
+
+    s.len = bytes_read;
+    *(s.data + s.len) = '\0';
+    fseek(file, pos, SeekStart); // Restore
+
+    return s;
+}
+
+fn read_line(file *FILE) *string::String {
+    var s = string::new();
+    var ch char;
+
+    while true {
+        var bytes = read(file, &ch, 1);
+        if bytes == 0 {
+            if is_eof(file) {
+                if s.len > 0 {
+                    return s;
+                } else {
+                    string::delete(s);
+                    return nil;
+                }
+            } else {
+                // Error (check ferror)
+                string::delete(s);
+                return nil;
+            }
+        }
+
+        string::push_char(s, ch);
+        if ch == '\n' {
+            // strip trailing \n
+            s.len += -1;
+            *(s.data + s.len) = '\0';
+            return s;
+        }
+    }
+
+    return nil;
+}
+
+// Write binary
+fn write_bytes(file *FILE, data *void, size usize) usize {
+    return fwrite(data, 1, size, file);
+}
+
+// Write
+fn write(file *FILE, data str, size usize) usize {
+    // Bytes written (use data as *void if binary)
+    return write_bytes(file, data as *void, size);
+}
+
+// Positioning
+fn seek(file *FILE, offset i64, whence i32) bool {
+    // True if success (fseek == 0); whence = SeekStart etc.
+    var result = fseek(file, offset, whence);
+    return result == 0;
+}
+
+fn tell(file *FILE) i64 {
+    // Current position (-1 on error)
+    return ftell(file);
+}
+
+fn filesize(file *FILE) usize {
+    // File size (0 on error); seeks to end
+    var orig_pos = tell(file);
+    if orig_pos == -1 { return 0; }
+
+    // Seek to end to get size
+    var seek_success = seek(file, 0, SeekEnd);
+    if !seek_success {
+        // Restore on error
+        seek(file, orig_pos, SeekStart);
+        return 0;
+    }
+
+    var size = tell(file);
+    if size == -1 {
+        // Restore on error
+        seek(file, orig_pos, SeekStart);
+        return 0;
+    }
+
+    seek(file, orig_pos, SeekStart);
+    // Since it is not -1, it is >= 0
+    return size as usize;
+}
+
+// Control
+fn flush(file *FILE) bool{
+    // True if success (fflush == 0)
+    var result = fflush(file);
+       return result == 0;
+}
+
+fn is_eof(file *FILE) bool {
+    return feof(file) != 0;
+}
+
+fn get_file_error(file *FILE) *string::String {
+    if ferror(file) == 0 {
+        // No error on this file
+        return nil;
+    }
+
+    var err = errno;
+    var err_msg = strerror(err);
+    if strlen(err_msg) == 0 { return nil; }
+
+    var s = string::new();
+    string::push_str(s, err_msg);
+    return s;
+}
+
+// Path Utilities
+fn exists(path str) bool {
+    var buf = mem::new(256);
+    defer mem::delete(buf);
+    if buf == nil {
+        return false;
+    }
+
+    var res = stat(path, buf);
+    return res == 0; // 0 = exists (file or dir); -1 = error
+}
+
+fn is_dir(path str) bool {
+    var dir = opendir(path);
+    if dir == nil {
+        return false;  // Not a dir, doesn't exist, or error
+    }
+    closedir(dir);
+    return true;
+}
+
+fn delete(path str) bool{
+    // remove success (ignores dirs)
+    var result = remove(path);
+    return result == 0;
+}
+
+
+fn rename_path(old str, new str) bool {
+    var result = rename(old, new);
+    return result == 0; // rename success
+}
+
+// Common file/dir permissions
+let MODE_DIR_DEFAULT = 0x1ED;   // rwxr-xr-x (0x1ED == 0755 octal: dirs/executables)
+let MODE_FILE_DEFAULT = 0x1A4;  // rw-r--r-- (0x1A4 == 0644 octal: readable by all, writable by owner)
+let MODE_FILE_WRITEABLE = 0x1B6; // rw-rw-rw- (0x1B6 == 0666 octal: shared writes; use cautiously for security)
+
+fn makedir_with_mode(path str, mode u16) bool {
+    var result = mkdir(path, mode);
+    return result == 0;
+}
+
+fn makedir(path str) bool {
+    return makedir_with_mode(path, MODE_DIR_DEFAULT);
+}

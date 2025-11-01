@@ -196,7 +196,9 @@ void codegen_init(Codegen *cg, FILE *output) {
     // Set preamble (use alloc.c's str_dup for long-lived strings if needed)
     cg->preamble = "#include <stdlib.h>\n#include <stdbool.h>\n#include "
                    "<stdio.h>\n#include <string.h>\n#include "
-                   "<stddef.h>\n#include <assert.h>\n\n";
+                   "<stddef.h>\n#include <assert.h>\n#include "
+                   "<dirent.h>\n#include <errno.h>\n#include "
+                   "<sys/stat.h>\n\n";
   } else {
     // Freestanding has basic default includes
     cg->preamble = "#include <stddef.h>\n#include <stdbool.h>\n\n";
@@ -525,18 +527,39 @@ void emit_program(Codegen *cg) {
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT ||
         sym->kind == SYMBOL_EXTERN_VARIABLE ||
         sym->kind == SYMBOL_EXTERN_CONSTANT) {
+
+      if (sym->kind == SYMBOL_EXTERN_CONSTANT) {
+        if (sym->data.external.lib_name) {
+          emit_string(cg, "extern ");
+          emit_type_name(cg, sym->type);
+          emit_string(cg, " ");
+
+          emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
+          emit_string(cg, ";\n");
+        }
+        continue;
+      }
+
+      if (sym->kind == SYMBOL_EXTERN_VARIABLE) {
+        if (sym->data.external.lib_name) {
+          emit_string(cg, "extern ");
+          emit_type_name(cg, sym->type);
+          emit_string(cg, " ");
+
+          emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
+          emit_string(cg, ";\n");
+        }
+        continue;
+      }
+
       // Emit extern decl
       emit_string(cg, "extern ");
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       if (sym->kind == SYMBOL_VARIABLE)
         emit_string(cg, sym->decl->data.var_decl.qualified_name);
-      if (sym->kind == SYMBOL_EXTERN_VARIABLE)
-        emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
-      if (sym->kind == SYMBOL_CONSTANT)
+      else if (sym->kind == SYMBOL_CONSTANT)
         emit_string(cg, sym->decl->data.const_decl.qualified_name);
-      if (sym->kind == SYMBOL_EXTERN_CONSTANT)
-        emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
@@ -901,11 +924,11 @@ void emit_sections(Codegen *cg) {
         cg->output);
 
   if (!compiler_opts.freestanding) {
-    fputs("void *__pebble_c_alloc(__pebble_context __unused, void *ptr, size_t "
+    fputs("void *__pebble_c_alloc(__pebble_context ctx, void *ptr, size_t "
           "size) {\n"
           "  return malloc(size);\n"
           "}\n\n"
-          "void __pebble_c_free(__pebble_context __unused, void *ptr, void "
+          "void __pebble_c_free(__pebble_context ctx, void *ptr, void "
           "*data) {\n"
           "  free(data);\n"
           "}\n\n"
