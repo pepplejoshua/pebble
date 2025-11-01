@@ -46,6 +46,15 @@ let SeekStart = 0;
 let SeekCurrent = 1;
 let SeekEnd = 2;
 
+let MODE_READ = "r";             // Text read (default)
+let MODE_WRITE = "w";            // Text write (create/truncate)
+let MODE_APPEND = "a";           // Text append (create if missing)
+let MODE_READ_WRITE = "r+";      // Text read+write (must exist)
+let MODE_READ_BINARY = "rb";     // Binary read
+let MODE_WRITE_BINARY = "wb";    // Binary write (create/truncate)
+let MODE_APPEND_BINARY = "ab";   // Binary append
+let MODE_READ_WRITE_BINARY = "r+b";  // Binary read+write (must exist)
+
 // Basic File Handling
 fn open(path str, mode str) *FILE {
     // Returns null on error; use ferror() after
