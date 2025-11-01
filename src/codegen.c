@@ -528,18 +528,41 @@ void emit_program(Codegen *cg) {
         sym->kind == SYMBOL_EXTERN_VARIABLE ||
         sym->kind == SYMBOL_EXTERN_CONSTANT) {
 
+      if (sym->kind == SYMBOL_EXTERN_CONSTANT) {
+        if (sym->data.external.lib_name) {
+          emit_string(cg, "extern ");
+          emit_type_name(cg, sym->type);
+          emit_string(cg, " ");
+
+          emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
+          emit_string(cg, ";\n");
+        }
+        continue;
+      }
+
+      if (sym->kind == SYMBOL_EXTERN_VARIABLE) {
+        if (sym->data.external.lib_name) {
+          emit_string(cg, "extern ");
+          emit_type_name(cg, sym->type);
+          emit_string(cg, " ");
+
+          emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
+          emit_string(cg, ";\n");
+        }
+        continue;
+      }
+
       // Emit extern decl
       emit_string(cg, "extern ");
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       if (sym->kind == SYMBOL_VARIABLE)
         emit_string(cg, sym->decl->data.var_decl.qualified_name);
-      if (sym->kind == SYMBOL_CONSTANT)
+      else if (sym->kind == SYMBOL_CONSTANT)
         emit_string(cg, sym->decl->data.const_decl.qualified_name);
-      if (sym->kind == SYMBOL_EXTERN_CONSTANT && sym->data.external.lib_name)
-        emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
-      if (sym->kind == SYMBOL_EXTERN_VARIABLE && sym->data.external.lib_name)
-        emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
+      else {
+        printf("HERE - %d\n", sym->kind);
+      }
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
