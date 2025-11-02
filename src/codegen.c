@@ -770,8 +770,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, sym->decl->data.func_decl.params[i].name);
       }
 
-      emit_string(cg, ")");
-      emit_string(cg, ";\n");
+      emit_string(cg, ");\n");
     }
   }
 
@@ -806,8 +805,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, sym->decl->data.func_decl.params[i].name);
         }
 
-        emit_string(cg, ")");
-        emit_string(cg, ";\n");
+        emit_string(cg, ");\n");
       }
     }
   }
@@ -836,8 +834,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
       emit_string(cg, sym->decl->data.func_expr.params[i].name);
     }
 
-    emit_string(cg, ")");
-    emit_string(cg, ";\n");
+    emit_string(cg, ");\n");
   }
 
   // Emit anonymous functions
@@ -880,7 +877,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
     defer_scope_exit(cg);
 
     emit_dedent(cg);
-    emit_string(cg, "}\n");
+    emit_string(cg, "}\n\n");
   }
 
   // Emit func definitions
@@ -925,7 +922,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
       defer_scope_exit(cg);
 
       emit_dedent(cg);
-      emit_string(cg, "}\n");
+      emit_string(cg, "}\n\n");
     }
   }
 
@@ -971,7 +968,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
         defer_scope_exit(cg);
 
         emit_dedent(cg);
-        emit_string(cg, "}\n");
+        emit_string(cg, "}\n\n");
       }
     }
   }
@@ -1986,9 +1983,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "NULL");
     break;
 
-  case AST_EXPR_IDENTIFIER:
-    emit_string(cg, expr->data.ident.full_qualified_name);
+  case AST_EXPR_IDENTIFIER: {
+    char *name = expr->data.ident.full_qualified_name;
+    if (!name) {
+      name = expr->data.ident.qualified_name;
+    }
+    emit_string(cg, name);
     break;
+  }
 
   case AST_EXPR_MODULE_MEMBER:
     emit_string(cg, expr->data.mod_member_expr.qualified_path);

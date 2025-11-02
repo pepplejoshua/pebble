@@ -34,6 +34,7 @@ typedef struct CompilerOptions
   bool has_main;
   LibraryType library;
   const char *entry_point;
+  const char *std_path;
 
   char **linked_libraries;
   size_t linked_libraries_count;

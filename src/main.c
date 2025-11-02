@@ -75,19 +75,8 @@ static bool compile_file(const char *filename) {
 
   qualify_globals_in_module(main_mod);
 
-  // AstNode *project = combine_modules();
-
-  // module_table_cleanup();
-
   // Phase 3: Type checking
   checker_init(main_mod);
-
-  // Pass 2: Collect globals
-  // if (!collect_globals(project->data.block_stmt.stmts,
-  //                      project->data.block_stmt.stmt_count)) {
-  //   printf("Compilation failed during symbol collection\n");
-  //   return false;
-  // }
 
   size_t total_modules = 0;
   ModuleEntry *cur, *tmp;
@@ -134,7 +123,6 @@ static bool compile_file(const char *filename) {
     if (!check_function_bodies()) {
       printf("Compilation failed during function body checking\n");
       module_table_cleanup();
-      // debug_print_type_table();
       return false;
     }
   }

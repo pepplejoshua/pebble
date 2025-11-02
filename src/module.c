@@ -1,6 +1,7 @@
 #include "module.h"
 #include "alloc.h"
 #include "ast.h"
+#include "options.h"
 #include "parser.h"
 #include "symbol.h"
 #include "uthash.h"
@@ -10,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+    #include <mach-o/dyld.h>
+#endif
 
 // External allocator
 extern Arena long_lived;
@@ -49,8 +53,61 @@ char *get_basename(const char *full_path, bool without_ext) {
   return result;
 }
 
-static char *get_absolute_path(const char *partial_path) {
-  char resolved_path[PATH_MAX];
+static char *get_executable_dir(void) {
+  char path[PATH_MAX] = {0};
+  ssize_t len = 0;
+
+#if defined(__APPLE__)
+  uint32_t size = sizeof(path);
+  if (_NSGetExecutablePath(path, &size) != 0) {
+    // Buffer too small; allocate dynamically
+    char *tmp = arena_alloc(&long_lived, size);
+    if (!tmp) return NULL;
+    if (_NSGetExecutablePath(tmp, &size) != 0) {
+      return NULL;
+    }
+    // Resolve any symlinks to get the real absolute path
+    char resolved[PATH_MAX];
+    if (realpath(tmp, resolved) == NULL) {
+      return NULL;
+    }
+    strncpy(path, resolved, sizeof(path));
+  }
+#else
+  len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  if (len == -1) {
+    return NULL;
+  }
+  path[len] = '\0';
+#endif
+
+  // Strip filename → keep directory only
+  char *slash = strrchr(path, '/');
+  if (slash) {
+    *slash = '\0';
+  }
+
+  return str_dup(path);
+}
+
+static char *get_absolute_path(const char *path_literal, const char *partial_path) {
+  char resolved_path[PATH_MAX] = {0};
+
+  size_t len = strlen(partial_path);
+  // at least longer than "std:"
+  if (len > 4 && strncmp(path_literal, "std:", 4) == 0) {
+    if (!compiler_opts.std_path) {
+      char *executable_dir = get_executable_dir();
+      char *std_path = prepend(executable_dir, "/std/");
+      char *module_path = prepend(std_path, path_literal + 4);
+      char *code_path = prepend(module_path, ".peb");
+      return code_path;
+    } else {
+      char *module_path = prepend(compiler_opts.std_path, path_literal + 4);
+      char *code_path = prepend(module_path, ".peb");
+      return code_path;
+    }
+  }
 
   if (realpath(partial_path, resolved_path) == NULL) {
     printf("failed to get absolute path of '%s'", partial_path);
@@ -107,7 +164,7 @@ static char *get_absolute_directory(const char *filepath) {
 }
 
 Module *new_module(const char *partial_path) {
-  char *module_abs_path = get_absolute_path(partial_path);
+  char *module_abs_path = get_absolute_path(partial_path, partial_path);
   char *module_abs_dir = get_absolute_directory(partial_path);
   char *module_filename = get_basename(module_abs_path, false);
   char *module_name = get_basename(module_abs_path, true);
@@ -238,7 +295,7 @@ bool collect_all_modules(Module *cur) {
     char *code_file_path = prepend(resolved_path, ".peb");
 
     // 1. We expand it to absolute path
-    char *mod_path = get_absolute_path(code_file_path);
+    char *mod_path = get_absolute_path(path, code_file_path);
 
     // 2. We are not self-importing
     // (report error and return false)
