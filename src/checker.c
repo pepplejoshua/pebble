@@ -1509,6 +1509,21 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     return cast;
   }
 
+  // void* <-> string
+  if ((expr_type->kind == TYPE_POINTER && target_type->kind == TYPE_STRING) ||
+      (expr_type->kind == TYPE_STRING && target_type->kind == TYPE_POINTER)
+  ) {
+    if (expr_type->data.ptr.base == type_void ||
+        target_type->data.ptr.base == type_void) {
+      AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+      cast->kind = AST_EXPR_IMPLICIT_CAST;
+      cast->loc = expr->loc;
+      cast->data.implicit_cast.expr = expr;
+      cast->data.implicit_cast.target_type = target_type;
+      return cast;
+    }
+  }
+
   // Check if implicit conversion is allowed
   if (expr_type->kind == TYPE_POINTER && target_type->kind == TYPE_POINTER) {
     // *void to *T || *T to *void
