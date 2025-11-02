@@ -1049,7 +1049,7 @@ static void check_function_signatures(void) {
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
       // Create function's local scope with global as parent
-      Scope *func_scope = scope_create(global_scope);
+      Scope *func_scope = scope_create(checker_state.current_module->scope);
       sym->data.func.local_scope = func_scope;
       for (size_t i = 0; i < param_count; i++) {
         if (!param_types[i]) {
@@ -1111,7 +1111,7 @@ bool check_anonymous_functions(void) {
 
     // Add parameters as symbols in the function scope
     // Create function's local scope with global as parent
-    Scope *func_scope = scope_create(global_scope);
+    Scope *func_scope = scope_create(checker_state.current_module->scope);
     sym->data.func.local_scope = func_scope;
     for (size_t i = 0; i < param_count; i++) {
       if (!param_types[i]) {
@@ -1195,7 +1195,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
       if (checker_state.in_type_resolution) { // ADD THIS CHECK
-        Symbol *sym = scope_lookup(global_scope, name, type_expr->loc.file);
+        Scope *mod_scope = checker_state.current_module->scope;
+        Symbol *sym = scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -1221,8 +1222,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
-      if (checker_state.in_type_resolution) { // ADD THIS CHECK
-        Symbol *sym = scope_lookup_local(global_scope, qualified_name);
+      if (checker_state.in_type_resolution) {
+        Symbol *sym = scope_lookup_local(checker_state.current_module->scope, qualified_name);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -2057,7 +2058,8 @@ Type *check_expression(AstNode *expr) {
 
   case AST_EXPR_IDENTIFIER: {
     char *name = expr->data.ident.name;
-    Symbol *sym = scope_lookup(current_scope, name, expr->loc.file);
+    Scope *mod_scope = checker_state.current_module->scope;
+    Symbol *sym = scope_lookup(mod_scope, current_scope, name, checker_state.current_module->qualified_name);
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s'", name);
       return NULL;
@@ -2744,11 +2746,6 @@ Type *check_expression(AstNode *expr) {
     AstNode *module_expr = expr->data.mod_member_expr.module;
     const char *member_name = expr->data.mod_member_expr.member;
 
-    // We need to convert these 2 into a qualifed string to perform a
-    // name lookup
-    char *prefix = prepend(module_expr->data.ident.name, "__");
-    char *qualified_name = prepend(prefix, member_name);
-
     Symbol *sym = NULL;
     Module *module = lookup_imported_module(checker_state.current_module, module_expr->data.ident.name);
     if (!module) {
@@ -2756,6 +2753,11 @@ Type *check_expression(AstNode *expr) {
                     module_expr->data.ident.name);
     } else {
       expr->data.mod_member_expr.qualified_path = module->qualified_name;
+
+      // We need to convert these 2 into a qualifed string to perform a
+      // name lookup
+      char *prefix = prepend(module->qualified_name, "__");
+      char *qualified_name = prepend(prefix, member_name);
 
       sym = scope_lookup_local(module->scope, qualified_name);
     }
@@ -2871,8 +2873,8 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(field_values[i], value_type, expected_types[j]);
 
           if (!converted_init) {
-            checker_error(expr->loc, "field '%s' has initializer type mismatch",
-                          field_names[i]);
+            checker_error(expr->loc, "field '%s' has initializer type mismatch '%s' != '%s'",
+                          field_names[i], type_name(expected_types[j]), type_name(value_type));
             return NULL;
           }
 
@@ -3360,8 +3362,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // If LHS is an identifier, check if it's a constant
     if (lhs->kind == AST_EXPR_IDENTIFIER) {
+      Scope *mod_scope = checker_state.current_module->scope;
       Symbol *sym =
-          scope_lookup(current_scope, lhs->data.ident.name, lhs->loc.file);
+          scope_lookup(mod_scope, current_scope, lhs->data.ident.name, lhs->loc.file);
       if (sym && sym->kind == SYMBOL_CONSTANT) {
         checker_error(lhs->loc, "cannot assign to constant");
         return false;
