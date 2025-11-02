@@ -267,6 +267,7 @@ struct AstNode {
       char *name;
       char *qualified_name;
       char *full_qualified_name;
+      bool is_extern;
     } ident;
     struct {
       BinaryOp op;
@@ -294,6 +295,7 @@ struct AstNode {
       AstNode *module;
       char *qualified_path;
       char *member;
+      bool is_extern;
     } mod_member_expr;
     struct {
       AstNode *operand;

@@ -1567,6 +1567,7 @@ AstNode *parse_module_member(Parser *parser, AstNode *object) {
                                 "Expected module member name after '::'");
   mod_mem->data.mod_member_expr.member = str_dup(member.lexeme);
 
+  mod_mem->data.mod_member_expr.is_extern = false;
   return mod_mem;
 }
 

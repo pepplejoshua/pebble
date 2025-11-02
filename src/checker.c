@@ -223,6 +223,7 @@ static void collect_declaration(AstNode *decl) {
 
   // Create and add symbol
   Symbol *symbol = symbol_create(qualified_name, kind, decl);
+  symbol->reg_name = name;
   if (kind == SYMBOL_VARIABLE) {
     symbol->data.var.is_global = true;
   }
@@ -2080,6 +2081,11 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    // FIXME: See if variables/constants need this too
+    if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+      expr->data.ident.is_extern = true;
+    }
+
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
       // The name got qualified, so we should update the reference to it
       if (sym->data.var.is_global) {
@@ -2792,6 +2798,8 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "undefined name '%s::%s'",
                     module_expr->data.ident.name, member_name);
       return NULL;
+    } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+      expr->data.mod_member_expr.is_extern = true;
     }
 
     // Types are not values

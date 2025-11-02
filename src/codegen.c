@@ -1984,17 +1984,23 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     break;
 
   case AST_EXPR_IDENTIFIER: {
-    char *name = expr->data.ident.full_qualified_name;
-    if (!name) {
-      name = expr->data.ident.qualified_name;
+    if (expr->data.ident.is_extern) {
+      emit_string(cg, expr->data.ident.name);
+    } else {
+      char *name = expr->data.ident.full_qualified_name;
+      if (!name) {
+        name = expr->data.ident.qualified_name;
+      }
+      emit_string(cg, name);
     }
-    emit_string(cg, name);
     break;
   }
 
   case AST_EXPR_MODULE_MEMBER:
-    emit_string(cg, expr->data.mod_member_expr.qualified_path);
-    emit_string(cg, "__");
+    if (!expr->data.mod_member_expr.is_extern) {
+      emit_string(cg, expr->data.mod_member_expr.qualified_path);
+      emit_string(cg, "__");
+    }
     emit_string(cg, expr->data.mod_member_expr.member);
     break;
 
