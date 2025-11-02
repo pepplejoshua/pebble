@@ -2059,15 +2059,26 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_IDENTIFIER: {
     char *name = expr->data.ident.name;
     Scope *mod_scope = checker_state.current_module->scope;
-    Symbol *sym = scope_lookup(mod_scope, current_scope, name, checker_state.current_module->qualified_name);
+    Symbol *sym = scope_lookup(mod_scope, current_scope, name, checker_state.current_module->name);
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s'", name);
       return NULL;
     }
 
-    if (strcmp(name, sym->name)) {
+    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
       // The name got qualified, so we should update the reference to it
+      if (sym->data.var.is_global) {
+        char *prefix = prepend(checker_state.current_module->qualified_name, "__");
+        char *qualifed = prepend(prefix, sym->name);
+        expr->data.ident.full_qualified_name = qualifed;
+      }
+
       expr->data.ident.qualified_name = sym->name;
+
+    } else {
+      char *prefix = prepend(checker_state.current_module->qualified_name, "__");
+      char *qualifed = prepend(prefix, sym->reg_name);
+      expr->data.ident.full_qualified_name = qualifed;
     }
 
     // Types are not values
@@ -2088,7 +2099,7 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "name '%s' used before type is resolved", name);
       return NULL;
     }
-    // expr->resolved_type = sym->type;
+
     expr->resolved_type = sym->type;
     return sym->type;
   }
@@ -2756,7 +2767,7 @@ Type *check_expression(AstNode *expr) {
 
       // We need to convert these 2 into a qualifed string to perform a
       // name lookup
-      char *prefix = prepend(module->qualified_name, "__");
+      char *prefix = prepend(module->name, "__");
       char *qualified_name = prepend(prefix, member_name);
 
       sym = scope_lookup_local(module->scope, qualified_name);
