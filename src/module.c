@@ -2,15 +2,19 @@
 #include "alloc.h"
 #include "ast.h"
 #include "parser.h"
+#include "symbol.h"
 #include "uthash.h"
 #include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // External allocator
 extern Arena long_lived;
+
+char *root_directory = NULL;
 
 // Module table for tracking parsed modules
 ModuleEntry *module_table = NULL;
@@ -45,7 +49,7 @@ char *get_basename(const char *full_path, bool without_ext) {
   return result;
 }
 
-char *get_absolute_path(const char *partial_path) {
+static char *get_absolute_path(const char *partial_path) {
   char resolved_path[PATH_MAX];
 
   if (realpath(partial_path, resolved_path) == NULL) {
@@ -56,17 +60,98 @@ char *get_absolute_path(const char *partial_path) {
   return str_dup(resolved_path);
 }
 
+static char *get_absolute_directory(const char *filepath) {
+  if (!filepath) return str_dup(".");
+
+  char abs_path[4096] = {0};
+  char *resolved = realpath(filepath, abs_path);
+  if (!resolved) {
+    // If file doesn't exist yet, try resolving its directory
+    char tmp[4096];
+    strncpy(tmp, filepath, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+
+    // Trim trailing slashes
+    for (int i = strlen(tmp) - 1; i >= 0 && (tmp[i] == '/' || tmp[i] == '\\'); --i) {
+      tmp[i] = '\0';
+    }
+
+    // Remove filename part
+    char *slash1 = strrchr(tmp, '/');
+    char *slash2 = strrchr(tmp, '\\');
+    char *slash = slash1 > slash2 ? slash1 : slash2;
+    if (slash) {
+      *slash = '\0';
+    } else {
+      strcpy(tmp, ".");
+    }
+
+    if (realpath(tmp, abs_path) == NULL) {
+      // Even directory can't be resolved → just return "."
+      return str_dup(".");
+    }
+  }
+
+  // Strip off filename from absolute path
+  char *slash1 = strrchr(abs_path, '/');
+  char *slash2 = strrchr(abs_path, '\\');
+  char *slash = slash1 > slash2 ? slash1 : slash2;
+
+  if (slash) {
+    *slash = '\0';
+  } else {
+    strcpy(abs_path, ".");
+  }
+
+  return str_dup(abs_path);
+}
+
 Module *new_module(const char *partial_path) {
   char *module_abs_path = get_absolute_path(partial_path);
+  char *module_abs_dir = get_absolute_directory(partial_path);
   char *module_filename = get_basename(module_abs_path, false);
   char *module_name = get_basename(module_abs_path, true);
 
+  // Compute qualified name from root
+  char *qualified_name = module_name; // Default to basename
+  if (root_directory && module_abs_path) {
+    size_t root_len = strlen(root_directory);
+    size_t path_len = strlen(module_abs_path);
+
+    // Check if module_abs_path starts with root_directory
+    if (path_len > root_len && strncmp(module_abs_path, root_directory, root_len) == 0) {
+      // Skip root and leading slash
+      char *relative = module_abs_path + root_len;
+      if (relative[0] == '/') relative++;
+
+      // Remove .peb extension and replace / with _
+      size_t rel_len = strlen(relative);
+      if (rel_len > 4 && strcmp(relative + rel_len - 4, ".peb") == 0) {
+        rel_len -= 4;
+      }
+
+      qualified_name = arena_alloc(&long_lived, rel_len + 1);
+      for (size_t i = 0; i < rel_len; i++) {
+        qualified_name[i] = (relative[i] == '/') ? '_' : relative[i];
+      }
+      qualified_name[rel_len] = '\0';
+    }
+  }
+
   Module *new_module = arena_alloc(&long_lived, sizeof(Module));
   new_module->abs_file_path = module_abs_path;
+  new_module->abs_dir_path = module_abs_dir;
   new_module->filename = module_filename;
   new_module->name = module_name;
+  new_module->qualified_name = qualified_name;
   new_module->ast = NULL;
   new_module->global_node_count = 0;
+  new_module->scope = scope_create(global_scope);
+
+  new_module->imported_modules = arena_alloc(&long_lived, 2 * sizeof(Module *));
+  new_module->import_count = 0;
+  new_module->import_capacity = 2;
+  new_module->import_score = 0;
 
   return new_module;
 }
@@ -173,6 +258,11 @@ bool collect_all_modules(Module *cur) {
                      "A module cannot import the entry / main module.");
         return false;
       }
+
+      append_module(cur, exists);
+
+      module_increment_count(exists);
+
       continue; // We already know of this file
     }
 
@@ -188,15 +278,31 @@ bool collect_all_modules(Module *cur) {
     // 5. We track the new module
     track_module(new_mod);
 
+    append_module(cur, new_mod);
+    module_increment_count(new_mod);
+
     // 6. We call collect_all_modules on the new module
     if (!collect_all_modules(new_mod))
       return false;
+
 
     // 7. Qualify all global names in module
     qualify_globals_in_module(new_mod);
   }
 
   return true;
+}
+
+void append_module(Module *module, Module *imported) {
+  if (module->import_count >= module->import_capacity) {
+    module->import_capacity *= 2;
+    Module **new_modules = arena_alloc(&long_lived, module->import_capacity * sizeof(Module *));
+    memcpy(new_modules, module->imported_modules, module->import_count * sizeof(Module *));
+
+    module->imported_modules = new_modules;
+  }
+
+  module->imported_modules[module->import_count++] = imported;
 }
 
 char *prepend(const char *prefix, const char *base) {
@@ -242,7 +348,9 @@ void qualify_globals_in_module(Module *mod) {
         continue;
       }
       char *prefix = prepend(mod->name, "__");
+      char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.func_decl.qualified_name = prepend(prefix, cur_name);
+      node->data.func_decl.full_qualified_name = prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_EXTERN_FUNC:
@@ -252,19 +360,25 @@ void qualify_globals_in_module(Module *mod) {
     case AST_DECL_VARIABLE: {
       char *cur_name = node->data.var_decl.name;
       char *prefix = prepend(mod->name, "__");
+      char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.var_decl.qualified_name = prepend(prefix, cur_name);
+      node->data.var_decl.full_qualified_name = prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_CONSTANT: {
       char *cur_name = node->data.const_decl.name;
       char *prefix = prepend(mod->name, "__");
+      char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.const_decl.qualified_name = prepend(prefix, cur_name);
+      node->data.const_decl.full_qualified_name = prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_TYPE: {
       char *cur_name = node->data.type_decl.name;
       char *prefix = prepend(mod->name, "__");
+      char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.type_decl.qualified_name = prepend(prefix, cur_name);
+      node->data.type_decl.full_qualified_name = prepend(full_prefix, cur_name);
       break;
     }
     default:
@@ -301,6 +415,43 @@ AstNode *combine_modules() {
   prog->data.block_stmt.stmt_count = total_num_nodes;
   prog->data.block_stmt.stmts = complete_program;
   return prog;
+}
+
+Module *lookup_imported_module(Module *from_module, const char *name) {
+  if (!from_module) {
+    return NULL;
+  }
+
+  for (size_t i = 0; i < from_module->import_count; i++) {
+    if (strcmp(from_module->imported_modules[i]->name, name) == 0) {
+      return from_module->imported_modules[i];
+    }
+  }
+
+  return NULL;
+}
+
+void module_increment_count(Module *module) {
+  // Increase score
+  module->import_score++;
+
+  // Increase its dependencies scores
+  for (size_t i = 0; i < module->import_count; i++) {
+    module_increment_count(module->imported_modules[i]);
+  }
+}
+
+int compare_modules_desc(const void *a, const void *b) {
+  const Module *ma = *(const Module **)a;
+  const Module *mb = *(const Module **)b;
+
+  // Sort from most to least (descending)
+  return (mb->import_score - ma->import_score);
+}
+
+// Example usage:
+void sort_modules(Module **modules, size_t count) {
+  qsort(modules, count, sizeof(Module *), compare_modules_desc);
 }
 
 void module_table_cleanup() { HASH_CLEAR(hh, module_table); }

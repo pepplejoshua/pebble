@@ -3,10 +3,11 @@
 
 #include "ast.h"
 #include "symbol.h"
+#include "module.h"
 #include <stdbool.h>
 
 // Initialize the checker and symbol table system
-void checker_init(void);
+void checker_init(Module *main_mod);
 
 // Pass 2: Collect all global declarations into the symbol table
 // Returns true if successful, false if there were errors
@@ -23,7 +24,7 @@ bool check_function_bodies(void);
 bool check_anonymous_functions(void);
 
 // Pass 5: Validate entry point
-bool verify_entry_point(void);
+bool verify_entry_point(Module *main_mod);
 
 // Helper: Resolve a type expression AST node to a Type object
 Type *resolve_type_expression(AstNode *type_expr);
@@ -33,6 +34,9 @@ Type *check_expression(AstNode *expr);
 
 // Check if checker has encountered errors
 bool checker_has_errors(void);
+
+// Set the current module being checked
+void checker_set_current_module(Module *mod);
 
 // Error reporting
 void checker_error(Location loc, const char *fmt, ...);

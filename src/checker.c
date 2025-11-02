@@ -24,17 +24,24 @@ typedef struct {
   bool in_defer;
   size_t anonymous_functions;
   CallingConvention current_convention;
+  Module *current_module;
 } CheckerState;
 
 static CheckerState checker_state;
 
-void checker_init(void) {
+void checker_init(Module *main_mod) {
   checker_state.has_errors = false;
   checker_state.error_count = 0;
   checker_state.in_type_resolution = false;
   checker_state.in_loop = false;
   checker_state.anonymous_functions = 0;
+  checker_state.current_module = main_mod;
   symbol_table_init(); // Create fresh global scope
+}
+
+void checker_set_current_module(Module *mod) {
+  checker_state.current_module = mod;
+  current_scope = mod->scope;
 }
 
 static char *next_anonymous_function_name() {
@@ -136,6 +143,9 @@ static void collect_declaration(AstNode *decl) {
   Location loc;
   bool is_opaque_type = false;
 
+  Module *module = checker_state.current_module;
+  Scope *target_scope = module ? module->scope : global_scope;
+
   // Extract name and kind based on declaration type
   switch (decl->kind) {
   case AST_DECL_FUNCTION:
@@ -204,7 +214,7 @@ static void collect_declaration(AstNode *decl) {
   }
 
   // Check for duplicates
-  Symbol *existing = scope_lookup_local(global_scope, qualified_name);
+  Symbol *existing = scope_lookup_local(target_scope, qualified_name);
   if (existing) {
     checker_error(decl->loc, "duplicate declaration of '%s'", name);
     checker_error(existing->decl->loc, "previous declaration was here");
@@ -249,7 +259,7 @@ static void collect_declaration(AstNode *decl) {
 
   symbol->reg_name = name;
 
-  scope_add_symbol(global_scope, symbol);
+  scope_add_symbol(target_scope, symbol);
 }
 
 bool collect_globals(AstNode **decls, size_t decl_count) {
@@ -688,7 +698,7 @@ static void check_type_declarations(void) {
   size_t worklist_size = 0;
   size_t worklist_capacity = 0;
 
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Opaque types have their sym->type already set
     if (sym->kind == SYMBOL_TYPE && sym->type == NULL) {
       if (worklist_size >= worklist_capacity) {
@@ -788,7 +798,7 @@ static void check_global_constants(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process constant declarations
     if (sym->kind != SYMBOL_CONSTANT && sym->kind != SYMBOL_EXTERN_CONSTANT) {
       continue;
@@ -873,7 +883,7 @@ static void check_global_variables(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process variable declarations
     if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_EXTERN_VARIABLE) {
       continue;
@@ -972,7 +982,7 @@ static void check_function_signatures(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process function declarations
     if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_EXTERN_FUNCTION) {
       continue;
@@ -1158,7 +1168,6 @@ bool check_anonymous_functions(void) {
 
 // Main entry point for Pass 3
 bool check_globals(void) {
-  type_system_init();
   check_type_declarations();
   check_global_constants();
   check_global_variables();
@@ -2740,7 +2749,17 @@ Type *check_expression(AstNode *expr) {
     char *prefix = prepend(module_expr->data.ident.name, "__");
     char *qualified_name = prepend(prefix, member_name);
 
-    Symbol *sym = scope_lookup_local(global_scope, qualified_name);
+    Symbol *sym = NULL;
+    Module *module = lookup_imported_module(checker_state.current_module, module_expr->data.ident.name);
+    if (!module) {
+      checker_error(expr->loc, "cannot find module '%s'",
+                    module_expr->data.ident.name);
+    } else {
+      expr->data.mod_member_expr.qualified_path = module->qualified_name;
+
+      sym = scope_lookup_local(module->scope, qualified_name);
+    }
+
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s::%s'",
                     module_expr->data.ident.name, member_name);
@@ -3553,7 +3572,7 @@ bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all function symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process functions
     if (sym->kind != SYMBOL_FUNCTION) {
       continue;
@@ -3593,12 +3612,12 @@ bool check_function_bodies(void) {
 // []str) -> int
 // - If entry_point is NOT "main": must exist with signature () -> void
 // - If --no-main is set: skip verification entirely
-bool verify_entry_point(void) {
+bool verify_entry_point(Module *main_mod) {
   const char *entry_name = compiler_opts.entry_point;
   bool is_main = strcmp(entry_name, "main") == 0;
 
   // Look up the entry point function in global scope
-  Symbol *entry_sym = scope_lookup_local(global_scope, entry_name);
+  Symbol *entry_sym = scope_lookup_local(main_mod->scope, entry_name);
 
   if (!entry_sym) {
     // This is fine
