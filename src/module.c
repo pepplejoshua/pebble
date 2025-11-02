@@ -98,7 +98,7 @@ static char *get_absolute_directory(const char *filepath) {
   char *slash = slash1 > slash2 ? slash1 : slash2;
 
   if (slash) {
-    *slash = '\0';
+    *(slash + 1) = '\0';
   } else {
     strcpy(abs_path, ".");
   }
@@ -234,7 +234,8 @@ bool collect_all_modules(Module *cur) {
       continue;
 
     char *path = node->data.import_stmt.path_str->data.str_lit.value;
-    char *code_file_path = prepend(path, ".peb");
+    char *resolved_path = prepend(cur->abs_dir_path, path);
+    char *code_file_path = prepend(resolved_path, ".peb");
 
     // 1. We expand it to absolute path
     char *mod_path = get_absolute_path(code_file_path);
