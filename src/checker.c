@@ -671,10 +671,10 @@ static void canonicalize_type(Type **type_ref) {
 }
 
 // Sub-pass 3a-prime: Compute canonical names and deduplicate types
-static void canonicalize_types(void) {
+static void canonicalize_types(Module *module) {
   // Walk all global symbols and canonicalize their types
   Symbol *sym, *tmp;
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, module->scope->symbols, sym, tmp) {
     if (sym->type) {
       // Type hasn't been canonicalized yet
       // Don't attempt to canonicalize opaque types
@@ -690,7 +690,7 @@ static void canonicalize_types(void) {
 }
 
 // Sub-pass 3a: Resolve type declarations
-static void check_type_declarations(void) {
+static void check_type_declarations(Module *module) {
   Symbol *sym, *tmp;
 
   // Build worklist of type declarations
@@ -773,7 +773,7 @@ static void check_type_declarations(void) {
   free(worklist);
 
   // Sub-pass 3a' - canonicalize and deduplicate
-  canonicalize_types();
+  canonicalize_types(module);
 }
 
 static bool type_is_int(Type *type) {
@@ -1167,8 +1167,8 @@ bool check_anonymous_functions(void) {
 }
 
 // Main entry point for Pass 3
-bool check_globals(void) {
-  check_type_declarations();
+bool check_globals(Module *module) {
+  check_type_declarations(module);
   check_global_constants();
   check_global_variables();
   check_function_signatures();
@@ -2810,33 +2810,35 @@ Type *check_expression(AstNode *expr) {
 
   case AST_EXPR_STRUCT_LITERAL: {
     char *type_name = expr->data.struct_literal.type_name;
-    const char *type_mod_name = expr->loc.file;
+    const char *type_mod_name = checker_state.current_module->name;
     char **field_names = expr->data.struct_literal.field_names;
     AstNode **field_values = expr->data.struct_literal.field_values;
     size_t field_count = expr->data.struct_literal.field_count;
 
     // Look up the type
-    Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
-    if (!type_sym) {
+    // Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
+    // if (!type_sym) {
+    //   checker_error(expr->loc, "undefined type '%s'", type_name);
+    //   return NULL;
+    // }
+    Type *type_of = type_lookup(type_name, type_mod_name);
+    if (!type_of) {
       checker_error(expr->loc, "undefined type '%s'", type_name);
       return NULL;
     }
 
-    if (strcmp(type_name, type_sym->name)) {
-      // The name got qualified, so we should update the reference to it
-      expr->data.struct_literal.qualified_type_name = type_sym->name;
-    }
-
-    if (type_sym->kind != SYMBOL_TYPE) {
-      checker_error(expr->loc, "'%s' is not a type", type_name);
-      return NULL;
-    }
-
-    Type *struct_type = type_sym->type;
-    if (struct_type->kind != TYPE_STRUCT) {
+    if (type_of->kind != TYPE_STRUCT) {
       checker_error(expr->loc, "'%s' is not a struct type", type_name);
       return NULL;
     }
+
+    if (type_of->qualified_name) {
+      // The name got qualified, so we should update the reference to it
+      expr->data.struct_literal.qualified_type_name = type_of->qualified_name;
+    }
+
+    Type *struct_type = type_of;
+    expr->resolved_type = struct_type;
 
     // Verify field count matches
     size_t expected_count = struct_type->data.struct_data.field_count;

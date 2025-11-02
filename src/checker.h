@@ -15,7 +15,7 @@ bool collect_globals(AstNode **decls, size_t decl_count);
 
 // Pass 3: Type-check all global declarations (4 sub-passes)
 // Returns true if successful, false if there were errors
-bool check_globals(void);
+bool check_globals(Module *module);
 
 // Pass 4: Type-check function bodies
 // Returns true if successful, false if there were errors

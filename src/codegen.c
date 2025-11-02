@@ -1924,7 +1924,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_type_name(cg, stmt->resolved_type); // Resolved type?
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.var_decl.qualified_name);
+    char *name = stmt->data.var_decl.full_qualified_name;
+    if (!name) {
+      name = stmt->data.var_decl.qualified_name;
+    }
+    emit_string(cg, name);
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
@@ -1947,7 +1951,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, "const ");
     emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.const_decl.full_qualified_name);
+    char *name = stmt->data.const_decl.full_qualified_name;
+    if (!name) {
+      name = stmt->data.const_decl.qualified_name;
+    }
+    emit_string(cg, name);
     emit_string(cg, " = ");
     emit_expr(cg, stmt->data.const_decl.value);
     emit_string(cg, ";\n");

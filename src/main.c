@@ -124,7 +124,7 @@ static bool compile_file(const char *filename) {
     checker_set_current_module(mod);
 
     // Pass 3: Type check globals
-    if (!check_globals()) {
+    if (!check_globals(mod)) {
       printf("Compilation failed during type checking\n");
       module_table_cleanup();
       return false;
