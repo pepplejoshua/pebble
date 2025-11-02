@@ -279,12 +279,12 @@ bool collect_all_modules(Module *cur) {
     track_module(new_mod);
 
     append_module(cur, new_mod);
-    module_increment_count(new_mod);
 
     // 6. We call collect_all_modules on the new module
     if (!collect_all_modules(new_mod))
       return false;
 
+    module_increment_count(new_mod);
 
     // 7. Qualify all global names in module
     qualify_globals_in_module(new_mod);
