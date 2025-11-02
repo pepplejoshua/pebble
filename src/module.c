@@ -411,10 +411,62 @@ void qualify_globals_in_module(Module *mod) {
       node->data.func_decl.full_qualified_name = prepend(full_prefix, cur_name);
       break;
     }
-    case AST_DECL_EXTERN_FUNC:
-    case AST_DECL_EXTERN_TYPE:
-    case AST_DECL_EXTERN_BLOCK:
+    case AST_DECL_EXTERN_FUNC: {
+      char *cur_name = node->data.extern_func.name;
+      if (mod->is_main && strcmp("main", cur_name) == 0) {
+        continue;
+      }
+      char *prefix = prepend(mod->name, "__");
+      char *full_prefix = prepend(mod->qualified_name, "__");
+      node->data.extern_func.qualified_name = prepend(prefix, cur_name);
+      node->data.extern_func.full_qualified_name = prepend(full_prefix, cur_name);
       break;
+    }
+    case AST_DECL_EXTERN_TYPE: {
+      char *cur_name = node->data.extern_type.name;
+      if (mod->is_main && strcmp("main", cur_name) == 0) {
+        continue;
+      }
+      char *prefix = prepend(mod->name, "__");
+      char *full_prefix = prepend(mod->qualified_name, "__");
+      node->data.extern_type.qualified_name = prepend(prefix, cur_name);
+      node->data.extern_type.full_qualified_name = prepend(full_prefix, cur_name);
+      break;
+    }
+    case AST_DECL_EXTERN_BLOCK: {
+      for (size_t i = 0; i < node->data.extern_block.decls_count; i++) {
+        AstNode *decl = node->data.extern_block.decls[i];
+        switch (decl->kind) {
+        case AST_DECL_EXTERN_FUNC: {
+          char *cur_name = decl->data.extern_func.name;
+          if (mod->is_main && strcmp("main", cur_name) == 0) {
+            continue;
+          }
+          char *prefix = prepend(mod->name, "__");
+          char *full_prefix = prepend(mod->qualified_name, "__");
+          decl->data.extern_func.qualified_name = prepend(prefix, cur_name);
+          decl->data.extern_func.full_qualified_name = prepend(full_prefix, cur_name);
+          break;
+        }
+        case AST_DECL_EXTERN_TYPE: {
+          char *cur_name = decl->data.extern_type.name;
+          if (mod->is_main && strcmp("main", cur_name) == 0) {
+            continue;
+          }
+          char *prefix = prepend(mod->name, "__");
+          char *full_prefix = prepend(mod->qualified_name, "__");
+          decl->data.extern_type.qualified_name = prepend(prefix, cur_name);
+          decl->data.extern_type.full_qualified_name = prepend(full_prefix, cur_name);
+          break;
+        }
+
+        default:
+          break;
+        }
+      }
+
+      break;
+    }
     case AST_DECL_VARIABLE: {
       char *cur_name = node->data.var_decl.name;
       char *prefix = prepend(mod->name, "__");

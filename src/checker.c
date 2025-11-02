@@ -156,26 +156,26 @@ static void collect_declaration(AstNode *decl) {
     break;
   case AST_DECL_EXTERN_FUNC:
     name = decl->data.extern_func.name;
-    qualified_name = decl->data.extern_func.name;
+    qualified_name = decl->data.extern_func.qualified_name;
     kind = SYMBOL_EXTERN_FUNCTION;
     loc = decl->loc;
     break;
   case AST_DECL_EXTERN_TYPE:
     name = decl->data.extern_type.name;
-    qualified_name = decl->data.extern_type.name;
+    qualified_name = decl->data.extern_type.qualified_name;
     kind = SYMBOL_TYPE;
     is_opaque_type = true;
     loc = decl->loc;
     break;
   case AST_DECL_EXTERN_VARIABLE:
     name = decl->data.extern_var_decl.name;
-    qualified_name = decl->data.extern_var_decl.name;
+    qualified_name = decl->data.extern_var_decl.qualified_name;
     kind = SYMBOL_EXTERN_VARIABLE;
     loc = decl->loc;
     break;
   case AST_DECL_EXTERN_CONSTANT:
     name = decl->data.extern_const_decl.name;
-    qualified_name = decl->data.extern_const_decl.name;
+    qualified_name = decl->data.extern_const_decl.qualified_name;
     kind = SYMBOL_EXTERN_CONSTANT;
     loc = decl->loc;
     break;
