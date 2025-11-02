@@ -2809,7 +2809,7 @@ Type *check_expression(AstNode *expr) {
   }
 
   case AST_EXPR_STRUCT_LITERAL: {
-    char *type_name = expr->data.struct_literal.type_name;
+    char *struct_type_name = expr->data.struct_literal.type_name;
     const char *type_mod_name = checker_state.current_module->name;
     char **field_names = expr->data.struct_literal.field_names;
     AstNode **field_values = expr->data.struct_literal.field_values;
@@ -2821,14 +2821,14 @@ Type *check_expression(AstNode *expr) {
     //   checker_error(expr->loc, "undefined type '%s'", type_name);
     //   return NULL;
     // }
-    Type *type_of = type_lookup(type_name, type_mod_name);
+    Type *type_of = type_lookup(struct_type_name, type_mod_name);
     if (!type_of) {
-      checker_error(expr->loc, "undefined type '%s'", type_name);
+      checker_error(expr->loc, "undefined type '%s'", struct_type_name);
       return NULL;
     }
 
     if (type_of->kind != TYPE_STRUCT) {
-      checker_error(expr->loc, "'%s' is not a struct type", type_name);
+      checker_error(expr->loc, "'%s' is not a struct type", struct_type_name);
       return NULL;
     }
 
@@ -2845,8 +2845,8 @@ Type *check_expression(AstNode *expr) {
     if (field_count != expected_count) {
       checker_error(
           expr->loc,
-          "struct literal has %zu fields, but type '%s' has %zu fields",
-          field_count, type_name, expected_count);
+          "struct literal has %zu field(s), but type '%s' has %zu field(s)",
+          field_count, type_name(type_of), expected_count);
       return NULL;
     }
 
@@ -3521,7 +3521,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       // Type specified, check compatibility and insert cast if needed
       AstNode *converted = maybe_insert_cast(value, value_type, const_type);
       if (!converted) {
-        checker_error(value->loc, "constant initializer type mismatch");
+        checker_error(value->loc,
+          "constant initializer type mismatch '%s' != '%s'",
+          type_name(const_type), type_name(value_type));
         return false;
       }
       stmt->data.const_decl.value =

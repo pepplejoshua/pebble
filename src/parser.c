@@ -2,6 +2,7 @@
 #include "alloc.h"
 #include "ast.h"
 #include "lexer.h"
+#include "module.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1361,10 +1362,18 @@ AstNode *parse_postfix(Parser *parser) {
     } else if (parser_match(parser, TOKEN_DOT)) {
       // Check for struct literal: IDENTIFIER.{ ... }
       if (parser_check(parser, TOKEN_LBRACE) &&
-          expr->kind == AST_EXPR_IDENTIFIER) {
+          (expr->kind == AST_EXPR_IDENTIFIER || expr->kind == AST_EXPR_MODULE_MEMBER)) {
         parser_advance(parser); // consume '{'
         Location loc = expr->loc;
-        char *type_name = expr->data.ident.name;
+        char *type_name = NULL;
+
+        // FIXME: Will be better to defer the type name to checker
+        if (expr->kind == AST_EXPR_IDENTIFIER) {
+          type_name = expr->data.ident.name;
+        } else {
+          char *prefix = prepend(expr->data.mod_member_expr.module->data.ident.name, "__");
+          type_name = prepend(prefix, expr->data.mod_member_expr.member);
+        }
 
         // Parse struct literal fields
         char **field_names = NULL;
