@@ -84,6 +84,7 @@ typedef enum {
   AST_TYPE_FUNCTION, // fn(T1, T2) R
   AST_TYPE_TUPLE,    // (T1, T2, T3)
   AST_TYPE_ENUM,     // enum { IDENT*, ... }
+  AST_TYPE_UNION,    // union (enum) { IDENT T*, ... }
 } AstKind;
 
 // Binary/unary ops
@@ -383,6 +384,12 @@ struct AstNode {
       AstNode **field_types;
       size_t field_count;
     } type_struct;
+    struct {
+      bool is_tagged;
+      char **field_names;
+      AstNode **field_types;
+      size_t field_count;
+    } type_union;
     struct {
       char **variant_names;
       size_t variant_count;
