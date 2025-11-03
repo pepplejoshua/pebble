@@ -1,5 +1,5 @@
 // An implementation of a growable string type
-import "./std/mem";
+import "std:mem";
 
 extern {
     fn memcpy(dst *void, src *void, n usize) *void;

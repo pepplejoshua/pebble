@@ -127,6 +127,7 @@ struct AstNode {
       AstNode *convention;
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;
@@ -135,6 +136,7 @@ struct AstNode {
     struct {
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       AstNode *lib_name;
       FuncParam *params;
       size_t param_count;
@@ -143,6 +145,7 @@ struct AstNode {
     struct {
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
     } extern_type;
     struct {
       AstNode *lib_name;
@@ -153,29 +156,34 @@ struct AstNode {
       AstNode *lib_name;
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       AstNode *type_expr;
     } extern_var_decl;
     struct {
       AstNode *lib_name;
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       AstNode *type_expr;
     } extern_const_decl;
     struct {
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       AstNode *type_expr;
       AstNode *init;
     } var_decl;
     struct {
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       AstNode *type_expr;
       AstNode *value;
     } const_decl;
     struct {
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
       AstNode *type_expr;
     } type_decl;
 
@@ -259,6 +267,8 @@ struct AstNode {
     struct {
       char *name;
       char *qualified_name;
+      char *full_qualified_name;
+      bool is_extern;
     } ident;
     struct {
       BinaryOp op;
@@ -284,7 +294,9 @@ struct AstNode {
     } member_expr;
     struct {
       AstNode *module;
+      char *qualified_path;
       char *member;
+      bool is_extern;
     } mod_member_expr;
     struct {
       AstNode *operand;

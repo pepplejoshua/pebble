@@ -55,6 +55,10 @@ static bool compile_file(const char *filename) {
   main_mod->is_main = true;
   bool module_had_error = parse_module(main_mod);
 
+  // Path of the main module
+  // Need this for relative qualified module names
+  root_directory = main_mod->abs_dir_path;
+
   if (module_had_error) {
     printf("Compilation failed due to parse errors in %s.\n",
            main_mod->filename);
@@ -71,31 +75,56 @@ static bool compile_file(const char *filename) {
 
   qualify_globals_in_module(main_mod);
 
-  AstNode *project = combine_modules();
-
-  module_table_cleanup();
-
   // Phase 3: Type checking
-  checker_init();
+  checker_init(main_mod);
 
-  // Pass 2: Collect globals
-  if (!collect_globals(project->data.block_stmt.stmts,
-                       project->data.block_stmt.stmt_count)) {
-    printf("Compilation failed during symbol collection\n");
-    return false;
+  size_t total_modules = 0;
+  ModuleEntry *cur, *tmp;
+
+  HASH_ITER(hh, module_table, cur, tmp) {
+    Module *mod = cur->module;
+    checker_set_current_module(mod);
+
+    total_modules++;
+
+    if (!collect_globals(mod->ast->data.block_stmt.stmts,
+                         mod->global_node_count)) {
+      printf("Compilation failed during symbol collection in %s\n", mod->filename);
+      module_table_cleanup();
+      return false;
+    }
   }
 
-  // Pass 3: Type check globals
-  if (!check_globals()) {
-    printf("Compilation failed during type checking\n");
-    return false;
+  Module **all_modules = arena_alloc(&long_lived, total_modules * sizeof(Module *));
+  {
+    size_t i = 0;
+    HASH_ITER(hh, module_table, cur, tmp) {
+      all_modules[i++] = cur->module;
+    }
   }
 
-  // Pass 4: Type check function bodies
-  if (!check_function_bodies()) {
-    printf("Compilation failed during function body checking\n");
-    // debug_print_type_table();
-    return false;
+  // Sort by import_score N -> 0
+  sort_modules(all_modules, total_modules);
+
+  type_system_init();
+
+  for (size_t i = 0; i < total_modules; i++) {
+    Module *mod = all_modules[i];
+    checker_set_current_module(mod);
+
+    // Pass 3: Type check globals
+    if (!check_globals(mod)) {
+      printf("Compilation failed during type checking\n");
+      module_table_cleanup();
+      return false;
+    }
+
+    // Pass 4: Type check function bodies
+    if (!check_function_bodies()) {
+      printf("Compilation failed during function body checking\n");
+      module_table_cleanup();
+      return false;
+    }
   }
 
   if (!check_anonymous_functions()) {
@@ -104,8 +133,9 @@ static bool compile_file(const char *filename) {
   }
 
   // Pass 5: Verify entry point exists and has correct signature
-  if (!verify_entry_point()) {
+  if (!verify_entry_point(main_mod)) {
     printf("Compilation failed during entry point verification\n");
+    module_table_cleanup();
     return false;
   }
 
@@ -119,10 +149,12 @@ static bool compile_file(const char *filename) {
   FILE *output = fopen(c_filename, "w");
   codegen_init(&cg, output);
   // codegen_init(&cg, stdout);
-  emit_program(&cg);
+  emit_program(&cg, main_mod);
   // printf("\n");
   fclose(output);
   printf("Generated %s\n", c_filename);
+
+  module_table_cleanup();
 
   if (compiler_opts.generate_only) {
     return true;

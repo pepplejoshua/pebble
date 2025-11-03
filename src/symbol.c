@@ -55,18 +55,18 @@ void scope_add_child(Scope *parent, Scope *child) {
 }
 
 // Look up symbol in this scope and parent scopes
-Symbol *scope_lookup(Scope *scope, char *name, const char *sym_mod_name) {
+Symbol *scope_lookup(Scope *module_scope, Scope *scope, char *name, const char *sym_mod_name) {
   while (scope) {
     Symbol *symbol;
-    if (scope == global_scope) {
+    if (scope == module_scope) {
       char *prefix = prepend(get_basename(sym_mod_name, true), "__");
       char *qualified_name = prepend(prefix, name);
-      // printf("Qualified lookup for %s using %s\n", name, qualified_name);
       symbol = scope_lookup_local(scope, qualified_name);
       if (!symbol) {
         symbol = scope_lookup_local(scope, name);
       }
 
+      // FIXME: Could add global scope check here?
     } else {
       symbol = scope_lookup_local(scope, name);
     }

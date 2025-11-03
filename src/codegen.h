@@ -6,6 +6,7 @@
 #include "symbol.h"
 #include "type.h"
 #include "uthash.h"
+#include "module.h"
 #include <stdio.h>
 
 // Uthash struct for set-based deduplication (key: canonical type/variable name)
@@ -60,8 +61,8 @@ typedef struct {
 
 // Core functions
 void codegen_init(Codegen *cg, FILE *output);
-void emit_program(Codegen *cg);
-void emit_sections(Codegen *cg);
+void emit_program(Codegen *cg, Module *main_mod);
+void emit_sections(Codegen *cg, Module *main_mod);
 
 // Emission helpers
 void emit_string(Codegen *cg, const char *str);

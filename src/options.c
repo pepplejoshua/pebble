@@ -86,6 +86,7 @@ void initialise_args(void) {
   compiler_opts.library = LIBRARY_NONE;
   compiler_opts.entry_point = "main";
   compiler_opts.input_file = NULL;
+  compiler_opts.std_path = NULL; // Default to alongside compiler
 
   // linked libraries
   compiler_opts.linked_libraries = NULL;
@@ -402,6 +403,8 @@ void print_usage(const char *program_name) {
   printf("  --test-parser        Run parser tests\n");
   printf("  --test-checker       Run checker tests\n");
   printf("  --test-all           Run all tests\n");
+  printf("\nModule Paths:\n");
+  printf("  --std-path           Location of std lib (default: alongside compiler)\n");
   printf("\nFreestanding Options:\n");
   printf("  --freestanding       Generate freestanding code (no standard "
          "library)\n");
@@ -522,6 +525,12 @@ bool parse_args(int argc, char **argv) {
         return false;
       }
       compiler_opts.entry_point = argv[++i];
+    } else if (strcmp(argv[i], "--std-path") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --std-path requires an argument\n");
+        return false;
+      }
+      compiler_opts.std_path = argv[++i];
     } else if (strcmp(argv[i], "--no-main") == 0) {
       compiler_opts.has_main = false;
     } else if (strcmp(argv[i], "--shared") == 0) {

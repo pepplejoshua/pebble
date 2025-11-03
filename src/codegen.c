@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include "alloc.h"
 #include "ast.h"
+#include "module.h"
 #include "options.h"
 #include "symbol.h"
 #include "type.h"
@@ -55,6 +56,7 @@ static DeferStack *defer_stack_create(DeferStack *parent,
   stack->capacity = 0;
   stack->scope_type = scope_type;
   stack->parent = parent;
+  stack->locked = false;
 
   return stack;
 }
@@ -209,7 +211,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   cg->defined_types = NULL;
   cg->declared_vars = NULL;
 
-  cg->defer_stack = false;
+  cg->in_defer = false;
   cg->defer_stack = NULL;
 
   // Init temporary
@@ -395,7 +397,7 @@ bool topo_visit(TypeDepNode *all_types, TypeDepNode *node, char ***result,
   return true;
 }
 
-void emit_program(Codegen *cg) {
+void emit_program(Codegen *cg, Module *main_mod) {
   TypeDepNode *dep_graph = NULL;
   Symbol *sym, *tmp;
 
@@ -534,7 +536,8 @@ void emit_program(Codegen *cg) {
           emit_type_name(cg, sym->type);
           emit_string(cg, " ");
 
-          emit_string(cg, sym->decl->data.extern_const_decl.qualified_name);
+          emit_string(cg,
+                      sym->decl->data.extern_const_decl.full_qualified_name);
           emit_string(cg, ";\n");
         }
         continue;
@@ -546,7 +549,7 @@ void emit_program(Codegen *cg) {
           emit_type_name(cg, sym->type);
           emit_string(cg, " ");
 
-          emit_string(cg, sym->decl->data.extern_var_decl.qualified_name);
+          emit_string(cg, sym->decl->data.extern_var_decl.full_qualified_name);
           emit_string(cg, ";\n");
         }
         continue;
@@ -557,9 +560,9 @@ void emit_program(Codegen *cg) {
       emit_type_name(cg, sym->type);
       emit_string(cg, " ");
       if (sym->kind == SYMBOL_VARIABLE)
-        emit_string(cg, sym->decl->data.var_decl.qualified_name);
+        emit_string(cg, sym->decl->data.var_decl.full_qualified_name);
       else if (sym->kind == SYMBOL_CONSTANT)
-        emit_string(cg, sym->decl->data.const_decl.qualified_name);
+        emit_string(cg, sym->decl->data.const_decl.full_qualified_name);
 
       emit_string(cg, ";\n");
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
@@ -590,6 +593,78 @@ void emit_program(Codegen *cg) {
     }
   }
 
+  ModuleEntry *cur, *tmp_mod;
+  HASH_ITER(hh, module_table, cur, tmp_mod) {
+    HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
+      if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT ||
+          sym->kind == SYMBOL_EXTERN_VARIABLE ||
+          sym->kind == SYMBOL_EXTERN_CONSTANT) {
+
+        if (sym->kind == SYMBOL_EXTERN_CONSTANT) {
+          if (sym->data.external.lib_name) {
+            emit_string(cg, "extern ");
+            emit_type_name(cg, sym->type);
+            emit_string(cg, " ");
+
+            emit_string(cg,
+                        sym->decl->data.extern_const_decl.full_qualified_name);
+            emit_string(cg, ";\n");
+          }
+          continue;
+        }
+
+        if (sym->kind == SYMBOL_EXTERN_VARIABLE) {
+          if (sym->data.external.lib_name) {
+            emit_string(cg, "extern ");
+            emit_type_name(cg, sym->type);
+            emit_string(cg, " ");
+
+            emit_string(cg,
+                        sym->decl->data.extern_var_decl.full_qualified_name);
+            emit_string(cg, ";\n");
+          }
+          continue;
+        }
+
+        // Emit extern decl
+        emit_string(cg, "extern ");
+        emit_type_name(cg, sym->type);
+        emit_string(cg, " ");
+        if (sym->kind == SYMBOL_VARIABLE)
+          emit_string(cg, sym->decl->data.var_decl.full_qualified_name);
+        else if (sym->kind == SYMBOL_CONSTANT)
+          emit_string(cg, sym->decl->data.const_decl.full_qualified_name);
+
+        emit_string(cg, ";\n");
+      } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+        Type *func_type = sym->type;
+        if (!sym->data.external.lib_name) {
+          continue;
+        }
+
+        emit_string(cg, "/* ");
+        emit_string(cg, sym->data.external.lib_name);
+        emit_string(cg, " */\n");
+
+        emit_string(cg, "extern ");
+        emit_type_name(cg, func_type->data.func.return_type);
+        emit_string(cg, " ");
+        emit_string(cg, sym->name);
+
+        emit_string(cg, "(");
+
+        for (size_t i = 0; i < func_type->data.func.param_count; i++) {
+          if (i > 0) {
+            emit_string(cg, ", ");
+          }
+          emit_type_name(cg, func_type->data.func.param_types[i]);
+        }
+
+        emit_string(cg, ");\n");
+      }
+    }
+  }
+
   cg->current_section = "defs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
@@ -597,9 +672,9 @@ void emit_program(Codegen *cg) {
       emit_string(cg, " ");
 
       if (sym->kind == SYMBOL_VARIABLE)
-        emit_string(cg, sym->decl->data.var_decl.qualified_name);
+        emit_string(cg, sym->decl->data.var_decl.full_qualified_name);
       if (sym->kind == SYMBOL_CONSTANT)
-        emit_string(cg, sym->decl->data.const_decl.qualified_name);
+        emit_string(cg, sym->decl->data.const_decl.full_qualified_name);
 
       if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
         emit_string(cg, " = ");
@@ -628,6 +703,45 @@ void emit_program(Codegen *cg) {
     }
   }
 
+  HASH_ITER(hh, module_table, cur, tmp_mod) {
+    HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
+      if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
+        emit_type_name(cg, sym->type);
+        emit_string(cg, " ");
+
+        if (sym->kind == SYMBOL_VARIABLE)
+          emit_string(cg, sym->decl->data.var_decl.full_qualified_name);
+        if (sym->kind == SYMBOL_CONSTANT)
+          emit_string(cg, sym->decl->data.const_decl.full_qualified_name);
+
+        if (sym->kind == SYMBOL_VARIABLE && sym->decl) {
+          emit_string(cg, " = ");
+
+          if (sym->decl->data.var_decl.init) {
+            emit_expr(cg, sym->decl->data.var_decl.init);
+          } else {
+            Type *init_t = sym->decl->resolved_type;
+
+            if (init_t->kind == TYPE_ARRAY) {
+              emit_string(cg, " {{0}, ");
+              char len_buffer[32] = {0};
+              sprintf(len_buffer, "%zu", init_t->data.array.size);
+              emit_string(cg, len_buffer);
+              emit_string(cg, "}");
+            } else {
+              emit_string(cg, "{0}");
+            }
+          }
+        } else if (sym->kind == SYMBOL_CONSTANT && sym->decl &&
+                   sym->decl->data.const_decl.value) {
+          emit_string(cg, " = ");
+          emit_expr(cg, sym->decl->data.const_decl.value);
+        }
+        emit_string(cg, ";\n");
+      }
+    }
+  }
+
   // Emit func prototypes
   cg->current_section = "forward_vars_funcs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
@@ -641,7 +755,7 @@ void emit_program(Codegen *cg) {
       if (strcmp("main", sym->name) == 0) {
         emit_string(cg, "__user_main");
       } else {
-        emit_string(cg, sym->decl->data.func_decl.qualified_name);
+        emit_string(cg, sym->decl->data.func_decl.full_qualified_name);
       }
       emit_string(cg, "(");
 
@@ -660,8 +774,43 @@ void emit_program(Codegen *cg) {
         emit_string(cg, sym->decl->data.func_decl.params[i].name);
       }
 
-      emit_string(cg, ")");
-      emit_string(cg, ";\n");
+      emit_string(cg, ");\n");
+    }
+  }
+
+  HASH_ITER(hh, module_table, cur, tmp_mod) {
+    HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
+      if (sym->kind == SYMBOL_FUNCTION) {
+        // if (sym->kind == SYMBOL_FUNCTION || sym->kind ==
+        // SYMBOL_EXTERN_FUNCTION) {
+        Type *func = sym->type; // Assume sym->ast points to func node
+        // Emit prototype
+        emit_type_name(cg, func->data.func.return_type);
+        emit_string(cg, " ");
+        if (strcmp("main", sym->name) == 0) {
+          emit_string(cg, "__user_main");
+        } else {
+          emit_string(cg, sym->decl->data.func_decl.full_qualified_name);
+        }
+        emit_string(cg, "(");
+
+        size_t param_count = func->data.func.param_count;
+
+        CallingConvention conv = func->data.func.convention;
+        if (conv == CALL_CONV_PEBBLE) {
+          emit_string(cg, "__pebble_context context");
+        }
+
+        for (size_t i = 0; i < param_count; i++) {
+          if (conv == CALL_CONV_PEBBLE || i > 0)
+            emit_string(cg, ", ");
+          emit_type_name(cg, func->data.func.param_types[i]);
+          emit_string(cg, " ");
+          emit_string(cg, sym->decl->data.func_decl.params[i].name);
+        }
+
+        emit_string(cg, ");\n");
+      }
     }
   }
 
@@ -689,8 +838,7 @@ void emit_program(Codegen *cg) {
       emit_string(cg, sym->decl->data.func_expr.params[i].name);
     }
 
-    emit_string(cg, ")");
-    emit_string(cg, ";\n");
+    emit_string(cg, ");\n");
   }
 
   // Emit anonymous functions
@@ -733,7 +881,7 @@ void emit_program(Codegen *cg) {
     defer_scope_exit(cg);
 
     emit_dedent(cg);
-    emit_string(cg, "}\n");
+    emit_string(cg, "}\n\n");
   }
 
   // Emit func definitions
@@ -745,7 +893,7 @@ void emit_program(Codegen *cg) {
       if (strcmp("main", sym->name) == 0) {
         emit_string(cg, "__user_main");
       } else {
-        emit_string(cg, func->data.func_decl.qualified_name);
+        emit_string(cg, func->data.func_decl.full_qualified_name);
       }
       emit_string(cg, "(");
 
@@ -778,12 +926,59 @@ void emit_program(Codegen *cg) {
       defer_scope_exit(cg);
 
       emit_dedent(cg);
-      emit_string(cg, "}\n");
+      emit_string(cg, "}\n\n");
+    }
+  }
+
+  HASH_ITER(hh, module_table, cur, tmp_mod) {
+    HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
+      if (sym->kind == SYMBOL_FUNCTION) {
+        AstNode *func = sym->decl; // Func decl AST node
+        emit_type_name(cg, sym->type->data.func.return_type);
+        emit_string(cg, " ");
+        if (strcmp("main", sym->name) == 0) {
+          emit_string(cg, "__user_main");
+        } else {
+          emit_string(cg, func->data.func_decl.full_qualified_name);
+        }
+        emit_string(cg, "(");
+
+        size_t param_count = sym->type->data.func.param_count;
+
+        CallingConvention conv = sym->type->data.func.convention;
+        if (conv == CALL_CONV_PEBBLE) {
+          emit_string(cg, "__pebble_context context");
+        }
+
+        for (size_t i = 0; i < param_count; i++) {
+          if (conv == CALL_CONV_PEBBLE || i > 0)
+            emit_string(cg, ", ");
+          emit_type_name(cg, sym->type->data.func.param_types[i]);
+          emit_string(cg, " ");
+          emit_string(cg, func->data.func_decl.params[i].name);
+        }
+
+        emit_string(cg, ") ");
+        emit_string(cg, "{\n");
+        emit_indent(cg);
+
+        // Enter function scope
+        defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
+
+        // Emit body (minimal traversal)
+        emit_stmt(cg, func->data.func_decl.body);
+
+        // Exit function scope (though returns should have handled this already)
+        defer_scope_exit(cg);
+
+        emit_dedent(cg);
+        emit_string(cg, "}\n\n");
+      }
     }
   }
 
   // Emit sections
-  emit_sections(cg);
+  emit_sections(cg, main_mod);
 
   // Free global symbol and type tables
   HASH_CLEAR(hh, global_scope->symbols);
@@ -852,7 +1047,7 @@ void emit_type_name(Codegen *cg, Type *type) {
     emit_string(cg, "*");
     break;
   case TYPE_OPAQUE:
-    emit_string(cg, type->canonical_name);
+    emit_string(cg, type->declared_name);
     break;
   case TYPE_STRUCT:
   case TYPE_TUPLE:
@@ -883,7 +1078,7 @@ void emit_type_name(Codegen *cg, Type *type) {
   }
 }
 
-void emit_sections(Codegen *cg) {
+void emit_sections(Codegen *cg, Module *main_mod) {
   // Emit preamble directly
   if (cg->preamble) {
     fputs("// PREAMBLE\n", cg->output);
@@ -972,7 +1167,7 @@ void emit_sections(Codegen *cg) {
 
   if (is_main) {
     // Look up the entry point function in global scope
-    Symbol *entry_sym = scope_lookup_local(global_scope, entry_name);
+    Symbol *entry_sym = scope_lookup_local(main_mod->scope, entry_name);
 
     fputs("int main(int argc, const char **argv) {\n", cg->output);
 
@@ -1617,7 +1812,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "for (");
       emit_type_name(cg, init->resolved_type);
       emit_string(cg, " ");
-      emit_string(cg, init->data.var_decl.qualified_name);
+      emit_string(cg, init->data.var_decl.full_qualified_name);
       emit_string(cg, " = ");
       emit_expr(cg, init->data.var_decl.init);
       emit_string(cg, "; ");
@@ -1730,7 +1925,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_type_name(cg, stmt->resolved_type); // Resolved type?
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.var_decl.qualified_name);
+    char *name = stmt->data.var_decl.full_qualified_name;
+    if (!name) {
+      name = stmt->data.var_decl.qualified_name;
+    }
+    emit_string(cg, name);
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
@@ -1753,7 +1952,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, "const ");
     emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
-    emit_string(cg, stmt->data.const_decl.qualified_name);
+    char *name = stmt->data.const_decl.full_qualified_name;
+    if (!name) {
+      name = stmt->data.const_decl.qualified_name;
+    }
+    emit_string(cg, name);
     emit_string(cg, " = ");
     emit_expr(cg, stmt->data.const_decl.value);
     emit_string(cg, ";\n");
@@ -1784,13 +1987,24 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "NULL");
     break;
 
-  case AST_EXPR_IDENTIFIER:
-    emit_string(cg, expr->data.ident.qualified_name);
+  case AST_EXPR_IDENTIFIER: {
+    if (expr->data.ident.is_extern) {
+      emit_string(cg, expr->data.ident.name);
+    } else {
+      char *name = expr->data.ident.full_qualified_name;
+      if (!name) {
+        name = expr->data.ident.qualified_name;
+      }
+      emit_string(cg, name);
+    }
     break;
+  }
 
   case AST_EXPR_MODULE_MEMBER:
-    emit_expr(cg, expr->data.mod_member_expr.module);
-    emit_string(cg, "__");
+    if (!expr->data.mod_member_expr.is_extern) {
+      emit_string(cg, expr->data.mod_member_expr.qualified_path);
+      emit_string(cg, "__");
+    }
     emit_string(cg, expr->data.mod_member_expr.member);
     break;
 

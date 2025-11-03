@@ -24,17 +24,24 @@ typedef struct {
   bool in_defer;
   size_t anonymous_functions;
   CallingConvention current_convention;
+  Module *current_module;
 } CheckerState;
 
 static CheckerState checker_state;
 
-void checker_init(void) {
+void checker_init(Module *main_mod) {
   checker_state.has_errors = false;
   checker_state.error_count = 0;
   checker_state.in_type_resolution = false;
   checker_state.in_loop = false;
   checker_state.anonymous_functions = 0;
+  checker_state.current_module = main_mod;
   symbol_table_init(); // Create fresh global scope
+}
+
+void checker_set_current_module(Module *mod) {
+  checker_state.current_module = mod;
+  current_scope = mod->scope;
 }
 
 static char *next_anonymous_function_name() {
@@ -136,6 +143,9 @@ static void collect_declaration(AstNode *decl) {
   Location loc;
   bool is_opaque_type = false;
 
+  Module *module = checker_state.current_module;
+  Scope *target_scope = module ? module->scope : global_scope;
+
   // Extract name and kind based on declaration type
   switch (decl->kind) {
   case AST_DECL_FUNCTION:
@@ -146,26 +156,26 @@ static void collect_declaration(AstNode *decl) {
     break;
   case AST_DECL_EXTERN_FUNC:
     name = decl->data.extern_func.name;
-    qualified_name = decl->data.extern_func.name;
+    qualified_name = decl->data.extern_func.qualified_name;
     kind = SYMBOL_EXTERN_FUNCTION;
     loc = decl->loc;
     break;
   case AST_DECL_EXTERN_TYPE:
     name = decl->data.extern_type.name;
-    qualified_name = decl->data.extern_type.name;
+    qualified_name = decl->data.extern_type.qualified_name;
     kind = SYMBOL_TYPE;
     is_opaque_type = true;
     loc = decl->loc;
     break;
   case AST_DECL_EXTERN_VARIABLE:
     name = decl->data.extern_var_decl.name;
-    qualified_name = decl->data.extern_var_decl.name;
+    qualified_name = decl->data.extern_var_decl.qualified_name;
     kind = SYMBOL_EXTERN_VARIABLE;
     loc = decl->loc;
     break;
   case AST_DECL_EXTERN_CONSTANT:
     name = decl->data.extern_const_decl.name;
-    qualified_name = decl->data.extern_const_decl.name;
+    qualified_name = decl->data.extern_const_decl.qualified_name;
     kind = SYMBOL_EXTERN_CONSTANT;
     loc = decl->loc;
     break;
@@ -204,7 +214,7 @@ static void collect_declaration(AstNode *decl) {
   }
 
   // Check for duplicates
-  Symbol *existing = scope_lookup_local(global_scope, qualified_name);
+  Symbol *existing = scope_lookup_local(target_scope, qualified_name);
   if (existing) {
     checker_error(decl->loc, "duplicate declaration of '%s'", name);
     checker_error(existing->decl->loc, "previous declaration was here");
@@ -213,7 +223,8 @@ static void collect_declaration(AstNode *decl) {
 
   // Create and add symbol
   Symbol *symbol = symbol_create(qualified_name, kind, decl);
-  if (kind == SYMBOL_VARIABLE) {
+  symbol->reg_name = name;
+  if (kind == SYMBOL_VARIABLE || kind == SYMBOL_CONSTANT) {
     symbol->data.var.is_global = true;
   }
 
@@ -243,13 +254,13 @@ static void collect_declaration(AstNode *decl) {
 
   if (is_opaque_type) {
     symbol->type = type_create(TYPE_OPAQUE, loc);
-    symbol->type->declared_name = symbol->name;
+    symbol->type->declared_name = name;
     symbol->type->canonical_name = symbol->name;
   }
 
   symbol->reg_name = name;
 
-  scope_add_symbol(global_scope, symbol);
+  scope_add_symbol(target_scope, symbol);
 }
 
 bool collect_globals(AstNode **decls, size_t decl_count) {
@@ -661,10 +672,10 @@ static void canonicalize_type(Type **type_ref) {
 }
 
 // Sub-pass 3a-prime: Compute canonical names and deduplicate types
-static void canonicalize_types(void) {
+static void canonicalize_types(Module *module) {
   // Walk all global symbols and canonicalize their types
   Symbol *sym, *tmp;
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, module->scope->symbols, sym, tmp) {
     if (sym->type) {
       // Type hasn't been canonicalized yet
       // Don't attempt to canonicalize opaque types
@@ -680,7 +691,7 @@ static void canonicalize_types(void) {
 }
 
 // Sub-pass 3a: Resolve type declarations
-static void check_type_declarations(void) {
+static void check_type_declarations(Module *module) {
   Symbol *sym, *tmp;
 
   // Build worklist of type declarations
@@ -688,7 +699,7 @@ static void check_type_declarations(void) {
   size_t worklist_size = 0;
   size_t worklist_capacity = 0;
 
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Opaque types have their sym->type already set
     if (sym->kind == SYMBOL_TYPE && sym->type == NULL) {
       if (worklist_size >= worklist_capacity) {
@@ -763,7 +774,7 @@ static void check_type_declarations(void) {
   free(worklist);
 
   // Sub-pass 3a' - canonicalize and deduplicate
-  canonicalize_types();
+  canonicalize_types(module);
 }
 
 static bool type_is_int(Type *type) {
@@ -788,7 +799,7 @@ static void check_global_constants(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process constant declarations
     if (sym->kind != SYMBOL_CONSTANT && sym->kind != SYMBOL_EXTERN_CONSTANT) {
       continue;
@@ -873,7 +884,7 @@ static void check_global_variables(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process variable declarations
     if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_EXTERN_VARIABLE) {
       continue;
@@ -972,7 +983,7 @@ static void check_function_signatures(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process function declarations
     if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_EXTERN_FUNCTION) {
       continue;
@@ -1039,7 +1050,7 @@ static void check_function_signatures(void) {
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
       // Create function's local scope with global as parent
-      Scope *func_scope = scope_create(global_scope);
+      Scope *func_scope = scope_create(checker_state.current_module->scope);
       sym->data.func.local_scope = func_scope;
       for (size_t i = 0; i < param_count; i++) {
         if (!param_types[i]) {
@@ -1101,7 +1112,7 @@ bool check_anonymous_functions(void) {
 
     // Add parameters as symbols in the function scope
     // Create function's local scope with global as parent
-    Scope *func_scope = scope_create(global_scope);
+    Scope *func_scope = scope_create(checker_state.current_module->scope);
     sym->data.func.local_scope = func_scope;
     for (size_t i = 0; i < param_count; i++) {
       if (!param_types[i]) {
@@ -1157,9 +1168,8 @@ bool check_anonymous_functions(void) {
 }
 
 // Main entry point for Pass 3
-bool check_globals(void) {
-  type_system_init();
-  check_type_declarations();
+bool check_globals(Module *module) {
+  check_type_declarations(module);
   check_global_constants();
   check_global_variables();
   check_function_signatures();
@@ -1186,7 +1196,9 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
       if (checker_state.in_type_resolution) { // ADD THIS CHECK
-        Symbol *sym = scope_lookup(global_scope, name, type_expr->loc.file);
+        Scope *mod_scope = checker_state.current_module->scope;
+        Symbol *sym =
+            scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -1212,8 +1224,9 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
-      if (checker_state.in_type_resolution) { // ADD THIS CHECK
-        Symbol *sym = scope_lookup_local(global_scope, qualified_name);
+      if (checker_state.in_type_resolution) {
+        Symbol *sym = scope_lookup_local(checker_state.current_module->scope,
+                                         qualified_name);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -1497,6 +1510,20 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     cast->data.implicit_cast.target_type = target_type;
     cast->resolved_type = target_type;
     return cast;
+  }
+
+  // void* <-> string
+  if ((expr_type->kind == TYPE_POINTER && target_type->kind == TYPE_STRING) ||
+      (expr_type->kind == TYPE_STRING && target_type->kind == TYPE_POINTER)) {
+    if (expr_type->data.ptr.base == type_void ||
+        target_type->data.ptr.base == type_void) {
+      AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
+      cast->kind = AST_EXPR_IMPLICIT_CAST;
+      cast->loc = expr->loc;
+      cast->data.implicit_cast.expr = expr;
+      cast->data.implicit_cast.target_type = target_type;
+      return cast;
+    }
   }
 
   // Check if implicit conversion is allowed
@@ -2073,15 +2100,36 @@ Type *check_expression(AstNode *expr) {
 
   case AST_EXPR_IDENTIFIER: {
     char *name = expr->data.ident.name;
-    Symbol *sym = scope_lookup(current_scope, name, expr->loc.file);
+    Scope *mod_scope = checker_state.current_module->scope;
+    Symbol *sym = scope_lookup(mod_scope, current_scope, name,
+                               checker_state.current_module->name);
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s'", name);
       return NULL;
     }
 
-    if (strcmp(name, sym->name)) {
+    // FIXME: See if variables/constants need this too
+    if (sym->kind == SYMBOL_EXTERN_FUNCTION ||
+        sym->kind == SYMBOL_EXTERN_CONSTANT ||
+        sym->kind == SYMBOL_EXTERN_VARIABLE) {
+      expr->data.ident.is_extern = true;
+    }
+
+    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
       // The name got qualified, so we should update the reference to it
+      if (sym->data.var.is_global) {
+        char *prefix =
+            prepend(checker_state.current_module->qualified_name, "__");
+        char *qualified = prepend(prefix, sym->reg_name);
+        expr->data.ident.full_qualified_name = qualified;
+      }
+
       expr->data.ident.qualified_name = sym->name;
+    } else {
+      char *prefix =
+          prepend(checker_state.current_module->qualified_name, "__");
+      char *qualified = prepend(prefix, sym->reg_name);
+      expr->data.ident.full_qualified_name = qualified;
     }
 
     // Types are not values
@@ -2102,7 +2150,7 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "name '%s' used before type is resolved", name);
       return NULL;
     }
-    // expr->resolved_type = sym->type;
+
     expr->resolved_type = sym->type;
     return sym->type;
   }
@@ -2758,16 +2806,29 @@ Type *check_expression(AstNode *expr) {
     AstNode *module_expr = expr->data.mod_member_expr.module;
     const char *member_name = expr->data.mod_member_expr.member;
 
-    // We need to convert these 2 into a qualifed string to perform a
-    // name lookup
-    char *prefix = prepend(module_expr->data.ident.name, "__");
-    char *qualified_name = prepend(prefix, member_name);
+    Symbol *sym = NULL;
+    Module *module = lookup_imported_module(checker_state.current_module,
+                                            module_expr->data.ident.name);
+    if (!module) {
+      checker_error(expr->loc, "cannot find module '%s'",
+                    module_expr->data.ident.name);
+    } else {
+      expr->data.mod_member_expr.qualified_path = module->qualified_name;
 
-    Symbol *sym = scope_lookup_local(global_scope, qualified_name);
+      // We need to convert these 2 into a qualifed string to perform a
+      // name lookup
+      char *prefix = prepend(module->name, "__");
+      char *qualified_name = prepend(prefix, member_name);
+
+      sym = scope_lookup_local(module->scope, qualified_name);
+    }
+
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s::%s'",
                     module_expr->data.ident.name, member_name);
       return NULL;
+    } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+      expr->data.mod_member_expr.is_extern = true;
     }
 
     // Types are not values
@@ -2813,42 +2874,44 @@ Type *check_expression(AstNode *expr) {
   }
 
   case AST_EXPR_STRUCT_LITERAL: {
-    char *type_name = expr->data.struct_literal.type_name;
-    const char *type_mod_name = expr->loc.file;
+    char *struct_type_name = expr->data.struct_literal.type_name;
+    const char *type_mod_name = checker_state.current_module->name;
     char **field_names = expr->data.struct_literal.field_names;
     AstNode **field_values = expr->data.struct_literal.field_values;
     size_t field_count = expr->data.struct_literal.field_count;
 
     // Look up the type
-    Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
-    if (!type_sym) {
-      checker_error(expr->loc, "undefined type '%s'", type_name);
+    // Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
+    // if (!type_sym) {
+    //   checker_error(expr->loc, "undefined type '%s'", type_name);
+    //   return NULL;
+    // }
+    Type *type_of = type_lookup(struct_type_name, type_mod_name);
+    if (!type_of) {
+      checker_error(expr->loc, "undefined type '%s'", struct_type_name);
       return NULL;
     }
 
-    if (strcmp(type_name, type_sym->name)) {
+    if (type_of->kind != TYPE_STRUCT) {
+      checker_error(expr->loc, "'%s' is not a struct type", struct_type_name);
+      return NULL;
+    }
+
+    if (type_of->qualified_name) {
       // The name got qualified, so we should update the reference to it
-      expr->data.struct_literal.qualified_type_name = type_sym->name;
+      expr->data.struct_literal.qualified_type_name = type_of->qualified_name;
     }
 
-    if (type_sym->kind != SYMBOL_TYPE) {
-      checker_error(expr->loc, "'%s' is not a type", type_name);
-      return NULL;
-    }
-
-    Type *struct_type = type_sym->type;
-    if (struct_type->kind != TYPE_STRUCT) {
-      checker_error(expr->loc, "'%s' is not a struct type", type_name);
-      return NULL;
-    }
+    Type *struct_type = type_of;
+    expr->resolved_type = struct_type;
 
     // Verify field count matches
     size_t expected_count = struct_type->data.struct_data.field_count;
     if (field_count != expected_count) {
       checker_error(
           expr->loc,
-          "struct literal has %zu fields, but type '%s' has %zu fields",
-          field_count, type_name, expected_count);
+          "struct literal has %zu field(s), but type '%s' has %zu field(s)",
+          field_count, type_name(type_of), expected_count);
       return NULL;
     }
 
@@ -2873,8 +2936,11 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(field_values[i], value_type, expected_types[j]);
 
           if (!converted_init) {
-            checker_error(expr->loc, "field '%s' has initializer type mismatch",
-                          field_names[i]);
+            checker_error(
+                expr->loc,
+                "field '%s' has initializer type mismatch '%s' != '%s'",
+                field_names[i], type_name(expected_types[j]),
+                type_name(value_type));
             return NULL;
           }
 
@@ -3362,8 +3428,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // If LHS is an identifier, check if it's a constant
     if (lhs->kind == AST_EXPR_IDENTIFIER) {
-      Symbol *sym =
-          scope_lookup(current_scope, lhs->data.ident.name, lhs->loc.file);
+      Scope *mod_scope = checker_state.current_module->scope;
+      Symbol *sym = scope_lookup(mod_scope, current_scope, lhs->data.ident.name,
+                                 lhs->loc.file);
       if (sym && sym->kind == SYMBOL_CONSTANT) {
         checker_error(lhs->loc, "cannot assign to constant");
         return false;
@@ -3533,7 +3600,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       // Type specified, check compatibility and insert cast if needed
       AstNode *converted = maybe_insert_cast(value, value_type, const_type);
       if (!converted) {
-        checker_error(value->loc, "constant initializer type mismatch");
+        checker_error(value->loc,
+                      "constant initializer type mismatch '%s' != '%s'",
+                      type_name(const_type), type_name(value_type));
         return false;
       }
       stmt->data.const_decl.value =
@@ -3586,7 +3655,7 @@ bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
   // Iterate over all function symbols in global scope
-  HASH_ITER(hh, global_scope->symbols, sym, tmp) {
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process functions
     if (sym->kind != SYMBOL_FUNCTION) {
       continue;
@@ -3626,12 +3695,12 @@ bool check_function_bodies(void) {
 // []str) -> int
 // - If entry_point is NOT "main": must exist with signature () -> void
 // - If --no-main is set: skip verification entirely
-bool verify_entry_point(void) {
+bool verify_entry_point(Module *main_mod) {
   const char *entry_name = compiler_opts.entry_point;
   bool is_main = strcmp(entry_name, "main") == 0;
 
   // Look up the entry point function in global scope
-  Symbol *entry_sym = scope_lookup_local(global_scope, entry_name);
+  Symbol *entry_sym = scope_lookup_local(main_mod->scope, entry_name);
 
   if (!entry_sym) {
     // This is fine
