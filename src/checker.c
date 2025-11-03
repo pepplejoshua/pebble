@@ -3167,6 +3167,13 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check return expression
     Type *expr_type = check_expression(expr);
     if (!expr_type) {
+      // Return value is expected
+      if (expected_return_type->kind != TYPE_VOID) {
+        checker_error(stmt->loc,
+          "return value is expected with type '%s'",
+          type_name(expected_return_type));
+      }
+
       return true; // Error already reported
     }
 
@@ -3174,10 +3181,16 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *converted =
         maybe_insert_cast(expr, expr_type, expected_return_type);
     if (!converted) {
-      checker_error(stmt->loc, "return type mismatch");
+      checker_error(stmt->loc,
+        "return type mismatch '%s' != '%s'",
+        type_name(expr_type), type_name(expected_return_type));
     } else {
       stmt->data.return_stmt.expr =
           converted; // Replace with cast node if needed
+    }
+
+    if (expected_return_type->kind != TYPE_VOID && !expr_type) {
+      printf("FRICK\n");
     }
 
     // Cannot return with defer statements
@@ -3232,8 +3245,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       had_error = true;
     }
 
+    bool cases_return = true;
+
     for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
-      check_statement(cases[i], expected_return_type);
+      if (!check_statement(cases[i], expected_return_type)) {
+        cases_return = false;
+      }
     }
 
     if (!had_error) {
@@ -3244,7 +3261,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         default_case ? check_statement(default_case, expected_return_type)
                      : false;
 
-    return else_returns;
+    return cases_return && else_returns;
   }
 
   case AST_STMT_CASE: {
