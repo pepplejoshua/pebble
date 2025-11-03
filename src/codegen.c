@@ -1276,7 +1276,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     } else {
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
-      } else if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+      } else if (type->kind == TYPE_UNION) {
         emit_string(cg, "typedef union ");
       } else {
         emit_string(cg, "typedef struct ");
@@ -1348,7 +1348,7 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
 
-      if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+      if (type->kind == TYPE_UNION) {
         emit_string(cg, "union ");
       } else {
         emit_string(cg, "struct ");
@@ -1367,15 +1367,51 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           emit_string(cg, ";");
           emit_string(cg, "\n");
         }
-      } else if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+      } else if (type->kind == TYPE_UNION) {
         for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
           emit_indent_spaces(cg);
           emit_type_name(cg, type->data.union_data.variant_types[i]);
           emit_string(cg, " ");
           emit_string(cg, type->data.union_data.variant_names[i]);
-          emit_string(cg, ";");
-          emit_string(cg, "\n");
+          emit_string(cg, ";\n");
         }
+      } else if (type->kind == TYPE_TAGGED_UNION) {
+        // Generate enum tags
+        // NOTE: Enums dont like being generated empty
+        if (type->data.union_data.variant_count > 0) {
+          emit_indent_spaces(cg);
+          emit_string(cg, "enum {\n");
+
+          for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+            emit_indent_spaces(cg);
+            emit_indent_spaces(cg);
+
+            emit_string(cg, canonical);
+            emit_string(cg, "__");
+            emit_string(cg, type->data.union_data.variant_names[i]);
+            emit_string(cg, ",\n");
+          }
+
+          emit_indent_spaces(cg);
+          emit_string(cg, "} __tag;\n");
+        }
+
+        // Generate variants under union
+        emit_indent_spaces(cg);
+        emit_string(cg, "union {\n");
+
+        for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+          emit_indent_spaces(cg);
+          emit_indent_spaces(cg);
+
+          emit_type_name(cg, type->data.union_data.variant_types[i]);
+          emit_string(cg, " ");
+          emit_string(cg, type->data.union_data.variant_names[i]);
+          emit_string(cg, ";\n");
+        }
+
+        emit_indent_spaces(cg);
+        emit_string(cg, "} __data;\n");
       } else if (type->kind == TYPE_TUPLE) {
         for (size_t i = 0; i < type->data.tuple.element_count; i++) {
           emit_indent_spaces(cg);
@@ -2581,11 +2617,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // Check if the object is a pointer and prepare the operator
     if (object_type && object_type->kind == TYPE_POINTER) {
       Type *base_type = object_type->data.ptr.base;
-      if (base_type && (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION ||
-        base_type->kind == TYPE_TAGGED_UNION)) {
-        // Pointer to struct: emit object directly, then -> (e.g., ptr->field)
+      if (base_type && (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION)) {
+        // Pointer to struct/union: emit object directly, then -> (e.g., ptr->field)
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
+      } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
+        // TODO: Emit assert for current tag matching variant
+        emit_expr(cg, object_expr);
+        emit_string(cg, "->__data.");
       } else {
         // Pointer to tuple, array, or slice: emit (*object). (e.g.,
         // (*ptr).len or (*ptr)._0)
@@ -2597,6 +2636,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       // Non-pointer: emit object, then . (e.g., obj.field or t._0)
       emit_expr(cg, object_expr);
       emit_string(cg, ".");
+
+      // TODO: Emit assert for current tag matching variant
+      if (object_type->kind == TYPE_TAGGED_UNION) {
+        emit_string(cg, "__data.");
+      }
     }
 
     // For tuple access, prepend underscore to numeric fields
