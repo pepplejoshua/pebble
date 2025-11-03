@@ -211,7 +211,7 @@ void codegen_init(Codegen *cg, FILE *output) {
   cg->defined_types = NULL;
   cg->declared_vars = NULL;
 
-  cg->defer_stack = false;
+  cg->in_defer = false;
   cg->defer_stack = NULL;
 
   // Init temporary
