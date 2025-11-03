@@ -581,6 +581,46 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     break;
   }
 
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION: {
+    // Unions are always nominal (use declared name)
+    if (cycle_detected) {
+      checker_error(
+          type->loc,
+          "recursive type '%s' has infinite size (use pointer for indirection)",
+          type->declared_name);
+      canonical_name = str_dup(type->declared_name);
+    } else if (type->qualified_name) {
+      canonical_name = str_dup(type->qualified_name);
+    } else {
+      // Anonymous struct - build structural name
+      size_t capacity = 256;
+      canonical_name = arena_alloc(&long_lived, capacity);
+      size_t offset = 0;
+
+      offset += snprintf(canonical_name + offset, capacity - offset, "union");
+
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        char *field_name = type->data.union_data.variant_names[i];
+        char *type_name =
+            GET_COMPONENT_NAME(type->data.union_data.variant_types[i]);
+
+        size_t needed =
+            offset + 1 + strlen(field_name) + 1 + strlen(type_name) + 1;
+        if (needed > capacity) {
+          capacity = needed * 2;
+          char *new_buf = arena_alloc(&long_lived, capacity);
+          memcpy(new_buf, canonical_name, offset);
+          canonical_name = new_buf;
+        }
+
+        offset += snprintf(canonical_name + offset, capacity - offset, "_%s_%s",
+                           field_name, type_name);
+      }
+    }
+    break;
+  }
+
   case TYPE_ENUM: {
     if (type->qualified_name) {
       canonical_name = str_dup(type->qualified_name);
@@ -738,8 +778,9 @@ static void check_type_declarations(Module *module) {
           *placeholder = *resolved;
         }
 
-        if (placeholder->kind == TYPE_STRUCT ||
-            placeholder->kind == TYPE_TUPLE || placeholder->kind == TYPE_ENUM) {
+        if (placeholder->kind == TYPE_STRUCT || placeholder->kind == TYPE_TUPLE ||
+            placeholder->kind == TYPE_ENUM || placeholder->kind == TYPE_UNION ||
+            placeholder->kind == TYPE_TAGGED_UNION) {
           placeholder->qualified_name = str_dup(sym->name);
           placeholder->declared_name = str_dup(sym->reg_name);
         }
@@ -1356,6 +1397,70 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     return type_create_struct(field_names, field_types, field_count, false,
                               loc);
+  }
+
+  case AST_TYPE_UNION: {
+    bool tagged = type_expr->data.type_union.is_tagged;
+    size_t variant_count = type_expr->data.type_union.variant_count;
+    if (variant_count == 0) {
+      checker_warning(type_expr->loc,
+                      "Union was declared without any members");
+      return type_create_union(tagged, NULL, NULL, variant_count, loc);
+    }
+
+    // Resolve all field types and create struct type
+    char **variant_names = type_expr->data.type_union.variant_names;
+    AstNode **variant_type_exprs = type_expr->data.type_union.variant_types;
+
+    Type **variant_types = arena_alloc(&long_lived, sizeof(Type *) * variant_count);
+
+    // Check duplicate field names
+    typedef struct {
+      char *name;
+      UT_hash_handle hh;
+    } variant_entry;
+    variant_entry *seen = NULL;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
+    for (size_t i = 0; i < variant_count; i++) {
+      // Check field name collisions
+      variant_entry *entry;
+      HASH_FIND_STR(seen, variant_names[i], entry);
+      if (entry) {
+        checker_error(type_expr->loc, "Duplicate union member '%s'",
+                      variant_names[i]);
+      } else {
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
+        entry->name = variant_names[i];
+        HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
+      }
+
+      // Check types
+      variant_types[i] = resolve_type_expression(variant_type_exprs[i]);
+      if (!variant_types[i]) {
+        HASH_CLEAR(hh, seen);
+        arena_free(&temp_arena);
+        return NULL;
+      }
+
+      if (variant_types[i]->kind == TYPE_OPAQUE) {
+        checker_error(type_expr->loc,
+                      "Cannot have field of opaque type '%s' in union (use "
+                      "pointer instead)",
+                      variant_types[i]->canonical_name);
+
+        HASH_CLEAR(hh, seen);
+        arena_free(&temp_arena);
+        return NULL;
+      }
+    }
+
+    HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
+
+    return type_create_union(tagged, variant_names, variant_types, variant_count, loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -2780,6 +2885,20 @@ Type *check_expression(AstNode *expr) {
       }
 
       checker_error(expr->loc, "struct has no field named '%s'", field_name);
+      return NULL;
+    } else if (base_type->kind == TYPE_UNION || base_type->kind == TYPE_TAGGED_UNION) {
+      size_t variant_count = base_type->data.union_data.variant_count;
+      char **variant_names = base_type->data.union_data.variant_names;
+      Type **variant_types = base_type->data.union_data.variant_types;
+
+      for (size_t i = 0; i < variant_count; i++) {
+        if (strcmp(variant_names[i], field_name) == 0) {
+          expr->resolved_type = variant_types[i];
+          return variant_types[i];
+        }
+      }
+
+      checker_error(expr->loc, "union has no field named '%s'", field_name);
       return NULL;
     } else if (base_type->kind == TYPE_ENUM) {
       char **variant_names = base_type->data.enum_data.variant_names;

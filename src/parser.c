@@ -2159,9 +2159,9 @@ AstNode *parse_type_expression(Parser *parser) {
 
     type = alloc_node(AST_TYPE_UNION, loc);
     type->data.type_union.is_tagged = is_tagged;
-    type->data.type_union.field_names = field_names;
-    type->data.type_union.field_types = field_types;
-    type->data.type_union.field_count = count;
+    type->data.type_union.variant_names = field_names;
+    type->data.type_union.variant_types = field_types;
+    type->data.type_union.variant_count = count;
     return type;
   }
 

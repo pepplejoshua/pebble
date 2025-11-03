@@ -386,9 +386,9 @@ struct AstNode {
     } type_struct;
     struct {
       bool is_tagged;
-      char **field_names;
-      AstNode **field_types;
-      size_t field_count;
+      char **variant_names;
+      AstNode **variant_types;
+      size_t variant_count;
     } type_union;
     struct {
       char **variant_names;

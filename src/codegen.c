@@ -340,6 +340,13 @@ void collect_dependencies(Type *t, const char *self_name,
                            all_types, deps, dep_count, dep_capacity);
     }
     break;
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
+    for (size_t i = 0; i < t->data.union_data.variant_count; i++) {
+      collect_dependencies(t->data.union_data.variant_types[i], self_name,
+                           all_types, deps, dep_count, dep_capacity);
+    }
+    break;
   case TYPE_TUPLE:
     for (size_t i = 0; i < t->data.tuple.element_count; i++) {
       collect_dependencies(t->data.tuple.element_types[i], self_name, all_types,
@@ -409,7 +416,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
         type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION ||
-        type->kind == TYPE_OPTIONAL) {
+        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+        type->kind == TYPE_TAGGED_UNION) {
       TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
@@ -466,6 +474,17 @@ void emit_program(Codegen *cg, Module *main_mod) {
       }
       break;
     }
+
+    case TYPE_UNION:
+    case TYPE_TAGGED_UNION: {
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        collect_dependencies(type->data.union_data.variant_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      break;
+    }
+
     case TYPE_FUNCTION: {
       for (size_t i = 0; i < type->data.func.param_count; i++) {
         collect_dependencies(type->data.func.param_types[i],
@@ -507,7 +526,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
          entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION ||
-         entry->type->kind == TYPE_OPTIONAL)) {
+         entry->type->kind == TYPE_OPTIONAL || entry->type->kind == TYPE_UNION ||
+         entry->type->kind == TYPE_TAGGED_UNION)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -1053,6 +1073,8 @@ void emit_type_name(Codegen *cg, Type *type) {
   case TYPE_TUPLE:
   case TYPE_OPTIONAL:
   case TYPE_ENUM:
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
     emit_string(cg, type->canonical_name); // Just "Node" or "tuple_int_int"
     break;
   case TYPE_ARRAY: {
@@ -1254,6 +1276,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     } else {
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
+      } else if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+        emit_string(cg, "typedef union ");
       } else {
         emit_string(cg, "typedef struct ");
       }
@@ -1310,7 +1334,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   // Check if already defined (full struct/tuple)
   if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
       type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-      type->kind == TYPE_OPTIONAL) {
+      type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+      type->kind == TYPE_TAGGED_UNION) {
 
     if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
       return;
@@ -1323,7 +1348,12 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
 
-      emit_string(cg, "struct ");
+      if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+        emit_string(cg, "union ");
+      } else {
+        emit_string(cg, "struct ");
+      }
+
       emit_string(cg, canonical);
       emit_string(cg, " {");
       emit_string(cg, "\n");
@@ -1334,6 +1364,15 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           emit_type_name(cg, type->data.struct_data.field_types[i]);
           emit_string(cg, " ");
           emit_string(cg, type->data.struct_data.field_names[i]);
+          emit_string(cg, ";");
+          emit_string(cg, "\n");
+        }
+      } else if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+        for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+          emit_indent_spaces(cg);
+          emit_type_name(cg, type->data.union_data.variant_types[i]);
+          emit_string(cg, " ");
+          emit_string(cg, type->data.union_data.variant_names[i]);
           emit_string(cg, ";");
           emit_string(cg, "\n");
         }
@@ -2542,7 +2581,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // Check if the object is a pointer and prepare the operator
     if (object_type && object_type->kind == TYPE_POINTER) {
       Type *base_type = object_type->data.ptr.base;
-      if (base_type && base_type->kind == TYPE_STRUCT) {
+      if (base_type && (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION ||
+        base_type->kind == TYPE_TAGGED_UNION)) {
         // Pointer to struct: emit object directly, then -> (e.g., ptr->field)
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
