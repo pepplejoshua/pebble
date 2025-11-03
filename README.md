@@ -44,7 +44,7 @@ fn add(a int, b int) int {
 fn square(x int) int => x * x
 
 // Variadic function
-fn sum(count int, ...values) int {
+fn sum(...values []int) int {
     // Implementation
 }
 ```
@@ -295,7 +295,7 @@ fn main() void {
 **Extern Declarations:**
 ```go
 // Single extern function
-extern fn printf(fmt str, ...) i32;
+extern fn strlen(s str) usize;
 
 // Extern block
 extern {
@@ -437,30 +437,44 @@ io::rename_path("old.txt", "new.txt");
 
 ### Basic Options
 ```sh
--o, --output NAME          Output executable name (default: output)
--c, --compiler COMPILER    Specify C compiler (auto-detected by default)
---keep-c-file             Keep generated C file (default: true)
---generate-only           Generate C without compiling
--v, --verbose             Verbose output
--w, --warnings            Enable C compiler warnings
+-v, --verbose              Enable verbose output
+-w, --warnings             Enable C compiler warnings
+--keep-c                   Keep generated C file (default)
+--no-keep-c                Remove generated C file after compilation
+--generate-only            Only generate C source without compiling
+--compiler <compiler>      Specify C compiler (autodetects gcc/clang/cc)
+-o <name>                  Output executable name (default: output)
+-c <name>                  Output C file name (default: output.c)
 ```
 
-### Library Options
+### Library & Include Options
 ```sh
--l, --lib LIBRARY         Link library (e.g., -l pthread)
--L, --libpath PATH        Add library search path
--I, --include PATH        Add include search path
--H, --header FILE         Include local header
--S, --sys-header FILE     Include system header
+-l <library>               Link library (e.g., -l pthread)
+-L <path>                  Add library search path
+-I <path>                  Add include search path
+--header <name>            Include local header in source
+--sys-header <name>        Include system header in source
 ```
 
-### Build Modes
+### Module Paths
 ```sh
---freestanding            Compile without C stdlib
---release-mode MODE       Release mode: debug, small, safe, default
---library shared          Generate shared library
---library static          Generate static library
---entry SYMBOL            Custom entry point (default: main)
+--std-path <path>          Location of std library (default: alongside compiler)
+```
+
+### Freestanding & Library Options
+```sh
+--freestanding             Generate freestanding code (no standard library)
+--entry-point <symbol>     Entry point of your code (default: main)
+--no-main                  No entry point. Compiles to object file only
+--shared                   Compile as a shared library
+```
+
+### Release Modes
+```sh
+--debug                    Compile in debug mode
+--release-small            Compile for a smaller binary
+--release-safe             Compile with runtime safety features
+--release                  Compile with standard release compiler flags
 ```
 
 ### Examples
@@ -468,14 +482,20 @@ io::rename_path("old.txt", "new.txt");
 # Compile with pthread
 ./peb server.peb -l pthread -o server
 
-# Generate optimized shared library
-./peb mylib.peb --library shared --release-mode small -O libmylib
+# Generate shared library
+./peb mylib.peb --shared -o libmylib
 
 # Freestanding for embedded
-./peb kernel.peb --freestanding --entry kernel_main
+./peb kernel.peb --freestanding --entry-point kernel_main
 
 # Custom C compiler with includes
-./peb app.peb -c clang -I ./include -L ./lib -l mylib
+./peb app.peb --compiler clang -I ./include -L ./lib -l mylib
+
+# Keep C file for debugging
+./peb program.peb --keep-c --generate-only
+
+# Object file without entry point
+./peb module.peb --no-main -o module.o
 ```
 
 ## Compiler Architecture

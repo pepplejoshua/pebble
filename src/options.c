@@ -176,12 +176,12 @@ void append_library_path_string(char *str) {
     return;
   }
 
-  if (compiler_opts.lib_paths_count >=
-      compiler_opts.lib_paths_capacity) {
+  if (compiler_opts.lib_paths_count >= compiler_opts.lib_paths_capacity) {
     size_t new_cap = compiler_opts.lib_paths_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
 
-    char **new_library_paths = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    char **new_library_paths =
+        arena_alloc(&long_lived, new_cap * sizeof(char *));
     memcpy(new_library_paths, compiler_opts.lib_paths,
            compiler_opts.lib_paths_count * sizeof(char *));
 
@@ -193,7 +193,8 @@ void append_library_path_string(char *str) {
 
   entry = arena_alloc(&long_lived, sizeof(StringEntry));
   entry->name = str_dup(library_path);
-  HASH_ADD_KEYPTR(hh, library_path_set, entry->name, strlen(entry->name), entry);
+  HASH_ADD_KEYPTR(hh, library_path_set, entry->name, strlen(entry->name),
+                  entry);
 }
 
 void append_include_path_string(char *str) {
@@ -219,7 +220,8 @@ void append_include_path_string(char *str) {
     size_t new_cap = compiler_opts.include_paths_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
 
-    char **new_include_paths = arena_alloc(&long_lived, new_cap * sizeof(char *));
+    char **new_include_paths =
+        arena_alloc(&long_lived, new_cap * sizeof(char *));
     memcpy(new_include_paths, compiler_opts.include_paths,
            compiler_opts.include_paths_count * sizeof(char *));
 
@@ -231,7 +233,8 @@ void append_include_path_string(char *str) {
 
   entry = arena_alloc(&long_lived, sizeof(StringEntry));
   entry->name = str_dup(include);
-  HASH_ADD_KEYPTR(hh, library_path_set, entry->name, strlen(entry->name), entry);
+  HASH_ADD_KEYPTR(hh, library_path_set, entry->name, strlen(entry->name),
+                  entry);
 }
 
 void append_header_string(char *str) {
@@ -307,7 +310,8 @@ void append_system_header_string(char *str) {
 
   entry = arena_alloc(&long_lived, sizeof(StringEntry));
   entry->name = str_dup(header);
-  HASH_ADD_KEYPTR(hh, system_header_set, entry->name, strlen(entry->name), entry);
+  HASH_ADD_KEYPTR(hh, system_header_set, entry->name, strlen(entry->name),
+                  entry);
 }
 
 bool mode_is_safe(void) {
@@ -411,7 +415,8 @@ void print_usage(const char *program_name) {
   printf("  --test-checker       Run checker tests\n");
   printf("  --test-all           Run all tests\n");
   printf("\nModule Paths:\n");
-  printf("  --std-path           Location of std lib (default: alongside compiler)\n");
+  printf("  --std-path           Location of std lib (default: alongside "
+         "compiler)\n");
   printf("\nFreestanding Options:\n");
   printf("  --freestanding       Generate freestanding code (no standard "
          "library)\n");
@@ -421,7 +426,8 @@ void print_usage(const char *program_name) {
   printf("  --debug              Compile in debug mode\n");
   printf("  --release-small      Compile for a smaller binary\n");
   printf("  --release-safe       Compile with runtime safety features\n");
-  printf("  --release            Compile with standard release compiler flags\n");
+  printf(
+      "  --release            Compile with standard release compiler flags\n");
   printf("\nOther Options:\n");
   printf("  -h, --help           Show this help message\n");
 }
