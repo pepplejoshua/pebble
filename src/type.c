@@ -743,6 +743,8 @@ char *type_name(Type *type) {
   case TYPE_STRUCT:
   case TYPE_ENUM:
   case TYPE_OPAQUE:
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
     return type->declared_name;
   case TYPE_POINTER: {
     char *base_ty_name = type_name(type->data.ptr.base);
@@ -862,5 +864,33 @@ char *type_name(Type *type) {
     return "UNRESOLVED";
   default:
     return "UNKNOWN_TYPE";
+  }
+}
+
+int member_index_of_type(Type *type, const char *member) {
+  switch (type->kind) {
+    case TYPE_STRUCT: {
+      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+        if (strcmp(member, type->data.struct_data.field_names[i]) == 0) {
+          return i;
+        }
+      }
+
+      return -1;
+    }
+
+    case TYPE_UNION:
+    case TYPE_TAGGED_UNION: {
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        if (strcmp(member, type->data.union_data.variant_names[i]) == 0) {
+          return i;
+        }
+      }
+
+      return -1;
+    }
+
+    default:
+      return -1;
   }
 }

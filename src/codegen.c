@@ -2622,9 +2622,33 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
       } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
-        // TODO: Emit assert for current tag matching variant
+        int index = member_index_of_type(base_type, member);
+
+        char buffer[64] = {0};
+
+        emit_string(cg, "({\n");
+        char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
+        emit_type_name(cg, object_type);
+        emit_string(cg, " ");
+        emit_string(cg, buffer);
+        emit_string(cg, " = ");
         emit_expr(cg, object_expr);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "assert(");
+        emit_string(cg, temp);
+        emit_string(cg, "->__tag == ");
+        emit_string(cg, base_type->qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, base_type->data.union_data.variant_names[index]);
+        emit_string(cg, ");\n");
+
+        emit_string(cg, temp);
         emit_string(cg, "->__data.");
+        emit_string(cg, member);
+        emit_string(cg, ";\n })");
+
+        return;
       } else {
         // Pointer to tuple, array, or slice: emit (*object). (e.g.,
         // (*ptr).len or (*ptr)._0)
@@ -2634,12 +2658,39 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // Non-pointer: emit object, then . (e.g., obj.field or t._0)
-      emit_expr(cg, object_expr);
-      emit_string(cg, ".");
 
       // TODO: Emit assert for current tag matching variant
       if (object_type->kind == TYPE_TAGGED_UNION) {
-        emit_string(cg, "__data.");
+        int index = member_index_of_type(object_type, member);
+
+        char buffer[64] = {0};
+
+        emit_string(cg, "({\n");
+        char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
+        emit_type_name(cg, object_type);
+        emit_string(cg, " ");
+        emit_string(cg, buffer);
+        emit_string(cg, " = ");
+        emit_expr(cg, object_expr);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "assert(");
+        emit_string(cg, temp);
+        emit_string(cg, ".__tag == ");
+        emit_string(cg, object_type->qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, object_type->data.union_data.variant_names[index]);
+        emit_string(cg, ");\n");
+
+        emit_string(cg, temp);
+        emit_string(cg, ".__data.");
+        emit_string(cg, member);
+        emit_string(cg, ";\n })");
+
+        return;
+      } else {
+        emit_expr(cg, object_expr);
+        emit_string(cg, ".");
       }
     }
 
