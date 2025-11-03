@@ -1812,7 +1812,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "for (");
       emit_type_name(cg, init->resolved_type);
       emit_string(cg, " ");
-      emit_string(cg, init->data.var_decl.full_qualified_name);
+      emit_string(cg, init->data.var_decl.name);
       emit_string(cg, " = ");
       emit_expr(cg, init->data.var_decl.init);
       emit_string(cg, "; ");
