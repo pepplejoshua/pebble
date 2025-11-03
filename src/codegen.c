@@ -1754,40 +1754,87 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     break;
   }
   case AST_STMT_LOOP: {
-    // Generate: for (long long _loop_i = start; _loop_i < end; _loop_i++) {
-    //     const long long iter = _loop_i;
-    //     body
-    // }
+    // Generate runtime-direction loop that handles both forward and reverse
     static int loop_counter = 0;
-    char loop_var[64];
-    snprintf(loop_var, sizeof(loop_var), "_loop_i%d", loop_counter++);
+    char loop_var[64], loop_start[64], loop_end[64], loop_step[64];
+    snprintf(loop_var, sizeof(loop_var), "_loop_i%d", loop_counter);
+    snprintf(loop_start, sizeof(loop_start), "_loop_start%d", loop_counter);
+    snprintf(loop_end, sizeof(loop_end), "_loop_end%d", loop_counter);
+    snprintf(loop_step, sizeof(loop_step), "_loop_step%d", loop_counter);
+    loop_counter++;
 
+    emit_indent_spaces(cg);
+    emit_string(cg, "{\n");
+    emit_indent(cg);
+
+    // Declare and initialize loop bounds
+    emit_indent_spaces(cg);
+    emit_string(cg, "int ");
+    emit_string(cg, loop_start);
+    emit_string(cg, " = ");
+    emit_expr(cg, stmt->data.loop_stmt.start);
+    emit_string(cg, ";\n");
+
+    emit_indent_spaces(cg);
+    emit_string(cg, "int ");
+    emit_string(cg, loop_end);
+    emit_string(cg, " = ");
+    emit_expr(cg, stmt->data.loop_stmt.end);
+    emit_string(cg, ";\n");
+
+    // Calculate step direction: 1 if forward, -1 if reverse
+    emit_indent_spaces(cg);
+    emit_string(cg, "int ");
+    emit_string(cg, loop_step);
+    emit_string(cg, " = (");
+    emit_string(cg, loop_start);
+    emit_string(cg, " <= ");
+    emit_string(cg, loop_end);
+    emit_string(cg, ") ? 1 : -1;\n");
+
+    // Generate for loop with runtime direction
     emit_indent_spaces(cg);
     emit_string(cg, "for (int ");
     emit_string(cg, loop_var);
     emit_string(cg, " = ");
-    emit_expr(cg, stmt->data.loop_stmt.start);
+    emit_string(cg, loop_start);
     emit_string(cg, "; ");
+
+    // Condition depends on step direction
+    emit_string(cg, "(");
+    emit_string(cg, loop_step);
+    emit_string(cg, " > 0) ? (");
     emit_string(cg, loop_var);
     if (stmt->data.loop_stmt.inclusive) {
       emit_string(cg, " <= ");
     } else {
       emit_string(cg, " < ");
     }
-    emit_expr(cg, stmt->data.loop_stmt.end);
-    emit_string(cg, "; ");
+    emit_string(cg, loop_end);
+    emit_string(cg, ") : (");
     emit_string(cg, loop_var);
-    emit_string(cg, "++) {\n");
+    if (stmt->data.loop_stmt.inclusive) {
+      emit_string(cg, " >= ");
+    } else {
+      emit_string(cg, " > ");
+    }
+    emit_string(cg, loop_end);
+    emit_string(cg, "); ");
+
+    // Update with step
+    emit_string(cg, loop_var);
+    emit_string(cg, " += ");
+    emit_string(cg, loop_step);
+    emit_string(cg, ") {\n");
     emit_indent(cg);
 
     // Emit const iter = _loop_i
     emit_indent_spaces(cg);
     AstNode *iter_name = stmt->data.loop_stmt.iterator_name;
     char *iterator_name = iter_name ? iter_name->data.ident.name : "iter";
-    char c_iter_access[64];
-    snprintf(c_iter_access, sizeof(c_iter_access),
-             "const int %s = ", iterator_name);
-    emit_string(cg, c_iter_access);
+    emit_string(cg, "const int ");
+    emit_string(cg, iterator_name);
+    emit_string(cg, " = ");
     emit_string(cg, loop_var);
     emit_string(cg, ";\n");
 
@@ -1802,8 +1849,13 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_dedent(cg);
     emit_indent_spaces(cg);
     emit_string(cg, "}\n");
+
+    emit_dedent(cg);
+    emit_indent_spaces(cg);
+    emit_string(cg, "}\n"); // Close outer block
     break;
   }
+
   case AST_STMT_FOR: {
     AstNode *init = stmt->data.for_stmt.init;
 
