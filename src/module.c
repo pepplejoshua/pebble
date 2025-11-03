@@ -12,7 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 #if defined(__APPLE__)
-    #include <mach-o/dyld.h>
+#include <mach-o/dyld.h>
 #endif
 
 // External allocator
@@ -55,14 +55,14 @@ char *get_basename(const char *full_path, bool without_ext) {
 
 static char *get_executable_dir(void) {
   char path[PATH_MAX] = {0};
-  ssize_t len = 0;
 
 #if defined(__APPLE__)
   uint32_t size = sizeof(path);
   if (_NSGetExecutablePath(path, &size) != 0) {
     // Buffer too small; allocate dynamically
     char *tmp = arena_alloc(&long_lived, size);
-    if (!tmp) return NULL;
+    if (!tmp)
+      return NULL;
     if (_NSGetExecutablePath(tmp, &size) != 0) {
       return NULL;
     }
@@ -74,6 +74,7 @@ static char *get_executable_dir(void) {
     strncpy(path, resolved, sizeof(path));
   }
 #else
+  ssize_t len = 0;
   len = readlink("/proc/self/exe", path, sizeof(path) - 1);
   if (len == -1) {
     return NULL;
@@ -90,7 +91,8 @@ static char *get_executable_dir(void) {
   return str_dup(path);
 }
 
-static char *get_absolute_path(const char *path_literal, const char *partial_path) {
+static char *get_absolute_path(const char *path_literal,
+                               const char *partial_path) {
   char resolved_path[PATH_MAX] = {0};
 
   size_t len = strlen(partial_path);
@@ -118,7 +120,8 @@ static char *get_absolute_path(const char *path_literal, const char *partial_pat
 }
 
 static char *get_absolute_directory(const char *filepath) {
-  if (!filepath) return str_dup(".");
+  if (!filepath)
+    return str_dup(".");
 
   char abs_path[4096] = {0};
   char *resolved = realpath(filepath, abs_path);
@@ -129,7 +132,8 @@ static char *get_absolute_directory(const char *filepath) {
     tmp[sizeof(tmp) - 1] = '\0';
 
     // Trim trailing slashes
-    for (int i = strlen(tmp) - 1; i >= 0 && (tmp[i] == '/' || tmp[i] == '\\'); --i) {
+    for (int i = strlen(tmp) - 1; i >= 0 && (tmp[i] == '/' || tmp[i] == '\\');
+         --i) {
       tmp[i] = '\0';
     }
 
@@ -176,10 +180,12 @@ Module *new_module(const char *partial_path) {
     size_t path_len = strlen(module_abs_path);
 
     // Check if module_abs_path starts with root_directory
-    if (path_len > root_len && strncmp(module_abs_path, root_directory, root_len) == 0) {
+    if (path_len > root_len &&
+        strncmp(module_abs_path, root_directory, root_len) == 0) {
       // Skip root and leading slash
       char *relative = module_abs_path + root_len;
-      if (relative[0] == '/') relative++;
+      if (relative[0] == '/')
+        relative++;
 
       // Remove .peb extension and replace / with _
       size_t rel_len = strlen(relative);
@@ -354,8 +360,10 @@ bool collect_all_modules(Module *cur) {
 void append_module(Module *module, Module *imported) {
   if (module->import_count >= module->import_capacity) {
     module->import_capacity *= 2;
-    Module **new_modules = arena_alloc(&long_lived, module->import_capacity * sizeof(Module *));
-    memcpy(new_modules, module->imported_modules, module->import_count * sizeof(Module *));
+    Module **new_modules =
+        arena_alloc(&long_lived, module->import_capacity * sizeof(Module *));
+    memcpy(new_modules, module->imported_modules,
+           module->import_count * sizeof(Module *));
 
     module->imported_modules = new_modules;
   }
@@ -419,7 +427,8 @@ void qualify_globals_in_module(Module *mod) {
       char *prefix = prepend(mod->name, "__");
       char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.extern_func.qualified_name = prepend(prefix, cur_name);
-      node->data.extern_func.full_qualified_name = prepend(full_prefix, cur_name);
+      node->data.extern_func.full_qualified_name =
+          prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_EXTERN_TYPE: {
@@ -430,7 +439,8 @@ void qualify_globals_in_module(Module *mod) {
       char *prefix = prepend(mod->name, "__");
       char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.extern_type.qualified_name = prepend(prefix, cur_name);
-      node->data.extern_type.full_qualified_name = prepend(full_prefix, cur_name);
+      node->data.extern_type.full_qualified_name =
+          prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_EXTERN_BLOCK: {
@@ -445,7 +455,8 @@ void qualify_globals_in_module(Module *mod) {
           char *prefix = prepend(mod->name, "__");
           char *full_prefix = prepend(mod->qualified_name, "__");
           decl->data.extern_func.qualified_name = prepend(prefix, cur_name);
-          decl->data.extern_func.full_qualified_name = prepend(full_prefix, cur_name);
+          decl->data.extern_func.full_qualified_name =
+              prepend(full_prefix, cur_name);
           break;
         }
         case AST_DECL_EXTERN_TYPE: {
@@ -456,7 +467,8 @@ void qualify_globals_in_module(Module *mod) {
           char *prefix = prepend(mod->name, "__");
           char *full_prefix = prepend(mod->qualified_name, "__");
           decl->data.extern_type.qualified_name = prepend(prefix, cur_name);
-          decl->data.extern_type.full_qualified_name = prepend(full_prefix, cur_name);
+          decl->data.extern_type.full_qualified_name =
+              prepend(full_prefix, cur_name);
           break;
         }
 
@@ -480,7 +492,8 @@ void qualify_globals_in_module(Module *mod) {
       char *prefix = prepend(mod->name, "__");
       char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.const_decl.qualified_name = prepend(prefix, cur_name);
-      node->data.const_decl.full_qualified_name = prepend(full_prefix, cur_name);
+      node->data.const_decl.full_qualified_name =
+          prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_TYPE: {
