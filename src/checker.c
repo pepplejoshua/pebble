@@ -3169,9 +3169,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (!expr_type) {
       // Return value is expected
       if (expected_return_type->kind != TYPE_VOID) {
-        checker_error(stmt->loc,
-          "return value is expected with type '%s'",
-          type_name(expected_return_type));
+        checker_error(stmt->loc, "return value is expected with type '%s'",
+                      type_name(expected_return_type));
       }
 
       return true; // Error already reported
@@ -3181,16 +3180,11 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *converted =
         maybe_insert_cast(expr, expr_type, expected_return_type);
     if (!converted) {
-      checker_error(stmt->loc,
-        "return type mismatch '%s' != '%s'",
-        type_name(expr_type), type_name(expected_return_type));
+      checker_error(stmt->loc, "return type mismatch '%s' != '%s'",
+                    type_name(expr_type), type_name(expected_return_type));
     } else {
       stmt->data.return_stmt.expr =
           converted; // Replace with cast node if needed
-    }
-
-    if (expected_return_type->kind != TYPE_VOID && !expr_type) {
-      printf("FRICK\n");
     }
 
     // Cannot return with defer statements
