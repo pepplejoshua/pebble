@@ -56,6 +56,7 @@ static DeferStack *defer_stack_create(DeferStack *parent,
   stack->capacity = 0;
   stack->scope_type = scope_type;
   stack->parent = parent;
+  stack->locked = false;
 
   return stack;
 }
