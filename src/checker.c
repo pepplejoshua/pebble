@@ -224,7 +224,7 @@ static void collect_declaration(AstNode *decl) {
   // Create and add symbol
   Symbol *symbol = symbol_create(qualified_name, kind, decl);
   symbol->reg_name = name;
-  if (kind == SYMBOL_VARIABLE) {
+  if (kind == SYMBOL_VARIABLE || kind == SYMBOL_CONSTANT) {
     symbol->data.var.is_global = true;
   }
 
@@ -2095,17 +2095,16 @@ Type *check_expression(AstNode *expr) {
       if (sym->data.var.is_global) {
         char *prefix =
             prepend(checker_state.current_module->qualified_name, "__");
-        char *qualifed = prepend(prefix, sym->name);
-        expr->data.ident.full_qualified_name = qualifed;
+        char *qualified = prepend(prefix, sym->reg_name);
+        expr->data.ident.full_qualified_name = qualified;
       }
 
       expr->data.ident.qualified_name = sym->name;
-
     } else {
       char *prefix =
           prepend(checker_state.current_module->qualified_name, "__");
-      char *qualifed = prepend(prefix, sym->reg_name);
-      expr->data.ident.full_qualified_name = qualifed;
+      char *qualified = prepend(prefix, sym->reg_name);
+      expr->data.ident.full_qualified_name = qualified;
     }
 
     // Types are not values
