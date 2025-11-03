@@ -358,9 +358,12 @@ static Token lexer_scan_number(Lexer *lexer) {
     lexer_advance(lexer);
   }
 
-  // Check if single number 0 and next is 'x' or 'X' for hex
+  // Check if single number 0 and next is 'x', 'X', 'b', or 'B' for hex/binary
   if (lexer->current - start == 1 && lexer->source[start] == '0') {
-    if (lexer_peek(lexer) == 'x' || lexer_peek(lexer) == 'X') {
+    char prefix = lexer_peek(lexer);
+
+    // Hexadecimal: 0x or 0X
+    if (prefix == 'x' || prefix == 'X') {
       lexer_advance(lexer); // consume 'x'
       // Scan hex digits
       while (true) {
@@ -375,6 +378,24 @@ static Token lexer_scan_number(Lexer *lexer) {
       Token token = lexer_make_token(lexer, TOKEN_INT);
       // Parse hex value
       token.value.int_val = strtoll(&lexer->source[start], NULL, 16);
+      return token;
+    }
+
+    // Binary: 0b or 0B
+    if (prefix == 'b' || prefix == 'B') {
+      lexer_advance(lexer); // consume 'b'
+      // Scan binary digits (0 and 1 only)
+      while (true) {
+        char c = lexer_peek(lexer);
+        if (c == '0' || c == '1') {
+          lexer_advance(lexer);
+        } else {
+          break;
+        }
+      }
+      Token token = lexer_make_token(lexer, TOKEN_INT);
+      // Parse binary value
+      token.value.int_val = strtoll(&lexer->source[start + 2], NULL, 2);
       return token;
     }
   }
