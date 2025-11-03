@@ -2084,7 +2084,9 @@ Type *check_expression(AstNode *expr) {
     }
 
     // FIXME: See if variables/constants need this too
-    if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+    if (sym->kind == SYMBOL_EXTERN_FUNCTION ||
+        sym->kind == SYMBOL_EXTERN_CONSTANT ||
+        sym->kind == SYMBOL_EXTERN_VARIABLE) {
       expr->data.ident.is_extern = true;
     }
 
