@@ -310,6 +310,11 @@ void append_system_header_string(char *str) {
   HASH_ADD_KEYPTR(hh, system_header_set, entry->name, strlen(entry->name), entry);
 }
 
+bool mode_is_safe(void) {
+  return compiler_opts.release_mode == RELEASE_DEBUG ||
+         compiler_opts.release_mode == RELEASE_SAFE;
+}
+
 char *flatten_strings(char **strings, size_t count, char compiler_arg) {
   size_t total_length = count * 3; // account for "-<compiler arg>" and " "
   for (size_t i = 0; i < count; i++) {
@@ -363,6 +368,8 @@ char *release_mode_string(void) {
       return "-Os -ffunction-sections -fdata-sections -Wl,--gc-sections";
     }
 
+  // NOTE: Release safe matters in code gen not C compile
+  case RELEASE_SAFE:
   case RELEASE_DEFAULT:
     if (is_clang_like) {
       return "-O2 -march=native -flto";
@@ -413,8 +420,8 @@ void print_usage(const char *program_name) {
   printf("\nRelease Options:\n");
   printf("  --debug              Compile in debug mode\n");
   printf("  --release-small      Compile for a smaller binary\n");
-  printf(
-      "  --release            Compile with standard release compiler flags\n");
+  printf("  --release-safe       Compile with runtime safety features\n");
+  printf("  --release            Compile with standard release compiler flags\n");
   printf("\nOther Options:\n");
   printf("  -h, --help           Show this help message\n");
 }
@@ -540,6 +547,8 @@ bool parse_args(int argc, char **argv) {
       compiler_opts.release_mode = RELEASE_DEBUG;
     } else if (strcmp(argv[i], "--release-small") == 0) {
       compiler_opts.release_mode = RELEASE_SMALL;
+    } else if (strcmp(argv[i], "--release-safe") == 0) {
+      compiler_opts.release_mode = RELEASE_SAFE;
     } else if (strcmp(argv[i], "--release") == 0) {
       compiler_opts.release_mode = RELEASE_DEFAULT;
     } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {

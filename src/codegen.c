@@ -2363,7 +2363,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (array_type->kind == TYPE_STRING) {
       // For str, index directly
-      if (compiler_opts.release_mode == RELEASE_DEBUG) {
+      if (mode_is_safe()) {
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
@@ -2378,7 +2378,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // For arrays/slices, use .data
-      if (compiler_opts.release_mode == RELEASE_DEBUG) {
+      if (mode_is_safe()) {
         // Bounds checking
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);

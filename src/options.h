@@ -8,6 +8,7 @@ typedef enum ReleaseMode
 {
   RELEASE_DEBUG,
   RELEASE_SMALL,
+  RELEASE_SAFE,
   RELEASE_DEFAULT,
 } ReleaseMode;
 
@@ -70,6 +71,7 @@ void append_include_path_string(char *str);
 void append_header_string(char *str);
 void append_system_header_string(char *str);
 
+bool mode_is_safe(void);
 char *flatten_strings(char **strings, size_t count, char compiler_arg);
 char* release_mode_string(void);
 void print_usage(const char *program_name);
