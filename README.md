@@ -361,6 +361,19 @@ fn use_allocator() void {
 }
 ```
 
+In C, this looks like:
+```c
+typedef struct {
+  Allocator default_allocator;
+} __pebble_context;
+
+typedef struct Allocator {
+  void *ptr;
+  void *(*alloc)(__pebble_context, void *, size_t);
+  void (*free)(__pebble_context, void *, void *);
+} Allocator;
+```
+
 The context contains:
 - `default_allocator` - An allocator with function pointers for `alloc` and `free`
 
