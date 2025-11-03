@@ -1121,7 +1121,9 @@ void emit_sections(Codegen *cg, Module *main_mod) {
   if (!compiler_opts.freestanding) {
     fputs("void *__pebble_c_alloc(__pebble_context ctx, void *ptr, size_t "
           "size) {\n"
-          "  return malloc(size);\n"
+          "  void *data = malloc(size);\n"
+          "  memset(data, 0, size);\n"
+          "  return data;\n"
           "}\n\n"
           "void __pebble_c_free(__pebble_context ctx, void *ptr, void "
           "*data) {\n"
