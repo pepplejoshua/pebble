@@ -58,21 +58,25 @@ static char *get_executable_dir(void) {
 
 #if defined(__APPLE__)
   uint32_t size = sizeof(path);
+  char *exe_path = path;
+
   if (_NSGetExecutablePath(path, &size) != 0) {
     // Buffer too small; allocate dynamically
-    char *tmp = arena_alloc(&long_lived, size);
-    if (!tmp)
+    exe_path = arena_alloc(&long_lived, size);
+    if (!exe_path)
       return NULL;
-    if (_NSGetExecutablePath(tmp, &size) != 0) {
-      return NULL;
-    }
-    // Resolve any symlinks to get the real absolute path
-    char resolved[PATH_MAX];
-    if (realpath(tmp, resolved) == NULL) {
+    if (_NSGetExecutablePath(exe_path, &size) != 0) {
       return NULL;
     }
-    strncpy(path, resolved, sizeof(path));
   }
+
+  // Resolve any symlinks to get the real absolute path (always)
+  char resolved[PATH_MAX];
+  if (realpath(exe_path, resolved) == NULL) {
+    return NULL;
+  }
+  strncpy(path, resolved, sizeof(path));
+
 #else
   ssize_t len = 0;
   len = readlink("/proc/self/exe", path, sizeof(path) - 1);

@@ -1,6 +1,6 @@
 // Implementation of basic io operations
-import "./std/string";
-import "./std/mem";
+import "std:string";
+import "std:mem";
 
 extern {
     // Opaque types (map to struct in C)
@@ -40,6 +40,8 @@ extern {
 
     // For line reads (if implementing read_line)
     fn fgets(buf *void, size i32, file *FILE) *void;  // char* -> *void, returns buf or null
+
+    fn strlen(s str) usize;
 }
 
 let SeekStart = 0;
