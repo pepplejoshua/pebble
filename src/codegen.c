@@ -535,7 +535,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_type_name(cg, sym->type);
           emit_string(cg, " ");
 
-          emit_string(cg, sym->decl->data.extern_const_decl.full_qualified_name);
+          emit_string(cg,
+                      sym->decl->data.extern_const_decl.full_qualified_name);
           emit_string(cg, ";\n");
         }
         continue;
@@ -604,7 +605,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
             emit_type_name(cg, sym->type);
             emit_string(cg, " ");
 
-            emit_string(cg, sym->decl->data.extern_const_decl.full_qualified_name);
+            emit_string(cg,
+                        sym->decl->data.extern_const_decl.full_qualified_name);
             emit_string(cg, ";\n");
           }
           continue;
@@ -616,7 +618,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
             emit_type_name(cg, sym->type);
             emit_string(cg, " ");
 
-            emit_string(cg, sym->decl->data.extern_var_decl.full_qualified_name);
+            emit_string(cg,
+                        sym->decl->data.extern_var_decl.full_qualified_name);
             emit_string(cg, ";\n");
           }
           continue;
@@ -1043,7 +1046,7 @@ void emit_type_name(Codegen *cg, Type *type) {
     emit_string(cg, "*");
     break;
   case TYPE_OPAQUE:
-    emit_string(cg, type->canonical_name);
+    emit_string(cg, type->declared_name);
     break;
   case TYPE_STRUCT:
   case TYPE_TUPLE:

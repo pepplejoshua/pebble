@@ -254,7 +254,7 @@ static void collect_declaration(AstNode *decl) {
 
   if (is_opaque_type) {
     symbol->type = type_create(TYPE_OPAQUE, loc);
-    symbol->type->declared_name = symbol->name;
+    symbol->type->declared_name = name;
     symbol->type->canonical_name = symbol->name;
   }
 
@@ -1197,7 +1197,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
       // During type resolution, check if it's an unresolved type decl
       if (checker_state.in_type_resolution) { // ADD THIS CHECK
         Scope *mod_scope = checker_state.current_module->scope;
-        Symbol *sym = scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
+        Symbol *sym =
+            scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -1224,7 +1225,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
       if (checker_state.in_type_resolution) {
-        Symbol *sym = scope_lookup_local(checker_state.current_module->scope, qualified_name);
+        Symbol *sym = scope_lookup_local(checker_state.current_module->scope,
+                                         qualified_name);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -1512,8 +1514,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
 
   // void* <-> string
   if ((expr_type->kind == TYPE_POINTER && target_type->kind == TYPE_STRING) ||
-      (expr_type->kind == TYPE_STRING && target_type->kind == TYPE_POINTER)
-  ) {
+      (expr_type->kind == TYPE_STRING && target_type->kind == TYPE_POINTER)) {
     if (expr_type->data.ptr.base == type_void ||
         target_type->data.ptr.base == type_void) {
       AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
@@ -2075,7 +2076,8 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_IDENTIFIER: {
     char *name = expr->data.ident.name;
     Scope *mod_scope = checker_state.current_module->scope;
-    Symbol *sym = scope_lookup(mod_scope, current_scope, name, checker_state.current_module->name);
+    Symbol *sym = scope_lookup(mod_scope, current_scope, name,
+                               checker_state.current_module->name);
     if (!sym) {
       checker_error(expr->loc, "undefined name '%s'", name);
       return NULL;
@@ -2089,7 +2091,8 @@ Type *check_expression(AstNode *expr) {
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
       // The name got qualified, so we should update the reference to it
       if (sym->data.var.is_global) {
-        char *prefix = prepend(checker_state.current_module->qualified_name, "__");
+        char *prefix =
+            prepend(checker_state.current_module->qualified_name, "__");
         char *qualifed = prepend(prefix, sym->name);
         expr->data.ident.full_qualified_name = qualifed;
       }
@@ -2097,7 +2100,8 @@ Type *check_expression(AstNode *expr) {
       expr->data.ident.qualified_name = sym->name;
 
     } else {
-      char *prefix = prepend(checker_state.current_module->qualified_name, "__");
+      char *prefix =
+          prepend(checker_state.current_module->qualified_name, "__");
       char *qualifed = prepend(prefix, sym->reg_name);
       expr->data.ident.full_qualified_name = qualifed;
     }
@@ -2296,11 +2300,9 @@ Type *check_expression(AstNode *expr) {
     if (op == BINOP_BIT_AND || op == BINOP_BIT_OR || op == BINOP_BIT_XOR ||
         op == BINOP_BIT_SHL || op == BINOP_BIT_SHR) {
       if (!type_is_integral(left) || !type_is_integral(right)) {
-        checker_error(
-          expr->loc,
-          "bitwise operation requires integer operands, got %s",
-          type_name(expr->resolved_type)
-        );
+        checker_error(expr->loc,
+                      "bitwise operation requires integer operands, got %s",
+                      type_name(expr->resolved_type));
         return NULL;
       }
       // Handle type promotion for sized integers
@@ -2779,7 +2781,8 @@ Type *check_expression(AstNode *expr) {
     const char *member_name = expr->data.mod_member_expr.member;
 
     Symbol *sym = NULL;
-    Module *module = lookup_imported_module(checker_state.current_module, module_expr->data.ident.name);
+    Module *module = lookup_imported_module(checker_state.current_module,
+                                            module_expr->data.ident.name);
     if (!module) {
       checker_error(expr->loc, "cannot find module '%s'",
                     module_expr->data.ident.name);
@@ -2907,8 +2910,11 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(field_values[i], value_type, expected_types[j]);
 
           if (!converted_init) {
-            checker_error(expr->loc, "field '%s' has initializer type mismatch '%s' != '%s'",
-                          field_names[i], type_name(expected_types[j]), type_name(value_type));
+            checker_error(
+                expr->loc,
+                "field '%s' has initializer type mismatch '%s' != '%s'",
+                field_names[i], type_name(expected_types[j]),
+                type_name(value_type));
             return NULL;
           }
 
@@ -3397,8 +3403,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // If LHS is an identifier, check if it's a constant
     if (lhs->kind == AST_EXPR_IDENTIFIER) {
       Scope *mod_scope = checker_state.current_module->scope;
-      Symbol *sym =
-          scope_lookup(mod_scope, current_scope, lhs->data.ident.name, lhs->loc.file);
+      Symbol *sym = scope_lookup(mod_scope, current_scope, lhs->data.ident.name,
+                                 lhs->loc.file);
       if (sym && sym->kind == SYMBOL_CONSTANT) {
         checker_error(lhs->loc, "cannot assign to constant");
         return false;
@@ -3427,11 +3433,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (lhs_type && rhs_type) {
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
       if (!converted) {
-        checker_error(
-          stmt->loc,
-          "assignment type mismatch, '%s' != '%s'",
-          type_name(lhs_type), type_name(rhs_type)
-        );
+        checker_error(stmt->loc, "assignment type mismatch, '%s' != '%s'",
+                      type_name(lhs_type), type_name(rhs_type));
       } else {
         stmt->data.assign_stmt.rhs =
             converted; // Replace with cast node if needed
@@ -3559,8 +3562,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       AstNode *converted = maybe_insert_cast(value, value_type, const_type);
       if (!converted) {
         checker_error(value->loc,
-          "constant initializer type mismatch '%s' != '%s'",
-          type_name(const_type), type_name(value_type));
+                      "constant initializer type mismatch '%s' != '%s'",
+                      type_name(const_type), type_name(value_type));
         return false;
       }
       stmt->data.const_decl.value =
