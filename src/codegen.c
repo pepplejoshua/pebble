@@ -1121,7 +1121,9 @@ void emit_sections(Codegen *cg, Module *main_mod) {
   if (!compiler_opts.freestanding) {
     fputs("void *__pebble_c_alloc(__pebble_context ctx, void *ptr, size_t "
           "size) {\n"
-          "  return malloc(size);\n"
+          "  void *data = malloc(size);\n"
+          "  memset(data, 0, size);\n"
+          "  return data;\n"
           "}\n\n"
           "void __pebble_c_free(__pebble_context ctx, void *ptr, void "
           "*data) {\n"
@@ -1812,7 +1814,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, "for (");
       emit_type_name(cg, init->resolved_type);
       emit_string(cg, " ");
-      emit_string(cg, init->data.var_decl.full_qualified_name);
+      emit_string(cg, init->data.var_decl.name);
       emit_string(cg, " = ");
       emit_expr(cg, init->data.var_decl.init);
       emit_string(cg, "; ");
@@ -2363,7 +2365,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (array_type->kind == TYPE_STRING) {
       // For str, index directly
-      if (compiler_opts.release_mode == RELEASE_DEBUG) {
+      if (mode_is_safe()) {
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
@@ -2378,7 +2380,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // For arrays/slices, use .data
-      if (compiler_opts.release_mode == RELEASE_DEBUG) {
+      if (mode_is_safe()) {
         // Bounds checking
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);
