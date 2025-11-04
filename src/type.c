@@ -41,6 +41,7 @@ TypeEntry *canonical_type_table = NULL;
 // Create a basic type
 Type *type_create(TypeKind kind, Location loc) {
   Type *type = arena_alloc(&long_lived, sizeof(Type));
+  memset(type, 0, sizeof(Type));
   type->kind = kind;
   type->loc = loc;
   return type;
@@ -639,9 +640,78 @@ char *compute_canonical_name(Type *type) {
   }
 
   case TYPE_UNION:
-  case TYPE_TAGGED_UNION:
+  case TYPE_TAGGED_UNION: {
+    // Named unions already have canonical_name set (nominal)
+    if (!type->canonical_name) {
+      size_t capacity = 256;
+      char *canonical_name = arena_alloc(&long_lived, capacity);
+      size_t offset = 0;
+
+      offset += snprintf(canonical_name + offset, capacity - offset, "union");
+
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        char *field_name = type->data.union_data.variant_names[i];
+        char *type_name =
+            type->data.union_data.variant_types[i]->canonical_name;
+
+        size_t needed =
+            offset + 1 + strlen(field_name) + 1 + strlen(type_name) + 1;
+        if (needed > capacity) {
+          capacity = needed * 2;
+          char *new_buf = arena_alloc(&long_lived, capacity);
+          memcpy(new_buf, canonical_name, offset);
+          canonical_name = new_buf;
+        }
+
+        offset += snprintf(canonical_name + offset, capacity - offset, "_%s_%s",
+                           field_name, type_name);
+
+        canonical_register(canonical_name, type);
+      }
+
+      type->canonical_name = canonical_name;
+    }
+    result = type->canonical_name;
+    break;
+  }
+
   case TYPE_STRUCT: {
     // Named structs already have canonical_name set (nominal)
+    if (!type->canonical_name) {
+      // Anonymous struct - build structural name
+      size_t capacity = 256;
+      char *canonical_name = arena_alloc(&long_lived, capacity);
+      size_t offset = 0;
+
+      offset += snprintf(canonical_name + offset, capacity - offset, "struct");
+
+      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+        char *field_name = type->data.struct_data.field_names[i];
+        Type *field_type = type->data.struct_data.field_types[i];
+        char *type_name = field_type->canonical_name;
+        if (!type_name) {
+          type_name = compute_canonical_name(field_type);
+        }
+        assert(type_name && "Failed to canonicalize type");
+
+        size_t needed =
+            offset + 1 + strlen(field_name) + 1 + strlen(type_name) + 1;
+        if (needed > capacity) {
+          capacity = needed * 2;
+          char *new_buf = arena_alloc(&long_lived, capacity);
+          memcpy(new_buf, canonical_name, offset);
+          canonical_name = new_buf;
+        }
+
+        offset += snprintf(canonical_name + offset, capacity - offset, "_%s_%s",
+                           field_name, type_name);
+
+        canonical_register(canonical_name, type);
+      }
+
+      type->canonical_name = canonical_name;
+    }
+
     result = type->canonical_name;
     break;
   }

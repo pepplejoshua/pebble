@@ -1661,6 +1661,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         ? cond_type->qualified_name
         : cond_type->data.ptr.base->qualified_name;
 
+      if (!qualified_name) {
+        qualified_name = cond_type->canonical_name
+          ? cond_type->canonical_name
+          : cond_type->data.ptr.base->canonical_name;
+      }
+
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
         emit_indent_spaces(cg);
         emit_string(cg, "case ");
@@ -2746,10 +2752,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, ";\n");
 
+        char *name = base_type->qualified_name
+          ? base_type->qualified_name
+          : base_type->canonical_name;
+
         emit_string(cg, "assert(");
         emit_string(cg, temp);
         emit_string(cg, "->__tag == ");
-        emit_string(cg, base_type->qualified_name);
+        emit_string(cg, name);
         emit_string(cg, "__");
         emit_string(cg, base_type->data.union_data.variant_names[index]);
         emit_string(cg, ");\n");
@@ -2776,6 +2786,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         char buffer[64] = {0};
 
+        char *name = object_type->qualified_name
+          ? object_type->qualified_name
+          : object_type->canonical_name;
+
         emit_string(cg, "({\n");
         char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
         emit_type_name(cg, object_type);
@@ -2788,7 +2802,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "assert(");
         emit_string(cg, temp);
         emit_string(cg, ".__tag == ");
-        emit_string(cg, object_type->qualified_name);
+        emit_string(cg, name);
         emit_string(cg, "__");
         emit_string(cg, object_type->data.union_data.variant_names[index]);
         emit_string(cg, ");\n");
@@ -2824,7 +2838,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       if (expr->data.struct_literal.field_count > 0) {
         emit_string(cg, ".__tag = ");
 
-        emit_string(cg, expr->resolved_type->qualified_name);
+        char *name = expr->resolved_type->qualified_name
+          ? expr->resolved_type->qualified_name
+          : expr->resolved_type->canonical_name;
+
+        emit_string(cg, name);
         emit_string(cg, "__");
         emit_string(cg, expr->data.struct_literal.field_names[0]);
 

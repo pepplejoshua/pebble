@@ -593,7 +593,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     } else if (type->qualified_name) {
       canonical_name = str_dup(type->qualified_name);
     } else {
-      // Anonymous struct - build structural name
+      // Anonymous union - build structural name
       size_t capacity = 256;
       canonical_name = arena_alloc(&long_lived, capacity);
       size_t offset = 0;
