@@ -1338,7 +1338,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_STRUCT: {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
-      checker_warning(type_expr->loc,
+      checker_error(type_expr->loc,
                       "Struct was declared without any members");
       return type_create_struct(NULL, NULL, field_count, false, loc);
     }
@@ -1403,7 +1403,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     bool tagged = type_expr->data.type_union.is_tagged;
     size_t variant_count = type_expr->data.type_union.variant_count;
     if (variant_count == 0) {
-      checker_warning(type_expr->loc,
+      checker_error(type_expr->loc,
                       "Union was declared without any members");
       return type_create_union(tagged, NULL, NULL, variant_count, loc);
     }
@@ -1466,7 +1466,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_ENUM: {
     size_t variant_count = type_expr->data.type_enum.variant_count;
     if (variant_count == 0) {
-      checker_warning(type_expr->loc, "Enum was declared without any members");
+      checker_error(type_expr->loc, "Enum was declared without any members");
       return type_create_enum(NULL, variant_count, loc);
     }
 
