@@ -256,8 +256,14 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
       if (start[1] == '6' && start[2] == '4')
         return lexer_check_keyword(lexer, 3, "u64", TOKEN_U64_TYPE);
     }
-    if (length == 5)
-      return lexer_check_keyword(lexer, 5, "usize", TOKEN_USIZE_TYPE);
+    if (length == 5) {
+      if (start[1] == 's') {
+        return lexer_check_keyword(lexer, 5, "usize", TOKEN_USIZE_TYPE);
+      }
+      if (start[1] == 'n') {
+        return lexer_check_keyword(lexer, 5, "union", TOKEN_UNION);
+      }
+    }
     break;
   case 'v':
     if (length == 3)

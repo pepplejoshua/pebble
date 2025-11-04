@@ -340,6 +340,13 @@ void collect_dependencies(Type *t, const char *self_name,
                            all_types, deps, dep_count, dep_capacity);
     }
     break;
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
+    for (size_t i = 0; i < t->data.union_data.variant_count; i++) {
+      collect_dependencies(t->data.union_data.variant_types[i], self_name,
+                           all_types, deps, dep_count, dep_capacity);
+    }
+    break;
   case TYPE_TUPLE:
     for (size_t i = 0; i < t->data.tuple.element_count; i++) {
       collect_dependencies(t->data.tuple.element_types[i], self_name, all_types,
@@ -409,7 +416,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
         type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION ||
-        type->kind == TYPE_OPTIONAL) {
+        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+        type->kind == TYPE_TAGGED_UNION) {
       TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
       node->name = type->canonical_name;
       node->depends_on = NULL;
@@ -466,6 +474,17 @@ void emit_program(Codegen *cg, Module *main_mod) {
       }
       break;
     }
+
+    case TYPE_UNION:
+    case TYPE_TAGGED_UNION: {
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        collect_dependencies(type->data.union_data.variant_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      break;
+    }
+
     case TYPE_FUNCTION: {
       for (size_t i = 0; i < type->data.func.param_count; i++) {
         collect_dependencies(type->data.func.param_types[i],
@@ -507,7 +526,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
          entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION ||
-         entry->type->kind == TYPE_OPTIONAL)) {
+         entry->type->kind == TYPE_OPTIONAL || entry->type->kind == TYPE_UNION ||
+         entry->type->kind == TYPE_TAGGED_UNION)) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -1053,6 +1073,8 @@ void emit_type_name(Codegen *cg, Type *type) {
   case TYPE_TUPLE:
   case TYPE_OPTIONAL:
   case TYPE_ENUM:
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
     emit_string(cg, type->canonical_name); // Just "Node" or "tuple_int_int"
     break;
   case TYPE_ARRAY: {
@@ -1254,6 +1276,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
     } else {
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
+      } else if (type->kind == TYPE_UNION) {
+        emit_string(cg, "typedef union ");
       } else {
         emit_string(cg, "typedef struct ");
       }
@@ -1310,7 +1334,8 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   // Check if already defined (full struct/tuple)
   if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
       type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-      type->kind == TYPE_OPTIONAL) {
+      type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+      type->kind == TYPE_TAGGED_UNION) {
 
     if (type->kind == TYPE_STRUCT && type->data.struct_data.builtin) {
       return;
@@ -1323,7 +1348,12 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
 
-      emit_string(cg, "struct ");
+      if (type->kind == TYPE_UNION) {
+        emit_string(cg, "union ");
+      } else {
+        emit_string(cg, "struct ");
+      }
+
       emit_string(cg, canonical);
       emit_string(cg, " {");
       emit_string(cg, "\n");
@@ -1337,6 +1367,51 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
           emit_string(cg, ";");
           emit_string(cg, "\n");
         }
+      } else if (type->kind == TYPE_UNION) {
+        for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+          emit_indent_spaces(cg);
+          emit_type_name(cg, type->data.union_data.variant_types[i]);
+          emit_string(cg, " ");
+          emit_string(cg, type->data.union_data.variant_names[i]);
+          emit_string(cg, ";\n");
+        }
+      } else if (type->kind == TYPE_TAGGED_UNION) {
+        // Generate enum tags
+        // NOTE: Enums dont like being generated empty
+        if (type->data.union_data.variant_count > 0) {
+          emit_indent_spaces(cg);
+          emit_string(cg, "enum {\n");
+
+          for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+            emit_indent_spaces(cg);
+            emit_indent_spaces(cg);
+
+            emit_string(cg, canonical);
+            emit_string(cg, "__");
+            emit_string(cg, type->data.union_data.variant_names[i]);
+            emit_string(cg, ",\n");
+          }
+
+          emit_indent_spaces(cg);
+          emit_string(cg, "} __tag;\n");
+        }
+
+        // Generate variants under union
+        emit_indent_spaces(cg);
+        emit_string(cg, "union {\n");
+
+        for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+          emit_indent_spaces(cg);
+          emit_indent_spaces(cg);
+
+          emit_type_name(cg, type->data.union_data.variant_types[i]);
+          emit_string(cg, " ");
+          emit_string(cg, type->data.union_data.variant_names[i]);
+          emit_string(cg, ";\n");
+        }
+
+        emit_indent_spaces(cg);
+        emit_string(cg, "} __data;\n");
       } else if (type->kind == TYPE_TUPLE) {
         for (size_t i = 0; i < type->data.tuple.element_count; i++) {
           emit_indent_spaces(cg);
@@ -1569,36 +1644,44 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_indent_spaces(cg);
 
-    switch (cond_type->kind) {
-    case TYPE_CHAR:
-    case TYPE_INT:
-    case TYPE_U8:
-    case TYPE_U32:
-    case TYPE_USIZE:
-    case TYPE_I16:
-    case TYPE_I64:
-    case TYPE_U16:
-    case TYPE_U64:
-    case TYPE_I8:
-    case TYPE_I32:
-    case TYPE_ISIZE:
-    case TYPE_ENUM: {
+    if (cond_type->kind == TYPE_TAGGED_UNION || (cond_type->kind == TYPE_POINTER &&
+      cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION))
+    {
       emit_string(cg, "switch (");
       emit_expr(cg, cond);
+
+      if (cond_type->kind == TYPE_POINTER) {
+        emit_string(cg, "->__tag");
+      } else {
+        emit_string(cg, ".__tag");
+      }
+
       emit_string(cg, ") {\n");
+      char *qualified_name = cond_type->qualified_name
+        ? cond_type->qualified_name
+        : cond_type->data.ptr.base->qualified_name;
 
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+        emit_indent_spaces(cg);
         emit_string(cg, "case ");
-        emit_expr(cg, cases[i]->data.case_stmt.condition);
+        AstNode *ident = cases[i]->data.case_stmt.condition;
+
+
+        emit_string(cg, qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, ident->data.ident.name);
         emit_string(cg, ":\n");
 
         emit_indent(cg);
         emit_stmt(cg, cases[i]->data.case_stmt.body);
         emit_dedent(cg);
 
+        emit_indent_spaces(cg);
+        emit_indent_spaces(cg);
         emit_string(cg, "break;\n");
       }
 
+      emit_indent_spaces(cg);
       emit_string(cg, "default: {\n");
 
       if (stmt->data.switch_stmt.default_case) {
@@ -1607,127 +1690,176 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_dedent(cg);
       }
 
-      emit_string(cg, "}\n");
+      emit_indent_spaces(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "break;\n");
 
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
-      break;
-    }
 
-    case TYPE_F32:
-    case TYPE_F64: {
-      char buffer[64];
-      char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-      size_t case_count = stmt->data.switch_stmt.case_count;
-
-      if (case_count > 0) {
-        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-        emit_string(cg, " ");
-        emit_string(cg, temporary_name);
-
-        emit_string(cg, " = ");
+      emit_indent_spaces(cg);
+      emit_string(cg, "}\n");
+    } else {
+      switch (cond_type->kind) {
+      case TYPE_CHAR:
+      case TYPE_INT:
+      case TYPE_U8:
+      case TYPE_U32:
+      case TYPE_USIZE:
+      case TYPE_I16:
+      case TYPE_I64:
+      case TYPE_U16:
+      case TYPE_U64:
+      case TYPE_I8:
+      case TYPE_I32:
+      case TYPE_ISIZE:
+      case TYPE_ENUM: {
+        emit_string(cg, "switch (");
         emit_expr(cg, cond);
-        emit_string(cg, ";\n");
-      }
-
-      for (size_t i = 0; i < case_count; i++) {
-        if (i == 0) {
-          emit_string(cg, "if (");
-        } else {
-          emit_string(cg, "else if (");
-        }
-
-        emit_string(cg, temporary_name);
-        emit_string(cg, " == ");
-
-        emit_expr(cg, cases[i]->data.case_stmt.condition);
         emit_string(cg, ") {\n");
 
-        emit_indent(cg);
-        emit_stmt(cg, cases[i]->data.case_stmt.body);
-        emit_dedent(cg);
+        for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+          emit_string(cg, "case ");
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ":\n");
 
-        emit_string(cg, "}");
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "break;\n");
+        }
+
+        emit_string(cg, "default: {\n");
+
+        if (stmt->data.switch_stmt.default_case) {
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+        }
+
+        emit_string(cg, "}\n");
+        emit_string(cg, "break;\n");
+
+        emit_indent_spaces(cg);
+        emit_string(cg, "}\n");
+        break;
       }
 
-      if (stmt->data.switch_stmt.default_case) {
+      case TYPE_F32:
+      case TYPE_F64: {
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+        size_t case_count = stmt->data.switch_stmt.case_count;
+
         if (case_count > 0) {
-          emit_string(cg, " else ");
+          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+          emit_string(cg, " ");
+          emit_string(cg, temporary_name);
+
+          emit_string(cg, " = ");
+          emit_expr(cg, cond);
+          emit_string(cg, ";\n");
         }
 
-        emit_string(cg, "{\n");
+        for (size_t i = 0; i < case_count; i++) {
+          if (i == 0) {
+            emit_string(cg, "if (");
+          } else {
+            emit_string(cg, "else if (");
+          }
 
-        emit_indent(cg);
-        emit_stmt(cg, stmt->data.switch_stmt.default_case);
-        emit_dedent(cg);
+          emit_string(cg, temporary_name);
+          emit_string(cg, " == ");
 
-        emit_string(cg, "}");
-      }
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ") {\n");
 
-      emit_string(cg, "\n");
-      break;
-    }
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
 
-    case TYPE_STRING: {
-      char buffer[64];
-      char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-      size_t case_count = stmt->data.switch_stmt.case_count;
-
-      if (case_count > 0) {
-        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-        emit_string(cg, " ");
-        emit_string(cg, temporary_name);
-
-        emit_string(cg, " = ");
-        emit_expr(cg, cond);
-        emit_string(cg, ";\n");
-      }
-
-      for (size_t i = 0; i < case_count; i++) {
-        if (i == 0) {
-          emit_string(cg, "if (");
-        } else {
-          emit_string(cg, " else if (");
+          emit_string(cg, "}");
         }
 
-        emit_string(cg, "strcmp(");
+        if (stmt->data.switch_stmt.default_case) {
+          if (case_count > 0) {
+            emit_string(cg, " else ");
+          }
 
-        emit_string(cg, temporary_name);
-        emit_string(cg, ", ");
+          emit_string(cg, "{\n");
 
-        emit_expr(cg, cases[i]->data.case_stmt.condition);
-        emit_string(cg, ") == 0) {\n");
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
 
-        emit_indent(cg);
-        emit_stmt(cg, cases[i]->data.case_stmt.body);
-        emit_dedent(cg);
+          emit_string(cg, "}");
+        }
 
-        emit_string(cg, "}");
+        emit_string(cg, "\n");
+        break;
       }
 
-      if (stmt->data.switch_stmt.default_case) {
+      case TYPE_STRING: {
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+        size_t case_count = stmt->data.switch_stmt.case_count;
+
         if (case_count > 0) {
-          emit_string(cg, " else ");
+          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+          emit_string(cg, " ");
+          emit_string(cg, temporary_name);
+
+          emit_string(cg, " = ");
+          emit_expr(cg, cond);
+          emit_string(cg, ";\n");
         }
 
-        emit_string(cg, "{\n");
+        for (size_t i = 0; i < case_count; i++) {
+          if (i == 0) {
+            emit_string(cg, "if (");
+          } else {
+            emit_string(cg, " else if (");
+          }
 
-        emit_indent(cg);
-        emit_stmt(cg, stmt->data.switch_stmt.default_case);
-        emit_dedent(cg);
+          emit_string(cg, "strcmp(");
 
-        emit_string(cg, "}");
+          emit_string(cg, temporary_name);
+          emit_string(cg, ", ");
+
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ") == 0) {\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        if (stmt->data.switch_stmt.default_case) {
+          if (case_count > 0) {
+            emit_string(cg, " else ");
+          }
+
+          emit_string(cg, "{\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        emit_string(cg, "\n");
+        break;
       }
 
-      emit_string(cg, "\n");
-      break;
-    }
-
-    default:
-      break;
+      default:
+        break;
+      }
     }
 
     break;
@@ -2208,8 +2340,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, "&");
       break;
     case UNOP_DEREF:
-      emit_string(cg, "*");
-      break;
+      emit_string(cg, "(*");
+      emit_expr(cg, expr->data.unop.operand);
+      emit_string(cg, ")");
+      return;
     case UNOP_BIT_NOT:
       emit_string(cg, "~");
       break;
@@ -2594,10 +2728,38 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // Check if the object is a pointer and prepare the operator
     if (object_type && object_type->kind == TYPE_POINTER) {
       Type *base_type = object_type->data.ptr.base;
-      if (base_type && base_type->kind == TYPE_STRUCT) {
-        // Pointer to struct: emit object directly, then -> (e.g., ptr->field)
+      if (base_type && (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION)) {
+        // Pointer to struct/union: emit object directly, then -> (e.g., ptr->field)
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
+      } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
+        int index = member_index_of_type(base_type, member);
+
+        char buffer[64] = {0};
+
+        emit_string(cg, "({\n");
+        char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
+        emit_type_name(cg, object_type);
+        emit_string(cg, " ");
+        emit_string(cg, buffer);
+        emit_string(cg, " = ");
+        emit_expr(cg, object_expr);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "assert(");
+        emit_string(cg, temp);
+        emit_string(cg, "->__tag == ");
+        emit_string(cg, base_type->qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, base_type->data.union_data.variant_names[index]);
+        emit_string(cg, ");\n");
+
+        emit_string(cg, temp);
+        emit_string(cg, "->__data.");
+        emit_string(cg, member);
+        emit_string(cg, ";\n })");
+
+        return;
       } else {
         // Pointer to tuple, array, or slice: emit (*object). (e.g.,
         // (*ptr).len or (*ptr)._0)
@@ -2607,8 +2769,40 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // Non-pointer: emit object, then . (e.g., obj.field or t._0)
-      emit_expr(cg, object_expr);
-      emit_string(cg, ".");
+
+      // TODO: Emit assert for current tag matching variant
+      if (object_type->kind == TYPE_TAGGED_UNION) {
+        int index = member_index_of_type(object_type, member);
+
+        char buffer[64] = {0};
+
+        emit_string(cg, "({\n");
+        char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
+        emit_type_name(cg, object_type);
+        emit_string(cg, " ");
+        emit_string(cg, buffer);
+        emit_string(cg, " = ");
+        emit_expr(cg, object_expr);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "assert(");
+        emit_string(cg, temp);
+        emit_string(cg, ".__tag == ");
+        emit_string(cg, object_type->qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, object_type->data.union_data.variant_names[index]);
+        emit_string(cg, ");\n");
+
+        emit_string(cg, temp);
+        emit_string(cg, ".__data.");
+        emit_string(cg, member);
+        emit_string(cg, ";\n })");
+
+        return;
+      } else {
+        emit_expr(cg, object_expr);
+        emit_string(cg, ".");
+      }
     }
 
     // For tuple access, prepend underscore to numeric fields
@@ -2625,14 +2819,37 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "(");
     emit_string(cg, expr->data.struct_literal.qualified_type_name);
     emit_string(cg, "){");
-    for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
-      emit_string(cg, ".");
-      emit_string(cg, expr->data.struct_literal.field_names[i]);
-      emit_string(cg, " = ");
-      emit_expr(cg, expr->data.struct_literal.field_values[i]);
+
+    if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {
+      if (expr->data.struct_literal.field_count > 0) {
+        emit_string(cg, ".__tag = ");
+
+        emit_string(cg, expr->resolved_type->qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, expr->data.struct_literal.field_names[0]);
+
+        emit_string(cg, ", .__data = { ");
+
+        emit_string(cg, ".");
+        emit_string(cg, expr->data.struct_literal.field_names[0]);
+        emit_string(cg, " = ");
+        emit_expr(cg, expr->data.struct_literal.field_values[0]);
+
+        emit_string(cg, " }");
+      } else {
+        emit_string(cg, "0");
+      }
+    } else {
+      for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
+        if (i > 0)
+          emit_string(cg, ", ");
+        emit_string(cg, ".");
+        emit_string(cg, expr->data.struct_literal.field_names[i]);
+        emit_string(cg, " = ");
+        emit_expr(cg, expr->data.struct_literal.field_values[i]);
+      }
     }
+
     emit_string(cg, "}");
     break;
   }

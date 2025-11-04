@@ -185,6 +185,33 @@ Type *type_create_struct(char **field_names, Type **field_types,
   return type;
 }
 
+// Create union type
+Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
+                         size_t variant_count, Location loc) {
+  Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, loc);
+  type->data.union_data.tagged = tagged;
+
+  if (variant_count == 0) {
+    type->data.union_data.variant_count = variant_count;
+    return type;
+  }
+
+  // Duplicate field names into arena
+  char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
+  for (size_t i = 0; i < variant_count; i++) {
+    names[i] = str_dup(variant_names[i]);
+  }
+
+  // Copy field types array
+  Type **types = arena_alloc(&long_lived, variant_count * sizeof(Type *));
+  memcpy(types, variant_types, variant_count * sizeof(Type *));
+
+  type->data.union_data.variant_names = names;
+  type->data.union_data.variant_types = types;
+  type->data.union_data.variant_count = variant_count;
+  return type;
+}
+
 // Create enum type
 Type *type_create_enum(char **variant_names, size_t variant_count,
                        Location loc) {
@@ -611,6 +638,8 @@ char *compute_canonical_name(Type *type) {
     break;
   }
 
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
   case TYPE_STRUCT: {
     // Named structs already have canonical_name set (nominal)
     result = type->canonical_name;
@@ -714,6 +743,8 @@ char *type_name(Type *type) {
   case TYPE_STRUCT:
   case TYPE_ENUM:
   case TYPE_OPAQUE:
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
     return type->declared_name;
   case TYPE_POINTER: {
     char *base_ty_name = type_name(type->data.ptr.base);
@@ -833,5 +864,33 @@ char *type_name(Type *type) {
     return "UNRESOLVED";
   default:
     return "UNKNOWN_TYPE";
+  }
+}
+
+int member_index_of_type(Type *type, const char *member) {
+  switch (type->kind) {
+    case TYPE_STRUCT: {
+      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+        if (strcmp(member, type->data.struct_data.field_names[i]) == 0) {
+          return i;
+        }
+      }
+
+      return -1;
+    }
+
+    case TYPE_UNION:
+    case TYPE_TAGGED_UNION: {
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        if (strcmp(member, type->data.union_data.variant_names[i]) == 0) {
+          return i;
+        }
+      }
+
+      return -1;
+    }
+
+    default:
+      return -1;
   }
 }

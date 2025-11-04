@@ -25,6 +25,7 @@ typedef enum {
   TOKEN_FOR,
   TOKEN_TYPE,
   TOKEN_STRUCT,
+  TOKEN_UNION,
   TOKEN_LET, // let a = 5; a is constant
   TOKEN_VAR, // var b = 5; a is a mutable variable
   TOKEN_TRUE,
