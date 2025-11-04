@@ -1644,36 +1644,44 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_indent_spaces(cg);
 
-    switch (cond_type->kind) {
-    case TYPE_CHAR:
-    case TYPE_INT:
-    case TYPE_U8:
-    case TYPE_U32:
-    case TYPE_USIZE:
-    case TYPE_I16:
-    case TYPE_I64:
-    case TYPE_U16:
-    case TYPE_U64:
-    case TYPE_I8:
-    case TYPE_I32:
-    case TYPE_ISIZE:
-    case TYPE_ENUM: {
+    if (cond_type->kind == TYPE_TAGGED_UNION || (cond_type->kind == TYPE_POINTER &&
+      cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION))
+    {
       emit_string(cg, "switch (");
       emit_expr(cg, cond);
+
+      if (cond_type->kind == TYPE_POINTER) {
+        emit_string(cg, "->__tag");
+      } else {
+        emit_string(cg, ".__tag");
+      }
+
       emit_string(cg, ") {\n");
+      char *qualified_name = cond_type->qualified_name
+        ? cond_type->qualified_name
+        : cond_type->data.ptr.base->qualified_name;
 
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+        emit_indent_spaces(cg);
         emit_string(cg, "case ");
-        emit_expr(cg, cases[i]->data.case_stmt.condition);
+        AstNode *ident = cases[i]->data.case_stmt.condition;
+
+
+        emit_string(cg, qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, ident->data.ident.name);
         emit_string(cg, ":\n");
 
         emit_indent(cg);
         emit_stmt(cg, cases[i]->data.case_stmt.body);
         emit_dedent(cg);
 
+        emit_indent_spaces(cg);
+        emit_indent_spaces(cg);
         emit_string(cg, "break;\n");
       }
 
+      emit_indent_spaces(cg);
       emit_string(cg, "default: {\n");
 
       if (stmt->data.switch_stmt.default_case) {
@@ -1682,127 +1690,176 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_dedent(cg);
       }
 
-      emit_string(cg, "}\n");
+      emit_indent_spaces(cg);
+      emit_indent_spaces(cg);
       emit_string(cg, "break;\n");
 
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
-      break;
-    }
 
-    case TYPE_F32:
-    case TYPE_F64: {
-      char buffer[64];
-      char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-      size_t case_count = stmt->data.switch_stmt.case_count;
-
-      if (case_count > 0) {
-        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-        emit_string(cg, " ");
-        emit_string(cg, temporary_name);
-
-        emit_string(cg, " = ");
+      emit_indent_spaces(cg);
+      emit_string(cg, "}\n");
+    } else {
+      switch (cond_type->kind) {
+      case TYPE_CHAR:
+      case TYPE_INT:
+      case TYPE_U8:
+      case TYPE_U32:
+      case TYPE_USIZE:
+      case TYPE_I16:
+      case TYPE_I64:
+      case TYPE_U16:
+      case TYPE_U64:
+      case TYPE_I8:
+      case TYPE_I32:
+      case TYPE_ISIZE:
+      case TYPE_ENUM: {
+        emit_string(cg, "switch (");
         emit_expr(cg, cond);
-        emit_string(cg, ";\n");
-      }
-
-      for (size_t i = 0; i < case_count; i++) {
-        if (i == 0) {
-          emit_string(cg, "if (");
-        } else {
-          emit_string(cg, "else if (");
-        }
-
-        emit_string(cg, temporary_name);
-        emit_string(cg, " == ");
-
-        emit_expr(cg, cases[i]->data.case_stmt.condition);
         emit_string(cg, ") {\n");
 
-        emit_indent(cg);
-        emit_stmt(cg, cases[i]->data.case_stmt.body);
-        emit_dedent(cg);
+        for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+          emit_string(cg, "case ");
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ":\n");
 
-        emit_string(cg, "}");
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "break;\n");
+        }
+
+        emit_string(cg, "default: {\n");
+
+        if (stmt->data.switch_stmt.default_case) {
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+        }
+
+        emit_string(cg, "}\n");
+        emit_string(cg, "break;\n");
+
+        emit_indent_spaces(cg);
+        emit_string(cg, "}\n");
+        break;
       }
 
-      if (stmt->data.switch_stmt.default_case) {
+      case TYPE_F32:
+      case TYPE_F64: {
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+        size_t case_count = stmt->data.switch_stmt.case_count;
+
         if (case_count > 0) {
-          emit_string(cg, " else ");
+          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+          emit_string(cg, " ");
+          emit_string(cg, temporary_name);
+
+          emit_string(cg, " = ");
+          emit_expr(cg, cond);
+          emit_string(cg, ";\n");
         }
 
-        emit_string(cg, "{\n");
+        for (size_t i = 0; i < case_count; i++) {
+          if (i == 0) {
+            emit_string(cg, "if (");
+          } else {
+            emit_string(cg, "else if (");
+          }
 
-        emit_indent(cg);
-        emit_stmt(cg, stmt->data.switch_stmt.default_case);
-        emit_dedent(cg);
+          emit_string(cg, temporary_name);
+          emit_string(cg, " == ");
 
-        emit_string(cg, "}");
-      }
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ") {\n");
 
-      emit_string(cg, "\n");
-      break;
-    }
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
 
-    case TYPE_STRING: {
-      char buffer[64];
-      char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-      size_t case_count = stmt->data.switch_stmt.case_count;
-
-      if (case_count > 0) {
-        emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-        emit_string(cg, " ");
-        emit_string(cg, temporary_name);
-
-        emit_string(cg, " = ");
-        emit_expr(cg, cond);
-        emit_string(cg, ";\n");
-      }
-
-      for (size_t i = 0; i < case_count; i++) {
-        if (i == 0) {
-          emit_string(cg, "if (");
-        } else {
-          emit_string(cg, " else if (");
+          emit_string(cg, "}");
         }
 
-        emit_string(cg, "strcmp(");
+        if (stmt->data.switch_stmt.default_case) {
+          if (case_count > 0) {
+            emit_string(cg, " else ");
+          }
 
-        emit_string(cg, temporary_name);
-        emit_string(cg, ", ");
+          emit_string(cg, "{\n");
 
-        emit_expr(cg, cases[i]->data.case_stmt.condition);
-        emit_string(cg, ") == 0) {\n");
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
 
-        emit_indent(cg);
-        emit_stmt(cg, cases[i]->data.case_stmt.body);
-        emit_dedent(cg);
+          emit_string(cg, "}");
+        }
 
-        emit_string(cg, "}");
+        emit_string(cg, "\n");
+        break;
       }
 
-      if (stmt->data.switch_stmt.default_case) {
+      case TYPE_STRING: {
+        char buffer[64];
+        char *temporary_name = get_temporary_name(cg, buffer, 64);
+
+        size_t case_count = stmt->data.switch_stmt.case_count;
+
         if (case_count > 0) {
-          emit_string(cg, " else ");
+          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
+          emit_string(cg, " ");
+          emit_string(cg, temporary_name);
+
+          emit_string(cg, " = ");
+          emit_expr(cg, cond);
+          emit_string(cg, ";\n");
         }
 
-        emit_string(cg, "{\n");
+        for (size_t i = 0; i < case_count; i++) {
+          if (i == 0) {
+            emit_string(cg, "if (");
+          } else {
+            emit_string(cg, " else if (");
+          }
 
-        emit_indent(cg);
-        emit_stmt(cg, stmt->data.switch_stmt.default_case);
-        emit_dedent(cg);
+          emit_string(cg, "strcmp(");
 
-        emit_string(cg, "}");
+          emit_string(cg, temporary_name);
+          emit_string(cg, ", ");
+
+          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, ") == 0) {\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, cases[i]->data.case_stmt.body);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        if (stmt->data.switch_stmt.default_case) {
+          if (case_count > 0) {
+            emit_string(cg, " else ");
+          }
+
+          emit_string(cg, "{\n");
+
+          emit_indent(cg);
+          emit_stmt(cg, stmt->data.switch_stmt.default_case);
+          emit_dedent(cg);
+
+          emit_string(cg, "}");
+        }
+
+        emit_string(cg, "\n");
+        break;
       }
 
-      emit_string(cg, "\n");
-      break;
-    }
-
-    default:
-      break;
+      default:
+        break;
+      }
     }
 
     break;
@@ -2231,8 +2288,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, "&");
       break;
     case UNOP_DEREF:
-      emit_string(cg, "*");
-      break;
+      emit_string(cg, "(*");
+      emit_expr(cg, expr->data.unop.operand);
+      emit_string(cg, ")");
+      return;
     case UNOP_BIT_NOT:
       emit_string(cg, "~");
       break;

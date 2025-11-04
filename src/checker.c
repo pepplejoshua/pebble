@@ -1867,8 +1867,12 @@ static bool is_nil_type(Type *type) {
 }
 
 static bool is_constant_known(AstNode *node) {
-  // Enum values are always constant
-  if (node->resolved_type->kind == TYPE_ENUM) {
+  // Enum values and union tags are always constant
+  if (node->resolved_type->kind == TYPE_ENUM ||
+      node->resolved_type->kind == TYPE_TAGGED_UNION ||
+     (node->resolved_type->kind == TYPE_POINTER &&
+      node->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION)
+    ) {
     return true;
   }
 
@@ -1977,7 +1981,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
   }
 
   // Check exhaustiveness of enums
-  if (switch_type->kind == TYPE_ENUM) {
+  else if (switch_type->kind == TYPE_ENUM) {
     size_t variant_count = switch_type->data.enum_data.variant_count;
 
     Arena temp_arena;
@@ -2036,10 +2040,81 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     arena_free(&temp_arena);
+
+    return;
+  }
+  // Tagged enum variants
+  else if (switch_type->kind == TYPE_TAGGED_UNION || (switch_type->kind == TYPE_POINTER &&
+    switch_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
+
+    size_t variant_count = switch_type->kind == TYPE_TAGGED_UNION
+      ? switch_type->data.union_data.variant_count
+      : switch_type->data.ptr.base->data.union_data.variant_count;
+
+    char **variant_names = switch_type->kind == TYPE_TAGGED_UNION
+      ? switch_type->data.union_data.variant_names
+      : switch_type->data.ptr.base->data.union_data.variant_names;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, variant_count);
+
+    bool *covered = arena_alloc(&temp_arena, variant_count);
+
+    // Mark covered values
+    for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
+      AstNode *_case =
+          node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+
+      if (_case->kind == AST_EXPR_IDENTIFIER) {
+        const char *variant_name = _case->data.ident.name;
+
+        // Find which enum value this is
+        for (size_t j = 0; j < variant_count; j++) {
+          if (strcmp(variant_name, variant_names[j]) == 0) {
+            if (covered[j]) {
+              if (covered[j]) {
+                checker_error(node->loc,
+                              "Switch case %d has already covered the variant "
+                              "\"%s\" in a "
+                              "previous case.",
+                              i + 1, variant_name);
+              }
+            }
+
+            covered[j] = true;
+            break;
+          }
+        }
+      }
+    }
+
+    size_t missing_items = 0;
+
+    // Check for uncovered values
+    for (size_t i = 0; i < variant_count; i++) {
+      if (!covered[i]) {
+        missing_items++;
+        checker_error(node->loc,
+                      "Switch not exhaustive: missing case for '%s'",
+                      variant_names[i]);
+      }
+    }
+
+    if (missing_items > 0) {
+      checker_error(node->loc,
+                    "Switch is non-exhaustive and is missing %d variant(s) of "
+                    "type %s. Use \"else\" "
+                    "if you need a default branch.",
+                    missing_items, switch_type->canonical_name);
+    }
+
+    arena_free(&temp_arena);
+
+    return;
   }
 
   checker_error(node->loc,
-                "Switch is non-exhaustive. If you need a default branch.");
+                "Switch is non-exhaustive. Use \"else\" if you need a default branch.");
 }
 
 Type *check_expression(AstNode *expr) {
@@ -2238,7 +2313,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Types are not values
-    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM) {
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
+        sym->type->kind != TYPE_TAGGED_UNION) {
       checker_error(expr->loc, "'%s' is a type, not a value", name);
       return NULL;
     }
@@ -2246,7 +2322,8 @@ Type *check_expression(AstNode *expr) {
     // Only variables, constants and functions can be used as values
     if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CONSTANT &&
         sym->kind != SYMBOL_FUNCTION &&
-        (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
+        (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
+         sym->type->kind != TYPE_TAGGED_UNION)) {
       checker_error(expr->loc, "'%s' cannot be used as a value", name);
       return NULL;
     }
@@ -2951,7 +3028,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Types are not values
-    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM) {
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM && sym->type->kind != TYPE_ENUM) {
       checker_error(expr->loc, "'%s::%s' is a type, not a value",
                     module_expr->data.ident.name, member_name);
       return NULL;
@@ -2960,7 +3037,8 @@ Type *check_expression(AstNode *expr) {
     // Only variables, constants and functions can be used as values
     if (sym->kind != SYMBOL_VARIABLE && sym->kind != SYMBOL_CONSTANT &&
         sym->kind != SYMBOL_FUNCTION &&
-        (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM)) {
+        (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
+         sym->type->kind != TYPE_TAGGED_UNION)) {
       checker_error(expr->loc, "'%s::%s' cannot be used as a value",
                     module_expr->data.ident.name, member_name);
       return NULL;
@@ -3435,9 +3513,11 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     if (cond_type && !type_is_numeric(cond_type) &&
         cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
-        cond_type->kind != TYPE_ENUM) {
+        cond_type->kind != TYPE_ENUM && cond_type->kind != TYPE_TAGGED_UNION &&
+        // Allow pointers to tagged unions
+        (cond_type->kind == TYPE_POINTER && cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
       checker_error(cond->loc, "switch condition must be numeric (int or "
-                               "float), char, enum or string");
+                              "float), char, enum, string or tagged union");
       had_error = true;
     }
 
@@ -3465,17 +3545,31 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *switch_cond =
         stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
 
-    Type *cond_type = check_expression(cond);
-    AstNode *casted_cond =
-        maybe_insert_cast(cond, cond_type, switch_cond->resolved_type);
+    bool is_tagged_union =
+      switch_cond->resolved_type->kind == TYPE_TAGGED_UNION ||
+      (switch_cond->resolved_type->kind == TYPE_POINTER &&
+       switch_cond->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION);
 
-    if (casted_cond && switch_cond->resolved_type &&
-        !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
-      checker_error(cond->loc,
-                    "switch case condition '%s' doesn't match switch "
-                    "condition type '%s'",
-                    cond->resolved_type->canonical_name,
-                    switch_cond->resolved_type->canonical_name);
+    Type *cond_type = NULL;
+    // Tagged unions will use their field names for their cases
+    // FIXME: Allow TypeName.variant like enums
+    if (!is_tagged_union && cond->kind != AST_EXPR_IDENTIFIER) {
+      cond_type = check_expression(cond);
+      AstNode *casted_cond =
+          maybe_insert_cast(cond, cond_type, switch_cond->resolved_type);
+
+      if (casted_cond && switch_cond->resolved_type &&
+          !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
+        checker_error(cond->loc,
+                      "switch case condition '%s' doesn't match switch "
+                      "condition type '%s'",
+                      cond->resolved_type->canonical_name,
+                      switch_cond->resolved_type->canonical_name);
+      }
+    } else {
+      // Tagged union will assume type
+      cond_type = switch_cond->resolved_type;
+      cond->resolved_type = cond_type;
     }
 
     // Check that condition is constant
