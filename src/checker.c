@@ -1913,6 +1913,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     arena_init(&temp_arena, size);
 
     bool *covered = arena_alloc(&temp_arena, size);
+    memset(covered, 0, size);
 
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
       AstNode *_case =
@@ -1988,6 +1989,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     arena_init(&temp_arena, variant_count);
 
     bool *covered = arena_alloc(&temp_arena, variant_count);
+    memset(covered, 0, variant_count);
 
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
@@ -2059,6 +2061,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     arena_init(&temp_arena, variant_count);
 
     bool *covered = arena_alloc(&temp_arena, variant_count);
+    memset(covered, 0, variant_count);
 
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
