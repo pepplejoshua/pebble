@@ -2708,14 +2708,37 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "(");
     emit_string(cg, expr->data.struct_literal.qualified_type_name);
     emit_string(cg, "){");
-    for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
-      emit_string(cg, ".");
-      emit_string(cg, expr->data.struct_literal.field_names[i]);
-      emit_string(cg, " = ");
-      emit_expr(cg, expr->data.struct_literal.field_values[i]);
+
+    if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {
+      if (expr->data.struct_literal.field_count > 0) {
+        emit_string(cg, ".__tag = ");
+
+        emit_string(cg, expr->resolved_type->qualified_name);
+        emit_string(cg, "__");
+        emit_string(cg, expr->data.struct_literal.field_names[0]);
+
+        emit_string(cg, ", .__data = { ");
+
+        emit_string(cg, ".");
+        emit_string(cg, expr->data.struct_literal.field_names[0]);
+        emit_string(cg, " = ");
+        emit_expr(cg, expr->data.struct_literal.field_values[0]);
+
+        emit_string(cg, " }");
+      } else {
+        emit_string(cg, "0");
+      }
+    } else {
+      for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
+        if (i > 0)
+          emit_string(cg, ", ");
+        emit_string(cg, ".");
+        emit_string(cg, expr->data.struct_literal.field_names[i]);
+        emit_string(cg, " = ");
+        emit_expr(cg, expr->data.struct_literal.field_values[i]);
+      }
     }
+
     emit_string(cg, "}");
     break;
   }

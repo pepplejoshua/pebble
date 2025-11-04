@@ -3011,8 +3011,9 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    if (type_of->kind != TYPE_STRUCT) {
-      checker_error(expr->loc, "'%s' is not a struct type", struct_type_name);
+    if (type_of->kind != TYPE_STRUCT && type_of->kind != TYPE_UNION &&
+        type_of->kind != TYPE_TAGGED_UNION) {
+      checker_error(expr->loc, "'%s' is not a struct or union type", struct_type_name);
       return NULL;
     }
 
@@ -3021,61 +3022,143 @@ Type *check_expression(AstNode *expr) {
       expr->data.struct_literal.qualified_type_name = type_of->qualified_name;
     }
 
-    Type *struct_type = type_of;
-    expr->resolved_type = struct_type;
+    switch (type_of->kind) {
+      case TYPE_STRUCT: {
+        Type *struct_type = type_of;
 
-    // Verify field count matches
-    size_t expected_count = struct_type->data.struct_data.field_count;
-    if (field_count != expected_count) {
-      checker_error(
-          expr->loc,
-          "struct literal has %zu field(s), but type '%s' has %zu field(s)",
-          field_count, type_name(type_of), expected_count);
-      return NULL;
-    }
+        // Verify field count matches
+        size_t expected_count = struct_type->data.struct_data.field_count;
+        if (field_count != expected_count) {
+          checker_error(
+              expr->loc,
+              "struct literal has %zu field(s), but type '%s' has %zu field(s)",
+              field_count, type_name(type_of), expected_count);
+          return NULL;
+        }
 
-    // Check each field
-    char **expected_names = struct_type->data.struct_data.field_names;
-    Type **expected_types = struct_type->data.struct_data.field_types;
+        // Check each field
+        char **expected_names = struct_type->data.struct_data.field_names;
+        Type **expected_types = struct_type->data.struct_data.field_types;
 
-    for (size_t i = 0; i < field_count; i++) {
-      // Find this field in the struct type
-      bool found = false;
-      for (size_t j = 0; j < expected_count; j++) {
-        if (strcmp(field_names[i], expected_names[j]) == 0) {
-          found = true;
+        for (size_t i = 0; i < field_count; i++) {
+          // Find this field in the struct type
+          bool found = false;
+          for (size_t j = 0; j < expected_count; j++) {
+            if (strcmp(field_names[i], expected_names[j]) == 0) {
+              found = true;
 
-          // Type-check the value
-          Type *value_type = check_expression(field_values[i]);
-          if (!value_type) {
-            return NULL; // Error already reported
+              // Type-check the value
+              Type *value_type = check_expression(field_values[i]);
+              if (!value_type) {
+                return NULL; // Error already reported
+              }
+
+              AstNode *converted_init =
+                  maybe_insert_cast(field_values[i], value_type, expected_types[j]);
+
+              if (!converted_init) {
+                checker_error(
+                    expr->loc,
+                    "field '%s' has initializer type mismatch '%s' != '%s'",
+                    field_names[i], type_name(expected_types[j]),
+                    type_name(value_type));
+                return NULL;
+              }
+
+              break;
+            }
           }
 
-          AstNode *converted_init =
-              maybe_insert_cast(field_values[i], value_type, expected_types[j]);
-
-          if (!converted_init) {
-            checker_error(
-                expr->loc,
-                "field '%s' has initializer type mismatch '%s' != '%s'",
-                field_names[i], type_name(expected_types[j]),
-                type_name(value_type));
+          if (!found) {
+            checker_error(expr->loc, "struct '%s' has no field named '%s'",
+                          type_name, field_names[i]);
             return NULL;
           }
-
-          break;
         }
+
+        break;
       }
 
-      if (!found) {
-        checker_error(expr->loc, "struct '%s' has no field named '%s'",
-                      type_name, field_names[i]);
-        return NULL;
+      case TYPE_UNION:
+      case TYPE_TAGGED_UNION: {
+        Type *union_type = type_of;
+
+        // Union can only have 1 active field (need to check empty union too)
+        if (field_count > 1) {
+          checker_error(
+              expr->loc,
+              "union literal has %zu field(s), but type '%s' can only have 0 or 1 active variant",
+              field_count, type_name(type_of));
+          return NULL;
+        }
+
+        size_t expected_count = union_type->data.union_data.variant_count;
+        // Variants and no field, or no variants and 1 field
+        if (expected_count == 0 && field_count == 1) {
+          checker_error(
+              expr->loc,
+              "union literal has %zu field(s), but type '%s' can only have 0 or 1 active variant",
+              field_count, type_name(type_of));
+          return NULL;
+        }
+
+        // Check each field
+        size_t variant_count = union_type->data.union_data.variant_count;
+        char **variant_names = union_type->data.union_data.variant_names;
+        Type **variant_types = union_type->data.union_data.variant_types;
+
+        int index_of_active_member = -1;
+
+        for (size_t i = 0; i < field_count; i++) {
+          if (index_of_active_member >= 0) {
+            // Member found
+            break;
+          }
+
+          // Find variant to set
+          for (size_t j = 0; j < variant_count; j++) {
+            if (strcmp(field_names[i], variant_names[j]) == 0) {
+              index_of_active_member = j;
+
+              // Type-check the value
+              Type *value_type = check_expression(field_values[i]);
+              if (!value_type) {
+                return NULL; // Error already reported
+              }
+
+              AstNode *converted_init =
+                  maybe_insert_cast(field_values[i], value_type, variant_types[j]);
+
+              if (!converted_init) {
+                checker_error(
+                    expr->loc,
+                    "field '%s' has initializer type mismatch '%s' != '%s'",
+                    field_names[i], type_name(variant_types[j]),
+                    type_name(value_type));
+                return NULL;
+              }
+
+              break;
+            }
+          }
+        }
+
+        if (index_of_active_member == -1 && field_count > 0) {
+          // No member found or is invalid
+          checker_error(expr->loc, "struct '%s' has no field named '%s'",
+                        type_name, variant_names[0]);
+          return NULL;
+        }
+
+        break;
       }
+
+      default:
+        break;
     }
 
-    expr->resolved_type = struct_type;
-    return struct_type;
+    expr->resolved_type = type_of;
+    return type_of;
   }
 
   case AST_EXPR_ARRAY_LITERAL: {
