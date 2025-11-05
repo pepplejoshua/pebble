@@ -3087,12 +3087,45 @@ Type *check_expression(AstNode *expr) {
     AstNode **field_values = expr->data.struct_literal.field_values;
     size_t field_count = expr->data.struct_literal.field_count;
 
+    typedef struct {
+      char *name;
+      UT_hash_handle hh;
+    } variant_entry;
+    variant_entry *seen = NULL;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
+    for (size_t i = 0; i < field_count; i++) {
+      variant_entry *entry;
+      HASH_FIND_STR(seen, field_names[i], entry);
+      if (entry) {
+        checker_error(expr->loc, "Duplicate struct field '%s'",
+                      field_names[i]);
+      } else {
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
+        entry->name = field_names[i];
+        HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
+      }
+    }
+
+    HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
+
+    if (!struct_type_name) {
+      Type **field_types = arena_alloc(&long_lived, field_count * sizeof(Type *));
+      for (size_t i = 0; i < field_count; i++) {
+        field_types[i] = check_expression(field_values[i]);
+      }
+
+      Type *struct_type = type_create_struct(field_names, field_types, field_count,
+                                false, !checker_state.in_type_resolution, expr->loc);
+      expr->resolved_type = struct_type;
+
+      return struct_type;
+    }
+
     // Look up the type
-    // Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
-    // if (!type_sym) {
-    //   checker_error(expr->loc, "undefined type '%s'", type_name);
-    //   return NULL;
-    // }
     Type *type_of = type_lookup(struct_type_name, type_mod_name);
     if (!type_of) {
       checker_error(expr->loc, "undefined type '%s'", struct_type_name);

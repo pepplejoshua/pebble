@@ -2823,8 +2823,12 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_STRUCT_LITERAL: {
+    char *type_name = expr->data.struct_literal.qualified_type_name
+      ? expr->data.struct_literal.qualified_type_name
+      : expr->resolved_type->canonical_name;
+
     emit_string(cg, "(");
-    emit_string(cg, expr->data.struct_literal.qualified_type_name);
+    emit_string(cg, type_name);
     emit_string(cg, "){");
 
     if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {

@@ -1793,6 +1793,75 @@ AstNode *parse_primary(Parser *parser) {
     return parse_function(parser, parser->previous.location, NULL, convention);
   }
 
+  // Anonymous struct literal
+  if (parser_match(parser, TOKEN_DOT)) {
+    // Check for struct literal: IDENTIFIER.{ ... }
+    if (parser_match(parser, TOKEN_LBRACE)) {
+      Location loc = parser->previous.location;
+
+      // Parse struct literal fields
+      char **field_names = NULL;
+      AstNode **field_values = NULL;
+      size_t count = 0;
+      size_t capacity = 4;
+
+      field_names = arena_alloc(&long_lived, capacity * sizeof(char *));
+      field_values = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+      if (!parser_check(parser, TOKEN_RBRACE)) {
+        do {
+          if (parser_check(parser, TOKEN_RBRACE)) {
+            break;
+          }
+          // Grow arrays if needed
+          if (count >= capacity) {
+            capacity *= 2;
+            char **new_names =
+                arena_alloc(&long_lived, capacity * sizeof(char *));
+            AstNode **new_values =
+                arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+            memcpy(new_names, field_names, count * sizeof(char *));
+            memcpy(new_values, field_values, count * sizeof(AstNode *));
+            field_names = new_names;
+            field_values = new_values;
+          }
+
+          // Parse field: IDENTIFIER = EXPR
+          if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+            parser_error(parser, "Expected field name in struct literal");
+            parser_synchronize(parser);
+            continue;
+          }
+          parser_advance(parser);
+          Token field_name = parser->previous;
+
+          parser_consume(parser, TOKEN_EQUAL,
+                         "Expected '=' after field name");
+
+          field_names[count] = str_dup(field_name.lexeme);
+          field_values[count] = parse_expression(parser);
+          if (!field_values[count]) {
+            parser_synchronize(parser);
+            continue;
+          }
+          count++;
+
+        } while (parser_match(parser, TOKEN_COMMA));
+      }
+
+      parser_consume(parser, TOKEN_RBRACE,
+                     "Expected '}' after struct literal fields");
+
+      AstNode *expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+      expr->data.struct_literal.type_name = NULL;
+      expr->data.struct_literal.qualified_type_name = NULL;
+      expr->data.struct_literal.field_names = field_names;
+      expr->data.struct_literal.field_values = field_values;
+      expr->data.struct_literal.field_count = count;
+      return expr;
+    }
+  }
+
   parser_error(parser, "Expected expression");
   return NULL;
 }
