@@ -152,9 +152,10 @@ Type *type_create_optional(Type *base, bool canonicalize, Location loc);
 Type *type_create_slice(Type *element, bool canonicalize, Location loc);
 Type *type_create_array(Type *element, size_t size, bool canonicalize, Location loc);
 Type *type_create_struct(char **field_names, Type **field_types,
-                         size_t field_count, bool builtin, Location loc);
+                         size_t field_count, bool builtin, bool canonicalize,
+                         Location loc);
 Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
-                         size_t variant_count, Location loc);
+                         size_t variant_count, bool canonicalize, Location loc);
 Type *type_create_enum(char **variant_names, size_t variant_count, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);

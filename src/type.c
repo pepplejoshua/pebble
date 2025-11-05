@@ -161,56 +161,142 @@ Type *type_create_array(Type *element, size_t size, bool canonicalize,
 
 // Create struct type
 Type *type_create_struct(char **field_names, Type **field_types,
-                         size_t field_count, bool builtin, Location loc) {
-  Type *type = type_create(TYPE_STRUCT, loc);
-  type->data.struct_data.builtin = builtin;
+                         size_t field_count, bool builtin, bool canonicalize,
+                         Location loc) {
+  if (canonicalize) {
+    // First create a temporary type to compute canonical name
+    Type *temp_type = arena_alloc(&long_lived, sizeof(Type));
+    temp_type->kind = TYPE_STRUCT;
+    temp_type->data.struct_data.builtin = builtin;
 
-  if (field_count == 0) {
+    char **names = NULL;
+    Type **types = NULL;
+
+    if (field_count > 0) {
+      // Duplicate field names into arena
+      names = arena_alloc(&long_lived, field_count * sizeof(char *));
+      for (size_t i = 0; i < field_count; i++) {
+        names[i] = str_dup(field_names[i]);
+      }
+
+      // Copy field types array
+      types = arena_alloc(&long_lived, field_count * sizeof(Type *));
+      memcpy(types, field_types, field_count * sizeof(Type *));
+    }
+
+    temp_type->data.struct_data.field_names = names;
+    temp_type->data.struct_data.field_types = types;
+    temp_type->data.struct_data.field_count = field_count;
+
+    // Compute canonical name (this requires element types to be canonicalized
+    // first) For now, assume element types are already canonicalized
+    char *canonical_name = compute_canonical_name(temp_type);
+
+    // Check if this type already exists
+    Type *existing = canonical_lookup(canonical_name);
+    if (existing) {
+      // Return existing type, discard temp
+      return existing;
+    }
+
+    // First time - finalize the type
+    Type *type = temp_type;
+    type->canonical_name = canonical_name;
+    canonical_register(canonical_name, type);
+    return type;
+  } else {
+    Type *type = type_create(TYPE_STRUCT, loc);
+    type->data.struct_data.builtin = builtin;
+
+    if (field_count == 0) {
+      type->data.struct_data.field_count = field_count;
+      return type;
+    }
+
+    // Duplicate field names into arena
+    char **names = arena_alloc(&long_lived, field_count * sizeof(char *));
+    for (size_t i = 0; i < field_count; i++) {
+      names[i] = str_dup(field_names[i]);
+    }
+
+    // Copy field types array
+    Type **types = arena_alloc(&long_lived, field_count * sizeof(Type *));
+    memcpy(types, field_types, field_count * sizeof(Type *));
+
+    type->data.struct_data.field_names = names;
+    type->data.struct_data.field_types = types;
     type->data.struct_data.field_count = field_count;
     return type;
   }
-
-  // Duplicate field names into arena
-  char **names = arena_alloc(&long_lived, field_count * sizeof(char *));
-  for (size_t i = 0; i < field_count; i++) {
-    names[i] = str_dup(field_names[i]);
-  }
-
-  // Copy field types array
-  Type **types = arena_alloc(&long_lived, field_count * sizeof(Type *));
-  memcpy(types, field_types, field_count * sizeof(Type *));
-
-  type->data.struct_data.field_names = names;
-  type->data.struct_data.field_types = types;
-  type->data.struct_data.field_count = field_count;
-  return type;
 }
 
 // Create union type
 Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
-                        size_t variant_count, Location loc) {
-  Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, loc);
-  type->data.union_data.tagged = tagged;
+                        size_t variant_count, bool canonicalize, Location loc) {
+  if (canonicalize) {
+    // First create a temporary type to compute canonical name
+    Type *temp_type = arena_alloc(&long_lived, sizeof(Type));
+    temp_type->kind = tagged ? TYPE_TAGGED_UNION : TYPE_UNION;
 
-  if (variant_count == 0) {
+    char **names = NULL;
+    Type **types = NULL;
+
+    if (variant_count > 0) {
+      // Duplicate field names into arena
+      names = arena_alloc(&long_lived, variant_count * sizeof(char *));
+      for (size_t i = 0; i < variant_count; i++) {
+        names[i] = str_dup(variant_names[i]);
+      }
+
+      // Copy field types array
+      types = arena_alloc(&long_lived, variant_count * sizeof(Type *));
+      memcpy(types, variant_types, variant_count * sizeof(Type *));
+    }
+
+    temp_type->data.union_data.variant_names = names;
+    temp_type->data.union_data.variant_types = types;
+    temp_type->data.union_data.variant_count = variant_count;
+
+    // Compute canonical name (this requires element types to be canonicalized
+    // first) For now, assume element types are already canonicalized
+    char *canonical_name = compute_canonical_name(temp_type);
+
+    // Check if this type already exists
+    Type *existing = canonical_lookup(canonical_name);
+    if (existing) {
+      // Return existing type, discard temp
+      return existing;
+    }
+
+    // First time - finalize the type
+    Type *type = temp_type;
+    type->canonical_name = canonical_name;
+    canonical_register(canonical_name, type);
+    return type;
+  } else {
+    Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, loc);
+    type->data.union_data.tagged = tagged;
+
+    if (variant_count == 0) {
+      type->data.union_data.variant_count = variant_count;
+      return type;
+    }
+
+    // Duplicate field names into arena
+    char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
+    for (size_t i = 0; i < variant_count; i++) {
+      names[i] = str_dup(variant_names[i]);
+    }
+
+    // Copy field types array
+    Type **types = arena_alloc(&long_lived, variant_count * sizeof(Type *));
+    memcpy(types, variant_types, variant_count * sizeof(Type *));
+
+    type->data.union_data.variant_names = names;
+    type->data.union_data.variant_types = types;
     type->data.union_data.variant_count = variant_count;
     return type;
   }
-
-  // Duplicate field names into arena
-  char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
-  for (size_t i = 0; i < variant_count; i++) {
-    names[i] = str_dup(variant_names[i]);
-  }
-
-  // Copy field types array
-  Type **types = arena_alloc(&long_lived, variant_count * sizeof(Type *));
-  memcpy(types, variant_types, variant_count * sizeof(Type *));
-
-  type->data.union_data.variant_names = names;
-  type->data.union_data.variant_types = types;
-  type->data.union_data.variant_count = variant_count;
-  return type;
 }
 
 // Create enum type
@@ -490,7 +576,7 @@ void type_system_init(void) {
 
   // NOTE: Context needs to be a dummy type, then patched
   //       after allocator as it requires it.
-  type_context = type_create_struct(NULL, NULL, 0, true, loc);
+  type_context = type_create_struct(NULL, NULL, 0, true, false, loc);
   type_context->canonical_name = "__pebble_context";
 
   Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
@@ -514,8 +600,8 @@ void type_system_init(void) {
   allocator_types[0] = void_ptr;
   allocator_types[1] = alloc_fn_t;
   allocator_types[2] = free_fn_t;
-  Type *allocator_t =
-      type_create_struct(allocator_field_names, allocator_types, 3, true, loc);
+  Type *allocator_t = type_create_struct(allocator_field_names, allocator_types,
+                                         3, true, false, loc);
   allocator_t->canonical_name = "Allocator";
 
   // Patch context

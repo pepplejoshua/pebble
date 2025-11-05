@@ -1340,7 +1340,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
       checker_error(type_expr->loc, "Struct was declared without any members");
-      return type_create_struct(NULL, NULL, field_count, false, loc);
+      return type_create_struct(NULL, NULL, field_count,
+                        false, !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1396,7 +1397,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_struct(field_names, field_types, field_count, false,
-                              loc);
+                              !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_UNION: {
@@ -1404,7 +1405,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t variant_count = type_expr->data.type_union.variant_count;
     if (variant_count == 0) {
       checker_error(type_expr->loc, "Union was declared without any members");
-      return type_create_union(tagged, NULL, NULL, variant_count, loc);
+      return type_create_union(tagged, NULL, NULL, variant_count,
+                                !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1461,7 +1463,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_union(tagged, variant_names, variant_types,
-                             variant_count, loc);
+                             variant_count, !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_ENUM: {
