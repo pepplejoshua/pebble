@@ -1657,21 +1657,14 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       }
 
       emit_string(cg, ") {\n");
-      char *qualified_name = cond_type->qualified_name
-        ? cond_type->qualified_name
-        : cond_type->data.ptr.base->qualified_name;
-
-      if (!qualified_name) {
-        qualified_name = cond_type->canonical_name
+      char *qualified_name = cond_type->canonical_name
           ? cond_type->canonical_name
           : cond_type->data.ptr.base->canonical_name;
-      }
 
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
         emit_indent_spaces(cg);
         emit_string(cg, "case ");
         AstNode *ident = cases[i]->data.case_stmt.condition;
-
 
         emit_string(cg, qualified_name);
         emit_string(cg, "__");
