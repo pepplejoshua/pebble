@@ -13,6 +13,7 @@ void arena_init(Arena *arena, size_t initial_capacity) {
 
   slab->buffer = malloc(initial_capacity);
   assert(slab->buffer && "Slab buffer allocation failed");
+  memset(slab->buffer, 0, initial_capacity);
 
   slab->capacity = initial_capacity;
   slab->used = 0;
@@ -55,6 +56,7 @@ void *arena_alloc(Arena *arena, size_t size) {
 
   new_slab->buffer = malloc(new_slab_size);
   assert(new_slab->buffer && "Slab buffer allocation failed");
+  memset(new_slab->buffer, 0, new_slab_size);
 
   new_slab->capacity = new_slab_size;
   new_slab->used = 0;

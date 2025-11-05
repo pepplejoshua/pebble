@@ -275,8 +275,6 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
     return type;
   } else {
     Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, loc);
-    type->data.union_data.tagged = tagged;
-
     if (variant_count == 0) {
       type->data.union_data.variant_count = variant_count;
       return type;

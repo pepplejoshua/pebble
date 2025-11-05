@@ -345,7 +345,17 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   case TYPE_STRUCT:
     for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
       if (canonicalize_type_internal(&type->data.struct_data.field_types[i],
-                                     visited)) {
+                                      visited)) {
+        cycle_detected = true;
+      }
+    }
+    break;
+
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
+    for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+      if (canonicalize_type_internal(&type->data.union_data.variant_types[i],
+                                      visited)) {
         cycle_detected = true;
       }
     }
