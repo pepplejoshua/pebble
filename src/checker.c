@@ -1927,6 +1927,11 @@ bool is_valid_cast(Type *from, Type *to) {
     return true;
   }
 
+  // tuple <-> tuple
+  if (from->kind == TYPE_TUPLE && to->kind == TYPE_TUPLE) {
+    return true;
+  }
+
   return false;
 }
 
@@ -3487,7 +3492,8 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    if (value_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) {
+    if ((value_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) ||
+        (value_type->kind == TYPE_TUPLE && target_type->kind == TYPE_TUPLE)) {
       expr->data.explicit_cast.pointer_cast = true;
     }
 
