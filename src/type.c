@@ -901,7 +901,10 @@ char *type_name(Type *type) {
   case TYPE_OPAQUE:
   case TYPE_UNION:
   case TYPE_TAGGED_UNION:
-    return type->declared_name;
+    return type->declared_name
+      ? type->declared_name
+      : type->canonical_name;
+
   case TYPE_POINTER: {
     char *base_ty_name = type_name(type->data.ptr.base);
     size_t len = strlen(base_ty_name) + 2;
