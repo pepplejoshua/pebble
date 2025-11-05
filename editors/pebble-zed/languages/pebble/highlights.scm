@@ -22,6 +22,7 @@
   "case"
   "defer"
   "import"
+  "inline"
 ] @keyword
 
 ; Types
