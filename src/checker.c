@@ -778,8 +778,9 @@ static void check_type_declarations(Module *module) {
           *placeholder = *resolved;
         }
 
-        if (placeholder->kind == TYPE_STRUCT || placeholder->kind == TYPE_TUPLE ||
-            placeholder->kind == TYPE_ENUM || placeholder->kind == TYPE_UNION ||
+        if (placeholder->kind == TYPE_STRUCT ||
+            placeholder->kind == TYPE_TUPLE || placeholder->kind == TYPE_ENUM ||
+            placeholder->kind == TYPE_UNION ||
             placeholder->kind == TYPE_TAGGED_UNION) {
           placeholder->qualified_name = str_dup(sym->name);
           placeholder->declared_name = str_dup(sym->reg_name);
@@ -1084,9 +1085,9 @@ static void check_function_signatures(void) {
     }
 
     // Create function type
-    sym->type = type_create_function(
-        param_types, param_count, return_type, is_variadic != -1,
-        !checker_state.in_type_resolution, convention, sym->decl->loc);
+    sym->type = type_create_function(param_types, param_count, return_type,
+                                     is_variadic != -1, false, convention,
+                                     sym->decl->loc);
 
     // Add parameters as symbols in the function scope
     if (sym->kind == SYMBOL_FUNCTION) {
@@ -1338,8 +1339,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_STRUCT: {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
-      checker_error(type_expr->loc,
-                      "Struct was declared without any members");
+      checker_error(type_expr->loc, "Struct was declared without any members");
       return type_create_struct(NULL, NULL, field_count, false, loc);
     }
 
@@ -1403,8 +1403,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     bool tagged = type_expr->data.type_union.is_tagged;
     size_t variant_count = type_expr->data.type_union.variant_count;
     if (variant_count == 0) {
-      checker_error(type_expr->loc,
-                      "Union was declared without any members");
+      checker_error(type_expr->loc, "Union was declared without any members");
       return type_create_union(tagged, NULL, NULL, variant_count, loc);
     }
 
@@ -1412,7 +1411,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     char **variant_names = type_expr->data.type_union.variant_names;
     AstNode **variant_type_exprs = type_expr->data.type_union.variant_types;
 
-    Type **variant_types = arena_alloc(&long_lived, sizeof(Type *) * variant_count);
+    Type **variant_types =
+        arena_alloc(&long_lived, sizeof(Type *) * variant_count);
 
     // Check duplicate field names
     typedef struct {
@@ -1460,7 +1460,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_union(tagged, variant_names, variant_types, variant_count, loc);
+    return type_create_union(tagged, variant_names, variant_types,
+                             variant_count, loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -1870,9 +1871,8 @@ static bool is_constant_known(AstNode *node) {
   // Enum values and union tags are always constant
   if (node->resolved_type->kind == TYPE_ENUM ||
       node->resolved_type->kind == TYPE_TAGGED_UNION ||
-     (node->resolved_type->kind == TYPE_POINTER &&
-      node->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION)
-    ) {
+      (node->resolved_type->kind == TYPE_POINTER &&
+       node->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
     return true;
   }
 
@@ -2046,16 +2046,19 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     return;
   }
   // Tagged enum variants
-  else if (switch_type->kind == TYPE_TAGGED_UNION || (switch_type->kind == TYPE_POINTER &&
-    switch_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
+  else if (switch_type->kind == TYPE_TAGGED_UNION ||
+           (switch_type->kind == TYPE_POINTER &&
+            switch_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
 
-    size_t variant_count = switch_type->kind == TYPE_TAGGED_UNION
-      ? switch_type->data.union_data.variant_count
-      : switch_type->data.ptr.base->data.union_data.variant_count;
+    size_t variant_count =
+        switch_type->kind == TYPE_TAGGED_UNION
+            ? switch_type->data.union_data.variant_count
+            : switch_type->data.ptr.base->data.union_data.variant_count;
 
-    char **variant_names = switch_type->kind == TYPE_TAGGED_UNION
-      ? switch_type->data.union_data.variant_names
-      : switch_type->data.ptr.base->data.union_data.variant_names;
+    char **variant_names =
+        switch_type->kind == TYPE_TAGGED_UNION
+            ? switch_type->data.union_data.variant_names
+            : switch_type->data.ptr.base->data.union_data.variant_names;
 
     Arena temp_arena;
     arena_init(&temp_arena, variant_count);
@@ -2097,8 +2100,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     for (size_t i = 0; i < variant_count; i++) {
       if (!covered[i]) {
         missing_items++;
-        checker_error(node->loc,
-                      "Switch not exhaustive: missing case for '%s'",
+        checker_error(node->loc, "Switch not exhaustive: missing case for '%s'",
                       variant_names[i]);
       }
     }
@@ -2116,8 +2118,9 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     return;
   }
 
-  checker_error(node->loc,
-                "Switch is non-exhaustive. Use \"else\" if you need a default branch.");
+  checker_error(
+      node->loc,
+      "Switch is non-exhaustive. Use \"else\" if you need a default branch.");
 }
 
 Type *check_expression(AstNode *expr) {
@@ -2966,7 +2969,8 @@ Type *check_expression(AstNode *expr) {
 
       checker_error(expr->loc, "struct has no field named '%s'", field_name);
       return NULL;
-    } else if (base_type->kind == TYPE_UNION || base_type->kind == TYPE_TAGGED_UNION) {
+    } else if (base_type->kind == TYPE_UNION ||
+               base_type->kind == TYPE_TAGGED_UNION) {
       size_t variant_count = base_type->data.union_data.variant_count;
       char **variant_names = base_type->data.union_data.variant_names;
       Type **variant_types = base_type->data.union_data.variant_types;
@@ -3031,7 +3035,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Types are not values
-    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM && sym->type->kind != TYPE_ENUM) {
+    if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
+        sym->type->kind != TYPE_ENUM) {
       checker_error(expr->loc, "'%s::%s' is a type, not a value",
                     module_expr->data.ident.name, member_name);
       return NULL;
@@ -3094,7 +3099,8 @@ Type *check_expression(AstNode *expr) {
 
     if (type_of->kind != TYPE_STRUCT && type_of->kind != TYPE_UNION &&
         type_of->kind != TYPE_TAGGED_UNION) {
-      checker_error(expr->loc, "'%s' is not a struct or union type", struct_type_name);
+      checker_error(expr->loc, "'%s' is not a struct or union type",
+                    struct_type_name);
       return NULL;
     }
 
@@ -3104,138 +3110,138 @@ Type *check_expression(AstNode *expr) {
     }
 
     switch (type_of->kind) {
-      case TYPE_STRUCT: {
-        Type *struct_type = type_of;
+    case TYPE_STRUCT: {
+      Type *struct_type = type_of;
 
-        // Verify field count matches
-        size_t expected_count = struct_type->data.struct_data.field_count;
-        if (field_count != expected_count) {
-          checker_error(
-              expr->loc,
-              "struct literal has %zu field(s), but type '%s' has %zu field(s)",
-              field_count, type_name(type_of), expected_count);
-          return NULL;
-        }
-
-        // Check each field
-        char **expected_names = struct_type->data.struct_data.field_names;
-        Type **expected_types = struct_type->data.struct_data.field_types;
-
-        for (size_t i = 0; i < field_count; i++) {
-          // Find this field in the struct type
-          bool found = false;
-          for (size_t j = 0; j < expected_count; j++) {
-            if (strcmp(field_names[i], expected_names[j]) == 0) {
-              found = true;
-
-              // Type-check the value
-              Type *value_type = check_expression(field_values[i]);
-              if (!value_type) {
-                return NULL; // Error already reported
-              }
-
-              AstNode *converted_init =
-                  maybe_insert_cast(field_values[i], value_type, expected_types[j]);
-
-              if (!converted_init) {
-                checker_error(
-                    expr->loc,
-                    "field '%s' has initializer type mismatch '%s' != '%s'",
-                    field_names[i], type_name(expected_types[j]),
-                    type_name(value_type));
-                return NULL;
-              }
-
-              break;
-            }
-          }
-
-          if (!found) {
-            checker_error(expr->loc, "struct '%s' has no field named '%s'",
-                          type_name, field_names[i]);
-            return NULL;
-          }
-        }
-
-        break;
+      // Verify field count matches
+      size_t expected_count = struct_type->data.struct_data.field_count;
+      if (field_count != expected_count) {
+        checker_error(
+            expr->loc,
+            "struct literal has %zu field(s), but type '%s' has %zu field(s)",
+            field_count, type_name(type_of), expected_count);
+        return NULL;
       }
 
-      case TYPE_UNION:
-      case TYPE_TAGGED_UNION: {
-        Type *union_type = type_of;
+      // Check each field
+      char **expected_names = struct_type->data.struct_data.field_names;
+      Type **expected_types = struct_type->data.struct_data.field_types;
 
-        // Union can only have 1 active field (need to check empty union too)
-        if (field_count > 1) {
-          checker_error(
-              expr->loc,
-              "union literal has %zu field(s), but type '%s' can only have 0 or 1 active variant",
-              field_count, type_name(type_of));
-          return NULL;
-        }
+      for (size_t i = 0; i < field_count; i++) {
+        // Find this field in the struct type
+        bool found = false;
+        for (size_t j = 0; j < expected_count; j++) {
+          if (strcmp(field_names[i], expected_names[j]) == 0) {
+            found = true;
 
-        size_t expected_count = union_type->data.union_data.variant_count;
-        // Variants and no field, or no variants and 1 field
-        if (expected_count == 0 && field_count == 1) {
-          checker_error(
-              expr->loc,
-              "union literal has %zu field(s), but type '%s' can only have 0 or 1 active variant",
-              field_count, type_name(type_of));
-          return NULL;
-        }
+            // Type-check the value
+            Type *value_type = check_expression(field_values[i]);
+            if (!value_type) {
+              return NULL; // Error already reported
+            }
 
-        // Check each field
-        size_t variant_count = union_type->data.union_data.variant_count;
-        char **variant_names = union_type->data.union_data.variant_names;
-        Type **variant_types = union_type->data.union_data.variant_types;
+            AstNode *converted_init = maybe_insert_cast(
+                field_values[i], value_type, expected_types[j]);
 
-        int index_of_active_member = -1;
+            if (!converted_init) {
+              checker_error(
+                  expr->loc,
+                  "field '%s' has initializer type mismatch '%s' != '%s'",
+                  field_names[i], type_name(expected_types[j]),
+                  type_name(value_type));
+              return NULL;
+            }
 
-        for (size_t i = 0; i < field_count; i++) {
-          if (index_of_active_member >= 0) {
-            // Member found
             break;
           }
-
-          // Find variant to set
-          for (size_t j = 0; j < variant_count; j++) {
-            if (strcmp(field_names[i], variant_names[j]) == 0) {
-              index_of_active_member = j;
-
-              // Type-check the value
-              Type *value_type = check_expression(field_values[i]);
-              if (!value_type) {
-                return NULL; // Error already reported
-              }
-
-              AstNode *converted_init =
-                  maybe_insert_cast(field_values[i], value_type, variant_types[j]);
-
-              if (!converted_init) {
-                checker_error(
-                    expr->loc,
-                    "field '%s' has initializer type mismatch '%s' != '%s'",
-                    field_names[i], type_name(variant_types[j]),
-                    type_name(value_type));
-                return NULL;
-              }
-
-              break;
-            }
-          }
         }
 
-        if (index_of_active_member == -1 && field_count > 0) {
-          // No member found or is invalid
+        if (!found) {
           checker_error(expr->loc, "struct '%s' has no field named '%s'",
-                        type_name, variant_names[0]);
+                        type_name, field_names[i]);
           return NULL;
         }
-
-        break;
       }
 
-      default:
-        break;
+      break;
+    }
+
+    case TYPE_UNION:
+    case TYPE_TAGGED_UNION: {
+      Type *union_type = type_of;
+
+      // Union can only have 1 active field (need to check empty union too)
+      if (field_count > 1) {
+        checker_error(expr->loc,
+                      "union literal has %zu field(s), but type '%s' can only "
+                      "have 0 or 1 active variant",
+                      field_count, type_name(type_of));
+        return NULL;
+      }
+
+      size_t expected_count = union_type->data.union_data.variant_count;
+      // Variants and no field, or no variants and 1 field
+      if (expected_count == 0 && field_count == 1) {
+        checker_error(expr->loc,
+                      "union literal has %zu field(s), but type '%s' can only "
+                      "have 0 or 1 active variant",
+                      field_count, type_name(type_of));
+        return NULL;
+      }
+
+      // Check each field
+      size_t variant_count = union_type->data.union_data.variant_count;
+      char **variant_names = union_type->data.union_data.variant_names;
+      Type **variant_types = union_type->data.union_data.variant_types;
+
+      int index_of_active_member = -1;
+
+      for (size_t i = 0; i < field_count; i++) {
+        if (index_of_active_member >= 0) {
+          // Member found
+          break;
+        }
+
+        // Find variant to set
+        for (size_t j = 0; j < variant_count; j++) {
+          if (strcmp(field_names[i], variant_names[j]) == 0) {
+            index_of_active_member = j;
+
+            // Type-check the value
+            Type *value_type = check_expression(field_values[i]);
+            if (!value_type) {
+              return NULL; // Error already reported
+            }
+
+            AstNode *converted_init = maybe_insert_cast(
+                field_values[i], value_type, variant_types[j]);
+
+            if (!converted_init) {
+              checker_error(
+                  expr->loc,
+                  "field '%s' has initializer type mismatch '%s' != '%s'",
+                  field_names[i], type_name(variant_types[j]),
+                  type_name(value_type));
+              return NULL;
+            }
+
+            break;
+          }
+        }
+      }
+
+      if (index_of_active_member == -1 && field_count > 0) {
+        // No member found or is invalid
+        checker_error(expr->loc, "struct '%s' has no field named '%s'",
+                      type_name, variant_names[0]);
+        return NULL;
+      }
+
+      break;
+    }
+
+    default:
+      break;
     }
 
     expr->resolved_type = type_of;
@@ -3518,9 +3524,10 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
         cond_type->kind != TYPE_ENUM && cond_type->kind != TYPE_TAGGED_UNION &&
         // Allow pointers to tagged unions
-        (cond_type->kind == TYPE_POINTER && cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
+        (cond_type->kind == TYPE_POINTER &&
+         cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
       checker_error(cond->loc, "switch condition must be numeric (int or "
-                              "float), char, enum, string or tagged union");
+                               "float), char, enum, string or tagged union");
       had_error = true;
     }
 
@@ -3549,9 +3556,9 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         stmt->data.case_stmt.switch_stmt->data.switch_stmt.condition;
 
     bool is_tagged_union =
-      switch_cond->resolved_type->kind == TYPE_TAGGED_UNION ||
-      (switch_cond->resolved_type->kind == TYPE_POINTER &&
-       switch_cond->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION);
+        switch_cond->resolved_type->kind == TYPE_TAGGED_UNION ||
+        (switch_cond->resolved_type->kind == TYPE_POINTER &&
+         switch_cond->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION);
 
     Type *cond_type = NULL;
     // Tagged unions will use their field names for their cases
@@ -3562,7 +3569,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
           maybe_insert_cast(cond, cond_type, switch_cond->resolved_type);
 
       if (casted_cond && switch_cond->resolved_type &&
-          !type_equals(switch_cond->resolved_type, casted_cond->resolved_type)) {
+          !type_equals(switch_cond->resolved_type,
+                       casted_cond->resolved_type)) {
         checker_error(cond->loc,
                       "switch case condition '%s' doesn't match switch "
                       "condition type '%s'",
