@@ -1812,6 +1812,66 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
+  } else if (expr_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) {
+    // Check if structs have the same number of fields
+    if (expr_type->data.struct_data.field_count !=
+        target_type->data.struct_data.field_count) {
+      return NULL;
+    }
+
+    if (expr->kind != AST_EXPR_STRUCT_LITERAL) {
+      return NULL;
+    }
+
+    bool needs_conversion = false;
+    for (size_t i = 0; i < expr_type->data.struct_data.field_count; i++) {
+      // Names must match
+      if (strcmp(expr->data.struct_literal.field_names[i],
+                 target_type->data.struct_data.field_names[i]) != 0) {
+        return NULL;
+      }
+
+      if (!type_equals(expr_type->data.struct_data.field_types[i],
+                       target_type->data.struct_data.field_types[i])) {
+        needs_conversion = true;
+        break;
+      }
+    }
+
+    // If all elements match exactly, no cast needed
+    if (!needs_conversion) {
+      expr->resolved_type = target_type;
+      return expr;
+    }
+
+    // Create a new struct expression with recursively casted elements
+    AstNode *new_struct = arena_alloc(&long_lived, sizeof(AstNode));
+    new_struct->kind = AST_EXPR_STRUCT_LITERAL;
+    new_struct->loc = expr->loc;
+    new_struct->data.struct_literal.field_count =
+        target_type->data.struct_data.field_count;
+    new_struct->data.struct_literal.field_names = arena_alloc(
+        &long_lived, sizeof(char *) * target_type->data.struct_data.field_count);
+    new_struct->data.struct_literal.field_values = arena_alloc(
+        &long_lived, sizeof(AstNode *) * target_type->data.struct_data.field_count);
+
+    // Recursively cast each element
+    for (size_t i = 0; i < expr_type->data.struct_data.field_count; i++) {
+      AstNode *casted_elem =
+          maybe_insert_cast(expr->data.struct_literal.field_values[i],
+                            expr_type->data.struct_data.field_types[i],
+                            target_type->data.struct_data.field_types[i]);
+
+      if (!casted_elem) {
+        return NULL; // Element conversion failed
+      }
+
+      new_struct->data.struct_literal.field_values[i] = casted_elem;
+    }
+
+    expr->resolved_type = target_type;
+    new_struct->resolved_type = target_type;
+    return new_struct;
   }
 
   // No valid conversion
