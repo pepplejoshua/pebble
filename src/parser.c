@@ -1276,6 +1276,7 @@ AstNode *parse_cast(Parser *parser) {
     AstNode *expl_cast = alloc_node(AST_EXPR_EXPLICIT_CAST, op.location);
     expl_cast->data.explicit_cast.expr = left;
     expl_cast->data.explicit_cast.target_type = right;
+    expl_cast->data.explicit_cast.pointer_cast = false;
     left = expl_cast;
   }
 

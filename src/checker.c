@@ -1922,6 +1922,11 @@ bool is_valid_cast(Type *from, Type *to) {
     return true;
   }
 
+  // struct <-> struct
+  if (from->kind == TYPE_STRUCT && to->kind == TYPE_STRUCT) {
+    return true;
+  }
+
   return false;
 }
 
@@ -3480,6 +3485,10 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "Invalid cast from %s to %s",
                     type_name(value_type), type_name(target_type));
       return NULL;
+    }
+
+    if (value_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) {
+      expr->data.explicit_cast.pointer_cast = true;
     }
 
     // Result type is the target type

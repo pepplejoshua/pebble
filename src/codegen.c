@@ -2412,11 +2412,36 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_EXPLICIT_CAST: {
     Type *target_type = expr->resolved_type;
+    if (expr->data.explicit_cast.pointer_cast) {
+      if (expr->data.explicit_cast.expr->kind == AST_EXPR_STRUCT_LITERAL) {
+        // Need to assign to temporary first
+        emit_string(cg, "({ ");
+        emit_type_name(cg, expr->data.explicit_cast.expr->resolved_type);
+        emit_string(cg, " ");
 
-    emit_string(cg, "(");
-    emit_type_name(cg, target_type); // Uses canonical name
-    emit_string(cg, ")");
-    emit_expr(cg, expr->data.explicit_cast.expr);
+        char temporary[32] = {0};
+        get_temporary_name(cg, temporary, 32);
+        emit_string(cg, temporary);
+
+        emit_string(cg, " = ");
+        emit_expr(cg, expr->data.explicit_cast.expr);
+        emit_string(cg, "; *(");
+        emit_type_name(cg, target_type);
+        emit_string(cg, "*)&");
+        emit_string(cg, temporary);
+        emit_string(cg, "; })");
+      } else {
+        emit_string(cg, "*(");
+        emit_type_name(cg, target_type);
+        emit_string(cg, "*)&");
+        emit_expr(cg, expr->data.explicit_cast.expr);
+      }
+    } else {
+      emit_string(cg, "(");
+      emit_type_name(cg, target_type); // Uses canonical name
+      emit_string(cg, ")");
+      emit_expr(cg, expr->data.explicit_cast.expr);
+    }
     break;
   }
 
