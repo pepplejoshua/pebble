@@ -1,0 +1,93 @@
+import "std:mem";
+
+type Slab = struct {
+  buffer *u8;
+  capacity usize;
+  used usize;
+  next *Slab;
+};
+
+type Arena = struct {
+  backing Allocator;
+  current *Slab;
+  slab_size usize;
+};
+
+fn init(arena *Arena, initial_capacity usize, backing Allocator) void {
+  var slab *Slab = backing.alloc(backing.ptr, sizeof Slab);
+  slab.buffer = backing.alloc(backing.ptr, initial_capacity);
+
+  slab.capacity = initial_capacity;
+  slab.used = 0;
+  slab.next = nil;
+
+  arena.current = slab;
+  arena.backing = backing;
+  arena.slab_size = initial_capacity;
+}
+
+fn alloc(ptr *void, size usize) *void {
+  var arena = ptr as *Arena;
+  let alignment = 8; // Need alignof
+
+  let aligned_used = mem::align_up(arena.current.used, alignment);
+
+  // Check if allocation fits in current slab
+  if (aligned_used + size <= arena.current.capacity) {
+    var ptr = arena.current.buffer + aligned_used;
+    arena.current.used = aligned_used + size;
+    return ptr;
+  }
+
+  // Doesn't fit - need a new slab
+  // Decide slab size: use default or custom size for large allocations
+  var new_slab_size = arena.slab_size;
+  if (size > new_slab_size) {
+    new_slab_size = size + alignment; // Custom size for large allocation
+  }
+
+  // Allocate new slab
+  var new_slab *Slab = arena.backing.alloc(arena.backing.ptr, sizeof Slab);
+
+  new_slab.buffer = arena.backing.alloc(arena.backing.ptr, new_slab_size);
+
+  new_slab.capacity = new_slab_size;
+  new_slab.used = 0;
+  new_slab.next = arena.current;
+
+  // Link new slab and make it current
+  arena.current = new_slab;
+
+  // Allocate from new slab (it's empty so alignment is already satisfied)
+  var data = new_slab.buffer as *void;
+  new_slab.used = size;
+  return data;
+}
+
+fn free (ptr, data *void) void {
+  // Do nothing
+}
+
+fn destroy(arena *Arena) void {
+  var current = arena.current;
+
+  // Walk the linked list and free each slab
+  while (current != nil) {
+    var next *Slab = current.next;
+    arena.backing.free(arena.backing.ptr, current.buffer); // Free the slab's buffer
+    arena.backing.free(arena.backing.ptr, current);        // Free the slab struct itself
+    current = next;
+  }
+
+  // Reset arena to empty state
+  arena.current = nil;
+  arena.slab_size = 0;
+}
+
+fn allocator(arena *Arena) Allocator {
+  return Allocator.{
+    ptr = arena,
+    alloc = alloc,
+    free = free,
+  };
+}
