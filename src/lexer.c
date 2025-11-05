@@ -205,8 +205,12 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
     }
     if (length == 5)
       return lexer_check_keyword(lexer, 5, "isize", TOKEN_ISIZE_TYPE);
-    if (length == 6)
-      return lexer_check_keyword(lexer, 6, "import", TOKEN_IMPORT);
+    if (length == 6) {
+      if (start[1] == 'm')
+        return lexer_check_keyword(lexer, 6, "import", TOKEN_IMPORT);
+      if (start[1] == 'n')
+        return lexer_check_keyword(lexer, 6, "inline", TOKEN_INLINE);
+    }
     break;
   case 'l':
     if (length == 3)

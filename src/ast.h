@@ -125,6 +125,7 @@ struct AstNode {
   union {
     // Declarations
     struct {
+      bool inlined;
       AstNode *convention;
       char *name;
       char *qualified_name;
@@ -330,6 +331,7 @@ struct AstNode {
       size_t count;   // How many times (from integer literal)
     } array_repeat;
     struct {
+      bool inlined;
       AstNode *convention;
       FuncParam *params;
       size_t param_count;
