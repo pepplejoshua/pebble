@@ -318,7 +318,7 @@ AstNode *parse_import_stmt(Parser *parser) {
 }
 
 static AstNode *parse_function(Parser *parser, Location location, char *name,
-                               AstNode *convention) {
+                               bool inlined, AstNode *convention) {
   // (params) return_type { body }
   // (params) return_type => expr
 
@@ -429,6 +429,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_decl.param_count = param_count;
     func->data.func_decl.return_type = return_type;
     func->data.func_decl.body = body;
+    func->data.func_decl.inlined = inlined;
     func->data.func_decl.convention = convention;
   } else {
     // Anonymous function
@@ -437,6 +438,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_expr.param_count = param_count;
     func->data.func_expr.return_type = return_type;
     func->data.func_expr.body = body;
+    func->data.func_expr.inlined = inlined;
     func->data.func_expr.convention = convention;
   }
 
@@ -447,6 +449,8 @@ AstNode *parse_function_decl(Parser *parser) {
   // fn name(params) return_type { body }
   // fn name(params) return_type => expr
 
+  bool inlined = parser_match(parser, TOKEN_INLINE);
+
   AstNode *convention = NULL;
   if (parser_match(parser, TOKEN_STRING)) {
     convention = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);
@@ -456,7 +460,7 @@ AstNode *parse_function_decl(Parser *parser) {
   Token name =
       parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
 
-  return parse_function(parser, name.location, name.lexeme, convention);
+  return parse_function(parser, name.location, name.lexeme, inlined, convention);
 }
 
 AstNode *parse_extern(Parser *parser) {
@@ -1784,6 +1788,8 @@ AstNode *parse_primary(Parser *parser) {
 
   // Function literal
   if (parser_match(parser, TOKEN_FN)) {
+    bool inlined = parser_match(parser, TOKEN_INLINE);
+
     AstNode *convention = NULL;
     if (parser_match(parser, TOKEN_STRING)) {
       convention =
@@ -1791,7 +1797,7 @@ AstNode *parse_primary(Parser *parser) {
       convention->data.str_lit.value = str_dup(parser->previous.lexeme);
     }
 
-    return parse_function(parser, parser->previous.location, NULL, convention);
+    return parse_function(parser, parser->previous.location, NULL, inlined, convention);
   }
 
   // Anonymous struct literal

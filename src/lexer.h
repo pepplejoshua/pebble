@@ -45,6 +45,7 @@ typedef enum {
   TOKEN_NONE,
   TOKEN_IMPORT,
   TOKEN_CONTEXT,
+  TOKEN_INLINE,
 
   // Types (built-in)
   TOKEN_INT_TYPE,    // "int"

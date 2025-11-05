@@ -865,6 +865,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   cg->current_section = "defs";
   HASH_ITER(hh, anonymous_funcs->symbols, sym, tmp) {
     AstNode *func = sym->decl; // Func decl AST node
+
+    if (func->data.func_expr.inlined) {
+      emit_string(cg, "inline ");
+    }
+
     emit_type_name(cg, sym->type->data.func.return_type);
     emit_string(cg, " ");
     emit_string(cg, func->data.func_expr.symbol);
@@ -908,6 +913,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
       AstNode *func = sym->decl; // Func decl AST node
+
+      if (func->data.func_decl.inlined) {
+        emit_string(cg, "inline ");
+      }
+
       emit_type_name(cg, sym->type->data.func.return_type);
       emit_string(cg, " ");
       if (strcmp("main", sym->name) == 0) {
@@ -954,6 +964,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
     HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
       if (sym->kind == SYMBOL_FUNCTION) {
         AstNode *func = sym->decl; // Func decl AST node
+
+        if (func->data.func_decl.inlined) {
+          emit_string(cg, "inline ");
+        }
+
         emit_type_name(cg, sym->type->data.func.return_type);
         emit_string(cg, " ");
         if (strcmp("main", sym->name) == 0) {
