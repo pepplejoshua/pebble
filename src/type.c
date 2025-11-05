@@ -187,7 +187,7 @@ Type *type_create_struct(char **field_names, Type **field_types,
 
 // Create union type
 Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
-                         size_t variant_count, Location loc) {
+                        size_t variant_count, Location loc) {
   Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, loc);
   type->data.union_data.tagged = tagged;
 
@@ -496,13 +496,13 @@ void type_system_init(void) {
   alloc_param_types[0] = void_ptr;
   alloc_param_types[1] = type_usize;
   Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr, false,
-                                          true, CALL_CONV_PEBBLE, loc);
+                                          false, CALL_CONV_PEBBLE, loc);
 
   Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   free_param_types[0] = void_ptr;
   free_param_types[1] = void_ptr;
   Type *free_fn_t = type_create_function(free_param_types, 2, type_void, false,
-                                         true, CALL_CONV_PEBBLE, loc);
+                                         false, CALL_CONV_PEBBLE, loc);
 
   char **allocator_field_names = arena_alloc(&long_lived, 3 * sizeof(char *));
   allocator_field_names[0] = "ptr";
@@ -869,28 +869,28 @@ char *type_name(Type *type) {
 
 int member_index_of_type(Type *type, const char *member) {
   switch (type->kind) {
-    case TYPE_STRUCT: {
-      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
-        if (strcmp(member, type->data.struct_data.field_names[i]) == 0) {
-          return i;
-        }
+  case TYPE_STRUCT: {
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      if (strcmp(member, type->data.struct_data.field_names[i]) == 0) {
+        return i;
       }
-
-      return -1;
     }
 
-    case TYPE_UNION:
-    case TYPE_TAGGED_UNION: {
-      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
-        if (strcmp(member, type->data.union_data.variant_names[i]) == 0) {
-          return i;
-        }
-      }
+    return -1;
+  }
 
-      return -1;
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION: {
+    for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+      if (strcmp(member, type->data.union_data.variant_names[i]) == 0) {
+        return i;
+      }
     }
 
-    default:
-      return -1;
+    return -1;
+  }
+
+  default:
+    return -1;
   }
 }
