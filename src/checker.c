@@ -3019,8 +3019,8 @@ Type *check_expression(AstNode *expr) {
     // Handle array or slice member access
     else if (base_type->kind == TYPE_ARRAY || base_type->kind == TYPE_SLICE) {
       if (strcmp(field_name, "len") == 0) {
-        expr->resolved_type = type_u32;
-        return type_u32;
+        expr->resolved_type = type_usize;
+        return type_usize;
       } else {
         const char *type_name =
             base_type->kind == TYPE_ARRAY ? "array" : "slice";
