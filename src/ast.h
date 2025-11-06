@@ -349,6 +349,7 @@ struct AstNode {
     struct {
       AstNode *expr; // Expression being cast
       AstNode *target_type;
+      bool pointer_cast;
     } explicit_cast;
     struct {
       AstNode *inner_expr;

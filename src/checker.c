@@ -345,7 +345,17 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   case TYPE_STRUCT:
     for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
       if (canonicalize_type_internal(&type->data.struct_data.field_types[i],
-                                     visited)) {
+                                      visited)) {
+        cycle_detected = true;
+      }
+    }
+    break;
+
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
+    for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+      if (canonicalize_type_internal(&type->data.union_data.variant_types[i],
+                                      visited)) {
         cycle_detected = true;
       }
     }
@@ -593,7 +603,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     } else if (type->qualified_name) {
       canonical_name = str_dup(type->qualified_name);
     } else {
-      // Anonymous struct - build structural name
+      // Anonymous union - build structural name
       size_t capacity = 256;
       canonical_name = arena_alloc(&long_lived, capacity);
       size_t offset = 0;
@@ -894,10 +904,15 @@ static void check_global_constants(void) {
           continue;
         }
 
-        if (!type_equals(explicit_type, inferred_type)) {
-          checker_error(value->loc, "constant initializer type mismatch");
+        AstNode *converted = maybe_insert_cast(value, inferred_type, explicit_type);
+        if (!converted) {
+          checker_error(value->loc,
+                        "constant initializer type mismatch '%s' != '%s'",
+                        type_name(inferred_type), type_name(explicit_type));
           continue;
         }
+
+        decl->data.const_decl.value = converted;
 
         sym->type = explicit_type;
         sym->decl->resolved_type = explicit_type;
@@ -1340,7 +1355,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
       checker_error(type_expr->loc, "Struct was declared without any members");
-      return type_create_struct(NULL, NULL, field_count, false, loc);
+      return type_create_struct(NULL, NULL, field_count,
+                        false, !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1396,7 +1412,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_struct(field_names, field_types, field_count, false,
-                              loc);
+                              !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_UNION: {
@@ -1404,7 +1420,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t variant_count = type_expr->data.type_union.variant_count;
     if (variant_count == 0) {
       checker_error(type_expr->loc, "Union was declared without any members");
-      return type_create_union(tagged, NULL, NULL, variant_count, loc);
+      return type_create_union(tagged, NULL, NULL, variant_count,
+                                !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1461,7 +1478,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_union(tagged, variant_names, variant_types,
-                             variant_count, loc);
+                             variant_count, !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -1607,8 +1624,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   }
 
   // Cast integer literals
-  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(expr_type) &&
-      type_is_integral(target_type)) {
+  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(target_type)) {
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
     cast->loc = expr->loc;
@@ -1810,6 +1826,66 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
+  } else if (expr_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) {
+    // Check if structs have the same number of fields
+    if (expr_type->data.struct_data.field_count !=
+        target_type->data.struct_data.field_count) {
+      return NULL;
+    }
+
+    if (expr->kind != AST_EXPR_STRUCT_LITERAL) {
+      return NULL;
+    }
+
+    bool needs_conversion = false;
+    for (size_t i = 0; i < expr_type->data.struct_data.field_count; i++) {
+      // Names must match
+      if (strcmp(expr->data.struct_literal.field_names[i],
+                 target_type->data.struct_data.field_names[i]) != 0) {
+        return NULL;
+      }
+
+      if (!type_equals(expr_type->data.struct_data.field_types[i],
+                       target_type->data.struct_data.field_types[i])) {
+        needs_conversion = true;
+        break;
+      }
+    }
+
+    // If all elements match exactly, no cast needed
+    if (!needs_conversion) {
+      expr->resolved_type = target_type;
+      return expr;
+    }
+
+    // Create a new struct expression with recursively casted elements
+    AstNode *new_struct = arena_alloc(&long_lived, sizeof(AstNode));
+    new_struct->kind = AST_EXPR_STRUCT_LITERAL;
+    new_struct->loc = expr->loc;
+    new_struct->data.struct_literal.field_count =
+        target_type->data.struct_data.field_count;
+    new_struct->data.struct_literal.field_names = arena_alloc(
+        &long_lived, sizeof(char *) * target_type->data.struct_data.field_count);
+    new_struct->data.struct_literal.field_values = arena_alloc(
+        &long_lived, sizeof(AstNode *) * target_type->data.struct_data.field_count);
+
+    // Recursively cast each element
+    for (size_t i = 0; i < expr_type->data.struct_data.field_count; i++) {
+      AstNode *casted_elem =
+          maybe_insert_cast(expr->data.struct_literal.field_values[i],
+                            expr_type->data.struct_data.field_types[i],
+                            target_type->data.struct_data.field_types[i]);
+
+      if (!casted_elem) {
+        return NULL; // Element conversion failed
+      }
+
+      new_struct->data.struct_literal.field_values[i] = casted_elem;
+    }
+
+    expr->resolved_type = target_type;
+    new_struct->resolved_type = target_type;
+    return new_struct;
   }
 
   // No valid conversion
@@ -1828,10 +1904,10 @@ bool is_valid_cast(Type *from, Type *to) {
   }
 
   // Int <-> Pointer (for FFI)
-  if (type_is_int(from) && to->kind == TYPE_POINTER) {
+  if (type_is_integral(from) && to->kind == TYPE_POINTER) {
     return true;
   }
-  if (from->kind == TYPE_POINTER && type_is_int(to)) {
+  if (from->kind == TYPE_POINTER && type_is_integral(to)) {
     return true;
   }
 
@@ -1857,6 +1933,16 @@ bool is_valid_cast(Type *from, Type *to) {
   // *char to str (which is const char *)
   if (from->kind == TYPE_POINTER && from->data.ptr.base == type_char &&
       to == type_string) {
+    return true;
+  }
+
+  // struct <-> struct
+  if (from->kind == TYPE_STRUCT && to->kind == TYPE_STRUCT) {
+    return true;
+  }
+
+  // tuple <-> tuple
+  if (from->kind == TYPE_TUPLE && to->kind == TYPE_TUPLE) {
     return true;
   }
 
@@ -2937,8 +3023,8 @@ Type *check_expression(AstNode *expr) {
     // Handle array or slice member access
     else if (base_type->kind == TYPE_ARRAY || base_type->kind == TYPE_SLICE) {
       if (strcmp(field_name, "len") == 0) {
-        expr->resolved_type = type_u32;
-        return type_u32;
+        expr->resolved_type = type_usize;
+        return type_usize;
       } else {
         const char *type_name =
             base_type->kind == TYPE_ARRAY ? "array" : "slice";
@@ -3085,12 +3171,45 @@ Type *check_expression(AstNode *expr) {
     AstNode **field_values = expr->data.struct_literal.field_values;
     size_t field_count = expr->data.struct_literal.field_count;
 
+    typedef struct {
+      char *name;
+      UT_hash_handle hh;
+    } variant_entry;
+    variant_entry *seen = NULL;
+
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
+    for (size_t i = 0; i < field_count; i++) {
+      variant_entry *entry;
+      HASH_FIND_STR(seen, field_names[i], entry);
+      if (entry) {
+        checker_error(expr->loc, "Duplicate struct field '%s'",
+                      field_names[i]);
+      } else {
+        entry = arena_alloc(&temp_arena, sizeof(variant_entry));
+        entry->name = field_names[i];
+        HASH_ADD_KEYPTR(hh, seen, entry->name, strlen(entry->name), entry);
+      }
+    }
+
+    HASH_CLEAR(hh, seen);
+    arena_free(&temp_arena);
+
+    if (!struct_type_name) {
+      Type **field_types = arena_alloc(&long_lived, field_count * sizeof(Type *));
+      for (size_t i = 0; i < field_count; i++) {
+        field_types[i] = check_expression(field_values[i]);
+      }
+
+      Type *struct_type = type_create_struct(field_names, field_types, field_count,
+                                false, !checker_state.in_type_resolution, expr->loc);
+      expr->resolved_type = struct_type;
+
+      return struct_type;
+    }
+
     // Look up the type
-    // Symbol *type_sym = scope_lookup(current_scope, type_name, type_mod_name);
-    // if (!type_sym) {
-    //   checker_error(expr->loc, "undefined type '%s'", type_name);
-    //   return NULL;
-    // }
     Type *type_of = type_lookup(struct_type_name, type_mod_name);
     if (!type_of) {
       checker_error(expr->loc, "undefined type '%s'", struct_type_name);
@@ -3385,6 +3504,11 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "Invalid cast from %s to %s",
                     type_name(value_type), type_name(target_type));
       return NULL;
+    }
+
+    if ((value_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) ||
+        (value_type->kind == TYPE_TUPLE && target_type->kind == TYPE_TUPLE)) {
+      expr->data.explicit_cast.pointer_cast = true;
     }
 
     // Result type is the target type
