@@ -904,10 +904,15 @@ static void check_global_constants(void) {
           continue;
         }
 
-        if (!type_equals(explicit_type, inferred_type)) {
-          checker_error(value->loc, "constant initializer type mismatch");
+        AstNode *converted = maybe_insert_cast(value, inferred_type, explicit_type);
+        if (!converted) {
+          checker_error(value->loc,
+                        "constant initializer type mismatch '%s' != '%s'",
+                        type_name(inferred_type), type_name(explicit_type));
           continue;
         }
+
+        decl->data.const_decl.value = converted;
 
         sym->type = explicit_type;
         sym->decl->resolved_type = explicit_type;
@@ -1619,8 +1624,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   }
 
   // Cast integer literals
-  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(expr_type) &&
-      type_is_integral(target_type)) {
+  if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(target_type)) {
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
     cast->loc = expr->loc;
