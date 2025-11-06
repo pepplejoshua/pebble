@@ -2088,37 +2088,117 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   }
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
-    emit_expr(cg, stmt->data.assign_stmt.lhs);
 
-    switch (stmt->data.assign_stmt.op) {
-    case BINOP_ADD: {
-      emit_string(cg, " += ");
-      break;
-    }
+    if (stmt->data.assign_stmt.lhs->kind == AST_EXPR_INDEX) {
+      AstNode *expr = stmt->data.assign_stmt.lhs;
+      AstNode *array_expr = expr->data.index_expr.array;
+      Type *array_type = array_expr->resolved_type;
 
-    case BINOP_SUB: {
-      emit_string(cg, " -= ");
-      break;
-    }
+      if (array_type->kind == TYPE_STRING) {
+        // For str, index directly
+        if (mode_is_safe()) {
+          emit_string(cg, "({ int __index = ");
+          emit_expr(cg, expr->data.index_expr.index);
+          emit_string(cg, "; char *__item = ");
+          emit_expr(cg, array_expr);
+          emit_string(cg, "; ");
+          emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+          emit_string(cg, "__item[__index]");
+        } else {
+          emit_expr(cg, array_expr);
+          emit_string(cg, "[");
+          emit_expr(cg, expr->data.index_expr.index);
+          emit_string(cg, "]");
+        }
+      } else {
+        // For arrays/slices, use .data
+        if (mode_is_safe()) {
+          // Bounds checking
+          emit_string(cg, "({ int __index = ");
+          emit_expr(cg, expr->data.index_expr.index);
+          emit_string(cg, "; ");
 
-    case BINOP_MUL: {
-      emit_string(cg, " *= ");
-      break;
-    }
+          emit_type_name(cg, array_expr->resolved_type);
+          emit_string(cg, " __item = ");
+          emit_expr(cg, array_expr);
+          emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
+                          "__item.data[__index]");
+        } else {
+          emit_expr(cg, array_expr);
+          emit_string(cg, ".data[");
+          emit_expr(cg, expr->data.index_expr.index);
+          emit_string(cg, "]");
+        }
+      }
 
-    case BINOP_DIV: {
-      emit_string(cg, " /= ");
-      break;
-    }
+      switch (stmt->data.assign_stmt.op) {
+      case BINOP_ADD: {
+        emit_string(cg, " += ");
+        break;
+      }
 
-    default: {
-      emit_string(cg, " = ");
-      break;
-    }
-    }
+      case BINOP_SUB: {
+        emit_string(cg, " -= ");
+        break;
+      }
 
-    emit_expr(cg, stmt->data.assign_stmt.rhs);
-    emit_string(cg, ";\n");
+      case BINOP_MUL: {
+        emit_string(cg, " *= ");
+        break;
+      }
+
+      case BINOP_DIV: {
+        emit_string(cg, " /= ");
+        break;
+      }
+
+      default: {
+        emit_string(cg, " = ");
+        break;
+      }
+      }
+
+      emit_expr(cg, stmt->data.assign_stmt.rhs);
+      emit_string(cg, ";");
+
+      if (mode_is_safe()) {
+        emit_string(cg, " });");
+      }
+
+      emit_string(cg, "\n");
+    } else {
+      emit_expr(cg, stmt->data.assign_stmt.lhs);
+
+      switch (stmt->data.assign_stmt.op) {
+      case BINOP_ADD: {
+        emit_string(cg, " += ");
+        break;
+      }
+
+      case BINOP_SUB: {
+        emit_string(cg, " -= ");
+        break;
+      }
+
+      case BINOP_MUL: {
+        emit_string(cg, " *= ");
+        break;
+      }
+
+      case BINOP_DIV: {
+        emit_string(cg, " /= ");
+        break;
+      }
+
+      default: {
+        emit_string(cg, " = ");
+        break;
+      }
+      }
+
+      emit_expr(cg, stmt->data.assign_stmt.rhs);
+      emit_string(cg, ";\n");
+    }
     break;
   }
   case AST_DECL_VARIABLE: {
