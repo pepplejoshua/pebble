@@ -2351,7 +2351,52 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, "!");
       break;
     case UNOP_ADDR:
-      emit_string(cg, "&");
+      if (expr->data.unop.operand->kind == AST_EXPR_INDEX) {
+        AstNode *array_expr = expr->data.unop.operand->data.index_expr.array;
+        Type *array_type = array_expr->resolved_type;
+
+        if (array_type->kind == TYPE_STRING) {
+          // For str, index directly
+          if (mode_is_safe()) {
+            emit_string(cg, "({ int __index = ");
+            emit_expr(cg, expr->data.index_expr.index);
+            emit_string(cg, "; char *__item = ");
+            emit_expr(cg, array_expr);
+            emit_string(cg, "; ");
+            emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+            emit_string(cg, "&__item[__index]; })");
+          } else {
+            emit_string(cg, "&");
+            emit_expr(cg, array_expr);
+            emit_string(cg, "[");
+            emit_expr(cg, expr->data.index_expr.index);
+            emit_string(cg, "]");
+          }
+        } else {
+          // For arrays/slices, use .data
+          if (mode_is_safe()) {
+            // Bounds checking
+            emit_string(cg, "({ int __index = ");
+            emit_expr(cg, expr->data.index_expr.index);
+            emit_string(cg, "; ");
+
+            emit_type_name(cg, array_expr->resolved_type);
+            emit_string(cg, " __item = ");
+            emit_expr(cg, array_expr);
+            emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
+                            "&__item.data[__index]; })");
+          } else {
+            emit_string(cg, "&");
+            emit_expr(cg, array_expr);
+            emit_string(cg, ".data[");
+            emit_expr(cg, expr->data.index_expr.index);
+            emit_string(cg, "]");
+          }
+        }
+        return;
+      } else {
+        emit_string(cg, "&");
+      }
       break;
     case UNOP_DEREF:
       emit_string(cg, "(*");
@@ -2595,8 +2640,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < "
-                        "(int)strlen(__item)); __item[__index]; })");
+        emit_string(cg, "; ");
+        emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+        emit_string(cg, "__item[__index]; })");
       } else {
         emit_expr(cg, array_expr);
         emit_string(cg, "[");
