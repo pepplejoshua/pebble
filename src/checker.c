@@ -1900,10 +1900,10 @@ bool is_valid_cast(Type *from, Type *to) {
   }
 
   // Int <-> Pointer (for FFI)
-  if (type_is_int(from) && to->kind == TYPE_POINTER) {
+  if (type_is_integral(from) && to->kind == TYPE_POINTER) {
     return true;
   }
-  if (from->kind == TYPE_POINTER && type_is_int(to)) {
+  if (from->kind == TYPE_POINTER && type_is_integral(to)) {
     return true;
   }
 
