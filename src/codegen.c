@@ -2252,42 +2252,6 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   }
 }
 
-// Emit a string literal with proper C escaping
-void emit_escaped_string_literal(Codegen *cg, const char *str) {
-  emit_string(cg, "\"");
-
-  for (size_t i = 0; str[i] != '\0'; i++) {
-    char c = str[i];
-    switch (c) {
-    case '\n':
-      emit_string(cg, "\\n");
-      break;
-    case '\t':
-      emit_string(cg, "\\t");
-      break;
-    case '\r':
-      emit_string(cg, "\\r");
-      break;
-    case '\\':
-      emit_string(cg, "\\\\");
-      break;
-    case '"':
-      emit_string(cg, "\\\"");
-      break;
-    case '\0':
-      emit_string(cg, "\\0");
-      break;
-    default: {
-      char buf[2] = {c, '\0'};
-      emit_string(cg, buf);
-      break;
-    }
-    }
-  }
-
-  emit_string(cg, "\"");
-}
-
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
@@ -2343,7 +2307,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_LITERAL_STRING:
-    emit_escaped_string_literal(cg, expr->data.str_lit.value);
+    emit_string(cg, "\"");
+    emit_string(cg, expr->data.str_lit.value);
+    emit_string(cg, "\"");
     break;
 
   case AST_EXPR_SIZEOF: {
