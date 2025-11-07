@@ -2312,6 +2312,142 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "\"");
     break;
 
+  case AST_EXPR_INTERPOLATED_STRING: {
+    emit_string(cg, "({ ");
+
+    // First, evaluate all non-literal expressions into temporaries
+    char temp_names[64][64]; // Store temp names for each expression
+    size_t temp_count = 0;
+
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind != AST_EXPR_LITERAL_STRING) {
+        Type *part_type = part->resolved_type;
+        char buffer[64];
+        char *temp_name = get_temporary_name(cg, buffer, 64);
+        strcpy(temp_names[temp_count++], temp_name);
+
+        // Declare and assign temporary
+        if (part_type->kind == TYPE_STRING) {
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_INT || part_type->kind == TYPE_I32 ||
+                   part_type->kind == TYPE_I64 ||
+                   part_type->kind == TYPE_ISIZE) {
+          emit_string(cg, "long long ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = (long long)");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_U8 || part_type->kind == TYPE_U16 ||
+                   part_type->kind == TYPE_U32 || part_type->kind == TYPE_U64 ||
+                   part_type->kind == TYPE_USIZE) {
+          emit_string(cg, "unsigned long long ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = (unsigned long long)");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_F32 || part_type->kind == TYPE_F64) {
+          emit_string(cg, "double ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_BOOL) {
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, " ? \"true\" : \"false\"; ");
+        } else if (part_type->kind == TYPE_CHAR) {
+          emit_string(cg, "char ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else {
+          // Fallback for other types - output type name like print does
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = \"");
+          emit_string(cg, type_name(part_type));
+          emit_string(cg, "\"; ");
+        }
+      }
+    }
+
+    // Build the format string
+    emit_string(cg, "char *__fmt = \"");
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind == AST_EXPR_LITERAL_STRING) {
+        emit_string(cg, part->data.str_lit.value);
+      } else {
+        Type *part_type = part->resolved_type;
+        if (part_type->kind == TYPE_STRING || part_type->kind == TYPE_BOOL) {
+          emit_string(cg, "%s");
+        } else if (part_type->kind == TYPE_INT || part_type->kind == TYPE_I32 ||
+                   part_type->kind == TYPE_I64 ||
+                   part_type->kind == TYPE_ISIZE ||
+                   part_type->kind == TYPE_I8 || part_type->kind == TYPE_I16) {
+          emit_string(cg, "%lld");
+        } else if (part_type->kind == TYPE_U8 || part_type->kind == TYPE_U16 ||
+                   part_type->kind == TYPE_U32 || part_type->kind == TYPE_U64 ||
+                   part_type->kind == TYPE_USIZE) {
+          emit_string(cg, "%llu");
+        } else if (part_type->kind == TYPE_F32 || part_type->kind == TYPE_F64) {
+          emit_string(cg, "%f");
+        } else if (part_type->kind == TYPE_CHAR) {
+          emit_string(cg, "%c");
+        } else {
+          // Fallback for other types
+          emit_string(cg, "%s");
+        }
+      }
+    }
+    emit_string(cg, "\"; ");
+
+    // Calculate size with snprintf
+    emit_string(cg, "size_t __len = snprintf(NULL, 0, __fmt");
+
+    temp_count = 0;
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind != AST_EXPR_LITERAL_STRING) {
+        emit_string(cg, ", ");
+        emit_string(cg, temp_names[temp_count++]);
+      }
+    }
+
+    emit_string(cg, "); ");
+
+    // Allocate buffer on stack
+    emit_string(cg, "char *__buf = alloca(__len + 1); ");
+
+    // Fill buffer with sprintf
+    emit_string(cg, "sprintf(__buf, __fmt");
+
+    temp_count = 0;
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind != AST_EXPR_LITERAL_STRING) {
+        emit_string(cg, ", ");
+        emit_string(cg, temp_names[temp_count++]);
+      }
+    }
+
+    emit_string(cg, "); ");
+    emit_string(cg, "__buf; })");
+    break;
+  }
+
   case AST_EXPR_SIZEOF: {
     Type *type = expr->data.sizeof_expr.type_expr->resolved_type;
 
