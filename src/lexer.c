@@ -288,13 +288,99 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   return TOKEN_IDENTIFIER;
 }
 
+// Process escape sequences in a string
+// For interpolated strings, also handles \{ and \`
+static char *process_string_escapes(Lexer *lexer, size_t start, size_t end,
+                                    bool is_interpolated) {
+  // Allocate max possible size (worst case: no escapes)
+  size_t max_length = end - start;
+  char *processed = arena_alloc(&long_lived, max_length + 1);
+  size_t write_pos = 0;
+
+  for (size_t i = start; i < end;) {
+    if (lexer->source[i] == '\\' && i + 1 < end) {
+      // Escape sequence
+      char next = lexer->source[i + 1];
+      switch (next) {
+      case 'n':
+        processed[write_pos++] = '\n';
+        i += 2;
+        break;
+      case 't':
+        processed[write_pos++] = '\t';
+        i += 2;
+        break;
+      case 'r':
+        processed[write_pos++] = '\r';
+        i += 2;
+        break;
+      case '\\':
+        processed[write_pos++] = '\\';
+        i += 2;
+        break;
+      case '"':
+        processed[write_pos++] = '"';
+        i += 2;
+        break;
+      case '0':
+        processed[write_pos++] = '\0';
+        i += 2;
+        break;
+      case '`':
+        if (is_interpolated) {
+          processed[write_pos++] = '`';
+          i += 2;
+        } else {
+          // Not valid in regular strings, keep as-is
+          processed[write_pos++] = '\\';
+          processed[write_pos++] = '`';
+          i += 2;
+        }
+        break;
+      case '{':
+        if (is_interpolated) {
+          processed[write_pos++] = '{';
+          i += 2;
+        } else {
+          // Not valid in regular strings, keep as-is
+          processed[write_pos++] = '\\';
+          processed[write_pos++] = '{';
+          i += 2;
+        }
+        break;
+      default:
+        // Unknown escape - keep both characters
+        processed[write_pos++] = '\\';
+        processed[write_pos++] = next;
+        i += 2;
+        break;
+      }
+    } else {
+      // Regular character
+      processed[write_pos++] = lexer->source[i];
+      i++;
+    }
+  }
+
+  processed[write_pos] = '\0';
+  return processed;
+}
+
 // Scan specific token types
 static Token lexer_scan_string(Lexer *lexer) {
   // Skip opening quote
   while (lexer_peek(lexer) != '"' && !lexer_is_at_end(lexer)) {
-    if (lexer_peek(lexer) == '\n')
-      lexer->line++;
-    lexer_advance(lexer);
+    if (lexer_peek(lexer) == '\\') {
+      // Skip escape sequence (don't stop at escaped quotes)
+      lexer_advance(lexer);
+      if (!lexer_is_at_end(lexer)) {
+        lexer_advance(lexer);
+      }
+    } else {
+      if (lexer_peek(lexer) == '\n')
+        lexer->line++;
+      lexer_advance(lexer);
+    }
   }
 
   if (lexer_is_at_end(lexer)) {
@@ -306,9 +392,11 @@ static Token lexer_scan_string(Lexer *lexer) {
 
   Token token = lexer_make_token(lexer, TOKEN_STRING);
 
-  // Extract string value (without quotes)
-  size_t length = lexer->current - lexer->start - 2;
-  token.value.str_val = str_dup_lex(&lexer->source[lexer->start + 1], length);
+  // Process escape sequences (without quotes)
+  size_t content_start = lexer->start + 1;
+  size_t content_end = lexer->current - 1;
+  token.value.str_val =
+      process_string_escapes(lexer, content_start, content_end, false);
 
   return token;
 }
@@ -458,6 +546,11 @@ void lexer_init(Lexer *lexer, const char *source, const char *filename) {
   lexer->line = 1;
   lexer->column = 1;
   lexer->filename = filename;
+  // Pre-allocate for 12 tokens
+  lexer->token_queue = arena_alloc(&long_lived, sizeof(Token) * 12);
+  lexer->queue_capacity = 12;
+  lexer->queue_count = 0;
+  lexer->queue_index = 0;
 }
 
 Token lexer_next_token(Lexer *lexer) {
