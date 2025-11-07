@@ -47,6 +47,7 @@ typedef enum {
   AST_EXPR_LITERAL_INT,
   AST_EXPR_LITERAL_FLOAT,
   AST_EXPR_LITERAL_STRING,
+  AST_EXPR_INTERPOLATED_STRING,
   AST_EXPR_LITERAL_CHAR,
   AST_EXPR_LITERAL_BOOL,
   AST_EXPR_LITERAL_NIL,
@@ -260,6 +261,10 @@ struct AstNode {
     struct {
       char *value;
     } str_lit;
+    struct {
+      AstNode **parts; // Array of string literals and expressions
+      size_t num_parts;
+    } interpolated_string;
     struct {
       char value;
     } char_lit;

@@ -10,11 +10,12 @@ typedef struct {
   Token current;
   Token previous;
   bool had_error;
-  bool panic_mode; // For error recovery
+  bool panic_mode;           // For error recovery
+  const char *abs_file_path; // For error reporting
 } Parser;
 
 // Main parser functions
-void parser_init(Parser *parser, const char *source, const char *filename);
+void parser_init(Parser *parser, const char *source, const char *filename, const char *abs_file_path);
 AstNode *
 parse_program(Parser *parser); // Returns list of top-level declarations
 

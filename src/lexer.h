@@ -146,6 +146,8 @@ typedef struct {
   size_t queue_capacity;  // How many tokens we can hold
   size_t queue_count;     // How many tokens are queued
   size_t queue_index;     // Current position in queue
+
+  bool skip_queue;        // Lex fresh tokens in interpolated strings
 } Lexer;
 
 // Lexer functions

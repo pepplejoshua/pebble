@@ -392,9 +392,11 @@ static Token lexer_make_interpolated_fragment(Lexer *lexer, size_t start,
 }
 
 static Token lexer_scan_interpolated_string(Lexer *lexer) {
-  // lexer->start is at the backtick
-  // Consume initial backtick
-  lexer_advance(lexer);
+  // Prevent nested interpolated strings
+  if (lexer->skip_queue) {
+    return lexer_error_token(lexer, "Nested interpolated strings are not "
+                                    "supported. Use variables instead.");
+  }
 
   // Create opening backtick token
   Token bt =
@@ -466,6 +468,8 @@ static Token lexer_scan_interpolated_string(Lexer *lexer) {
       bool saw_rcurly = false;
       int num_of_lcurly = 1;
 
+      lexer->skip_queue = true;
+
       while (!lexer_is_at_end(lexer)) {
         Token tok = lexer_next_token(lexer);
 
@@ -486,6 +490,8 @@ static Token lexer_scan_interpolated_string(Lexer *lexer) {
           num_of_lcurly--;
         }
       }
+
+      lexer->skip_queue = false;
 
       if (!saw_rcurly) {
         return lexer_error_token(
@@ -697,9 +703,21 @@ void lexer_init(Lexer *lexer, const char *source, const char *filename) {
   lexer->queue_capacity = 12;
   lexer->queue_count = 0;
   lexer->queue_index = 0;
+  lexer->skip_queue = false;
 }
 
 Token lexer_next_token(Lexer *lexer) {
+  // Check if we have queued tokens (unless we're building the queue)
+  if (!lexer->skip_queue && lexer->queue_index < lexer->queue_count) {
+    return lexer->token_queue[lexer->queue_index++];
+  }
+
+  // Reset queue for next interpolated string
+  if (!lexer->skip_queue) {
+    lexer->queue_count = 0;
+    lexer->queue_index = 0;
+  }
+
   lexer_skip_whitespace(lexer);
 
   lexer->start = lexer->current;
