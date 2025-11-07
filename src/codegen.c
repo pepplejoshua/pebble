@@ -526,7 +526,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
          entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION ||
-         entry->type->kind == TYPE_OPTIONAL || entry->type->kind == TYPE_UNION ||
+         entry->type->kind == TYPE_OPTIONAL ||
+         entry->type->kind == TYPE_UNION ||
          entry->type->kind == TYPE_TAGGED_UNION)) {
       emit_type_if_needed(cg, entry->type);
     }
@@ -1659,9 +1660,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_indent_spaces(cg);
 
-    if (cond_type->kind == TYPE_TAGGED_UNION || (cond_type->kind == TYPE_POINTER &&
-      cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION))
-    {
+    if (cond_type->kind == TYPE_TAGGED_UNION ||
+        (cond_type->kind == TYPE_POINTER &&
+         cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
       emit_string(cg, "switch (");
       emit_expr(cg, cond);
 
@@ -1673,8 +1674,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
       emit_string(cg, ") {\n");
       char *qualified_name = cond_type->canonical_name
-          ? cond_type->canonical_name
-          : cond_type->data.ptr.base->canonical_name;
+                                 ? cond_type->canonical_name
+                                 : cond_type->data.ptr.base->canonical_name;
 
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
         emit_indent_spaces(cg);
@@ -2102,7 +2103,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, "; char *__item = ");
           emit_expr(cg, array_expr);
           emit_string(cg, "; ");
-          emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+          emit_string(cg,
+                      "assert(__index >= 0 && __index < (int)strlen(__item));");
           emit_string(cg, "__item[__index]");
         } else {
           emit_expr(cg, array_expr);
@@ -2121,8 +2123,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_type_name(cg, array_expr->resolved_type);
           emit_string(cg, " __item = ");
           emit_expr(cg, array_expr);
-          emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
-                          "__item.data[__index]");
+          emit_string(cg,
+                      "; assert(__index >= 0 && __index < (int)__item.len); "
+                      "__item.data[__index]");
         } else {
           emit_expr(cg, array_expr);
           emit_string(cg, ".data[");
@@ -2249,6 +2252,42 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   }
 }
 
+// Emit a string literal with proper C escaping
+void emit_escaped_string_literal(Codegen *cg, const char *str) {
+  emit_string(cg, "\"");
+
+  for (size_t i = 0; str[i] != '\0'; i++) {
+    char c = str[i];
+    switch (c) {
+    case '\n':
+      emit_string(cg, "\\n");
+      break;
+    case '\t':
+      emit_string(cg, "\\t");
+      break;
+    case '\r':
+      emit_string(cg, "\\r");
+      break;
+    case '\\':
+      emit_string(cg, "\\\\");
+      break;
+    case '"':
+      emit_string(cg, "\\\"");
+      break;
+    case '\0':
+      emit_string(cg, "\\0");
+      break;
+    default: {
+      char buf[2] = {c, '\0'};
+      emit_string(cg, buf);
+      break;
+    }
+    }
+  }
+
+  emit_string(cg, "\"");
+}
+
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
@@ -2304,9 +2343,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_LITERAL_STRING:
-    emit_string(cg, "\"");
-    emit_string(cg, expr->data.str_lit.value);
-    emit_string(cg, "\"");
+    emit_escaped_string_literal(cg, expr->data.str_lit.value);
     break;
 
   case AST_EXPR_SIZEOF: {
@@ -2443,7 +2480,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, "; char *__item = ");
             emit_expr(cg, array_expr);
             emit_string(cg, "; ");
-            emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+            emit_string(
+                cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
             emit_string(cg, "&__item[__index]; })");
           } else {
             emit_string(cg, "&");
@@ -2463,8 +2501,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_type_name(cg, array_expr->resolved_type);
             emit_string(cg, " __item = ");
             emit_expr(cg, array_expr);
-            emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
-                            "&__item.data[__index]; })");
+            emit_string(cg,
+                        "; assert(__index >= 0 && __index < (int)__item.len); "
+                        "&__item.data[__index]; })");
           } else {
             emit_string(cg, "&");
             emit_expr(cg, array_expr);
@@ -2721,7 +2760,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
         emit_string(cg, "; ");
-        emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+        emit_string(cg,
+                    "assert(__index >= 0 && __index < (int)strlen(__item));");
         emit_string(cg, "__item[__index]; })");
       } else {
         emit_expr(cg, array_expr);
@@ -2893,8 +2933,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // Check if the object is a pointer and prepare the operator
     if (object_type && object_type->kind == TYPE_POINTER) {
       Type *base_type = object_type->data.ptr.base;
-      if (base_type && (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION)) {
-        // Pointer to struct/union: emit object directly, then -> (e.g., ptr->field)
+      if (base_type &&
+          (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION)) {
+        // Pointer to struct/union: emit object directly, then -> (e.g.,
+        // ptr->field)
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
       } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
@@ -2911,9 +2953,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, ";\n");
 
-        char *name = base_type->qualified_name
-          ? base_type->qualified_name
-          : base_type->canonical_name;
+        char *name = base_type->qualified_name ? base_type->qualified_name
+                                               : base_type->canonical_name;
 
         emit_string(cg, "assert(");
         emit_string(cg, temp);
@@ -2945,9 +2986,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         char buffer[64] = {0};
 
-        char *name = object_type->qualified_name
-          ? object_type->qualified_name
-          : object_type->canonical_name;
+        char *name = object_type->qualified_name ? object_type->qualified_name
+                                                 : object_type->canonical_name;
 
         emit_string(cg, "({\n");
         char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
@@ -2990,8 +3030,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_STRUCT_LITERAL: {
     char *type_name = expr->data.struct_literal.qualified_type_name
-      ? expr->data.struct_literal.qualified_type_name
-      : expr->resolved_type->canonical_name;
+                          ? expr->data.struct_literal.qualified_type_name
+                          : expr->resolved_type->canonical_name;
 
     emit_string(cg, "(");
     emit_string(cg, type_name);
@@ -3002,8 +3042,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ".__tag = ");
 
         char *name = expr->resolved_type->qualified_name
-          ? expr->resolved_type->qualified_name
-          : expr->resolved_type->canonical_name;
+                         ? expr->resolved_type->qualified_name
+                         : expr->resolved_type->canonical_name;
 
         emit_string(cg, name);
         emit_string(cg, "__");

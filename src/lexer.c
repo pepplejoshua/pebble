@@ -366,6 +366,177 @@ static char *process_string_escapes(Lexer *lexer, size_t start, size_t end,
   return processed;
 }
 
+static void lexer_queue_token(Lexer *lexer, Token token) {
+  if (lexer->queue_count >= lexer->queue_capacity) {
+    size_t new_capacity =
+        lexer->queue_capacity == 0 ? 12 : lexer->queue_capacity * 2;
+
+    Token *new_queue = arena_alloc(&long_lived, sizeof(Token) * new_capacity);
+
+    if (lexer->token_queue != NULL && lexer->queue_count > 0) {
+      memcpy(new_queue, lexer->token_queue, sizeof(Token) * lexer->queue_count);
+    }
+
+    lexer->token_queue = new_queue;
+    lexer->queue_capacity = new_capacity;
+  }
+
+  lexer->token_queue[lexer->queue_count++] = token;
+}
+
+static Token lexer_make_token_at(Lexer *lexer, TokenType type, size_t start,
+                                 size_t end, int line, int column) {
+  Token token;
+  token.type = type;
+  token.location.file = lexer->filename;
+  token.location.line = line;
+  token.location.column = column;
+
+  size_t length = end - start;
+  token.lexeme = str_dup_lex(&lexer->source[start], length);
+
+  return token;
+}
+
+static Token lexer_make_interpolated_fragment(Lexer *lexer, size_t start,
+                                              size_t end, int line,
+                                              int column) {
+  Token token;
+  token.type = TOKEN_STRING;
+  token.location.file = lexer->filename;
+  token.location.line = line;
+  token.location.column = column;
+
+  // Process both {{ -> { and escape sequences like \n, \t, \`, etc.
+  char *processed = process_string_escapes(lexer, start, end, true);
+
+  token.lexeme = processed;
+  token.value.str_val = processed;
+
+  return token;
+}
+
+static Token lexer_scan_interpolated_string(Lexer *lexer) {
+  // lexer->start is at the backtick
+  // Consume initial backtick
+  lexer_advance(lexer);
+
+  // Create opening backtick token
+  Token bt =
+      lexer_make_token_at(lexer, TOKEN_BACKTICK, lexer->start, lexer->current,
+                          lexer->line, lexer->column - 1);
+
+  // Track where current string fragment starts
+  size_t fragment_start = lexer->current;
+  int fragment_line = lexer->line;
+  int fragment_column = lexer->column;
+
+  while (!lexer_is_at_end(lexer)) {
+    char c = lexer_peek(lexer);
+
+    // Handle escape sequences first (including \`, \{, \n, etc.)
+    if (c == '\\') {
+      lexer_advance(lexer); // Skip backslash
+      if (!lexer_is_at_end(lexer)) {
+        lexer_advance(lexer); // Skip escaped character
+      }
+      continue;
+    }
+
+    if (c == '`') {
+      // Found closing backtick (unescaped)
+      // Queue any buffered fragment if it has content
+      if (lexer->current > fragment_start) {
+        Token fragment = lexer_make_interpolated_fragment(
+            lexer, fragment_start, lexer->current, fragment_line,
+            fragment_column);
+        lexer_queue_token(lexer, fragment);
+      }
+
+      // Consume and queue closing backtick
+      size_t backtick_start = lexer->current;
+      int backtick_line = lexer->line;
+      int backtick_column = lexer->column;
+      lexer_advance(lexer);
+
+      Token closing_backtick =
+          lexer_make_token_at(lexer, TOKEN_BACKTICK, backtick_start,
+                              lexer->current, backtick_line, backtick_column);
+      lexer_queue_token(lexer, closing_backtick);
+      break;
+    }
+
+    else if (c == '{') {
+      // Unescaped { means code section starts
+      // Queue buffered fragment if it has content
+      if (lexer->current > fragment_start) {
+        Token fragment = lexer_make_interpolated_fragment(
+            lexer, fragment_start, lexer->current, fragment_line,
+            fragment_column);
+        lexer_queue_token(lexer, fragment);
+      }
+
+      // Consume and queue the {
+      size_t lcurly_start = lexer->current;
+      int lcurly_line = lexer->line;
+      int lcurly_column = lexer->column;
+      lexer_advance(lexer);
+
+      Token lcurly =
+          lexer_make_token_at(lexer, TOKEN_LBRACE, lcurly_start, lexer->current,
+                              lcurly_line, lcurly_column);
+      lexer_queue_token(lexer, lcurly);
+
+      // Recursively lex tokens until we find matching }
+      bool saw_rcurly = false;
+      int num_of_lcurly = 1;
+
+      while (!lexer_is_at_end(lexer)) {
+        Token tok = lexer_next_token(lexer);
+
+        if (tok.type == TOKEN_LBRACE) {
+          // Nested braces (could be nested interpolated strings)
+          num_of_lcurly++;
+        }
+
+        bool is_rcurly = (tok.type == TOKEN_RBRACE);
+        lexer_queue_token(lexer, tok);
+
+        if (is_rcurly) {
+          if (num_of_lcurly == 1) {
+            // This closes our original {
+            saw_rcurly = true;
+            break;
+          }
+          num_of_lcurly--;
+        }
+      }
+
+      if (!saw_rcurly) {
+        return lexer_error_token(
+            lexer, "Unterminated code section in interpolated string");
+      }
+
+      // Reset fragment buffer for next section
+      fragment_start = lexer->current;
+      fragment_line = lexer->line;
+      fragment_column = lexer->column;
+    }
+
+    else {
+      // Regular character - advance (adds to fragment buffer)
+      lexer_advance(lexer);
+    }
+  }
+
+  if (lexer_is_at_end(lexer)) {
+    return lexer_error_token(lexer, "Unterminated interpolated string");
+  }
+
+  // Return opening backtick (parts are queued)
+  return bt;
+}
+
 // Scan specific token types
 static Token lexer_scan_string(Lexer *lexer) {
   // Skip opening quote
@@ -570,6 +741,8 @@ Token lexer_next_token(Lexer *lexer) {
     return lexer_scan_number(lexer);
 
   switch (c) {
+  case '`':
+    return lexer_scan_interpolated_string(lexer);
   case '(':
     return lexer_make_token(lexer, TOKEN_LPAREN);
   case ')':
