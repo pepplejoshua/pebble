@@ -1479,6 +1479,159 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   }
 }
 
+// Helper: Get format specifier for a built-in type
+static const char *get_format_specifier(Type *type) {
+  switch (type->kind) {
+  case TYPE_STRING:
+  case TYPE_BOOL:
+    return "%s";
+  case TYPE_INT:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_ISIZE:
+  case TYPE_I8:
+  case TYPE_I16:
+    return "%lld";
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_USIZE:
+    return "%llu";
+  case TYPE_F32:
+  case TYPE_F64:
+    return "%f";
+  case TYPE_CHAR:
+    return "%c";
+  default:
+    return "%s";
+  }
+}
+
+// Helper: Recursively build format string for struct/tuple
+static void build_composite_format_string(Codegen *cg, Type *type) {
+  if (type->kind == TYPE_STRUCT) {
+    // Emit "TypeName.{field1 = %d, field2 = %s, ...}"
+    emit_string(cg, type_name(type));
+    emit_string(cg, ".{");
+
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+
+      emit_string(cg, type->data.struct_data.field_names[i]);
+      emit_string(cg, " = ");
+
+      Type *field_type = type->data.struct_data.field_types[i];
+
+      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
+        // Recursively format nested composite types
+        build_composite_format_string(cg, field_type);
+      } else {
+        // Emit format specifier for builtin types
+        emit_string(cg, get_format_specifier(field_type));
+      }
+    }
+
+    emit_string(cg, "}");
+
+  } else if (type->kind == TYPE_TUPLE) {
+    // Emit "(%d, %s, ...)"
+    emit_string(cg, "(");
+
+    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+
+      Type *elem_type = type->data.tuple.element_types[i];
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+        build_composite_format_string(cg, elem_type);
+      } else {
+        emit_string(cg, get_format_specifier(elem_type));
+      }
+    }
+
+    emit_string(cg, ")");
+  }
+}
+
+// Helper: Recursively emit arguments for sprintf (field accesses)
+static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
+                                 bool *first) {
+  if (type->kind == TYPE_STRUCT) {
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      Type *field_type = type->data.struct_data.field_types[i];
+      char field_access[512];
+      snprintf(field_access, sizeof(field_access), "%s.%s", base_expr,
+               type->data.struct_data.field_names[i]);
+
+      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
+        // Recursive case
+        build_composite_args(cg, field_type, field_access, first);
+      } else {
+        // Base case: emit argument with appropriate cast
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        if (field_type->kind == TYPE_INT || field_type->kind == TYPE_I32 ||
+            field_type->kind == TYPE_I64 || field_type->kind == TYPE_ISIZE ||
+            field_type->kind == TYPE_I8 || field_type->kind == TYPE_I16) {
+          emit_string(cg, "(long long)");
+        } else if (field_type->kind == TYPE_U8 ||
+                   field_type->kind == TYPE_U16 ||
+                   field_type->kind == TYPE_U32 ||
+                   field_type->kind == TYPE_U64 ||
+                   field_type->kind == TYPE_USIZE) {
+          emit_string(cg, "(unsigned long long)");
+        } else if (field_type->kind == TYPE_BOOL) {
+          emit_string(cg, "(");
+        }
+
+        emit_string(cg, field_access);
+
+        if (field_type->kind == TYPE_BOOL) {
+          emit_string(cg, " ? \"true\" : \"false\")");
+        }
+      }
+    }
+
+  } else if (type->kind == TYPE_TUPLE) {
+    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+      Type *elem_type = type->data.tuple.element_types[i];
+      char field_access[512];
+      snprintf(field_access, sizeof(field_access), "%s._%zu", base_expr, i);
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+        build_composite_args(cg, elem_type, field_access, first);
+      } else {
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        if (elem_type->kind == TYPE_INT || elem_type->kind == TYPE_I32 ||
+            elem_type->kind == TYPE_I64 || elem_type->kind == TYPE_ISIZE ||
+            elem_type->kind == TYPE_I8 || elem_type->kind == TYPE_I16) {
+          emit_string(cg, "(long long)");
+        } else if (elem_type->kind == TYPE_U8 || elem_type->kind == TYPE_U16 ||
+                   elem_type->kind == TYPE_U32 || elem_type->kind == TYPE_U64 ||
+                   elem_type->kind == TYPE_USIZE) {
+          emit_string(cg, "(unsigned long long)");
+        } else if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, "(");
+        }
+
+        emit_string(cg, field_access);
+
+        if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, " ? \"true\" : \"false\")");
+        }
+      }
+    }
+  }
+}
+
 // Emit statement (minimal)
 void emit_stmt(Codegen *cg, AstNode *stmt) {
   if (!stmt)
@@ -1586,7 +1739,72 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         } else {
           emit_expr(cg, expr);
         }
+      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE) {
+        // Print struct/tuple with formatted representation
+
+        // Wrap in a statement expression to create temporaries
+        emit_string(cg, "({ ");
+
+        // Evaluate the expression into a temporary
+        char temp_expr_buf[64];
+        snprintf(temp_expr_buf, sizeof(temp_expr_buf), "__print_composite_%zu",
+                 i);
+
+        emit_type_name(cg, type);
+        emit_string(cg, " ");
+        emit_string(cg, temp_expr_buf);
+        emit_string(cg, " = ");
+        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
+        emit_string(cg, "; ");
+
+        // Create a buffer for the formatted output using alloca
+        char buffer_name[64];
+        snprintf(buffer_name, sizeof(buffer_name), "__print_buf_%zu", i);
+
+        // Calculate required size first
+        emit_string(cg, "size_t __print_len_");
+        char len_suffix[32];
+        snprintf(len_suffix, sizeof(len_suffix), "%zu", i);
+        emit_string(cg, len_suffix);
+        emit_string(cg, " = snprintf(NULL, 0, \"");
+
+        build_composite_format_string(cg, type);
+
+        emit_string(cg, "\"");
+        emit_string(cg, ", ");
+
+        bool first_arg = true;
+        build_composite_args(cg, type, temp_expr_buf, &first_arg);
+
+        emit_string(cg, "); ");
+
+        // Allocate with alloca (lives in parent frame)
+        emit_string(cg, "char *");
+        emit_string(cg, buffer_name);
+        emit_string(cg, " = alloca(__print_len_");
+        emit_string(cg, len_suffix);
+        emit_string(cg, " + 1); ");
+
+        // Build sprintf call
+        emit_string(cg, "sprintf(");
+        emit_string(cg, buffer_name);
+        emit_string(cg, ", \"");
+
+        build_composite_format_string(cg, type);
+
+        emit_string(cg, "\"");
+        emit_string(cg, ", ");
+
+        first_arg = true;
+        build_composite_args(cg, type, temp_expr_buf, &first_arg);
+
+        emit_string(cg, "); ");
+
+        // Return the buffer as the result
+        emit_string(cg, buffer_name);
+        emit_string(cg, "; })");
       } else {
+        // Fallback for truly unknown types
         emit_string(cg, "\"");
         emit_string(cg,
                     type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
@@ -2249,159 +2467,6 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   default:
     emit_indent_spaces(cg);
     emit_string(cg, "/* TODO stmt */");
-  }
-}
-
-// Helper: Get format specifier for a built-in type
-static const char *get_format_specifier(Type *type) {
-  switch (type->kind) {
-  case TYPE_STRING:
-  case TYPE_BOOL:
-    return "%s";
-  case TYPE_INT:
-  case TYPE_I32:
-  case TYPE_I64:
-  case TYPE_ISIZE:
-  case TYPE_I8:
-  case TYPE_I16:
-    return "%lld";
-  case TYPE_U8:
-  case TYPE_U16:
-  case TYPE_U32:
-  case TYPE_U64:
-  case TYPE_USIZE:
-    return "%llu";
-  case TYPE_F32:
-  case TYPE_F64:
-    return "%f";
-  case TYPE_CHAR:
-    return "%c";
-  default:
-    return "%s";
-  }
-}
-
-// Helper: Recursively build format string for struct/tuple
-static void build_composite_format_string(Codegen *cg, Type *type) {
-  if (type->kind == TYPE_STRUCT) {
-    // Emit "TypeName.{field1 = %d, field2 = %s, ...}"
-    emit_string(cg, type_name(type));
-    emit_string(cg, ".{");
-
-    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
-
-      emit_string(cg, type->data.struct_data.field_names[i]);
-      emit_string(cg, " = ");
-
-      Type *field_type = type->data.struct_data.field_types[i];
-
-      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
-        // Recursively format nested composite types
-        build_composite_format_string(cg, field_type);
-      } else {
-        // Emit format specifier for builtin types
-        emit_string(cg, get_format_specifier(field_type));
-      }
-    }
-
-    emit_string(cg, "}");
-
-  } else if (type->kind == TYPE_TUPLE) {
-    // Emit "(%d, %s, ...)"
-    emit_string(cg, "(");
-
-    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
-
-      Type *elem_type = type->data.tuple.element_types[i];
-
-      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
-        build_composite_format_string(cg, elem_type);
-      } else {
-        emit_string(cg, get_format_specifier(elem_type));
-      }
-    }
-
-    emit_string(cg, ")");
-  }
-}
-
-// Helper: Recursively emit arguments for sprintf (field accesses)
-static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
-                                 bool *first) {
-  if (type->kind == TYPE_STRUCT) {
-    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
-      Type *field_type = type->data.struct_data.field_types[i];
-      char field_access[512];
-      snprintf(field_access, sizeof(field_access), "%s.%s", base_expr,
-               type->data.struct_data.field_names[i]);
-
-      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
-        // Recursive case
-        build_composite_args(cg, field_type, field_access, first);
-      } else {
-        // Base case: emit argument with appropriate cast
-        if (!*first)
-          emit_string(cg, ", ");
-        *first = false;
-
-        if (field_type->kind == TYPE_INT || field_type->kind == TYPE_I32 ||
-            field_type->kind == TYPE_I64 || field_type->kind == TYPE_ISIZE ||
-            field_type->kind == TYPE_I8 || field_type->kind == TYPE_I16) {
-          emit_string(cg, "(long long)");
-        } else if (field_type->kind == TYPE_U8 ||
-                   field_type->kind == TYPE_U16 ||
-                   field_type->kind == TYPE_U32 ||
-                   field_type->kind == TYPE_U64 ||
-                   field_type->kind == TYPE_USIZE) {
-          emit_string(cg, "(unsigned long long)");
-        } else if (field_type->kind == TYPE_BOOL) {
-          emit_string(cg, "(");
-        }
-
-        emit_string(cg, field_access);
-
-        if (field_type->kind == TYPE_BOOL) {
-          emit_string(cg, " ? \"true\" : \"false\")");
-        }
-      }
-    }
-
-  } else if (type->kind == TYPE_TUPLE) {
-    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-      Type *elem_type = type->data.tuple.element_types[i];
-      char field_access[512];
-      snprintf(field_access, sizeof(field_access), "%s._%zu", base_expr, i);
-
-      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
-        build_composite_args(cg, elem_type, field_access, first);
-      } else {
-        if (!*first)
-          emit_string(cg, ", ");
-        *first = false;
-
-        if (elem_type->kind == TYPE_INT || elem_type->kind == TYPE_I32 ||
-            elem_type->kind == TYPE_I64 || elem_type->kind == TYPE_ISIZE ||
-            elem_type->kind == TYPE_I8 || elem_type->kind == TYPE_I16) {
-          emit_string(cg, "(long long)");
-        } else if (elem_type->kind == TYPE_U8 || elem_type->kind == TYPE_U16 ||
-                   elem_type->kind == TYPE_U32 || elem_type->kind == TYPE_U64 ||
-                   elem_type->kind == TYPE_USIZE) {
-          emit_string(cg, "(unsigned long long)");
-        } else if (elem_type->kind == TYPE_BOOL) {
-          emit_string(cg, "(");
-        }
-
-        emit_string(cg, field_access);
-
-        if (elem_type->kind == TYPE_BOOL) {
-          emit_string(cg, " ? \"true\" : \"false\")");
-        }
-      }
-    }
   }
 }
 
