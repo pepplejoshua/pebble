@@ -392,6 +392,7 @@ void print_usage(const char *program_name) {
   printf("Options:\n");
   printf("  -v, --verbose        Enable verbose output\n");
   printf("  -w, --warnings       Enable C compiler warnings\n");
+  printf("  --check-only         Verify the program without generating any source\n");
   printf("  --keep-c             Keep generated C file (default)\n");
   printf("  --no-keep-c          Remove generated C file after compilation\n");
   printf(
@@ -442,6 +443,8 @@ bool parse_args(int argc, char **argv) {
     } else if (strcmp(argv[i], "-w") == 0 ||
                strcmp(argv[i], "--warnings") == 0) {
       compiler_opts.warnings = true;
+    } else if (strcmp(argv[i], "--check-only") == 0) {
+      compiler_opts.check_only = true;
     } else if (strcmp(argv[i], "--keep-c") == 0) {
       compiler_opts.keep_c_file = true;
     } else if (strcmp(argv[i], "--no-keep-c") == 0) {
