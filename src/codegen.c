@@ -3299,6 +3299,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Get the type of the object expression
     Type *object_type = object_expr->resolved_type;
+    assert(object_type && "No object type");
 
     if (object_type->kind == TYPE_OPTIONAL) {
       emit_expr(cg, object_expr);
