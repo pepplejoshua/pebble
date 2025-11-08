@@ -136,6 +136,10 @@ struct AstNode {
       size_t param_count;
       AstNode *return_type;
       AstNode *body;
+
+      // Generics
+      char **type_params;
+      size_t type_param_count;
     } func_decl;
     struct {
       char *name;
@@ -347,6 +351,10 @@ struct AstNode {
       AstNode *return_type;
       AstNode *body;
       char *symbol; // Name generated
+
+      // Generics
+      char **type_params;
+      size_t type_param_count;
     } func_expr;
     struct {
       AstNode *expr; // Expression being cast

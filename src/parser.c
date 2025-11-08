@@ -321,6 +321,40 @@ AstNode *parse_import_stmt(Parser *parser) {
 
 static AstNode *parse_function(Parser *parser, Location location, char *name,
                                bool inlined, AstNode *convention) {
+  // Handle generic parameters
+  // <GenericType, U>
+  char **type_params;
+  size_t type_param_count = 0;
+  if (parser_match(parser, TOKEN_LBRACKET)) {
+    size_t type_param_cap = 0;
+    do {
+      // FIXME: Increase this when generics work properly
+      if (type_param_count >= 5) {
+        parser_error(parser, "Too many generic type parameters (max 5)");
+        break;
+      }
+
+      if (type_param_count >= type_param_cap) {
+        // FIXME: Make this grow when we increase the type parameter cap
+        type_param_cap = 5;
+        char **new_params =
+            arena_alloc(&long_lived, type_param_cap * sizeof(char *));
+        if (type_param_count > 0) {
+          memcpy(new_params, type_params, type_param_count * sizeof(char *));
+        }
+        type_params = new_params;
+      }
+
+      Token type_param_name =
+          parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+
+      type_params[type_param_count++] = type_param_name.lexeme;
+
+    } while (parser_match(parser, TOKEN_COMMA));
+    parser_consume(parser, TOKEN_RBRACKET,
+                   "Expected '[' after generic parameters");
+  }
+
   // (params) return_type { body }
   // (params) return_type => expr
 
@@ -332,6 +366,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
 
   if (!parser_check(parser, TOKEN_RPAREN)) {
     size_t param_capacity = 4;
+    // FIXME: Only perform this allocation when we are sure there are actually
+    // parameters. The check in the do-while loop can handle it
     params = arena_alloc(&long_lived, param_capacity * sizeof(FuncParam));
 
     do {
@@ -433,6 +469,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_decl.body = body;
     func->data.func_decl.inlined = inlined;
     func->data.func_decl.convention = convention;
+    func->data.func_decl.type_params = type_params;
+    func->data.func_decl.type_param_count = type_param_count;
   } else {
     // Anonymous function
     func = alloc_node(AST_EXPR_FUNCTION, location);
@@ -442,6 +480,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_expr.body = body;
     func->data.func_expr.inlined = inlined;
     func->data.func_expr.convention = convention;
+    func->data.func_expr.type_param_count = type_param_count;
+    func->data.func_expr.type_params = type_params;
   }
 
   return func;
@@ -1863,7 +1903,8 @@ AstNode *parse_primary(Parser *parser) {
   if (parser_match(parser, TOKEN_DOT)) {
     if (parser_match(parser, TOKEN_IDENTIFIER)) {
       // Partial member access .member
-      AstNode *expr = alloc_node(AST_EXPR_PARTIAL_MEMBER, parser->previous.location);
+      AstNode *expr =
+          alloc_node(AST_EXPR_PARTIAL_MEMBER, parser->previous.location);
       expr->data.partial_member_expr.member = str_dup(parser->previous.lexeme);
       return expr;
     } else if (parser_match(parser, TOKEN_LBRACE)) {
