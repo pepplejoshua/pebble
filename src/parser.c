@@ -323,7 +323,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
                                bool inlined, AstNode *convention) {
   // Handle generic parameters
   // <GenericType, U>
-  char **type_params;
+  Token *type_params;
   size_t type_param_count = 0;
   if (parser_match(parser, TOKEN_LBRACKET)) {
     size_t type_param_cap = 0;
@@ -337,10 +337,10 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
       if (type_param_count >= type_param_cap) {
         // FIXME: Make this grow when we increase the type parameter cap
         type_param_cap = 5;
-        char **new_params =
-            arena_alloc(&long_lived, type_param_cap * sizeof(char *));
+        Token *new_params =
+            arena_alloc(&long_lived, type_param_cap * sizeof(Token));
         if (type_param_count > 0) {
-          memcpy(new_params, type_params, type_param_count * sizeof(char *));
+          memcpy(new_params, type_params, type_param_count * sizeof(Token));
         }
         type_params = new_params;
       }
@@ -348,8 +348,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
       Token type_param_name =
           parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
 
-      type_params[type_param_count++] = type_param_name.lexeme;
-
+      type_params[type_param_count++] = type_param_name;
     } while (parser_match(parser, TOKEN_COMMA));
     parser_consume(parser, TOKEN_RBRACKET,
                    "Expected '[' after generic parameters");

@@ -42,6 +42,7 @@ typedef enum {
   TYPE_OPAQUE,
   TYPE_OPTIONAL,
   TYPE_NONE,
+  TYPE_VARIABLE,
 } TypeKind;
 
 typedef enum {
@@ -107,6 +108,10 @@ struct Type {
     struct {
       Type *base;
     } optional;
+
+    struct {
+      char *name; // "T", "U"
+    } type_var;
   } data;
 };
 
@@ -163,6 +168,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
                            Location loc);
+Type *type_create_variable(Token *name);
 
 // Type lookup and registration
 Type *type_lookup(const char *name, const char *mod_name);
