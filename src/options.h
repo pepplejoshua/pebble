@@ -25,6 +25,7 @@ typedef struct CompilerOptions
   bool freestanding;
   bool verbose;
   bool warnings;
+  bool check_only;
   bool keep_c_file;
   bool generate_only;
   ReleaseMode release_mode;

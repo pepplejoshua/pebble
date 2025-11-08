@@ -144,6 +144,10 @@ static bool compile_file(const char *filename) {
 
   printf("Compilation successful!\n");
 
+  if (compiler_opts.check_only) {
+    return true;
+  }
+
   Codegen cg;
   const char *c_filename = compiler_opts.output_c_name;
   FILE *output = fopen(c_filename, "w");
