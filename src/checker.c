@@ -1885,6 +1885,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_struct->data.struct_literal.field_names =
         arena_alloc(&long_lived,
                     sizeof(char *) * target_type->data.struct_data.field_count);
+    memcpy(
+      new_struct->data.struct_literal.field_names,
+      expr->data.struct_literal.field_names,
+      sizeof(char *) * target_type->data.struct_data.field_count
+    );
+
     new_struct->data.struct_literal.field_values =
         arena_alloc(&long_lived, sizeof(AstNode *) *
                                      target_type->data.struct_data.field_count);
@@ -2019,11 +2025,39 @@ bool is_valid_cast(Type *from, Type *to) {
 
   // struct <-> struct
   if (from->kind == TYPE_STRUCT && to->kind == TYPE_STRUCT) {
+    // Can only coerce to structs >= in field count
+    if (from->data.struct_data.field_count < to->data.struct_data.field_count) {
+      return false;
+    }
+
+    // Check fields align
+    for (size_t i = 0; i < to->data.struct_data.field_count; i++) {
+      if (strcmp(from->data.struct_data.field_names[i], to->data.struct_data.field_names[i]) != 0) {
+        return false;
+      }
+
+      if (!type_equals(from->data.struct_data.field_types[i], to->data.struct_data.field_types[i])) {
+        return false;
+      }
+    }
+
     return true;
   }
 
   // tuple <-> tuple
   if (from->kind == TYPE_TUPLE && to->kind == TYPE_TUPLE) {
+    // Can only coerce to tuples >= in field count
+    if (from->data.tuple.element_count < to->data.tuple.element_count) {
+      return false;
+    }
+
+    // Check elements align
+    for (size_t i = 0; i < to->data.tuple.element_count; i++) {
+      if (!type_equals(from->data.tuple.element_types[i], to->data.tuple.element_types[i])) {
+        return false;
+      }
+    }
+
     return true;
   }
 
