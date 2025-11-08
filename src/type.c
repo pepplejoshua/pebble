@@ -299,23 +299,53 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
 
 // Create enum type
 Type *type_create_enum(char **variant_names, size_t variant_count,
-                       Location loc) {
-  Type *type = type_create(TYPE_ENUM, loc);
+                       bool canonicalize, Location loc) {
+  if (canonicalize) {
+    Type *temp_type = type_create(TYPE_ENUM, loc);
 
-  if (variant_count == 0) {
+    // Duplicate field names into arena
+    char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
+    for (size_t i = 0; i < variant_count; i++) {
+      names[i] = str_dup(variant_names[i]);
+    }
+
+    temp_type->data.enum_data.variant_names = names;
+    temp_type->data.enum_data.variant_count = variant_count;
+
+    // Compute canonical name (this requires element types to be canonicalized
+    // first) For now, assume element types are already canonicalized
+    char *canonical_name = compute_canonical_name(temp_type);
+
+    // Check if this type already exists
+    Type *existing = canonical_lookup(canonical_name);
+    if (existing) {
+      // Return existing type, discard temp
+      return existing;
+    }
+
+    // First time - finalize the type
+    Type *type = temp_type;
+    type->canonical_name = canonical_name;
+    canonical_register(canonical_name, type);
+    return type;
+  } else {
+    Type *type = type_create(TYPE_ENUM, loc);
+
+    if (variant_count == 0) {
+      type->data.enum_data.variant_count = variant_count;
+      return type;
+    }
+
+    // Duplicate field names into arena
+    char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
+    for (size_t i = 0; i < variant_count; i++) {
+      names[i] = str_dup(variant_names[i]);
+    }
+
+    type->data.enum_data.variant_names = names;
     type->data.enum_data.variant_count = variant_count;
     return type;
   }
-
-  // Duplicate field names into arena
-  char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
-  for (size_t i = 0; i < variant_count; i++) {
-    names[i] = str_dup(variant_names[i]);
-  }
-
-  type->data.enum_data.variant_names = names;
-  type->data.enum_data.variant_count = variant_count;
-  return type;
 }
 
 // Create tuple type (no caching)
@@ -665,7 +695,6 @@ char *compute_canonical_name(Type *type) {
   case TYPE_CHAR:
   case TYPE_OPAQUE:
   case TYPE_NONE:
-  case TYPE_ENUM:
     result = type->canonical_name;
     break;
 
@@ -720,6 +749,37 @@ char *compute_canonical_name(Type *type) {
         strcat(result, "_");
       strcat(result, elem_names[i]);
     }
+    break;
+  }
+
+  case TYPE_ENUM: {
+    if (!type->canonical_name) {
+      size_t capacity = 256;
+      char *canonical_name = arena_alloc(&long_lived, capacity);
+      size_t offset = 0;
+
+      offset += snprintf(canonical_name + offset, capacity - offset, "enum");
+
+      for (size_t i = 0; i < type->data.enum_data.variant_count; i++) {
+        char *field_name = type->data.enum_data.variant_names[i];
+
+        size_t needed = offset + 1 + strlen(field_name) + 1;
+        if (needed > capacity) {
+          capacity = needed * 2;
+          char *new_buf = arena_alloc(&long_lived, capacity);
+          memcpy(new_buf, canonical_name, offset);
+          canonical_name = new_buf;
+        }
+
+        offset += snprintf(canonical_name + offset, capacity - offset, "_%s",
+                           field_name);
+
+        canonical_register(canonical_name, type);
+      }
+
+      type->canonical_name = canonical_name;
+    }
+    result = type->canonical_name;
     break;
   }
 
@@ -1029,6 +1089,16 @@ int member_index_of_type(Type *type, const char *member) {
   case TYPE_STRUCT: {
     for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
       if (strcmp(member, type->data.struct_data.field_names[i]) == 0) {
+        return i;
+      }
+    }
+
+    return -1;
+  }
+
+  case TYPE_ENUM: {
+    for (size_t i = 0; i < type->data.enum_data.variant_count; i++) {
+      if (strcmp(member, type->data.enum_data.variant_names[i]) == 0) {
         return i;
       }
     }

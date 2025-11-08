@@ -156,7 +156,7 @@ Type *type_create_struct(char **field_names, Type **field_types,
                          Location loc);
 Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
                          size_t variant_count, bool canonicalize, Location loc);
-Type *type_create_enum(char **variant_names, size_t variant_count, Location loc);
+Type *type_create_enum(char **variant_names, size_t variant_count, bool canonicalize, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
 Type *type_create_function(Type **param_types, size_t param_count,

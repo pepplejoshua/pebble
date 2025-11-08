@@ -3299,6 +3299,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Get the type of the object expression
     Type *object_type = object_expr->resolved_type;
+    assert(object_type && "No object type");
 
     if (object_type->kind == TYPE_OPTIONAL) {
       emit_expr(cg, object_expr);
@@ -3410,6 +3411,17 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Emit the member name
     emit_string(cg, member);
+    break;
+  }
+
+  case AST_EXPR_PARTIAL_MEMBER: {
+    char *name = expr->resolved_type->qualified_name
+                  ? expr->resolved_type->qualified_name
+                  : expr->resolved_type->canonical_name;
+
+    emit_string(cg, name);
+    emit_string(cg, "_");
+    emit_string(cg, expr->data.partial_member_expr.member);
     break;
   }
 

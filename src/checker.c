@@ -1487,7 +1487,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t variant_count = type_expr->data.type_enum.variant_count;
     if (variant_count == 0) {
       checker_error(type_expr->loc, "Enum was declared without any members");
-      return type_create_enum(NULL, variant_count, loc);
+      return type_create_enum(NULL, variant_count,
+                              !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1519,7 +1520,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_enum(variant_names, variant_count, loc);
+    return type_create_enum(variant_names, variant_count, !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_FUNCTION: {
@@ -1828,6 +1829,20 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
+  } else if (expr_type->kind == TYPE_ENUM &&
+             target_type->kind == TYPE_ENUM) {
+    // Infer partial member as enum
+    if (expr->kind != AST_EXPR_PARTIAL_MEMBER) {
+      return NULL;
+    }
+
+    int index = member_index_of_type(target_type, expr->data.partial_member_expr.member);
+    if (index == -1) {
+      return NULL;
+    }
+
+    expr->resolved_type = target_type;
+    return expr;
   } else if (expr_type->kind == TYPE_STRUCT &&
              target_type->kind == TYPE_STRUCT) {
     // Check if structs have the same number of fields
@@ -1870,6 +1885,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_struct->data.struct_literal.field_names =
         arena_alloc(&long_lived,
                     sizeof(char *) * target_type->data.struct_data.field_count);
+    memcpy(
+      new_struct->data.struct_literal.field_names,
+      expr->data.struct_literal.field_names,
+      sizeof(char *) * target_type->data.struct_data.field_count
+    );
+
     new_struct->data.struct_literal.field_values =
         arena_alloc(&long_lived, sizeof(AstNode *) *
                                      target_type->data.struct_data.field_count);
@@ -1891,6 +1912,67 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     expr->resolved_type = target_type;
     new_struct->resolved_type = target_type;
     return new_struct;
+  } else if (expr_type->kind == TYPE_STRUCT &&
+             (target_type->kind == TYPE_UNION || target_type->kind == TYPE_TAGGED_UNION)) {
+    // Must have a single field for unions
+    if (expr_type->data.struct_data.field_count != 1) {
+      return NULL;
+    }
+
+    // Can only use literals
+    if (expr->kind != AST_EXPR_STRUCT_LITERAL) {
+      return NULL;
+    }
+
+    bool needs_conversion = false;
+    char *member = expr_type->data.struct_data.field_names[0];
+
+    int index = member_index_of_type(target_type, member);
+    if (index == -1) {
+      return NULL;
+    }
+
+    if (!type_equals(expr_type->data.struct_data.field_types[0],
+                     target_type->data.struct_data.field_types[index])) {
+      needs_conversion = true;
+    }
+
+    // If all elements match exactly, no cast needed
+    if (!needs_conversion) {
+      expr->resolved_type = target_type;
+      return expr;
+    }
+
+    // Create a new struct expression with recursively casted elements
+    AstNode *new_union = arena_alloc(&long_lived, sizeof(AstNode));
+    new_union->kind = AST_EXPR_STRUCT_LITERAL;
+    new_union->loc = expr->loc;
+    new_union->data.struct_literal.field_count = 1;
+    new_union->data.struct_literal.field_names =
+        arena_alloc(&long_lived, sizeof(char *));
+    memcpy(
+      new_union->data.struct_literal.field_names,
+      expr->data.struct_literal.field_names,
+      sizeof(char *)
+    );
+
+    new_union->data.struct_literal.field_values =
+        arena_alloc(&long_lived, sizeof(AstNode *));
+
+    AstNode *casted_elem =
+        maybe_insert_cast(expr->data.struct_literal.field_values[0],
+                          expr_type->data.struct_data.field_types[0],
+                          target_type->data.union_data.variant_types[index]);
+
+    if (!casted_elem) {
+      return NULL; // Element conversion failed
+    }
+
+    new_union->data.struct_literal.field_values[0] = casted_elem;
+
+    expr->resolved_type = target_type;
+    new_union->resolved_type = target_type;
+    return new_union;
   }
 
   // No valid conversion
@@ -1943,11 +2025,39 @@ bool is_valid_cast(Type *from, Type *to) {
 
   // struct <-> struct
   if (from->kind == TYPE_STRUCT && to->kind == TYPE_STRUCT) {
+    // Can only coerce to structs >= in field count
+    if (from->data.struct_data.field_count < to->data.struct_data.field_count) {
+      return false;
+    }
+
+    // Check fields align
+    for (size_t i = 0; i < to->data.struct_data.field_count; i++) {
+      if (strcmp(from->data.struct_data.field_names[i], to->data.struct_data.field_names[i]) != 0) {
+        return false;
+      }
+
+      if (!type_equals(from->data.struct_data.field_types[i], to->data.struct_data.field_types[i])) {
+        return false;
+      }
+    }
+
     return true;
   }
 
   // tuple <-> tuple
   if (from->kind == TYPE_TUPLE && to->kind == TYPE_TUPLE) {
+    // Can only coerce to tuples >= in field count
+    if (from->data.tuple.element_count < to->data.tuple.element_count) {
+      return false;
+    }
+
+    // Check elements align
+    for (size_t i = 0; i < to->data.tuple.element_count; i++) {
+      if (!type_equals(from->data.tuple.element_types[i], to->data.tuple.element_types[i])) {
+        return false;
+      }
+    }
+
     return true;
   }
 
@@ -2087,9 +2197,14 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
       AstNode *_case =
           node->data.switch_stmt.cases[i]->data.case_stmt.condition;
 
+      char *variant_name = NULL;
       if (_case->kind == AST_EXPR_MEMBER) {
-        const char *variant_name = _case->data.member_expr.member;
+        variant_name = _case->data.member_expr.member;
+      } else if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
+        variant_name = _case->data.partial_member_expr.member;
+      }
 
+      if (variant_name) {
         // Find which enum value this is
         for (size_t j = 0; j < variant_count; j++) {
           if (strcmp(variant_name,
@@ -2162,8 +2277,8 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
       AstNode *_case =
           node->data.switch_stmt.cases[i]->data.case_stmt.condition;
 
-      if (_case->kind == AST_EXPR_IDENTIFIER) {
-        const char *variant_name = _case->data.ident.name;
+      if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
+        const char *variant_name = _case->data.partial_member_expr.member;
 
         // Find which enum value this is
         for (size_t j = 0; j < variant_count; j++) {
@@ -3112,6 +3227,16 @@ Type *check_expression(AstNode *expr) {
     }
   }
 
+  case AST_EXPR_PARTIAL_MEMBER: {
+    char **variant_names = arena_alloc(&long_lived, 1);
+    variant_names[0] = expr->data.partial_member_expr.member;
+
+   Type * type = type_create_enum(variant_names, 1, !checker_state.in_type_resolution, expr->loc);
+   expr->resolved_type = type;
+
+   return type;
+  }
+
   case AST_EXPR_MODULE_MEMBER: {
     AstNode *module_expr = expr->data.mod_member_expr.module;
     const char *member_name = expr->data.mod_member_expr.member;
@@ -3666,34 +3791,38 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       had_error = true;
     }
 
-    if (cond_type && !type_is_numeric(cond_type) &&
-        cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
-        cond_type->kind != TYPE_ENUM && cond_type->kind != TYPE_TAGGED_UNION &&
-        // Allow pointers to tagged unions
-        (cond_type->kind == TYPE_POINTER &&
-         cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
-      checker_error(cond->loc, "switch condition must be numeric (int or "
-                               "float), char, enum, string or tagged union");
-      had_error = true;
-    }
-
-    bool cases_return = true;
-
-    for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
-      if (!check_statement(cases[i], expected_return_type)) {
-        cases_return = false;
+    if (cond_type) {
+      if (!type_is_numeric(cond_type) &&
+          cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
+          cond_type->kind != TYPE_ENUM && cond_type->kind != TYPE_TAGGED_UNION &&
+          // Allow pointers to tagged unions
+          (cond_type->kind == TYPE_POINTER &&
+           cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
+        checker_error(cond->loc, "switch condition must be numeric (int or "
+                                 "float), char, enum, string or tagged union");
+        had_error = true;
       }
+
+      bool cases_return = true;
+
+      for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+        if (!check_statement(cases[i], expected_return_type)) {
+          cases_return = false;
+        }
+      }
+
+      if (!had_error) {
+        check_switch_is_exhaustive(stmt, cond->resolved_type);
+      }
+
+      bool else_returns =
+          default_case ? check_statement(default_case, expected_return_type)
+                      : false;
+
+      return cases_return && else_returns;
     }
 
-    if (!had_error) {
-      check_switch_is_exhaustive(stmt, cond->resolved_type);
-    }
-
-    bool else_returns =
-        default_case ? check_statement(default_case, expected_return_type)
-                     : false;
-
-    return cases_return && else_returns;
+    return false;
   }
 
   case AST_STMT_CASE: {
@@ -3707,26 +3836,28 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
          switch_cond->resolved_type->data.ptr.base->kind == TYPE_TAGGED_UNION);
 
     Type *cond_type = NULL;
-    // Tagged unions will use their field names for their cases
     // FIXME: Allow TypeName.variant like enums
-    if (!is_tagged_union && cond->kind != AST_EXPR_IDENTIFIER) {
+    if (!is_tagged_union && cond->kind != AST_EXPR_PARTIAL_MEMBER) {
       cond_type = check_expression(cond);
       AstNode *casted_cond =
           maybe_insert_cast(cond, cond_type, switch_cond->resolved_type);
 
-      if (casted_cond && switch_cond->resolved_type &&
-          !type_equals(switch_cond->resolved_type,
-                       casted_cond->resolved_type)) {
+      Type *resolved = casted_cond && casted_cond->resolved_type
+                ? casted_cond->resolved_type
+                : cond_type;
+
+      if (!type_equals(switch_cond->resolved_type, resolved)) {
         checker_error(cond->loc,
                       "switch case condition '%s' doesn't match switch "
                       "condition type '%s'",
-                      cond->resolved_type->canonical_name,
-                      switch_cond->resolved_type->canonical_name);
+                      type_name(switch_cond->resolved_type),
+                      type_name(resolved));
       }
+
+      cond->resolved_type = resolved;
     } else {
-      // Tagged union will assume type
-      cond_type = switch_cond->resolved_type;
-      cond->resolved_type = cond_type;
+      // Tagged union/partial member will assume type
+      cond->resolved_type = switch_cond->resolved_type;
     }
 
     // Check that condition is constant
