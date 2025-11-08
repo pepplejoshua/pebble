@@ -28,6 +28,8 @@ clean:
 install: pebc
 	install -d $(BINDIR)
 	install -m 755 pebc $(BINDIR)
+	cp -r std $(BINDIR)
 
 uninstall:
 	rm -f $(BINDIR)/pebc
+	rm -rf $(BINDIR)/std
