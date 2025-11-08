@@ -2540,6 +2540,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
       AstNode *part = expr->data.interpolated_string.parts[i];
 
+      // Will need to handle more lengthy formatted strings
+      assert(temp_count < 64);
+
       if (part->kind != AST_EXPR_LITERAL_STRING) {
         Type *part_type = part->resolved_type;
         char buffer[64] = {0};
