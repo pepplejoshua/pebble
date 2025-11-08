@@ -1,3 +1,6 @@
+PREFIX ?= /usr/local
+BINDIR = $(PREFIX)/bin
+
 CC = gcc
 CFLAGS = -Wall -Wextra -g -I src
 
@@ -7,6 +10,9 @@ OBJS = src/alloc.o src/lexer.o src/parser.o src/options.o \
 
 # Auto-generate dependencies
 DEPS = $(OBJS:.o=.d)
+
+# Tells make these dont product files
+.PHONY: clean install uninstall
 
 pebc: $(OBJS)
 	$(CC) $(CFLAGS) -o pebc $(OBJS)
@@ -18,3 +24,10 @@ pebc: $(OBJS)
 
 clean:
 	rm -f pebc $(OBJS) $(DEPS)
+
+install: pebc
+	install -d $(BINDIR)
+	install -m 755 pebc $(BINDIR)
+
+uninstall:
+	rm -f $(BINDIR)/pebc
