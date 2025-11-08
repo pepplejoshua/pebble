@@ -109,6 +109,7 @@ typedef enum {
   TOKEN_FAT_ARROW, // =>
   TOKEN_COLON,     // :
   TOKEN_MOD_SCOPE, // ::
+  TOKEN_BACKTICK,
 
   // Special
   TOKEN_EOF,
@@ -140,6 +141,13 @@ typedef struct {
   int line;             // Current line
   int column;           // Current column
   const char *filename; // Source filename
+  // Token queue for interpolated strings
+  Token *token_queue;     // Array of queued tokens
+  size_t queue_capacity;  // How many tokens we can hold
+  size_t queue_count;     // How many tokens are queued
+  size_t queue_index;     // Current position in queue
+
+  bool skip_queue;        // Lex fresh tokens in interpolated strings
 } Lexer;
 
 // Lexer functions

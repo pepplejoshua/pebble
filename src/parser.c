@@ -14,10 +14,12 @@ extern Arena long_lived;
 // BASIC PARSER UTILITIES
 // ============================================================================
 
-void parser_init(Parser *parser, const char *source, const char *filename) {
+void parser_init(Parser *parser, const char *source, const char *filename,
+                 const char *abs_file_path) {
   lexer_init(&parser->lexer, source, filename);
   parser->had_error = false;
   parser->panic_mode = false;
+  parser->abs_file_path = abs_file_path;
 
   // Prime the parser with the first token
   parser_advance(parser);
@@ -66,8 +68,8 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "%s:%d:%d: Error", token->location.file, token->location.line,
-          token->location.column);
+  fprintf(stderr, "%s:%d:%d:\nError", parser->abs_file_path,
+          token->location.line, token->location.column);
 
   if (token->type == TOKEN_EOF) {
     fprintf(stderr, " at end");
@@ -460,7 +462,8 @@ AstNode *parse_function_decl(Parser *parser) {
   Token name =
       parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
 
-  return parse_function(parser, name.location, name.lexeme, inlined, convention);
+  return parse_function(parser, name.location, name.lexeme, inlined,
+                        convention);
 }
 
 AstNode *parse_extern(Parser *parser) {
@@ -1373,7 +1376,8 @@ AstNode *parse_postfix(Parser *parser) {
     } else if (parser_match(parser, TOKEN_DOT)) {
       // Check for struct literal: IDENTIFIER.{ ... }
       if (parser_check(parser, TOKEN_LBRACE) &&
-          (expr->kind == AST_EXPR_IDENTIFIER || expr->kind == AST_EXPR_MODULE_MEMBER)) {
+          (expr->kind == AST_EXPR_IDENTIFIER ||
+           expr->kind == AST_EXPR_MODULE_MEMBER)) {
         parser_advance(parser); // consume '{'
         Location loc = expr->loc;
         char *type_name = NULL;
@@ -1382,7 +1386,8 @@ AstNode *parse_postfix(Parser *parser) {
         if (expr->kind == AST_EXPR_IDENTIFIER) {
           type_name = expr->data.ident.name;
         } else {
-          char *prefix = prepend(expr->data.mod_member_expr.module->data.ident.name, "__");
+          char *prefix =
+              prepend(expr->data.mod_member_expr.module->data.ident.name, "__");
           type_name = prepend(prefix, expr->data.mod_member_expr.member);
         }
 
@@ -1582,6 +1587,55 @@ AstNode *parse_module_member(Parser *parser, AstNode *object) {
   return mod_mem;
 }
 
+static AstNode *parse_interpolated_string(Parser *parser) {
+  // parser->previous is the opening TOKEN_BACKTICK
+  Location loc = parser->previous.location;
+
+  AstNode **parts = NULL;
+  size_t count = 0;
+  size_t capacity = 4;
+  parts = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+  // Parse until we hit the closing backtick
+  while (!parser_check(parser, TOKEN_BACKTICK) &&
+         !parser_check(parser, TOKEN_EOF)) {
+    // Grow array if needed
+    if (count >= capacity) {
+      capacity *= 2;
+      AstNode **new_array =
+          arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+      memcpy(new_array, parts, count * sizeof(AstNode *));
+      parts = new_array;
+    }
+
+    if (parser_match(parser, TOKEN_STRING)) {
+      // String fragment
+      Token str = parser->previous;
+      AstNode *lit = alloc_node(AST_EXPR_LITERAL_STRING, str.location);
+      lit->data.str_lit.value = str.value.str_val;
+      parts[count++] = lit;
+    } else if (parser_match(parser, TOKEN_LBRACE)) {
+      // Interpolated expression: { expr }
+      AstNode *expr = parse_expression(parser);
+      parser_consume(parser, TOKEN_RBRACE,
+                     "Expected '}' after interpolated expression");
+      parts[count++] = expr;
+    } else {
+      parser_error_at_current(parser,
+                              "Unexpected token in interpolated string");
+      parser_advance(parser); // Skip problematic token
+    }
+  }
+
+  parser_consume(parser, TOKEN_BACKTICK,
+                 "Expected closing '`' for interpolated string");
+
+  AstNode *interp = alloc_node(AST_EXPR_INTERPOLATED_STRING, loc);
+  interp->data.interpolated_string.parts = parts;
+  interp->data.interpolated_string.num_parts = count;
+  return interp;
+}
+
 AstNode *parse_primary(Parser *parser) {
   // Literals
   if (parser_match(parser, TOKEN_INT)) {
@@ -1610,6 +1664,10 @@ AstNode *parse_primary(Parser *parser) {
     AstNode *lit = alloc_node(AST_EXPR_LITERAL_CHAR, char_tok.location);
     lit->data.char_lit.value = char_tok.value.char_val;
     return lit;
+  }
+
+  if (parser_match(parser, TOKEN_BACKTICK)) {
+    return parse_interpolated_string(parser);
   }
 
   if (parser_match(parser, TOKEN_TRUE) || parser_match(parser, TOKEN_FALSE)) {
@@ -1797,7 +1855,8 @@ AstNode *parse_primary(Parser *parser) {
       convention->data.str_lit.value = str_dup(parser->previous.lexeme);
     }
 
-    return parse_function(parser, parser->previous.location, NULL, inlined, convention);
+    return parse_function(parser, parser->previous.location, NULL, inlined,
+                          convention);
   }
 
   // Anonymous struct literal
@@ -1842,8 +1901,7 @@ AstNode *parse_primary(Parser *parser) {
           parser_advance(parser);
           Token field_name = parser->previous;
 
-          parser_consume(parser, TOKEN_EQUAL,
-                         "Expected '=' after field name");
+          parser_consume(parser, TOKEN_EQUAL, "Expected '=' after field name");
 
           field_names[count] = str_dup(field_name.lexeme);
           field_values[count] = parse_expression(parser);

@@ -345,7 +345,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   case TYPE_STRUCT:
     for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
       if (canonicalize_type_internal(&type->data.struct_data.field_types[i],
-                                      visited)) {
+                                     visited)) {
         cycle_detected = true;
       }
     }
@@ -355,7 +355,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   case TYPE_TAGGED_UNION:
     for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
       if (canonicalize_type_internal(&type->data.union_data.variant_types[i],
-                                      visited)) {
+                                     visited)) {
         cycle_detected = true;
       }
     }
@@ -904,7 +904,8 @@ static void check_global_constants(void) {
           continue;
         }
 
-        AstNode *converted = maybe_insert_cast(value, inferred_type, explicit_type);
+        AstNode *converted =
+            maybe_insert_cast(value, inferred_type, explicit_type);
         if (!converted) {
           checker_error(value->loc,
                         "constant initializer type mismatch '%s' != '%s'",
@@ -1355,8 +1356,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
       checker_error(type_expr->loc, "Struct was declared without any members");
-      return type_create_struct(NULL, NULL, field_count,
-                        false, !checker_state.in_type_resolution, loc);
+      return type_create_struct(NULL, NULL, field_count, false,
+                                !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1421,7 +1422,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (variant_count == 0) {
       checker_error(type_expr->loc, "Union was declared without any members");
       return type_create_union(tagged, NULL, NULL, variant_count,
-                                !checker_state.in_type_resolution, loc);
+                               !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1478,7 +1479,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_union(tagged, variant_names, variant_types,
-                             variant_count, !checker_state.in_type_resolution, loc);
+                             variant_count, !checker_state.in_type_resolution,
+                             loc);
   }
 
   case AST_TYPE_ENUM: {
@@ -1826,7 +1828,8 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
-  } else if (expr_type->kind == TYPE_STRUCT && target_type->kind == TYPE_STRUCT) {
+  } else if (expr_type->kind == TYPE_STRUCT &&
+             target_type->kind == TYPE_STRUCT) {
     // Check if structs have the same number of fields
     if (expr_type->data.struct_data.field_count !=
         target_type->data.struct_data.field_count) {
@@ -1864,10 +1867,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_struct->loc = expr->loc;
     new_struct->data.struct_literal.field_count =
         target_type->data.struct_data.field_count;
-    new_struct->data.struct_literal.field_names = arena_alloc(
-        &long_lived, sizeof(char *) * target_type->data.struct_data.field_count);
-    new_struct->data.struct_literal.field_values = arena_alloc(
-        &long_lived, sizeof(AstNode *) * target_type->data.struct_data.field_count);
+    new_struct->data.struct_literal.field_names =
+        arena_alloc(&long_lived,
+                    sizeof(char *) * target_type->data.struct_data.field_count);
+    new_struct->data.struct_literal.field_values =
+        arena_alloc(&long_lived, sizeof(AstNode *) *
+                                     target_type->data.struct_data.field_count);
 
     // Recursively cast each element
     for (size_t i = 0; i < expr_type->data.struct_data.field_count; i++) {
@@ -2234,6 +2239,22 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_LITERAL_STRING:
     expr->resolved_type = type_string;
     return type_string;
+
+  case AST_EXPR_INTERPOLATED_STRING: {
+    // Check all parts of the interpolated string
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+      Type *part_type = check_expression(part);
+
+      if (!part_type) {
+        return NULL; // Error already reported
+      }
+    }
+
+    // The whole interpolated string evaluates to a string
+    expr->resolved_type = type_string;
+    return type_string;
+  }
 
   case AST_EXPR_LITERAL_CHAR:
     expr->resolved_type = type_char;
@@ -3184,8 +3205,7 @@ Type *check_expression(AstNode *expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, field_names[i], entry);
       if (entry) {
-        checker_error(expr->loc, "Duplicate struct field '%s'",
-                      field_names[i]);
+        checker_error(expr->loc, "Duplicate struct field '%s'", field_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
         entry->name = field_names[i];
@@ -3197,13 +3217,15 @@ Type *check_expression(AstNode *expr) {
     arena_free(&temp_arena);
 
     if (!struct_type_name) {
-      Type **field_types = arena_alloc(&long_lived, field_count * sizeof(Type *));
+      Type **field_types =
+          arena_alloc(&long_lived, field_count * sizeof(Type *));
       for (size_t i = 0; i < field_count; i++) {
         field_types[i] = check_expression(field_values[i]);
       }
 
-      Type *struct_type = type_create_struct(field_names, field_types, field_count,
-                                false, !checker_state.in_type_resolution, expr->loc);
+      Type *struct_type =
+          type_create_struct(field_names, field_types, field_count, false,
+                             !checker_state.in_type_resolution, expr->loc);
       expr->resolved_type = struct_type;
 
       return struct_type;

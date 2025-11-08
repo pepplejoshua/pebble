@@ -260,7 +260,7 @@ bool parse_module(Module *mod) {
   }
 
   Parser parser;
-  parser_init(&parser, source, mod->filename);
+  parser_init(&parser, source, mod->filename, mod->abs_file_path);
   AstNode *program = parse_program(&parser);
   mod->ast = program;
   mod->global_node_count = program->data.block_stmt.stmt_count;

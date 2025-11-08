@@ -288,13 +288,251 @@ static TokenType lexer_identifier_type(Lexer *lexer) {
   return TOKEN_IDENTIFIER;
 }
 
+// Process escape sequences in a string
+// For interpolated strings, also handles \{ and \`
+static char *process_string_escapes(Lexer *lexer, size_t start, size_t end,
+                                    bool is_interpolated) {
+  size_t max_length = end - start;
+  char *processed = arena_alloc(&long_lived, max_length + 1);
+  size_t write_pos = 0;
+
+  for (size_t i = start; i < end;) {
+    if (lexer->source[i] == '\\' && i + 1 < end) {
+      char next = lexer->source[i + 1];
+      switch (next) {
+      case '"':
+        processed[write_pos++] = '"';
+        i += 2;
+        break;
+      case '`':
+        if (is_interpolated) {
+          processed[write_pos++] = '`';
+          i += 2;
+        } else {
+          processed[write_pos++] = '\\';
+          processed[write_pos++] = '`';
+          i += 2;
+        }
+        break;
+      case '{':
+        if (is_interpolated) {
+          processed[write_pos++] = '{';
+          i += 2;
+        } else {
+          processed[write_pos++] = '\\';
+          processed[write_pos++] = '{';
+          i += 2;
+        }
+        break;
+      default:
+        // Keep the escape sequence as-is (let C handle it)
+        processed[write_pos++] = '\\';
+        processed[write_pos++] = next;
+        i += 2;
+        break;
+      }
+    } else {
+      processed[write_pos++] = lexer->source[i];
+      i++;
+    }
+  }
+
+  processed[write_pos] = '\0';
+  return processed;
+}
+
+static void lexer_queue_token(Lexer *lexer, Token token) {
+  if (lexer->queue_count >= lexer->queue_capacity) {
+    size_t new_capacity =
+        lexer->queue_capacity == 0 ? 12 : lexer->queue_capacity * 2;
+
+    Token *new_queue = arena_alloc(&long_lived, sizeof(Token) * new_capacity);
+
+    if (lexer->token_queue != NULL && lexer->queue_count > 0) {
+      memcpy(new_queue, lexer->token_queue, sizeof(Token) * lexer->queue_count);
+    }
+
+    lexer->token_queue = new_queue;
+    lexer->queue_capacity = new_capacity;
+  }
+
+  lexer->token_queue[lexer->queue_count++] = token;
+}
+
+static Token lexer_make_token_at(Lexer *lexer, TokenType type, size_t start,
+                                 size_t end, int line, int column) {
+  Token token;
+  token.type = type;
+  token.location.file = lexer->filename;
+  token.location.line = line;
+  token.location.column = column;
+
+  size_t length = end - start;
+  token.lexeme = str_dup_lex(&lexer->source[start], length);
+
+  return token;
+}
+
+static Token lexer_make_interpolated_fragment(Lexer *lexer, size_t start,
+                                              size_t end, int line,
+                                              int column) {
+  Token token;
+  token.type = TOKEN_STRING;
+  token.location.file = lexer->filename;
+  token.location.line = line;
+  token.location.column = column;
+
+  // Process both {{ -> { and escape sequences like \n, \t, \`, etc.
+  char *processed = process_string_escapes(lexer, start, end, true);
+
+  token.lexeme = processed;
+  token.value.str_val = processed;
+
+  return token;
+}
+
+static Token lexer_scan_interpolated_string(Lexer *lexer) {
+  // Prevent nested interpolated strings
+  if (lexer->skip_queue) {
+    return lexer_error_token(lexer, "Nested interpolated strings are not "
+                                    "supported. Use variables instead.");
+  }
+
+  // Create opening backtick token
+  Token bt =
+      lexer_make_token_at(lexer, TOKEN_BACKTICK, lexer->start, lexer->current,
+                          lexer->line, lexer->column - 1);
+
+  // Track where current string fragment starts
+  size_t fragment_start = lexer->current;
+  int fragment_line = lexer->line;
+  int fragment_column = lexer->column;
+
+  while (!lexer_is_at_end(lexer)) {
+    char c = lexer_peek(lexer);
+
+    // Handle escape sequences first (including \`, \{, \n, etc.)
+    if (c == '\\') {
+      lexer_advance(lexer); // Skip backslash
+      if (!lexer_is_at_end(lexer)) {
+        lexer_advance(lexer); // Skip escaped character
+      }
+      continue;
+    }
+
+    if (c == '`') {
+      // Found closing backtick (unescaped)
+      // Queue any buffered fragment if it has content
+      if (lexer->current > fragment_start) {
+        Token fragment = lexer_make_interpolated_fragment(
+            lexer, fragment_start, lexer->current, fragment_line,
+            fragment_column);
+        lexer_queue_token(lexer, fragment);
+      }
+
+      // Consume and queue closing backtick
+      size_t backtick_start = lexer->current;
+      int backtick_line = lexer->line;
+      int backtick_column = lexer->column;
+      lexer_advance(lexer);
+
+      Token closing_backtick =
+          lexer_make_token_at(lexer, TOKEN_BACKTICK, backtick_start,
+                              lexer->current, backtick_line, backtick_column);
+      lexer_queue_token(lexer, closing_backtick);
+      break;
+    }
+
+    else if (c == '{') {
+      // Unescaped { means code section starts
+      // Queue buffered fragment if it has content
+      if (lexer->current > fragment_start) {
+        Token fragment = lexer_make_interpolated_fragment(
+            lexer, fragment_start, lexer->current, fragment_line,
+            fragment_column);
+        lexer_queue_token(lexer, fragment);
+      }
+
+      // Consume and queue the {
+      size_t lcurly_start = lexer->current;
+      int lcurly_line = lexer->line;
+      int lcurly_column = lexer->column;
+      lexer_advance(lexer);
+
+      Token lcurly =
+          lexer_make_token_at(lexer, TOKEN_LBRACE, lcurly_start, lexer->current,
+                              lcurly_line, lcurly_column);
+      lexer_queue_token(lexer, lcurly);
+
+      // Recursively lex tokens until we find matching }
+      bool saw_rcurly = false;
+      int num_of_lcurly = 1;
+
+      lexer->skip_queue = true;
+
+      while (!lexer_is_at_end(lexer)) {
+        Token tok = lexer_next_token(lexer);
+
+        if (tok.type == TOKEN_LBRACE) {
+          // Nested braces (could be nested interpolated strings)
+          num_of_lcurly++;
+        }
+
+        bool is_rcurly = (tok.type == TOKEN_RBRACE);
+        lexer_queue_token(lexer, tok);
+
+        if (is_rcurly) {
+          if (num_of_lcurly == 1) {
+            // This closes our original {
+            saw_rcurly = true;
+            break;
+          }
+          num_of_lcurly--;
+        }
+      }
+
+      lexer->skip_queue = false;
+
+      if (!saw_rcurly) {
+        return lexer_error_token(
+            lexer, "Unterminated code section in interpolated string");
+      }
+
+      // Reset fragment buffer for next section
+      fragment_start = lexer->current;
+      fragment_line = lexer->line;
+      fragment_column = lexer->column;
+    }
+
+    else {
+      // Regular character - advance (adds to fragment buffer)
+      lexer_advance(lexer);
+    }
+  }
+
+  if (lexer_is_at_end(lexer)) {
+    return lexer_error_token(lexer, "Unterminated interpolated string");
+  }
+
+  // Return opening backtick (parts are queued)
+  return bt;
+}
+
 // Scan specific token types
 static Token lexer_scan_string(Lexer *lexer) {
   // Skip opening quote
   while (lexer_peek(lexer) != '"' && !lexer_is_at_end(lexer)) {
-    if (lexer_peek(lexer) == '\n')
-      lexer->line++;
-    lexer_advance(lexer);
+    if (lexer_peek(lexer) == '\\') {
+      // Skip escape sequence (don't stop at escaped quotes)
+      lexer_advance(lexer);
+      if (!lexer_is_at_end(lexer)) {
+        lexer_advance(lexer);
+      }
+    } else {
+      if (lexer_peek(lexer) == '\n')
+        lexer->line++;
+      lexer_advance(lexer);
+    }
   }
 
   if (lexer_is_at_end(lexer)) {
@@ -306,9 +544,11 @@ static Token lexer_scan_string(Lexer *lexer) {
 
   Token token = lexer_make_token(lexer, TOKEN_STRING);
 
-  // Extract string value (without quotes)
-  size_t length = lexer->current - lexer->start - 2;
-  token.value.str_val = str_dup_lex(&lexer->source[lexer->start + 1], length);
+  // Process escape sequences (without quotes)
+  size_t content_start = lexer->start + 1;
+  size_t content_end = lexer->current - 1;
+  token.value.str_val =
+      process_string_escapes(lexer, content_start, content_end, false);
 
   return token;
 }
@@ -458,9 +698,26 @@ void lexer_init(Lexer *lexer, const char *source, const char *filename) {
   lexer->line = 1;
   lexer->column = 1;
   lexer->filename = filename;
+  // Pre-allocate for 12 tokens
+  lexer->token_queue = arena_alloc(&long_lived, sizeof(Token) * 12);
+  lexer->queue_capacity = 12;
+  lexer->queue_count = 0;
+  lexer->queue_index = 0;
+  lexer->skip_queue = false;
 }
 
 Token lexer_next_token(Lexer *lexer) {
+  // Check if we have queued tokens (unless we're building the queue)
+  if (!lexer->skip_queue && lexer->queue_index < lexer->queue_count) {
+    return lexer->token_queue[lexer->queue_index++];
+  }
+
+  // Reset queue for next interpolated string
+  if (!lexer->skip_queue) {
+    lexer->queue_count = 0;
+    lexer->queue_index = 0;
+  }
+
   lexer_skip_whitespace(lexer);
 
   lexer->start = lexer->current;
@@ -477,6 +734,8 @@ Token lexer_next_token(Lexer *lexer) {
     return lexer_scan_number(lexer);
 
   switch (c) {
+  case '`':
+    return lexer_scan_interpolated_string(lexer);
   case '(':
     return lexer_make_token(lexer, TOKEN_LPAREN);
   case ')':

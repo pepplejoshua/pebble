@@ -526,7 +526,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
         (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
          entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
          entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION ||
-         entry->type->kind == TYPE_OPTIONAL || entry->type->kind == TYPE_UNION ||
+         entry->type->kind == TYPE_OPTIONAL ||
+         entry->type->kind == TYPE_UNION ||
          entry->type->kind == TYPE_TAGGED_UNION)) {
       emit_type_if_needed(cg, entry->type);
     }
@@ -1478,6 +1479,159 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   }
 }
 
+// Helper: Get format specifier for a built-in type
+static const char *get_format_specifier(Type *type) {
+  switch (type->kind) {
+  case TYPE_STRING:
+  case TYPE_BOOL:
+    return "%s";
+  case TYPE_INT:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_ISIZE:
+  case TYPE_I8:
+  case TYPE_I16:
+    return "%lld";
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_USIZE:
+    return "%llu";
+  case TYPE_F32:
+  case TYPE_F64:
+    return "%f";
+  case TYPE_CHAR:
+    return "%c";
+  default:
+    return "%s";
+  }
+}
+
+// Helper: Recursively build format string for struct/tuple
+static void build_composite_format_string(Codegen *cg, Type *type) {
+  if (type->kind == TYPE_STRUCT) {
+    // Emit "TypeName.{field1 = %d, field2 = %s, ...}"
+    emit_string(cg, type_name(type));
+    emit_string(cg, ".{");
+
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+
+      emit_string(cg, type->data.struct_data.field_names[i]);
+      emit_string(cg, " = ");
+
+      Type *field_type = type->data.struct_data.field_types[i];
+
+      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
+        // Recursively format nested composite types
+        build_composite_format_string(cg, field_type);
+      } else {
+        // Emit format specifier for builtin types
+        emit_string(cg, get_format_specifier(field_type));
+      }
+    }
+
+    emit_string(cg, "}");
+
+  } else if (type->kind == TYPE_TUPLE) {
+    // Emit "(%d, %s, ...)"
+    emit_string(cg, "(");
+
+    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+
+      Type *elem_type = type->data.tuple.element_types[i];
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+        build_composite_format_string(cg, elem_type);
+      } else {
+        emit_string(cg, get_format_specifier(elem_type));
+      }
+    }
+
+    emit_string(cg, ")");
+  }
+}
+
+// Helper: Recursively emit arguments for sprintf (field accesses)
+static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
+                                 bool *first) {
+  if (type->kind == TYPE_STRUCT) {
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      Type *field_type = type->data.struct_data.field_types[i];
+      char field_access[512];
+      snprintf(field_access, sizeof(field_access), "%s.%s", base_expr,
+               type->data.struct_data.field_names[i]);
+
+      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
+        // Recursive case
+        build_composite_args(cg, field_type, field_access, first);
+      } else {
+        // Base case: emit argument with appropriate cast
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        if (field_type->kind == TYPE_INT || field_type->kind == TYPE_I32 ||
+            field_type->kind == TYPE_I64 || field_type->kind == TYPE_ISIZE ||
+            field_type->kind == TYPE_I8 || field_type->kind == TYPE_I16) {
+          emit_string(cg, "(long long)");
+        } else if (field_type->kind == TYPE_U8 ||
+                   field_type->kind == TYPE_U16 ||
+                   field_type->kind == TYPE_U32 ||
+                   field_type->kind == TYPE_U64 ||
+                   field_type->kind == TYPE_USIZE) {
+          emit_string(cg, "(unsigned long long)");
+        } else if (field_type->kind == TYPE_BOOL) {
+          emit_string(cg, "(");
+        }
+
+        emit_string(cg, field_access);
+
+        if (field_type->kind == TYPE_BOOL) {
+          emit_string(cg, " ? \"true\" : \"false\")");
+        }
+      }
+    }
+
+  } else if (type->kind == TYPE_TUPLE) {
+    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+      Type *elem_type = type->data.tuple.element_types[i];
+      char field_access[512];
+      snprintf(field_access, sizeof(field_access), "%s._%zu", base_expr, i);
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+        build_composite_args(cg, elem_type, field_access, first);
+      } else {
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        if (elem_type->kind == TYPE_INT || elem_type->kind == TYPE_I32 ||
+            elem_type->kind == TYPE_I64 || elem_type->kind == TYPE_ISIZE ||
+            elem_type->kind == TYPE_I8 || elem_type->kind == TYPE_I16) {
+          emit_string(cg, "(long long)");
+        } else if (elem_type->kind == TYPE_U8 || elem_type->kind == TYPE_U16 ||
+                   elem_type->kind == TYPE_U32 || elem_type->kind == TYPE_U64 ||
+                   elem_type->kind == TYPE_USIZE) {
+          emit_string(cg, "(unsigned long long)");
+        } else if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, "(");
+        }
+
+        emit_string(cg, field_access);
+
+        if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, " ? \"true\" : \"false\")");
+        }
+      }
+    }
+  }
+}
+
 // Emit statement (minimal)
 void emit_stmt(Codegen *cg, AstNode *stmt) {
   if (!stmt)
@@ -1585,7 +1739,72 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         } else {
           emit_expr(cg, expr);
         }
+      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE) {
+        // Print struct/tuple with formatted representation
+
+        // Wrap in a statement expression to create temporaries
+        emit_string(cg, "({ ");
+
+        // Evaluate the expression into a temporary
+        char temp_expr_buf[64];
+        snprintf(temp_expr_buf, sizeof(temp_expr_buf), "__print_composite_%zu",
+                 i);
+
+        emit_type_name(cg, type);
+        emit_string(cg, " ");
+        emit_string(cg, temp_expr_buf);
+        emit_string(cg, " = ");
+        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
+        emit_string(cg, "; ");
+
+        // Create a buffer for the formatted output using alloca
+        char buffer_name[64];
+        snprintf(buffer_name, sizeof(buffer_name), "__print_buf_%zu", i);
+
+        // Calculate required size first
+        emit_string(cg, "size_t __print_len_");
+        char len_suffix[32];
+        snprintf(len_suffix, sizeof(len_suffix), "%zu", i);
+        emit_string(cg, len_suffix);
+        emit_string(cg, " = snprintf(NULL, 0, \"");
+
+        build_composite_format_string(cg, type);
+
+        emit_string(cg, "\"");
+        emit_string(cg, ", ");
+
+        bool first_arg = true;
+        build_composite_args(cg, type, temp_expr_buf, &first_arg);
+
+        emit_string(cg, "); ");
+
+        // Allocate with alloca (lives in parent frame)
+        emit_string(cg, "char *");
+        emit_string(cg, buffer_name);
+        emit_string(cg, " = alloca(__print_len_");
+        emit_string(cg, len_suffix);
+        emit_string(cg, " + 1); ");
+
+        // Build sprintf call
+        emit_string(cg, "sprintf(");
+        emit_string(cg, buffer_name);
+        emit_string(cg, ", \"");
+
+        build_composite_format_string(cg, type);
+
+        emit_string(cg, "\"");
+        emit_string(cg, ", ");
+
+        first_arg = true;
+        build_composite_args(cg, type, temp_expr_buf, &first_arg);
+
+        emit_string(cg, "); ");
+
+        // Return the buffer as the result
+        emit_string(cg, buffer_name);
+        emit_string(cg, "; })");
       } else {
+        // Fallback for truly unknown types
         emit_string(cg, "\"");
         emit_string(cg,
                     type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
@@ -1659,9 +1878,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_indent_spaces(cg);
 
-    if (cond_type->kind == TYPE_TAGGED_UNION || (cond_type->kind == TYPE_POINTER &&
-      cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION))
-    {
+    if (cond_type->kind == TYPE_TAGGED_UNION ||
+        (cond_type->kind == TYPE_POINTER &&
+         cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
       emit_string(cg, "switch (");
       emit_expr(cg, cond);
 
@@ -1673,8 +1892,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
       emit_string(cg, ") {\n");
       char *qualified_name = cond_type->canonical_name
-          ? cond_type->canonical_name
-          : cond_type->data.ptr.base->canonical_name;
+                                 ? cond_type->canonical_name
+                                 : cond_type->data.ptr.base->canonical_name;
 
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
         emit_indent_spaces(cg);
@@ -2102,7 +2321,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, "; char *__item = ");
           emit_expr(cg, array_expr);
           emit_string(cg, "; ");
-          emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+          emit_string(cg,
+                      "assert(__index >= 0 && __index < (int)strlen(__item));");
           emit_string(cg, "__item[__index]");
         } else {
           emit_expr(cg, array_expr);
@@ -2121,8 +2341,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_type_name(cg, array_expr->resolved_type);
           emit_string(cg, " __item = ");
           emit_expr(cg, array_expr);
-          emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
-                          "__item.data[__index]");
+          emit_string(cg,
+                      "; assert(__index >= 0 && __index < (int)__item.len); "
+                      "__item.data[__index]");
         } else {
           emit_expr(cg, array_expr);
           emit_string(cg, ".data[");
@@ -2309,6 +2530,207 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, "\"");
     break;
 
+  case AST_EXPR_INTERPOLATED_STRING: {
+    emit_string(cg, "({ ");
+
+    // First, evaluate all non-literal expressions into temporaries
+    char temp_names[64][64]; // Store temp names for each expression
+    size_t temp_count = 0;
+
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      // Will need to handle more lengthy formatted strings
+      assert(temp_count < 64);
+
+      if (part->kind != AST_EXPR_LITERAL_STRING) {
+        Type *part_type = part->resolved_type;
+        char buffer[64] = {0};
+        char *temp_name = get_temporary_name(cg, buffer, 64);
+        strcpy(temp_names[temp_count++], temp_name);
+
+        // Declare and assign temporary
+        if (part_type->kind == TYPE_STRING) {
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_INT || part_type->kind == TYPE_I32 ||
+                   part_type->kind == TYPE_I64 ||
+                   part_type->kind == TYPE_ISIZE) {
+          emit_string(cg, "long long ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = (long long)");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_U8 || part_type->kind == TYPE_U16 ||
+                   part_type->kind == TYPE_U32 || part_type->kind == TYPE_U64 ||
+                   part_type->kind == TYPE_USIZE) {
+          emit_string(cg, "unsigned long long ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = (unsigned long long)");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_F32 || part_type->kind == TYPE_F64) {
+          emit_string(cg, "double ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_BOOL) {
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, " ? \"true\" : \"false\"; ");
+        } else if (part_type->kind == TYPE_CHAR) {
+          emit_string(cg, "char ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_ENUM) {
+          emit_type_name(cg, part_type);
+          emit_string(cg, " ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_STRUCT ||
+                   part_type->kind == TYPE_TUPLE) {
+          // Handle struct/tuple: create a formatted buffer
+
+          // First, evaluate the expression into a temporary variable
+          char temp_expr_buf[64];
+          snprintf(temp_expr_buf, sizeof(temp_expr_buf), "__temp_composite_%zu",
+                   i);
+
+          emit_type_name(cg, part_type);
+          emit_string(cg, " ");
+          emit_string(cg, temp_expr_buf);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+
+          // Create the buffer for formatted output
+          char buffer_name[64];
+          snprintf(buffer_name, sizeof(buffer_name), "__composite_buf_%zu", i);
+
+          emit_string(cg, "char ");
+          emit_string(cg, buffer_name);
+          emit_string(cg, "[512] = {0}; ");
+
+          // Build the sprintf call
+          emit_string(cg, "sprintf(");
+          emit_string(cg, buffer_name);
+          emit_string(cg, ", \"");
+
+          // Emit the format string for this struct/tuple
+          build_composite_format_string(cg, part_type);
+
+          emit_string(cg, "\""); // Close the format string
+
+          // ADD THIS LINE - comma before arguments!
+          emit_string(cg, ", "); // <-- THIS IS THE FIX!
+
+          // Emit the arguments (field accesses)
+          bool first_arg =
+              true; // Now first_arg=true is correct (no comma before first arg)
+          build_composite_args(cg, part_type, temp_expr_buf, &first_arg);
+
+          emit_string(cg, "); "); // Close sprintf call
+
+          // Store buffer pointer as the temporary for the main interpolated
+          // string
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_string(cg, buffer_name);
+          emit_string(cg, "; ");
+        } else {
+          // Fallback for other types - output type name like print does
+          emit_string(cg, "const char* ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = \"");
+          emit_string(cg, type_name(part_type));
+          emit_string(cg, "\"; ");
+        }
+      }
+    }
+
+    // Build the format string
+    emit_string(cg, "char *__fmt = \"");
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind == AST_EXPR_LITERAL_STRING) {
+        emit_string(cg, part->data.str_lit.value);
+      } else {
+        Type *part_type = part->resolved_type;
+        if (part_type->kind == TYPE_STRING || part_type->kind == TYPE_BOOL) {
+          emit_string(cg, "%s");
+        } else if (part_type->kind == TYPE_INT || part_type->kind == TYPE_I32 ||
+                   part_type->kind == TYPE_I64 ||
+                   part_type->kind == TYPE_ISIZE ||
+                   part_type->kind == TYPE_I8 || part_type->kind == TYPE_I16) {
+          emit_string(cg, "%lld");
+        } else if (part_type->kind == TYPE_U8 || part_type->kind == TYPE_U16 ||
+                   part_type->kind == TYPE_U32 || part_type->kind == TYPE_U64 ||
+                   part_type->kind == TYPE_USIZE) {
+          emit_string(cg, "%llu");
+        } else if (part_type->kind == TYPE_F32 || part_type->kind == TYPE_F64) {
+          emit_string(cg, "%f");
+        } else if (part_type->kind == TYPE_CHAR) {
+          emit_string(cg, "%c");
+        } else if (part_type->kind == TYPE_ENUM) {
+          // TODO: variant name
+          emit_string(cg, "%d");
+        } else {
+          // Fallback for other types
+          emit_string(cg, "%s");
+        }
+      }
+    }
+    emit_string(cg, "\"; ");
+
+    // Calculate size with snprintf
+    emit_string(cg, "size_t __len = snprintf(NULL, 0, __fmt");
+
+    temp_count = 0;
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind != AST_EXPR_LITERAL_STRING) {
+        emit_string(cg, ", ");
+        emit_string(cg, temp_names[temp_count++]);
+      }
+    }
+
+    emit_string(cg, "); ");
+
+    // Allocate buffer on stack
+    emit_string(cg, "char *__buf = alloca(__len + 1); ");
+    emit_string(cg, "memset(__buf, 0, __len + 1); ");
+
+    // Fill buffer with sprintf
+    emit_string(cg, "sprintf(__buf, __fmt");
+
+    temp_count = 0;
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      AstNode *part = expr->data.interpolated_string.parts[i];
+
+      if (part->kind != AST_EXPR_LITERAL_STRING) {
+        emit_string(cg, ", ");
+        emit_string(cg, temp_names[temp_count++]);
+      }
+    }
+
+    emit_string(cg, "); ");
+    emit_string(cg, "__buf; })");
+    break;
+  }
+
   case AST_EXPR_SIZEOF: {
     Type *type = expr->data.sizeof_expr.type_expr->resolved_type;
 
@@ -2443,7 +2865,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, "; char *__item = ");
             emit_expr(cg, array_expr);
             emit_string(cg, "; ");
-            emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+            emit_string(
+                cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
             emit_string(cg, "&__item[__index]; })");
           } else {
             emit_string(cg, "&");
@@ -2463,8 +2886,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_type_name(cg, array_expr->resolved_type);
             emit_string(cg, " __item = ");
             emit_expr(cg, array_expr);
-            emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
-                            "&__item.data[__index]; })");
+            emit_string(cg,
+                        "; assert(__index >= 0 && __index < (int)__item.len); "
+                        "&__item.data[__index]; })");
           } else {
             emit_string(cg, "&");
             emit_expr(cg, array_expr);
@@ -2721,7 +3145,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "; char *__item = ");
         emit_expr(cg, array_expr);
         emit_string(cg, "; ");
-        emit_string(cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
+        emit_string(cg,
+                    "assert(__index >= 0 && __index < (int)strlen(__item));");
         emit_string(cg, "__item[__index]; })");
       } else {
         emit_expr(cg, array_expr);
@@ -2893,8 +3318,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // Check if the object is a pointer and prepare the operator
     if (object_type && object_type->kind == TYPE_POINTER) {
       Type *base_type = object_type->data.ptr.base;
-      if (base_type && (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION)) {
-        // Pointer to struct/union: emit object directly, then -> (e.g., ptr->field)
+      if (base_type &&
+          (base_type->kind == TYPE_STRUCT || base_type->kind == TYPE_UNION)) {
+        // Pointer to struct/union: emit object directly, then -> (e.g.,
+        // ptr->field)
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
       } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
@@ -2911,9 +3338,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, ";\n");
 
-        char *name = base_type->qualified_name
-          ? base_type->qualified_name
-          : base_type->canonical_name;
+        char *name = base_type->qualified_name ? base_type->qualified_name
+                                               : base_type->canonical_name;
 
         emit_string(cg, "assert(");
         emit_string(cg, temp);
@@ -2945,9 +3371,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         char buffer[64] = {0};
 
-        char *name = object_type->qualified_name
-          ? object_type->qualified_name
-          : object_type->canonical_name;
+        char *name = object_type->qualified_name ? object_type->qualified_name
+                                                 : object_type->canonical_name;
 
         emit_string(cg, "({\n");
         char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
@@ -2990,8 +3415,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_STRUCT_LITERAL: {
     char *type_name = expr->data.struct_literal.qualified_type_name
-      ? expr->data.struct_literal.qualified_type_name
-      : expr->resolved_type->canonical_name;
+                          ? expr->data.struct_literal.qualified_type_name
+                          : expr->resolved_type->canonical_name;
 
     emit_string(cg, "(");
     emit_string(cg, type_name);
@@ -3002,8 +3427,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ".__tag = ");
 
         char *name = expr->resolved_type->qualified_name
-          ? expr->resolved_type->qualified_name
-          : expr->resolved_type->canonical_name;
+                         ? expr->resolved_type->qualified_name
+                         : expr->resolved_type->canonical_name;
 
         emit_string(cg, name);
         emit_string(cg, "__");
