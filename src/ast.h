@@ -59,6 +59,7 @@ typedef enum {
   AST_EXPR_SLICE,
   AST_EXPR_MEMBER,
   AST_EXPR_MODULE_MEMBER,
+  AST_EXPR_PARTIAL_MEMBER,
   AST_EXPR_TUPLE,
   AST_EXPR_STRUCT_LITERAL,
   AST_EXPR_ARRAY_LITERAL,
@@ -299,6 +300,9 @@ struct AstNode {
       AstNode *object;
       char *member;
     } member_expr;
+    struct {
+      char *member;
+    } partial_member_expr;
     struct {
       AstNode *module;
       char *qualified_path;

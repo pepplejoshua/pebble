@@ -1861,8 +1861,13 @@ AstNode *parse_primary(Parser *parser) {
 
   // Anonymous struct literal
   if (parser_match(parser, TOKEN_DOT)) {
-    // Check for struct literal: IDENTIFIER.{ ... }
-    if (parser_match(parser, TOKEN_LBRACE)) {
+    if (parser_match(parser, TOKEN_IDENTIFIER)) {
+      // Partial member access .member
+      AstNode *expr = alloc_node(AST_EXPR_PARTIAL_MEMBER, parser->previous.location);
+      expr->data.partial_member_expr.member = str_dup(parser->previous.lexeme);
+      return expr;
+    } else if (parser_match(parser, TOKEN_LBRACE)) {
+      // Check for struct literal: .{ ... }
       Location loc = parser->previous.location;
 
       // Parse struct literal fields

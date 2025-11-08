@@ -3413,6 +3413,17 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     break;
   }
 
+  case AST_EXPR_PARTIAL_MEMBER: {
+    char *name = expr->resolved_type->qualified_name
+                  ? expr->resolved_type->qualified_name
+                  : expr->resolved_type->canonical_name;
+
+    emit_string(cg, name);
+    emit_string(cg, "_");
+    emit_string(cg, expr->data.partial_member_expr.member);
+    break;
+  }
+
   case AST_EXPR_STRUCT_LITERAL: {
     char *type_name = expr->data.struct_literal.qualified_type_name
                           ? expr->data.struct_literal.qualified_type_name

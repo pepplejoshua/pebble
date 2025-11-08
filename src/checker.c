@@ -1487,7 +1487,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     size_t variant_count = type_expr->data.type_enum.variant_count;
     if (variant_count == 0) {
       checker_error(type_expr->loc, "Enum was declared without any members");
-      return type_create_enum(NULL, variant_count, loc);
+      return type_create_enum(NULL, variant_count,
+                              !checker_state.in_type_resolution, loc);
     }
 
     // Resolve all field types and create struct type
@@ -1519,7 +1520,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_enum(variant_names, variant_count, loc);
+    return type_create_enum(variant_names, variant_count, !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_FUNCTION: {
@@ -1828,6 +1829,20 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
+  } else if (expr_type->kind == TYPE_ENUM &&
+             target_type->kind == TYPE_ENUM) {
+    // Infer partial member as enum
+    if (expr->kind != AST_EXPR_PARTIAL_MEMBER) {
+      return NULL;
+    }
+
+    int index = member_index_of_type(target_type, expr->data.partial_member_expr.member);
+    if (index == -1) {
+      return NULL;
+    }
+
+    expr->resolved_type = target_type;
+    return expr;
   } else if (expr_type->kind == TYPE_STRUCT &&
              target_type->kind == TYPE_STRUCT) {
     // Check if structs have the same number of fields
@@ -3110,6 +3125,16 @@ Type *check_expression(AstNode *expr) {
                     "slice, or pointer to one of these");
       return NULL;
     }
+  }
+
+  case AST_EXPR_PARTIAL_MEMBER: {
+    char **variant_names = arena_alloc(&long_lived, 1);
+    variant_names[0] = expr->data.partial_member_expr.member;
+
+   Type * type = type_create_enum(variant_names, 1, !checker_state.in_type_resolution, expr->loc);
+   expr->resolved_type = type;
+
+   return type;
   }
 
   case AST_EXPR_MODULE_MEMBER: {
