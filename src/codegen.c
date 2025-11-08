@@ -2609,7 +2609,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           emit_string(cg, "char ");
           emit_string(cg, buffer_name);
-          emit_string(cg, "[512]; ");
+          emit_string(cg, "[512] = {0}; ");
 
           // Build the sprintf call
           emit_string(cg, "sprintf(");
@@ -2698,6 +2698,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Allocate buffer on stack
     emit_string(cg, "char *__buf = alloca(__len + 1); ");
+    emit_string(cg, "memset(__buf, 0, __len + 1); ");
 
     // Fill buffer with sprintf
     emit_string(cg, "sprintf(__buf, __fmt");
