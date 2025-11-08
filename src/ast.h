@@ -1,19 +1,13 @@
 #ifndef AST_H
 #define AST_H
 
+#include "lexer.h"
 #include <stdbool.h> // For bool
 #include <stddef.h>  // For size_t
 
 // Forward declarations
 typedef struct AstNode AstNode;
 typedef struct Type Type;
-
-// Source location for errors
-typedef struct {
-  const char *file;
-  int line;
-  int column;
-} Location;
 
 // Tagged union for AST nodes
 typedef enum {
@@ -138,7 +132,7 @@ struct AstNode {
       AstNode *body;
 
       // Generics
-      char **type_params;
+      Token *type_params;
       size_t type_param_count;
     } func_decl;
     struct {
@@ -353,7 +347,7 @@ struct AstNode {
       char *symbol; // Name generated
 
       // Generics
-      char **type_params;
+      Token *type_params;
       size_t type_param_count;
     } func_expr;
     struct {

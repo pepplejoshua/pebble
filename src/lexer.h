@@ -2,8 +2,15 @@
 #define LEXER_H
 
 #include "alloc.h"
-#include "ast.h" // For Location
 #include <stddef.h>
+#include <stdbool.h> // For bool
+
+// Source location for errors
+typedef struct {
+  const char *file;
+  int line;
+  int column;
+} Location;
 
 // Token types
 typedef enum {
