@@ -2542,7 +2542,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       if (part->kind != AST_EXPR_LITERAL_STRING) {
         Type *part_type = part->resolved_type;
-        char buffer[64];
+        char buffer[64] = {0};
         char *temp_name = get_temporary_name(cg, buffer, 64);
         strcpy(temp_names[temp_count++], temp_name);
 
@@ -2583,6 +2583,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, " ? \"true\" : \"false\"; ");
         } else if (part_type->kind == TYPE_CHAR) {
           emit_string(cg, "char ");
+          emit_string(cg, temp_name);
+          emit_string(cg, " = ");
+          emit_expr(cg, part);
+          emit_string(cg, "; ");
+        } else if (part_type->kind == TYPE_ENUM) {
+          emit_type_name(cg, part_type);
+          emit_string(cg, " ");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
           emit_expr(cg, part);
@@ -2673,6 +2680,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, "%f");
         } else if (part_type->kind == TYPE_CHAR) {
           emit_string(cg, "%c");
+        } else if (part_type->kind == TYPE_ENUM) {
+          // TODO: variant name
+          emit_string(cg, "%d");
         } else {
           // Fallback for other types
           emit_string(cg, "%s");
