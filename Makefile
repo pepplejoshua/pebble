@@ -8,8 +8,8 @@ OBJS = src/alloc.o src/lexer.o src/parser.o src/options.o \
 # Auto-generate dependencies
 DEPS = $(OBJS:.o=.d)
 
-peb: $(OBJS)
-	$(CC) $(CFLAGS) -o peb $(OBJS)
+pebc: $(OBJS)
+	$(CC) $(CFLAGS) -o pebc $(OBJS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
@@ -17,4 +17,4 @@ peb: $(OBJS)
 -include $(DEPS)
 
 clean:
-	rm -f peb $(OBJS) $(DEPS)
+	rm -f pebc $(OBJS) $(DEPS)
