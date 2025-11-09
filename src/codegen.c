@@ -1479,6 +1479,22 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   }
 }
 
+static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
+  size_t len = strlen(string);
+  size_t buffer_idx = 0;
+
+  for (size_t i = 0; i < len; i++) {
+    assert(buffer_idx < buffer_sz);
+
+    if (string[i] == '"' && (i > 0 || string[i-1] != '\\')) {
+      buffer[buffer_idx++] = '\\';
+      buffer[buffer_idx++] = '"';
+    } else {
+      buffer[buffer_idx++] = string[i];
+    }
+  }
+}
+
 // Helper: Get format specifier for a built-in type
 static const char *get_format_specifier(Type *type) {
   switch (type->kind) {
@@ -1693,6 +1709,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_string(cg, "\\n\", ");
 
+    char temp_buffer[512];
+
     // Emit expressions
     for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
       Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
@@ -1806,8 +1824,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       } else {
         // Fallback for truly unknown types
         emit_string(cg, "\"");
-        emit_string(cg,
-                    type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+
+        escape_string(temp_buffer, sizeof(temp_buffer), type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+        emit_string(cg, temp_buffer);
+        memset(temp_buffer, 0, sizeof(temp_buffer));
+
         emit_string(cg, "\"");
       }
     }
@@ -2467,22 +2488,6 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   default:
     emit_indent_spaces(cg);
     emit_string(cg, "/* TODO stmt */");
-  }
-}
-
-static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
-  size_t len = strlen(string);
-  size_t buffer_idx = 0;
-
-  for (size_t i = 0; i < len; i++) {
-    assert(buffer_idx < buffer_sz);
-
-    if (string[i] == '"' && (i > 0 || string[i-1] != '\\')) {
-      buffer[buffer_idx++] = '\\';
-      buffer[buffer_idx++] = '"';
-    } else {
-      buffer[buffer_idx++] = string[i];
-    }
   }
 }
 
