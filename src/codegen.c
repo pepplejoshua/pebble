@@ -2470,6 +2470,22 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   }
 }
 
+static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
+  size_t len = strlen(string);
+  size_t buffer_idx = 0;
+
+  for (size_t i = 0; i < len; i++) {
+    assert(buffer_idx < buffer_sz);
+
+    if (string[i] == '"' && (i > 0 || string[i-1] != '\\')) {
+      buffer[buffer_idx++] = '\\';
+      buffer[buffer_idx++] = '"';
+    } else {
+      buffer[buffer_idx++] = string[i];
+    }
+  }
+}
+
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
   switch (expr->kind) {
@@ -2536,6 +2552,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // First, evaluate all non-literal expressions into temporaries
     char temp_names[64][64]; // Store temp names for each expression
     size_t temp_count = 0;
+
+    char temp_buffer[512] = {0};
 
     for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
       AstNode *part = expr->data.interpolated_string.parts[i];
@@ -2653,19 +2671,25 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, "const char* ");
           emit_string(cg, temp_name);
           emit_string(cg, " = \"");
-          emit_string(cg, type_name(part_type));
+
+          escape_string(temp_buffer, sizeof(temp_buffer), type_name(part_type));
+          emit_string(cg, temp_buffer);
+          memset(temp_buffer, 0, sizeof(temp_buffer));
+
           emit_string(cg, "\"; ");
         }
       }
     }
 
     // Build the format string
-    emit_string(cg, "char *__fmt = \"");
+    emit_string(cg, "const char *__fmt = \"");
     for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
       AstNode *part = expr->data.interpolated_string.parts[i];
 
       if (part->kind == AST_EXPR_LITERAL_STRING) {
-        emit_string(cg, part->data.str_lit.value);
+        escape_string(temp_buffer, sizeof(temp_buffer), part->data.str_lit.value);
+        emit_string(cg, temp_buffer);
+        memset(temp_buffer, 0, sizeof(temp_buffer));
       } else {
         Type *part_type = part->resolved_type;
         if (part_type->kind == TYPE_STRING || part_type->kind == TYPE_BOOL) {
