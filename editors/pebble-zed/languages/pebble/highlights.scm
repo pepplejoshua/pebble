@@ -50,6 +50,17 @@
 (none_expression) @constant
 (context_expression) @keyword
 
+; Template literals
+(template_literal
+  "`" @string
+  "`" @string)
+
+(template_string_fragment) @string
+
+(template_interpolation
+  "{" @punctuation.bracket
+  "}" @punctuation.bracket)
+
 ; Qualified paths used as types - highlight all segments
 (pointer_type
   (qualified_path

@@ -1,6 +1,6 @@
 id = "pebble"
 name = "Pebble"
-version = "0.1.10"
+version = "0.1.11"
 schema_version = 1
 grammar = "pebble"
 authors = ["Caleb Otto", "Joshua Pepple"]
@@ -8,4 +8,4 @@ repository = "https://github.com/pepplejoshua/pebble"
 
 [grammars.pebble]
 repository = "https://github.com/Caleb-o/pebble-grammar"
-rev = "b1b5024fdc3e54c9bd17630e304ad119a292fbcf"
+rev = "c5aacafd7e6803b1da31fe1a245dce8ea2fe40e2"
