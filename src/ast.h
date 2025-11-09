@@ -236,6 +236,8 @@ struct AstNode {
     struct {
       AstNode *switch_stmt; // Associated switch stmt
       AstNode *condition;
+      AstNode **alt_conditions;
+      size_t alt_condition_count;
       AstNode *body;
     } case_stmt;
     struct {

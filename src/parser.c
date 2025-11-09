@@ -822,6 +822,34 @@ AstNode *parse_switch_stmt(Parser *parser) {
     _case->data.case_stmt.switch_stmt = stmt;
     _case->data.case_stmt.condition = parse_expression(parser);
 
+    AstNode **alt_cases = NULL;
+    size_t alt_condition_count = 0;
+    if (parser_match(parser, TOKEN_COMMA)) {
+      size_t capacity = 2;
+      alt_cases = arena_alloc(&long_lived, sizeof(AstNode *) * capacity);
+
+      do {
+        if (alt_condition_count >= capacity) {
+          capacity *= 2;
+          AstNode **new_alt_cases = arena_alloc(&long_lived, sizeof(AstNode *) * capacity);
+          memcpy(new_alt_cases, alt_cases, alt_condition_count * sizeof(AstNode *));
+          alt_cases = new_alt_cases;
+        }
+
+        AstNode *alt_case = alloc_node(AST_STMT_CASE, parser->previous.location);
+        alt_case->data.case_stmt.switch_stmt = stmt;
+        alt_case->data.case_stmt.condition = parse_expression(parser);
+        alt_case->data.case_stmt.body = NULL;
+        alt_case->data.case_stmt.alt_conditions = NULL;
+        alt_case->data.case_stmt.alt_condition_count = 0;
+
+        alt_cases[alt_condition_count++] = alt_case;
+      } while (parser_match(parser, TOKEN_COMMA));
+    }
+
+    _case->data.case_stmt.alt_conditions = alt_cases;
+    _case->data.case_stmt.alt_condition_count = alt_condition_count;
+
     parser_consume(parser, TOKEN_COLON,
                    "Expect ':' after switch case condition");
     _case->data.case_stmt.body = parse_statement(parser);

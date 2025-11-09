@@ -2096,10 +2096,6 @@ static bool is_constant_known(AstNode *node) {
 
 static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
   assert(node->kind == AST_STMT_SWITCH);
-  // Default case will make it pass exhaustive check
-  if (node->data.switch_stmt.default_case) {
-    return;
-  }
 
   // A lot of types are not feasible to check exhaustiveness for one reason or
   // another.
@@ -2109,56 +2105,67 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
   if (switch_type->kind == TYPE_U8 || switch_type->kind == TYPE_I8) {
     const int size = 256;
-
-    Arena temp_arena;
-    arena_init(&temp_arena, size);
-
-    bool *covered = arena_alloc(&temp_arena, size);
+    bool covered[size];
     memset(covered, 0, size);
 
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *_case =
-          node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+      AstNode *switch_case =
+          node->data.switch_stmt.cases[i];
 
-      if (_case->kind == AST_EXPR_LITERAL_INT) {
-        long long value = _case->data.int_lit.value;
+      AstNode *cases[1 + switch_case->data.case_stmt.alt_condition_count];
+      cases[0] = switch_case;
+      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count; i++) {
+        cases[1 + i] = switch_case->data.case_stmt.alt_conditions[i];
+      }
 
-        if (switch_type->kind == TYPE_U8) {
-          if (value < 0 || value >= size) {
-            continue;
+      for (size_t j = 0; j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
+        AstNode *_case = cases[j]->data.case_stmt.condition;
+
+        if (_case->kind == AST_EXPR_LITERAL_INT) {
+          long long value = _case->data.int_lit.value;
+
+          if (switch_type->kind == TYPE_U8) {
+            if (value < 0 || value >= size) {
+              continue;
+            }
+
+            // Check u8
+            unsigned char b = value;
+            if (covered[b]) {
+              checker_error(
+                  _case->loc,
+                  "Switch case %d has already covered its condition in a "
+                  "previous case.",
+                  i + 1);
+            }
+
+            covered[b] = true;
+          } else {
+            // Check i8
+            if (value < -127 || value >= 128) {
+              continue;
+            }
+
+            char b = value;
+            if (covered[b + 128]) {
+              checker_error(
+                  _case->loc,
+                  "Switch case %d has already covered its condition in a "
+                  "previous case.",
+                  i + 1);
+            }
+
+            // NOTE: Reusing array which is 0-255 so if b was below zero, like
+            // -127, we need to offset it
+            covered[b + 128] = true;
           }
-
-          // Check u8
-          unsigned char b = value;
-          if (covered[b]) {
-            checker_error(
-                node->loc,
-                "Switch case %d has already covered its condition in a "
-                "previous case.",
-                i + 1);
-          }
-
-          covered[b] = true;
-        } else {
-          // Check i8
-          if (value < -128 || value >= 128) {
-            continue;
-          }
-
-          char b = value;
-          if (covered[b + 128]) {
-            checker_error(
-                node->loc,
-                "Switch case %d has already covered its condition in a "
-                "previous case.",
-                i + 1);
-          }
-
-          // NOTE: Reusing array which is 0-255 so if b was below zero, like
-          // -128, we need to offset it
-          covered[b + 128] = true;
         }
       }
+    }
+
+    // Default case will make it pass exhaustive check
+    if (node->data.switch_stmt.default_case) {
+      return;
     }
 
     size_t missing_items = 0;
@@ -2178,52 +2185,62 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "if you need a default branch.",
                     missing_items, switch_type->canonical_name);
     }
-
-    arena_free(&temp_arena);
   }
 
   // Check exhaustiveness of enums
   else if (switch_type->kind == TYPE_ENUM) {
     size_t variant_count = switch_type->data.enum_data.variant_count;
 
-    Arena temp_arena;
-    arena_init(&temp_arena, variant_count);
-
-    bool *covered = arena_alloc(&temp_arena, variant_count);
+    bool covered[variant_count];
     memset(covered, 0, variant_count);
 
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *_case =
-          node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+      AstNode *switch_case =
+          node->data.switch_stmt.cases[i];
 
-      char *variant_name = NULL;
-      if (_case->kind == AST_EXPR_MEMBER) {
-        variant_name = _case->data.member_expr.member;
-      } else if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
-        variant_name = _case->data.partial_member_expr.member;
+      AstNode *cases[1 + switch_case->data.case_stmt.alt_condition_count];
+      cases[0] = switch_case;
+      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count; i++) {
+        cases[1 + i] = switch_case->data.case_stmt.alt_conditions[i];
       }
 
-      if (variant_name) {
-        // Find which enum value this is
-        for (size_t j = 0; j < variant_count; j++) {
-          if (strcmp(variant_name,
-                     switch_type->data.enum_data.variant_names[j]) == 0) {
-            if (covered[j]) {
-              if (covered[j]) {
-                checker_error(node->loc,
-                              "Switch case %d has already covered the variant "
-                              "\"%s\" in a "
-                              "previous case.",
-                              i + 1, variant_name);
-              }
-            }
+      for (size_t j = 0; j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
+        AstNode *_case = cases[j]->data.case_stmt.condition;
 
-            covered[j] = true;
-            break;
+        char *variant_name = NULL;
+        if (_case->kind == AST_EXPR_MEMBER) {
+          variant_name = _case->data.member_expr.member;
+        } else if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
+          variant_name = _case->data.partial_member_expr.member;
+        }
+
+        if (variant_name) {
+          // Find which enum value this is
+          for (size_t j = 0; j < variant_count; j++) {
+            if (strcmp(variant_name,
+                      switch_type->data.enum_data.variant_names[j]) == 0) {
+              if (covered[j]) {
+                if (covered[j]) {
+                  checker_error(_case->loc,
+                                "Switch case %d has already covered the variant "
+                                "\"%s\" in a "
+                                "previous case.",
+                                i + 1, variant_name);
+                }
+              }
+
+              covered[j] = true;
+              break;
+            }
           }
         }
       }
+    }
+
+    // Default case will make it pass exhaustive check
+    if (node->data.switch_stmt.default_case) {
+      return;
     }
 
     size_t missing_items = 0;
@@ -2247,8 +2264,6 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     missing_items, switch_type->canonical_name);
     }
 
-    arena_free(&temp_arena);
-
     return;
   }
   // Tagged enum variants
@@ -2266,38 +2281,50 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
             ? switch_type->data.union_data.variant_names
             : switch_type->data.ptr.base->data.union_data.variant_names;
 
-    Arena temp_arena;
-    arena_init(&temp_arena, variant_count);
-
-    bool *covered = arena_alloc(&temp_arena, variant_count);
+    bool covered[variant_count];
     memset(covered, 0, variant_count);
 
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *_case =
-          node->data.switch_stmt.cases[i]->data.case_stmt.condition;
+      AstNode *switch_case =
+          node->data.switch_stmt.cases[i];
 
-      if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
-        const char *variant_name = _case->data.partial_member_expr.member;
+      AstNode *cases[1 + switch_case->data.case_stmt.alt_condition_count];
+      cases[0] = switch_case;
+      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count; i++) {
+        cases[1 + i] = switch_case->data.case_stmt.alt_conditions[i];
+      }
 
-        // Find which enum value this is
-        for (size_t j = 0; j < variant_count; j++) {
-          if (strcmp(variant_name, variant_names[j]) == 0) {
-            if (covered[j]) {
+      for (size_t j = 0; j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
+        AstNode *_case = cases[j]->data.case_stmt.condition;
+
+        if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
+          const char *variant_name = _case->data.partial_member_expr.member;
+
+          // Find which enum value this is
+          for (size_t j = 0; j < variant_count; j++) {
+            if (strcmp(variant_name, variant_names[j]) == 0) {
               if (covered[j]) {
-                checker_error(node->loc,
-                              "Switch case %d has already covered the variant "
-                              "\"%s\" in a "
-                              "previous case.",
-                              i + 1, variant_name);
+                if (covered[j]) {
+                  checker_error(_case->loc,
+                                "Switch case %d has already covered the variant "
+                                "\"%s\" in a "
+                                "previous case.",
+                                i + 1, variant_name);
+                }
               }
-            }
 
-            covered[j] = true;
-            break;
+              covered[j] = true;
+              break;
+            }
           }
         }
       }
+    }
+
+    // Default case will make it pass exhaustive check
+    if (node->data.switch_stmt.default_case) {
+      return;
     }
 
     size_t missing_items = 0;
@@ -2319,8 +2346,11 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     missing_items, switch_type->canonical_name);
     }
 
-    arena_free(&temp_arena);
+    return;
+  }
 
+  // Default case will make it pass exhaustive check
+  if (node->data.switch_stmt.default_case) {
     return;
   }
 
@@ -3785,21 +3815,21 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check condition is numeric or string
     Type *cond_type = check_expression(cond);
-    if (cond_type && cond_type->kind == TYPE_BOOL) {
-      checker_error(cond->loc, "switch cases cannot be used with boolean "
-                               "types. please use if statements instead.");
-      had_error = true;
-    }
-
     if (cond_type) {
-      if (!type_is_numeric(cond_type) &&
+      if (cond_type->kind == TYPE_BOOL) {
+        checker_error(cond->loc, "switch cases cannot be used with boolean "
+                                 "types. please use if statements instead.");
+        had_error = true;
+      }
+
+      if (!type_is_integral(cond_type) &&
           cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
           cond_type->kind != TYPE_ENUM && cond_type->kind != TYPE_TAGGED_UNION &&
           // Allow pointers to tagged unions
-          (cond_type->kind == TYPE_POINTER &&
+          !(cond_type->kind == TYPE_POINTER &&
            cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
-        checker_error(cond->loc, "switch condition must be numeric (int or "
-                                 "float), char, enum, string or tagged union");
+        checker_error(cond->loc, "switch condition must be integral, "
+                                 "char, enum, string or tagged union");
         had_error = true;
       }
 
@@ -3863,6 +3893,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check that condition is constant
     if (!is_constant_known(cond)) {
       checker_error(cond->loc, "switch case condition must be a constant");
+    }
+
+    if (stmt->data.case_stmt.alt_condition_count > 0) {
+      for (size_t i = 0; i < stmt->data.case_stmt.alt_condition_count; i++) {
+        check_statement(stmt->data.case_stmt.alt_conditions[i], expected_return_type);
+      }
     }
 
     return check_statement(stmt->data.case_stmt.body, expected_return_type);
