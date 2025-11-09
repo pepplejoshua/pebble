@@ -410,9 +410,9 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   })
 
   switch (type->kind) {
-  case TYPE_VARIABLE:
+  case TYPE_GENERIC_FUNCTION:
     // This should not occur, ever
-    assert(false && "Attempt to canonicalize type variable parameter");
+    assert(false && "Attempt to canonicalize generic function.");
   case TYPE_INT:
     canonical_name = type_int->canonical_name;
     break;
@@ -1052,6 +1052,17 @@ static void check_function_signatures(void) {
     }
 
     AstNode *decl = sym->decl;
+
+    // Handle generic functions
+    if (decl->kind == AST_DECL_FUNCTION &&
+        decl->data.func_decl.type_param_count > 0) {
+      // Create a generic function type
+      Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
+      generic_type->data.generic_func.decl = decl;
+      sym->type = generic_type;
+      continue;
+    }
+
     FuncParam *params;
     size_t param_count = 0;
     AstNode *return_type_expr;
@@ -2333,6 +2344,78 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
       "Switch is non-exhaustive. Use \"else\" if you need a default branch.");
 }
 
+// Type parameter bindings for monomorphization
+typedef struct {
+  char *param_name;    // "T", "U", etc.
+  Type *concrete_type; // int, bool, etc.
+} TypeBinding;
+
+typedef struct {
+  TypeBinding *bindings;
+  size_t count;
+} TypeBindings;
+
+static TypeBindings infer_type_arguments(AstNode *generic_decl, AstNode **args,
+                                         size_t arg_count, Location call_loc) {
+  TypeBindings result = {0};
+
+  size_t type_param_count = generic_decl->data.func_decl.type_param_count;
+  Token *type_params = generic_decl->data.func_decl.type_params;
+  FuncParam *params = generic_decl->data.func_decl.params;
+  size_t param_count = generic_decl->data.func_decl.param_count;
+
+  result.bindings =
+      arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
+  result.count = type_param_count;
+
+  // Initialize all bindings to NULL
+  for (size_t i = 0; i < type_param_count; i++) {
+    result.bindings[i].param_name = type_params[i].lexeme;
+    result.bindings[i].concrete_type = NULL;
+  }
+
+  // Check each argument against each parameter
+  for (size_t j = 0; j < param_count && j < arg_count; j++) {
+    AstNode *param_type = params[j].type;
+    Type *arg_type = check_expression(args[j]);
+
+    if (!arg_type)
+      continue;
+
+    // Simple case: parameter type is directly a type variable
+    if (param_type->kind == AST_TYPE_NAMED) {
+      char *param_type_name = param_type->data.type_named.name;
+
+      // Check if this is a type parameter
+      for (size_t i = 0; i < type_param_count; i++) {
+        if (strcmp(type_params[i].lexeme, param_type_name) == 0) {
+          // Found a usage of type parameter i
+
+          if (result.bindings[i].concrete_type == NULL) {
+            // First binding for this type parameter
+            result.bindings[i].concrete_type = arg_type;
+          } else {
+            // Already have a binding - check consistency
+            if (!type_equals(result.bindings[i].concrete_type, arg_type)) {
+              checker_error(call_loc,
+                            "type variable '%s' was previously inferred as "
+                            "'%s', but got '%s' "
+                            "from argument %zu",
+                            param_type_name,
+                            type_name(result.bindings[i].concrete_type),
+                            type_name(arg_type), j + 1);
+            }
+          }
+          break;
+        }
+      }
+    }
+    // TODO: Handle complex types like []T, *T, etc.
+  }
+
+  return result;
+}
+
 Type *check_expression(AstNode *expr) {
   if (!expr) {
     return NULL;
@@ -2854,6 +2937,34 @@ Type *check_expression(AstNode *expr) {
 
     Type *call_type = check_expression(func_expr);
     if (call_type == NULL) {
+      return NULL;
+    }
+
+    // Check if this is a generic function
+    if (call_type->kind == TYPE_GENERIC_FUNCTION) {
+      AstNode *generic_decl = call_type->data.generic_func.decl;
+
+      // Infer type arguments from call arguments
+      TypeBindings bindings =
+          infer_type_arguments(generic_decl, args, arg_count, expr->loc);
+
+      // Check if inference succeeded
+      for (size_t i = 0; i < bindings.count; i++) {
+        if (!bindings.bindings[i].concrete_type) {
+          checker_error(expr->loc, "could not infer type parameter '%s'",
+                        bindings.bindings[i].param_name);
+          return NULL;
+        }
+      }
+
+      // Debug: print what we inferred
+      for (size_t i = 0; i < bindings.count; i++) {
+        printf("Inferred %s = %s\n", bindings.bindings[i].param_name,
+               type_name(bindings.bindings[i].concrete_type));
+      }
+
+      // TODO: Next step - monomorphize with these bindings
+      checker_error(expr->loc, "monomorphization not yet implemented");
       return NULL;
     }
 
@@ -4263,6 +4374,12 @@ bool check_function_bodies(void) {
 
     // Get function details
     AstNode *decl = sym->decl;
+
+    // Skip generic functions - they'll be checked when monomorphized
+    if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+      continue;
+    }
+
     AstNode *body = decl->data.func_decl.body;
     Type *func_type = sym->type;
     Type *return_type = func_type->data.func.return_type;
