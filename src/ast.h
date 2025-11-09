@@ -2,6 +2,7 @@
 #define AST_H
 
 #include "lexer.h"
+#include "alloc.h"
 #include <stdbool.h> // For bool
 #include <stddef.h>  // For size_t
 
@@ -420,5 +421,7 @@ struct AstNode {
     } type_tuple;
   } data;
 };
+
+AstNode *clone_ast_node(AstNode *node);
 
 #endif
