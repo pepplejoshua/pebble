@@ -2516,7 +2516,6 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // FIXME: See if variables/constants need this too
     if (sym->kind == SYMBOL_EXTERN_FUNCTION ||
         sym->kind == SYMBOL_EXTERN_CONSTANT ||
         sym->kind == SYMBOL_EXTERN_VARIABLE) {
@@ -3262,7 +3261,8 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "undefined name '%s::%s'",
                     module_expr->data.ident.name, member_name);
       return NULL;
-    } else if (sym->kind == SYMBOL_EXTERN_FUNCTION) {
+    } else if (sym->kind == SYMBOL_EXTERN_FUNCTION ||
+      sym->kind == SYMBOL_EXTERN_VARIABLE || sym->kind == SYMBOL_EXTERN_CONSTANT) {
       expr->data.mod_member_expr.is_extern = true;
     }
 
