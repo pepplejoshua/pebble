@@ -55,7 +55,8 @@ void scope_add_child(Scope *parent, Scope *child) {
 }
 
 // Look up symbol in this scope and parent scopes
-Symbol *scope_lookup(Scope *module_scope, Scope *scope, char *name, const char *sym_mod_name) {
+Symbol *scope_lookup(Scope *module_scope, Scope *scope, char *name,
+                     const char *sym_mod_name) {
   while (scope) {
     Symbol *symbol;
     if (scope == module_scope) {

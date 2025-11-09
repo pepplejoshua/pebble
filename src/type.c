@@ -47,15 +47,6 @@ Type *type_create(TypeKind kind, Location loc) {
   return type;
 }
 
-Type *type_create_variable(Token *name) {
-  Type *var = type_create(TYPE_VARIABLE, name->location);
-  var->data.type_var.name = name->lexeme;
-  var->canonical_name = name->lexeme;
-  var->declared_name = name->lexeme;
-  var->qualified_name = name->lexeme;
-  return var;
-}
-
 // Create pointer type (conditional canonicalization)
 Type *type_create_pointer(Type *base, bool canonicalize, Location loc) {
   assert(base);
@@ -704,8 +695,11 @@ char *compute_canonical_name(Type *type) {
   case TYPE_CHAR:
   case TYPE_OPAQUE:
   case TYPE_NONE:
-  case TYPE_VARIABLE:
     result = type->canonical_name;
+    break;
+
+  case TYPE_GENERIC_FUNCTION:
+    assert(false && "Attempt to compute canonical name on a generic function.");
     break;
 
   case TYPE_POINTER: {

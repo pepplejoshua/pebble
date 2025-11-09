@@ -42,7 +42,7 @@ typedef enum {
   TYPE_OPAQUE,
   TYPE_OPTIONAL,
   TYPE_NONE,
-  TYPE_VARIABLE,
+  TYPE_GENERIC_FUNCTION,
 } TypeKind;
 
 typedef enum {
@@ -110,8 +110,8 @@ struct Type {
     } optional;
 
     struct {
-      char *name; // "T", "U"
-    } type_var;
+      AstNode *decl;  // Points to the original AST_DECL_FUNCTION
+    } generic_func;
   } data;
 };
 
@@ -168,7 +168,6 @@ Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
                            Location loc);
-Type *type_create_variable(Token *name);
 
 // Type lookup and registration
 Type *type_lookup(const char *name, const char *mod_name);
