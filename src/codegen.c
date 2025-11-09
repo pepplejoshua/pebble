@@ -1926,6 +1926,16 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, ident->data.ident.name);
         emit_string(cg, ":\n");
 
+        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+          AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+          AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+          emit_string(cg, qualified_name);
+          emit_string(cg, "__");
+          emit_string(cg, alt_cond->data.ident.name);
+          emit_string(cg, ":\n");
+        }
+
         emit_indent(cg);
         emit_stmt(cg, cases[i]->data.case_stmt.body);
         emit_dedent(cg);
@@ -1977,6 +1987,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_expr(cg, cases[i]->data.case_stmt.condition);
           emit_string(cg, ":\n");
 
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+            AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+            AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+            emit_string(cg, "case ");
+            emit_expr(cg, alt_cond);
+            emit_string(cg, ":\n");
+          }
+
           emit_indent(cg);
           emit_stmt(cg, cases[i]->data.case_stmt.body);
           emit_dedent(cg);
@@ -1997,61 +2016,6 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
         emit_indent_spaces(cg);
         emit_string(cg, "}\n");
-        break;
-      }
-
-      case TYPE_F32:
-      case TYPE_F64: {
-        char buffer[64];
-        char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-        size_t case_count = stmt->data.switch_stmt.case_count;
-
-        if (case_count > 0) {
-          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-          emit_string(cg, " ");
-          emit_string(cg, temporary_name);
-
-          emit_string(cg, " = ");
-          emit_expr(cg, cond);
-          emit_string(cg, ";\n");
-        }
-
-        for (size_t i = 0; i < case_count; i++) {
-          if (i == 0) {
-            emit_string(cg, "if (");
-          } else {
-            emit_string(cg, "else if (");
-          }
-
-          emit_string(cg, temporary_name);
-          emit_string(cg, " == ");
-
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ") {\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, cases[i]->data.case_stmt.body);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        if (stmt->data.switch_stmt.default_case) {
-          if (case_count > 0) {
-            emit_string(cg, " else ");
-          }
-
-          emit_string(cg, "{\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, stmt->data.switch_stmt.default_case);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        emit_string(cg, "\n");
         break;
       }
 
@@ -2084,7 +2048,22 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, ", ");
 
           emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ") == 0) {\n");
+          emit_string(cg, ") == 0");
+
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+            AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+            AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+            emit_string(cg, " || strcmp(");
+
+            emit_string(cg, temporary_name);
+            emit_string(cg, ", ");
+
+            emit_expr(cg, alt_cond);
+            emit_string(cg, ") == 0");
+          }
+
+          emit_string(cg, ") {\n");
 
           emit_indent(cg);
           emit_stmt(cg, cases[i]->data.case_stmt.body);

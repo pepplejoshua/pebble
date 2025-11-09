@@ -836,9 +836,14 @@ AstNode *parse_switch_stmt(Parser *parser) {
           alt_cases = new_alt_cases;
         }
 
-        // FIXME: Create AST_STMT_CASE nodes for easier processing in checker
+        AstNode *alt_case = alloc_node(AST_STMT_CASE, parser->previous.location);
+        alt_case->data.case_stmt.switch_stmt = stmt;
+        alt_case->data.case_stmt.condition = parse_expression(parser);
+        alt_case->data.case_stmt.body = NULL;
+        alt_case->data.case_stmt.alt_conditions = NULL;
+        alt_case->data.case_stmt.alt_condition_count = 0;
 
-        alt_cases[alt_condition_count++] = parse_expression(parser);
+        alt_cases[alt_condition_count++] = alt_case;
       } while (parser_match(parser, TOKEN_COMMA));
     }
 
