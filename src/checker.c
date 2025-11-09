@@ -1041,6 +1041,107 @@ static void check_global_variables(void) {
 }
 
 // Sub-pass 3d: Check function signatures
+// Extract the signature checking logic for a single function
+static void check_function_signature(Symbol *sym) {
+  AstNode *decl = sym->decl;
+
+  // Handle generic functions - give them a special type
+  if (decl->kind == AST_DECL_FUNCTION &&
+      decl->data.func_decl.type_param_count > 0) {
+    Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
+    generic_type->data.generic_func.decl = decl;
+    sym->type = generic_type;
+    return;
+  }
+
+  FuncParam *params;
+  size_t param_count = 0;
+  AstNode *return_type_expr;
+  CallingConvention convention = CALL_CONV_C;
+
+  if (decl->kind == AST_DECL_FUNCTION) {
+    params = decl->data.func_decl.params;
+    param_count = decl->data.func_decl.param_count;
+    return_type_expr = decl->data.func_decl.return_type;
+
+    check_convention(decl->data.func_decl.convention);
+
+    convention = convention_from_node(decl->data.func_decl.convention);
+  } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
+    params = decl->data.extern_func.params;
+    param_count = decl->data.extern_func.param_count;
+    return_type_expr = decl->data.extern_func.return_type;
+    // NOTE: extern functions cannot define a convention
+  } else {
+    return; // Not a function we handle
+  }
+
+  int is_variadic = -1;
+
+  // Resolve parameter types
+  Type **param_types = NULL;
+  if (param_count > 0) {
+    param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
+    for (size_t i = 0; i < param_count; i++) {
+      if (is_variadic != -1) {
+        checker_error(decl->loc,
+                      "Parameter '%s' is marked as variadic but parameter "
+                      "'%s' is already variadic",
+                      params[i].name, params[is_variadic].name);
+      }
+
+      if (params[i].is_variadic) {
+        is_variadic = (int)i;
+      }
+
+      param_types[i] = resolve_type_expression(params[i].type);
+      if (!param_types[i]) {
+        // Error already reported, but keep going to check other params
+        param_types[i] = type_int; // Use placeholder to continue
+      }
+    }
+  }
+
+  // Resolve return type
+  Type *return_type = resolve_type_expression(return_type_expr);
+  if (!return_type) {
+    return; // Error already reported
+  }
+
+  // Create function type
+  sym->type = type_create_function(param_types, param_count, return_type,
+                                   is_variadic != -1, false, convention,
+                                   sym->decl->loc);
+
+  // Add parameters as symbols in the function scope
+  if (sym->kind == SYMBOL_FUNCTION) {
+    // Create function's local scope with global as parent
+    Scope *func_scope = scope_create(checker_state.current_module->scope);
+    sym->data.func.local_scope = func_scope;
+    for (size_t i = 0; i < param_count; i++) {
+      if (!param_types[i]) {
+        continue; // Skip if type resolution failed
+      }
+
+      // Create parameter symbol
+      Symbol *param_sym = symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
+      param_sym->type = param_types[i];
+      param_sym->data.var.is_global = false; // Parameters are local
+
+      // Check for duplicate parameter names
+      Symbol *existing = scope_lookup_local(func_scope, params[i].name);
+      if (existing) {
+        checker_error(decl->loc, "duplicate parameter name '%s'",
+                      params[i].name);
+        continue;
+      }
+
+      scope_add_symbol(func_scope, param_sym);
+    }
+  }
+}
+
+// Now refactor the original function to use it
 static void check_function_signatures(void) {
   Symbol *sym, *tmp;
 
@@ -1051,102 +1152,7 @@ static void check_function_signatures(void) {
       continue;
     }
 
-    AstNode *decl = sym->decl;
-
-    // Handle generic functions
-    if (decl->kind == AST_DECL_FUNCTION &&
-        decl->data.func_decl.type_param_count > 0) {
-      // Create a generic function type
-      Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
-      generic_type->data.generic_func.decl = decl;
-      sym->type = generic_type;
-      continue;
-    }
-
-    FuncParam *params;
-    size_t param_count = 0;
-    AstNode *return_type_expr;
-    CallingConvention convention = CALL_CONV_C;
-
-    if (decl->kind == AST_DECL_FUNCTION) {
-      params = decl->data.func_decl.params;
-      param_count = decl->data.func_decl.param_count;
-      return_type_expr = decl->data.func_decl.return_type;
-
-      check_convention(decl->data.func_decl.convention);
-
-      convention = convention_from_node(decl->data.func_decl.convention);
-    } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
-      params = decl->data.extern_func.params;
-      param_count = decl->data.extern_func.param_count;
-      return_type_expr = decl->data.extern_func.return_type;
-      // NOTE: extern functions cannot define a convention
-    }
-
-    int is_variadic = -1;
-
-    // Resolve parameter types
-    Type **param_types = NULL;
-    if (param_count > 0) {
-      param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
-      for (size_t i = 0; i < param_count; i++) {
-        if (is_variadic != -1) {
-          checker_error(decl->loc,
-                        "Parameter '%s' is marked as variadic but parameter "
-                        "'%s' is already variadic",
-                        params[i].name, params[is_variadic].name);
-        }
-
-        if (params[i].is_variadic) {
-          is_variadic = (int)i;
-        }
-
-        param_types[i] = resolve_type_expression(params[i].type);
-        if (!param_types[i]) {
-          // Error already reported, but keep going to check other params
-          param_types[i] = type_int; // Use placeholder to continue
-        }
-      }
-    }
-
-    // Resolve return type
-    Type *return_type = resolve_type_expression(return_type_expr);
-    if (!return_type) {
-      continue; // Error already reported
-    }
-
-    // Create function type
-    sym->type = type_create_function(param_types, param_count, return_type,
-                                     is_variadic != -1, false, convention,
-                                     sym->decl->loc);
-
-    // Add parameters as symbols in the function scope
-    if (sym->kind == SYMBOL_FUNCTION) {
-      // Create function's local scope with global as parent
-      Scope *func_scope = scope_create(checker_state.current_module->scope);
-      sym->data.func.local_scope = func_scope;
-      for (size_t i = 0; i < param_count; i++) {
-        if (!param_types[i]) {
-          continue; // Skip if type resolution failed
-        }
-
-        // Create parameter symbol
-        Symbol *param_sym =
-            symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
-        param_sym->type = param_types[i];
-        param_sym->data.var.is_global = false; // Parameters are local
-
-        // Check for duplicate parameter names
-        Symbol *existing = scope_lookup_local(func_scope, params[i].name);
-        if (existing) {
-          checker_error(decl->loc, "duplicate parameter name '%s'",
-                        params[i].name);
-          continue;
-        }
-
-        scope_add_symbol(func_scope, param_sym);
-      }
-    }
+    check_function_signature(sym);
   }
 }
 
