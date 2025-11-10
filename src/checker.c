@@ -3184,16 +3184,24 @@ Type *check_expression(AstNode *expr) {
 
       expr->resolved_type = base_type->data.tuple.element_types[index];
       return expr->resolved_type;
-    }
-    // Handle array or slice member access
-    else if (base_type->kind == TYPE_ARRAY || base_type->kind == TYPE_SLICE) {
+    } else if (base_type->kind == TYPE_SLICE) {
+      if (strcmp(field_name, "len") == 0) {
+        expr->resolved_type = type_usize;
+        return type_usize;
+      } else if (strcmp(field_name, "data") == 0) {
+        expr->resolved_type =
+            type_create_pointer(base_type->data.slice.element, true, expr->loc);
+        return expr->resolved_type;
+      } else {
+        checker_error(expr->loc, "slice has only 'data' and 'len' fields");
+        return NULL;
+      }
+    } else if (base_type->kind == TYPE_ARRAY) {
       if (strcmp(field_name, "len") == 0) {
         expr->resolved_type = type_usize;
         return type_usize;
       } else {
-        const char *type_name =
-            base_type->kind == TYPE_ARRAY ? "array" : "slice";
-        checker_error(expr->loc, "%s has only 'len' field", type_name);
+        checker_error(expr->loc, "array has only 'len' field");
         return NULL;
       }
     } else if (base_type->kind == TYPE_OPTIONAL) {
