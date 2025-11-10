@@ -2666,11 +2666,16 @@ static void substitute_type_params_in_type(AstNode *type_node,
     // Check if this name matches a type parameter
     for (size_t i = 0; i < bindings->count; i++) {
       if (strcmp(name, bindings->bindings[i].param_name) == 0) {
-        // Found a match! Replace with concrete type name
+        // Found a match! Replace with the concrete type's AST representation
         Type *concrete = bindings->bindings[i].concrete_type;
-        type_node->data.type_named.name = concrete->declared_name
-                                              ? concrete->declared_name
-                                              : type_name(concrete);
+        AstNode *replacement = type_to_ast_node(concrete);
+
+        // Replace this node's content with the replacement
+        type_node->kind = replacement->kind;
+        type_node->data = replacement->data;
+        type_node->resolved_type = concrete;
+
+        // Note: We don't free replacement since it's arena-allocated
         return;
       }
     }
@@ -3003,6 +3008,11 @@ static bool check_function_body(Symbol *sym);
 static AstNode *monomorphize_function(AstNode *generic_func,
                                       TypeBindings *bindings,
                                       Location call_loc) {
+  // FIXME:
+  // 1. Handle variadic functions
+  // 2. Handle anonymous functions
+  // 3. Make sure generic functions from other modules work correctly
+
   // Step 1: Generate mangled name
   Type **concrete_types =
       arena_alloc(&long_lived, sizeof(Type *) * bindings->count);
@@ -3054,14 +3064,14 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   Scope *saved_scope = current_scope;
   current_scope = checker_state.current_module->scope; // Reset to global
 
-  check_function_body(mono_sym);
+  bool succeeded = check_function_body(mono_sym);
 
   // Restore scope state
   current_scope = saved_scope;
 
-  if (checker_has_errors()) {
+  if (!succeeded) {
     checker_error(call_loc, "failed to type-check monomorphized function '%s'",
-                  mangled_name);
+                  generic_func->data.func_decl.name);
     return NULL;
   }
 
@@ -3612,8 +3622,10 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    bool is_generic = false;
     // Check if this is a generic function
     if (call_type->kind == TYPE_GENERIC_FUNCTION) {
+      is_generic = true;
       AstNode *generic_decl = call_type->data.generic_func.decl;
 
       // Infer type arguments from call arguments
@@ -3628,12 +3640,6 @@ Type *check_expression(AstNode *expr) {
           return NULL;
         }
       }
-
-      // Debug: print what we inferred
-      // for (size_t i = 0; i < bindings.count; i++) {
-      //   printf("Inferred %s = %s\n", bindings.bindings[i].param_name,
-      //          type_name(bindings.bindings[i].concrete_type));
-      // }
 
       // Monomorphize!
       AstNode *mono_func =

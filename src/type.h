@@ -199,6 +199,9 @@ bool type_equals(Type *a, Type *b);
 bool type_is_numeric(Type *type);
 bool type_is_ord(Type *type);
 
+// Type conversion
+AstNode *type_to_ast_node(Type *type);
+
 int member_index_of_type(Type *type, const char *member);
 
 #endif

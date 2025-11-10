@@ -1509,6 +1509,8 @@ static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
       buffer[buffer_idx++] = string[i];
     }
   }
+
+  buffer[buffer_idx] = '\0';
 }
 
 // Helper: Get format specifier for a built-in type
