@@ -41,18 +41,6 @@ typedef struct {
     char* bg_color;      // e.g., "l_white", ":d_cyan", or NULL
 } StyleOptions;
 
-typedef struct ASTNode {
-    NodeType type;
-    union {
-        char* text;                    // For NODE_TEXT
-        struct {
-            StyleOptions* style;
-            struct ASTNode** children; // Array of child nodes
-            size_t child_count;
-        } formatted;
-    } data;
-} ASTNode;
-
 // ============================================
 // PASTEL LEXER
 // ============================================
