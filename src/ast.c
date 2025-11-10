@@ -11,6 +11,29 @@ AstNode *clone_ast_node(AstNode *node) {
 
   switch (node->kind) {
   // Declarations
+  case AST_DECL_VARIABLE: {
+    clone->data.var_decl.name = node->data.var_decl.name;
+    clone->data.var_decl.qualified_name = node->data.var_decl.qualified_name;
+    clone->data.var_decl.full_qualified_name =
+        node->data.var_decl.full_qualified_name;
+    clone->data.var_decl.type_expr =
+        clone_ast_node(node->data.var_decl.type_expr);
+    clone->data.var_decl.init = clone_ast_node(node->data.var_decl.init);
+    break;
+  }
+
+  case AST_DECL_CONSTANT: {
+    clone->data.const_decl.name = node->data.const_decl.name;
+    clone->data.const_decl.qualified_name =
+        node->data.const_decl.qualified_name;
+    clone->data.const_decl.full_qualified_name =
+        node->data.const_decl.full_qualified_name;
+    clone->data.const_decl.type_expr =
+        clone_ast_node(node->data.const_decl.type_expr);
+    clone->data.const_decl.value = clone_ast_node(node->data.const_decl.value);
+    break;
+  }
+
   case AST_DECL_FUNCTION: {
     clone->data.func_decl.inlined = node->data.func_decl.inlined;
     clone->data.func_decl.convention =

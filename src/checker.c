@@ -2361,14 +2361,197 @@ typedef struct {
   size_t count;
 } TypeBindings;
 
-static TypeBindings infer_type_arguments(AstNode *generic_decl, AstNode **args,
+// Check if a name is a type parameter
+static bool is_type_parameter(const char *name, TypeBindings *bindings) {
+  for (size_t i = 0; i < bindings->count; i++) {
+    if (strcmp(name, bindings->bindings[i].param_name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Match a type pattern (AST node) against a concrete type and extract bindings
+// Returns true if match succeeds, false otherwise
+static bool match_and_bind_type(AstNode *pattern, Type *concrete,
+                                TypeBindings *bindings, Location loc) {
+  if (!pattern || !concrete) {
+    return false;
+  }
+
+  switch (pattern->kind) {
+  case AST_TYPE_NAMED: {
+    char *name = pattern->data.type_named.name;
+
+    // Check if this is a type parameter
+    if (is_type_parameter(name, bindings)) {
+      // Find the binding
+      for (size_t i = 0; i < bindings->count; i++) {
+        if (strcmp(name, bindings->bindings[i].param_name) == 0) {
+          if (bindings->bindings[i].concrete_type == NULL) {
+            // First binding for this type parameter
+            bindings->bindings[i].concrete_type = concrete;
+            return true;
+          } else {
+            // Already bound - check consistency
+            if (type_equals(bindings->bindings[i].concrete_type, concrete)) {
+              return true;
+            } else {
+              checker_error(loc,
+                            "type variable '%s' was previously inferred as "
+                            "'%s', but got '%s'",
+                            name,
+                            type_name(bindings->bindings[i].concrete_type),
+                            type_name(concrete));
+              return false;
+            }
+          }
+        }
+      }
+    }
+
+    // Not a type parameter - just a regular named type
+    // We'd need to resolve it and check equality, but for now skip
+    return true;
+  }
+
+  case AST_TYPE_SLICE: {
+    // Pattern: []T
+    // Concrete can be: []SomeType OR [N]SomeType (implicit cast)
+
+    if (concrete->kind == TYPE_SLICE) {
+      // Direct match: []T with []int
+      return match_and_bind_type(pattern->data.type_slice.element,
+                                 concrete->data.slice.element, bindings, loc);
+    } else if (concrete->kind == TYPE_ARRAY) {
+      // Array to slice: []T with [N]int
+      // Extract element type from array
+      return match_and_bind_type(pattern->data.type_slice.element,
+                                 concrete->data.array.element, bindings, loc);
+    } else {
+      checker_error(loc, "type mismatch: expected slice type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+  }
+
+  case AST_TYPE_POINTER: {
+    // Pattern: *T, Concrete must be: *SomeType
+    if (concrete->kind != TYPE_POINTER) {
+      checker_error(loc, "type mismatch: expected pointer type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    // Recursively match base types
+    return match_and_bind_type(pattern->data.type_pointer.base,
+                               concrete->data.ptr.base, bindings, loc);
+  }
+
+  case AST_TYPE_OPTIONAL: {
+    // Pattern: ?T, Concrete must be: ?SomeType
+    if (concrete->kind != TYPE_OPTIONAL) {
+      checker_error(loc, "type mismatch: expected optional type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    // Recursively match base types
+    return match_and_bind_type(pattern->data.type_optional.base,
+                               concrete->data.optional.base, bindings, loc);
+  }
+
+  case AST_TYPE_ARRAY: {
+    // Pattern: [N]T, Concrete must be: [N]SomeType with same size
+    if (concrete->kind != TYPE_ARRAY) {
+      checker_error(loc, "type mismatch: expected array type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_array.size != concrete->data.array.size) {
+      checker_error(loc, "array size mismatch: expected [%zu], got [%zu]",
+                    pattern->data.type_array.size, concrete->data.array.size);
+      return false;
+    }
+
+    // Recursively match element types
+    return match_and_bind_type(pattern->data.type_array.element,
+                               concrete->data.array.element, bindings, loc);
+  }
+
+  case AST_TYPE_FUNCTION: {
+    // Pattern: fn(T1, T2) R, Concrete must be: fn(Type1, Type2) RetType
+    if (concrete->kind != TYPE_FUNCTION) {
+      checker_error(loc, "type mismatch: expected function type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_function.param_count !=
+        concrete->data.func.param_count) {
+      checker_error(loc,
+                    "function parameter count mismatch: expected %zu, got %zu",
+                    pattern->data.type_function.param_count,
+                    concrete->data.func.param_count);
+      return false;
+    }
+
+    // Match each parameter type
+    for (size_t i = 0; i < pattern->data.type_function.param_count; i++) {
+      if (!match_and_bind_type(pattern->data.type_function.param_types[i],
+                               concrete->data.func.param_types[i], bindings,
+                               loc)) {
+        return false;
+      }
+    }
+
+    // Match return type
+    return match_and_bind_type(pattern->data.type_function.return_type,
+                               concrete->data.func.return_type, bindings, loc);
+  }
+
+  case AST_TYPE_TUPLE: {
+    // Pattern: (T1, T2, T3), Concrete must be: (Type1, Type2, Type3)
+    if (concrete->kind != TYPE_TUPLE) {
+      checker_error(loc, "type mismatch: expected tuple type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_tuple.element_count !=
+        concrete->data.tuple.element_count) {
+      checker_error(loc, "tuple element count mismatch: expected %zu, got %zu",
+                    pattern->data.type_tuple.element_count,
+                    concrete->data.tuple.element_count);
+      return false;
+    }
+
+    // Match each element type
+    for (size_t i = 0; i < pattern->data.type_tuple.element_count; i++) {
+      if (!match_and_bind_type(pattern->data.type_tuple.element_types[i],
+                               concrete->data.tuple.element_types[i], bindings,
+                               loc)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  default:
+    return false;
+  }
+}
+
+static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
                                          size_t arg_count, Location call_loc) {
   TypeBindings result = {0};
 
-  size_t type_param_count = generic_decl->data.func_decl.type_param_count;
-  Token *type_params = generic_decl->data.func_decl.type_params;
-  FuncParam *params = generic_decl->data.func_decl.params;
-  size_t param_count = generic_decl->data.func_decl.param_count;
+  size_t type_param_count = generic_func->data.func_decl.type_param_count;
+  Token *type_params = generic_func->data.func_decl.type_params;
+  FuncParam *params = generic_func->data.func_decl.params;
+  size_t param_count = generic_func->data.func_decl.param_count;
 
   result.bindings =
       arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
@@ -2380,43 +2563,24 @@ static TypeBindings infer_type_arguments(AstNode *generic_decl, AstNode **args,
     result.bindings[i].concrete_type = NULL;
   }
 
-  // Check each argument against each parameter
+  // Check argument count
+  if (arg_count != param_count) {
+    checker_error(call_loc, "function expects %zu arguments, got %zu",
+                  param_count, arg_count);
+    return result;
+  }
+
+  // Match each argument against each parameter
   for (size_t j = 0; j < param_count && j < arg_count; j++) {
     AstNode *param_type = params[j].type;
-    Type *arg_type = check_expression(args[j]);
 
+    // Get the concrete type of the argument
+    Type *arg_type = check_expression(args[j]);
     if (!arg_type)
       continue;
 
-    // Simple case: parameter type is directly a type variable
-    if (param_type->kind == AST_TYPE_NAMED) {
-      char *param_type_name = param_type->data.type_named.name;
-
-      // Check if this is a type parameter
-      for (size_t i = 0; i < type_param_count; i++) {
-        if (strcmp(type_params[i].lexeme, param_type_name) == 0) {
-          // Found a usage of type parameter i
-
-          if (result.bindings[i].concrete_type == NULL) {
-            // First binding for this type parameter
-            result.bindings[i].concrete_type = arg_type;
-          } else {
-            // Already have a binding - check consistency
-            if (!type_equals(result.bindings[i].concrete_type, arg_type)) {
-              checker_error(call_loc,
-                            "type variable '%s' was previously inferred as "
-                            "'%s', but got '%s' "
-                            "from argument %zu",
-                            param_type_name,
-                            type_name(result.bindings[i].concrete_type),
-                            type_name(arg_type), j + 1);
-            }
-          }
-          break;
-        }
-      }
-    }
-    // TODO: Handle complex types like []T, *T, etc.
+    // Match the parameter type pattern with the argument's concrete type
+    match_and_bind_type(param_type, arg_type, &result, call_loc);
   }
 
   return result;
@@ -4183,6 +4347,22 @@ Type *check_expression(AstNode *expr) {
   }
 
   case AST_EXPR_FUNCTION: {
+    // If this anonymous function already has a symbol, it's already been
+    // checked (Happens when checking monomorphized functions that were cloned)
+    if (expr->data.func_expr.symbol != NULL) {
+      // Already checked - just return its type
+      if (expr->resolved_type) {
+        return expr->resolved_type;
+      }
+      // Look up the existing symbol
+      Symbol *existing =
+          scope_lookup_local(anonymous_funcs, expr->data.func_expr.symbol);
+      if (existing) {
+        expr->resolved_type = existing->type;
+        return existing->type;
+      }
+    }
+
     // Resolve parameter types and return type
     size_t param_count = expr->data.func_expr.param_count;
     FuncParam *params = expr->data.func_expr.params;
