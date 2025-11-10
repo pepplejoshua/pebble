@@ -403,6 +403,8 @@ void print_usage(const char *program_name) {
          "object only.\n");
   printf("  -o <name>            Specify output executable name (default: "
          "output)\n");
+  printf("  --c-output <name>    Specify output C source name (default: "
+         "output)\n");
   printf("  -c <name>            Specify output c file name (default: "
          "output.c)\n");
   printf("  -l <library>         Specify library to include\n");
@@ -458,6 +460,12 @@ bool parse_args(int argc, char **argv) {
         return false;
       }
       compiler_opts.output_exe_name = argv[++i];
+    } else if (strcmp(argv[i], "--c-output") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --c-output requires an argument\n");
+        return false;
+      }
+      compiler_opts.output_c_name = argv[++i];
     } else if (strcmp(argv[i], "-l") == 0) {
       if (i + 1 >= argc) {
         fprintf(stderr, "Error: -l requires an argument\n");
