@@ -4430,6 +4430,13 @@ Type *check_expression(AstNode *expr) {
       }
     }
 
+    // No generic anonymous functions yet
+    if (expr->data.func_expr.type_param_count > 0) {
+      checker_error(expr->loc,
+                    "generic anonymous functions are not yet supported");
+      return NULL;
+    }
+
     // Resolve parameter types and return type
     size_t param_count = expr->data.func_expr.param_count;
     FuncParam *params = expr->data.func_expr.params;
