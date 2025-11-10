@@ -1495,6 +1495,22 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
   }
 }
 
+static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
+  size_t len = strlen(string);
+  size_t buffer_idx = 0;
+
+  for (size_t i = 0; i < len; i++) {
+    assert(buffer_idx < buffer_sz);
+
+    if (string[i] == '"' && (i > 0 || string[i-1] != '\\')) {
+      buffer[buffer_idx++] = '\\';
+      buffer[buffer_idx++] = '"';
+    } else {
+      buffer[buffer_idx++] = string[i];
+    }
+  }
+}
+
 // Helper: Get format specifier for a built-in type
 static const char *get_format_specifier(Type *type) {
   switch (type->kind) {
@@ -1709,6 +1725,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_string(cg, "\\n\", ");
 
+    char temp_buffer[512];
+
     // Emit expressions
     for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
       Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
@@ -1822,8 +1840,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       } else {
         // Fallback for truly unknown types
         emit_string(cg, "\"");
-        emit_string(cg,
-                    type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+
+        escape_string(temp_buffer, sizeof(temp_buffer), type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+        emit_string(cg, temp_buffer);
+        memset(temp_buffer, 0, sizeof(temp_buffer));
+
         emit_string(cg, "\"");
       }
     }
@@ -1921,6 +1942,16 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, ident->data.ident.name);
         emit_string(cg, ":\n");
 
+        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+          AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+          AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+          emit_string(cg, qualified_name);
+          emit_string(cg, "__");
+          emit_string(cg, alt_cond->data.ident.name);
+          emit_string(cg, ":\n");
+        }
+
         emit_indent(cg);
         emit_stmt(cg, cases[i]->data.case_stmt.body);
         emit_dedent(cg);
@@ -1972,6 +2003,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_expr(cg, cases[i]->data.case_stmt.condition);
           emit_string(cg, ":\n");
 
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+            AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+            AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+            emit_string(cg, "case ");
+            emit_expr(cg, alt_cond);
+            emit_string(cg, ":\n");
+          }
+
           emit_indent(cg);
           emit_stmt(cg, cases[i]->data.case_stmt.body);
           emit_dedent(cg);
@@ -1992,61 +2032,6 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
         emit_indent_spaces(cg);
         emit_string(cg, "}\n");
-        break;
-      }
-
-      case TYPE_F32:
-      case TYPE_F64: {
-        char buffer[64];
-        char *temporary_name = get_temporary_name(cg, buffer, 64);
-
-        size_t case_count = stmt->data.switch_stmt.case_count;
-
-        if (case_count > 0) {
-          emit_type_name(cg, stmt->data.switch_stmt.condition->resolved_type);
-          emit_string(cg, " ");
-          emit_string(cg, temporary_name);
-
-          emit_string(cg, " = ");
-          emit_expr(cg, cond);
-          emit_string(cg, ";\n");
-        }
-
-        for (size_t i = 0; i < case_count; i++) {
-          if (i == 0) {
-            emit_string(cg, "if (");
-          } else {
-            emit_string(cg, "else if (");
-          }
-
-          emit_string(cg, temporary_name);
-          emit_string(cg, " == ");
-
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ") {\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, cases[i]->data.case_stmt.body);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        if (stmt->data.switch_stmt.default_case) {
-          if (case_count > 0) {
-            emit_string(cg, " else ");
-          }
-
-          emit_string(cg, "{\n");
-
-          emit_indent(cg);
-          emit_stmt(cg, stmt->data.switch_stmt.default_case);
-          emit_dedent(cg);
-
-          emit_string(cg, "}");
-        }
-
-        emit_string(cg, "\n");
         break;
       }
 
@@ -2079,7 +2064,22 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, ", ");
 
           emit_expr(cg, cases[i]->data.case_stmt.condition);
-          emit_string(cg, ") == 0) {\n");
+          emit_string(cg, ") == 0");
+
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+            AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+            AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+            emit_string(cg, " || strcmp(");
+
+            emit_string(cg, temporary_name);
+            emit_string(cg, ", ");
+
+            emit_expr(cg, alt_cond);
+            emit_string(cg, ") == 0");
+          }
+
+          emit_string(cg, ") {\n");
 
           emit_indent(cg);
           emit_stmt(cg, cases[i]->data.case_stmt.body);
@@ -2553,6 +2553,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     char temp_names[64][64]; // Store temp names for each expression
     size_t temp_count = 0;
 
+    char temp_buffer[512] = {0};
+
     for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
       AstNode *part = expr->data.interpolated_string.parts[i];
 
@@ -2669,19 +2671,25 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, "const char* ");
           emit_string(cg, temp_name);
           emit_string(cg, " = \"");
-          emit_string(cg, type_name(part_type));
+
+          escape_string(temp_buffer, sizeof(temp_buffer), type_name(part_type));
+          emit_string(cg, temp_buffer);
+          memset(temp_buffer, 0, sizeof(temp_buffer));
+
           emit_string(cg, "\"; ");
         }
       }
     }
 
     // Build the format string
-    emit_string(cg, "char *__fmt = \"");
+    emit_string(cg, "const char *__fmt = \"");
     for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
       AstNode *part = expr->data.interpolated_string.parts[i];
 
       if (part->kind == AST_EXPR_LITERAL_STRING) {
-        emit_string(cg, part->data.str_lit.value);
+        escape_string(temp_buffer, sizeof(temp_buffer), part->data.str_lit.value);
+        emit_string(cg, temp_buffer);
+        memset(temp_buffer, 0, sizeof(temp_buffer));
       } else {
         Type *part_type = part->resolved_type;
         if (part_type->kind == TYPE_STRING || part_type->kind == TYPE_BOOL) {
