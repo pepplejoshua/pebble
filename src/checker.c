@@ -3891,10 +3891,13 @@ Type *check_expression(AstNode *expr) {
       if (!start_type) {
         return NULL;
       }
-      if (!type_is_int(start_type)) {
-        checker_error(start_expr->loc, "slice start index must be an integer");
+      AstNode *cast = maybe_insert_cast(start_expr, start_type, type_usize);
+      if (!cast) {
+        checker_error(start_expr->loc,
+                      "slice start index must be numerically typed");
         return NULL;
       }
+      start_expr = cast;
     }
 
     // Check end index if present
@@ -3903,10 +3906,13 @@ Type *check_expression(AstNode *expr) {
       if (!end_type) {
         return NULL;
       }
-      if (!type_is_int(end_type)) {
-        checker_error(end_expr->loc, "slice end index must be an integer");
+      AstNode *cast = maybe_insert_cast(end_expr, end_type, type_usize);
+      if (!cast) {
+        checker_error(end_expr->loc,
+                      "slice end index must be numerically typed");
         return NULL;
       }
+      end_expr = cast;
     }
 
     // Return slice type
