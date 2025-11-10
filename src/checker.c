@@ -838,6 +838,9 @@ static bool type_is_int(Type *type) {
 }
 
 static bool type_is_integral(Type *type) {
+  if (!type)
+    return false;
+
   return type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
          type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
          type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
@@ -4756,8 +4759,13 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check end is an integer (can be variable or expression)
     Type *end_type = check_expression(end);
-    if (end_type && !type_is_integral(end_type)) {
+    if (!end_type) {
+      return NULL;
+    }
+
+    if (!type_is_integral(end_type)) {
       checker_error(end->loc, "loop range end must be an integer");
+      return NULL;
     }
 
     AstNode *new_end = maybe_insert_cast(end, end_type, start_type);
