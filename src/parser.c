@@ -170,6 +170,8 @@ BinaryOp token_to_binary_op(TokenType type) {
     return BINOP_MUL;
   case TOKEN_SLASH:
     return BINOP_DIV;
+  case TOKEN_PERCENT:
+    return BINOP_MOD;
   case TOKEN_EQ:
     return BINOP_EQ;
   case TOKEN_NE:
@@ -831,12 +833,15 @@ AstNode *parse_switch_stmt(Parser *parser) {
       do {
         if (alt_condition_count >= capacity) {
           capacity *= 2;
-          AstNode **new_alt_cases = arena_alloc(&long_lived, sizeof(AstNode *) * capacity);
-          memcpy(new_alt_cases, alt_cases, alt_condition_count * sizeof(AstNode *));
+          AstNode **new_alt_cases =
+              arena_alloc(&long_lived, sizeof(AstNode *) * capacity);
+          memcpy(new_alt_cases, alt_cases,
+                 alt_condition_count * sizeof(AstNode *));
           alt_cases = new_alt_cases;
         }
 
-        AstNode *alt_case = alloc_node(AST_STMT_CASE, parser->previous.location);
+        AstNode *alt_case =
+            alloc_node(AST_STMT_CASE, parser->previous.location);
         alt_case->data.case_stmt.switch_stmt = stmt;
         alt_case->data.case_stmt.condition = parse_expression(parser);
         alt_case->data.case_stmt.body = NULL;
@@ -1118,6 +1123,9 @@ AstNode *parse_assignment_stmt(Parser *parser) {
   } else if (parser_match(parser, TOKEN_SLASH_EQUAL)) {
     compound_op = TOKEN_SLASH_EQUAL;
     binop = BINOP_DIV;
+  } else if (parser_match(parser, TOKEN_PERCENT_EQUAL)) {
+    compound_op = TOKEN_PERCENT_EQUAL;
+    binop = BINOP_MOD;
   }
 
   if (compound_op != TOKEN_EOF) {
@@ -1340,7 +1348,8 @@ AstNode *parse_factor(Parser *parser) {
   AstNode *left = parse_unary(parser);
 
   while (parser_match(parser, TOKEN_STAR) ||
-         parser_match(parser, TOKEN_SLASH)) {
+         parser_match(parser, TOKEN_SLASH) ||
+         parser_match(parser, TOKEN_PERCENT)) {
     Token op = parser->previous;
     AstNode *right = parse_unary(parser);
 
@@ -1891,7 +1900,8 @@ AstNode *parse_primary(Parser *parser) {
   if (parser_match(parser, TOKEN_DOT)) {
     if (parser_match(parser, TOKEN_IDENTIFIER)) {
       // Partial member access .member
-      AstNode *expr = alloc_node(AST_EXPR_PARTIAL_MEMBER, parser->previous.location);
+      AstNode *expr =
+          alloc_node(AST_EXPR_PARTIAL_MEMBER, parser->previous.location);
       expr->data.partial_member_expr.member = str_dup(parser->previous.lexeme);
       return expr;
     } else if (parser_match(parser, TOKEN_LBRACE)) {

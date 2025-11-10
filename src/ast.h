@@ -95,6 +95,7 @@ typedef enum {
   BINOP_SUB,
   BINOP_MUL,
   BINOP_DIV,
+  BINOP_MOD,
   BINOP_EQ,
   BINOP_NE,
   BINOP_LT,
