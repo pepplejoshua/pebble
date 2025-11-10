@@ -1556,7 +1556,8 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
 
       Type *field_type = type->data.struct_data.field_types[i];
 
-      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
+      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE ||
+          field_type->kind == TYPE_ARRAY) {
         // Recursively format nested composite types
         build_composite_format_string(cg, field_type);
       } else {
@@ -1566,7 +1567,6 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
     }
 
     emit_string(cg, "}");
-
   } else if (type->kind == TYPE_TUPLE) {
     // Emit "(%d, %s, ...)"
     emit_string(cg, "(");
@@ -1577,7 +1577,8 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
 
       Type *elem_type = type->data.tuple.element_types[i];
 
-      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
         build_composite_format_string(cg, elem_type);
       } else {
         emit_string(cg, get_format_specifier(elem_type));
@@ -1585,6 +1586,25 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
     }
 
     emit_string(cg, ")");
+  } else if (type->kind == TYPE_ARRAY) {
+    // Emit "[%d, %d, ...]"
+    emit_string(cg, "[");
+
+    for (size_t i = 0; i < type->data.array.size; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+
+      Type *elem_type = type->data.array.element;
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
+        build_composite_format_string(cg, elem_type);
+      } else {
+        emit_string(cg, get_format_specifier(elem_type));
+      }
+    }
+
+    emit_string(cg, "]");
   }
 }
 
@@ -1635,9 +1655,46 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
       char field_access[512];
       snprintf(field_access, sizeof(field_access), "%s._%zu", base_expr, i);
 
-      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
         build_composite_args(cg, elem_type, field_access, first);
       } else {
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        if (elem_type->kind == TYPE_INT || elem_type->kind == TYPE_I32 ||
+            elem_type->kind == TYPE_I64 || elem_type->kind == TYPE_ISIZE ||
+            elem_type->kind == TYPE_I8 || elem_type->kind == TYPE_I16) {
+          emit_string(cg, "(long long)");
+        } else if (elem_type->kind == TYPE_U8 || elem_type->kind == TYPE_U16 ||
+                   elem_type->kind == TYPE_U32 || elem_type->kind == TYPE_U64 ||
+                   elem_type->kind == TYPE_USIZE) {
+          emit_string(cg, "(unsigned long long)");
+        } else if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, "(");
+        }
+
+        emit_string(cg, field_access);
+
+        if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, " ? \"true\" : \"false\")");
+        }
+      }
+    }
+  } else if (type->kind == TYPE_ARRAY) {
+    for (size_t i = 0; i < type->data.array.size; i++) {
+      Type *elem_type = type->data.array.element;
+      char field_access[512];
+      snprintf(field_access, sizeof(field_access), "%s.data[%zu]", base_expr,
+               i);
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
+        // Recursive case for nested composites
+        build_composite_args(cg, elem_type, field_access, first);
+      } else {
+        // Base case: emit argument with appropriate cast
         if (!*first)
           emit_string(cg, ", ");
         *first = false;
@@ -3317,10 +3374,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_TUPLE: {
-    // emit_string(cg, "(");
-    // emit_type_name(cg, expr->resolved_type);
-    // emit_string(cg, ") {");
-    emit_string(cg, "{");
+    emit_string(cg, "(");
+    emit_type_name(cg, expr->resolved_type);
+    emit_string(cg, ") {");
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
       if (i > 0)
         emit_string(cg, ", ");
