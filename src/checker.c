@@ -1520,7 +1520,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     HASH_CLEAR(hh, seen);
     arena_free(&temp_arena);
 
-    return type_create_enum(variant_names, variant_count, !checker_state.in_type_resolution, loc);
+    return type_create_enum(variant_names, variant_count,
+                            !checker_state.in_type_resolution, loc);
   }
 
   case AST_TYPE_FUNCTION: {
@@ -1829,14 +1830,14 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_some->data.some_expr.value = casted_value;
     new_some->resolved_type = target_type;
     return new_some;
-  } else if (expr_type->kind == TYPE_ENUM &&
-             target_type->kind == TYPE_ENUM) {
+  } else if (expr_type->kind == TYPE_ENUM && target_type->kind == TYPE_ENUM) {
     // Infer partial member as enum
     if (expr->kind != AST_EXPR_PARTIAL_MEMBER) {
       return NULL;
     }
 
-    int index = member_index_of_type(target_type, expr->data.partial_member_expr.member);
+    int index = member_index_of_type(target_type,
+                                     expr->data.partial_member_expr.member);
     if (index == -1) {
       return NULL;
     }
@@ -1885,11 +1886,9 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_struct->data.struct_literal.field_names =
         arena_alloc(&long_lived,
                     sizeof(char *) * target_type->data.struct_data.field_count);
-    memcpy(
-      new_struct->data.struct_literal.field_names,
-      expr->data.struct_literal.field_names,
-      sizeof(char *) * target_type->data.struct_data.field_count
-    );
+    memcpy(new_struct->data.struct_literal.field_names,
+           expr->data.struct_literal.field_names,
+           sizeof(char *) * target_type->data.struct_data.field_count);
 
     new_struct->data.struct_literal.field_values =
         arena_alloc(&long_lived, sizeof(AstNode *) *
@@ -1913,7 +1912,8 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_struct->resolved_type = target_type;
     return new_struct;
   } else if (expr_type->kind == TYPE_STRUCT &&
-             (target_type->kind == TYPE_UNION || target_type->kind == TYPE_TAGGED_UNION)) {
+             (target_type->kind == TYPE_UNION ||
+              target_type->kind == TYPE_TAGGED_UNION)) {
     // Must have a single field for unions
     if (expr_type->data.struct_data.field_count != 1) {
       return NULL;
@@ -1950,11 +1950,8 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_union->data.struct_literal.field_count = 1;
     new_union->data.struct_literal.field_names =
         arena_alloc(&long_lived, sizeof(char *));
-    memcpy(
-      new_union->data.struct_literal.field_names,
-      expr->data.struct_literal.field_names,
-      sizeof(char *)
-    );
+    memcpy(new_union->data.struct_literal.field_names,
+           expr->data.struct_literal.field_names, sizeof(char *));
 
     new_union->data.struct_literal.field_values =
         arena_alloc(&long_lived, sizeof(AstNode *));
@@ -2032,11 +2029,13 @@ bool is_valid_cast(Type *from, Type *to) {
 
     // Check fields align
     for (size_t i = 0; i < to->data.struct_data.field_count; i++) {
-      if (strcmp(from->data.struct_data.field_names[i], to->data.struct_data.field_names[i]) != 0) {
+      if (strcmp(from->data.struct_data.field_names[i],
+                 to->data.struct_data.field_names[i]) != 0) {
         return false;
       }
 
-      if (!type_equals(from->data.struct_data.field_types[i], to->data.struct_data.field_types[i])) {
+      if (!type_equals(from->data.struct_data.field_types[i],
+                       to->data.struct_data.field_types[i])) {
         return false;
       }
     }
@@ -2053,7 +2052,8 @@ bool is_valid_cast(Type *from, Type *to) {
 
     // Check elements align
     for (size_t i = 0; i < to->data.tuple.element_count; i++) {
-      if (!type_equals(from->data.tuple.element_types[i], to->data.tuple.element_types[i])) {
+      if (!type_equals(from->data.tuple.element_types[i],
+                       to->data.tuple.element_types[i])) {
         return false;
       }
     }
@@ -2109,16 +2109,17 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     memset(covered, 0, size);
 
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *switch_case =
-          node->data.switch_stmt.cases[i];
+      AstNode *switch_case = node->data.switch_stmt.cases[i];
 
       AstNode *cases[1 + switch_case->data.case_stmt.alt_condition_count];
       cases[0] = switch_case;
-      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count; i++) {
+      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count;
+           i++) {
         cases[1 + i] = switch_case->data.case_stmt.alt_conditions[i];
       }
 
-      for (size_t j = 0; j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
+      for (size_t j = 0;
+           j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
         AstNode *_case = cases[j]->data.case_stmt.condition;
 
         if (_case->kind == AST_EXPR_LITERAL_INT) {
@@ -2196,16 +2197,17 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *switch_case =
-          node->data.switch_stmt.cases[i];
+      AstNode *switch_case = node->data.switch_stmt.cases[i];
 
       AstNode *cases[1 + switch_case->data.case_stmt.alt_condition_count];
       cases[0] = switch_case;
-      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count; i++) {
+      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count;
+           i++) {
         cases[1 + i] = switch_case->data.case_stmt.alt_conditions[i];
       }
 
-      for (size_t j = 0; j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
+      for (size_t j = 0;
+           j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
         AstNode *_case = cases[j]->data.case_stmt.condition;
 
         char *variant_name = NULL;
@@ -2219,14 +2221,15 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
           // Find which enum value this is
           for (size_t j = 0; j < variant_count; j++) {
             if (strcmp(variant_name,
-                      switch_type->data.enum_data.variant_names[j]) == 0) {
+                       switch_type->data.enum_data.variant_names[j]) == 0) {
               if (covered[j]) {
                 if (covered[j]) {
-                  checker_error(_case->loc,
-                                "Switch case %d has already covered the variant "
-                                "\"%s\" in a "
-                                "previous case.",
-                                i + 1, variant_name);
+                  checker_error(
+                      _case->loc,
+                      "Switch case %d has already covered the variant "
+                      "\"%s\" in a "
+                      "previous case.",
+                      i + 1, variant_name);
                 }
               }
 
@@ -2286,16 +2289,17 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
     // Mark covered values
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
-      AstNode *switch_case =
-          node->data.switch_stmt.cases[i];
+      AstNode *switch_case = node->data.switch_stmt.cases[i];
 
       AstNode *cases[1 + switch_case->data.case_stmt.alt_condition_count];
       cases[0] = switch_case;
-      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count; i++) {
+      for (size_t i = 0; i < switch_case->data.case_stmt.alt_condition_count;
+           i++) {
         cases[1 + i] = switch_case->data.case_stmt.alt_conditions[i];
       }
 
-      for (size_t j = 0; j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
+      for (size_t j = 0;
+           j < 1 + switch_case->data.case_stmt.alt_condition_count; j++) {
         AstNode *_case = cases[j]->data.case_stmt.condition;
 
         if (_case->kind == AST_EXPR_PARTIAL_MEMBER) {
@@ -2306,11 +2310,12 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
             if (strcmp(variant_name, variant_names[j]) == 0) {
               if (covered[j]) {
                 if (covered[j]) {
-                  checker_error(_case->loc,
-                                "Switch case %d has already covered the variant "
-                                "\"%s\" in a "
-                                "previous case.",
-                                i + 1, variant_name);
+                  checker_error(
+                      _case->loc,
+                      "Switch case %d has already covered the variant "
+                      "\"%s\" in a "
+                      "previous case.",
+                      i + 1, variant_name);
                 }
               }
 
@@ -2607,7 +2612,7 @@ Type *check_expression(AstNode *expr) {
 
     // Arithmetic: +, -, *, /
     if (op == BINOP_ADD || op == BINOP_SUB || op == BINOP_MUL ||
-        op == BINOP_DIV) {
+        op == BINOP_DIV || op == BINOP_MOD) {
       // Handle Pointer arithmetic
       if (op == BINOP_ADD) {
         if (left->kind == TYPE_POINTER && type_is_numeric(right)) {
@@ -2622,6 +2627,14 @@ Type *check_expression(AstNode *expr) {
         if (left->kind == TYPE_POINTER && type_is_numeric(right)) {
           expr->resolved_type = left;
           return left;
+        }
+      }
+      if (op == BINOP_MOD) {
+        if (type_is_floating(left) || type_is_floating(right)) {
+          checker_error(
+              expr->loc,
+              "Modulo operator cannot be used with floating-point types");
+          return NULL;
         }
       }
 
@@ -3268,10 +3281,11 @@ Type *check_expression(AstNode *expr) {
     char **variant_names = arena_alloc(&long_lived, 1);
     variant_names[0] = expr->data.partial_member_expr.member;
 
-   Type * type = type_create_enum(variant_names, 1, !checker_state.in_type_resolution, expr->loc);
-   expr->resolved_type = type;
+    Type *type = type_create_enum(variant_names, 1,
+                                  !checker_state.in_type_resolution, expr->loc);
+    expr->resolved_type = type;
 
-   return type;
+    return type;
   }
 
   case AST_EXPR_MODULE_MEMBER: {
@@ -3300,7 +3314,8 @@ Type *check_expression(AstNode *expr) {
                     module_expr->data.ident.name, member_name);
       return NULL;
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION ||
-      sym->kind == SYMBOL_EXTERN_VARIABLE || sym->kind == SYMBOL_EXTERN_CONSTANT) {
+               sym->kind == SYMBOL_EXTERN_VARIABLE ||
+               sym->kind == SYMBOL_EXTERN_CONSTANT) {
       expr->data.mod_member_expr.is_extern = true;
     }
 
@@ -3830,12 +3845,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         had_error = true;
       }
 
-      if (!type_is_integral(cond_type) &&
-          cond_type->kind != TYPE_STRING && cond_type->kind != TYPE_CHAR &&
-          cond_type->kind != TYPE_ENUM && cond_type->kind != TYPE_TAGGED_UNION &&
+      if (!type_is_integral(cond_type) && cond_type->kind != TYPE_STRING &&
+          cond_type->kind != TYPE_CHAR && cond_type->kind != TYPE_ENUM &&
+          cond_type->kind != TYPE_TAGGED_UNION &&
           // Allow pointers to tagged unions
           !(cond_type->kind == TYPE_POINTER &&
-           cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
+            cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
         checker_error(cond->loc, "switch condition must be integral, "
                                  "char, enum, string or tagged union");
         had_error = true;
@@ -3855,7 +3870,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
       bool else_returns =
           default_case ? check_statement(default_case, expected_return_type)
-                      : false;
+                       : false;
 
       return cases_return && else_returns;
     }
@@ -3881,8 +3896,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
           maybe_insert_cast(cond, cond_type, switch_cond->resolved_type);
 
       Type *resolved = casted_cond && casted_cond->resolved_type
-                ? casted_cond->resolved_type
-                : cond_type;
+                           ? casted_cond->resolved_type
+                           : cond_type;
 
       if (!type_equals(switch_cond->resolved_type, resolved)) {
         checker_error(cond->loc,
@@ -3905,7 +3920,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     if (stmt->data.case_stmt.alt_condition_count > 0) {
       for (size_t i = 0; i < stmt->data.case_stmt.alt_condition_count; i++) {
-        check_statement(stmt->data.case_stmt.alt_conditions[i], expected_return_type);
+        check_statement(stmt->data.case_stmt.alt_conditions[i],
+                        expected_return_type);
       }
     }
 

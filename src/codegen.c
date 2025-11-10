@@ -1486,7 +1486,7 @@ static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
   for (size_t i = 0; i < len; i++) {
     assert(buffer_idx < buffer_sz);
 
-    if (string[i] == '"' && (i > 0 || string[i-1] != '\\')) {
+    if (string[i] == '"' && (i > 0 || string[i - 1] != '\\')) {
       buffer[buffer_idx++] = '\\';
       buffer[buffer_idx++] = '"';
     } else {
@@ -1825,7 +1825,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         // Fallback for truly unknown types
         emit_string(cg, "\"");
 
-        escape_string(temp_buffer, sizeof(temp_buffer), type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
+        escape_string(temp_buffer, sizeof(temp_buffer),
+                      type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
         emit_string(cg, temp_buffer);
         memset(temp_buffer, 0, sizeof(temp_buffer));
 
@@ -1926,7 +1927,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, ident->data.ident.name);
         emit_string(cg, ":\n");
 
-        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
+             j++) {
           AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
           AstNode *alt_cond = alt_case->data.case_stmt.condition;
 
@@ -1987,7 +1989,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_expr(cg, cases[i]->data.case_stmt.condition);
           emit_string(cg, ":\n");
 
-          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
+               j++) {
             AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
             AstNode *alt_cond = alt_case->data.case_stmt.condition;
 
@@ -2050,7 +2053,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_expr(cg, cases[i]->data.case_stmt.condition);
           emit_string(cg, ") == 0");
 
-          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
+               j++) {
             AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
             AstNode *alt_cond = alt_case->data.case_stmt.condition;
 
@@ -2411,6 +2415,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         break;
       }
 
+      case BINOP_MOD: {
+        emit_string(cg, " %= ");
+        break;
+      }
+
       default: {
         emit_string(cg, " = ");
         break;
@@ -2671,7 +2680,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       AstNode *part = expr->data.interpolated_string.parts[i];
 
       if (part->kind == AST_EXPR_LITERAL_STRING) {
-        escape_string(temp_buffer, sizeof(temp_buffer), part->data.str_lit.value);
+        escape_string(temp_buffer, sizeof(temp_buffer),
+                      part->data.str_lit.value);
         emit_string(cg, temp_buffer);
         memset(temp_buffer, 0, sizeof(temp_buffer));
       } else {
@@ -2803,6 +2813,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       break;
     case BINOP_DIV:
       emit_string(cg, "/");
+      break;
+    case BINOP_MOD:
+      emit_string(cg, "%");
       break;
     case BINOP_EQ:
       emit_string(cg, "==");
@@ -3424,8 +3437,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_PARTIAL_MEMBER: {
     char *name = expr->resolved_type->qualified_name
-                  ? expr->resolved_type->qualified_name
-                  : expr->resolved_type->canonical_name;
+                     ? expr->resolved_type->qualified_name
+                     : expr->resolved_type->canonical_name;
 
     emit_string(cg, name);
     emit_string(cg, "_");
