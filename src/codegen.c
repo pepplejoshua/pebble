@@ -767,8 +767,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   cg->current_section = "forward_vars_funcs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
-      // if (sym->kind == SYMBOL_FUNCTION || sym->kind ==
-      // SYMBOL_EXTERN_FUNCTION) {
+      // Skip generic functions - only emit monomorphized instances
+      if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+        continue;
+      }
+
       Type *func = sym->type; // Assume sym->ast points to func node
       // Emit prototype
       emit_type_name(cg, func->data.func.return_type);
@@ -802,8 +805,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   HASH_ITER(hh, module_table, cur, tmp_mod) {
     HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
       if (sym->kind == SYMBOL_FUNCTION) {
-        // if (sym->kind == SYMBOL_FUNCTION || sym->kind ==
-        // SYMBOL_EXTERN_FUNCTION) {
+        // Skip generic functions - only emit monomorphized instances
+        if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+          continue;
+        }
+
         Type *func = sym->type; // Assume sym->ast points to func node
         // Emit prototype
         emit_type_name(cg, func->data.func.return_type);
@@ -913,6 +919,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   // Emit func definitions
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
+      // Skip generic functions - only emit monomorphized instances
+      if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+        continue;
+      }
+
       AstNode *func = sym->decl; // Func decl AST node
 
       if (func->data.func_decl.inlined) {
@@ -964,6 +975,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   HASH_ITER(hh, module_table, cur, tmp_mod) {
     HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
       if (sym->kind == SYMBOL_FUNCTION) {
+        // Skip generic functions - only emit monomorphized instances
+        if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+          continue;
+        }
+
         AstNode *func = sym->decl; // Func decl AST node
 
         if (func->data.func_decl.inlined) {
@@ -3416,8 +3432,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_PARTIAL_MEMBER: {
     char *name = expr->resolved_type->qualified_name
-                  ? expr->resolved_type->qualified_name
-                  : expr->resolved_type->canonical_name;
+                     ? expr->resolved_type->qualified_name
+                     : expr->resolved_type->canonical_name;
 
     emit_string(cg, name);
     emit_string(cg, "_");
