@@ -3329,7 +3329,7 @@ Type *check_expression(AstNode *expr) {
 
     // Arithmetic: +, -, *, /
     if (op == BINOP_ADD || op == BINOP_SUB || op == BINOP_MUL ||
-        op == BINOP_DIV) {
+        op == BINOP_DIV || op == BINOP_MOD) {
       // Handle Pointer arithmetic
       if (op == BINOP_ADD) {
         if (left->kind == TYPE_POINTER && type_is_numeric(right)) {
@@ -3344,6 +3344,14 @@ Type *check_expression(AstNode *expr) {
         if (left->kind == TYPE_POINTER && type_is_numeric(right)) {
           expr->resolved_type = left;
           return left;
+        }
+      }
+      if (op == BINOP_MOD) {
+        if (type_is_floating(left) || type_is_floating(right)) {
+          checker_error(
+              expr->loc,
+              "Modulo operator cannot be used with floating-point types");
+          return NULL;
         }
       }
 
