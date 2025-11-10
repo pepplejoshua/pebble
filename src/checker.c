@@ -3140,7 +3140,7 @@ Type *check_expression(AstNode *expr) {
       if (!start_type) {
         return NULL;
       }
-      if (!type_is_int(start_type)) {
+      if (!type_is_integral(start_type)) {
         checker_error(start_expr->loc, "slice start index must be an integer");
         return NULL;
       }
@@ -3152,7 +3152,7 @@ Type *check_expression(AstNode *expr) {
       if (!end_type) {
         return NULL;
       }
-      if (!type_is_int(end_type)) {
+      if (!type_is_integral(end_type)) {
         checker_error(end_expr->loc, "slice end index must be an integer");
         return NULL;
       }
@@ -3863,7 +3863,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
           !(cond_type->kind == TYPE_POINTER &&
             cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
         checker_error(cond->loc, "switch condition must be integral, "
-                                 "char, enum, string or tagged union");
+                                 "char, enum, string or tagged union. Got '%s'.",
+                                 type_name(cond_type));
         had_error = true;
       }
 
