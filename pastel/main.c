@@ -6,17 +6,16 @@ void test_format(const char *input) {
   printf("Input: %s\n", input);
   printf("========================================\n");
 
-  char *output = pastel_format_text(input);
+  char output[4096];
+  size_t written = pastel_format(input, output, sizeof(output));
 
-  if (!output) {
-    printf("ERROR: Failed to format\n");
+  if (written == 0) {
+    printf("ERROR: Failed to format (buffer too small or parse error)\n");
     return;
   }
 
   printf("Output: %s\n", output);
   printf("========================================\n");
-
-  free(output);
 }
 
 int main() {

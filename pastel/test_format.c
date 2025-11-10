@@ -5,9 +5,16 @@ void print_token(Token *token) {
   const char *type_names[] = {"TEXT", "FORMAT_START", "FORMAT_END", "EOF",
                               "ERROR"};
 
-  printf("Token { type: %-13s, line: %zu, col: %zu, value: \"%s\" }\n",
-         type_names[token->type], token->line, token->column,
-         token->value ? token->value : "(null)");
+  printf("Token { type: %-13s, line: %zu, col: %zu, value: \"",
+         type_names[token->type], token->line, token->column);
+
+  // Print the token value from start/length instead of null-terminated string
+  if (token->start && token->length > 0) {
+    printf("%.*s", (int)token->length, token->start);
+  } else {
+    printf("(null)");
+  }
+  printf("\" }\n");
 }
 
 void test_tokenize(const char *input) {
@@ -27,7 +34,7 @@ void test_tokenize(const char *input) {
     print_token(&tokens[i]);
   }
 
-  pastel_free_tokens(tokens, token_count);
+  pastel_free_tokens(tokens);
 }
 
 int main() {
