@@ -38,6 +38,9 @@ TypeEntry *type_table = NULL;
 // Canonical type table (hash map of canonical_name => type entries)
 TypeEntry *canonical_type_table = NULL;
 
+// Monomorphization table (hash map of mangled_name => MonoFuncInstance)
+MonoFuncInstance *mono_instances = NULL;
+
 // Create a basic type
 Type *type_create(TypeKind kind, Location loc) {
   Type *type = arena_alloc(&long_lived, sizeof(Type));

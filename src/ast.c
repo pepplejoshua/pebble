@@ -10,6 +10,42 @@ AstNode *clone_ast_node(AstNode *node) {
   clone->resolved_type = node->resolved_type;
 
   switch (node->kind) {
+  // Declarations
+  case AST_DECL_FUNCTION: {
+    clone->data.func_decl.inlined = node->data.func_decl.inlined;
+    clone->data.func_decl.convention =
+        clone_ast_node(node->data.func_decl.convention);
+    clone->data.func_decl.name = node->data.func_decl.name;
+    clone->data.func_decl.qualified_name = node->data.func_decl.qualified_name;
+    clone->data.func_decl.full_qualified_name =
+        node->data.func_decl.full_qualified_name;
+    clone->data.func_decl.param_count = node->data.func_decl.param_count;
+    clone->data.func_decl.return_type =
+        clone_ast_node(node->data.func_decl.return_type);
+    clone->data.func_decl.body = clone_ast_node(node->data.func_decl.body);
+    clone->data.func_decl.type_param_count =
+        node->data.func_decl.type_param_count;
+    clone->data.func_decl.type_params =
+        node->data.func_decl.type_params; // Shallow copy
+
+    // Clone params array (FuncParam structs)
+    if (node->data.func_decl.param_count > 0) {
+      clone->data.func_decl.params = arena_alloc(
+          &long_lived, sizeof(FuncParam) * node->data.func_decl.param_count);
+      for (size_t i = 0; i < node->data.func_decl.param_count; i++) {
+        clone->data.func_decl.params[i].name =
+            node->data.func_decl.params[i].name;
+        clone->data.func_decl.params[i].type =
+            clone_ast_node(node->data.func_decl.params[i].type);
+        clone->data.func_decl.params[i].is_variadic =
+            node->data.func_decl.params[i].is_variadic;
+      }
+    } else {
+      clone->data.func_decl.params = NULL;
+    }
+    break;
+  }
+
   // Statements
   case AST_STMT_RETURN: {
     clone->data.return_stmt.expr = clone_ast_node(node->data.return_stmt.expr);
