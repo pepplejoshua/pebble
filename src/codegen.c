@@ -2832,7 +2832,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           }
         } else {
           // For arrays/slices, use .data
-          if (!cg->lvalue_assignment && mode_is_safe()) {
+          if (!cg->lvalue_assignment && mode_is_safe() && false) {
             // Bounds checking
             emit_string(cg, "({ int __index = ");
             emit_expr(cg, index_expr);
@@ -3111,7 +3111,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // For arrays/slices, use .data
-      if (!cg->lvalue_assignment && mode_is_safe()) {
+      if (!cg->lvalue_assignment && mode_is_safe() && false) {
         // Bounds checking
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);
