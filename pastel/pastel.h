@@ -7,6 +7,10 @@
 #include <stdlib.h>   // for malloc
 #include <string.h>   // for memcpy
 
+// Configuration
+#define MAX_NESTING_DEPTH 32
+#define MAX_COLOR_NAME_LEN 16
+
 // Token types for lexer
 typedef enum {
     TOKEN_TEXT,
@@ -18,9 +22,10 @@ typedef enum {
 
 typedef struct {
     TokenType type;
-    char* value;         // For TEXT and FORMAT_START (options string)
-    size_t line;        // Current line (for error reporting)
-    size_t column;      // Current column (for error reporting)
+    const char* start;   // Pointer into source string
+    size_t length;       // Length of this token's text
+    size_t line;
+    size_t column;
 } Token;
 
 // AST node types
@@ -37,8 +42,11 @@ typedef struct {
     bool strikethrough;
     bool dim;
     bool reverse;
-    char* fg_color;      // e.g., "l_red", "d_blue", or NULL
-    char* bg_color;      // e.g., "l_white", ":d_cyan", or NULL
+
+    const char* fg_color;      // e.g., "l_red", "d_blue", or NULL
+    size_t fg_color_len;
+    const char* bg_color;      // e.g., "l_white", ":d_cyan", or NULL
+    size_t bg_color_len;
 } StyleOptions;
 
 // ============================================
@@ -113,31 +121,24 @@ static inline bool pastel_is_format_end(PastelLexer* lexer) {
           pastel_peek_by(lexer, 2) == ']';
 }
 
-// Helper: String duplication (you can use arena allocator or malloc)
-static inline char* pastel_str_dup(const char* str, size_t len) {
-    char* copy = (char*)malloc(len + 1);
-    if (!copy) return NULL;
-    memcpy(copy, str, len);
-    copy[len] = '\0';
-    return copy;
-}
-
 // Token creation
-static inline Token pastel_make_token(PastelLexer* lexer, TokenType type, char* value) {
+static inline Token pastel_make_token(PastelLexer* lexer, TokenType type) {
   Token token;
   token.type = type;
+  token.start = &lexer->source[lexer->start];
+  token.length = lexer->current - lexer->start;
   token.line = lexer->line;
-  token.column = lexer->column - (lexer->current - lexer->start);
-  token.value = value;
+  token.column = lexer->column - token.length;
 
   return token;
 }
-static inline Token pastel_error_token(PastelLexer* lexer, char* message) {
+static inline Token pastel_error_token(PastelLexer* lexer, const char* message, size_t msg_len) {
   Token token;
   token.type = TOKEN_ERROR;
+  token.start = message;
+  token.length = msg_len;
   token.line = lexer->line;
   token.column = lexer->column;
-  token.value = message;
   return token;
 }
 
@@ -158,27 +159,30 @@ static inline Token pastel_scan_format_start(PastelLexer* lexer) {
     }
 
     if (pastel_is_at_end(lexer)) {
-        return pastel_error_token(lexer, pastel_str_dup("Unterminated format directive", 30));
+        const char *err = "Unterminated format directive";
+        return pastel_error_token(lexer, err, strlen(err));
     }
 
-    // Extract options string
-    size_t options_len = lexer->current - options_start;
-    char* options = pastel_str_dup(&lexer->source[options_start], options_len);
+    // Create token pointing to just the options part
+    Token token;
+    token.type = TOKEN_FORMAT_START;
+    token.start = &lexer->source[options_start];
+    token.length = lexer->current - options_start;
+    token.line = lexer->line;
+    token.column = lexer->column;
 
     pastel_advance(lexer);  // Consume ']'
 
-    return pastel_make_token(lexer, TOKEN_FORMAT_START, options);
+    return token;
 }
 // Scan [/]
 static inline Token pastel_scan_format_end(PastelLexer* lexer) {
     lexer->start = lexer->current;
-
     // Consume [/]
     pastel_advance(lexer);  // '['
     pastel_advance(lexer);  // '/'
     pastel_advance(lexer);  // ']'
-
-    return pastel_make_token(lexer, TOKEN_FORMAT_END, NULL);
+    return pastel_make_token(lexer, TOKEN_FORMAT_END);
 }
 //Scan plain text
 static inline Token pastel_scan_text(PastelLexer* lexer) {
@@ -192,20 +196,15 @@ static inline Token pastel_scan_text(PastelLexer* lexer) {
     }
 
     // Extract the text
-    size_t len = lexer->current - lexer->start;
-    char* text = pastel_str_dup(&lexer->source[lexer->start], len);
-    return pastel_make_token(lexer, TOKEN_TEXT, text);
+    return pastel_make_token(lexer, TOKEN_TEXT);
 }
 
 // Main scanning function - get next token
 static inline Token pastel_lexer_next_token(PastelLexer* lexer) {
-    // Skip any leading whitespace? (Optional - depends if you want to preserve it)
-    // For now, let's preserve all text including whitespace
-
     lexer->start = lexer->current;
 
     if (pastel_is_at_end(lexer)) {
-        return pastel_make_token(lexer, TOKEN_EOF, NULL);
+        return pastel_make_token(lexer, TOKEN_EOF);
     }
 
     // Check for format directives first
@@ -254,12 +253,7 @@ static inline Token* pastel_tokenize(const char* input, size_t* token_count) {
     *token_count = count;
     return tokens;
 }
-static inline void pastel_free_tokens(Token* tokens, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        if (tokens[i].value) {
-            free(tokens[i].value);
-        }
-    }
+static inline void pastel_free_tokens(Token* tokens) {
     free(tokens);
 }
 
@@ -276,8 +270,6 @@ typedef struct {
 
 static inline void free_style_options(StyleOptions* opts) {
     if (!opts) return;
-    if (opts->fg_color) free(opts->fg_color);
-    if (opts->bg_color) free(opts->bg_color);
     free(opts);
 }
 static inline void style_stack_init(StyleStack* stack) {
@@ -319,13 +311,23 @@ static inline void style_stack_free(StyleStack* stack) {
     stack->capacity = 0;
 }
 
+// Helper: compare string with length
+static inline bool str_eq(const char* str, size_t len, const char* target) {
+    size_t target_len = strlen(target);
+    return len == target_len && memcmp(str, target, len) == 0;
+}
+
+// Helper: check if substring starts with prefix
+static inline bool str_starts_with(const char* str, size_t len, const char* prefix) {
+    size_t prefix_len = strlen(prefix);
+    return len >= prefix_len && memcmp(str, prefix, prefix_len) == 0;
+}
+
 // Parse options string into StyleOptions
 // Input: "*, u, l_red:d_blue" or "b, red" etc.
-static inline StyleOptions* parse_style_options(const char* options_str) {
-    StyleOptions* opts = (StyleOptions*)malloc(sizeof(StyleOptions));
-    if (!opts) return NULL;
-
-    // Initialize all to false/NULL
+// Parse options string into StyleOptions (no allocation!)
+static inline void parse_style_options(const char* options_str, size_t options_len, StyleOptions* opts) {
+    // Initialize
     opts->bold = false;
     opts->underline = false;
     opts->italic = false;
@@ -333,105 +335,122 @@ static inline StyleOptions* parse_style_options(const char* options_str) {
     opts->dim = false;
     opts->reverse = false;
     opts->fg_color = NULL;
+    opts->fg_color_len = 0;
     opts->bg_color = NULL;
+    opts->bg_color_len = 0;
 
-    if (!options_str || strlen(options_str) == 0) {
-        return opts;
-    }
+    if (!options_str || options_len == 0) return;
 
-    // Make a copy we can modify
-    char* opts_copy = strdup(options_str);
-    char* token = strtok(opts_copy, ",");
+    // Parse comma-separated options
+    size_t start = 0;
+    for (size_t i = 0; i <= options_len; i++) {
+        if (i == options_len || options_str[i] == ',') {
+            // Extract token
+            size_t token_start = start;
+            size_t token_end = i;
 
-    while (token) {
-        // Trim whitespace
-        while (*token == ' ') token++;
-        char* end = token + strlen(token) - 1;
-        while (end > token && *end == ' ') end--;
-        *(end + 1) = '\0';
+            // Trim whitespace
+            while (token_start < token_end && options_str[token_start] == ' ') token_start++;
+            while (token_end > token_start && options_str[token_end - 1] == ' ') token_end--;
 
-        // Check for style flags
-        if (strcmp(token, "*") == 0 || strcmp(token, "b") == 0) {
-            opts->bold = true;
-        }
-        else if (strcmp(token, "_") == 0 || strcmp(token, "u") == 0) {
-            opts->underline = true;
-        }
-        else if (strcmp(token, "/") == 0 || strcmp(token, "i") == 0) {
-            opts->italic = true;
-        }
-        else if (strcmp(token, "~") == 0 || strcmp(token, "s") == 0) {
-            opts->strikethrough = true;
-        }
-        else if (strcmp(token, "d") == 0) {
-            opts->dim = true;
-        }
-        else if (strcmp(token, "r") == 0) {
-            opts->reverse = true;
-        }
-        // Check for colors (l_COLOR or d_COLOR or l_COLOR:d_COLOR)
-        else if (strncmp(token, "l_", 2) == 0 || strncmp(token, "d_", 2) == 0) {
-            // Check if it contains ':' for fg:bg
-            char* colon = strchr(token, ':');
-            if (colon) {
-                // Has both fg and bg
-                size_t fg_len = colon - token;
-                opts->fg_color = pastel_str_dup(token, fg_len);
-                opts->bg_color = strdup(colon + 1);
-            } else {
-                // Just foreground
-                opts->fg_color = strdup(token);
+            size_t token_len = token_end - token_start;
+            const char* token = &options_str[token_start];
+
+            if (token_len == 0) {
+                start = i + 1;
+                continue;
             }
-        }
-        // Check for background-only color (:l_COLOR or :d_COLOR)
-        else if (token[0] == ':' && (strncmp(token + 1, "l_", 2) == 0 || strncmp(token + 1, "d_", 2) == 0)) {
-            opts->bg_color = strdup(token + 1);  // Skip the ':'
-        }
-        // Try without prefix (shorthand like "red" assumes "l_red")
-        else {
-            // Check if it's a valid color name
-            const char* colors[] = {"black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"};
-            bool is_color = false;
-            for (int i = 0; i < 8; i++) {
-                if (strcmp(token, colors[i]) == 0) {
-                    is_color = true;
-                    break;
+
+            // Check style flags
+            if (str_eq(token, token_len, "*") || str_eq(token, token_len, "b")) {
+                opts->bold = true;
+            }
+            else if (str_eq(token, token_len, "_") || str_eq(token, token_len, "u")) {
+                opts->underline = true;
+            }
+            else if (str_eq(token, token_len, "/") || str_eq(token, token_len, "i")) {
+                opts->italic = true;
+            }
+            else if (str_eq(token, token_len, "~") || str_eq(token, token_len, "s")) {
+                opts->strikethrough = true;
+            }
+            else if (str_eq(token, token_len, "d")) {
+                opts->dim = true;
+            }
+            else if (str_eq(token, token_len, "r")) {
+                opts->reverse = true;
+            }
+            // Check for colors
+            else if (str_starts_with(token, token_len, "l_") || str_starts_with(token, token_len, "d_")) {
+                // Look for colon (fg:bg)
+                size_t colon_pos = 0;
+                bool has_colon = false;
+                for (size_t j = 0; j < token_len; j++) {
+                    if (token[j] == ':') {
+                        colon_pos = j;
+                        has_colon = true;
+                        break;
+                    }
+                }
+
+                if (has_colon) {
+                    // Has both fg and bg
+                    opts->fg_color = token;
+                    opts->fg_color_len = colon_pos;
+                    opts->bg_color = token + colon_pos + 1;
+                    opts->bg_color_len = token_len - colon_pos - 1;
+                } else {
+                    // Just foreground
+                    opts->fg_color = token;
+                    opts->fg_color_len = token_len;
                 }
             }
-            if (is_color) {
-              // Assume light foreground
-              size_t len = strlen(token) + 3;  // "l_" + color + '\0'
-              opts->fg_color = (char*)malloc(len);
-              snprintf(opts->fg_color, len, "l_%s", token);
+            // Background only (:color)
+            else if (token[0] == ':' && token_len > 1) {
+                opts->bg_color = token + 1;
+                opts->bg_color_len = token_len - 1;
+            } else {
+                // Try plain color name (will be handled as l_color by get_ansi_color_code)
+                if (str_eq(token, token_len, "black") ||
+                    str_eq(token, token_len, "red") ||
+                    str_eq(token, token_len, "green") ||
+                    str_eq(token, token_len, "yellow") ||
+                    str_eq(token, token_len, "blue") ||
+                    str_eq(token, token_len, "magenta") ||
+                    str_eq(token, token_len, "cyan") ||
+                    str_eq(token, token_len, "white")) {
+                    opts->fg_color = token;
+                    opts->fg_color_len = token_len;
+                }
             }
-            // Otherwise ignore unknown option
+
+
+            start = i + 1;
         }
-
-        token = strtok(NULL, ",");
     }
-
-    free(opts_copy);
-    return opts;
 }
 
 // Helper to append string to dynamically growing buffer
-static inline void append_string(char** output, size_t* len, size_t* capacity, const char* str) {
-    if (!str) return;
-
+static inline bool append_str(char** out, size_t* out_len, size_t* out_capacity, const char* str) {
     size_t str_len = strlen(str);
-
-    // Ensure capacity
-    while (*len + str_len + 1 > *capacity) {
-        *capacity *= 2;
-        char* new_output = (char*)realloc(*output, *capacity);
-        if (!new_output) return;  // TODO: better error handling
-        *output = new_output;
+    if (*out_len + str_len >= *out_capacity) {
+        return false;  // Buffer too small
     }
+    memcpy(*out + *out_len, str, str_len);
+    *out_len += str_len;
+    (*out)[*out_len] = '\0';
+    return true;
+}
 
-    // Append
-    memcpy(*output + *len, str, str_len);
-    *len += str_len;
-    (*output)[*len] = '\0';
+// Helper: append buffer to output
+static inline bool append_buf(char** out, size_t* out_len, size_t* out_capacity, const char* buf, size_t buf_len) {
+    if (*out_len + buf_len >= *out_capacity) {
+        return false;  // Buffer too small
+    }
+    memcpy(*out + *out_len, buf, buf_len);
+    *out_len += buf_len;
+    (*out)[*out_len] = '\0';
+    return true;
 }
 
 // ANSI escape code constants
@@ -445,156 +464,148 @@ static inline void append_string(char** output, size_t* len, size_t* capacity, c
 
 // Emit reset code
 static inline void emit_ansi_reset(char** output, size_t* len, size_t* capacity) {
-    append_string(output, len, capacity, ANSI_RESET);
+    append_str(output, len, capacity, ANSI_RESET);
 }
 
 // Get ANSI color code from color string like "l_red" or "d_blue"
-static inline const char* get_ansi_color_code(const char* color_str, bool is_background) {
-    if (!color_str) return NULL;
+static inline const char* get_ansi_color_code(const char* color, size_t len, bool is_bg) {
+    if (!color || len == 0) return NULL;
 
-    bool is_light = (color_str[0] == 'l');
-    const char* color_name = color_str + 2;  // Skip "l_" or "d_"
+    bool is_light = true;  // Default to light
+    const char* name = color;
+    size_t name_len = len;
+
+    // Check if it has l_ or d_ prefix
+    if (len >= 3 && (color[0] == 'l' || color[0] == 'd') && color[1] == '_') {
+        is_light = (color[0] == 'l');
+        name = color + 2;
+        name_len = len - 2;
+    }
+    // Otherwise it's a plain color name (like "red"), treat as light
 
     // Map color names to ANSI codes
     // Foreground: 30-37 (dark), 90-97 (light)
     // Background: 40-47 (dark), 100-107 (light)
 
-    int base_code = 0;
-    if (strcmp(color_name, "black") == 0)   base_code = is_background ? 40 : 30;
-    else if (strcmp(color_name, "red") == 0)     base_code = is_background ? 41 : 31;
-    else if (strcmp(color_name, "green") == 0)   base_code = is_background ? 42 : 32;
-    else if (strcmp(color_name, "yellow") == 0)  base_code = is_background ? 43 : 33;
-    else if (strcmp(color_name, "blue") == 0)    base_code = is_background ? 44 : 34;
-    else if (strcmp(color_name, "magenta") == 0) base_code = is_background ? 45 : 35;
-    else if (strcmp(color_name, "cyan") == 0)    base_code = is_background ? 46 : 36;
-    else if (strcmp(color_name, "white") == 0)   base_code = is_background ? 47 : 37;
+    int base = 0;
+    if (str_eq(name, name_len, "black"))   base = is_bg ? 40 : 30;
+    else if (str_eq(name, name_len, "red"))     base = is_bg ? 41 : 31;
+    else if (str_eq(name, name_len, "green"))   base = is_bg ? 42 : 32;
+    else if (str_eq(name, name_len, "yellow"))  base = is_bg ? 43 : 33;
+    else if (str_eq(name, name_len, "blue"))    base = is_bg ? 44 : 34;
+    else if (str_eq(name, name_len, "magenta")) base = is_bg ? 45 : 35;
+    else if (str_eq(name, name_len, "cyan"))    base = is_bg ? 46 : 36;
+    else if (str_eq(name, name_len, "white"))   base = is_bg ? 47 : 37;
     else return NULL;
 
-    if (is_light) base_code += 60;  // Light variants are +60
+    if (is_light) base += 60;
 
-    static char code_buf[16];
-    snprintf(code_buf, sizeof(code_buf), "\x1b[%dm", base_code);
-    return code_buf;
+    static char buf[16];
+    snprintf(buf, sizeof(buf), "\x1b[%dm", base);
+    return buf;
 }
 
+
 // Emit ANSI codes for a StyleOptions
-static inline void emit_ansi_codes(StyleOptions* style, char** output, size_t* len, size_t* capacity) {
-    if (!style) return;
+static inline bool emit_ansi_codes(StyleOptions* style, char** output, size_t* len, size_t* capacity) {
+  if (style->bold && !append_str(output, len, capacity, ANSI_BOLD)) return false;
+      if (style->dim && !append_str(output, len, capacity, ANSI_DIM)) return false;
+      if (style->italic && !append_str(output, len, capacity, ANSI_ITALIC)) return false;
+      if (style->underline && !append_str(output, len, capacity, ANSI_UNDERLINE)) return false;
+      if (style->strikethrough && !append_str(output, len, capacity, ANSI_STRIKETHROUGH)) return false;
+      if (style->reverse && !append_str(output, len, capacity, ANSI_REVERSE)) return false;
 
-    if (style->bold) {
-        append_string(output, len, capacity, ANSI_BOLD);
-    }
-    if (style->dim) {
-        append_string(output, len, capacity, ANSI_DIM);
-    }
-    if (style->italic) {
-        append_string(output, len, capacity, ANSI_ITALIC);
-    }
-    if (style->underline) {
-        append_string(output, len, capacity, ANSI_UNDERLINE);
-    }
-    if (style->strikethrough) {
-        append_string(output, len, capacity, ANSI_STRIKETHROUGH);
-    }
-    if (style->reverse) {
-        append_string(output, len, capacity, ANSI_REVERSE);
-    }
+      if (style->fg_color) {
+          const char* code = get_ansi_color_code(style->fg_color, style->fg_color_len, false);
+          if (code && !append_str(output, len, capacity, code)) return false;
+      }
 
-    // Foreground color
-    if (style->fg_color) {
-        const char* fg_code = get_ansi_color_code(style->fg_color, false);
-        if (fg_code) {
-            append_string(output, len, capacity, fg_code);
-        }
-    }
+      if (style->bg_color) {
+          const char* code = get_ansi_color_code(style->bg_color, style->bg_color_len, true);
+          if (code && !append_str(output, len, capacity, code)) return false;
+      }
 
-    // Background color
-    if (style->bg_color) {
-        const char* bg_code = get_ansi_color_code(style->bg_color, true);
-        if (bg_code) {
-            append_string(output, len, capacity, bg_code);
-        }
-    }
+      return true;
 }
 
 // Main formatter - converts tokens to ANSI-formatted string
-static inline char* pastel_format(Token* tokens, size_t token_count) {
-    // Initialize output buffer
-    size_t capacity = 256;
-    size_t len = 0;
-    char* output = (char*)malloc(capacity);
-    if (!output) return NULL;
-    output[0] = '\0';
+static inline size_t pastel_format(const char* input, char* output, size_t output_size) {
+    if (!input || !output || output_size == 0) return 0;
 
-    // Initialize style stack
-    StyleStack stack;
-    style_stack_init(&stack);
+    PastelLexer lexer;
+    pastel_lexer_init(&lexer, input);
 
-    // Process each token
-    for (size_t i = 0; i < token_count; i++) {
-        Token* token = &tokens[i];
+    // Style stack (fixed size, no allocation!)
+    StyleOptions stack[MAX_NESTING_DEPTH];
+    size_t stack_count = 0;
 
-        switch (token->type) {
+    char* out = output;
+    size_t out_len = 0;
+    size_t out_cap = output_size;
+    out[0] = '\0';
+
+    Token token;
+    while (true) {
+        token = pastel_lexer_next_token(&lexer);
+
+        if (token.type == TOKEN_EOF || token.type == TOKEN_ERROR) {
+            break;
+        }
+
+        switch (token.type) {
             case TOKEN_FORMAT_START: {
                 // Parse options and push onto stack
-                StyleOptions* style = parse_style_options(token->value);
-                style_stack_push(&stack, style);
+                if (stack_count >= MAX_NESTING_DEPTH) {
+                    return 0;  // Too much nesting
+                }
 
-                // Emit ANSI codes for this style
-                emit_ansi_codes(style, &output, &len, &capacity);
+                StyleOptions* style = &stack[stack_count++];
+                parse_style_options(token.start, token.length, style);
+
+                // Emit ANSI codes
+                if (!emit_ansi_codes(style, &out, &out_len, &out_cap)) {
+                    return 0;  // Buffer too small
+                }
                 break;
             }
 
             case TOKEN_TEXT: {
-                // Just append the text (codes already emitted)
-                append_string(&output, &len, &capacity, token->value);
+                // Append text directly
+                if (!append_buf(&out, &out_len, &out_cap, token.start, token.length)) {
+                    return 0;  // Buffer too small
+                }
                 break;
             }
 
             case TOKEN_FORMAT_END: {
                 // Pop from stack
-                StyleOptions* popped = style_stack_pop(&stack);
-                free_style_options(popped);
+                if (stack_count == 0) {
+                    return 0;  // Unmatched closing tag
+                }
+                stack_count--;
 
-                // Reset and re-apply parent style (if any)
-                emit_ansi_reset(&output, &len, &capacity);
+                // Reset and re-apply parent style
+                if (!append_str(&out, &out_len, &out_cap, ANSI_RESET)) {
+                    return 0;
+                }
 
-                StyleOptions* parent = style_stack_peek(&stack);
-                if (parent) {
-                    emit_ansi_codes(parent, &output, &len, &capacity);
+                if (stack_count > 0) {
+                    if (!emit_ansi_codes(&stack[stack_count - 1], &out, &out_len, &out_cap)) {
+                        return 0;
+                    }
                 }
                 break;
             }
 
-            case TOKEN_EOF:
-                // Done
-                break;
-
-            case TOKEN_ERROR:
-                // Handle error?
+            default:
                 break;
         }
     }
 
-    // Final reset to clean up any remaining formatting
-    emit_ansi_reset(&output, &len, &capacity);
+    // Final reset
+    append_str(&out, &out_len, &out_cap, ANSI_RESET);
 
-    style_stack_free(&stack);
-    return output;
-}
-
-// Public API - one-shot formatting
-static inline char* pastel_format_text(const char* input) {
-    size_t token_count;
-    Token* tokens = pastel_tokenize(input, &token_count);
-
-    if (!tokens) return NULL;
-
-    char* result = pastel_format(tokens, token_count);
-
-    pastel_free_tokens(tokens, token_count);
-
-    return result;
+    return out_len;
 }
 
 #endif
