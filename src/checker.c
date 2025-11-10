@@ -4368,6 +4368,40 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 }
 
 // Main entry point for Pass 4
+// Extract the body checking logic for a single function
+static bool check_function_body(Symbol *sym) {
+  // Skip generic functions - they'll be checked when monomorphized
+  if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+    return true;
+  }
+
+  AstNode *decl = sym->decl;
+  AstNode *body = decl->data.func_decl.body;
+  Type *func_type = sym->type;
+  Type *return_type = func_type->data.func.return_type;
+
+  // Push function's local scope (contains parameters)
+  scope_push(sym->data.func.local_scope);
+
+  checker_state.current_convention = func_type->data.func.convention;
+
+  // Check the function body
+  bool definitely_returns = check_statement(body, return_type);
+
+  // If non-void, ensure all paths return
+  if (return_type->kind != TYPE_VOID && !definitely_returns) {
+    checker_error(decl->loc,
+                  "function '%s' may not return a value on all paths",
+                  sym->name);
+  }
+
+  // Pop back to global scope
+  scope_pop();
+
+  return !checker_has_errors();
+}
+
+// Now refactor the original function to use it
 bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
@@ -4378,35 +4412,7 @@ bool check_function_bodies(void) {
       continue;
     }
 
-    // Get function details
-    AstNode *decl = sym->decl;
-
-    // Skip generic functions - they'll be checked when monomorphized
-    if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
-      continue;
-    }
-
-    AstNode *body = decl->data.func_decl.body;
-    Type *func_type = sym->type;
-    Type *return_type = func_type->data.func.return_type;
-
-    // Push function's local scope (contains parameters)
-    scope_push(sym->data.func.local_scope);
-
-    checker_state.current_convention = func_type->data.func.convention;
-
-    // Check the function body
-    bool definitely_returns = check_statement(body, return_type);
-
-    // If non-void, ensure all paths return
-    if (return_type->kind != TYPE_VOID && !definitely_returns) {
-      checker_error(decl->loc,
-                    "function '%s' may not return a value on all paths",
-                    sym->name);
-    }
-
-    // Pop back to global scope
-    scope_pop();
+    check_function_body(sym);
   }
 
   return !checker_has_errors();
