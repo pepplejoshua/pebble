@@ -2319,12 +2319,46 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, ";\n");
     break;
   }
+
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
 
     cg->lvalue_assignment = true;
 
-    emit_expr(cg, stmt->data.assign_stmt.lhs);
+    AstNode *lhs = stmt->data.assign_stmt.lhs;
+
+    if ((int)stmt->data.assign_stmt.op == -1 &&
+        lhs->kind == AST_EXPR_MEMBER &&
+        lhs->data.member_expr.object->resolved_type->kind == TYPE_TAGGED_UNION
+    ) {
+      emit_expr(cg, lhs->data.member_expr.object);
+
+      cg->lvalue_assignment = false;
+
+      const char *member = lhs->data.member_expr.member;
+      Type *tagged_type = lhs->data.member_expr.object->resolved_type;
+
+      const char *type_name = tagged_type->canonical_name;
+
+      emit_string(cg, " = (");
+      emit_string(cg, type_name);
+      emit_string(cg, "){ .__tag = ");
+
+      emit_string(cg, type_name);
+      emit_string(cg, "__");
+      emit_string(cg, member);
+
+      emit_string(cg, ", .__data = { .");
+      emit_string(cg, member);
+      emit_string(cg, " = ");
+      emit_expr(cg, stmt->data.assign_stmt.rhs);
+
+      emit_string(cg, " } };\n");
+
+      return;
+    } else {
+      emit_expr(cg, stmt->data.assign_stmt.lhs);
+    }
 
     cg->lvalue_assignment = false;
 
