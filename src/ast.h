@@ -293,6 +293,8 @@ struct AstNode {
       AstNode *func;
       AstNode **args;
       size_t arg_count;
+      AstNode **type_args;
+      size_t type_arg_count;
     } call;
     struct {
       AstNode *array;

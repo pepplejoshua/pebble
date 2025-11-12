@@ -1045,7 +1045,7 @@ static void check_global_variables(void) {
 
 // Sub-pass 3d: Check function signatures
 // Extract the signature checking logic for a single function
-static void check_function_signature(Symbol *sym) {
+static bool check_function_signature(Symbol *sym) {
   AstNode *decl = sym->decl;
 
   // Handle generic functions - give them a special type
@@ -1054,7 +1054,7 @@ static void check_function_signature(Symbol *sym) {
     Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
     generic_type->data.generic_func.decl = decl;
     sym->type = generic_type;
-    return;
+    return true;
   }
 
   FuncParam *params;
@@ -1076,7 +1076,7 @@ static void check_function_signature(Symbol *sym) {
     return_type_expr = decl->data.extern_func.return_type;
     // NOTE: extern functions cannot define a convention
   } else {
-    return; // Not a function we handle
+    return true; // Not a function we handle
   }
 
   int is_variadic = -1;
@@ -1108,7 +1108,7 @@ static void check_function_signature(Symbol *sym) {
   // Resolve return type
   Type *return_type = resolve_type_expression(return_type_expr);
   if (!return_type) {
-    return; // Error already reported
+    return true; // Error already reported
   }
 
   // Create function type
@@ -1117,6 +1117,7 @@ static void check_function_signature(Symbol *sym) {
                                    sym->decl->loc);
 
   // Add parameters as symbols in the function scope
+  bool no_error = true;
   if (sym->kind == SYMBOL_FUNCTION) {
     // Create function's local scope with global as parent
     Scope *func_scope = scope_create(checker_state.current_module->scope);
@@ -1136,12 +1137,14 @@ static void check_function_signature(Symbol *sym) {
       if (existing) {
         checker_error(decl->loc, "duplicate parameter name '%s'",
                       params[i].name);
+        no_error = false;
         continue;
       }
 
       scope_add_symbol(func_scope, param_sym);
     }
   }
+  return no_error;
 }
 
 // Now refactor the original function to use it
@@ -3067,11 +3070,6 @@ static bool check_function_body(Symbol *sym);
 static AstNode *monomorphize_function(AstNode *generic_func,
                                       TypeBindings *bindings,
                                       Location call_loc) {
-  // FIXME:
-  // 1. Handle variadic functions
-  // 2. Handle anonymous functions
-  // 3. Make sure generic functions from other modules work correctly
-
   // Step 1: Generate mangled name
   Type **concrete_types =
       arena_alloc(&long_lived, sizeof(Type *) * bindings->count);
@@ -3110,10 +3108,8 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
 
   // Step 7: Type-check the signature
-  check_function_signature(mono_sym);
-
-  if (checker_has_errors()) {
-    checker_error(call_loc, "failed to monomorphize function '%s'",
+  if (!check_function_signature(mono_sym)) {
+    checker_error(call_loc, "failed to monomorphize function '%s' called here",
                   generic_func->data.func_decl.name);
     return NULL;
   }
@@ -3129,8 +3125,10 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   current_scope = saved_scope;
 
   if (!succeeded) {
-    checker_error(call_loc, "failed to type-check monomorphized function '%s'",
-                  generic_func->data.func_decl.name);
+    checker_error(
+        call_loc,
+        "failed to type-check monomorphized function '%s' called here",
+        generic_func->data.func_decl.name);
     return NULL;
   }
 
@@ -3687,17 +3685,54 @@ Type *check_expression(AstNode *expr) {
     // Check if this is a generic function
     if (call_type->kind == TYPE_GENERIC_FUNCTION) {
       AstNode *generic_decl = call_type->data.generic_func.decl;
+      TypeBindings bindings;
 
-      // Infer type arguments from call arguments
-      TypeBindings bindings =
-          infer_type_arguments(generic_decl, args, arg_count, expr->loc);
+      if (expr->data.call.type_args != NULL) {
+        // Use explicit type arguments instead of inference
+        size_t type_arg_count = expr->data.call.type_arg_count;
+        size_t type_param_count = generic_decl->data.func_decl.type_param_count;
 
-      // Check if inference succeeded
-      for (size_t i = 0; i < bindings.count; i++) {
-        if (!bindings.bindings[i].concrete_type) {
-          checker_error(expr->loc, "could not infer type parameter '%s'",
-                        bindings.bindings[i].param_name);
+        // Validate count
+        if (type_arg_count != type_param_count) {
+          checker_error(expr->loc,
+                        "function '%s' expects %zu type arguments, got %zu",
+                        generic_decl->data.func_decl.name, type_param_count,
+                        type_arg_count);
           return NULL;
+        }
+
+        // Build TypeBindings from explicit type arguments
+        bindings.count = type_param_count;
+        bindings.bindings =
+            arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
+
+        for (size_t i = 0; i < type_param_count; i++) {
+          bindings.bindings[i].param_name =
+              generic_decl->data.func_decl.type_params[i].lexeme;
+
+          // Resolve the type expression to get a concrete Type*
+          Type *concrete_type =
+              resolve_type_expression(expr->data.call.type_args[i]);
+
+          if (!concrete_type) {
+            checker_error(expr->data.call.type_args[i]->loc,
+                          "invalid type argument %zu", i + 1);
+            return NULL;
+          }
+
+          bindings.bindings[i].concrete_type = concrete_type;
+        }
+      } else {
+        // Infer type arguments from call arguments
+        bindings =
+            infer_type_arguments(generic_decl, args, arg_count, expr->loc);
+        // Check if inference succeeded
+        for (size_t i = 0; i < bindings.count; i++) {
+          if (!bindings.bindings[i].concrete_type) {
+            checker_error(expr->loc, "could not infer type parameter '%s'",
+                          bindings.bindings[i].param_name);
+            return NULL;
+          }
         }
       }
 

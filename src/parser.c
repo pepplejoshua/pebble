@@ -1450,10 +1450,80 @@ AstNode *parse_postfix(Parser *parser) {
     } else if (parser_match(parser, TOKEN_LBRACKET)) {
       expr = parse_index(parser, expr);
     } else if (parser_match(parser, TOKEN_DOT)) {
+      if (parser_check(parser, TOKEN_LBRACKET)) {
+        // Generic expression (call or named type declaration)
+        parser_advance(parser); // consume [
+
+        // Parse comma-separated type expressions
+        AstNode **type_args = NULL;
+        size_t type_arg_count = 0;
+        size_t type_arg_capacity = 4;
+        type_args =
+            arena_alloc(&long_lived, type_arg_capacity * sizeof(AstNode *));
+
+        do {
+          if (type_arg_count >= type_arg_capacity) {
+            type_arg_capacity *= 2;
+            AstNode **new_args = arena_alloc(&long_lived, sizeof(AstNode *));
+            memcpy(new_args, type_args, type_arg_count * sizeof(AstNode *));
+            type_args = new_args;
+          }
+          type_args[type_arg_count++] = parse_type_expression(parser);
+        } while (parser_match(parser, TOKEN_COMMA));
+
+        parser_consume(parser, TOKEN_RBRACKET,
+                       "Expected ']' after type arguments");
+
+        // Must be followed by ( for function calls
+        if (!parser_check(parser, TOKEN_LPAREN)) {
+          parser_error(parser, "Expected '(' after type arguments");
+          return NULL;
+        }
+
+        // Parse arguments
+        parser_advance(parser); // consume (
+        AstNode **args = NULL;
+        size_t arg_count = 0;
+        size_t arg_capacity = 4;
+
+        AstNode *call = alloc_node(AST_EXPR_CALL, parser->previous.location);
+
+        if (!parser_check(parser, TOKEN_RPAREN)) {
+          // FIXME
+          args = arena_alloc(&long_lived,
+                             arg_capacity * sizeof(AstNode *)); // Max 16 args
+
+          do {
+            if (arg_count >= 64) {
+              parser_error(parser, "Too many arguments (max 64)");
+              break;
+            }
+
+            if (arg_count >= arg_capacity) {
+              arg_capacity *= 2;
+              AstNode **new_args =
+                  arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *));
+              memcpy(new_args, args, arg_count * sizeof(AstNode *));
+              args = new_args;
+            }
+
+            args[arg_count++] = parse_expression(parser);
+          } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after arguments");
+
+        call->data.call.func = expr;
+        call->data.call.args = args;
+        call->data.call.arg_count = arg_count;
+        call->data.call.type_args = type_args;
+        call->data.call.type_arg_count = type_arg_count;
+        expr = call;
+      }
       // Check for struct literal: IDENTIFIER.{ ... }
-      if (parser_check(parser, TOKEN_LBRACE) &&
-          (expr->kind == AST_EXPR_IDENTIFIER ||
-           expr->kind == AST_EXPR_MODULE_MEMBER)) {
+      else if (parser_check(parser, TOKEN_LBRACE) &&
+               (expr->kind == AST_EXPR_IDENTIFIER ||
+                expr->kind == AST_EXPR_MODULE_MEMBER)) {
         parser_advance(parser); // consume '{'
         Location loc = expr->loc;
         char *type_name = NULL;

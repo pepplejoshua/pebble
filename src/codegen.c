@@ -3321,7 +3321,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     CallingConvention conv = func_type->data.func.convention;
     if (conv == CALL_CONV_PEBBLE) {
-      emit_string(cg, "context, ");
+      emit_string(cg, "context");
     }
 
     if (func_type->data.func.is_variadic) {
