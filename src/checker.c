@@ -3684,10 +3684,8 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    bool is_generic = false;
     // Check if this is a generic function
     if (call_type->kind == TYPE_GENERIC_FUNCTION) {
-      is_generic = true;
       AstNode *generic_decl = call_type->data.generic_func.decl;
 
       // Infer type arguments from call arguments
@@ -3729,6 +3727,17 @@ Type *check_expression(AstNode *expr) {
             mono_func->data.func_decl.qualified_name;
         func_expr->data.ident.full_qualified_name =
             mono_func->data.func_decl.full_qualified_name;
+        func_expr->resolved_type = mono_sym->type;
+      } else if (func_expr->kind == AST_EXPR_MODULE_MEMBER) {
+        // Transform module member access into a regular identifier
+        // A::foo[int]() becomes a call to A__foo__int() in current scope
+        func_expr->kind = AST_EXPR_IDENTIFIER;
+        func_expr->data.ident.name = mono_func->data.func_decl.name;
+        func_expr->data.ident.qualified_name =
+            mono_func->data.func_decl.qualified_name;
+        func_expr->data.ident.full_qualified_name =
+            mono_func->data.func_decl.full_qualified_name;
+        func_expr->data.ident.is_extern = false;
         func_expr->resolved_type = mono_sym->type;
       }
 
