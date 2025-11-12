@@ -2402,10 +2402,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     AstNode *lhs = stmt->data.assign_stmt.lhs;
 
-    if ((int)stmt->data.assign_stmt.op == -1 &&
-        lhs->kind == AST_EXPR_MEMBER &&
-        lhs->data.member_expr.object->resolved_type->kind == TYPE_TAGGED_UNION
-    ) {
+    if ((int)stmt->data.assign_stmt.op == -1 && lhs->kind == AST_EXPR_MEMBER &&
+        lhs->data.member_expr.object->resolved_type->kind ==
+            TYPE_TAGGED_UNION) {
       emit_expr(cg, lhs->data.member_expr.object);
 
       cg->lvalue_assignment = false;
@@ -3021,13 +3020,26 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (src_type->kind == TYPE_ARRAY && target->kind == TYPE_SLICE) {
       // Special: construct slice from array
+      // Use statement expression to avoid evaluating src_expr twice
+      emit_string(cg, "({ ");
+      emit_type_name(cg, src_type);
+      emit_string(cg, " ");
+
+      char temp_name[64];
+      get_temporary_name(cg, temp_name, sizeof(temp_name));
+      emit_string(cg, temp_name);
+
+      emit_string(cg, " = ");
+      emit_expr(cg, src_expr);
+      emit_string(cg, "; ");
+
       emit_string(cg, "(");
-      emit_type_name(cg, target); // e.g., slice_int
+      emit_type_name(cg, target);
       emit_string(cg, "){ &");
-      emit_expr(cg, src_expr);
+      emit_string(cg, temp_name);
       emit_string(cg, ".data[0], ");
-      emit_expr(cg, src_expr);
-      emit_string(cg, ".len }");
+      emit_string(cg, temp_name);
+      emit_string(cg, ".len }; })");
     } else {
       // General cast, e.g., (float)int
       emit_string(cg, "(");
@@ -3153,47 +3165,107 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_SLICE: {
+    // Use statement expression to evaluate array/start/end only once
+    emit_string(cg, "({ ");
+
+    // Temp for array
+    char temp_array[64];
+    get_temporary_name(cg, temp_array, sizeof(temp_array));
+
+    // Temp for start (if present)
+    char temp_start[64] = {0};
+    bool has_start = expr->data.slice_expr.start != NULL;
+    if (has_start) {
+      get_temporary_name(cg, temp_start, sizeof(temp_start));
+    }
+
+    // Temp for end (if present)
+    char temp_end[64] = {0};
+    bool has_end = expr->data.slice_expr.end != NULL;
+    if (has_end) {
+      get_temporary_name(cg, temp_end, sizeof(temp_end));
+    }
+
+    // Emit temp declarations and assignments
+    Type *array_type = expr->data.slice_expr.array->resolved_type;
+
+    if (array_type->kind != TYPE_POINTER) {
+      emit_type_name(cg, array_type);
+      emit_string(cg, " ");
+      emit_string(cg, temp_array);
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.slice_expr.array);
+      emit_string(cg, "; ");
+    }
+
+    if (has_start) {
+      emit_string(cg, "size_t ");
+      emit_string(cg, temp_start);
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.slice_expr.start);
+      emit_string(cg, "; ");
+    }
+
+    if (has_end) {
+      emit_string(cg, "size_t ");
+      emit_string(cg, temp_end);
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.slice_expr.end);
+      emit_string(cg, "; ");
+    }
+
+    // Now emit the slice construction using temps
     emit_string(cg, "(");
     emit_type_name(cg, expr->resolved_type);
     emit_string(cg, "){ ");
-    if (expr->data.slice_expr.array->resolved_type->kind == TYPE_POINTER) {
+
+    if (array_type->kind == TYPE_POINTER) {
       emit_expr(cg, expr->data.slice_expr.array);
       emit_string(cg, " + ");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
+      if (has_start) {
+        emit_string(cg, temp_start);
       } else {
         emit_string(cg, "0");
       }
     } else {
       emit_string(cg, "&");
-      emit_expr(cg, expr->data.slice_expr.array);
+      emit_string(cg, temp_array);
       emit_string(cg, ".data[");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
+      if (has_start) {
+        emit_string(cg, temp_start);
       } else {
         emit_string(cg, "0");
       }
       emit_string(cg, "]");
     }
+
     emit_string(cg, ", ");
-    if (expr->data.slice_expr.end) {
-      emit_expr(cg, expr->data.slice_expr.end);
+
+    if (has_end) {
+      emit_string(cg, temp_end);
       emit_string(cg, " - ");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
+      if (has_start) {
+        emit_string(cg, temp_start);
       } else {
         emit_string(cg, "0");
       }
     } else {
-      emit_expr(cg, expr->data.slice_expr.array);
-      emit_string(cg, ".len - ");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
-      } else {
+      if (array_type->kind == TYPE_POINTER) {
+        // For pointer slicing without end, this shouldn't happen
+        // (should have been caught in checker)
         emit_string(cg, "0");
+      } else {
+        emit_string(cg, temp_array);
+        emit_string(cg, ".len - ");
+        if (has_start) {
+          emit_string(cg, temp_start);
+        } else {
+          emit_string(cg, "0");
+        }
       }
     }
-    emit_string(cg, " }");
+
+    emit_string(cg, " }; })");
     break;
   }
 
@@ -3249,7 +3321,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     CallingConvention conv = func_type->data.func.convention;
     if (conv == CALL_CONV_PEBBLE) {
-      emit_string(cg, "context");
+      emit_string(cg, "context, ");
     }
 
     if (func_type->data.func.is_variadic) {
@@ -3407,7 +3479,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, ";\n");
 
           char *name = base_type->qualified_name ? base_type->qualified_name
-                                                : base_type->canonical_name;
+                                                 : base_type->canonical_name;
 
           emit_string(cg, "assert(");
           emit_string(cg, temp);
@@ -3441,8 +3513,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           char buffer[64] = {0};
 
-          char *name = object_type->qualified_name ? object_type->qualified_name
-                                                  : object_type->canonical_name;
+          char *name = object_type->qualified_name
+                           ? object_type->qualified_name
+                           : object_type->canonical_name;
 
           emit_string(cg, "({\n");
           char *temp = get_temporary_name(cg, buffer, sizeof(buffer));

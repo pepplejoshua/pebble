@@ -1,17 +1,5 @@
 # Pebble Compiler
 
-## Fix
-This code can be problematic because it means expressions will be run / evaluated 2 times:
-```go
-var s []bool = [true, false, true, true];
-```
-
-to
-
-```c
-slice_bool s = (slice_bool){ &(array_4_bool){ {true, false, true, true}, 4 }.data[0], (array_4_bool){ {true, false, true, true}, 4 }.len };
-```
-
 ## 🚧 Missing Language Features
 
 ### Ideas from discussions with Caleb
