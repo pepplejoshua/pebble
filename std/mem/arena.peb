@@ -69,7 +69,7 @@ fn realloc(ptr, data *void, size usize) *void {
   return alloc(ptr, size);
 }
 
-fn free (ptr, data *void) void {
+fn free(ptr, data *void) void {
   // Do nothing
 }
 
