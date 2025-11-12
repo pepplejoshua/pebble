@@ -3333,7 +3333,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           // Emit variadic arguments
           for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
             char index_buff[24] = {0};
-            snprintf(index_buff, sizeof(index_buff), "%zu", i);
+            snprintf(index_buff, sizeof(index_buff), "%zu", i - fixed_params);
 
             emit_indent_spaces(cg);
             emit_indent_spaces(cg);

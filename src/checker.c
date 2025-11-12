@@ -2601,15 +2601,28 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
     result.bindings[i].concrete_type = NULL;
   }
 
+  // Check if function is variadic
+  bool is_variadic = (param_count > 0 && params[param_count - 1].is_variadic);
+  size_t required_param_count = is_variadic ? param_count - 1 : param_count;
+
   // Check argument count
-  if (arg_count != param_count) {
-    checker_error(call_loc, "function expects %zu arguments, got %zu",
-                  param_count, arg_count);
-    return result;
+  if (is_variadic) {
+    if (arg_count < required_param_count) {
+      checker_error(call_loc,
+                    "variadic function expects at least %zu arguments, got %zu",
+                    required_param_count, arg_count);
+      return result;
+    }
+  } else {
+    if (arg_count != param_count) {
+      checker_error(call_loc, "function expects %zu arguments, got %zu",
+                    param_count, arg_count);
+      return result;
+    }
   }
 
-  // Match each argument against each parameter
-  for (size_t j = 0; j < param_count && j < arg_count; j++) {
+  // Match non-variadic parameters
+  for (size_t j = 0; j < required_param_count; j++) {
     AstNode *param_type = params[j].type;
 
     // Get the concrete type of the argument
@@ -2619,6 +2632,44 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
 
     // Match the parameter type pattern with the argument's concrete type
     match_and_bind_type(param_type, arg_type, &result, call_loc);
+  }
+
+  // Match variadic parameters if present
+  if (is_variadic && arg_count > required_param_count) {
+    AstNode *variadic_type = params[required_param_count].type;
+
+    // Extract element type from []T
+    AstNode *element_type = NULL;
+    if (variadic_type->kind == AST_TYPE_SLICE) {
+      element_type = variadic_type->data.type_slice.element;
+    } else {
+      checker_error(call_loc, "variadic parameter must have slice type");
+      return result;
+    }
+
+    if (arg_count == required_param_count + 1) {
+      // Single variadic argument - could be slice or element
+      Type *arg_type = check_expression(args[required_param_count]);
+      if (arg_type) {
+        if (arg_type->kind == TYPE_SLICE) {
+          // Passing a slice directly - infer from its element type
+          match_and_bind_type(element_type, arg_type->data.slice.element,
+                              &result, call_loc);
+        } else {
+          // Single element - infer from the element itself
+          match_and_bind_type(element_type, arg_type, &result, call_loc);
+        }
+      }
+    } else {
+      // Multiple variadic arguments - infer from each element
+      for (size_t j = required_param_count; j < arg_count; j++) {
+        Type *arg_type = check_expression(args[j]);
+        if (!arg_type)
+          continue;
+
+        match_and_bind_type(element_type, arg_type, &result, call_loc);
+      }
+    }
   }
 
   return result;
