@@ -213,6 +213,7 @@ void codegen_init(Codegen *cg, FILE *output) {
 
   cg->in_defer = false;
   cg->defer_stack = NULL;
+  cg->lvalue_assignment = false;
 
   // Init temporary
   cg->temporary_count = 0;
@@ -2013,12 +2014,17 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, ":\n");
         }
 
+        emit_string(cg, "{\n");
+
         emit_indent(cg);
         emit_stmt(cg, cases[i]->data.case_stmt.body);
         emit_dedent(cg);
 
+        emit_string(cg, "\n}\n");
+
         emit_indent_spaces(cg);
         emit_indent_spaces(cg);
+
         emit_string(cg, "break;\n");
       }
 
@@ -2074,9 +2080,13 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
             emit_string(cg, ":\n");
           }
 
+          emit_string(cg, "{\n");
+
           emit_indent(cg);
           emit_stmt(cg, cases[i]->data.case_stmt.body);
           emit_dedent(cg);
+
+          emit_string(cg, "\n}\n");
 
           emit_string(cg, "break;\n");
         }
@@ -2384,126 +2394,83 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, ";\n");
     break;
   }
+
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
 
-    if (stmt->data.assign_stmt.lhs->kind == AST_EXPR_INDEX) {
-      AstNode *expr = stmt->data.assign_stmt.lhs;
-      AstNode *array_expr = expr->data.index_expr.array;
-      Type *array_type = array_expr->resolved_type;
+    cg->lvalue_assignment = true;
 
-      if (array_type->kind == TYPE_STRING) {
-        // For str, index directly
-        if (mode_is_safe()) {
-          emit_string(cg, "({ int __index = ");
-          emit_expr(cg, expr->data.index_expr.index);
-          emit_string(cg, "; char *__item = ");
-          emit_expr(cg, array_expr);
-          emit_string(cg, "; ");
-          emit_string(cg,
-                      "assert(__index >= 0 && __index < (int)strlen(__item));");
-          emit_string(cg, "__item[__index]");
-        } else {
-          emit_expr(cg, array_expr);
-          emit_string(cg, "[");
-          emit_expr(cg, expr->data.index_expr.index);
-          emit_string(cg, "]");
-        }
-      } else {
-        // For arrays/slices, use .data
-        if (mode_is_safe()) {
-          // Bounds checking
-          emit_string(cg, "({ int __index = ");
-          emit_expr(cg, expr->data.index_expr.index);
-          emit_string(cg, "; ");
+    AstNode *lhs = stmt->data.assign_stmt.lhs;
 
-          emit_type_name(cg, array_expr->resolved_type);
-          emit_string(cg, " __item = ");
-          emit_expr(cg, array_expr);
-          emit_string(cg,
-                      "; assert(__index >= 0 && __index < (int)__item.len); "
-                      "__item.data[__index]");
-        } else {
-          emit_expr(cg, array_expr);
-          emit_string(cg, ".data[");
-          emit_expr(cg, expr->data.index_expr.index);
-          emit_string(cg, "]");
-        }
-      }
+    if ((int)stmt->data.assign_stmt.op == -1 &&
+        lhs->kind == AST_EXPR_MEMBER &&
+        lhs->data.member_expr.object->resolved_type->kind == TYPE_TAGGED_UNION
+    ) {
+      emit_expr(cg, lhs->data.member_expr.object);
 
-      switch (stmt->data.assign_stmt.op) {
-      case BINOP_ADD: {
-        emit_string(cg, " += ");
-        break;
-      }
+      cg->lvalue_assignment = false;
 
-      case BINOP_SUB: {
-        emit_string(cg, " -= ");
-        break;
-      }
+      const char *member = lhs->data.member_expr.member;
+      Type *tagged_type = lhs->data.member_expr.object->resolved_type;
 
-      case BINOP_MUL: {
-        emit_string(cg, " *= ");
-        break;
-      }
+      const char *type_name = tagged_type->canonical_name;
 
-      case BINOP_DIV: {
-        emit_string(cg, " /= ");
-        break;
-      }
+      emit_string(cg, " = (");
+      emit_string(cg, type_name);
+      emit_string(cg, "){ .__tag = ");
 
-      default: {
-        emit_string(cg, " = ");
-        break;
-      }
-      }
+      emit_string(cg, type_name);
+      emit_string(cg, "__");
+      emit_string(cg, member);
 
+      emit_string(cg, ", .__data = { .");
+      emit_string(cg, member);
+      emit_string(cg, " = ");
       emit_expr(cg, stmt->data.assign_stmt.rhs);
-      emit_string(cg, ";");
 
-      if (mode_is_safe()) {
-        emit_string(cg, " });");
-      }
+      emit_string(cg, " } };\n");
 
-      emit_string(cg, "\n");
+      return;
     } else {
       emit_expr(cg, stmt->data.assign_stmt.lhs);
-
-      switch (stmt->data.assign_stmt.op) {
-      case BINOP_ADD: {
-        emit_string(cg, " += ");
-        break;
-      }
-
-      case BINOP_SUB: {
-        emit_string(cg, " -= ");
-        break;
-      }
-
-      case BINOP_MUL: {
-        emit_string(cg, " *= ");
-        break;
-      }
-
-      case BINOP_DIV: {
-        emit_string(cg, " /= ");
-        break;
-      }
-
-      case BINOP_MOD: {
-        emit_string(cg, " %= ");
-        break;
-      }
-
-      default: {
-        emit_string(cg, " = ");
-        break;
-      }
-      }
-
-      emit_expr(cg, stmt->data.assign_stmt.rhs);
-      emit_string(cg, ";\n");
     }
+
+    cg->lvalue_assignment = false;
+
+    switch (stmt->data.assign_stmt.op) {
+    case BINOP_ADD: {
+      emit_string(cg, " += ");
+      break;
+    }
+
+    case BINOP_SUB: {
+      emit_string(cg, " -= ");
+      break;
+    }
+
+    case BINOP_MUL: {
+      emit_string(cg, " *= ");
+      break;
+    }
+
+    case BINOP_DIV: {
+      emit_string(cg, " /= ");
+      break;
+    }
+
+    case BINOP_MOD: {
+      emit_string(cg, " %= ");
+      break;
+    }
+
+    default: {
+      emit_string(cg, " = ");
+      break;
+    }
+    }
+
+    emit_expr(cg, stmt->data.assign_stmt.rhs);
+    emit_string(cg, ";\n");
     break;
   }
   case AST_DECL_VARIABLE: {
@@ -2950,14 +2917,15 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       break;
     case UNOP_ADDR:
       if (expr->data.unop.operand->kind == AST_EXPR_INDEX) {
+        AstNode *index_expr = expr->data.unop.operand->data.index_expr.index;
         AstNode *array_expr = expr->data.unop.operand->data.index_expr.array;
         Type *array_type = array_expr->resolved_type;
 
         if (array_type->kind == TYPE_STRING) {
           // For str, index directly
-          if (mode_is_safe()) {
+          if (!cg->lvalue_assignment && mode_is_safe()) {
             emit_string(cg, "({ int __index = ");
-            emit_expr(cg, expr->data.index_expr.index);
+            emit_expr(cg, index_expr);
             emit_string(cg, "; char *__item = ");
             emit_expr(cg, array_expr);
             emit_string(cg, "; ");
@@ -2968,15 +2936,15 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, "&");
             emit_expr(cg, array_expr);
             emit_string(cg, "[");
-            emit_expr(cg, expr->data.index_expr.index);
+            emit_expr(cg, index_expr);
             emit_string(cg, "]");
           }
         } else {
           // For arrays/slices, use .data
-          if (mode_is_safe()) {
+          if (!cg->lvalue_assignment && mode_is_safe() && false) {
             // Bounds checking
             emit_string(cg, "({ int __index = ");
-            emit_expr(cg, expr->data.index_expr.index);
+            emit_expr(cg, index_expr);
             emit_string(cg, "; ");
 
             emit_type_name(cg, array_expr->resolved_type);
@@ -2989,7 +2957,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
             emit_string(cg, "&");
             emit_expr(cg, array_expr);
             emit_string(cg, ".data[");
-            emit_expr(cg, expr->data.index_expr.index);
+            emit_expr(cg, index_expr);
             emit_string(cg, "]");
           }
         }
@@ -3235,7 +3203,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (array_type->kind == TYPE_STRING) {
       // For str, index directly
-      if (mode_is_safe()) {
+      if (!cg->lvalue_assignment && mode_is_safe()) {
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);
         emit_string(cg, "; char *__item = ");
@@ -3252,7 +3220,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // For arrays/slices, use .data
-      if (mode_is_safe()) {
+      if (!cg->lvalue_assignment && mode_is_safe() && false) {
         // Bounds checking
         emit_string(cg, "({ int __index = ");
         emit_expr(cg, expr->data.index_expr.index);
@@ -3421,36 +3389,41 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
       } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
-        int index = member_index_of_type(base_type, member);
+        if (cg->lvalue_assignment) {
+          emit_expr(cg, object_expr);
+          emit_string(cg, "->__data.");
+        } else {
+          int index = member_index_of_type(base_type, member);
 
-        char buffer[64] = {0};
+          char buffer[64] = {0};
 
-        emit_string(cg, "({\n");
-        char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
-        emit_type_name(cg, object_type);
-        emit_string(cg, " ");
-        emit_string(cg, buffer);
-        emit_string(cg, " = ");
-        emit_expr(cg, object_expr);
-        emit_string(cg, ";\n");
+          emit_string(cg, "({\n");
+          char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
+          emit_type_name(cg, object_type);
+          emit_string(cg, " ");
+          emit_string(cg, buffer);
+          emit_string(cg, " = ");
+          emit_expr(cg, object_expr);
+          emit_string(cg, ";\n");
 
-        char *name = base_type->qualified_name ? base_type->qualified_name
-                                               : base_type->canonical_name;
+          char *name = base_type->qualified_name ? base_type->qualified_name
+                                                : base_type->canonical_name;
 
-        emit_string(cg, "assert(");
-        emit_string(cg, temp);
-        emit_string(cg, "->__tag == ");
-        emit_string(cg, name);
-        emit_string(cg, "__");
-        emit_string(cg, base_type->data.union_data.variant_names[index]);
-        emit_string(cg, ");\n");
+          emit_string(cg, "assert(");
+          emit_string(cg, temp);
+          emit_string(cg, "->__tag == ");
+          emit_string(cg, name);
+          emit_string(cg, "__");
+          emit_string(cg, base_type->data.union_data.variant_names[index]);
+          emit_string(cg, ");\n");
 
-        emit_string(cg, temp);
-        emit_string(cg, "->__data.");
-        emit_string(cg, member);
-        emit_string(cg, ";\n })");
+          emit_string(cg, temp);
+          emit_string(cg, "->__data.");
+          emit_string(cg, member);
+          emit_string(cg, ";\n })");
 
-        return;
+          return;
+        }
       } else {
         // Pointer to tuple, array, or slice: emit (*object). (e.g.,
         // (*ptr).len or (*ptr)._0)
@@ -3463,36 +3436,41 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       // TODO: Emit assert for current tag matching variant
       if (object_type->kind == TYPE_TAGGED_UNION) {
-        int index = member_index_of_type(object_type, member);
+        if (!cg->lvalue_assignment) {
+          int index = member_index_of_type(object_type, member);
 
-        char buffer[64] = {0};
+          char buffer[64] = {0};
 
-        char *name = object_type->qualified_name ? object_type->qualified_name
-                                                 : object_type->canonical_name;
+          char *name = object_type->qualified_name ? object_type->qualified_name
+                                                  : object_type->canonical_name;
 
-        emit_string(cg, "({\n");
-        char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
-        emit_type_name(cg, object_type);
-        emit_string(cg, " ");
-        emit_string(cg, buffer);
-        emit_string(cg, " = ");
-        emit_expr(cg, object_expr);
-        emit_string(cg, ";\n");
+          emit_string(cg, "({\n");
+          char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
+          emit_type_name(cg, object_type);
+          emit_string(cg, " ");
+          emit_string(cg, buffer);
+          emit_string(cg, " = ");
+          emit_expr(cg, object_expr);
+          emit_string(cg, ";\n");
 
-        emit_string(cg, "assert(");
-        emit_string(cg, temp);
-        emit_string(cg, ".__tag == ");
-        emit_string(cg, name);
-        emit_string(cg, "__");
-        emit_string(cg, object_type->data.union_data.variant_names[index]);
-        emit_string(cg, ");\n");
+          emit_string(cg, "assert(");
+          emit_string(cg, temp);
+          emit_string(cg, ".__tag == ");
+          emit_string(cg, name);
+          emit_string(cg, "__");
+          emit_string(cg, object_type->data.union_data.variant_names[index]);
+          emit_string(cg, ");\n");
 
-        emit_string(cg, temp);
-        emit_string(cg, ".__data.");
-        emit_string(cg, member);
-        emit_string(cg, ";\n })");
+          emit_string(cg, temp);
+          emit_string(cg, ".__data.");
+          emit_string(cg, member);
+          emit_string(cg, ";\n })");
 
-        return;
+          return;
+        } else {
+          emit_expr(cg, object_expr);
+          emit_string(cg, ".__data.");
+        }
       } else {
         emit_expr(cg, object_expr);
         emit_string(cg, ".");

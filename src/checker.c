@@ -2033,6 +2033,14 @@ bool is_valid_cast(Type *from, Type *to) {
     return true;
   }
 
+  // *u8 <-> str
+  if ((from->kind == TYPE_POINTER && from->data.ptr.base->kind == TYPE_U8 &&
+       to->kind == TYPE_STRING) ||
+      (from->kind == TYPE_STRING && to->kind == TYPE_POINTER &&
+       to->data.ptr.base->kind == TYPE_U8)) {
+    return true;
+  }
+
   // enum -> integral
   if (from->kind == TYPE_ENUM && type_is_integral(to)) {
     return true;
@@ -3544,8 +3552,11 @@ Type *check_expression(AstNode *expr) {
         right = left;
       }
 
-      if (!type_equals(left, right)) {
-        checker_error(expr->loc, "type mismatch in equality check");
+      AstNode *right_converted =
+          maybe_insert_cast(expr->data.binop.right, right, left);
+      if (!right_converted) {
+        checker_error(expr->loc, "type mismatch in equality check '%s' != '%s'",
+                      type_name(left), type_name(right));
         return NULL;
       }
       expr->resolved_type = type_bool;
@@ -4710,8 +4721,10 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
           // Allow pointers to tagged unions
           !(cond_type->kind == TYPE_POINTER &&
             cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
-        checker_error(cond->loc, "switch condition must be integral, "
-                                 "char, enum, string or tagged union");
+        checker_error(cond->loc,
+                      "switch condition must be integral, "
+                      "char, enum, string or tagged union. Got '%s'.",
+                      type_name(cond_type));
         had_error = true;
       }
 
