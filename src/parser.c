@@ -1482,43 +1482,10 @@ AstNode *parse_postfix(Parser *parser) {
 
         // Parse arguments
         parser_advance(parser); // consume (
-        AstNode **args = NULL;
-        size_t arg_count = 0;
-        size_t arg_capacity = 4;
+        expr = parse_call(parser, expr);
 
-        AstNode *call = alloc_node(AST_EXPR_CALL, parser->previous.location);
-
-        if (!parser_check(parser, TOKEN_RPAREN)) {
-          // FIXME
-          args = arena_alloc(&long_lived,
-                             arg_capacity * sizeof(AstNode *)); // Max 16 args
-
-          do {
-            if (arg_count >= 64) {
-              parser_error(parser, "Too many arguments (max 64)");
-              break;
-            }
-
-            if (arg_count >= arg_capacity) {
-              arg_capacity *= 2;
-              AstNode **new_args =
-                  arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *));
-              memcpy(new_args, args, arg_count * sizeof(AstNode *));
-              args = new_args;
-            }
-
-            args[arg_count++] = parse_expression(parser);
-          } while (parser_match(parser, TOKEN_COMMA));
-        }
-
-        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after arguments");
-
-        call->data.call.func = expr;
-        call->data.call.args = args;
-        call->data.call.arg_count = arg_count;
-        call->data.call.type_args = type_args;
-        call->data.call.type_arg_count = type_arg_count;
-        expr = call;
+        expr->data.call.type_args = type_args;
+        expr->data.call.type_arg_count = type_arg_count;
       }
       // Check for struct literal: IDENTIFIER.{ ... }
       else if (parser_check(parser, TOKEN_LBRACE) &&
