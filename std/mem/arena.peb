@@ -64,6 +64,11 @@ fn alloc(ptr *void, size usize) *void {
   return data;
 }
 
+fn realloc(ptr, data *void, size usize) *void {
+  // Just allocate new buffer for now
+  return alloc(ptr, size);
+}
+
 fn free (ptr, data *void) void {
   // Do nothing
 }
@@ -88,6 +93,7 @@ fn allocator(arena *Arena) Allocator {
   return Allocator.{
     ptr = arena,
     alloc = alloc,
+    realloc = realloc,
     free = free,
   };
 }
