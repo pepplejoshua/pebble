@@ -1,6 +1,17 @@
+extern fn alloca(sz usize) *void;
+
 fn new(size usize) *void {
     let allocator = context.default_allocator;
     return allocator.alloc(allocator.ptr, size);
+}
+
+fn stack_new(size usize) *void {
+  return alloca(size);
+}
+
+fn realloc(data *void, size usize) *void {
+    let allocator = context.default_allocator;
+    return allocator.realloc(allocator.ptr, data, size);
 }
 
 fn delete(ptr *void) void {
