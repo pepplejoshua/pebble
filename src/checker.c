@@ -3068,8 +3068,8 @@ static bool check_function_body(Symbol *sym);
 
 // Monomorphize a generic function with concrete types
 static AstNode *monomorphize_function(AstNode *generic_func,
-                                      TypeBindings *bindings,
-                                      Location call_loc) {
+                                      TypeBindings *bindings, Location call_loc,
+                                      Module *context_module) {
   // Step 1: Generate mangled name
   Type **concrete_types =
       arena_alloc(&long_lived, sizeof(Type *) * bindings->count);
@@ -3107,7 +3107,11 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   Symbol *mono_sym = symbol_create(mangled_name, SYMBOL_FUNCTION, mono_func);
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
 
-  // Step 7: Type-check the signature
+  // Step 7: Temporarily switch to defining module context for checking
+  Module *saved_module = checker_state.current_module;
+  checker_state.current_module = context_module;
+
+  // Type-check signature in defining context (local scope parents to it)
   if (!check_function_signature(mono_sym)) {
     checker_error(call_loc, "failed to monomorphize function '%s' called here",
                   generic_func->data.func_decl.name);
@@ -3117,12 +3121,13 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   // Step 8: Type-check the body
   // Save current scope state (we're likely inside another function)
   Scope *saved_scope = current_scope;
-  current_scope = checker_state.current_module->scope; // Reset to global
+  current_scope = checker_state.current_module->scope;
 
   bool succeeded = check_function_body(mono_sym);
 
-  // Restore scope state
+  // Restore scope state and current module
   current_scope = saved_scope;
+  checker_state.current_module = saved_module;
 
   if (!succeeded) {
     checker_error(
@@ -3736,9 +3741,31 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
+      // Determine defining module for monomorphization context
+      Module *context_module;
+      AstNode *func_expr = expr->data.call.func;
+
+      if (func_expr->kind == AST_EXPR_MODULE_MEMBER) {
+        // Qualified call: e.g., mem::new -> lookup "mem"
+        const char *mod_name =
+            func_expr->data.mod_member_expr.module->data.ident.name;
+        context_module =
+            lookup_imported_module(checker_state.current_module, mod_name);
+        if (!context_module) {
+          // Shouldn't happen (prior resolution would error), but safe
+          checker_error(expr->loc,
+                        "internal error: could not find defining module '%s'",
+                        mod_name);
+          return NULL;
+        }
+      } else {
+        // Local/unqualified call: e.g., new.[int]() in same module
+        context_module = checker_state.current_module;
+      }
+
       // Monomorphize!
-      AstNode *mono_func =
-          monomorphize_function(generic_decl, &bindings, expr->loc);
+      AstNode *mono_func = monomorphize_function(generic_decl, &bindings,
+                                                 expr->loc, context_module);
       if (!mono_func) {
         return NULL; // Error already reported
       }
