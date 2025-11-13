@@ -334,6 +334,8 @@ struct AstNode {
       char **field_names;          // ["x", "y"]
       AstNode **field_values;      // [10, 20]
       size_t field_count;
+      AstNode **type_args;
+      size_t type_arg_count;
     } struct_literal;
     struct {
       AstNode **elements;
