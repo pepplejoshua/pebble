@@ -768,8 +768,30 @@ AstNode *parse_variable_decl(Parser *parser) {
 
 AstNode *parse_type_decl(Parser *parser) {
   // type Name = TypeExpr;
+  // type Name[T, U, V] = TypeExpr;
 
   Token name = parser_consume(parser, TOKEN_IDENTIFIER, "Expected type name");
+  // Parse comma-separated type expressions
+  AstNode **type_args = NULL;
+  size_t type_arg_count = 0;
+
+  if (parser_match(parser, TOKEN_LBRACKET)) {
+    size_t type_arg_capacity = 4;
+    type_args = arena_alloc(&long_lived, type_arg_capacity * sizeof(AstNode *));
+
+    do {
+      if (type_arg_count >= type_arg_capacity) {
+        type_arg_capacity *= 2;
+        AstNode **new_args = arena_alloc(&long_lived, sizeof(AstNode *));
+        memcpy(new_args, type_args, type_arg_count * sizeof(AstNode *));
+        type_args = new_args;
+      }
+      type_args[type_arg_count++] = parse_type_expression(parser);
+    } while (parser_match(parser, TOKEN_COMMA));
+
+    parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after type arguments");
+  }
+
   parser_consume(parser, TOKEN_EQUAL, "Expected '=' after type name");
   AstNode *type_expr = parse_type_expression(parser);
   parser_consume(parser, TOKEN_SEMICOLON,
@@ -782,6 +804,8 @@ AstNode *parse_type_decl(Parser *parser) {
   node->data.type_decl.name = str_dup(name.lexeme);
   node->data.type_decl.qualified_name = str_dup(name.lexeme);
   node->data.type_decl.type_expr = type_expr;
+  node->data.type_decl.type_args = type_args;
+  node->data.type_decl.type_arg_count = type_arg_count;
 
   return node;
 }

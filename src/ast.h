@@ -189,6 +189,8 @@ struct AstNode {
       char *qualified_name;
       char *full_qualified_name;
       AstNode *type_expr;
+      AstNode **type_args;
+      size_t type_arg_count;
     } type_decl;
 
     // Statements
