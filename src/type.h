@@ -43,6 +43,7 @@ typedef enum {
   TYPE_OPTIONAL,
   TYPE_NONE,
   TYPE_GENERIC_FUNCTION,
+  TYPE_GENERIC_TYPE_DECL,
 } TypeKind;
 
 typedef enum {
@@ -58,6 +59,10 @@ struct Type {
   char *declared_name;
   char *qualified_name; // Used for named types
   Location loc;
+
+  // For monomorphized generics, store what it was specialized with
+  Type **generic_type_args;      // [int, string] for GenericType[int, string]
+  size_t generic_type_arg_count; // 2
 
   union {
     struct {
@@ -111,7 +116,8 @@ struct Type {
 
     struct {
       AstNode *decl;  // Points to the original AST_DECL_FUNCTION
-    } generic_func;
+    } generic_decl;
+
   } data;
 };
 
@@ -187,6 +193,7 @@ Type *type_lookup(const char *name, const char *mod_name);
 void type_register(const char *name, Type *type);
 Type *canonical_lookup(const char *canonical_name);
 void canonical_register(const char *canonical_name, Type *type);
+void canonical_unregister(const char *canonical_name);
 
 // Compute canonical name for a fully resolved type
 char *compute_canonical_name(Type *type);

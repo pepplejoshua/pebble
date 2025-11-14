@@ -470,6 +470,14 @@ void canonical_register(const char *canonical_name, Type *type) {
   HASH_ADD_STR(canonical_type_table, name, entry);
 }
 
+void canonical_unregister(const char *canonical_name) {
+  TypeEntry *entry = NULL;
+  HASH_FIND_STR(canonical_type_table, canonical_name, entry);
+  if (entry) {
+    HASH_DEL(canonical_type_table, entry);
+  }
+}
+
 // Look up canonical type
 Type *canonical_lookup(const char *canonical_name) {
   if (!canonical_name)
@@ -676,6 +684,12 @@ void type_system_init(void) {
 char *compute_canonical_name(Type *type) {
   assert(type);
 
+  if (type->kind == TYPE_UNRESOLVED) {
+    // This is a placeholder — return a temporary name so recursion doesn't
+    // crash
+    return "__UNRESOLVED__";
+  }
+
   char *result = NULL;
 
   switch (type->kind) {
@@ -703,6 +717,10 @@ char *compute_canonical_name(Type *type) {
 
   case TYPE_GENERIC_FUNCTION:
     assert(false && "Attempt to compute canonical name on a generic function.");
+    break;
+
+  case TYPE_GENERIC_TYPE_DECL:
+    assert(false && "Attempt to compute canonical name on a generic type.");
     break;
 
   case TYPE_POINTER: {
@@ -920,8 +938,8 @@ char *compute_canonical_name(Type *type) {
     break;
   }
 
-  case TYPE_UNRESOLVED:
-    assert(false && "Cannot compute canonical name for unresolved type");
+  default:
+    assert(false && "Cannot compute canonical name for unknown type");
     return NULL;
   }
   return result;
