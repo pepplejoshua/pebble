@@ -3313,11 +3313,8 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   }
 
   // Step 4: Create placeholder EARLY
-  checker_state.in_type_resolution = true;
   Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
   placeholder->declared_name = generic_struct_decl->data.type_decl.name;
-  // Do NOT set canonical_name yet — it triggers compute_canonical_name on
-  // UNRESOLVED
   canonical_register(mangled_name, placeholder);
   type_register(mangled_name, placeholder);
 
@@ -3336,29 +3333,39 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   }
 
   // Step 7: NOW update placeholder
+  char *saved_declared_name = placeholder->declared_name;
   *placeholder = *resolved_body;
-  placeholder->canonical_name = mangled_name;
+  placeholder->canonical_name = NULL;
   placeholder->qualified_name = mangled_name;
+  placeholder->declared_name = saved_declared_name;
 
   // Step 8: Track generic args
   placeholder->generic_type_args = concrete_types;
   placeholder->generic_type_arg_count = type_arg_count;
   placeholder->declared_name = generic_struct_decl->data.type_decl.name;
 
-  // Step 9: NOW safe to canonicalize (no UNRESOLVED children)
+  // Step 9: Check for cycles BEFORE canonicalization
   Visited *visited = NULL;
-  if (check_type_has_cycles(placeholder, &visited)) {
+  bool has_cycle = check_type_has_cycles(placeholder, &visited);
+
+  // Clean up visited set
+  Visited *curr, *tmp;
+  HASH_ITER(hh, visited, curr, tmp) { HASH_DEL(visited, curr); }
+
+  // Restore canonical name
+  placeholder->canonical_name = mangled_name;
+
+  if (has_cycle) {
     canonical_unregister(mangled_name);
     checker_error(
         call_loc,
-        "recursive struct '%s' has infinite size (use pointer for indirection)",
+        "recursive type '%s' has infinite size (use pointer for indirection)",
         placeholder->declared_name);
     return NULL;
   }
-  checker_state.in_type_resolution = false;
 
   // Step 10: Final canonicalization (dedup + name)
-  canonicalize_type(&placeholder); // This will use mangled_name and dedup
+  canonicalize_type(&placeholder);
 
   return placeholder;
 }
@@ -5495,6 +5502,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     }
 
     if (lhs_type && rhs_type) {
+      // printf("%s vs %s\n", lhs_type->canonical_name,
+      // rhs_type->canonical_name);
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
       if (!converted) {
         checker_error(stmt->loc, "assignment type mismatch, '%s' != '%s'",
