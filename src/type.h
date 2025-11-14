@@ -59,6 +59,7 @@ struct Type {
   char *declared_name;
   char *qualified_name; // Used for named types
   Location loc;
+  bool used;
 
   // For monomorphized generics, store what it was specialized with
   Type **generic_type_args;      // [int, string] for GenericType[int, string]

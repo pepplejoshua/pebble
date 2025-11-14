@@ -3342,6 +3342,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   // Step 8: Track generic args
   placeholder->generic_type_args = concrete_types;
   placeholder->generic_type_arg_count = type_arg_count;
+  placeholder->declared_name = generic_struct_decl->data.type_decl.name;
 
   // Step 9: NOW safe to canonicalize (no UNRESOLVED children)
   Visited *visited = NULL;

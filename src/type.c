@@ -47,6 +47,7 @@ Type *type_create(TypeKind kind, Location loc) {
   memset(type, 0, sizeof(Type));
   type->kind = kind;
   type->loc = loc;
+  type->used = false;
   return type;
 }
 
