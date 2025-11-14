@@ -1,0 +1,86 @@
+import "std:mem";
+
+type Vec[T] = struct {
+    data *T;
+    len usize;
+    cap usize;
+    backing Allocator;
+};
+
+// Creates a new, empty vector.
+fn new[T]() Vec[T] {
+    return .{
+        data = nil,
+        len = 0,
+        cap = 0,
+        backing = context.default_allocator,
+    };
+}
+
+// Creates a new vector with a specified capacity.
+fn with_capacity[T](cap usize) Vec[T] {
+    if cap == 0 {
+        return new[T]();
+    }
+
+    let allocator = context.default_allocator;
+    let size = cap * (sizeof T);
+    let data *T = allocator.alloc(allocator.ptr, size);
+
+    return .{
+        data = data,
+        len = 0,
+        cap = cap,
+        backing = allocator,
+    };
+}
+
+// Ensures the vector can hold at least `additional` more elements without reallocating.
+fn reserve[T](self *Vec[T], additional usize) void {
+    if self.len + additional > self.cap {
+        let needed = self.len + additional;
+        var new_cap = 0;
+        if self.cap == 0 {
+            new_cap = 4;
+        } else {
+            new_cap = self.cap;
+        }
+        while new_cap < needed {
+            new_cap *= 2;
+        }
+
+        let new_size = new_cap * (sizeof T);
+        if self.data == nil {
+            // First allocation
+            let allocator = context.default_allocator;
+            self.backing = allocator;
+            self.data = self.backing.alloc(self.backing.ptr, new_size) as *T;
+        } else {
+            // Reallocation
+            self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
+        }
+        self.cap = new_cap;
+    }
+}
+
+// Adds an element to the end of the vector.
+fn push[T](self *Vec[T], value T) void {
+    reserve(self, 1);
+    *(self.data + self.len) = value;
+    self.len++;
+}
+
+// Frees the memory used by the vector.
+fn drop[T](self *Vec[T]) void {
+    if self.data != nil {
+        self.backing.free(self.backing.ptr, self.data);
+        self.data = nil;
+        self.len = 0;
+        self.cap = 0;
+    }
+}
+
+// Returns a slice containing all elements in the vector.
+fn as_slice[T](self *Vec[T]) []T {
+    return self.data[:self.len];
+}
