@@ -248,6 +248,9 @@ void codegen_init(Codegen *cg, FILE *output) {
 
   // Init temporary
   cg->temporary_count = 0;
+
+  // Initialise expression buffer
+  init_expression_buffer();
 }
 
 char *get_temporary_name(Codegen *cg, char *buffer, size_t size) {
@@ -1954,12 +1957,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     defer_stack_emit_all(cg, true);
 
     emit_indent_spaces(cg);
-    emit_string(cg, "return");
+
     if (stmt->data.return_stmt.expr) {
-      emit_string(cg, " ");
       emit_expr(cg, stmt->data.return_stmt.expr);
+      emit_string(cg, "return ");
+      emit_expression_buffer(cg);
+      emit_string(cg, ";\n");
+      return;
     }
-    emit_string(cg, ";\n");
+    emit_string(cg, "return;\n");
     break;
   case AST_STMT_DEFER: {
     // Emit held stmt to defer stack
@@ -2520,6 +2526,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     if (stmt->data.var_decl.init) {
       emit_string(cg, " = ");
       emit_expr(cg, stmt->data.var_decl.init);
+      emit_expression_buffer(cg);
     } else {
       if (stmt->resolved_type->kind == TYPE_ARRAY) {
         emit_string(cg, " = {{0}, ");
@@ -2597,23 +2604,23 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_LITERAL_INT: {
     // Format long long
-    char buf[32];
+    char buf[32] = {0};
     sprintf(buf, "%lld", expr->data.int_lit.value);
-    emit_string(cg, buf);
+    write_expression(buf);
     break;
   }
 
   case AST_EXPR_LITERAL_FLOAT: {
-    char buf[64];
+    char buf[64] = {0};
     sprintf(buf, "%f", expr->data.float_lit.value);
-    emit_string(cg, buf);
+    write_expression(buf);
     break;
   }
 
   case AST_EXPR_LITERAL_STRING:
-    emit_string(cg, "\"");
-    emit_string(cg, expr->data.str_lit.value);
-    emit_string(cg, "\"");
+    write_expression("\"");
+    write_expression(expr->data.str_lit.value);
+    write_expression("\"");
     break;
 
   case AST_EXPR_INTERPOLATED_STRING: {
@@ -2876,67 +2883,67 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_BINARY_OP: {
     emit_expr(cg, expr->data.binop.left);
-    emit_string(cg, " ");
+    write_expression(" ");
     // Map BinaryOp to C op string
     switch (expr->data.binop.op) {
     case BINOP_ADD:
-      emit_string(cg, "+");
+      write_expression("+");
       break;
     case BINOP_SUB:
-      emit_string(cg, "-");
+      write_expression( "-");
       break;
     case BINOP_MUL:
-      emit_string(cg, "*");
+      write_expression("*");
       break;
     case BINOP_DIV:
-      emit_string(cg, "/");
+      write_expression("/");
       break;
     case BINOP_MOD:
-      emit_string(cg, "%");
+      write_expression("%");
       break;
     case BINOP_EQ:
-      emit_string(cg, "==");
+      write_expression("==");
       break;
     case BINOP_NE:
-      emit_string(cg, "!=");
+      write_expression("!=");
       break;
     case BINOP_LT:
-      emit_string(cg, "<");
+      write_expression("<");
       break;
     case BINOP_LE:
-      emit_string(cg, "<=");
+      write_expression("<=");
       break;
     case BINOP_GT:
-      emit_string(cg, ">");
+      write_expression( ">");
       break;
     case BINOP_GE:
-      emit_string(cg, ">=");
+      write_expression(">=");
       break;
     case BINOP_AND:
-      emit_string(cg, "&&");
+      write_expression("&&");
       break;
     case BINOP_OR:
-      emit_string(cg, "||");
+      write_expression("||");
       break;
     case BINOP_BIT_AND:
-      emit_string(cg, "&");
+      write_expression("&");
       break;
     case BINOP_BIT_OR:
-      emit_string(cg, "|");
+      write_expression( "|");
       break;
     case BINOP_BIT_XOR:
-      emit_string(cg, "^");
+      write_expression("^");
       break;
     case BINOP_BIT_SHL:
-      emit_string(cg, "<<");
+      write_expression("<<");
       break;
     case BINOP_BIT_SHR:
-      emit_string(cg, ">>");
+      write_expression(">>");
       break;
     default:
-      emit_string(cg, "/* ? */");
+      write_expression("/* ? */");
     }
-    emit_string(cg, " ");
+    write_expression(" ");
     emit_expr(cg, expr->data.binop.right);
     break;
   }
