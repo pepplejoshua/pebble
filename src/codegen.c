@@ -10,6 +10,14 @@
 #include <stdio.h>
 #include <string.h>
 
+typedef struct ExpressionBuffer {
+  char *buffer;
+  size_t length;
+} ExpressionBuffer;
+
+ExpressionBuffer expression_buffer = {0};
+const size_t expression_buffer_size = 1024;
+
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
   size_t *len, *cap;
@@ -47,6 +55,29 @@ static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
 }
 
 static void emit_indent_spaces(Codegen *cg);
+
+static void init_expression_buffer(void) {
+  expression_buffer.buffer = arena_alloc(&long_lived, expression_buffer_size);
+  expression_buffer.length = 0;
+}
+
+static void write_expression(char *expr) {
+  size_t len = strlen(expr);
+  assert(expression_buffer.length + len < expression_buffer_size);
+  memcpy(expression_buffer.buffer + expression_buffer.length, expr, len);
+  expression_buffer.length += len;
+}
+
+static void reset_expression_buffer(void) {
+  // only reset the used portion of the buffer
+  memset(expression_buffer.buffer, 0, expression_buffer.length);
+  expression_buffer.length = 0;
+}
+
+static void emit_expression_buffer(Codegen *cg) {
+  append_to_section(cg, expression_buffer.buffer, expression_buffer.length);
+  reset_expression_buffer();
+}
 
 static DeferStack *defer_stack_create(DeferStack *parent,
                                       DeferScopeType scope_type) {
