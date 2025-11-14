@@ -189,8 +189,8 @@ struct AstNode {
       char *qualified_name;
       char *full_qualified_name;
       AstNode *type_expr;
-      AstNode **type_args;
-      size_t type_arg_count;
+      Token *type_params;
+      size_t type_params_count;
     } type_decl;
 
     // Statements
@@ -385,10 +385,14 @@ struct AstNode {
     // Type expressions
     struct {
       char *name;
+      AstNode **type_args;
+      size_t type_arg_count;
     } type_named;
     struct {
       char *mod_name;
       char *mem_name;
+      AstNode **type_args;
+      size_t type_arg_count;
     } type_qualified_named;
     struct {
       AstNode *base;
