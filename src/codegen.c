@@ -409,145 +409,53 @@ bool topo_visit(TypeDepNode *all_types, TypeDepNode *node, char ***result,
   return true;
 }
 
+static void mark_type_used(Type *type) {
+  if (!type || type->used)
+    return;
+  type->used = true;
+
+  switch (type->kind) {
+  case TYPE_POINTER:
+    mark_type_used(type->data.ptr.base);
+    break;
+  case TYPE_STRUCT:
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      mark_type_used(type->data.struct_data.field_types[i]);
+    }
+    break;
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
+    for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+      mark_type_used(type->data.union_data.variant_types[i]);
+    }
+    break;
+  case TYPE_ARRAY:
+    mark_type_used(type->data.array.element);
+    break;
+  case TYPE_SLICE:
+    mark_type_used(type->data.slice.element);
+    break;
+  case TYPE_TUPLE:
+    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+      mark_type_used(type->data.tuple.element_types[i]);
+    }
+    break;
+  case TYPE_OPTIONAL:
+    mark_type_used(type->data.optional.base);
+    break;
+  case TYPE_FUNCTION:
+    for (size_t i = 0; i < type->data.func.param_count; i++) {
+      mark_type_used(type->data.func.param_types[i]);
+    }
+    mark_type_used(type->data.func.return_type);
+    break;
+  default:
+    break;
+  }
+}
+
 void emit_program(Codegen *cg, Module *main_mod) {
-  TypeDepNode *dep_graph = NULL;
   Symbol *sym, *tmp;
-
-  TypeEntry *entry, *type_tmp;
-
-  // Pass 1: Create nodes for all declared types
-  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
-    Type *type = entry->type;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
-        type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
-        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION ||
-        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
-        type->kind == TYPE_TAGGED_UNION) {
-      TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
-      node->name = type->canonical_name;
-      node->depends_on = NULL;
-      node->dep_count = 0;
-
-      assert(node->name && "Node does not have a name.");
-      HASH_ADD_KEYPTR(hh, dep_graph, node->name, strlen(node->name), node);
-    }
-  }
-
-  // Pass 2: Build dependency lists
-  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
-    Type *type = entry->type;
-    TypeDepNode *node = NULL;
-    HASH_FIND_STR(dep_graph, type->canonical_name, node);
-    size_t dep_capacity = 0;
-
-    switch (type->kind) {
-    case TYPE_ARRAY: {
-      collect_dependencies(type->data.array.element, type->canonical_name,
-                           dep_graph, &node->depends_on, &node->dep_count,
-                           &dep_capacity);
-      break;
-    }
-
-    case TYPE_TUPLE: {
-      for (size_t i = 0; i < type->data.tuple.element_count; i++) {
-        collect_dependencies(type->data.tuple.element_types[i],
-                             type->canonical_name, dep_graph, &node->depends_on,
-                             &node->dep_count, &dep_capacity);
-      }
-      break;
-    }
-
-    case TYPE_OPTIONAL: {
-      collect_dependencies(type->data.optional.base, type->canonical_name,
-                           dep_graph, &node->depends_on, &node->dep_count,
-                           &dep_capacity);
-      break;
-    }
-
-    case TYPE_SLICE: {
-      collect_dependencies(type->data.slice.element, type->canonical_name,
-                           dep_graph, &node->depends_on, &node->dep_count,
-                           &dep_capacity);
-      break;
-    }
-
-    case TYPE_STRUCT: {
-      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
-        collect_dependencies(type->data.struct_data.field_types[i],
-                             type->canonical_name, dep_graph, &node->depends_on,
-                             &node->dep_count, &dep_capacity);
-      }
-      break;
-    }
-
-    case TYPE_UNION:
-    case TYPE_TAGGED_UNION: {
-      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
-        collect_dependencies(type->data.union_data.variant_types[i],
-                             type->canonical_name, dep_graph, &node->depends_on,
-                             &node->dep_count, &dep_capacity);
-      }
-      break;
-    }
-
-    case TYPE_FUNCTION: {
-      for (size_t i = 0; i < type->data.func.param_count; i++) {
-        collect_dependencies(type->data.func.param_types[i],
-                             type->canonical_name, dep_graph, &node->depends_on,
-                             &node->dep_count, &dep_capacity);
-      }
-      collect_dependencies(type->data.func.return_type, type->canonical_name,
-                           dep_graph, &node->depends_on, &node->dep_count,
-                           &dep_capacity);
-      break;
-    }
-    default:
-      break;
-    }
-  }
-
-  // Pass 3: Topological sort
-  size_t type_count = HASH_COUNT(dep_graph);
-  char **sorted_types = malloc(type_count * sizeof(char *));
-  size_t sorted_count = 0;
-
-  TypeDepNode *node, *node_tmp;
-  HASH_ITER(hh, dep_graph, node, node_tmp) {
-    if (!node->visited) {
-      if (!topo_visit(dep_graph, node, &sorted_types, &sorted_count)) {
-        fprintf(stderr, "Failed to sort global types\n");
-        exit(1);
-      }
-    }
-  }
-
-  // Emit types in sorted order
-  cg->current_section = "forward_types";
-  for (size_t i = 0; i < sorted_count; i++) {
-    // Check for array/tuple type is in canonical type table
-    TypeEntry *entry = NULL;
-    HASH_FIND_STR(canonical_type_table, sorted_types[i], entry);
-    if (entry &&
-        (entry->type->kind == TYPE_ARRAY || entry->type->kind == TYPE_TUPLE ||
-         entry->type->kind == TYPE_SLICE || entry->type->kind == TYPE_STRUCT ||
-         entry->type->kind == TYPE_ENUM || entry->type->kind == TYPE_FUNCTION ||
-         entry->type->kind == TYPE_OPTIONAL ||
-         entry->type->kind == TYPE_UNION ||
-         entry->type->kind == TYPE_TAGGED_UNION)) {
-      emit_type_if_needed(cg, entry->type);
-    }
-  }
-
-  // Cleanup dependency graph
-  HASH_ITER(hh, dep_graph, node, node_tmp) {
-    HASH_DEL(dep_graph, node);
-    for (size_t i = 0; i < node->dep_count; i++) {
-      free(node->depends_on[i]);
-    }
-    free(node->depends_on);
-    free(node);
-  }
-  free(sorted_types);
 
   // Emit forwards/defs for vars/constants
   cg->current_section = "forward_vars_funcs";
@@ -1034,6 +942,131 @@ void emit_program(Codegen *cg, Module *main_mod) {
     }
   }
 
+  // DEFERRED TYPE EMISSION
+  TypeDepNode *dep_graph = NULL;
+  TypeEntry *entry, *type_tmp;
+
+  // Pass 1: Create nodes ONLY for types that were marked as used
+  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
+    Type *type = entry->type;
+    if (!type->used)
+      continue; // ← CRITICAL: Skip unused
+
+    if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
+        type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
+        type->kind == TYPE_ENUM || type->kind == TYPE_FUNCTION ||
+        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+        type->kind == TYPE_TAGGED_UNION) {
+
+      TypeDepNode *node = calloc(1, sizeof(TypeDepNode));
+      node->name = type->canonical_name;
+      node->depends_on = NULL;
+      node->dep_count = 0;
+      assert(node->name && "Node does not have a name.");
+      HASH_ADD_KEYPTR(hh, dep_graph, node->name, strlen(node->name), node);
+    }
+  }
+
+  // Pass 2: Build dependency lists (only for used types)
+  HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
+    Type *type = entry->type;
+    if (!type->used)
+      continue;
+
+    TypeDepNode *node = NULL;
+    HASH_FIND_STR(dep_graph, type->canonical_name, node);
+    if (!node)
+      continue;
+
+    size_t dep_capacity = 0;
+    switch (type->kind) {
+    case TYPE_ARRAY:
+      collect_dependencies(type->data.array.element, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
+      break;
+    case TYPE_TUPLE:
+      for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+        collect_dependencies(type->data.tuple.element_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      break;
+    case TYPE_OPTIONAL:
+      collect_dependencies(type->data.optional.base, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
+      break;
+    case TYPE_SLICE:
+      collect_dependencies(type->data.slice.element, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
+      break;
+    case TYPE_STRUCT:
+      for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+        collect_dependencies(type->data.struct_data.field_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      break;
+    case TYPE_UNION:
+    case TYPE_TAGGED_UNION:
+      for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+        collect_dependencies(type->data.union_data.variant_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      break;
+    case TYPE_FUNCTION:
+      for (size_t i = 0; i < type->data.func.param_count; i++) {
+        collect_dependencies(type->data.func.param_types[i],
+                             type->canonical_name, dep_graph, &node->depends_on,
+                             &node->dep_count, &dep_capacity);
+      }
+      collect_dependencies(type->data.func.return_type, type->canonical_name,
+                           dep_graph, &node->depends_on, &node->dep_count,
+                           &dep_capacity);
+      break;
+    default:
+      break;
+    }
+  }
+
+  // Pass 3: Topological sort
+  size_t type_count = HASH_COUNT(dep_graph);
+  char **sorted_types = malloc(type_count * sizeof(char *));
+  size_t sorted_count = 0;
+  TypeDepNode *node, *node_tmp;
+  HASH_ITER(hh, dep_graph, node, node_tmp) {
+    if (!node->visited) {
+      if (!topo_visit(dep_graph, node, &sorted_types, &sorted_count)) {
+        fprintf(stderr, "Failed to sort global types\n");
+        exit(1);
+      }
+    }
+  }
+
+  // Emit types in sorted order
+  cg->current_section = "forward_types";
+  for (size_t i = 0; i < sorted_count; i++) {
+    TypeEntry *entry = NULL;
+    HASH_FIND_STR(canonical_type_table, sorted_types[i], entry);
+    if (entry && entry->type->used) { // Double-check
+      emit_type_if_needed(cg, entry->type);
+    }
+  }
+
+  // Cleanup
+  HASH_ITER(hh, dep_graph, node, node_tmp) {
+    HASH_DEL(dep_graph, node);
+    for (size_t i = 0; i < node->dep_count; i++) {
+      free(node->depends_on[i]);
+    }
+    free(node->depends_on);
+    free(node);
+  }
+  free(sorted_types);
+
   // Emit sections
   emit_sections(cg, main_mod);
 
@@ -1046,6 +1079,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
 
 void emit_type_name(Codegen *cg, Type *type) {
   assert(type);
+  mark_type_used(type);
 
   switch (type->kind) {
   case TYPE_INT:
@@ -2526,6 +2560,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
 // Emit expression (minimal for PBL)
 void emit_expr(Codegen *cg, AstNode *expr) {
+  if (expr && expr->resolved_type) {
+    mark_type_used(expr->resolved_type);
+  }
+
   switch (expr->kind) {
   case AST_EXPR_CONTEXT:
     emit_string(cg, "context");

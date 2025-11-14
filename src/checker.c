@@ -1805,11 +1805,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     }
 
     // If all elements match exactly, no cast needed
-    if (!needs_conversion) {
+    if (!needs_conversion &&
+        strcmp(type_name(expr_type), type_name(target_type)) == 0) {
       return expr;
     }
 
-    // Determine if we are dealing a literal, so we can try to perform
+    // Determine if we are dealing with a literal, so we can try to perform
     // implicit casts on its elements
     if (expr->kind != AST_EXPR_TUPLE) {
       return NULL;
@@ -1839,7 +1840,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     }
 
     new_tuple->resolved_type = target_type;
-
+    expr->resolved_type = target_type;
     return new_tuple;
   } else if ((expr_type->kind == TYPE_F32 && target_type->kind == TYPE_F64) ||
              (expr_type->kind == TYPE_F64 && target_type->kind == TYPE_F32)) {
