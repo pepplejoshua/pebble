@@ -315,6 +315,10 @@ void collect_dependencies(Type *t, const char *self_name,
   if (t->canonical_name && strcmp(t->canonical_name, self_name) == 0)
     return;
 
+  if (t->kind == TYPE_POINTER) {
+    return; // Don't recurse into pointer base types
+  }
+
   // Check if this type's canonical name matches a declared type
   if (t->canonical_name && strcmp(t->canonical_name, self_name) != 0) {
     if (is_declared_type(t->canonical_name, all_types)) {
