@@ -42,6 +42,7 @@ typedef enum {
   TYPE_OPAQUE,
   TYPE_OPTIONAL,
   TYPE_NONE,
+  TYPE_GENERIC_FUNCTION,
 } TypeKind;
 
 typedef enum {
@@ -107,6 +108,10 @@ struct Type {
     struct {
       Type *base;
     } optional;
+
+    struct {
+      AstNode *decl;  // Points to the original AST_DECL_FUNCTION
+    } generic_func;
   } data;
 };
 
@@ -116,6 +121,16 @@ struct TypeEntry {
   Type *type;        // Pointer to the type
   UT_hash_handle hh; // Hash handle
 };
+
+// Monomorphization instance (for generic function)
+typedef struct MonoFuncInstance {
+  char *key;                   // Mangled name: "add__int"
+  AstNode *generic_func;   // Original generic function declaration
+  Type **concrete_types;       // [int] or [int, bool]
+  size_t type_count;
+  AstNode *monomorphized_func; // The specialized function AST
+  UT_hash_handle hh;
+} MonoFuncInstance;
 
 // Built-in types
 extern Type *type_int;
@@ -143,6 +158,9 @@ extern TypeEntry *type_table;
 
 // Canonical type table (global hash map of canonical name -> type)
 extern TypeEntry *canonical_type_table;
+
+// Monomorphization table (global hash map of mangled name -> function instance)
+extern MonoFuncInstance *mono_instances;
 
 // Type system functions
 void type_system_init(void);
@@ -180,6 +198,9 @@ char *type_name(Type *type);
 bool type_equals(Type *a, Type *b);
 bool type_is_numeric(Type *type);
 bool type_is_ord(Type *type);
+
+// Type conversion
+AstNode *type_to_ast_node(Type *type);
 
 int member_index_of_type(Type *type, const char *member);
 

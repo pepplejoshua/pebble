@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // External allocator
@@ -409,6 +410,9 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   })
 
   switch (type->kind) {
+  case TYPE_GENERIC_FUNCTION:
+    // This should not occur, ever
+    assert(false && "Attempt to canonicalize generic function.");
   case TYPE_INT:
     canonical_name = type_int->canonical_name;
     break;
@@ -834,6 +838,9 @@ static bool type_is_int(Type *type) {
 }
 
 static bool type_is_integral(Type *type) {
+  if (!type)
+    return false;
+
   return type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
          type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
          type->kind == TYPE_USIZE || type->kind == TYPE_I8 ||
@@ -1037,6 +1044,110 @@ static void check_global_variables(void) {
 }
 
 // Sub-pass 3d: Check function signatures
+// Extract the signature checking logic for a single function
+static bool check_function_signature(Symbol *sym) {
+  AstNode *decl = sym->decl;
+
+  // Handle generic functions - give them a special type
+  if (decl->kind == AST_DECL_FUNCTION &&
+      decl->data.func_decl.type_param_count > 0) {
+    Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
+    generic_type->data.generic_func.decl = decl;
+    sym->type = generic_type;
+    return true;
+  }
+
+  FuncParam *params;
+  size_t param_count = 0;
+  AstNode *return_type_expr;
+  CallingConvention convention = CALL_CONV_C;
+
+  if (decl->kind == AST_DECL_FUNCTION) {
+    params = decl->data.func_decl.params;
+    param_count = decl->data.func_decl.param_count;
+    return_type_expr = decl->data.func_decl.return_type;
+
+    check_convention(decl->data.func_decl.convention);
+
+    convention = convention_from_node(decl->data.func_decl.convention);
+  } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
+    params = decl->data.extern_func.params;
+    param_count = decl->data.extern_func.param_count;
+    return_type_expr = decl->data.extern_func.return_type;
+    // NOTE: extern functions cannot define a convention
+  } else {
+    return true; // Not a function we handle
+  }
+
+  int is_variadic = -1;
+
+  // Resolve parameter types
+  Type **param_types = NULL;
+  if (param_count > 0) {
+    param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
+    for (size_t i = 0; i < param_count; i++) {
+      if (is_variadic != -1) {
+        checker_error(decl->loc,
+                      "Parameter '%s' is marked as variadic but parameter "
+                      "'%s' is already variadic",
+                      params[i].name, params[is_variadic].name);
+      }
+
+      if (params[i].is_variadic) {
+        is_variadic = (int)i;
+      }
+
+      param_types[i] = resolve_type_expression(params[i].type);
+      if (!param_types[i]) {
+        // Error already reported, but keep going to check other params
+        param_types[i] = type_int; // Use placeholder to continue
+      }
+    }
+  }
+
+  // Resolve return type
+  Type *return_type = resolve_type_expression(return_type_expr);
+  if (!return_type) {
+    return true; // Error already reported
+  }
+
+  // Create function type
+  sym->type = type_create_function(param_types, param_count, return_type,
+                                   is_variadic != -1, false, convention,
+                                   sym->decl->loc);
+
+  // Add parameters as symbols in the function scope
+  bool no_error = true;
+  if (sym->kind == SYMBOL_FUNCTION) {
+    // Create function's local scope with global as parent
+    Scope *func_scope = scope_create(checker_state.current_module->scope);
+    sym->data.func.local_scope = func_scope;
+    for (size_t i = 0; i < param_count; i++) {
+      if (!param_types[i]) {
+        continue; // Skip if type resolution failed
+      }
+
+      // Create parameter symbol
+      Symbol *param_sym = symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
+      param_sym->type = param_types[i];
+      param_sym->data.var.is_global = false; // Parameters are local
+
+      // Check for duplicate parameter names
+      Symbol *existing = scope_lookup_local(func_scope, params[i].name);
+      if (existing) {
+        checker_error(decl->loc, "duplicate parameter name '%s'",
+                      params[i].name);
+        no_error = false;
+        continue;
+      }
+
+      scope_add_symbol(func_scope, param_sym);
+    }
+  }
+  return no_error;
+}
+
+// Now refactor the original function to use it
 static void check_function_signatures(void) {
   Symbol *sym, *tmp;
 
@@ -1047,91 +1158,7 @@ static void check_function_signatures(void) {
       continue;
     }
 
-    AstNode *decl = sym->decl;
-    FuncParam *params;
-    size_t param_count = 0;
-    AstNode *return_type_expr;
-    CallingConvention convention = CALL_CONV_C;
-
-    if (decl->kind == AST_DECL_FUNCTION) {
-      params = decl->data.func_decl.params;
-      param_count = decl->data.func_decl.param_count;
-      return_type_expr = decl->data.func_decl.return_type;
-
-      check_convention(decl->data.func_decl.convention);
-
-      convention = convention_from_node(decl->data.func_decl.convention);
-    } else if (decl->kind == AST_DECL_EXTERN_FUNC) {
-      params = decl->data.extern_func.params;
-      param_count = decl->data.extern_func.param_count;
-      return_type_expr = decl->data.extern_func.return_type;
-      // NOTE: extern functions cannot define a convention
-    }
-
-    int is_variadic = -1;
-
-    // Resolve parameter types
-    Type **param_types = NULL;
-    if (param_count > 0) {
-      param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
-      for (size_t i = 0; i < param_count; i++) {
-        if (is_variadic != -1) {
-          checker_error(decl->loc,
-                        "Parameter '%s' is marked as variadic but parameter "
-                        "'%s' is already variadic",
-                        params[i].name, params[is_variadic].name);
-        }
-
-        if (params[i].is_variadic) {
-          is_variadic = (int)i;
-        }
-
-        param_types[i] = resolve_type_expression(params[i].type);
-        if (!param_types[i]) {
-          // Error already reported, but keep going to check other params
-          param_types[i] = type_int; // Use placeholder to continue
-        }
-      }
-    }
-
-    // Resolve return type
-    Type *return_type = resolve_type_expression(return_type_expr);
-    if (!return_type) {
-      continue; // Error already reported
-    }
-
-    // Create function type
-    sym->type = type_create_function(param_types, param_count, return_type,
-                                     is_variadic != -1, false, convention,
-                                     sym->decl->loc);
-
-    // Add parameters as symbols in the function scope
-    if (sym->kind == SYMBOL_FUNCTION) {
-      // Create function's local scope with global as parent
-      Scope *func_scope = scope_create(checker_state.current_module->scope);
-      sym->data.func.local_scope = func_scope;
-      for (size_t i = 0; i < param_count; i++) {
-        if (!param_types[i]) {
-          continue; // Skip if type resolution failed
-        }
-
-        // Create parameter symbol
-        Symbol *param_sym =
-            symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
-        param_sym->type = param_types[i];
-        param_sym->data.var.is_global = false; // Parameters are local
-
-        // Check for duplicate parameter names
-        Symbol *existing = scope_lookup_local(func_scope, params[i].name);
-        if (existing) {
-          checker_error(decl->loc, "duplicate parameter name '%s'",
-                        params[i].name);
-          continue;
-        }
-
-        scope_add_symbol(func_scope, param_sym);
-      }
-    }
+    check_function_signature(sym);
   }
 }
 
@@ -2010,9 +2037,10 @@ bool is_valid_cast(Type *from, Type *to) {
   }
 
   // *u8 <-> str
-  if ((from->kind == TYPE_POINTER && from->data.ptr.base->kind == TYPE_U8 && to->kind == TYPE_STRING) ||
-    (from->kind == TYPE_STRING && to->kind == TYPE_POINTER && to->data.ptr.base->kind == TYPE_U8))
-  {
+  if ((from->kind == TYPE_POINTER && from->data.ptr.base->kind == TYPE_U8 &&
+       to->kind == TYPE_STRING) ||
+      (from->kind == TYPE_STRING && to->kind == TYPE_POINTER &&
+       to->data.ptr.base->kind == TYPE_U8)) {
     return true;
   }
 
@@ -2369,6 +2397,760 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
   checker_error(
       node->loc,
       "Switch is non-exhaustive. Use \"else\" if you need a default branch.");
+}
+
+// Type parameter bindings for monomorphization
+typedef struct {
+  char *param_name;    // "T", "U", etc.
+  Type *concrete_type; // int, bool, etc.
+} TypeBinding;
+
+typedef struct {
+  TypeBinding *bindings;
+  size_t count;
+} TypeBindings;
+
+// Check if a name is a type parameter
+static bool is_type_parameter(const char *name, TypeBindings *bindings) {
+  for (size_t i = 0; i < bindings->count; i++) {
+    if (strcmp(name, bindings->bindings[i].param_name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Match a type pattern (AST node) against a concrete type and extract bindings
+// Returns true if match succeeds, false otherwise
+static bool match_and_bind_type(AstNode *pattern, Type *concrete,
+                                TypeBindings *bindings, Location loc) {
+  if (!pattern || !concrete) {
+    return false;
+  }
+
+  switch (pattern->kind) {
+  case AST_TYPE_NAMED: {
+    char *name = pattern->data.type_named.name;
+
+    // Check if this is a type parameter
+    if (is_type_parameter(name, bindings)) {
+      // Find the binding
+      for (size_t i = 0; i < bindings->count; i++) {
+        if (strcmp(name, bindings->bindings[i].param_name) == 0) {
+          if (bindings->bindings[i].concrete_type == NULL) {
+            // First binding for this type parameter
+            bindings->bindings[i].concrete_type = concrete;
+            return true;
+          } else {
+            // Already bound - check consistency
+            if (type_equals(bindings->bindings[i].concrete_type, concrete)) {
+              return true;
+            } else {
+              checker_error(loc,
+                            "type variable '%s' was previously inferred as "
+                            "'%s', but got '%s'",
+                            name,
+                            type_name(bindings->bindings[i].concrete_type),
+                            type_name(concrete));
+              return false;
+            }
+          }
+        }
+      }
+    }
+
+    // Not a type parameter - just a regular named type
+    // We'd need to resolve it and check equality, but for now skip
+    return true;
+  }
+
+  case AST_TYPE_SLICE: {
+    // Pattern: []T
+    // Concrete can be: []SomeType OR [N]SomeType (implicit cast)
+
+    if (concrete->kind == TYPE_SLICE) {
+      // Direct match: []T with []int
+      return match_and_bind_type(pattern->data.type_slice.element,
+                                 concrete->data.slice.element, bindings, loc);
+    } else if (concrete->kind == TYPE_ARRAY) {
+      // Array to slice: []T with [N]int
+      // Extract element type from array
+      return match_and_bind_type(pattern->data.type_slice.element,
+                                 concrete->data.array.element, bindings, loc);
+    } else {
+      checker_error(loc, "type mismatch: expected slice type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+  }
+
+  case AST_TYPE_POINTER: {
+    // Pattern: *T, Concrete must be: *SomeType
+    if (concrete->kind != TYPE_POINTER) {
+      checker_error(loc, "type mismatch: expected pointer type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    // Recursively match base types
+    return match_and_bind_type(pattern->data.type_pointer.base,
+                               concrete->data.ptr.base, bindings, loc);
+  }
+
+  case AST_TYPE_OPTIONAL: {
+    // Pattern: ?T, Concrete must be: ?SomeType
+    if (concrete->kind != TYPE_OPTIONAL) {
+      checker_error(loc, "type mismatch: expected optional type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    // Recursively match base types
+    return match_and_bind_type(pattern->data.type_optional.base,
+                               concrete->data.optional.base, bindings, loc);
+  }
+
+  case AST_TYPE_ARRAY: {
+    // Pattern: [N]T, Concrete must be: [N]SomeType with same size
+    if (concrete->kind != TYPE_ARRAY) {
+      checker_error(loc, "type mismatch: expected array type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_array.size != concrete->data.array.size) {
+      checker_error(loc, "array size mismatch: expected [%zu], got [%zu]",
+                    pattern->data.type_array.size, concrete->data.array.size);
+      return false;
+    }
+
+    // Recursively match element types
+    return match_and_bind_type(pattern->data.type_array.element,
+                               concrete->data.array.element, bindings, loc);
+  }
+
+  case AST_TYPE_FUNCTION: {
+    // Pattern: fn(T1, T2) R, Concrete must be: fn(Type1, Type2) RetType
+    if (concrete->kind != TYPE_FUNCTION) {
+      checker_error(loc, "type mismatch: expected function type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_function.param_count !=
+        concrete->data.func.param_count) {
+      checker_error(loc,
+                    "function parameter count mismatch: expected %zu, got %zu",
+                    pattern->data.type_function.param_count,
+                    concrete->data.func.param_count);
+      return false;
+    }
+
+    // Match each parameter type
+    for (size_t i = 0; i < pattern->data.type_function.param_count; i++) {
+      if (!match_and_bind_type(pattern->data.type_function.param_types[i],
+                               concrete->data.func.param_types[i], bindings,
+                               loc)) {
+        return false;
+      }
+    }
+
+    // Match return type
+    return match_and_bind_type(pattern->data.type_function.return_type,
+                               concrete->data.func.return_type, bindings, loc);
+  }
+
+  case AST_TYPE_TUPLE: {
+    // Pattern: (T1, T2, T3), Concrete must be: (Type1, Type2, Type3)
+    if (concrete->kind != TYPE_TUPLE) {
+      checker_error(loc, "type mismatch: expected tuple type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_tuple.element_count !=
+        concrete->data.tuple.element_count) {
+      checker_error(loc, "tuple element count mismatch: expected %zu, got %zu",
+                    pattern->data.type_tuple.element_count,
+                    concrete->data.tuple.element_count);
+      return false;
+    }
+
+    // Match each element type
+    for (size_t i = 0; i < pattern->data.type_tuple.element_count; i++) {
+      if (!match_and_bind_type(pattern->data.type_tuple.element_types[i],
+                               concrete->data.tuple.element_types[i], bindings,
+                               loc)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  default:
+    return false;
+  }
+}
+
+static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
+                                         size_t arg_count, Location call_loc) {
+  TypeBindings result = {0};
+
+  size_t type_param_count = generic_func->data.func_decl.type_param_count;
+  Token *type_params = generic_func->data.func_decl.type_params;
+  FuncParam *params = generic_func->data.func_decl.params;
+  size_t param_count = generic_func->data.func_decl.param_count;
+
+  result.bindings =
+      arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
+  result.count = type_param_count;
+
+  // Initialize all bindings to NULL
+  for (size_t i = 0; i < type_param_count; i++) {
+    result.bindings[i].param_name = type_params[i].lexeme;
+    result.bindings[i].concrete_type = NULL;
+  }
+
+  // Check if function is variadic
+  bool is_variadic = (param_count > 0 && params[param_count - 1].is_variadic);
+  size_t required_param_count = is_variadic ? param_count - 1 : param_count;
+
+  // Check argument count
+  if (is_variadic) {
+    if (arg_count < required_param_count) {
+      checker_error(call_loc,
+                    "variadic function expects at least %zu arguments, got %zu",
+                    required_param_count, arg_count);
+      return result;
+    }
+  } else {
+    if (arg_count != param_count) {
+      checker_error(call_loc, "function expects %zu arguments, got %zu",
+                    param_count, arg_count);
+      return result;
+    }
+  }
+
+  // Match non-variadic parameters
+  for (size_t j = 0; j < required_param_count; j++) {
+    AstNode *param_type = params[j].type;
+
+    // Get the concrete type of the argument
+    Type *arg_type = check_expression(args[j]);
+    if (!arg_type)
+      continue;
+
+    // Match the parameter type pattern with the argument's concrete type
+    match_and_bind_type(param_type, arg_type, &result, call_loc);
+  }
+
+  // Match variadic parameters if present
+  if (is_variadic && arg_count > required_param_count) {
+    AstNode *variadic_type = params[required_param_count].type;
+
+    // Extract element type from []T
+    AstNode *element_type = NULL;
+    if (variadic_type->kind == AST_TYPE_SLICE) {
+      element_type = variadic_type->data.type_slice.element;
+    } else {
+      checker_error(call_loc, "variadic parameter must have slice type");
+      return result;
+    }
+
+    if (arg_count == required_param_count + 1) {
+      // Single variadic argument - could be slice or element
+      Type *arg_type = check_expression(args[required_param_count]);
+      if (arg_type) {
+        if (arg_type->kind == TYPE_SLICE) {
+          // Passing a slice directly - infer from its element type
+          match_and_bind_type(element_type, arg_type->data.slice.element,
+                              &result, call_loc);
+        } else {
+          // Single element - infer from the element itself
+          match_and_bind_type(element_type, arg_type, &result, call_loc);
+        }
+      }
+    } else {
+      // Multiple variadic arguments - infer from each element
+      for (size_t j = required_param_count; j < arg_count; j++) {
+        Type *arg_type = check_expression(args[j]);
+        if (!arg_type)
+          continue;
+
+        match_and_bind_type(element_type, arg_type, &result, call_loc);
+      }
+    }
+  }
+
+  return result;
+}
+
+// Generate mangled name for a monomorphized function
+// Example: mangle_generic_name("add", [int, bool]) -> "add__int__bool"
+static char *mangle_generic_name(const char *func_name, Type **concrete_types,
+                                 size_t type_count) {
+  // Start with function name
+  size_t len = strlen(func_name) + 1;
+
+  // Calculate total length needed
+  for (size_t i = 0; i < type_count; i++) {
+    Type *t = concrete_types[i];
+    char *type_str = t->canonical_name ? t->canonical_name : type_name(t);
+    len += 2 + strlen(type_str); // "__" + type name
+  }
+
+  // Allocate and build the mangled name
+  char *result = arena_alloc(&long_lived, len);
+  strcpy(result, func_name);
+
+  for (size_t i = 0; i < type_count; i++) {
+    strcat(result, "__");
+    Type *t = concrete_types[i];
+    char *type_str = t->canonical_name ? t->canonical_name : type_name(t);
+    strcat(result, type_str);
+  }
+
+  return result;
+}
+
+// Substitute type parameters in type expressions (recursive)
+static void substitute_type_params_in_type(AstNode *type_node,
+                                           TypeBindings *bindings) {
+  if (!type_node)
+    return;
+
+  switch (type_node->kind) {
+  // Base case: Named type that might be a type parameter
+  case AST_TYPE_NAMED: {
+    char *name = type_node->data.type_named.name;
+
+    // Check if this name matches a type parameter
+    for (size_t i = 0; i < bindings->count; i++) {
+      if (strcmp(name, bindings->bindings[i].param_name) == 0) {
+        // Found a match! Replace with the concrete type's AST representation
+        Type *concrete = bindings->bindings[i].concrete_type;
+        AstNode *replacement = type_to_ast_node(concrete);
+
+        // Replace this node's content with the replacement
+        type_node->kind = replacement->kind;
+        type_node->data = replacement->data;
+        type_node->resolved_type = concrete;
+
+        // Note: We don't free replacement since it's arena-allocated
+        return;
+      }
+    }
+    break;
+  }
+
+  // Recursive cases: Complex types
+  case AST_TYPE_POINTER:
+    substitute_type_params_in_type(type_node->data.type_pointer.base, bindings);
+    break;
+
+  case AST_TYPE_OPTIONAL:
+    substitute_type_params_in_type(type_node->data.type_optional.base,
+                                   bindings);
+    break;
+
+  case AST_TYPE_ARRAY:
+    substitute_type_params_in_type(type_node->data.type_array.element,
+                                   bindings);
+    break;
+
+  case AST_TYPE_SLICE:
+    substitute_type_params_in_type(type_node->data.type_slice.element,
+                                   bindings);
+    break;
+
+  case AST_TYPE_FUNCTION:
+    substitute_type_params_in_type(type_node->data.type_function.return_type,
+                                   bindings);
+    for (size_t i = 0; i < type_node->data.type_function.param_count; i++) {
+      substitute_type_params_in_type(
+          type_node->data.type_function.param_types[i], bindings);
+    }
+    break;
+
+  case AST_TYPE_TUPLE:
+    for (size_t i = 0; i < type_node->data.type_tuple.element_count; i++) {
+      substitute_type_params_in_type(
+          type_node->data.type_tuple.element_types[i], bindings);
+    }
+    break;
+
+  case AST_TYPE_STRUCT:
+    for (size_t i = 0; i < type_node->data.type_struct.field_count; i++) {
+      substitute_type_params_in_type(type_node->data.type_struct.field_types[i],
+                                     bindings);
+    }
+    break;
+
+  case AST_TYPE_UNION:
+    for (size_t i = 0; i < type_node->data.type_union.variant_count; i++) {
+      substitute_type_params_in_type(
+          type_node->data.type_union.variant_types[i], bindings);
+    }
+    break;
+
+  case AST_TYPE_QUALIFIED_NAMED:
+  case AST_TYPE_ENUM:
+    // These don't contain nested type parameters
+    break;
+
+  default:
+    break;
+  }
+}
+
+// Forward declaration for mutual recursion
+static void substitute_type_params_in_expr(AstNode *expr,
+                                           TypeBindings *bindings);
+
+// Substitute type parameters in statements (recursive)
+static void substitute_type_params_in_stmt(AstNode *stmt,
+                                           TypeBindings *bindings) {
+  if (!stmt)
+    return;
+
+  switch (stmt->kind) {
+  case AST_DECL_VARIABLE:
+    // var x T = ...;
+    substitute_type_params_in_type(stmt->data.var_decl.type_expr, bindings);
+    substitute_type_params_in_expr(stmt->data.var_decl.init, bindings);
+    break;
+
+  case AST_DECL_CONSTANT:
+    // const x T = ...;
+    substitute_type_params_in_type(stmt->data.const_decl.type_expr, bindings);
+    substitute_type_params_in_expr(stmt->data.const_decl.value, bindings);
+    break;
+
+  case AST_STMT_RETURN:
+    substitute_type_params_in_expr(stmt->data.return_stmt.expr, bindings);
+    break;
+
+  case AST_STMT_IF:
+    substitute_type_params_in_expr(stmt->data.if_stmt.cond, bindings);
+    substitute_type_params_in_stmt(stmt->data.if_stmt.then_branch, bindings);
+    substitute_type_params_in_stmt(stmt->data.if_stmt.else_branch, bindings);
+    break;
+
+  case AST_STMT_WHILE:
+    substitute_type_params_in_expr(stmt->data.while_stmt.cond, bindings);
+    substitute_type_params_in_stmt(stmt->data.while_stmt.body, bindings);
+    break;
+
+  case AST_STMT_LOOP:
+    substitute_type_params_in_expr(stmt->data.loop_stmt.start, bindings);
+    substitute_type_params_in_expr(stmt->data.loop_stmt.end, bindings);
+    substitute_type_params_in_expr(stmt->data.loop_stmt.iterator_name,
+                                   bindings);
+    substitute_type_params_in_stmt(stmt->data.loop_stmt.body, bindings);
+    break;
+
+  case AST_STMT_FOR:
+    substitute_type_params_in_stmt(stmt->data.for_stmt.init, bindings);
+    substitute_type_params_in_expr(stmt->data.for_stmt.cond, bindings);
+    substitute_type_params_in_expr(stmt->data.for_stmt.update, bindings);
+    substitute_type_params_in_stmt(stmt->data.for_stmt.body, bindings);
+    break;
+
+  case AST_STMT_BLOCK:
+    for (size_t i = 0; i < stmt->data.block_stmt.stmt_count; i++) {
+      substitute_type_params_in_stmt(stmt->data.block_stmt.stmts[i], bindings);
+    }
+    break;
+
+  case AST_STMT_EXPR:
+    substitute_type_params_in_expr(stmt->data.expr_stmt.expr, bindings);
+    break;
+
+  case AST_STMT_ASSIGN:
+    substitute_type_params_in_expr(stmt->data.assign_stmt.lhs, bindings);
+    substitute_type_params_in_expr(stmt->data.assign_stmt.rhs, bindings);
+    break;
+
+  case AST_STMT_PRINT:
+    for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
+      substitute_type_params_in_expr(stmt->data.print_stmt.exprs[i], bindings);
+    }
+    break;
+
+  case AST_STMT_CASE:
+    substitute_type_params_in_expr(stmt->data.case_stmt.condition, bindings);
+    substitute_type_params_in_stmt(stmt->data.case_stmt.body, bindings);
+    break;
+
+  case AST_STMT_SWITCH:
+    substitute_type_params_in_expr(stmt->data.switch_stmt.condition, bindings);
+    for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+      substitute_type_params_in_stmt(stmt->data.switch_stmt.cases[i], bindings);
+    }
+    substitute_type_params_in_stmt(stmt->data.switch_stmt.default_case,
+                                   bindings);
+    break;
+
+  case AST_STMT_DEFER:
+    substitute_type_params_in_stmt(stmt->data.defer_stmt.stmt, bindings);
+    break;
+
+  case AST_STMT_BREAK:
+  case AST_STMT_CONTINUE:
+    // No nested nodes
+    break;
+
+  default:
+    break;
+  }
+}
+
+// Substitute type parameters in expressions (recursive)
+static void substitute_type_params_in_expr(AstNode *expr,
+                                           TypeBindings *bindings) {
+  if (!expr)
+    return;
+
+  switch (expr->kind) {
+  case AST_EXPR_EXPLICIT_CAST:
+    // x as T
+    substitute_type_params_in_expr(expr->data.explicit_cast.expr, bindings);
+    substitute_type_params_in_type(expr->data.explicit_cast.target_type,
+                                   bindings);
+    break;
+
+  case AST_EXPR_SIZEOF:
+    // sizeof T
+    substitute_type_params_in_type(expr->data.sizeof_expr.type_expr, bindings);
+    break;
+
+  case AST_EXPR_FUNCTION:
+    // Anonymous function: fn(x T) U { ... }
+    for (size_t i = 0; i < expr->data.func_expr.param_count; i++) {
+      substitute_type_params_in_type(expr->data.func_expr.params[i].type,
+                                     bindings);
+    }
+    substitute_type_params_in_type(expr->data.func_expr.return_type, bindings);
+    substitute_type_params_in_stmt(expr->data.func_expr.body, bindings);
+    break;
+
+  // Recurse into nested expressions
+  case AST_EXPR_BINARY_OP:
+    substitute_type_params_in_expr(expr->data.binop.left, bindings);
+    substitute_type_params_in_expr(expr->data.binop.right, bindings);
+    break;
+
+  case AST_EXPR_UNARY_OP:
+    substitute_type_params_in_expr(expr->data.unop.operand, bindings);
+    break;
+
+  case AST_EXPR_CALL:
+    substitute_type_params_in_expr(expr->data.call.func, bindings);
+    for (size_t i = 0; i < expr->data.call.arg_count; i++) {
+      substitute_type_params_in_expr(expr->data.call.args[i], bindings);
+    }
+    break;
+
+  case AST_EXPR_INDEX:
+    substitute_type_params_in_expr(expr->data.index_expr.array, bindings);
+    substitute_type_params_in_expr(expr->data.index_expr.index, bindings);
+    break;
+
+  case AST_EXPR_SLICE:
+    substitute_type_params_in_expr(expr->data.slice_expr.array, bindings);
+    substitute_type_params_in_expr(expr->data.slice_expr.start, bindings);
+    substitute_type_params_in_expr(expr->data.slice_expr.end, bindings);
+    break;
+
+  case AST_EXPR_MEMBER:
+    substitute_type_params_in_expr(expr->data.member_expr.object, bindings);
+    break;
+
+  case AST_EXPR_MODULE_MEMBER:
+    substitute_type_params_in_expr(expr->data.mod_member_expr.module, bindings);
+    break;
+
+  case AST_EXPR_TUPLE:
+    for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
+      substitute_type_params_in_expr(expr->data.tuple_expr.elements[i],
+                                     bindings);
+    }
+    break;
+
+  case AST_EXPR_STRUCT_LITERAL:
+    for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
+      substitute_type_params_in_expr(expr->data.struct_literal.field_values[i],
+                                     bindings);
+    }
+    break;
+
+  case AST_EXPR_ARRAY_LITERAL:
+    for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
+      substitute_type_params_in_expr(expr->data.array_literal.elements[i],
+                                     bindings);
+    }
+    break;
+
+  case AST_EXPR_ARRAY_REPEAT:
+    substitute_type_params_in_expr(expr->data.array_repeat.value, bindings);
+    break;
+
+  case AST_EXPR_INTERPOLATED_STRING:
+    for (size_t i = 0; i < expr->data.interpolated_string.num_parts; i++) {
+      substitute_type_params_in_expr(expr->data.interpolated_string.parts[i],
+                                     bindings);
+    }
+    break;
+
+  case AST_EXPR_GROUPED_EXPR:
+    substitute_type_params_in_expr(expr->data.grouped_expr.inner_expr,
+                                   bindings);
+    break;
+
+  case AST_EXPR_SOME:
+    substitute_type_params_in_expr(expr->data.some_expr.value, bindings);
+    break;
+
+  case AST_EXPR_FORCE_UNWRAP:
+    substitute_type_params_in_expr(expr->data.force_unwrap.operand, bindings);
+    break;
+
+  case AST_EXPR_POSTFIX_INC:
+    substitute_type_params_in_expr(expr->data.postfix_inc.operand, bindings);
+    break;
+
+  case AST_EXPR_POSTFIX_DEC:
+    substitute_type_params_in_expr(expr->data.postfix_dec.operand, bindings);
+    break;
+
+  case AST_EXPR_IMPLICIT_CAST:
+    substitute_type_params_in_expr(expr->data.implicit_cast.expr, bindings);
+    break;
+
+  // Literals and identifiers - no substitution needed
+  case AST_EXPR_LITERAL_INT:
+  case AST_EXPR_LITERAL_FLOAT:
+  case AST_EXPR_LITERAL_STRING:
+  case AST_EXPR_LITERAL_CHAR:
+  case AST_EXPR_LITERAL_BOOL:
+  case AST_EXPR_LITERAL_NIL:
+  case AST_EXPR_LITERAL_NONE:
+  case AST_EXPR_IDENTIFIER:
+  case AST_EXPR_CONTEXT:
+  case AST_EXPR_PARTIAL_MEMBER:
+    // No type parameters here
+    break;
+
+  default:
+    break;
+  }
+}
+
+// Main entry point: substitute in function signature and body
+static void substitute_function_types(AstNode *func_decl,
+                                      TypeBindings *bindings) {
+  // Substitute in parameter types
+  for (size_t i = 0; i < func_decl->data.func_decl.param_count; i++) {
+    substitute_type_params_in_type(func_decl->data.func_decl.params[i].type,
+                                   bindings);
+  }
+
+  // Substitute in return type
+  substitute_type_params_in_type(func_decl->data.func_decl.return_type,
+                                 bindings);
+
+  // Substitute in body
+  substitute_type_params_in_stmt(func_decl->data.func_decl.body, bindings);
+}
+
+static bool check_function_body(Symbol *sym);
+
+// Monomorphize a generic function with concrete types
+static AstNode *monomorphize_function(AstNode *generic_func,
+                                      TypeBindings *bindings, Location call_loc,
+                                      Module *context_module) {
+  // Step 1: Generate mangled name
+  Type **concrete_types =
+      arena_alloc(&long_lived, sizeof(Type *) * bindings->count);
+  for (size_t i = 0; i < bindings->count; i++) {
+    concrete_types[i] = bindings->bindings[i].concrete_type;
+  }
+
+  char *mangled_name =
+      mangle_generic_name(generic_func->data.func_decl.full_qualified_name,
+                          concrete_types, bindings->count);
+
+  // Step 2: Check cache - return if already monomorphized
+  MonoFuncInstance *existing = NULL;
+  HASH_FIND_STR(mono_instances, mangled_name, existing);
+  if (existing) {
+    return existing->monomorphized_func;
+  }
+
+  // Step 3: Deep clone the generic function
+  AstNode *mono_func = clone_ast_node(generic_func);
+
+  // Step 4: Substitute type parameters throughout
+  substitute_function_types(mono_func, bindings);
+
+  // Step 5: Update function metadata
+  mono_func->data.func_decl.name = mangled_name;
+  mono_func->data.func_decl.qualified_name = mangled_name;
+  mono_func->data.func_decl.full_qualified_name = mangled_name;
+
+  // Clear type parameters (it's now concrete)
+  mono_func->data.func_decl.type_param_count = 0;
+  mono_func->data.func_decl.type_params = NULL;
+
+  // Step 6: Add to symbol table
+  Symbol *mono_sym = symbol_create(mangled_name, SYMBOL_FUNCTION, mono_func);
+  scope_add_symbol(checker_state.current_module->scope, mono_sym);
+
+  // Step 7: Temporarily switch to defining module context for checking
+  Module *saved_module = checker_state.current_module;
+  checker_state.current_module = context_module;
+
+  // Type-check signature in defining context (local scope parents to it)
+  if (!check_function_signature(mono_sym)) {
+    checker_error(call_loc, "failed to monomorphize function '%s' called here",
+                  generic_func->data.func_decl.name);
+    return NULL;
+  }
+
+  // Step 8: Type-check the body
+  // Save current scope state (we're likely inside another function)
+  Scope *saved_scope = current_scope;
+  current_scope = checker_state.current_module->scope;
+
+  bool succeeded = check_function_body(mono_sym);
+
+  // Restore scope state and current module
+  current_scope = saved_scope;
+  checker_state.current_module = saved_module;
+
+  if (!succeeded) {
+    checker_error(
+        call_loc,
+        "failed to type-check monomorphized function '%s' called here",
+        generic_func->data.func_decl.name);
+    return NULL;
+  }
+
+  // Step 9: Cache it
+  MonoFuncInstance *instance =
+      arena_alloc(&long_lived, sizeof(MonoFuncInstance));
+  instance->key = mangled_name;
+  instance->generic_func = generic_func;
+  instance->concrete_types = concrete_types;
+  instance->type_count = bindings->count;
+  instance->monomorphized_func = mono_func;
+
+  HASH_ADD_KEYPTR(hh, mono_instances, instance->key, strlen(instance->key),
+                  instance);
+
+  // Step 10: Return the monomorphized function
+  return mono_func;
 }
 
 Type *check_expression(AstNode *expr) {
@@ -2773,12 +3555,11 @@ Type *check_expression(AstNode *expr) {
         right = left;
       }
 
-      AstNode *right_converted = maybe_insert_cast(expr->data.binop.right, right, left);
+      AstNode *right_converted =
+          maybe_insert_cast(expr->data.binop.right, right, left);
       if (!right_converted) {
-        checker_error(expr->loc,
-          "type mismatch in equality check '%s' != '%s'",
-          type_name(left), type_name(right)
-        );
+        checker_error(expr->loc, "type mismatch in equality check '%s' != '%s'",
+                      type_name(left), type_name(right));
         return NULL;
       }
       expr->resolved_type = type_bool;
@@ -2906,7 +3687,240 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
-    // Verify it's actually a function
+    // Check if this is a generic function
+    if (call_type->kind == TYPE_GENERIC_FUNCTION) {
+      AstNode *generic_decl = call_type->data.generic_func.decl;
+      TypeBindings bindings;
+
+      if (expr->data.call.type_args != NULL) {
+        // Use explicit type arguments instead of inference
+        size_t type_arg_count = expr->data.call.type_arg_count;
+        size_t type_param_count = generic_decl->data.func_decl.type_param_count;
+
+        // Validate count
+        if (type_arg_count != type_param_count) {
+          checker_error(expr->loc,
+                        "function '%s' expects %zu type arguments, got %zu",
+                        generic_decl->data.func_decl.name, type_param_count,
+                        type_arg_count);
+          return NULL;
+        }
+
+        // Build TypeBindings from explicit type arguments
+        bindings.count = type_param_count;
+        bindings.bindings =
+            arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
+
+        for (size_t i = 0; i < type_param_count; i++) {
+          bindings.bindings[i].param_name =
+              generic_decl->data.func_decl.type_params[i].lexeme;
+
+          // Resolve the type expression to get a concrete Type*
+          Type *concrete_type =
+              resolve_type_expression(expr->data.call.type_args[i]);
+
+          if (!concrete_type) {
+            checker_error(expr->data.call.type_args[i]->loc,
+                          "invalid type argument %zu", i + 1);
+            return NULL;
+          }
+
+          bindings.bindings[i].concrete_type = concrete_type;
+        }
+      } else {
+        // Infer type arguments from call arguments
+        bindings =
+            infer_type_arguments(generic_decl, args, arg_count, expr->loc);
+        // Check if inference succeeded
+        for (size_t i = 0; i < bindings.count; i++) {
+          if (!bindings.bindings[i].concrete_type) {
+            checker_error(expr->loc, "could not infer type parameter '%s'",
+                          bindings.bindings[i].param_name);
+            return NULL;
+          }
+        }
+      }
+
+      // Determine defining module for monomorphization context
+      Module *context_module;
+      AstNode *func_expr = expr->data.call.func;
+
+      if (func_expr->kind == AST_EXPR_MODULE_MEMBER) {
+        // Qualified call: e.g., mem::new -> lookup "mem"
+        const char *mod_name =
+            func_expr->data.mod_member_expr.module->data.ident.name;
+        context_module =
+            lookup_imported_module(checker_state.current_module, mod_name);
+        if (!context_module) {
+          // Shouldn't happen (prior resolution would error), but safe
+          checker_error(expr->loc,
+                        "internal error: could not find defining module '%s'",
+                        mod_name);
+          return NULL;
+        }
+      } else {
+        // Local/unqualified call: e.g., new.[int]() in same module
+        context_module = checker_state.current_module;
+      }
+
+      // Monomorphize!
+      AstNode *mono_func = monomorphize_function(generic_decl, &bindings,
+                                                 expr->loc, context_module);
+      if (!mono_func) {
+        return NULL; // Error already reported
+      }
+
+      // Get the monomorphized function's symbol to get its type
+      Symbol *mono_sym =
+          scope_lookup(checker_state.current_module->scope,
+                       checker_state.current_module->scope,
+                       mono_func->data.func_decl.name, expr->loc.file);
+
+      if (!mono_sym || !mono_sym->type) {
+        checker_error(expr->loc,
+                      "internal error: monomorphized function has no type");
+        return NULL;
+      }
+
+      // Update the call expression to reference the monomorphized function
+      if (func_expr->kind == AST_EXPR_IDENTIFIER) {
+        func_expr->data.ident.name = mono_func->data.func_decl.name;
+        func_expr->data.ident.qualified_name =
+            mono_func->data.func_decl.qualified_name;
+        func_expr->data.ident.full_qualified_name =
+            mono_func->data.func_decl.full_qualified_name;
+        func_expr->resolved_type = mono_sym->type;
+      } else if (func_expr->kind == AST_EXPR_MODULE_MEMBER) {
+        // Transform module member access into a regular identifier
+        // A::foo[int]() becomes a call to A__foo__int() in current scope
+        func_expr->kind = AST_EXPR_IDENTIFIER;
+        func_expr->data.ident.name = mono_func->data.func_decl.name;
+        func_expr->data.ident.qualified_name =
+            mono_func->data.func_decl.qualified_name;
+        func_expr->data.ident.full_qualified_name =
+            mono_func->data.func_decl.full_qualified_name;
+        func_expr->data.ident.is_extern = false;
+        func_expr->resolved_type = mono_sym->type;
+      }
+
+      // Now treat it like a normal function call
+      call_type = mono_sym->type;
+
+      // For generic functions, arguments were already type-checked during
+      // inference. Just validate calling convention and insert casts, then
+      // return early
+      Type *func_type = call_type;
+      CallingConvention callee_conv = func_type->data.func.convention;
+      size_t param_count = func_type->data.func.param_count;
+      Type **param_types = func_type->data.func.param_types;
+      Type *return_type = func_type->data.func.return_type;
+      bool is_variadic = func_type->data.func.is_variadic;
+
+      // Check calling convention
+      if (callee_conv == CALL_CONV_PEBBLE &&
+          checker_state.current_convention == CALL_CONV_C) {
+        checker_error(expr->loc, "cannot call Pebble convention function from "
+                                 "C convention function");
+      }
+
+      // Arguments already have resolved_type from inference
+      // Just insert casts and handle variadic packing
+      if (is_variadic) {
+        size_t required_params = param_count - 1;
+
+        // Insert casts for fixed parameters
+        for (size_t i = 0; i < required_params; i++) {
+          Type *arg_type =
+              args[i]->resolved_type; // Already checked during inference
+          if (!arg_type)
+            continue;
+
+          AstNode *converted =
+              maybe_insert_cast(args[i], arg_type, param_types[i]);
+          if (!converted) {
+            checker_error(
+                args[i]->loc, "argument %zu type mismatch: expected %s, got %s",
+                i + 1, type_name(param_types[i]), type_name(arg_type));
+          } else {
+            args[i] = converted;
+          }
+        }
+
+        // Handle variadic arguments
+        Type *variadic_slice_type = param_types[required_params];
+        Type *elem_type = variadic_slice_type->data.slice.element;
+
+        if (arg_count == required_params + 1) {
+          Type *arg_type = args[required_params]->resolved_type;
+          if (!arg_type) {
+            expr->resolved_type = return_type;
+            return return_type;
+          }
+
+          if (arg_type->kind == TYPE_SLICE) {
+            if (!type_equals(arg_type->data.slice.element, elem_type)) {
+              checker_error(args[required_params]->loc,
+                            "slice element type mismatch: expected %s, got %s",
+                            type_name(elem_type),
+                            type_name(arg_type->data.slice.element));
+              return NULL;
+            }
+          } else {
+            AstNode *converted =
+                maybe_insert_cast(args[required_params], arg_type, elem_type);
+            if (!converted) {
+              checker_error(
+                  args[required_params]->loc,
+                  "variadic argument type mismatch: expected %s, got %s",
+                  type_name(elem_type), type_name(arg_type));
+            } else {
+              args[required_params] = converted;
+            }
+          }
+        } else {
+          for (size_t i = required_params; i < arg_count; i++) {
+            Type *arg_type = args[i]->resolved_type;
+            if (!arg_type)
+              continue;
+
+            AstNode *converted =
+                maybe_insert_cast(args[i], arg_type, elem_type);
+            if (!converted) {
+              checker_error(
+                  args[i]->loc,
+                  "variadic argument %zu type mismatch: expected %s, got %s",
+                  i - required_params + 1, type_name(elem_type),
+                  type_name(arg_type));
+            } else {
+              args[i] = converted;
+            }
+          }
+        }
+      } else {
+        // Non-variadic: insert casts
+        for (size_t i = 0; i < arg_count; i++) {
+          Type *arg_type =
+              args[i]->resolved_type; // Already checked during inference
+          if (!arg_type)
+            continue;
+
+          AstNode *converted =
+              maybe_insert_cast(args[i], arg_type, param_types[i]);
+          if (!converted) {
+            checker_error(
+                args[i]->loc, "argument %zu type mismatch: expected %s, got %s",
+                i + 1, type_name(param_types[i]), type_name(arg_type));
+          } else {
+            args[i] = converted;
+          }
+        }
+      }
+
+      expr->resolved_type = return_type;
+      return return_type; // ← Early return, skip the rest
+    }
+
+    // Only reached for non-generic functions
     if (call_type->kind != TYPE_FUNCTION) {
       checker_error(func_expr->loc, "'%s' is not a function",
                     type_name(call_type));
@@ -3140,10 +4154,13 @@ Type *check_expression(AstNode *expr) {
       if (!start_type) {
         return NULL;
       }
-      if (!type_is_integral(start_type)) {
-        checker_error(start_expr->loc, "slice start index must be an integer");
+      AstNode *cast = maybe_insert_cast(start_expr, start_type, type_usize);
+      if (!cast) {
+        checker_error(start_expr->loc,
+                      "slice start index must be numerically typed");
         return NULL;
       }
+      start_expr = cast;
     }
 
     // Check end index if present
@@ -3152,10 +4169,13 @@ Type *check_expression(AstNode *expr) {
       if (!end_type) {
         return NULL;
       }
-      if (!type_is_integral(end_type)) {
-        checker_error(end_expr->loc, "slice end index must be an integer");
+      AstNode *cast = maybe_insert_cast(end_expr, end_type, type_usize);
+      if (!cast) {
+        checker_error(end_expr->loc,
+                      "slice end index must be numerically typed");
         return NULL;
       }
+      end_expr = cast;
     }
 
     // Return slice type
@@ -3640,6 +4660,29 @@ Type *check_expression(AstNode *expr) {
   }
 
   case AST_EXPR_FUNCTION: {
+    // If this anonymous function already has a symbol, it's already been
+    // checked (Happens when checking monomorphized functions that were cloned)
+    if (expr->data.func_expr.symbol != NULL) {
+      // Already checked - just return its type
+      if (expr->resolved_type) {
+        return expr->resolved_type;
+      }
+      // Look up the existing symbol
+      Symbol *existing =
+          scope_lookup_local(anonymous_funcs, expr->data.func_expr.symbol);
+      if (existing) {
+        expr->resolved_type = existing->type;
+        return existing->type;
+      }
+    }
+
+    // No generic anonymous functions yet
+    if (expr->data.func_expr.type_param_count > 0) {
+      checker_error(expr->loc,
+                    "generic anonymous functions are not yet supported");
+      return NULL;
+    }
+
     // Resolve parameter types and return type
     size_t param_count = expr->data.func_expr.param_count;
     FuncParam *params = expr->data.func_expr.params;
@@ -3862,9 +4905,10 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
           // Allow pointers to tagged unions
           !(cond_type->kind == TYPE_POINTER &&
             cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
-        checker_error(cond->loc, "switch condition must be integral, "
-                                 "char, enum, string or tagged union. Got '%s'.",
-                                 type_name(cond_type));
+        checker_error(cond->loc,
+                      "switch condition must be integral, "
+                      "char, enum, string or tagged union. Got '%s'.",
+                      type_name(cond_type));
         had_error = true;
       }
 
@@ -3984,8 +5028,13 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check end is an integer (can be variable or expression)
     Type *end_type = check_expression(end);
-    if (end_type && !type_is_integral(end_type)) {
+    if (!end_type) {
+      return NULL;
+    }
+
+    if (!type_is_integral(end_type)) {
       checker_error(end->loc, "loop range end must be an integer");
+      return NULL;
     }
 
     AstNode *new_end = maybe_insert_cast(end, end_type, start_type);
@@ -4318,6 +5367,40 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 }
 
 // Main entry point for Pass 4
+// Extract the body checking logic for a single function
+static bool check_function_body(Symbol *sym) {
+  // Skip generic functions - they'll be checked when monomorphized
+  if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+    return true;
+  }
+
+  AstNode *decl = sym->decl;
+  AstNode *body = decl->data.func_decl.body;
+  Type *func_type = sym->type;
+  Type *return_type = func_type->data.func.return_type;
+
+  // Push function's local scope (contains parameters)
+  scope_push(sym->data.func.local_scope);
+
+  checker_state.current_convention = func_type->data.func.convention;
+
+  // Check the function body
+  bool definitely_returns = check_statement(body, return_type);
+
+  // If non-void, ensure all paths return
+  if (return_type->kind != TYPE_VOID && !definitely_returns) {
+    checker_error(decl->loc,
+                  "function '%s' may not return a value on all paths",
+                  sym->name);
+  }
+
+  // Pop back to global scope
+  scope_pop();
+
+  return !checker_has_errors();
+}
+
+// Now refactor the original function to use it
 bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
@@ -4328,29 +5411,7 @@ bool check_function_bodies(void) {
       continue;
     }
 
-    // Get function details
-    AstNode *decl = sym->decl;
-    AstNode *body = decl->data.func_decl.body;
-    Type *func_type = sym->type;
-    Type *return_type = func_type->data.func.return_type;
-
-    // Push function's local scope (contains parameters)
-    scope_push(sym->data.func.local_scope);
-
-    checker_state.current_convention = func_type->data.func.convention;
-
-    // Check the function body
-    bool definitely_returns = check_statement(body, return_type);
-
-    // If non-void, ensure all paths return
-    if (return_type->kind != TYPE_VOID && !definitely_returns) {
-      checker_error(decl->loc,
-                    "function '%s' may not return a value on all paths",
-                    sym->name);
-    }
-
-    // Pop back to global scope
-    scope_pop();
+    check_function_body(sym);
   }
 
   return !checker_has_errors();

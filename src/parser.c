@@ -323,6 +323,39 @@ AstNode *parse_import_stmt(Parser *parser) {
 
 static AstNode *parse_function(Parser *parser, Location location, char *name,
                                bool inlined, AstNode *convention) {
+  // Handle generic parameters
+  // <GenericType, U>
+  Token *type_params;
+  size_t type_param_count = 0;
+  if (parser_match(parser, TOKEN_LBRACKET)) {
+    size_t type_param_cap = 0;
+    do {
+      // FIXME: Increase this when generics work properly
+      if (type_param_count >= 5) {
+        parser_error(parser, "Too many generic type parameters (max 5)");
+        break;
+      }
+
+      if (type_param_count >= type_param_cap) {
+        // FIXME: Make this grow when we increase the type parameter cap
+        type_param_cap = 5;
+        Token *new_params =
+            arena_alloc(&long_lived, type_param_cap * sizeof(Token));
+        if (type_param_count > 0) {
+          memcpy(new_params, type_params, type_param_count * sizeof(Token));
+        }
+        type_params = new_params;
+      }
+
+      Token type_param_name =
+          parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+
+      type_params[type_param_count++] = type_param_name;
+    } while (parser_match(parser, TOKEN_COMMA));
+    parser_consume(parser, TOKEN_RBRACKET,
+                   "Expected '[' after generic parameters");
+  }
+
   // (params) return_type { body }
   // (params) return_type => expr
 
@@ -334,6 +367,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
 
   if (!parser_check(parser, TOKEN_RPAREN)) {
     size_t param_capacity = 4;
+    // FIXME: Only perform this allocation when we are sure there are actually
+    // parameters. The check in the do-while loop can handle it
     params = arena_alloc(&long_lived, param_capacity * sizeof(FuncParam));
 
     do {
@@ -435,6 +470,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_decl.body = body;
     func->data.func_decl.inlined = inlined;
     func->data.func_decl.convention = convention;
+    func->data.func_decl.type_params = type_params;
+    func->data.func_decl.type_param_count = type_param_count;
   } else {
     // Anonymous function
     func = alloc_node(AST_EXPR_FUNCTION, location);
@@ -444,6 +481,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_expr.body = body;
     func->data.func_expr.inlined = inlined;
     func->data.func_expr.convention = convention;
+    func->data.func_expr.type_param_count = type_param_count;
+    func->data.func_expr.type_params = type_params;
   }
 
   return func;
@@ -1411,10 +1450,47 @@ AstNode *parse_postfix(Parser *parser) {
     } else if (parser_match(parser, TOKEN_LBRACKET)) {
       expr = parse_index(parser, expr);
     } else if (parser_match(parser, TOKEN_DOT)) {
+      if (parser_check(parser, TOKEN_LBRACKET)) {
+        // Generic expression (call or named type declaration)
+        parser_advance(parser); // consume [
+
+        // Parse comma-separated type expressions
+        AstNode **type_args = NULL;
+        size_t type_arg_count = 0;
+        size_t type_arg_capacity = 4;
+        type_args =
+            arena_alloc(&long_lived, type_arg_capacity * sizeof(AstNode *));
+
+        do {
+          if (type_arg_count >= type_arg_capacity) {
+            type_arg_capacity *= 2;
+            AstNode **new_args = arena_alloc(&long_lived, sizeof(AstNode *));
+            memcpy(new_args, type_args, type_arg_count * sizeof(AstNode *));
+            type_args = new_args;
+          }
+          type_args[type_arg_count++] = parse_type_expression(parser);
+        } while (parser_match(parser, TOKEN_COMMA));
+
+        parser_consume(parser, TOKEN_RBRACKET,
+                       "Expected ']' after type arguments");
+
+        // Must be followed by ( for function calls
+        if (!parser_check(parser, TOKEN_LPAREN)) {
+          parser_error(parser, "Expected '(' after type arguments");
+          return NULL;
+        }
+
+        // Parse arguments
+        parser_advance(parser); // consume (
+        expr = parse_call(parser, expr);
+
+        expr->data.call.type_args = type_args;
+        expr->data.call.type_arg_count = type_arg_count;
+      }
       // Check for struct literal: IDENTIFIER.{ ... }
-      if (parser_check(parser, TOKEN_LBRACE) &&
-          (expr->kind == AST_EXPR_IDENTIFIER ||
-           expr->kind == AST_EXPR_MODULE_MEMBER)) {
+      else if (parser_check(parser, TOKEN_LBRACE) &&
+               (expr->kind == AST_EXPR_IDENTIFIER ||
+                expr->kind == AST_EXPR_MODULE_MEMBER)) {
         parser_advance(parser); // consume '{'
         Location loc = expr->loc;
         char *type_name = NULL;

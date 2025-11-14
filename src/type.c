@@ -38,6 +38,9 @@ TypeEntry *type_table = NULL;
 // Canonical type table (hash map of canonical_name => type entries)
 TypeEntry *canonical_type_table = NULL;
 
+// Monomorphization table (hash map of mangled_name => MonoFuncInstance)
+MonoFuncInstance *mono_instances = NULL;
+
 // Create a basic type
 Type *type_create(TypeKind kind, Location loc) {
   Type *type = arena_alloc(&long_lived, sizeof(Type));
@@ -707,6 +710,10 @@ char *compute_canonical_name(Type *type) {
     result = type->canonical_name;
     break;
 
+  case TYPE_GENERIC_FUNCTION:
+    assert(false && "Attempt to compute canonical name on a generic function.");
+    break;
+
   case TYPE_POINTER: {
     char *base_name = compute_canonical_name(type->data.ptr.base);
     size_t len = strlen("ptr_") + strlen(base_name) + 1;
@@ -968,9 +975,7 @@ char *type_name(Type *type) {
   case TYPE_OPAQUE:
   case TYPE_UNION:
   case TYPE_TAGGED_UNION:
-    return type->declared_name
-      ? type->declared_name
-      : type->canonical_name;
+    return type->declared_name ? type->declared_name : type->canonical_name;
 
   case TYPE_POINTER: {
     char *base_ty_name = type_name(type->data.ptr.base);
@@ -1129,4 +1134,175 @@ int member_index_of_type(Type *type, const char *member) {
   default:
     return -1;
   }
+}
+
+// Convert a Type* back to an AstNode* representing that type expression
+// This is the inverse of resolve_type_expression()
+AstNode *type_to_ast_node(Type *type) {
+  if (!type)
+    return NULL;
+
+  AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
+  memset(node, 0, sizeof(AstNode));
+  node->loc = type->loc;
+
+  switch (type->kind) {
+  case TYPE_INT:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "int";
+    break;
+
+  case TYPE_BOOL:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "bool";
+    break;
+
+  case TYPE_STRING:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "str";
+    break;
+
+  case TYPE_VOID:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "void";
+    break;
+
+  case TYPE_CHAR:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "char";
+    break;
+
+  case TYPE_F32:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "f32";
+    break;
+
+  case TYPE_F64:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "f64";
+    break;
+
+  case TYPE_U8:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "u8";
+    break;
+
+  case TYPE_U16:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "u16";
+    break;
+
+  case TYPE_U32:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "u32";
+    break;
+
+  case TYPE_U64:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "u64";
+    break;
+
+  case TYPE_USIZE:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "usize";
+    break;
+
+  case TYPE_I8:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "i8";
+    break;
+
+  case TYPE_I16:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "i16";
+    break;
+
+  case TYPE_I32:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "i32";
+    break;
+
+  case TYPE_I64:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "i64";
+    break;
+
+  case TYPE_ISIZE:
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name = "isize";
+    break;
+
+  case TYPE_NONE:
+    node->kind = AST_EXPR_LITERAL_NONE;
+    break;
+
+  case TYPE_POINTER:
+    node->kind = AST_TYPE_POINTER;
+    node->data.type_pointer.base = type_to_ast_node(type->data.ptr.base);
+    break;
+
+  case TYPE_OPTIONAL:
+    node->kind = AST_TYPE_OPTIONAL;
+    node->data.type_optional.base = type_to_ast_node(type->data.optional.base);
+    break;
+
+  case TYPE_ARRAY:
+    node->kind = AST_TYPE_ARRAY;
+    node->data.type_array.size = type->data.array.size;
+    node->data.type_array.element = type_to_ast_node(type->data.array.element);
+    break;
+
+  case TYPE_SLICE:
+    node->kind = AST_TYPE_SLICE;
+    node->data.type_slice.element = type_to_ast_node(type->data.slice.element);
+    break;
+
+  case TYPE_TUPLE:
+    node->kind = AST_TYPE_TUPLE;
+    node->data.type_tuple.element_count = type->data.tuple.element_count;
+    node->data.type_tuple.element_types = arena_alloc(
+        &long_lived, sizeof(AstNode *) * type->data.tuple.element_count);
+    for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+      node->data.type_tuple.element_types[i] =
+          type_to_ast_node(type->data.tuple.element_types[i]);
+    }
+    break;
+
+  case TYPE_FUNCTION:
+    node->kind = AST_TYPE_FUNCTION;
+    node->data.type_function.param_count = type->data.func.param_count;
+    node->data.type_function.param_types = arena_alloc(
+        &long_lived, sizeof(AstNode *) * type->data.func.param_count);
+    for (size_t i = 0; i < type->data.func.param_count; i++) {
+      node->data.type_function.param_types[i] =
+          type_to_ast_node(type->data.func.param_types[i]);
+    }
+    node->data.type_function.return_type =
+        type_to_ast_node(type->data.func.return_type);
+    // TODO: Handle convention if needed
+    node->data.type_function.convention = NULL;
+    break;
+
+  case TYPE_STRUCT:
+  case TYPE_ENUM:
+  case TYPE_UNION:
+  case TYPE_TAGGED_UNION:
+  case TYPE_OPAQUE:
+    // For named types (struct, enum, union, opaque), use the declared name
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name =
+        type->declared_name ? type->declared_name : type->canonical_name;
+    break;
+
+  default:
+    // Fallback for any unhandled types
+    node->kind = AST_TYPE_NAMED;
+    node->data.type_named.name =
+        type->declared_name
+            ? type->declared_name
+            : (type->canonical_name ? type->canonical_name : "<unknown>");
+    break;
+  }
+
+  return node;
 }

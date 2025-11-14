@@ -768,8 +768,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   cg->current_section = "forward_vars_funcs";
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
-      // if (sym->kind == SYMBOL_FUNCTION || sym->kind ==
-      // SYMBOL_EXTERN_FUNCTION) {
+      // Skip generic functions - only emit monomorphized instances
+      if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+        continue;
+      }
+
       Type *func = sym->type; // Assume sym->ast points to func node
       // Emit prototype
       emit_type_name(cg, func->data.func.return_type);
@@ -803,8 +806,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   HASH_ITER(hh, module_table, cur, tmp_mod) {
     HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
       if (sym->kind == SYMBOL_FUNCTION) {
-        // if (sym->kind == SYMBOL_FUNCTION || sym->kind ==
-        // SYMBOL_EXTERN_FUNCTION) {
+        // Skip generic functions - only emit monomorphized instances
+        if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+          continue;
+        }
+
         Type *func = sym->type; // Assume sym->ast points to func node
         // Emit prototype
         emit_type_name(cg, func->data.func.return_type);
@@ -914,6 +920,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   // Emit func definitions
   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
     if (sym->kind == SYMBOL_FUNCTION) {
+      // Skip generic functions - only emit monomorphized instances
+      if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+        continue;
+      }
+
       AstNode *func = sym->decl; // Func decl AST node
 
       if (func->data.func_decl.inlined) {
@@ -965,6 +976,11 @@ void emit_program(Codegen *cg, Module *main_mod) {
   HASH_ITER(hh, module_table, cur, tmp_mod) {
     HASH_ITER(hh, cur->module->scope->symbols, sym, tmp) {
       if (sym->kind == SYMBOL_FUNCTION) {
+        // Skip generic functions - only emit monomorphized instances
+        if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+          continue;
+        }
+
         AstNode *func = sym->decl; // Func decl AST node
 
         if (func->data.func_decl.inlined) {
@@ -1499,6 +1515,8 @@ static void escape_string(char *buffer, size_t buffer_sz, const char *string) {
       buffer[buffer_idx++] = string[i];
     }
   }
+
+  buffer[buffer_idx] = '\0';
 }
 
 // Helper: Get format specifier for a built-in type
@@ -1546,7 +1564,8 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
 
       Type *field_type = type->data.struct_data.field_types[i];
 
-      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
+      if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE ||
+          field_type->kind == TYPE_ARRAY) {
         // Recursively format nested composite types
         build_composite_format_string(cg, field_type);
       } else {
@@ -1556,7 +1575,6 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
     }
 
     emit_string(cg, "}");
-
   } else if (type->kind == TYPE_TUPLE) {
     // Emit "(%d, %s, ...)"
     emit_string(cg, "(");
@@ -1567,7 +1585,8 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
 
       Type *elem_type = type->data.tuple.element_types[i];
 
-      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
         build_composite_format_string(cg, elem_type);
       } else {
         emit_string(cg, get_format_specifier(elem_type));
@@ -1575,6 +1594,25 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
     }
 
     emit_string(cg, ")");
+  } else if (type->kind == TYPE_ARRAY) {
+    // Emit "[%d, %d, ...]"
+    emit_string(cg, "[");
+
+    for (size_t i = 0; i < type->data.array.size; i++) {
+      if (i > 0)
+        emit_string(cg, ", ");
+
+      Type *elem_type = type->data.array.element;
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
+        build_composite_format_string(cg, elem_type);
+      } else {
+        emit_string(cg, get_format_specifier(elem_type));
+      }
+    }
+
+    emit_string(cg, "]");
   }
 }
 
@@ -1625,9 +1663,46 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
       char field_access[512];
       snprintf(field_access, sizeof(field_access), "%s._%zu", base_expr, i);
 
-      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE) {
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
         build_composite_args(cg, elem_type, field_access, first);
       } else {
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        if (elem_type->kind == TYPE_INT || elem_type->kind == TYPE_I32 ||
+            elem_type->kind == TYPE_I64 || elem_type->kind == TYPE_ISIZE ||
+            elem_type->kind == TYPE_I8 || elem_type->kind == TYPE_I16) {
+          emit_string(cg, "(long long)");
+        } else if (elem_type->kind == TYPE_U8 || elem_type->kind == TYPE_U16 ||
+                   elem_type->kind == TYPE_U32 || elem_type->kind == TYPE_U64 ||
+                   elem_type->kind == TYPE_USIZE) {
+          emit_string(cg, "(unsigned long long)");
+        } else if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, "(");
+        }
+
+        emit_string(cg, field_access);
+
+        if (elem_type->kind == TYPE_BOOL) {
+          emit_string(cg, " ? \"true\" : \"false\")");
+        }
+      }
+    }
+  } else if (type->kind == TYPE_ARRAY) {
+    for (size_t i = 0; i < type->data.array.size; i++) {
+      Type *elem_type = type->data.array.element;
+      char field_access[512];
+      snprintf(field_access, sizeof(field_access), "%s.data[%zu]", base_expr,
+               i);
+
+      if (elem_type->kind == TYPE_STRUCT || elem_type->kind == TYPE_TUPLE ||
+          elem_type->kind == TYPE_ARRAY) {
+        // Recursive case for nested composites
+        build_composite_args(cg, elem_type, field_access, first);
+      } else {
+        // Base case: emit argument with appropriate cast
         if (!*first)
           emit_string(cg, ", ");
         *first = false;
@@ -2332,10 +2407,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     AstNode *lhs = stmt->data.assign_stmt.lhs;
 
-    if ((int)stmt->data.assign_stmt.op == -1 &&
-        lhs->kind == AST_EXPR_MEMBER &&
-        lhs->data.member_expr.object->resolved_type->kind == TYPE_TAGGED_UNION
-    ) {
+    if ((int)stmt->data.assign_stmt.op == -1 && lhs->kind == AST_EXPR_MEMBER &&
+        lhs->data.member_expr.object->resolved_type->kind ==
+            TYPE_TAGGED_UNION) {
       emit_expr(cg, lhs->data.member_expr.object);
 
       cg->lvalue_assignment = false;
@@ -2951,13 +3025,26 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (src_type->kind == TYPE_ARRAY && target->kind == TYPE_SLICE) {
       // Special: construct slice from array
+      // Use statement expression to avoid evaluating src_expr twice
+      emit_string(cg, "({ ");
+      emit_type_name(cg, src_type);
+      emit_string(cg, " ");
+
+      char temp_name[64];
+      get_temporary_name(cg, temp_name, sizeof(temp_name));
+      emit_string(cg, temp_name);
+
+      emit_string(cg, " = ");
+      emit_expr(cg, src_expr);
+      emit_string(cg, "; ");
+
       emit_string(cg, "(");
-      emit_type_name(cg, target); // e.g., slice_int
+      emit_type_name(cg, target);
       emit_string(cg, "){ &");
-      emit_expr(cg, src_expr);
+      emit_string(cg, temp_name);
       emit_string(cg, ".data[0], ");
-      emit_expr(cg, src_expr);
-      emit_string(cg, ".len }");
+      emit_string(cg, temp_name);
+      emit_string(cg, ".len }; })");
     } else {
       // General cast, e.g., (float)int
       emit_string(cg, "(");
@@ -3083,47 +3170,107 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_SLICE: {
+    // Use statement expression to evaluate array/start/end only once
+    emit_string(cg, "({ ");
+
+    // Temp for array
+    char temp_array[64];
+    get_temporary_name(cg, temp_array, sizeof(temp_array));
+
+    // Temp for start (if present)
+    char temp_start[64] = {0};
+    bool has_start = expr->data.slice_expr.start != NULL;
+    if (has_start) {
+      get_temporary_name(cg, temp_start, sizeof(temp_start));
+    }
+
+    // Temp for end (if present)
+    char temp_end[64] = {0};
+    bool has_end = expr->data.slice_expr.end != NULL;
+    if (has_end) {
+      get_temporary_name(cg, temp_end, sizeof(temp_end));
+    }
+
+    // Emit temp declarations and assignments
+    Type *array_type = expr->data.slice_expr.array->resolved_type;
+
+    if (array_type->kind != TYPE_POINTER) {
+      emit_type_name(cg, array_type);
+      emit_string(cg, " ");
+      emit_string(cg, temp_array);
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.slice_expr.array);
+      emit_string(cg, "; ");
+    }
+
+    if (has_start) {
+      emit_string(cg, "size_t ");
+      emit_string(cg, temp_start);
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.slice_expr.start);
+      emit_string(cg, "; ");
+    }
+
+    if (has_end) {
+      emit_string(cg, "size_t ");
+      emit_string(cg, temp_end);
+      emit_string(cg, " = ");
+      emit_expr(cg, expr->data.slice_expr.end);
+      emit_string(cg, "; ");
+    }
+
+    // Now emit the slice construction using temps
     emit_string(cg, "(");
     emit_type_name(cg, expr->resolved_type);
     emit_string(cg, "){ ");
-    if (expr->data.slice_expr.array->resolved_type->kind == TYPE_POINTER) {
+
+    if (array_type->kind == TYPE_POINTER) {
       emit_expr(cg, expr->data.slice_expr.array);
       emit_string(cg, " + ");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
+      if (has_start) {
+        emit_string(cg, temp_start);
       } else {
         emit_string(cg, "0");
       }
     } else {
       emit_string(cg, "&");
-      emit_expr(cg, expr->data.slice_expr.array);
+      emit_string(cg, temp_array);
       emit_string(cg, ".data[");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
+      if (has_start) {
+        emit_string(cg, temp_start);
       } else {
         emit_string(cg, "0");
       }
       emit_string(cg, "]");
     }
+
     emit_string(cg, ", ");
-    if (expr->data.slice_expr.end) {
-      emit_expr(cg, expr->data.slice_expr.end);
+
+    if (has_end) {
+      emit_string(cg, temp_end);
       emit_string(cg, " - ");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
+      if (has_start) {
+        emit_string(cg, temp_start);
       } else {
         emit_string(cg, "0");
       }
     } else {
-      emit_expr(cg, expr->data.slice_expr.array);
-      emit_string(cg, ".len - ");
-      if (expr->data.slice_expr.start) {
-        emit_expr(cg, expr->data.slice_expr.start);
-      } else {
+      if (array_type->kind == TYPE_POINTER) {
+        // For pointer slicing without end, this shouldn't happen
+        // (should have been caught in checker)
         emit_string(cg, "0");
+      } else {
+        emit_string(cg, temp_array);
+        emit_string(cg, ".len - ");
+        if (has_start) {
+          emit_string(cg, temp_start);
+        } else {
+          emit_string(cg, "0");
+        }
       }
     }
-    emit_string(cg, " }");
+
+    emit_string(cg, " }; })");
     break;
   }
 
@@ -3231,7 +3378,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           // Emit variadic arguments
           for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
             char index_buff[24] = {0};
-            snprintf(index_buff, sizeof(index_buff), "%zu", i);
+            snprintf(index_buff, sizeof(index_buff), "%zu", i - fixed_params);
 
             emit_indent_spaces(cg);
             emit_indent_spaces(cg);
@@ -3274,10 +3421,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_TUPLE: {
-    // emit_string(cg, "(");
-    // emit_type_name(cg, expr->resolved_type);
-    // emit_string(cg, ") {");
-    emit_string(cg, "{");
+    emit_string(cg, "(");
+    emit_type_name(cg, expr->resolved_type);
+    emit_string(cg, ") {");
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
       if (i > 0)
         emit_string(cg, ", ");
@@ -3338,7 +3484,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, ";\n");
 
           char *name = base_type->qualified_name ? base_type->qualified_name
-                                                : base_type->canonical_name;
+                                                 : base_type->canonical_name;
 
           emit_string(cg, "assert(");
           emit_string(cg, temp);
@@ -3372,8 +3518,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           char buffer[64] = {0};
 
-          char *name = object_type->qualified_name ? object_type->qualified_name
-                                                  : object_type->canonical_name;
+          char *name = object_type->qualified_name
+                           ? object_type->qualified_name
+                           : object_type->canonical_name;
 
           emit_string(cg, "({\n");
           char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
