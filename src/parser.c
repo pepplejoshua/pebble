@@ -771,25 +771,36 @@ AstNode *parse_type_decl(Parser *parser) {
   // type Name[T, U, V] = TypeExpr;
 
   Token name = parser_consume(parser, TOKEN_IDENTIFIER, "Expected type name");
-  // Parse comma-separated type expressions
-  AstNode **type_args = NULL;
-  size_t type_arg_count = 0;
-
+  // Parse comma-separated type parameters
+  Token *type_params = NULL;
+  size_t type_param_count = 0;
   if (parser_match(parser, TOKEN_LBRACKET)) {
-    size_t type_arg_capacity = 4;
-    type_args = arena_alloc(&long_lived, type_arg_capacity * sizeof(AstNode *));
-
+    size_t type_param_cap = 0;
     do {
-      if (type_arg_count >= type_arg_capacity) {
-        type_arg_capacity *= 2;
-        AstNode **new_args = arena_alloc(&long_lived, sizeof(AstNode *));
-        memcpy(new_args, type_args, type_arg_count * sizeof(AstNode *));
-        type_args = new_args;
+      // FIXME: Increase this when generics work properly
+      if (type_param_count >= 5) {
+        parser_error(parser, "Too many generic type parameters (max 5)");
+        break;
       }
-      type_args[type_arg_count++] = parse_type_expression(parser);
-    } while (parser_match(parser, TOKEN_COMMA));
 
-    parser_consume(parser, TOKEN_RBRACKET, "Expected ']' after type arguments");
+      if (type_param_count >= type_param_cap) {
+        // FIXME: Make this grow when we increase the type parameter cap
+        type_param_cap = 5;
+        Token *new_params =
+            arena_alloc(&long_lived, type_param_cap * sizeof(Token));
+        if (type_param_count > 0) {
+          memcpy(new_params, type_params, type_param_count * sizeof(Token));
+        }
+        type_params = new_params;
+      }
+
+      Token type_param_name =
+          parser_consume(parser, TOKEN_IDENTIFIER, "Expected parameter name");
+
+      type_params[type_param_count++] = type_param_name;
+    } while (parser_match(parser, TOKEN_COMMA));
+    parser_consume(parser, TOKEN_RBRACKET,
+                   "Expected '[' after generic parameters");
   }
 
   parser_consume(parser, TOKEN_EQUAL, "Expected '=' after type name");
@@ -804,8 +815,8 @@ AstNode *parse_type_decl(Parser *parser) {
   node->data.type_decl.name = str_dup(name.lexeme);
   node->data.type_decl.qualified_name = str_dup(name.lexeme);
   node->data.type_decl.type_expr = type_expr;
-  node->data.type_decl.type_args = type_args;
-  node->data.type_decl.type_arg_count = type_arg_count;
+  node->data.type_decl.type_params = type_params;
+  node->data.type_decl.type_params_count = type_param_count;
 
   return node;
 }
@@ -1516,72 +1527,70 @@ AstNode *parse_postfix(Parser *parser) {
             char *prefix = prepend(
                 expr->data.mod_member_expr.module->data.ident.name, "__");
             type_name = prepend(prefix, expr->data.mod_member_expr.member);
-
-            // Parse struct literal fields
-            char **field_names = NULL;
-            AstNode **field_values = NULL;
-            size_t count = 0;
-            size_t capacity = 4;
-
-            field_names = arena_alloc(&long_lived, capacity * sizeof(char *));
-            field_values =
-                arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-
-            // Allow empty struct literal
-            if (!parser_check(parser, TOKEN_RBRACE)) {
-              do {
-                if (parser_check(parser, TOKEN_RBRACE)) {
-                  break;
-                }
-                // Grow arrays if needed
-                if (count >= capacity) {
-                  capacity *= 2;
-                  char **new_names =
-                      arena_alloc(&long_lived, capacity * sizeof(char *));
-                  AstNode **new_values =
-                      arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-                  memcpy(new_names, field_names, count * sizeof(char *));
-                  memcpy(new_values, field_values, count * sizeof(AstNode *));
-                  field_names = new_names;
-                  field_values = new_values;
-                }
-
-                // Parse field: IDENTIFIER = EXPR
-                if (!parser_check(parser, TOKEN_IDENTIFIER)) {
-                  parser_error(parser, "Expected field name in struct literal");
-                  parser_synchronize(parser);
-                  continue;
-                }
-                parser_advance(parser);
-                Token field_name = parser->previous;
-
-                parser_consume(parser, TOKEN_EQUAL,
-                               "Expected '=' after field name");
-
-                field_names[count] = str_dup(field_name.lexeme);
-                field_values[count] = parse_expression(parser);
-                if (!field_values[count]) {
-                  parser_synchronize(parser);
-                  continue;
-                }
-                count++;
-
-              } while (parser_match(parser, TOKEN_COMMA));
-            }
-
-            parser_consume(parser, TOKEN_RBRACE,
-                           "Expected '}' after struct literal fields");
-
-            expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
-            expr->data.struct_literal.type_name = type_name;
-            expr->data.struct_literal.qualified_type_name = type_name;
-            expr->data.struct_literal.field_names = field_names;
-            expr->data.struct_literal.field_values = field_values;
-            expr->data.struct_literal.field_count = count;
-            expr->data.struct_literal.type_args = type_args;
-            expr->data.struct_literal.type_arg_count = type_arg_count;
-            return expr;
           }
+          // Parse struct literal fields
+          char **field_names = NULL;
+          AstNode **field_values = NULL;
+          size_t count = 0;
+          size_t capacity = 4;
+
+          field_names = arena_alloc(&long_lived, capacity * sizeof(char *));
+          field_values = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+          // Allow empty struct literal
+          if (!parser_check(parser, TOKEN_RBRACE)) {
+            do {
+              if (parser_check(parser, TOKEN_RBRACE)) {
+                break;
+              }
+              // Grow arrays if needed
+              if (count >= capacity) {
+                capacity *= 2;
+                char **new_names =
+                    arena_alloc(&long_lived, capacity * sizeof(char *));
+                AstNode **new_values =
+                    arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+                memcpy(new_names, field_names, count * sizeof(char *));
+                memcpy(new_values, field_values, count * sizeof(AstNode *));
+                field_names = new_names;
+                field_values = new_values;
+              }
+
+              // Parse field: IDENTIFIER = EXPR
+              if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+                parser_error(parser, "Expected field name in struct literal");
+                parser_synchronize(parser);
+                continue;
+              }
+              parser_advance(parser);
+              Token field_name = parser->previous;
+
+              parser_consume(parser, TOKEN_EQUAL,
+                             "Expected '=' after field name");
+
+              field_names[count] = str_dup(field_name.lexeme);
+              field_values[count] = parse_expression(parser);
+              if (!field_values[count]) {
+                parser_synchronize(parser);
+                continue;
+              }
+              count++;
+
+            } while (parser_match(parser, TOKEN_COMMA));
+          }
+
+          parser_consume(parser, TOKEN_RBRACE,
+                         "Expected '}' after struct literal fields");
+
+          expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+          expr->data.struct_literal.type_name = type_name;
+          expr->data.struct_literal.qualified_type_name = type_name;
+          expr->data.struct_literal.field_names = field_names;
+          expr->data.struct_literal.field_values = field_values;
+          expr->data.struct_literal.field_count = count;
+          expr->data.struct_literal.type_args = type_args;
+          expr->data.struct_literal.type_arg_count = type_arg_count;
+          return expr;
         } else {
           parser_error(parser, "Expected '(' or '{' after type arguments");
           return NULL;
@@ -2662,17 +2671,49 @@ AstNode *parse_type_expression(Parser *parser) {
   if (parser_match(parser, TOKEN_IDENTIFIER)) {
     Token name = parser->previous;
 
+    bool is_qualified_named_type = false;
     if (parser_match(parser, TOKEN_MOD_SCOPE)) {
       Token mod_type_name = parser_consume(parser, TOKEN_IDENTIFIER,
                                            "Expected an identifier after '::'");
       type = alloc_node(AST_TYPE_QUALIFIED_NAMED, mod_type_name.location);
       type->data.type_qualified_named.mod_name = name.lexeme;
       type->data.type_qualified_named.mem_name = mod_type_name.lexeme;
-      return type;
+      is_qualified_named_type = true;
+    } else {
+      type = alloc_node(AST_TYPE_NAMED, name.location);
+      type->data.type_named.name = str_dup(name.lexeme);
     }
 
-    type = alloc_node(AST_TYPE_NAMED, name.location);
-    type->data.type_named.name = str_dup(name.lexeme);
+    // Parse comma-separated type parameters
+    AstNode **type_args = NULL;
+    size_t type_arg_count = 0;
+    if (parser_match(parser, TOKEN_LBRACKET)) {
+      size_t type_arg_capacity = 4;
+      type_args =
+          arena_alloc(&long_lived, type_arg_capacity * sizeof(AstNode *));
+
+      do {
+        if (type_arg_count >= type_arg_capacity) {
+          type_arg_capacity *= 2;
+          AstNode **new_args = arena_alloc(&long_lived, sizeof(AstNode *));
+          memcpy(new_args, type_args, type_arg_count * sizeof(AstNode *));
+          type_args = new_args;
+        }
+        type_args[type_arg_count++] = parse_type_expression(parser);
+      } while (parser_match(parser, TOKEN_COMMA));
+
+      parser_consume(parser, TOKEN_RBRACKET,
+                     "Expected ']' after type arguments");
+    }
+
+    if (is_qualified_named_type) {
+      type->data.type_qualified_named.type_args = type_args;
+      type->data.type_qualified_named.type_arg_count = type_arg_count;
+    } else {
+      type->data.type_named.type_args = type_args;
+      type->data.type_named.type_arg_count = type_arg_count;
+    }
+
     return type;
   }
 
