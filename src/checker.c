@@ -3324,6 +3324,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   substitute_type_params_in_type(specialized_expr, &bindings);
 
   // Step 6: Resolve body — may hit placeholder (safe)
+  checker_state.in_type_resolution = false;
   Type *resolved_body = resolve_type_expression(specialized_expr);
   if (!resolved_body) {
     canonical_unregister(mangled_name);
