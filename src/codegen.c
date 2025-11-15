@@ -1794,7 +1794,25 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
           emit_string(cg, "(");
         }
 
-        emit_string(cg, field_access);
+        if (field_type->kind == TYPE_ARRAY) {
+          char index[32] = {0};
+
+          for (size_t el = 0; el < field_type->data.array.size; el++) {
+            if (el > 0) {
+              emit_string(cg, ", ");
+            }
+
+            memset(index, 0, sizeof(index));
+            snprintf(index, sizeof(index), "%ld", el);
+
+            emit_string(cg, field_access);
+            emit_string(cg, ".data[");
+            emit_string(cg, index);
+            emit_string(cg, "]");
+          }
+        } else {
+          emit_string(cg, field_access);
+        }
 
         if (field_type->kind == TYPE_BOOL) {
           emit_string(cg, " ? \"true\" : \"false\")");
@@ -1956,11 +1974,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         char temp_expr_buf[32] = {0};
         char *temp_expr = get_temporary_name(cg, temp_expr_buf, sizeof(temp_expr_buf));
 
+        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
+
         emit_type_name(cg, type);
         emit_string(cg, " ");
         emit_string(cg, temp_expr);
         emit_string(cg, " = ");
-        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
 
         emit_expression_buffer(cg);
         emit_string(cg, ";\n");
@@ -2567,8 +2586,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     break;
   }
   case AST_STMT_EXPR: {
-    emit_indent_spaces(cg);
     emit_expr(cg, stmt->data.expr_stmt.expr);
+
+    emit_indent_spaces(cg);
+    emit_expression_buffer(cg);
     emit_string(cg, ";\n");
     break;
   }
@@ -2666,7 +2687,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
 
     emit_indent_spaces(cg);
-    emit_type_name(cg, stmt->resolved_type); // Resolved type?
+    emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
     char *name = stmt->data.var_decl.full_qualified_name;
     if (!name) {
@@ -3860,7 +3881,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {
       if (expr->data.struct_literal.field_count > 0) {
-        emit_string(cg, ".__tag = ");
+        write_expression(".__tag = ");
 
         char *name = expr->resolved_type->qualified_name
                          ? expr->resolved_type->qualified_name
@@ -3896,6 +3917,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     }
 
     write_expression("}");
+    arena_free(&temp_arena);
     break;
   }
 
