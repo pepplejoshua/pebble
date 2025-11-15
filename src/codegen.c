@@ -3010,41 +3010,41 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_LITERAL_CHAR: {
     char c = expr->data.char_lit.value;
-    emit_string(cg, "'");
+    write_expression("'");
     if (c == '\n') {
-      emit_string(cg, "\\n");
+      write_expression("\\n");
     } else if (c == '\r') {
-      emit_string(cg, "\\r");
+      write_expression("\\r");
     } else if (c == '\t') {
-      emit_string(cg, "\\t");
+      write_expression("\\t");
     } else if (c == '\\') {
-      emit_string(cg, "\\\\");
+      write_expression("\\\\");
     } else if (c == '\'') {
-      emit_string(cg, "\\'");
+      write_expression("\\'");
     } else if (c == '\0') {
-      emit_string(cg, "\\0");
+      write_expression("\\0");
     } else if (c >= 32 && c <= 126) {
       // Printable ASCII (including ", numbers, letters, punctuation, etc.) —
       // emit as-is
       char buf[2] = {c, '\0'};
-      emit_string(cg, buf);
+      write_expression(buf);
     } else {
       // Non-printable or non-ASCII (e.g., control characters, extended chars)
       // — use fallback
-      emit_string(cg, "?");
+      write_expression("?");
     }
-    emit_string(cg, "'");
+    write_expression("'");
     break;
   }
 
   case AST_EXPR_LITERAL_BOOL:
-    emit_string(cg, expr->data.bool_lit.value ? "true" : "false");
+    write_expression(expr->data.bool_lit.value ? "true" : "false");
     break;
 
   case AST_EXPR_GROUPED_EXPR:
-    emit_string(cg, "(");
+    write_expression("(");
     emit_expr(cg, expr->data.grouped_expr.inner_expr);
-    emit_string(cg, ")");
+    write_expression(")");
     break;
 
   case AST_EXPR_BINARY_OP: {
@@ -3789,6 +3789,18 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_string(cg, type_name);
     emit_string(cg, "){");
 
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
+    char *expr_buffer[128] = {0};
+
+    for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
+      emit_expr(cg, expr->data.struct_literal.field_values[i]);
+
+      expr_buffer[i] = clone_expression_buffer(&temp_arena);
+      reset_expression_buffer();
+    }
+
     if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {
       if (expr->data.struct_literal.field_count > 0) {
         emit_string(cg, ".__tag = ");
@@ -3806,7 +3818,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ".");
         emit_string(cg, expr->data.struct_literal.field_names[0]);
         emit_string(cg, " = ");
-        emit_expr(cg, expr->data.struct_literal.field_values[0]);
+        emit_string(cg, expr_buffer[0]);
 
         emit_string(cg, " }");
       } else {
@@ -3814,12 +3826,15 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
-        if (i > 0)
+        if (i > 0) {
           emit_string(cg, ", ");
+        }
+
         emit_string(cg, ".");
         emit_string(cg, expr->data.struct_literal.field_names[i]);
         emit_string(cg, " = ");
-        emit_expr(cg, expr->data.struct_literal.field_values[i]);
+
+        emit_string(cg, expr_buffer[i]);
       }
     }
 
