@@ -2,8 +2,9 @@
 import "std:mem";
 
 extern {
-    fn memcpy(dst *void, src *void, n usize) *void;
     fn strlen(s str) usize;
+    fn strcmp(a str, b str) int;
+    fn memcmp(a *void, b *void, n usize) int;
 }
 
 type String = struct {
@@ -46,24 +47,35 @@ fn push_char(s *String, c char) void {
 
 fn push_str(s *String, new_str str) void {
     var len = strlen(new_str);
+    if (len == 0) {
+        return; // Nothing to append
+    }
 
-    // Calculate needed capacity
-    var needed = s.len + len + 1;
-    if needed > s.capacity {
+    // Reserve space for the new string plus null terminator
+    reserve(s, len);
+
+    // Copy the new string
+    var dst = s.data + s.len;
+    var src = new_str;
+    mem::copy(dst, src, len);
+
+    // Update length and null-terminate
+    s.len += len;
+    *(s.data + s.len) = '\0';
+}
+
+fn reserve(s *String, additional usize) void {
+    var needed = s.len + additional + 1;
+    if (needed > s.capacity) {
         var new_cap = s.capacity;
-        while new_cap < needed {
+        if (new_cap == 0) {
+            new_cap = 16; // Minimum capacity
+        }
+        while (new_cap < needed) {
             new_cap = new_cap * 2;
         }
         grow(s, new_cap);
     }
-
-    // Copy
-    var dst = s.data + s.len;
-    var src = new_str as *void;
-    memcpy(dst, src, len);
-
-    s.len += len;
-    *(s.data + s.len) = '\0';
 }
 
 fn as_str(s String) str {
@@ -75,4 +87,138 @@ fn as_str(s String) str {
 
 fn as_slice(s String) []char {
     return s.data[:s.len];
+}
+
+fn is_empty(s String) bool {
+    return s.len == 0;
+}
+
+fn clear(s *String) void {
+    s.len = 0;
+    if (s.data != nil) {
+        *s.data = '\0';
+    }
+}
+
+fn shrink_to_fit(s *String) void {
+    if (s.capacity > s.len + 1) {
+        if (s.len == 0) {
+            if (s.data != nil) {
+                mem::delete(s.data);
+                s.data = nil;
+            }
+            s.capacity = 0;
+        } else {
+            s.data = mem::realloc(s.data, s.len + 1);
+            s.capacity = s.len + 1;
+        }
+    }
+}
+
+fn eq(a String, b String) bool {
+    if (a.len != b.len) {
+        return false;
+    }
+    if (a.len == 0) {
+        return true; // Both empty
+    }
+    return memcmp(a.data, b.data, a.len) == 0;
+}
+
+fn starts_with(s String, prefix str) bool {
+    var prefix_len = strlen(prefix);
+    if (prefix_len > s.len) {
+        return false;
+    }
+    return memcmp(s.data, prefix, prefix_len) == 0;
+}
+
+fn ends_with(s String, suffix str) bool {
+    var suffix_len = strlen(suffix);
+    if (suffix_len > s.len) {
+        return false;
+    }
+    var start_pos = s.len - suffix_len;
+    return memcmp((s.data + start_pos), suffix, suffix_len) == 0;
+}
+
+fn find(s String, needle str) ?isize {
+    var needle_len = strlen(needle);
+    if (needle_len == 0) {
+        return some 0;
+    }
+    if (needle_len > s.len) {
+        return none; // Not found
+    }
+
+    var i = 0;
+    while (i <= s.len - needle_len) {
+        if (memcmp((s.data + i), needle, needle_len) == 0) {
+            return some i;
+        }
+        i++;
+    }
+    return none; // Not found
+}
+
+fn substr(s String, start usize, count usize) String {
+    if (start >= s.len) {
+        return new();
+    }
+    var actual_count = count;
+    if (start + count > s.len) {
+        actual_count = s.len - start;
+    }
+
+    var result = new();
+    reserve(&result, actual_count);
+
+    if (actual_count > 0) {
+        mem::copy(result.data, (s.data + start), actual_count);
+        result.len = actual_count;
+        *(result.data + result.len) = '\0';
+    }
+
+    return result;
+}
+
+fn insert(s *String, pos usize, new_str str) void {
+    var insert_len = strlen(new_str);
+    if (insert_len == 0) {
+        return; // Nothing to insert
+    }
+
+    if (pos > s.len) {
+        pos = s.len; // Clamp to end
+    }
+
+    reserve(s, insert_len);
+
+    // Shift existing data
+    if (pos < s.len) {
+        mem::copy((s.data + pos + insert_len), (s.data + pos), s.len - pos);
+    }
+
+    // Insert new data
+    mem::copy((s.data + pos), new_str, insert_len);
+    s.len += insert_len;
+    *(s.data + s.len) = '\0';
+}
+
+fn remove(s *String, pos usize, count usize) void {
+    if (pos >= s.len || count == 0) {
+        return; // Nothing to remove
+    }
+
+    var actual_count = count;
+    if (pos + count > s.len) {
+        actual_count = s.len - pos;
+    }
+
+    if (pos + actual_count < s.len) {
+        mem::copy((s.data + pos), (s.data + pos + actual_count), s.len - pos - actual_count);
+    }
+
+    s.len -= actual_count;
+    *(s.data + s.len) = '\0';
 }
