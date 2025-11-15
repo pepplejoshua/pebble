@@ -3742,7 +3742,21 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_CALL: {
     Type *func_type = expr->data.call.func->resolved_type;
 
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
+
     emit_expr(cg, expr->data.call.func);
+
+    emit_type_name(cg, expr->data.call.func->resolved_type);
+    emit_string(cg, " ");
+
+    emit_expression_buffer(cg);
+    emit_string(cg, " = ");
+    emit_string(cg, ";\n");
+
+    Arena temp_arena;
+    // arena_init(&temp_arena, 1024);
+
     emit_string(cg, "(");
 
     CallingConvention conv = func_type->data.func.convention;
