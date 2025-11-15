@@ -14,14 +14,16 @@ type String = struct {
 
 fn new() String {
     return String.{
-        data = mem::new((sizeof char) * 4),
-        capacity = 4,
+        data = nil,
+        capacity = 0,
         len = 0,
     };
 }
 
 fn delete(s *String) void {
-    mem::delete(s.data);
+    if (s.data != nil) {
+        mem::delete(s.data);
+    }
     s.data = nil;
     s.len = 0;
     s.capacity = 0;
