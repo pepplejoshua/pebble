@@ -67,6 +67,9 @@ fn push_str(s *String, new_str str) void {
 }
 
 fn as_str(s String) str {
+    if s.data == nil {
+        return "";
+    }
     return s.data as str;
 }
 
