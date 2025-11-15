@@ -3307,7 +3307,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
       type_param_count);
 
   // Step 3: Check cache
-  Type *existing = canonical_lookup(mangled_name);
+  Type *existing = type_lookup(mangled_name, generic_struct_decl->loc.file);
   if (existing) {
     return existing;
   }
@@ -3315,7 +3315,6 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   // Step 4: Create placeholder EARLY
   Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
   placeholder->declared_name = generic_struct_decl->data.type_decl.name;
-  canonical_register(mangled_name, placeholder);
   type_register(mangled_name, placeholder);
 
   // Step 5: Clone + substitute
@@ -3324,21 +3323,18 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   substitute_type_params_in_type(specialized_expr, &bindings);
 
   // Step 6: Resolve body — may hit placeholder (safe)
-  checker_state.in_type_resolution = false;
+  checker_state.in_type_resolution = true;
   Type *resolved_body = resolve_type_expression(specialized_expr);
-  if (!resolved_body) {
-    canonical_unregister(mangled_name);
-    checker_error(call_loc, "failed to specialize struct '%s'",
-                  generic_struct_decl->data.type_decl.name);
-    return NULL;
-  }
+  checker_state.in_type_resolution = false;
 
   // Step 7: NOW update placeholder
   char *saved_declared_name = placeholder->declared_name;
-  *placeholder = *resolved_body;
-  placeholder->canonical_name = NULL;
-  placeholder->qualified_name = mangled_name;
-  placeholder->declared_name = saved_declared_name;
+  if (resolved_body) {
+    *placeholder = *resolved_body;
+    placeholder->canonical_name = NULL;
+    placeholder->qualified_name = mangled_name;
+    placeholder->declared_name = saved_declared_name;
+  }
 
   // Step 8: Track generic args
   placeholder->generic_type_args = concrete_types;
@@ -3353,11 +3349,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   Visited *curr, *tmp;
   HASH_ITER(hh, visited, curr, tmp) { HASH_DEL(visited, curr); }
 
-  // Restore canonical name
-  placeholder->canonical_name = mangled_name;
-
   if (has_cycle) {
-    canonical_unregister(mangled_name);
     checker_error(
         call_loc,
         "recursive type '%s' has infinite size (use pointer for indirection)",

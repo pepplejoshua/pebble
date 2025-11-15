@@ -194,7 +194,6 @@ Type *type_lookup(const char *name, const char *mod_name);
 void type_register(const char *name, Type *type);
 Type *canonical_lookup(const char *canonical_name);
 void canonical_register(const char *canonical_name, Type *type);
-void canonical_unregister(const char *canonical_name);
 
 // Compute canonical name for a fully resolved type
 char *compute_canonical_name(Type *type);

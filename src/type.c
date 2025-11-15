@@ -471,14 +471,6 @@ void canonical_register(const char *canonical_name, Type *type) {
   HASH_ADD_STR(canonical_type_table, name, entry);
 }
 
-void canonical_unregister(const char *canonical_name) {
-  TypeEntry *entry = NULL;
-  HASH_FIND_STR(canonical_type_table, canonical_name, entry);
-  if (entry) {
-    HASH_DEL(canonical_type_table, entry);
-  }
-}
-
 // Look up canonical type
 Type *canonical_lookup(const char *canonical_name) {
   if (!canonical_name)
