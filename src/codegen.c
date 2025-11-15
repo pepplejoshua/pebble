@@ -942,7 +942,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
     }
   }
 
-  // DEFERRED TYPE EMISSION
+  // Type emission is deferred so we can emit only used types
   TypeDepNode *dep_graph = NULL;
   TypeEntry *entry, *type_tmp;
 
@@ -950,7 +950,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
   HASH_ITER(hh, canonical_type_table, entry, type_tmp) {
     Type *type = entry->type;
     if (!type->used)
-      continue; // ← CRITICAL: Skip unused
+      continue;
 
     if (type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE ||
         type->kind == TYPE_SLICE || type->kind == TYPE_STRUCT ||
@@ -1151,7 +1151,6 @@ void emit_type_name(Codegen *cg, Type *type) {
   case TYPE_ARRAY: {
     int old_indent = cg->indent_level;
     cg->indent_level = 0;
-    emit_type_if_needed(cg, type);
     emit_string(cg, type->canonical_name);
     cg->indent_level = old_indent;
     break;
@@ -1159,7 +1158,6 @@ void emit_type_name(Codegen *cg, Type *type) {
   case TYPE_SLICE: {
     int old_indent = cg->indent_level;
     cg->indent_level = 0;
-    emit_type_if_needed(cg, type);
     emit_string(cg, type->canonical_name);
     cg->indent_level = old_indent;
     break;
@@ -1219,7 +1217,8 @@ void emit_sections(Codegen *cg, Module *main_mod) {
           "  memset(data, 0, size);\n"
           "  return data;\n"
           "}\n\n"
-          "void *__pebble_c_realloc(__pebble_context ctx, void *ptr, void *data, size_t new_size) {\n"
+          "void *__pebble_c_realloc(__pebble_context ctx, void *ptr, void "
+          "*data, size_t new_size) {\n"
           "  return realloc(data, new_size);\n"
           "}\n\n"
           "void __pebble_c_free(__pebble_context ctx, void *ptr, void "
@@ -2734,8 +2733,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, ", "); // <-- THIS IS THE FIX!
 
           // Emit the arguments (field accesses)
-          bool first_arg =
-              true; // Now first_arg=true is correct (no comma before first arg)
+          bool first_arg = true; // Now first_arg=true is correct (no comma
+                                 // before first arg)
           build_composite_args(cg, part_type, temp_expr_buf, &first_arg);
 
           emit_string(cg, "); "); // Close sprintf call
@@ -2862,13 +2861,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     } else if (c == '\0') {
       emit_string(cg, "\\0");
     } else if (c >= 32 && c <= 126) {
-      // Printable ASCII (including ", numbers, letters, punctuation, etc.) —
-      // emit as-is
+      // Printable ASCII (including ", numbers, letters, punctuation, etc.)
+      // — emit as-is
       char buf[2] = {c, '\0'};
       emit_string(cg, buf);
     } else {
-      // Non-printable or non-ASCII (e.g., control characters, extended chars)
-      // — use fallback
+      // Non-printable or non-ASCII (e.g., control characters, extended
+      // chars) — use fallback
       emit_string(cg, "?");
     }
     emit_string(cg, "'");
