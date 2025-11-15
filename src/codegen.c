@@ -3561,20 +3561,56 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     if (array_type->kind == TYPE_STRING) {
       // For str, index directly
-      if (!cg->lvalue_assignment && mode_is_safe()) {
-        emit_string(cg, "({ int __index = ");
+      if (mode_is_safe()) {
+        char index[32] = {0};
+        get_temporary_name(cg, index, sizeof(index));
+
         emit_expr(cg, expr->data.index_expr.index);
-        emit_string(cg, "; char *__item = ");
+
+        emit_string(cg, "size_t ");
+        emit_string(cg, index);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
+        char str_item[32] = {0};
+        get_temporary_name(cg, str_item, sizeof(str_item));
+
         emit_expr(cg, array_expr);
-        emit_string(cg, "; ");
-        emit_string(cg,
-                    "assert(__index >= 0 && __index < (int)strlen(__item));");
-        emit_string(cg, "__item[__index]; })");
+
+        emit_string(cg, "char *");
+        emit_string(cg, str_item);
+        emit_string(cg, " = ");
+
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "__pebble_assert(");
+        emit_string(cg, index);
+        emit_string(cg, " >= 0 && ");
+        emit_string(cg, index);
+        emit_string(cg, " < strlen(");
+        emit_string(cg, str_item);
+        emit_string(cg, "), \"bounds check\", ");
+
+        emit_string(cg, "\"");
+        emit_string(cg, expr->loc.file);
+        emit_string(cg, "\", ");
+
+        char temp_buf[32] = {0};
+        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        emit_string(cg, temp_buf);
+        emit_string(cg, ");\n");
+
+        write_expression(str_item);
+        write_expression("[");
+        write_expression(index);
+        write_expression("]");
       } else {
         emit_expr(cg, array_expr);
-        emit_string(cg, "[");
+        write_expression("[");
         emit_expr(cg, expr->data.index_expr.index);
-        emit_string(cg, "]");
+        write_expression("]");
       }
     } else {
       // For arrays/slices, use .data
