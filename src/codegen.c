@@ -3578,7 +3578,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         emit_expr(cg, array_expr);
 
-        emit_string(cg, "char *");
+        emit_string(cg, "const char *");
         emit_string(cg, str_item);
         emit_string(cg, " = ");
 
@@ -3607,9 +3607,20 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         write_expression(index);
         write_expression("]");
       } else {
+        char index[32] = {0};
+        get_temporary_name(cg, index, sizeof(index));
+
+        emit_expr(cg, expr->data.index_expr.index);
+
+        emit_string(cg, "size_t ");
+        emit_string(cg, index);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
         emit_expr(cg, array_expr);
         write_expression("[");
-        emit_expr(cg, expr->data.index_expr.index);
+        write_expression(index);
         write_expression("]");
       }
     } else {
