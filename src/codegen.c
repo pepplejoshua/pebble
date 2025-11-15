@@ -1296,6 +1296,17 @@ void emit_sections(Codegen *cg, Module *main_mod) {
     fputs("\n", cg->output);
   }
 
+  if (!compiler_opts.freestanding) {
+    fputs(
+      "static void __pebble_assert(bool condition, const char *what, const char *file, size_t line) {\n"
+      "  if (!condition) {\n"
+      "    __assert_fail(what, file, line, __ASSERT_FUNCTION);\n"
+      "  }\n"
+      "}\n\n",
+      cg->output
+    );
+  }
+
   fputs("typedef struct __pebble_context __pebble_context;\n\n"
         "typedef struct Allocator {\n"
         "  void *ptr;\n"
@@ -3214,9 +3225,22 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_expression_buffer(cg);
 
     emit_string(cg, ";\n");
-    emit_string(cg, "assert(");
-    emit_string(cg, temp_name);
-    emit_string(cg, ".has_value);\n");
+
+    if (!compiler_opts.freestanding) {
+      // Should always assert unwraps, even in release modes
+      emit_string(cg, "__pebble_assert(");
+      emit_string(cg, temp_name);
+      emit_string(cg, ".has_value, \"unwrap\", ");
+
+      emit_string(cg, "\"");
+      emit_string(cg, expr->loc.file);
+      emit_string(cg, "\", ");
+
+      char temp_buf[32] = {0};
+      snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+      emit_string(cg, temp_buf);
+      emit_string(cg, ");\n");
+    }
 
     write_expression(temp_name);
     write_expression(".value");
