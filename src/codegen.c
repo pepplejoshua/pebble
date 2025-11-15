@@ -1838,7 +1838,9 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
   } else if (type->kind == TYPE_ARRAY) {
     for (size_t i = 0; i < type->data.array.size; i++) {
       Type *elem_type = type->data.array.element;
-      char field_access[512];
+      char field_access[512] = {0};
+
+      printf("HERE!\n");
       snprintf(field_access, sizeof(field_access), "%s.data[%zu]", base_expr,
                i);
 
@@ -2649,6 +2651,20 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     break;
   }
   case AST_DECL_VARIABLE: {
+    if (stmt->data.var_decl.init) {
+      emit_expr(cg, stmt->data.var_decl.init);
+    } else {
+      if (stmt->resolved_type->kind == TYPE_ARRAY) {
+        write_expression("{{0}, ");
+        char len_buffer[32] = {0};
+        sprintf(len_buffer, "%zu", stmt->resolved_type->data.array.size);
+        write_expression(len_buffer);
+        write_expression("}");
+      } else {
+        write_expression("{0}");
+      }
+    }
+
     emit_indent_spaces(cg);
     emit_type_name(cg, stmt->resolved_type); // Resolved type?
     emit_string(cg, " ");
@@ -2657,27 +2673,13 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       name = stmt->data.var_decl.qualified_name;
     }
     emit_string(cg, name);
-    if (stmt->data.var_decl.init) {
-      emit_string(cg, " = ");
-      emit_expr(cg, stmt->data.var_decl.init);
-      emit_expression_buffer(cg);
-    } else {
-      if (stmt->resolved_type->kind == TYPE_ARRAY) {
-        emit_string(cg, " = {{0}, ");
-        char len_buffer[32] = {0};
-        sprintf(len_buffer, "%zu", stmt->resolved_type->data.array.size);
-        emit_string(cg, len_buffer);
-        emit_string(cg, "}");
-      } else {
-        emit_string(cg, " = {0}");
-      }
-    }
+    emit_string(cg, " = ");
+    emit_expression_buffer(cg);
     emit_string(cg, ";\n");
     break;
   }
   case AST_DECL_CONSTANT: {
     emit_indent_spaces(cg);
-    emit_string(cg, "const ");
     emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
     char *name = stmt->data.const_decl.full_qualified_name;
@@ -2686,7 +2688,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     emit_string(cg, name);
     emit_string(cg, " = ");
+    // TODO: Will need to make sure this doesn't break in global space
     emit_expr(cg, stmt->data.const_decl.value);
+    emit_expression_buffer(cg);
     emit_string(cg, ";\n");
     break;
   }
@@ -2759,7 +2763,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_INTERPOLATED_STRING: {
     // First, evaluate all non-literal expressions into temporaries
-    char temp_names[64][64]; // Store temp names for each expression
+    char temp_names[128][64] = {0}; // Store temp names for each expression
     size_t temp_count = 0;
 
     char temp_buffer[512] = {0};
@@ -2768,7 +2772,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       AstNode *part = expr->data.interpolated_string.parts[i];
 
       // Will need to handle more lengthy formatted strings
-      assert(temp_count < 64);
+      assert(temp_count < 128);
 
       if (part->kind != AST_EXPR_LITERAL_STRING) {
         Type *part_type = part->resolved_type;
@@ -3267,7 +3271,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     if (src_type->kind == TYPE_ARRAY && target->kind == TYPE_SLICE) {
       // Special: construct slice from array
       // Use statement expression to avoid evaluating src_expr twice
-      emit_string(cg, "({ ");
       emit_type_name(cg, src_type);
       emit_string(cg, " ");
 
@@ -3277,20 +3280,22 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       emit_string(cg, " = ");
       emit_expr(cg, src_expr);
-      emit_string(cg, "; ");
 
-      emit_string(cg, "(");
-      emit_type_name(cg, target);
-      emit_string(cg, "){ &");
-      emit_string(cg, temp_name);
-      emit_string(cg, ".data[0], ");
-      emit_string(cg, temp_name);
-      emit_string(cg, ".len }; })");
+      emit_expression_buffer(cg);
+      emit_string(cg, ";\n");
+
+      write_expression("(");
+      emit_expression_type_name(cg, target);
+      write_expression("){ &");
+      write_expression(temp_name);
+      write_expression(".data[0], ");
+      write_expression(temp_name);
+      write_expression(".len }");
     } else {
       // General cast, e.g., (float)int
-      emit_string(cg, "(");
-      emit_type_name(cg, target);
-      emit_string(cg, ")");
+      write_expression("(");
+      emit_expression_type_name(cg, target);
+      write_expression(")");
       emit_expr(cg, src_expr);
     }
     break;
@@ -3301,7 +3306,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     if (expr->data.explicit_cast.pointer_cast) {
       if (expr->data.explicit_cast.expr->kind == AST_EXPR_STRUCT_LITERAL) {
         // Need to assign to temporary first
-        emit_string(cg, "({ ");
         emit_type_name(cg, expr->data.explicit_cast.expr->resolved_type);
         emit_string(cg, " ");
 
@@ -3311,40 +3315,43 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         emit_string(cg, " = ");
         emit_expr(cg, expr->data.explicit_cast.expr);
-        emit_string(cg, "; *(");
-        emit_type_name(cg, target_type);
-        emit_string(cg, "*)&");
-        emit_string(cg, temporary);
-        emit_string(cg, "; })");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
+        write_expression("*(");
+        emit_expression_type_name(cg, target_type);
+        write_expression("*)&");
+        write_expression(temporary);
       } else {
-        emit_string(cg, "*(");
-        emit_type_name(cg, target_type);
-        emit_string(cg, "*)&");
+        write_expression("*(");
+        emit_expression_type_name(cg, target_type);
+        write_expression("*)&");
         emit_expr(cg, expr->data.explicit_cast.expr);
       }
     } else {
-      emit_string(cg, "(");
-      emit_type_name(cg, target_type); // Uses canonical name
-      emit_string(cg, ")");
+      write_expression("(");
+      emit_expression_type_name(cg, target_type); // Uses canonical name
+      write_expression(")");
       emit_expr(cg, expr->data.explicit_cast.expr);
     }
     break;
   }
 
   case AST_EXPR_ARRAY_LITERAL: {
-    emit_string(cg, "(");
-    emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, "){ {");
+    write_expression("(");
+    emit_expression_type_name(cg, expr->resolved_type);
+    write_expression("){ {");
     for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
+      if (i > 0) {
+        write_expression(", ");
+      }
       emit_expr(cg, expr->data.array_literal.elements[i]);
     }
-    emit_string(cg, "}, ");
+    write_expression("}, ");
     char count_buf[16];
     sprintf(count_buf, "%zu", expr->data.array_literal.element_count);
-    emit_string(cg, count_buf);
-    emit_string(cg, " }");
+    write_expression(count_buf);
+    write_expression(" }");
     break;
   }
 
@@ -3356,39 +3363,55 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Optimization: if value is zero, use {0} initializer
     if (is_zero_value(value_expr)) {
-      emit_string(cg, "(");
-      emit_type_name(cg, array_type);
-      emit_string(cg, "){0}");
+      write_expression("(");
+      emit_expression_type_name(cg, array_type);
+      write_expression("){0}");
       break;
     }
 
     // Generate statement expression with loop
-    emit_string(cg, "({\n");
     emit_indent(cg);
 
     // Declare the array variable
     emit_indent_spaces(cg);
     emit_type_name(cg, array_type);
-    emit_string(cg, " _arr;\n");
+
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
+
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, ";\n");
 
     // Evaluate value expression once
     emit_indent_spaces(cg);
     emit_type_name(cg, element_type);
-    emit_string(cg, " _val = ");
+
+    char temp_val[32] = {0};
+    get_temporary_name(cg, temp_val, sizeof(temp_val));
+
+    emit_string(cg, " ");
+    emit_string(cg, temp_val);
+    emit_string(cg, " = ");
     emit_expr(cg, value_expr);
+
+    emit_expression_buffer(cg);
     emit_string(cg, ";\n");
 
     // Generate the fill loop
     emit_indent_spaces(cg);
     emit_string(cg, "for (size_t _i = 0; _i < ");
-    char count_buf[32];
+    char count_buf[32] = {0};
     sprintf(count_buf, "%zu", count);
     emit_string(cg, count_buf);
     emit_string(cg, "; _i++) {\n");
     emit_indent(cg);
 
     emit_indent_spaces(cg);
-    emit_string(cg, "_arr.data[_i] = _val;\n");
+    emit_string(cg, temp_name);
+    emit_string(cg, ".data[_i] = ");
+    emit_string(cg, temp_val);
+    emit_string(cg, ";\n");
 
     emit_dedent(cg);
     emit_indent_spaces(cg);
@@ -3396,17 +3419,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Set the array length
     emit_indent_spaces(cg);
-    emit_string(cg, "_arr.len = ");
+    emit_string(cg, temp_name);
+    emit_string(cg, ".len = ");
     emit_string(cg, count_buf);
     emit_string(cg, ";\n");
 
     // Return the array value
-    emit_indent_spaces(cg);
-    emit_string(cg, "_arr;\n");
-
-    emit_dedent(cg);
-    emit_indent_spaces(cg);
-    emit_string(cg, "})");
+    write_expression(temp_name);
     break;
   }
 
@@ -3662,15 +3681,16 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_TUPLE: {
-    emit_string(cg, "(");
-    emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, ") {");
+    write_expression("(");
+    emit_expression_type_name(cg, expr->resolved_type);
+    write_expression(") {");
     for (size_t i = 0; i < expr->data.tuple_expr.element_count; i++) {
-      if (i > 0)
-        emit_string(cg, ", ");
+      if (i > 0) {
+        write_expression(", ");
+      }
       emit_expr(cg, expr->data.tuple_expr.elements[i]);
     }
-    emit_string(cg, "}");
+    write_expression("}");
     break;
   }
 
@@ -3811,9 +3831,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
                      ? expr->resolved_type->qualified_name
                      : expr->resolved_type->canonical_name;
 
-    emit_string(cg, name);
-    emit_string(cg, "_");
-    emit_string(cg, expr->data.partial_member_expr.member);
+    write_expression(name);
+    write_expression("_");
+    write_expression(expr->data.partial_member_expr.member);
     break;
   }
 
@@ -3821,10 +3841,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     char *type_name = expr->data.struct_literal.qualified_type_name
                           ? expr->data.struct_literal.qualified_type_name
                           : expr->resolved_type->canonical_name;
-
-    emit_string(cg, "(");
-    emit_string(cg, type_name);
-    emit_string(cg, "){");
 
     Arena temp_arena;
     arena_init(&temp_arena, 1024);
@@ -3838,6 +3854,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       reset_expression_buffer();
     }
 
+    write_expression("(");
+    write_expression(type_name);
+    write_expression("){");
+
     if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {
       if (expr->data.struct_literal.field_count > 0) {
         emit_string(cg, ".__tag = ");
@@ -3846,45 +3866,45 @@ void emit_expr(Codegen *cg, AstNode *expr) {
                          ? expr->resolved_type->qualified_name
                          : expr->resolved_type->canonical_name;
 
-        emit_string(cg, name);
-        emit_string(cg, "__");
-        emit_string(cg, expr->data.struct_literal.field_names[0]);
+        write_expression(name);
+        write_expression("__");
+        write_expression(expr->data.struct_literal.field_names[0]);
 
-        emit_string(cg, ", .__data = { ");
+        write_expression(", .__data = { ");
 
-        emit_string(cg, ".");
-        emit_string(cg, expr->data.struct_literal.field_names[0]);
-        emit_string(cg, " = ");
-        emit_string(cg, expr_buffer[0]);
+        write_expression(".");
+        write_expression(expr->data.struct_literal.field_names[0]);
+        write_expression(" = ");
+        write_expression(expr_buffer[0]);
 
-        emit_string(cg, " }");
+        write_expression(" }");
       } else {
-        emit_string(cg, "0");
+        write_expression("0");
       }
     } else {
       for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
         if (i > 0) {
-          emit_string(cg, ", ");
+          write_expression(", ");
         }
 
-        emit_string(cg, ".");
-        emit_string(cg, expr->data.struct_literal.field_names[i]);
-        emit_string(cg, " = ");
+        write_expression(".");
+        write_expression(expr->data.struct_literal.field_names[i]);
+        write_expression(" = ");
 
-        emit_string(cg, expr_buffer[i]);
+        write_expression(expr_buffer[i]);
       }
     }
 
-    emit_string(cg, "}");
+    write_expression("}");
     break;
   }
 
   case AST_EXPR_FUNCTION: {
-    emit_string(cg, expr->data.func_expr.symbol);
+    write_expression(expr->data.func_expr.symbol);
     break;
   }
 
   default:
-    emit_string(cg, "/* TODO */");
+    write_expression("/* TODO */");
   }
 }
