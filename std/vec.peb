@@ -84,3 +84,24 @@ fn drop[T](self *Vec[T]) void {
 fn as_slice[T](self *Vec[T]) []T {
     return self.data[:self.len];
 }
+
+// Removes the last element from the vector and returns it.
+// Returns none if the vector is empty.
+fn pop[T](self *Vec[T]) ?T {
+    if self.len == 0 {
+        return none;
+    }
+    self.len--;
+    return some *(self.data + self.len);
+}
+
+// Appends all elements from a slice to the end of the vector.
+fn push_slice[T](self *Vec[T], items []T) void {
+    if items.len == 0 {
+        return;
+    }
+    reserve(self, items.len);
+    // Directly copy the memory from the slice to the vector's data
+    mem::copy(self.data + self.len, items.data, items.len * (sizeof T));
+    self.len += items.len;
+}
