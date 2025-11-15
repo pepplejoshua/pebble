@@ -61,7 +61,7 @@ static void init_expression_buffer(void) {
   expression_buffer.length = 0;
 }
 
-static void write_expression(char *expr) {
+static void write_expression(const char *expr) {
   size_t len = strlen(expr);
   assert(expression_buffer.length + len < expression_buffer_size);
   memcpy(expression_buffer.buffer + expression_buffer.length, expr, len);
@@ -251,7 +251,6 @@ void codegen_init(Codegen *cg, FILE *output) {
 
   cg->in_defer = false;
   cg->defer_stack = NULL;
-  cg->lvalue_assignment = false;
 
   // Init temporary
   cg->temporary_count = 0;
@@ -2597,22 +2596,32 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
 
-    cg->lvalue_assignment = true;
-
     AstNode *lhs = stmt->data.assign_stmt.lhs;
+
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
 
     if ((int)stmt->data.assign_stmt.op == -1 && lhs->kind == AST_EXPR_MEMBER &&
         lhs->data.member_expr.object->resolved_type->kind ==
             TYPE_TAGGED_UNION) {
+
       emit_expr(cg, lhs->data.member_expr.object);
 
-      cg->lvalue_assignment = false;
+      emit_type_name(cg, lhs->data.member_expr.object->resolved_type);
+      emit_string(cg, " ");
+      emit_string(cg, temp_name);
+      emit_string(cg, " = ");
+      emit_expression_buffer(cg);
+      emit_string(cg, ";\n");
 
       const char *member = lhs->data.member_expr.member;
       Type *tagged_type = lhs->data.member_expr.object->resolved_type;
 
       const char *type_name = tagged_type->canonical_name;
 
+      emit_expr(cg, stmt->data.assign_stmt.rhs);
+
+      emit_string(cg, temp_name);
       emit_string(cg, " = (");
       emit_string(cg, type_name);
       emit_string(cg, "){ .__tag = ");
@@ -2624,16 +2633,24 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, ", .__data = { .");
       emit_string(cg, member);
       emit_string(cg, " = ");
-      emit_expr(cg, stmt->data.assign_stmt.rhs);
 
+      emit_expression_buffer(cg);
       emit_string(cg, " } };\n");
 
       return;
-    } else {
-      emit_expr(cg, stmt->data.assign_stmt.lhs);
     }
 
-    cg->lvalue_assignment = false;
+    emit_expr(cg, stmt->data.assign_stmt.rhs);
+
+    emit_type_name(cg, stmt->data.assign_stmt.lhs->resolved_type);
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, " = ");
+    emit_expression_buffer(cg);
+    emit_string(cg, ";\n");
+
+    emit_expr(cg, stmt->data.assign_stmt.lhs);
+    emit_expression_buffer(cg);
 
     switch (stmt->data.assign_stmt.op) {
     case BINOP_ADD: {
@@ -2667,7 +2684,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     }
 
-    emit_expr(cg, stmt->data.assign_stmt.rhs);
+    emit_string(cg, temp_name);
     emit_string(cg, ";\n");
     break;
   }
@@ -3038,9 +3055,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_SIZEOF: {
     Type *type = expr->data.sizeof_expr.type_expr->resolved_type;
 
-    emit_string(cg, "sizeof(");
-    emit_type_name(cg, type);
-    emit_string(cg, ")");
+    write_expression("sizeof(");
+    emit_expression_type_name(cg, type);
+    write_expression(")");
     break;
   }
 
@@ -3077,11 +3094,25 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     write_expression(expr->data.bool_lit.value ? "true" : "false");
     break;
 
-  case AST_EXPR_GROUPED_EXPR:
-    write_expression("(");
+  case AST_EXPR_GROUPED_EXPR: {
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
+
     emit_expr(cg, expr->data.grouped_expr.inner_expr);
+
+    emit_type_name(cg, expr->data.grouped_expr.inner_expr->resolved_type);
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, " = ");
+
+    emit_expression_buffer(cg);
+    emit_string(cg, ";\n");
+
+    write_expression("(");
+    write_expression(temp_name);
     write_expression(")");
     break;
+  }
 
   case AST_EXPR_BINARY_OP: {
     emit_expr(cg, expr->data.binop.left);
@@ -3151,6 +3182,35 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_UNARY_OP: {
+    emit_expr(cg, expr->data.unop.operand);
+
+    if (expr->data.unop.op == UNOP_ADDR) {
+      // Address of needs to take the address of the expression,
+      // otherwise it will take an address of the temporary
+      Arena temp_arena;
+      arena_init(&temp_arena, 1024);
+
+      char *expr = clone_expression_buffer(&temp_arena);
+      reset_expression_buffer();
+
+      write_expression("&");
+      write_expression(expr);
+
+      arena_free(&temp_arena);
+      return;
+    }
+
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
+
+    emit_type_name(cg, expr->data.unop.operand->resolved_type);
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, " = ");
+
+    emit_expression_buffer(cg);
+    emit_string(cg, ";\n");
+
     // Map UnaryOp to C op string
     switch (expr->data.unop.op) {
     case UNOP_NEG:
@@ -3159,60 +3219,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     case UNOP_NOT:
       write_expression("!");
       break;
-    case UNOP_ADDR:
-      if (expr->data.unop.operand->kind == AST_EXPR_INDEX) {
-        AstNode *index_expr = expr->data.unop.operand->data.index_expr.index;
-        AstNode *array_expr = expr->data.unop.operand->data.index_expr.array;
-        Type *array_type = array_expr->resolved_type;
-
-        if (array_type->kind == TYPE_STRING) {
-          // For str, index directly
-          if (!cg->lvalue_assignment && mode_is_safe()) {
-            emit_string(cg, "({ int __index = ");
-            emit_expr(cg, index_expr);
-            emit_string(cg, "; char *__item = ");
-            emit_expr(cg, array_expr);
-            emit_string(cg, "; ");
-            emit_string(
-                cg, "assert(__index >= 0 && __index < (int)strlen(__item));");
-            emit_string(cg, "&__item[__index]; })");
-          } else {
-            emit_string(cg, "&");
-            emit_expr(cg, array_expr);
-            emit_string(cg, "[");
-            emit_expr(cg, index_expr);
-            emit_string(cg, "]");
-          }
-        } else {
-          // For arrays/slices, use .data
-          if (!cg->lvalue_assignment && mode_is_safe() && false) {
-            // Bounds checking
-            emit_string(cg, "({ int __index = ");
-            emit_expr(cg, index_expr);
-            emit_string(cg, "; ");
-
-            emit_type_name(cg, array_expr->resolved_type);
-            emit_string(cg, " __item = ");
-            emit_expr(cg, array_expr);
-            emit_string(cg,
-                        "; assert(__index >= 0 && __index < (int)__item.len); "
-                        "&__item.data[__index]; })");
-          } else {
-            emit_string(cg, "&");
-            emit_expr(cg, array_expr);
-            emit_string(cg, ".data[");
-            emit_expr(cg, index_expr);
-            emit_string(cg, "]");
-          }
-        }
-        return;
-      } else {
-        write_expression("&");
-      }
-      break;
     case UNOP_DEREF:
       write_expression("(*");
-      emit_expr(cg, expr->data.unop.operand);
+      write_expression(temp_name);
       write_expression(")");
       return;
     case UNOP_BIT_NOT:
@@ -3221,16 +3230,29 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     default:
       write_expression("/* ? */");
     }
-    emit_expr(cg, expr->data.unop.operand);
+
+    write_expression(temp_name);
     break;
   }
 
   case AST_EXPR_SOME: {
     // (optional_T){<emit wrapped expression>, true}
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
+
+    emit_expr(cg, expr->data.some_expr.value);
+
+    emit_type_name(cg, expr->resolved_type);
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, " = ");
+    emit_expression_buffer(cg);
+    emit_string(cg, ";\n");
+
     write_expression("(");
     emit_expression_type_name(cg, expr->resolved_type);
     write_expression("){");
-    emit_expr(cg, expr->data.some_expr.value);
+    write_expression(temp_name);
     write_expression(", true}");
     break;
   }
@@ -3241,14 +3263,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     char temp_name_buf[32] = {0};
     char *temp_name = get_temporary_name(cg, temp_name_buf, sizeof(temp_name_buf));
 
+    emit_expr(cg, expr->data.force_unwrap.operand);
+
     emit_type_name(cg, expr->data.force_unwrap.operand->resolved_type);
     emit_string(cg, " ");
     emit_string(cg, temp_name);
     emit_string(cg, " = ");
 
-    emit_expr(cg, expr->data.force_unwrap.operand);
     emit_expression_buffer(cg);
-
     emit_string(cg, ";\n");
 
     if (!compiler_opts.freestanding) {
@@ -3292,15 +3314,15 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     if (src_type->kind == TYPE_ARRAY && target->kind == TYPE_SLICE) {
       // Special: construct slice from array
       // Use statement expression to avoid evaluating src_expr twice
-      emit_type_name(cg, src_type);
-      emit_string(cg, " ");
+      emit_expr(cg, src_expr);
 
       char temp_name[64];
       get_temporary_name(cg, temp_name, sizeof(temp_name));
-      emit_string(cg, temp_name);
 
+      emit_type_name(cg, src_type);
+      emit_string(cg, " ");
+      emit_string(cg, temp_name);
       emit_string(cg, " = ");
-      emit_expr(cg, src_expr);
 
       emit_expression_buffer(cg);
       emit_string(cg, ";\n");
@@ -3314,62 +3336,84 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression(".len }");
     } else {
       // General cast, e.g., (float)int
+      char temp_name[32] = {0};
+      get_temporary_name(cg, temp_name, sizeof(temp_name));
+
+      emit_expr(cg, src_expr);
+
+      emit_type_name(cg, target);
+      emit_string(cg, " ");
+      emit_string(cg, temp_name);
+      emit_string(cg, " = ");
+
+      emit_expression_buffer(cg);
+      emit_string(cg, ";\n");
+
       write_expression("(");
       emit_expression_type_name(cg, target);
       write_expression(")");
-      emit_expr(cg, src_expr);
+      emit_string(cg, temp_name);
     }
     break;
   }
 
   case AST_EXPR_EXPLICIT_CAST: {
     Type *target_type = expr->resolved_type;
+
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
+
+    emit_expr(cg, expr->data.explicit_cast.expr);
+
+    emit_type_name(cg, expr->data.explicit_cast.expr->resolved_type);
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, " = ");
+
+    emit_expression_buffer(cg);
+    emit_string(cg, ";\n");
+
     if (expr->data.explicit_cast.pointer_cast) {
-      if (expr->data.explicit_cast.expr->kind == AST_EXPR_STRUCT_LITERAL) {
-        // Need to assign to temporary first
-        emit_type_name(cg, expr->data.explicit_cast.expr->resolved_type);
-        emit_string(cg, " ");
-
-        char temporary[32] = {0};
-        get_temporary_name(cg, temporary, 32);
-        emit_string(cg, temporary);
-
-        emit_string(cg, " = ");
-        emit_expr(cg, expr->data.explicit_cast.expr);
-        emit_expression_buffer(cg);
-        emit_string(cg, ";\n");
-
-        write_expression("*(");
-        emit_expression_type_name(cg, target_type);
-        write_expression("*)&");
-        write_expression(temporary);
-      } else {
-        write_expression("*(");
-        emit_expression_type_name(cg, target_type);
-        write_expression("*)&");
-        emit_expr(cg, expr->data.explicit_cast.expr);
-      }
+      write_expression("*(");
+      emit_expression_type_name(cg, target_type);
+      write_expression("*)&");
+      write_expression(temp_name);
     } else {
       write_expression("(");
       emit_expression_type_name(cg, target_type); // Uses canonical name
       write_expression(")");
-      emit_expr(cg, expr->data.explicit_cast.expr);
+      write_expression(temp_name);
     }
     break;
   }
 
   case AST_EXPR_ARRAY_LITERAL: {
+    Arena temp_arena;
+    arena_init(&temp_arena, 1024);
+
+    char *expr_buffer[256];
+
+    for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
+      emit_expr(cg, expr->data.array_literal.elements[i]);
+
+      expr_buffer[i] = clone_expression_buffer(&temp_arena);
+      reset_expression_buffer();
+    }
+
     write_expression("(");
     emit_expression_type_name(cg, expr->resolved_type);
     write_expression("){ {");
+
     for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
       if (i > 0) {
         write_expression(", ");
       }
-      emit_expr(cg, expr->data.array_literal.elements[i]);
+      write_expression(expr_buffer[i]);
     }
+
     write_expression("}, ");
-    char count_buf[16];
+
+    char count_buf[16] = {0};
     sprintf(count_buf, "%zu", expr->data.array_literal.element_count);
     write_expression(count_buf);
     write_expression(" }");
@@ -3644,9 +3688,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, array_expr);
 
         emit_type_name(cg, array_expr->resolved_type);
-        emit_string(cg, " ");
+        // NOTE: Needs to take a reference, as this will copy otherwise
+        emit_string(cg, "* ");
         emit_string(cg, item);
-        emit_string(cg, " = ");
+        emit_string(cg, " = &");
         emit_expression_buffer(cg);
         emit_string(cg, ";\n");
 
@@ -3656,7 +3701,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, index);
         emit_string(cg, " < ");
         emit_string(cg, item);
-        emit_string(cg, ".len");
+        emit_string(cg, "->len");
         emit_string(cg, ", \"bounds check\", ");
 
         emit_string(cg, "\"");
@@ -3669,7 +3714,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ");\n");
 
         write_expression(item);
-        write_expression(".data[");
+        write_expression("->data[");
         write_expression(index);
         write_expression("]");
       } else {
@@ -3843,41 +3888,44 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_expr(cg, object_expr);
         emit_string(cg, "->");
       } else if (base_type && base_type->kind == TYPE_TAGGED_UNION) {
-        if (cg->lvalue_assignment) {
-          emit_expr(cg, object_expr);
-          emit_string(cg, "->__data.");
-        } else {
-          int index = member_index_of_type(base_type, member);
+        int index = member_index_of_type(base_type, member);
 
-          char buffer[64] = {0};
+        char temp_name[32] = {0};
+        get_temporary_name(cg, temp_name, sizeof(temp_name));
 
-          emit_string(cg, "({\n");
-          char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
-          emit_type_name(cg, object_type);
-          emit_string(cg, " ");
-          emit_string(cg, buffer);
-          emit_string(cg, " = ");
-          emit_expr(cg, object_expr);
-          emit_string(cg, ";\n");
+        emit_expr(cg, object_expr);
 
-          char *name = base_type->qualified_name ? base_type->qualified_name
-                                                 : base_type->canonical_name;
+        emit_type_name(cg, object_type);
+        emit_string(cg, " ");
+        emit_string(cg, temp_name);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
 
-          emit_string(cg, "assert(");
-          emit_string(cg, temp);
-          emit_string(cg, "->__tag == ");
-          emit_string(cg, name);
-          emit_string(cg, "__");
-          emit_string(cg, base_type->data.union_data.variant_names[index]);
-          emit_string(cg, ");\n");
+        char *name = base_type->qualified_name ? base_type->qualified_name
+                                                : base_type->canonical_name;
 
-          emit_string(cg, temp);
-          emit_string(cg, "->__data.");
-          emit_string(cg, member);
-          emit_string(cg, ";\n })");
+        emit_string(cg, "__pebble_assert(");
+        emit_string(cg, temp_name);
+        emit_string(cg, "->__tag == ");
+        emit_string(cg, name);
+        emit_string(cg, "__");
+        emit_string(cg, base_type->data.union_data.variant_names[index]);
 
-          return;
-        }
+        emit_string(cg, ", \"tagged union access\", \"");
+        emit_string(cg, expr->loc.file);
+        emit_string(cg, "\", ");
+
+        char temp_buf[32] = {0};
+        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        emit_string(cg, temp_buf);
+        emit_string(cg, ");\n");
+
+        write_expression(temp_name);
+        write_expression("->__data.");
+        write_expression(member);
+
+        return;
       } else {
         // Pointer to tuple, array, or slice: emit (*object). (e.g.,
         // (*ptr).len or (*ptr)._0)
@@ -3887,45 +3935,46 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // Non-pointer: emit object, then . (e.g., obj.field or t._0)
-
-      // TODO: Emit assert for current tag matching variant
       if (object_type->kind == TYPE_TAGGED_UNION) {
-        if (!cg->lvalue_assignment) {
-          int index = member_index_of_type(object_type, member);
+        int index = member_index_of_type(object_type, member);
 
-          char buffer[64] = {0};
+        char temp_name[32] = {0};
+        get_temporary_name(cg, temp_name, sizeof(temp_name));
 
-          char *name = object_type->qualified_name
-                           ? object_type->qualified_name
-                           : object_type->canonical_name;
+        char *name = object_type->qualified_name
+                          ? object_type->qualified_name
+                          : object_type->canonical_name;
 
-          emit_string(cg, "({\n");
-          char *temp = get_temporary_name(cg, buffer, sizeof(buffer));
-          emit_type_name(cg, object_type);
-          emit_string(cg, " ");
-          emit_string(cg, buffer);
-          emit_string(cg, " = ");
-          emit_expr(cg, object_expr);
-          emit_string(cg, ";\n");
+        emit_expr(cg, object_expr);
 
-          emit_string(cg, "assert(");
-          emit_string(cg, temp);
-          emit_string(cg, ".__tag == ");
-          emit_string(cg, name);
-          emit_string(cg, "__");
-          emit_string(cg, object_type->data.union_data.variant_names[index]);
-          emit_string(cg, ");\n");
+        emit_type_name(cg, object_type);
+        emit_string(cg, " ");
+        emit_string(cg, temp_name);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
 
-          emit_string(cg, temp);
-          emit_string(cg, ".__data.");
-          emit_string(cg, member);
-          emit_string(cg, ";\n })");
+        emit_string(cg, "__pebble_assert(");
+        emit_string(cg, temp_name);
+        emit_string(cg, ".__tag == ");
+        emit_string(cg, name);
+        emit_string(cg, "__");
+        emit_string(cg, object_type->data.union_data.variant_names[index]);
 
-          return;
-        } else {
-          emit_expr(cg, object_expr);
-          emit_string(cg, ".__data.");
-        }
+        emit_string(cg, ", \"tagged union access\", \"");
+        emit_string(cg, expr->loc.file);
+        emit_string(cg, "\", ");
+
+        char temp_buf[32] = {0};
+        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        emit_string(cg, temp_buf);
+        emit_string(cg, ");\n");
+
+        write_expression(temp_name);
+        write_expression(".__data.");
+        write_expression(member);
+
+        return;
       } else {
         emit_expr(cg, object_expr);
         emit_string(cg, ".");
