@@ -3567,7 +3567,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         emit_expr(cg, expr->data.index_expr.index);
 
-        emit_string(cg, "size_t ");
+        emit_string(cg, "int ");
         emit_string(cg, index);
         emit_string(cg, " = ");
         emit_expression_buffer(cg);
@@ -3612,7 +3612,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
         emit_expr(cg, expr->data.index_expr.index);
 
-        emit_string(cg, "size_t ");
+        emit_string(cg, "int ");
         emit_string(cg, index);
         emit_string(cg, " = ");
         emit_expression_buffer(cg);
@@ -3625,22 +3625,70 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       }
     } else {
       // For arrays/slices, use .data
-      if (!cg->lvalue_assignment && mode_is_safe() && false) {
+      if (mode_is_safe()) {
         // Bounds checking
-        emit_string(cg, "({ int __index = ");
+        char index[32] = {0};
+        get_temporary_name(cg, index, sizeof(index));
+
         emit_expr(cg, expr->data.index_expr.index);
-        emit_string(cg, "; ");
+
+        emit_string(cg, "int ");
+        emit_string(cg, index);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
+        char item[32] = {0};
+        get_temporary_name(cg, item, sizeof(item));
+
+        emit_expr(cg, array_expr);
 
         emit_type_name(cg, array_expr->resolved_type);
-        emit_string(cg, " __item = ");
-        emit_expr(cg, array_expr);
-        emit_string(cg, "; assert(__index >= 0 && __index < (int)__item.len); "
-                        "__item.data[__index]; })");
+        emit_string(cg, " ");
+        emit_string(cg, item);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
+        emit_string(cg, "__pebble_assert(");
+        emit_string(cg, index);
+        emit_string(cg, " >= 0 && ");
+        emit_string(cg, index);
+        emit_string(cg, " < ");
+        emit_string(cg, item);
+        emit_string(cg, ".len");
+        emit_string(cg, ", \"bounds check\", ");
+
+        emit_string(cg, "\"");
+        emit_string(cg, expr->loc.file);
+        emit_string(cg, "\", ");
+
+        char temp_buf[32] = {0};
+        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        emit_string(cg, temp_buf);
+        emit_string(cg, ");\n");
+
+        write_expression(item);
+        write_expression(".data[");
+        write_expression(index);
+        write_expression("]");
       } else {
-        emit_expr(cg, array_expr);
-        emit_string(cg, ".data[");
+        char index[32] = {0};
+        get_temporary_name(cg, index, sizeof(index));
+
         emit_expr(cg, expr->data.index_expr.index);
-        emit_string(cg, "]");
+
+        emit_string(cg, "int ");
+        emit_string(cg, index);
+        emit_string(cg, " = ");
+        emit_expression_buffer(cg);
+        emit_string(cg, ";\n");
+
+        emit_expr(cg, array_expr);
+
+        write_expression(".data[");
+        write_expression(index);
+        write_expression("]");
       }
     }
     break;
