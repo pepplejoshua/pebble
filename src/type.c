@@ -47,6 +47,7 @@ Type *type_create(TypeKind kind, Location loc) {
   memset(type, 0, sizeof(Type));
   type->kind = kind;
   type->loc = loc;
+  type->used = false;
   return type;
 }
 
@@ -620,8 +621,8 @@ void type_system_init(void) {
   realloc_param_types[0] = void_ptr;
   realloc_param_types[1] = void_ptr;
   realloc_param_types[2] = type_usize;
-  Type *realloc_fn_t = type_create_function(realloc_param_types, 3, void_ptr, false,
-                                          false, CALL_CONV_PEBBLE, loc);
+  Type *realloc_fn_t = type_create_function(
+      realloc_param_types, 3, void_ptr, false, false, CALL_CONV_PEBBLE, loc);
 
   Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   free_param_types[0] = void_ptr;
@@ -641,7 +642,7 @@ void type_system_init(void) {
   allocator_types[2] = realloc_fn_t;
   allocator_types[3] = free_fn_t;
   Type *allocator_t = type_create_struct(allocator_field_names, allocator_types,
-                                        4, true, false, loc);
+                                         4, true, false, loc);
   allocator_t->canonical_name = "Allocator";
 
   // Patch context
@@ -685,6 +686,12 @@ void type_system_init(void) {
 char *compute_canonical_name(Type *type) {
   assert(type);
 
+  if (type->kind == TYPE_UNRESOLVED) {
+    // This is a placeholder — return a temporary name so recursion doesn't
+    // crash
+    return "__UNRESOLVED__";
+  }
+
   char *result = NULL;
 
   switch (type->kind) {
@@ -712,6 +719,10 @@ char *compute_canonical_name(Type *type) {
 
   case TYPE_GENERIC_FUNCTION:
     assert(false && "Attempt to compute canonical name on a generic function.");
+    break;
+
+  case TYPE_GENERIC_TYPE_DECL:
+    assert(false && "Attempt to compute canonical name on a generic type.");
     break;
 
   case TYPE_POINTER: {
@@ -929,8 +940,8 @@ char *compute_canonical_name(Type *type) {
     break;
   }
 
-  case TYPE_UNRESOLVED:
-    assert(false && "Cannot compute canonical name for unresolved type");
+  default:
+    assert(false && "Cannot compute canonical name for unknown type");
     return NULL;
   }
   return result;
