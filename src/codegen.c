@@ -3118,10 +3118,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     // Map UnaryOp to C op string
     switch (expr->data.unop.op) {
     case UNOP_NEG:
-      emit_string(cg, "-");
+      write_expression("-");
       break;
     case UNOP_NOT:
-      emit_string(cg, "!");
+      write_expression("!");
       break;
     case UNOP_ADDR:
       if (expr->data.unop.operand->kind == AST_EXPR_INDEX) {
@@ -3171,19 +3171,19 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         }
         return;
       } else {
-        emit_string(cg, "&");
+        write_expression("&");
       }
       break;
     case UNOP_DEREF:
-      emit_string(cg, "(*");
+      write_expression("(*");
       emit_expr(cg, expr->data.unop.operand);
-      emit_string(cg, ")");
+      write_expression(")");
       return;
     case UNOP_BIT_NOT:
-      emit_string(cg, "~");
+      write_expression("~");
       break;
     default:
-      emit_string(cg, "/* ? */");
+      write_expression("/* ? */");
     }
     emit_expr(cg, expr->data.unop.operand);
     break;
@@ -3191,34 +3191,47 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_SOME: {
     // (optional_T){<emit wrapped expression>, true}
-    emit_string(cg, "(");
-    emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, "){");
+    write_expression("(");
+    emit_expression_type_name(cg, expr->resolved_type);
+    write_expression("){");
     emit_expr(cg, expr->data.some_expr.value);
-    emit_string(cg, ", true}");
+    write_expression(", true}");
     break;
   }
 
   case AST_EXPR_FORCE_UNWRAP: {
     // emit assert on has_value
     // <emit operand>.value
-    emit_string(cg, "({ ");
+    char temp_name_buf[32] = {0};
+    char *temp_name = get_temporary_name(cg, temp_name_buf, sizeof(temp_name_buf));
+
     emit_type_name(cg, expr->data.force_unwrap.operand->resolved_type);
-    emit_string(cg, " __opt = ");
+    emit_string(cg, " ");
+    emit_string(cg, temp_name);
+    emit_string(cg, " = ");
+
     emit_expr(cg, expr->data.force_unwrap.operand);
-    emit_string(cg, "; assert(__opt.has_value); __opt.value; })");
+    emit_expression_buffer(cg);
+
+    emit_string(cg, ";\n");
+    emit_string(cg, "assert(");
+    emit_string(cg, temp_name);
+    emit_string(cg, ".has_value);\n");
+
+    write_expression(temp_name);
+    write_expression(".value");
     break;
   }
 
   case AST_EXPR_POSTFIX_INC: {
     emit_expr(cg, expr->data.postfix_inc.operand);
-    emit_string(cg, "++");
+    write_expression("++");
     break;
   }
 
   case AST_EXPR_POSTFIX_DEC: {
     emit_expr(cg, expr->data.postfix_dec.operand);
-    emit_string(cg, "--");
+    write_expression("--");
     break;
   }
 
