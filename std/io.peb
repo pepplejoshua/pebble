@@ -76,25 +76,25 @@ fn read(file *FILE, buffer *void, max_bytes usize) usize {
     return bytes_read;
 }
 
-fn read_all(file *FILE) *string::String {
+fn read_all(file *FILE) string::String {
     // Full contents as String (null on error)
     var pos = ftell(file);
-    if pos == -1 { return nil; }
+    if pos == -1 { return string::new(); }
 
     // Seek to end to get size
     var seek_res = fseek(file, 0, SeekEnd);
-    if seek_res != 0 { return nil; }
+    if seek_res != 0 { return string::new(); }
 
     var size = ftell(file);
     if size == -1 {
         // Restore pos and return nil
         fseek(file, pos, SeekStart);
-        return nil;
+        return string::new();
     }
 
     // Seek back to start
     seek_res = fseek(file, 0, SeekStart);
-    if seek_res != 0 { return nil; }
+    if seek_res != 0 { return string::new(); }
 
     if size == 0 {
         // Empty file; restore pos and return empty String
@@ -105,15 +105,15 @@ fn read_all(file *FILE) *string::String {
     var s = string::new();
     var needed usize = size + 1; // +1 for null terminator
     if needed > s.capacity {
-        string::grow(s, needed);
+        string::grow(&s, needed);
     }
 
     var bytes_read = fread(s.data, 1, size, file);
     if bytes_read != size as usize {
         // Partial read; error
-        string::delete(s);
+        string::delete(&s);
         fseek(file, pos, SeekStart); // Restore
-        return nil;
+        return string::new();
     }
 
     s.len = bytes_read;
@@ -123,7 +123,7 @@ fn read_all(file *FILE) *string::String {
     return s;
 }
 
-fn read_line(file *FILE) *string::String {
+fn read_line(file *FILE) string::String {
     var s = string::new();
     var ch char;
 
@@ -134,17 +134,17 @@ fn read_line(file *FILE) *string::String {
                 if s.len > 0 {
                     return s;
                 } else {
-                    string::delete(s);
-                    return nil;
+                    string::delete(&s);
+                    return s;
                 }
             } else {
                 // Error (check ferror)
-                string::delete(s);
-                return nil;
+                string::delete(&s);
+                return s;
             }
         }
 
-        string::push_char(s, ch);
+        string::push_char(&s, ch);
         if ch == '\n' {
             // strip trailing \n
             s.len += -1;
@@ -153,7 +153,7 @@ fn read_line(file *FILE) *string::String {
         }
     }
 
-    return nil;
+    return string::new();
 }
 
 // Write binary
@@ -215,18 +215,18 @@ fn is_eof(file *FILE) bool {
     return feof(file) != 0;
 }
 
-fn get_file_error(file *FILE) *string::String {
+fn get_file_error(file *FILE) string::String {
     if ferror(file) == 0 {
         // No error on this file
-        return nil;
+        return string::new();
     }
 
     var err = errno;
     var err_msg = strerror(err);
-    if strlen(err_msg) == 0 { return nil; }
+    if strlen(err_msg) == 0 { return string::new(); }
 
     var s = string::new();
-    string::push_str(s, err_msg);
+    string::push_str(&s, err_msg);
     return s;
 }
 
