@@ -5745,6 +5745,7 @@ static bool check_function_body(Symbol *sym) {
 bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
+  bool has_error = false;
   // Iterate over all function symbols in global scope
   HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process functions
@@ -5752,10 +5753,10 @@ bool check_function_bodies(void) {
       continue;
     }
 
-    check_function_body(sym);
+    has_error = check_function_body(sym);
   }
 
-  return !checker_has_errors();
+  return has_error;
 }
 
 // Verify that the entry point exists and has the correct signature
