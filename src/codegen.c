@@ -1760,6 +1760,8 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
     }
 
     emit_string(cg, "]");
+  } else {
+    emit_string(cg, "%s");
   }
 }
 
@@ -1769,13 +1771,21 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
   if (type->kind == TYPE_STRUCT) {
     for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
       Type *field_type = type->data.struct_data.field_types[i];
-      char field_access[512];
+      char field_access[512] = {0};
       snprintf(field_access, sizeof(field_access), "%s.%s", base_expr,
                type->data.struct_data.field_names[i]);
 
       if (field_type->kind == TYPE_STRUCT || field_type->kind == TYPE_TUPLE) {
         // Recursive case
         build_composite_args(cg, field_type, field_access, first);
+      } else if (field_type->kind == TYPE_SLICE) {
+        if (!*first)
+          emit_string(cg, ", ");
+        *first = false;
+
+        emit_string(cg, "\"");
+        emit_string(cg, type_name(field_type));
+        emit_string(cg, "\"");
       } else {
         // Base case: emit argument with appropriate cast
         if (!*first)
@@ -1860,7 +1870,6 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
       Type *elem_type = type->data.array.element;
       char field_access[512] = {0};
 
-      printf("HERE!\n");
       snprintf(field_access, sizeof(field_access), "%s.data[%zu]", base_expr,
                i);
 
@@ -1908,6 +1917,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_string(cg, "break;\n");
     break;
+
   case AST_STMT_CONTINUE:
     // Emit all defers up to (but not including) the loop scope
     defer_stack_emit_until(cg, DEFER_SCOPE_LOOP, true);
@@ -1915,18 +1925,15 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_string(cg, "continue;\n");
     break;
+
   case AST_STMT_PRINT: {
     // Evaluate expressions
-    char temp_buffer[512] = {0};
     char *expr_buffers[128] = {0};
+    char *temp_buffer = NULL;
 
     // Emit expressions
     for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
       Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
-
-      if (i > 0) {
-        write_expression(", ");
-      }
 
       if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
           type->kind == TYPE_ENUM || type->kind == TYPE_I8 ||
@@ -1984,11 +1991,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, ";\n");
 
         // Create a buffer for the formatted output using alloca
-        char buffer_name_buf[32] = {0};
-        char *buffer_name = get_temporary_name(cg, buffer_name_buf, sizeof(buffer_name_buf));
+        char buffer_name[32] = {0};
+        get_temporary_name(cg, buffer_name, sizeof(buffer_name));
 
-        char print_len_buf[32] = {0};
-        char *print_len = get_temporary_name(cg, print_len_buf, sizeof(print_len_buf));
+        char print_len[32] = {0};
+        get_temporary_name(cg, print_len, sizeof(print_len));
 
         // Calculate required size first
         emit_string(cg, "size_t ");
@@ -2038,10 +2045,14 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         // Fallback for truly unknown types
         write_expression("\"");
 
-        escape_string(temp_buffer, sizeof(temp_buffer),
+        if (!temp_buffer) {
+          temp_buffer = temp_alloc(&temp_allocator, 1024);
+        }
+
+        escape_string(temp_buffer, 1024,
                       type_name(stmt->data.print_stmt.exprs[i]->resolved_type));
         write_expression(temp_buffer);
-        memset(temp_buffer, 0, sizeof(temp_buffer));
+        memset(temp_buffer, 0, 1024);
 
         write_expression("\"");
       }
@@ -2502,6 +2513,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_dedent(cg);
     emit_indent_spaces(cg);
     emit_string(cg, "}\n"); // Close outer block
+
+    temp_reset(&temp_allocator);
     break;
   }
 
@@ -2581,6 +2594,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     }
+
+    temp_reset(&temp_allocator);
     break;
   }
   case AST_STMT_EXPR: {
@@ -2589,6 +2604,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent_spaces(cg);
     emit_expression_buffer(cg);
     emit_string(cg, ";\n");
+
+    temp_reset(&temp_allocator);
     break;
   }
 
@@ -2685,6 +2702,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_string(cg, temp_name);
     emit_string(cg, ";\n");
+
+    temp_reset(&temp_allocator);
     break;
   }
   case AST_DECL_VARIABLE: {
@@ -2713,6 +2732,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, " = ");
     emit_expression_buffer(cg);
     emit_string(cg, ";\n");
+
+    temp_reset(&temp_allocator);
     break;
   }
   case AST_DECL_CONSTANT: {
@@ -2729,6 +2750,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_expr(cg, stmt->data.const_decl.value);
     emit_expression_buffer(cg);
     emit_string(cg, ";\n");
+
+    temp_reset(&temp_allocator);
     break;
   }
 
@@ -2813,26 +2836,28 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       if (part->kind != AST_EXPR_LITERAL_STRING) {
         Type *part_type = part->resolved_type;
-        char buffer[64] = {0};
-        char *temp_name = get_temporary_name(cg, buffer, sizeof(buffer));
+        char temp_name[32] = {0};
+        get_temporary_name(cg, temp_name, sizeof(temp_name));
         strcpy(temp_names[temp_count++], temp_name);
 
         // Declare and assign temporary
         if (part_type->kind == TYPE_STRING) {
+          emit_expr(cg, part);
+
           emit_string(cg, "const char* ");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
         } else if (part_type->kind == TYPE_INT || part_type->kind == TYPE_I32 ||
                    part_type->kind == TYPE_I64 ||
                    part_type->kind == TYPE_ISIZE) {
+          emit_expr(cg, part);
+
           emit_string(cg, "long long ");
           emit_string(cg, temp_name);
           emit_string(cg, " = (long long)");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
@@ -2847,35 +2872,39 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
         } else if (part_type->kind == TYPE_F32 || part_type->kind == TYPE_F64) {
+          emit_expr(cg, part);
+
           emit_string(cg, "double ");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
         } else if (part_type->kind == TYPE_BOOL) {
+          emit_expr(cg, part);
+
           emit_string(cg, "const char* ");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, " ? \"true\" : \"false\";\n");
         } else if (part_type->kind == TYPE_CHAR) {
+          emit_expr(cg, part);
+
           emit_string(cg, "char ");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
         } else if (part_type->kind == TYPE_ENUM) {
+          emit_expr(cg, part);
+
           emit_type_name(cg, part_type);
           emit_string(cg, " ");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
@@ -2888,17 +2917,18 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           snprintf(temp_expr_buf, sizeof(temp_expr_buf), "__temp_composite_%zu",
                    i);
 
+          emit_expr(cg, part);
+
           emit_type_name(cg, part_type);
           emit_string(cg, " ");
           emit_string(cg, temp_expr_buf);
           emit_string(cg, " = ");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
 
           // Create the buffer for formatted output
-          char buffer_name[64];
+          char buffer_name[64] = {0};
           snprintf(buffer_name, sizeof(buffer_name), "__composite_buf_%zu", i);
 
           emit_string(cg, "char ");
@@ -2931,8 +2961,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
           emit_string(cg, buffer_name);
-
-          emit_expression_buffer(cg);
           emit_string(cg, ";\n");
         } else {
           // Fallback for other types - output type name like print does
@@ -3100,8 +3128,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     write_expression("(");
     write_expression(temp);
     write_expression(")");
-
-    temp_reset(&temp_allocator);
     break;
   }
 
@@ -3176,8 +3202,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     write_expression(" ");
 
     write_expression(right);
-
-    temp_reset(&temp_allocator);
     break;
   }
 
@@ -3191,8 +3215,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       write_expression("&");
       write_expression(expr);
-
-      temp_reset(&temp_allocator);
       return;
     }
 
@@ -3403,8 +3425,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression(expr_buffer[i]);
     }
 
-    temp_reset(&temp_allocator);
-
     write_expression("}, ");
 
     char count_buf[16] = {0};
@@ -3597,8 +3617,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     }
 
     write_expression(" }");
-
-    temp_reset(&temp_allocator);
     break;
   }
 
@@ -3999,17 +4017,17 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         return;
       } else {
         emit_expr(cg, object_expr);
-        emit_string(cg, ".");
+        write_expression(".");
       }
     }
 
     // For tuple access, prepend underscore to numeric fields
     if (member[0] >= '0' && member[0] <= '9') {
-      emit_string(cg, "_");
+      write_expression("_");
     }
 
     // Emit the member name
-    emit_string(cg, member);
+    write_expression(member);
     break;
   }
 
@@ -4033,7 +4051,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
       emit_expr(cg, expr->data.struct_literal.field_values[i]);
-
       expr_buffer[i] = move_expression_buffer_into_temp();
     }
 
@@ -4079,7 +4096,6 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     }
 
     write_expression("}");
-    reset_expression_buffer();
     break;
   }
 
