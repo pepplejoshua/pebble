@@ -306,16 +306,14 @@ static bool compile_file(const char *filename) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 1) {
+    print_usage(argv[0]);
+    return 0;
+  }
+
   // Initialize compiler systems
   arena_init(&long_lived, 256 * 1024);
   temp_init(&temp_allocator, 10 * 1024);
-
-  if (argc == 1) {
-    print_usage(argv[0]);
-    arena_free(&long_lived);
-    temp_free(&temp_allocator);
-    return 0;
-  }
 
   initialise_args();
 
