@@ -77,8 +77,8 @@ void temp_reset(TempAllocator *temp) {
   // Reset all slabs' used counters and return to first slab
   TempSlab *slab = temp->first;
   while (slab != NULL) {
+    memset(slab->buffer, 0, slab->used);
     slab->used = 0;
-    memset(slab->buffer, 0, slab->capacity);
     slab = slab->next;
   }
   temp->current = temp->first;
