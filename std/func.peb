@@ -9,6 +9,7 @@ fn map[T, Ret](items []T, operation fn(T) Ret) []Ret {
 
     return result;
 }
+
 fn filter[T](items []T, predicate fn(T) bool) []T {
     var result []T = (mem::new(items.len * sizeof T) as *T)[:items.len];
     var count = 0;
@@ -22,6 +23,7 @@ fn filter[T](items []T, predicate fn(T) bool) []T {
 
     return result[:count]; // Trim to actual size
 }
+
 fn reduce[T, Acc](items []T, initial Acc, combine fn(Acc, T) Acc) Acc {
     var accumulator = initial;
 
@@ -31,6 +33,7 @@ fn reduce[T, Acc](items []T, initial Acc, combine fn(Acc, T) Acc) Acc {
 
     return accumulator;
 }
+
 fn find[T](items []T, predicate fn(T) bool) ?T {
     loop 0..items.len : i {
         if predicate(items[i]) {
@@ -39,6 +42,7 @@ fn find[T](items []T, predicate fn(T) bool) ?T {
     }
     return none;
 }
+
 fn any[T](items []T, predicate fn(T) bool) bool {
     loop 0..items.len : i {
         if predicate(items[i]) {
@@ -47,6 +51,7 @@ fn any[T](items []T, predicate fn(T) bool) bool {
     }
     return false;
 }
+
 fn all[T](items []T, predicate fn(T) bool) bool {
     loop 0..items.len : i {
         if !predicate(items[i]) {
@@ -55,6 +60,7 @@ fn all[T](items []T, predicate fn(T) bool) bool {
     }
     return true;
 }
+
 fn zip[T, U](items1 []T, items2 []U) [](T, U) {
     var min_len = items1.len;
     if items2.len < min_len {
