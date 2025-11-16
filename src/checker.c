@@ -4030,6 +4030,11 @@ Type *check_expression(AstNode *expr) {
 
           bindings.bindings[i].concrete_type = concrete_type;
         }
+
+        for (size_t i = 0; i < arg_count; i++) {
+          check_expression(args[i]);
+        }
+
       } else {
         // Infer type arguments from call arguments
         bindings =
