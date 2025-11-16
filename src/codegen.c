@@ -2151,9 +2151,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     break;
   case AST_STMT_IF: {
+    emit_expr(cg, stmt->data.if_stmt.cond);
+    char *cond = move_expression_buffer_into_temp();
+
     emit_indent_spaces(cg);
     emit_string(cg, "if (");
-    emit_expr(cg, stmt->data.if_stmt.cond);
+    emit_string(cg, cond);
     emit_string(cg, ") ");
     emit_string(cg, "{\n");
     emit_indent(cg);
@@ -2182,11 +2185,21 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
     emit_indent_spaces(cg);
 
+    emit_expr(cg, cond);
+    char *expr_cond = move_expression_buffer_into_temp();
+
+    size_t condition_count = 0;
+    for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+      condition_count++;
+      condition_count += cases[i]->data.case_stmt.alt_condition_count;
+    }
+
     if (cond_type->kind == TYPE_TAGGED_UNION ||
         (cond_type->kind == TYPE_POINTER &&
          cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION)) {
+
       emit_string(cg, "switch (");
-      emit_expr(cg, cond);
+      emit_string(cg, expr_cond);
 
       if (cond_type->kind == TYPE_POINTER) {
         emit_string(cg, "->__tag");
@@ -2253,6 +2266,22 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     } else {
+      char **exprs = temp_alloc(&temp_allocator, condition_count * sizeof(char *));
+
+      size_t expr_count = 0;
+      for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
+        emit_expr(cg, cases[i]->data.case_stmt.condition);
+        exprs[expr_count++] = move_expression_buffer_into_temp();
+
+        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+          AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
+          AstNode *alt_cond = alt_case->data.case_stmt.condition;
+
+          emit_expr(cg, alt_cond);
+          exprs[expr_count++] = move_expression_buffer_into_temp();
+        }
+      }
+
       switch (cond_type->kind) {
       case TYPE_CHAR:
       case TYPE_INT:
@@ -2268,21 +2297,19 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       case TYPE_ISIZE:
       case TYPE_ENUM: {
         emit_string(cg, "switch (");
-        emit_expr(cg, cond);
+        emit_string(cg, expr_cond);
         emit_string(cg, ") {\n");
 
+        condition_count = 0;
         for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
           emit_string(cg, "case ");
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, exprs[condition_count++]);
           emit_string(cg, ":\n");
 
           for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
                j++) {
-            AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
-            AstNode *alt_cond = alt_case->data.case_stmt.condition;
-
             emit_string(cg, "case ");
-            emit_expr(cg, alt_cond);
+            emit_string(cg, exprs[condition_count++]);
             emit_string(cg, ":\n");
           }
 
@@ -2314,8 +2341,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       }
 
       case TYPE_STRING: {
-        char buffer[64];
-        char *temporary_name = get_temporary_name(cg, buffer, 64);
+        char temporary_name[32] = {0};
+        get_temporary_name(cg, temporary_name, sizeof(temporary_name));
 
         size_t case_count = stmt->data.switch_stmt.case_count;
 
@@ -2325,10 +2352,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, temporary_name);
 
           emit_string(cg, " = ");
-          emit_expr(cg, cond);
+          emit_string(cg, expr_cond);
           emit_string(cg, ";\n");
         }
 
+        condition_count = 0;
         for (size_t i = 0; i < case_count; i++) {
           if (i == 0) {
             emit_string(cg, "if (");
@@ -2341,20 +2369,17 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, temporary_name);
           emit_string(cg, ", ");
 
-          emit_expr(cg, cases[i]->data.case_stmt.condition);
+          emit_string(cg, exprs[condition_count++]);
           emit_string(cg, ") == 0");
 
           for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
                j++) {
-            AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
-            AstNode *alt_cond = alt_case->data.case_stmt.condition;
-
             emit_string(cg, " || strcmp(");
 
             emit_string(cg, temporary_name);
             emit_string(cg, ", ");
 
-            emit_expr(cg, alt_cond);
+            emit_string(cg, exprs[condition_count++]);
             emit_string(cg, ") == 0");
           }
 
@@ -2390,6 +2415,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       }
     }
 
+    temp_reset(&temp_allocator);
     break;
   }
   case AST_STMT_WHILE: {
@@ -2416,7 +2442,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
   case AST_STMT_LOOP: {
     // Generate runtime-direction loop that handles both forward and reverse
     static int loop_counter = 0;
-    char loop_var[64], loop_start[64], loop_end[64], loop_step[64];
+    char loop_var[32], loop_start[32], loop_end[32], loop_step[32];
     snprintf(loop_var, sizeof(loop_var), "_loop_i%d", loop_counter);
     snprintf(loop_start, sizeof(loop_start), "_loop_start%d", loop_counter);
     snprintf(loop_end, sizeof(loop_end), "_loop_end%d", loop_counter);
@@ -2428,18 +2454,24 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_indent(cg);
 
     // Declare and initialize loop bounds
+    emit_expr(cg, stmt->data.loop_stmt.start);
+
     emit_indent_spaces(cg);
     emit_string(cg, "int ");
     emit_string(cg, loop_start);
     emit_string(cg, " = ");
-    emit_expr(cg, stmt->data.loop_stmt.start);
+
+    emit_expression_buffer(cg);
     emit_string(cg, ";\n");
+
+    emit_expr(cg, stmt->data.loop_stmt.end);
 
     emit_indent_spaces(cg);
     emit_string(cg, "int ");
     emit_string(cg, loop_end);
     emit_string(cg, " = ");
-    emit_expr(cg, stmt->data.loop_stmt.end);
+
+    emit_expression_buffer(cg);
     emit_string(cg, ";\n");
 
     // Calculate step direction: 1 if forward, -1 if reverse
@@ -3324,7 +3356,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression("(");
       emit_expression_type_name(cg, target);
       write_expression(")");
-      emit_string(cg, temp);
+      write_expression(temp);
     }
     break;
   }
@@ -3710,11 +3742,18 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_expr(cg, expr->data.call.func);
     char *func_expr = move_expression_buffer_into_temp();
 
-    emit_string(cg, "(");
+    char **exprs = temp_alloc(&temp_allocator, expr->data.call.arg_count * sizeof(char *));
+    for (size_t i = 0; i < expr->data.call.arg_count; i++) {
+      emit_expr(cg, expr->data.call.args[i]);
+      exprs[i] = move_expression_buffer_into_temp();
+    }
+
+    write_expression(func_expr);
+    write_expression("(");
 
     CallingConvention conv = func_type->data.func.convention;
     if (conv == CALL_CONV_PEBBLE) {
-      emit_string(cg, "context");
+      write_expression("context");
     }
 
     if (func_type->data.func.is_variadic) {
@@ -3725,86 +3764,80 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
       // Emit fixed arguments
       for (size_t i = 0; i < fixed_params; i++) {
-        if (conv == CALL_CONV_PEBBLE || i > 0)
-          emit_string(cg, ", ");
-        emit_expr(cg, expr->data.call.args[i]);
+        if (conv == CALL_CONV_PEBBLE || i > 0) {
+          write_expression(", ");
+        }
+
+        write_expression(exprs[i]);
       }
 
       // Emit variadic count
       if (fixed_params > 0) {
-        emit_string(cg, ", ");
+        write_expression(", ");
       }
 
       Type **param_types = func_type->data.func.param_types;
       Type *variadic_type = param_types[fixed_params];
 
       if (arg_count == fixed_params + 1 && variadic_type->kind == TYPE_SLICE) {
-        emit_expr(cg, expr->data.call.args[fixed_params]);
+        write_expression(exprs[fixed_params]);
       } else {
         Type *inner_type = variadic_type->data.slice.element;
 
         if (variadic_count > 0) {
-          emit_string(cg, "({\n");
-          emit_indent_spaces(cg);
-          emit_indent_spaces(cg);
+          write_expression("({\n");
 
           char count_buf[24] = {0};
           snprintf(count_buf, sizeof(count_buf), "%zu", variadic_count);
 
-          emit_string(cg, "size_t __argc = ");
-          emit_string(cg, count_buf);
-          emit_string(cg, ";\n");
+          write_expression("size_t __argc = ");
+          write_expression(count_buf);
+          write_expression(";\n");
 
           emit_indent_spaces(cg);
           emit_indent_spaces(cg);
 
-          emit_type_name(cg, inner_type);
-          emit_string(cg, " *__args = alloca(sizeof(");
-          emit_type_name(cg, inner_type);
-          emit_string(cg, ") * __argc);\n");
+          emit_expression_type_name(cg, inner_type);
+          write_expression(" *__args = alloca(sizeof(");
+          emit_expression_type_name(cg, inner_type);
+          write_expression(") * __argc);\n");
 
           // Emit variadic arguments
           for (size_t i = fixed_params; i < expr->data.call.arg_count; i++) {
             char index_buff[24] = {0};
             snprintf(index_buff, sizeof(index_buff), "%zu", i - fixed_params);
 
-            emit_indent_spaces(cg);
-            emit_indent_spaces(cg);
+            write_expression("__args[");
+            write_expression(index_buff);
+            write_expression("] = ");
 
-            emit_string(cg, "__args[");
-            emit_string(cg, index_buff);
-            emit_string(cg, "] = ");
+            write_expression(exprs[i]);
 
-            emit_expr(cg, expr->data.call.args[i]);
-
-            emit_string(cg, ";\n");
+            write_expression(";\n");
           }
 
-          emit_indent_spaces(cg);
-          emit_indent_spaces(cg);
+          write_expression("(");
+          emit_expression_type_name(cg, variadic_type);
+          write_expression("){ __args, __argc };\n");
 
-          emit_string(cg, "(");
-          emit_type_name(cg, variadic_type);
-          emit_string(cg, "){ __args, __argc };\n");
-
-          emit_indent_spaces(cg);
-          emit_string(cg, "})");
+          write_expression("})");
         } else {
           // No elements
-          emit_string(cg, "(");
-          emit_type_name(cg, variadic_type);
-          emit_string(cg, "){ NULL, 0 }");
+          write_expression("(");
+          emit_expression_type_name(cg, variadic_type);
+          write_expression( "){ NULL, 0 }");
         }
       }
     } else {
       for (size_t i = 0; i < expr->data.call.arg_count; i++) {
-        if (conv == CALL_CONV_PEBBLE || i > 0)
-          emit_string(cg, ", ");
-        emit_expr(cg, expr->data.call.args[i]);
+        if (conv == CALL_CONV_PEBBLE || i > 0) {
+          write_expression(", ");
+        }
+        write_expression(exprs[i]);
       }
     }
 
-    emit_string(cg, ")");
+    write_expression(")");
     break;
   }
 
