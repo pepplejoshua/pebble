@@ -8,6 +8,7 @@
 #include "uthash.h"
 #include <assert.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2692,6 +2693,44 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
     // Match return type
     return match_and_bind_type(pattern->data.type_function.return_type,
                                concrete->data.func.return_type, bindings, loc);
+  }
+
+  case AST_TYPE_STRUCT: {
+    // Pattern: struct { T1, T2 }, Concrete must be: struct { Type1, Type2 }
+    if (concrete->kind != TYPE_STRUCT) {
+      checker_error(loc, "type mismatch: expected struct type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_struct.field_count !=
+        concrete->data.struct_data.field_count) {
+      checker_error(loc, "struct element count mismatch: expected %zu, got %zu",
+                    pattern->data.type_struct.field_count,
+                    concrete->data.struct_data.field_count);
+      return false;
+    }
+
+    for (size_t i = 0; i < pattern->data.type_struct.field_count; i++) {
+      char *pattern_field_name = pattern->data.type_struct.field_names[i];
+      char *concrete_field_name = concrete->data.struct_data.field_names[i];
+
+      if (strcmp(pattern_field_name, concrete_field_name) != 0) {
+        checker_error(
+            loc,
+            "struct field mismatch: expected field %zu to be %s, got field %s",
+            i + 1, pattern_field_name, concrete_field_name);
+        return false;
+      }
+
+      if (!match_and_bind_type(pattern->data.type_struct.field_types[i],
+                               concrete->data.struct_data.field_types[i],
+                               bindings, loc)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   case AST_TYPE_TUPLE: {
