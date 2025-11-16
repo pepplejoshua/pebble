@@ -1131,7 +1131,7 @@ static bool check_function_signature(Symbol *sym) {
   // Resolve return type
   Type *return_type = resolve_type_expression(return_type_expr);
   if (!return_type) {
-    return true; // Error already reported
+    return false; // Error already reported
   }
 
   // Create function type
@@ -1163,7 +1163,6 @@ static bool check_function_signature(Symbol *sym) {
         no_error = false;
         continue;
       }
-
       scope_add_symbol(func_scope, param_sym);
     }
   }
@@ -3409,28 +3408,28 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   // Step 6: Add to symbol table
   Symbol *mono_sym = symbol_create(mangled_name, SYMBOL_FUNCTION, mono_func);
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
+  mono_sym->is_mono = true;
 
   // Step 7: Temporarily switch to defining module context for checking
   Module *saved_module = checker_state.current_module;
-  checker_state.current_module = context_module;
+  Scope *saved_scope = current_scope;
+  checker_set_current_module(context_module);
 
+  // Save current scope state (we're likely inside another function)
   // Type-check signature in defining context (local scope parents to it)
   if (!check_function_signature(mono_sym)) {
+    checker_state.current_module = saved_module;
     checker_error(call_loc, "failed to monomorphize function '%s' called here",
                   generic_func->data.func_decl.name);
     return NULL;
   }
 
   // Step 8: Type-check the body
-  // Save current scope state (we're likely inside another function)
-  Scope *saved_scope = current_scope;
-  current_scope = checker_state.current_module->scope;
-
   bool succeeded = check_function_body(mono_sym);
 
   // Restore scope state and current module
+  checker_set_current_module(saved_module);
   current_scope = saved_scope;
-  checker_state.current_module = saved_module;
 
   if (!succeeded) {
     checker_error(
@@ -5722,19 +5721,24 @@ static bool check_function_body(Symbol *sym) {
   checker_state.current_convention = func_type->data.func.convention;
 
   // Check the function body
+  bool had_error = checker_state.has_errors;
+  checker_state.has_errors = false;
   bool definitely_returns = check_statement(body, return_type);
+  bool has_error = checker_state.has_errors;
+  checker_state.has_errors = had_error;
+
+  // Pop back to global scope
+  scope_pop();
 
   // If non-void, ensure all paths return
   if (return_type->kind != TYPE_VOID && !definitely_returns) {
     checker_error(decl->loc,
                   "function '%s' may not return a value on all paths",
                   sym->name);
+    return false;
   }
 
-  // Pop back to global scope
-  scope_pop();
-
-  return !checker_has_errors();
+  return !has_error;
 }
 
 // Now refactor the original function to use it
@@ -5744,7 +5748,7 @@ bool check_function_bodies(void) {
   // Iterate over all function symbols in global scope
   HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process functions
-    if (sym->kind != SYMBOL_FUNCTION) {
+    if (sym->kind != SYMBOL_FUNCTION || sym->is_mono) {
       continue;
     }
 
