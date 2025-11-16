@@ -2419,9 +2419,11 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     break;
   }
   case AST_STMT_WHILE: {
+    emit_expr(cg, stmt->data.while_stmt.cond);
+
     emit_indent_spaces(cg);
     emit_string(cg, "while (");
-    emit_expr(cg, stmt->data.while_stmt.cond);
+    emit_expression_buffer(cg);
     emit_string(cg, ") ");
     emit_string(cg, "{\n");
     emit_indent(cg);
@@ -2556,24 +2558,45 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     // Check if init is a variable declaration
     if (init->kind == AST_DECL_VARIABLE) {
       // Generate: for (int i = 0; cond; update) { body }
+      emit_expr(cg, init->data.var_decl.init);
+      char *_init = move_expression_buffer_into_temp();
+
+      emit_expr(cg, stmt->data.for_stmt.cond);
+      char *_cond = move_expression_buffer_into_temp();
+
+      AstNode *update = stmt->data.for_stmt.update;
+
+      char *_update = NULL;
+      char *_update_rhs = NULL;
+
+      if (update->kind == AST_STMT_ASSIGN) {
+        emit_expr(cg, update->data.assign_stmt.lhs);
+        _update = move_expression_buffer_into_temp();
+
+        emit_expr(cg, update->data.assign_stmt.rhs);
+        _update_rhs = move_expression_buffer_into_temp();
+      } else {
+        emit_expr(cg, update);
+        _update = move_expression_buffer_into_temp();
+      }
+
       emit_indent_spaces(cg);
       emit_string(cg, "for (");
       emit_type_name(cg, init->resolved_type);
       emit_string(cg, " ");
       emit_string(cg, init->data.var_decl.name);
       emit_string(cg, " = ");
-      emit_expr(cg, init->data.var_decl.init);
+      emit_string(cg, _init);
       emit_string(cg, "; ");
-      emit_expr(cg, stmt->data.for_stmt.cond);
+      emit_string(cg, _cond);
       emit_string(cg, "; ");
 
-      AstNode *update = stmt->data.for_stmt.update;
       if (update->kind == AST_STMT_ASSIGN) {
-        emit_expr(cg, update->data.assign_stmt.lhs);
+        emit_string(cg, _update);
         emit_string(cg, " = ");
-        emit_expr(cg, update->data.assign_stmt.rhs);
+        emit_string(cg, _update_rhs);
       } else {
-        emit_expr(cg, update);
+        emit_string(cg, _update);
       }
       emit_string(cg, ") {\n");
       emit_indent(cg);
@@ -2599,14 +2622,23 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       // Emit init
       emit_stmt(cg, init);
 
+      emit_expr(cg, stmt->data.for_stmt.cond);
+      char *_cond = move_expression_buffer_into_temp();
+
+      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.lhs);
+      char *_lhs = move_expression_buffer_into_temp();
+
+      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
+      char *_rhs = move_expression_buffer_into_temp();
+
       // Emit for loop
       emit_indent_spaces(cg);
       emit_string(cg, "for (; ");
-      emit_expr(cg, stmt->data.for_stmt.cond);
+      emit_string(cg, _cond);
       emit_string(cg, "; ");
-      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.lhs);
+      emit_string(cg, _lhs);
       emit_string(cg, " = ");
-      emit_expr(cg, stmt->data.for_stmt.update->data.assign_stmt.rhs);
+      emit_string(cg, _rhs);
       emit_string(cg, ") {\n");
       emit_indent(cg);
 
@@ -2659,6 +2691,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, " ");
       emit_string(cg, temp_name);
       emit_string(cg, " = ");
+
       emit_expression_buffer(cg);
       emit_string(cg, ";\n");
 
@@ -2694,6 +2727,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, " ");
     emit_string(cg, temp_name);
     emit_string(cg, " = ");
+
     emit_expression_buffer(cg);
     emit_string(cg, ";\n");
 
@@ -2762,6 +2796,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     emit_string(cg, name);
     emit_string(cg, " = ");
+
     emit_expression_buffer(cg);
     emit_string(cg, ";\n");
 
@@ -2778,6 +2813,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
     emit_string(cg, name);
     emit_string(cg, " = ");
+
     // TODO: Will need to make sure this doesn't break in global space
     emit_expr(cg, stmt->data.const_decl.value);
     emit_expression_buffer(cg);
