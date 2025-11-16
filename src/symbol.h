@@ -29,6 +29,7 @@ struct Symbol {
   SymbolKind kind; // What kind of symbol this is
   AstNode *decl;   // Pointer to declaration AST node
   Type *type;      // Type (NULL initially, filled in pass 3)
+  bool is_mono;
 
   // Kind-specific data
   union {
