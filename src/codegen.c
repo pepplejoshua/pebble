@@ -17,7 +17,7 @@ typedef struct ExpressionBuffer {
 } ExpressionBuffer;
 
 ExpressionBuffer expression_buffer = {0};
-const size_t expression_buffer_size = 1024;
+const size_t expression_buffer_size = 2048;
 
 static void append_to_section(Codegen *cg, const char *str, size_t str_len) {
   char **buf = NULL;
