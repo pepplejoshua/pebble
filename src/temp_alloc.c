@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <memory.h>
 #include <assert.h>
 #include "temp_alloc.h"
 
@@ -7,6 +8,7 @@ void temp_init(TempAllocator *temp, size_t initial_capacity) {
   assert(slab && "Temp slab allocation failed");
 
   slab->buffer = malloc(initial_capacity);
+  memset(slab->buffer, 0, initial_capacity);
   assert(slab->buffer && "Temp buffer allocation failed");
 
   slab->capacity = initial_capacity;
@@ -57,6 +59,7 @@ void *temp_alloc(TempAllocator *temp, size_t size) {
   assert(new_slab && "Temp slab allocation failed");
 
   new_slab->buffer = malloc(new_slab_size);
+  memset(new_slab->buffer, 0, new_slab_size);
   assert(new_slab->buffer && "Temp buffer allocation failed");
 
   new_slab->capacity = new_slab_size;
@@ -75,6 +78,7 @@ void temp_reset(TempAllocator *temp) {
   TempSlab *slab = temp->first;
   while (slab != NULL) {
     slab->used = 0;
+    memset(slab->buffer, 0, slab->capacity);
     slab = slab->next;
   }
   temp->current = temp->first;

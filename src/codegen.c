@@ -75,6 +75,15 @@ static void reset_expression_buffer(void) {
   expression_buffer.length = 0;
 }
 
+static char *move_expression_buffer_into_arena(Arena *arena) {
+  char *buffer = arena_alloc(arena, expression_buffer.length + 1);
+  memcpy(buffer, expression_buffer.buffer, expression_buffer.length);
+  buffer[expression_buffer.length] = '\0';
+
+  reset_expression_buffer();
+  return buffer;
+}
+
 static char *move_expression_buffer_into_temp(void) {
   char *buffer = temp_alloc(&temp_allocator, expression_buffer.length + 1);
   memcpy(buffer, expression_buffer.buffer, expression_buffer.length);
@@ -746,6 +755,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
 
         if (sym->decl->data.var_decl.init) {
           emit_expr(cg, sym->decl->data.var_decl.init);
+          emit_expression_buffer(cg);
         } else {
           Type *init_t = sym->decl->resolved_type;
 
@@ -763,6 +773,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
                  sym->decl->data.const_decl.value) {
         emit_string(cg, " = ");
         emit_expr(cg, sym->decl->data.const_decl.value);
+        emit_expression_buffer(cg);
       }
       emit_string(cg, ";\n");
     }
@@ -784,6 +795,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
 
           if (sym->decl->data.var_decl.init) {
             emit_expr(cg, sym->decl->data.var_decl.init);
+            emit_expression_buffer(cg);
           } else {
             Type *init_t = sym->decl->resolved_type;
 
@@ -801,6 +813,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
                    sym->decl->data.const_decl.value) {
           emit_string(cg, " = ");
           emit_expr(cg, sym->decl->data.const_decl.value);
+          emit_expression_buffer(cg);
         }
         emit_string(cg, ";\n");
       }
@@ -2266,21 +2279,27 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_indent_spaces(cg);
       emit_string(cg, "}\n");
     } else {
-      char **exprs = temp_alloc(&temp_allocator, condition_count * sizeof(char *));
+      Arena temp_arena;
+      arena_init(&temp_arena, 512);
+
+      // NOTE: Since we're evaluating upfront, we need longer living memory than temp
+      // As the bodies will be evaluated, then temp will be freed and clear these
+      char **exprs = arena_alloc(&temp_arena, condition_count * sizeof(char *));
 
       size_t expr_count = 0;
       for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
         emit_expr(cg, cases[i]->data.case_stmt.condition);
-        exprs[expr_count++] = move_expression_buffer_into_temp();
+        exprs[expr_count++] = move_expression_buffer_into_arena(&temp_arena);
 
         for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
           AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
           AstNode *alt_cond = alt_case->data.case_stmt.condition;
 
           emit_expr(cg, alt_cond);
-          exprs[expr_count++] = move_expression_buffer_into_temp();
+          exprs[expr_count++] = move_expression_buffer_into_arena(&temp_arena);
         }
       }
+      assert(expr_count == condition_count);
 
       switch (cond_type->kind) {
       case TYPE_CHAR:
@@ -2300,16 +2319,16 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, expr_cond);
         emit_string(cg, ") {\n");
 
-        condition_count = 0;
+        expr_count = 0;
         for (size_t i = 0; i < stmt->data.switch_stmt.case_count; i++) {
           emit_string(cg, "case ");
-          emit_string(cg, exprs[condition_count++]);
+          emit_string(cg, exprs[expr_count++]);
           emit_string(cg, ":\n");
 
           for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
                j++) {
             emit_string(cg, "case ");
-            emit_string(cg, exprs[condition_count++]);
+            emit_string(cg, exprs[expr_count++]);
             emit_string(cg, ":\n");
           }
 
@@ -2356,7 +2375,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, ";\n");
         }
 
-        condition_count = 0;
+        expr_count = 0;
         for (size_t i = 0; i < case_count; i++) {
           if (i == 0) {
             emit_string(cg, "if (");
@@ -2369,17 +2388,16 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, temporary_name);
           emit_string(cg, ", ");
 
-          emit_string(cg, exprs[condition_count++]);
+          emit_string(cg, exprs[expr_count++]);
           emit_string(cg, ") == 0");
 
-          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
-               j++) {
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
             emit_string(cg, " || strcmp(");
 
             emit_string(cg, temporary_name);
             emit_string(cg, ", ");
 
-            emit_string(cg, exprs[condition_count++]);
+            emit_string(cg, exprs[expr_count++]);
             emit_string(cg, ") == 0");
           }
 
@@ -2413,9 +2431,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       default:
         break;
       }
-    }
 
-    temp_reset(&temp_allocator);
+      arena_free(&temp_arena);
+    }
     break;
   }
   case AST_STMT_WHILE: {
@@ -2804,6 +2822,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     break;
   }
   case AST_DECL_CONSTANT: {
+    emit_expr(cg, stmt->data.const_decl.value);
+
     emit_indent_spaces(cg);
     emit_type_name(cg, stmt->resolved_type);
     emit_string(cg, " ");
@@ -2815,7 +2835,6 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     emit_string(cg, " = ");
 
     // TODO: Will need to make sure this doesn't break in global space
-    emit_expr(cg, stmt->data.const_decl.value);
     emit_expression_buffer(cg);
     emit_string(cg, ";\n");
 
