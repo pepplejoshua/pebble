@@ -3099,6 +3099,10 @@ static void substitute_type_params_in_expr(AstNode *expr,
     for (size_t i = 0; i < expr->data.call.arg_count; i++) {
       substitute_type_params_in_expr(expr->data.call.args[i], bindings);
     }
+
+    for (size_t i = 0; i < expr->data.call.type_arg_count; i++) {
+      substitute_type_params_in_type(expr->data.call.type_args[i], bindings);
+    }
     break;
 
   case AST_EXPR_INDEX:
