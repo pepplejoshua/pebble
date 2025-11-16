@@ -118,7 +118,6 @@ static CallingConvention convention_from_node(AstNode *conv) {
   }
 
   // NOTE: string includes quotes
-
   assert(conv->kind == AST_EXPR_LITERAL_STRING);
   if (strcmp("\"c\"", conv->data.str_lit.value) == 0 ||
       strcmp("\"C\"", conv->data.str_lit.value) == 0) {
@@ -261,6 +260,16 @@ static void collect_declaration(AstNode *decl) {
 
   symbol->reg_name = name;
 
+  // NEW: Handle generic types
+  if (kind == SYMBOL_TYPE && decl->kind == AST_DECL_TYPE &&
+      decl->data.type_decl.type_params_count > 0) {
+    // Create a marker type that says "this is generic"
+    Type *generic_marker = type_create(TYPE_GENERIC_TYPE_DECL, loc);
+    generic_marker->data.generic_decl.decl = decl;
+    generic_marker->declared_name = name;
+    symbol->type = generic_marker;
+  }
+
   scope_add_symbol(target_scope, symbol);
 }
 
@@ -284,6 +293,11 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   Type *type = *type_ref;
   if (!type)
     return false;
+
+  if (type->kind == TYPE_UNRESOLVED) {
+    // Should not happen — but if it does, skip
+    return false;
+  }
 
   // If already canonicalized, check for deduplication
   if (type->canonical_name != NULL) {
@@ -410,6 +424,9 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
   })
 
   switch (type->kind) {
+  case TYPE_GENERIC_TYPE_DECL:
+    // This should not occur, ever
+    assert(false && "Attempt to canonicalize generic type.");
   case TYPE_GENERIC_FUNCTION:
     // This should not occur, ever
     assert(false && "Attempt to canonicalize generic function.");
@@ -733,7 +750,8 @@ static void canonicalize_types(Module *module) {
     if (sym->type) {
       // Type hasn't been canonicalized yet
       // Don't attempt to canonicalize opaque types
-      if (sym->type->kind != TYPE_OPAQUE)
+      if (sym->type->kind != TYPE_OPAQUE &&
+          sym->type->kind != TYPE_GENERIC_TYPE_DECL)
         canonicalize_type(&(sym->type));
 
       // Keep type_table in sync (important for deduplication)
@@ -761,6 +779,11 @@ static void check_type_declarations(Module *module) {
         worklist = realloc(worklist, sizeof(Symbol *) * worklist_capacity);
       }
       worklist[worklist_size++] = sym;
+    } else if (sym->kind == SYMBOL_TYPE && sym->type &&
+               sym->type->kind == TYPE_GENERIC_TYPE_DECL) {
+      // Skip generic types - they're resolved on-demand
+      // Just ensure they're registered by name so we can look them up
+      type_register(sym->name, sym->type);
     }
   }
 
@@ -1052,7 +1075,7 @@ static bool check_function_signature(Symbol *sym) {
   if (decl->kind == AST_DECL_FUNCTION &&
       decl->data.func_decl.type_param_count > 0) {
     Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
-    generic_type->data.generic_func.decl = decl;
+    generic_type->data.generic_decl.decl = decl;
     sym->type = generic_type;
     return true;
   }
@@ -1264,6 +1287,9 @@ bool check_globals(Module *module) {
 //=============================================================================
 // TYPE RESOLUTION HELPERS
 //=============================================================================
+static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
+                                      AstNode **type_args,
+                                      size_t type_arg_count, Location call_loc);
 
 Type *resolve_type_expression(AstNode *type_expr) {
   if (!type_expr) {
@@ -1277,6 +1303,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Look up named type in type table
     char *name = type_expr->data.type_named.name;
     Type *type = type_lookup(name, loc.file);
+    AstNode **type_args = type_expr->data.type_named.type_args;
+    size_t type_arg_count = type_expr->data.type_named.type_arg_count;
 
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
@@ -1294,6 +1322,25 @@ Type *resolve_type_expression(AstNode *type_expr) {
       checker_error(type_expr->loc, "undefined type '%s'", name);
       return NULL;
     }
+
+    // Handle generic types
+    if (type->kind == TYPE_GENERIC_TYPE_DECL) {
+      if (type_arg_count == 0) {
+        checker_error(type_expr->loc,
+                      "generic type '%s' requires type arguments", name);
+        return NULL;
+      }
+
+      // Monomorphize the generic struct
+      type = monomorphize_struct_type(type->data.generic_decl.decl, type_args,
+                                      type_arg_count, type_expr->loc);
+    } else if (type_arg_count > 0) {
+      // Non-generic type with type arguments
+      checker_error(type_expr->loc,
+                    "type '%s' is not generic but has %zu type arguments", name,
+                    type_arg_count);
+      return NULL;
+    }
     return type;
   }
 
@@ -1301,6 +1348,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Look up qualified named type in type table
     char *mod = type_expr->data.type_qualified_named.mod_name;
     char *mem = type_expr->data.type_qualified_named.mem_name;
+    AstNode **type_args = type_expr->data.type_qualified_named.type_args;
+    size_t type_arg_count = type_expr->data.type_qualified_named.type_arg_count;
 
     char *prefix = prepend(mod, "__");
     char *qualified_name = prepend(prefix, mem);
@@ -1320,6 +1369,24 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
       // Otherwise, it's truly undefined
       checker_error(type_expr->loc, "undefined type '%s::%s'", mod, mem);
+      return NULL;
+    }
+
+    // Handle generic types in qualified names
+    if (type->kind == TYPE_GENERIC_TYPE_DECL) {
+      if (type_arg_count == 0) {
+        checker_error(type_expr->loc,
+                      "generic type '%s::%s' requires type arguments", mod,
+                      mem);
+        return NULL;
+      }
+
+      type = monomorphize_struct_type(type->data.generic_decl.decl, type_args,
+                                      type_arg_count, type_expr->loc);
+    } else if (type_arg_count > 0) {
+      checker_error(type_expr->loc,
+                    "type '%s::%s' is not generic but has %zu type arguments",
+                    mod, mem, type_arg_count);
       return NULL;
     }
 
@@ -1738,11 +1805,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     }
 
     // If all elements match exactly, no cast needed
-    if (!needs_conversion) {
+    if (!needs_conversion &&
+        strcmp(type_name(expr_type), type_name(target_type)) == 0) {
       return expr;
     }
 
-    // Determine if we are dealing a literal, so we can try to perform
+    // Determine if we are dealing with a literal, so we can try to perform
     // implicit casts on its elements
     if (expr->kind != AST_EXPR_TUPLE) {
       return NULL;
@@ -1772,7 +1840,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     }
 
     new_tuple->resolved_type = target_type;
-
+    expr->resolved_type = target_type;
     return new_tuple;
   } else if ((expr_type->kind == TYPE_F32 && target_type->kind == TYPE_F64) ||
              (expr_type->kind == TYPE_F64 && target_type->kind == TYPE_F32)) {
@@ -2420,6 +2488,24 @@ static bool is_type_parameter(const char *name, TypeBindings *bindings) {
   return false;
 }
 
+static bool extract_generic_specialization(Type *concrete_type,
+                                           Type ***out_type_args,
+                                           size_t *out_count) {
+  if (!concrete_type || concrete_type->kind != TYPE_STRUCT) {
+    return false;
+  }
+
+  // Check if this struct stores generic type args
+  if (concrete_type->generic_type_arg_count > 0 &&
+      concrete_type->generic_type_args) {
+    *out_type_args = concrete_type->generic_type_args;
+    *out_count = concrete_type->generic_type_arg_count;
+    return true;
+  }
+
+  return false;
+}
+
 // Match a type pattern (AST node) against a concrete type and extract bindings
 // Returns true if match succeeds, false otherwise
 static bool match_and_bind_type(AstNode *pattern, Type *concrete,
@@ -2457,6 +2543,55 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
           }
         }
       }
+    }
+
+    // Handle generic struct references with type arguments
+    if (pattern->data.type_named.type_arg_count > 0) {
+      if (concrete->kind != TYPE_STRUCT) {
+        checker_error(loc, "type mismatch: expected struct type, got '%s'",
+                      type_name(concrete));
+        return false;
+      }
+
+      if (!concrete->declared_name ||
+          strcmp(concrete->declared_name, name) != 0) {
+        checker_error(loc, "type mismatch: expected '%s', got '%s'", name,
+                      type_name(concrete));
+        return false;
+      }
+
+      // Extract concrete type arguments from the monomorphized struct
+      Type **concrete_type_args = NULL;
+      size_t concrete_type_arg_count = 0;
+
+      if (!extract_generic_specialization(concrete, &concrete_type_args,
+                                          &concrete_type_arg_count)) {
+        // Either not monomorphized or not a generic struct
+        // This shouldn't happen if type checking is working
+        checker_error(
+            loc,
+            "internal error: struct '%s' is not a valid generic specialization",
+            name);
+        return false;
+      }
+
+      size_t pattern_arg_count = pattern->data.type_named.type_arg_count;
+      if (concrete_type_arg_count != pattern_arg_count) {
+        checker_error(loc,
+                      "generic type '%s' expects %zu type arguments, got %zu",
+                      name, pattern_arg_count, concrete_type_arg_count);
+        return false;
+      }
+
+      // Recursively match pattern args against concrete args
+      for (size_t i = 0; i < pattern_arg_count; i++) {
+        if (!match_and_bind_type(pattern->data.type_named.type_args[i],
+                                 concrete_type_args[i], bindings, loc)) {
+          return false;
+        }
+      }
+
+      return true;
     }
 
     // Not a type parameter - just a regular named type
@@ -2736,9 +2871,14 @@ static void substitute_type_params_in_type(AstNode *type_node,
         type_node->kind = replacement->kind;
         type_node->data = replacement->data;
         type_node->resolved_type = concrete;
-
-        // Note: We don't free replacement since it's arena-allocated
         return;
+      }
+    }
+
+    if (type_node->data.type_named.type_arg_count > 0) {
+      for (size_t i = 0; i < type_node->data.type_named.type_arg_count; i++) {
+        substitute_type_params_in_type(type_node->data.type_named.type_args[i],
+                                       bindings);
       }
     }
     break;
@@ -2795,6 +2935,15 @@ static void substitute_type_params_in_type(AstNode *type_node,
     break;
 
   case AST_TYPE_QUALIFIED_NAMED:
+    if (type_node->data.type_qualified_named.type_arg_count > 0) {
+      for (size_t i = 0;
+           i < type_node->data.type_qualified_named.type_arg_count; i++) {
+        substitute_type_params_in_type(
+            type_node->data.type_qualified_named.type_args[i], bindings);
+      }
+    }
+    break;
+
   case AST_TYPE_ENUM:
     // These don't contain nested type parameters
     break;
@@ -2950,6 +3099,10 @@ static void substitute_type_params_in_expr(AstNode *expr,
     for (size_t i = 0; i < expr->data.call.arg_count; i++) {
       substitute_type_params_in_expr(expr->data.call.args[i], bindings);
     }
+
+    for (size_t i = 0; i < expr->data.call.type_arg_count; i++) {
+      substitute_type_params_in_type(expr->data.call.type_args[i], bindings);
+    }
     break;
 
   case AST_EXPR_INDEX:
@@ -2981,6 +3134,11 @@ static void substitute_type_params_in_expr(AstNode *expr,
   case AST_EXPR_STRUCT_LITERAL:
     for (size_t i = 0; i < expr->data.struct_literal.field_count; i++) {
       substitute_type_params_in_expr(expr->data.struct_literal.field_values[i],
+                                     bindings);
+    }
+
+    for (size_t i = 0; i < expr->data.struct_literal.type_arg_count; i++) {
+      substitute_type_params_in_type(expr->data.struct_literal.type_args[i],
                                      bindings);
     }
     break;
@@ -3062,6 +3220,151 @@ static void substitute_function_types(AstNode *func_decl,
 
   // Substitute in body
   substitute_type_params_in_stmt(func_decl->data.func_decl.body, bindings);
+}
+
+// Helper: Check if a type has cycles (for monomorphized generics)
+static bool check_type_has_cycles(Type *type, Visited **visited) {
+  if (!type)
+    return false;
+
+  // Already has a canonical name - assume it's been checked
+  if (type->canonical_name != NULL) {
+    return false;
+  }
+
+  // Pointers break cycles
+  if (type->kind == TYPE_POINTER) {
+    return false;
+  }
+
+  // Check for cycle (back-edge)
+  Visited *found;
+  HASH_FIND_PTR(*visited, &type, found);
+  if (found) {
+    return true; // Cycle detected
+  }
+
+  // Add to visited
+  Visited *new_v = arena_alloc(&long_lived, sizeof(Visited));
+  new_v->key = type;
+  HASH_ADD_PTR(*visited, key, new_v);
+
+  // Check components recursively
+  bool cycle_detected = false;
+
+  if (type->kind == TYPE_STRUCT) {
+    for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+      if (check_type_has_cycles(type->data.struct_data.field_types[i],
+                                visited)) {
+        cycle_detected = true;
+        break;
+      }
+    }
+  } else if (type->kind == TYPE_ARRAY) {
+    cycle_detected = check_type_has_cycles(type->data.array.element, visited);
+  } else if (type->kind == TYPE_POINTER) {
+    // Pointers don't create cycles (they break them)
+  } else if (type->kind == TYPE_SLICE) {
+    cycle_detected = check_type_has_cycles(type->data.slice.element, visited);
+  }
+
+  HASH_DEL(*visited, new_v);
+  return cycle_detected;
+}
+
+// Main monomorphization function
+static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
+                                      AstNode **type_args,
+                                      size_t type_arg_count,
+                                      Location call_loc) {
+  size_t type_param_count =
+      generic_struct_decl->data.type_decl.type_params_count;
+
+  if (type_arg_count != type_param_count) {
+    checker_error(call_loc, "type '%s' expects %zu type arguments, got %zu",
+                  generic_struct_decl->data.type_decl.name, type_param_count,
+                  type_arg_count);
+    return NULL;
+  }
+
+  // Step 1: Resolve type args
+  TypeBindings bindings = {0};
+  bindings.count = type_param_count;
+  bindings.bindings =
+      arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
+  Type **concrete_types =
+      arena_alloc(&long_lived, sizeof(Type *) * type_param_count);
+
+  for (size_t i = 0; i < type_param_count; i++) {
+    bindings.bindings[i].param_name =
+        generic_struct_decl->data.type_decl.type_params[i].lexeme;
+    Type *concrete = resolve_type_expression(type_args[i]);
+    if (!concrete)
+      return NULL;
+    bindings.bindings[i].concrete_type = concrete;
+    concrete_types[i] = concrete;
+  }
+
+  // Step 2: Mangle name
+  char *mangled_name = mangle_generic_name(
+      generic_struct_decl->data.type_decl.full_qualified_name, concrete_types,
+      type_param_count);
+
+  // Step 3: Check cache
+  Type *existing = type_lookup(mangled_name, generic_struct_decl->loc.file);
+  if (existing) {
+    return existing;
+  }
+
+  // Step 4: Create placeholder EARLY
+  Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
+  placeholder->declared_name = generic_struct_decl->data.type_decl.name;
+  type_register(mangled_name, placeholder);
+
+  // Step 5: Clone + substitute
+  AstNode *type_expr = generic_struct_decl->data.type_decl.type_expr;
+  AstNode *specialized_expr = clone_ast_node(type_expr);
+  substitute_type_params_in_type(specialized_expr, &bindings);
+
+  // Step 6: Resolve body — may hit placeholder (safe)
+  checker_state.in_type_resolution = true;
+  Type *resolved_body = resolve_type_expression(specialized_expr);
+  checker_state.in_type_resolution = false;
+
+  // Step 7: NOW update placeholder
+  char *saved_declared_name = placeholder->declared_name;
+  if (resolved_body) {
+    *placeholder = *resolved_body;
+    placeholder->canonical_name = NULL;
+    placeholder->qualified_name = mangled_name;
+    placeholder->declared_name = saved_declared_name;
+  }
+
+  // Step 8: Track generic args
+  placeholder->generic_type_args = concrete_types;
+  placeholder->generic_type_arg_count = type_arg_count;
+  placeholder->declared_name = generic_struct_decl->data.type_decl.name;
+
+  // Step 9: Check for cycles BEFORE canonicalization
+  Visited *visited = NULL;
+  bool has_cycle = check_type_has_cycles(placeholder, &visited);
+
+  // Clean up visited set
+  Visited *curr, *tmp;
+  HASH_ITER(hh, visited, curr, tmp) { HASH_DEL(visited, curr); }
+
+  if (has_cycle) {
+    checker_error(
+        call_loc,
+        "recursive type '%s' has infinite size (use pointer for indirection)",
+        placeholder->declared_name);
+    return NULL;
+  }
+
+  // Step 10: Final canonicalization (dedup + name)
+  canonicalize_type(&placeholder);
+
+  return placeholder;
 }
 
 static bool check_function_body(Symbol *sym);
@@ -3689,7 +3992,7 @@ Type *check_expression(AstNode *expr) {
 
     // Check if this is a generic function
     if (call_type->kind == TYPE_GENERIC_FUNCTION) {
-      AstNode *generic_decl = call_type->data.generic_func.decl;
+      AstNode *generic_decl = call_type->data.generic_decl.decl;
       TypeBindings bindings;
 
       if (expr->data.call.type_args != NULL) {
@@ -3727,6 +4030,11 @@ Type *check_expression(AstNode *expr) {
 
           bindings.bindings[i].concrete_type = concrete_type;
         }
+
+        for (size_t i = 0; i < arg_count; i++) {
+          check_expression(args[i]);
+        }
+
       } else {
         // Infer type arguments from call arguments
         bindings =
@@ -4445,6 +4753,29 @@ Type *check_expression(AstNode *expr) {
     if (!type_of) {
       checker_error(expr->loc, "undefined type '%s'", struct_type_name);
       return NULL;
+    }
+
+    if (type_of->kind == TYPE_GENERIC_TYPE_DECL) {
+      AstNode **type_args = expr->data.struct_literal.type_args;
+      size_t type_arg_count = expr->data.struct_literal.type_arg_count;
+      if (type_args) {
+        // Explicit generic instantiation 'GenericTypeName.[...]{ ... }'
+        AstNode *generic_decl = type_of->data.generic_decl.decl;
+
+        // Monomorphize the struct type
+        type_of = monomorphize_struct_type(generic_decl, type_args,
+                                           type_arg_count, expr->loc);
+        if (!type_of)
+          return NULL;
+      } else {
+        // Error: GenericStruct.{ ... }
+        checker_error(expr->loc,
+                      "generic type '%s' cannot be instantiated without "
+                      "explicit type arguments. use an anonymous struct "
+                      "'.{...}' if the type is known",
+                      struct_type_name);
+        return NULL;
+      }
     }
 
     if (type_of->kind != TYPE_STRUCT && type_of->kind != TYPE_UNION &&
@@ -5173,6 +5504,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     }
 
     if (lhs_type && rhs_type) {
+      // printf("%s vs %s\n", lhs_type->canonical_name,
+      // rhs_type->canonical_name);
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
       if (!converted) {
         checker_error(stmt->loc, "assignment type mismatch, '%s' != '%s'",
@@ -5369,8 +5702,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 // Main entry point for Pass 4
 // Extract the body checking logic for a single function
 static bool check_function_body(Symbol *sym) {
+  if (!sym->type) {
+    return false;
+  }
+
   // Skip generic functions - they'll be checked when monomorphized
-  if (sym->type->kind == TYPE_GENERIC_FUNCTION) {
+  if (sym->type && sym->type->kind == TYPE_GENERIC_FUNCTION) {
     return true;
   }
 

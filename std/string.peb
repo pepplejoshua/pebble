@@ -12,24 +12,25 @@ type String = struct {
     capacity usize;
 };
 
-fn new() *String {
-    var s *String = mem::new(sizeof String);
-    s.capacity = 4;
-    s.len = 0;
-    s.data = mem::new((sizeof char) * 4);
-    return s;
+fn new() String {
+    return String.{
+        data = nil,
+        capacity = 0,
+        len = 0,
+    };
 }
 
 fn delete(s *String) void {
-    mem::delete(s.data);
-    mem::delete(s);
+    if (s.data != nil) {
+        mem::delete(s.data);
+    }
+    s.data = nil;
+    s.len = 0;
+    s.capacity = 0;
 }
 
 fn grow(s *String, new_cap usize) void {
-    var new_data *char = mem::new((sizeof char) * new_cap);
-    memcpy(new_data, s.data, s.capacity);
-    mem::delete(s.data);
-    s.data = new_data;
+    s.data = mem::realloc(s.data, (sizeof char) * new_cap);
     s.capacity = new_cap;
 }
 
@@ -65,6 +66,13 @@ fn push_str(s *String, new_str str) void {
     *(s.data + s.len) = '\0';
 }
 
-fn to_str(s *String) str {
+fn as_str(s String) str {
+    if s.data == nil {
+        return "";
+    }
     return s.data as str;
+}
+
+fn as_slice(s String) []char {
+    return s.data[:s.len];
 }
