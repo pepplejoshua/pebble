@@ -6,7 +6,7 @@ CFLAGS = -Wall -Wextra -g -I src
 
 OBJS = src/alloc.o src/ast.o src/lexer.o src/parser.o src/options.o \
        src/symbol.o src/type.o src/checker.o src/codegen.o src/module.o \
-       src/main.o
+       src/temp_alloc.o src/main.o
 
 # Auto-generate dependencies
 DEPS = $(OBJS:.o=.d)
