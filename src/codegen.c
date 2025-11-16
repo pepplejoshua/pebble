@@ -3207,27 +3207,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_UNARY_OP: {
     emit_expr(cg, expr->data.unop.operand);
-
-    if (expr->data.unop.op == UNOP_ADDR) {
-      // Address of needs to take the address of the expression,
-      // otherwise it will take an address of the temporary
-      char *expr = move_expression_buffer_into_temp();
-
-      write_expression("&");
-      write_expression(expr);
-      return;
-    }
-
-    char temp_name[32] = {0};
-    get_temporary_name(cg, temp_name, sizeof(temp_name));
-
-    emit_type_name(cg, expr->data.unop.operand->resolved_type);
-    emit_string(cg, " ");
-    emit_string(cg, temp_name);
-    emit_string(cg, " = ");
-
-    emit_expression_buffer(cg);
-    emit_string(cg, ";\n");
+    char *temp = move_expression_buffer_into_temp();
 
     // Map UnaryOp to C op string
     switch (expr->data.unop.op) {
@@ -3239,9 +3219,12 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       break;
     case UNOP_DEREF:
       write_expression("(*");
-      write_expression(temp_name);
+      write_expression(temp);
       write_expression(")");
       return;
+    case  UNOP_ADDR:
+      write_expression("&");
+      break;
     case UNOP_BIT_NOT:
       write_expression("~");
       break;
@@ -3249,28 +3232,19 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression("/* ? */");
     }
 
-    write_expression(temp_name);
+    write_expression(temp);
     break;
   }
 
   case AST_EXPR_SOME: {
     // (optional_T){<emit wrapped expression>, true}
-    char temp_name[32] = {0};
-    get_temporary_name(cg, temp_name, sizeof(temp_name));
-
     emit_expr(cg, expr->data.some_expr.value);
-
-    emit_type_name(cg, expr->resolved_type);
-    emit_string(cg, " ");
-    emit_string(cg, temp_name);
-    emit_string(cg, " = ");
-    emit_expression_buffer(cg);
-    emit_string(cg, ";\n");
+    char *temp = move_expression_buffer_into_temp();
 
     write_expression("(");
     emit_expression_type_name(cg, expr->resolved_type);
     write_expression("){");
-    write_expression(temp_name);
+    write_expression(temp);
     write_expression(", true}");
     break;
   }
@@ -3278,8 +3252,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_FORCE_UNWRAP: {
     // emit assert on has_value
     // <emit operand>.value
-    char temp_name_buf[32] = {0};
-    char *temp_name = get_temporary_name(cg, temp_name_buf, sizeof(temp_name_buf));
+    char temp_name[32] = {0};
+    get_temporary_name(cg, temp_name, sizeof(temp_name));
 
     emit_expr(cg, expr->data.force_unwrap.operand);
 
@@ -3333,44 +3307,24 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       // Special: construct slice from array
       // Use statement expression to avoid evaluating src_expr twice
       emit_expr(cg, src_expr);
-
-      char temp_name[32] = {0};
-      get_temporary_name(cg, temp_name, sizeof(temp_name));
-
-      emit_type_name(cg, src_type);
-      emit_string(cg, " ");
-      emit_string(cg, temp_name);
-      emit_string(cg, " = ");
-
-      emit_expression_buffer(cg);
-      emit_string(cg, ";\n");
+      char *temp = move_expression_buffer_into_temp();
 
       write_expression("(");
       emit_expression_type_name(cg, target);
       write_expression("){ &");
-      write_expression(temp_name);
+      write_expression(temp);
       write_expression(".data[0], ");
-      write_expression(temp_name);
+      write_expression(temp);
       write_expression(".len }");
     } else {
       // General cast, e.g., (float)int
-      char temp_name[32] = {0};
-      get_temporary_name(cg, temp_name, sizeof(temp_name));
-
       emit_expr(cg, src_expr);
-
-      emit_type_name(cg, target);
-      emit_string(cg, " ");
-      emit_string(cg, temp_name);
-      emit_string(cg, " = ");
-
-      emit_expression_buffer(cg);
-      emit_string(cg, ";\n");
+      char *temp = move_expression_buffer_into_temp();
 
       write_expression("(");
       emit_expression_type_name(cg, target);
       write_expression(")");
-      emit_string(cg, temp_name);
+      emit_string(cg, temp);
     }
     break;
   }
@@ -3378,35 +3332,25 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_EXPLICIT_CAST: {
     Type *target_type = expr->resolved_type;
 
-    char temp_name[32] = {0};
-    get_temporary_name(cg, temp_name, sizeof(temp_name));
-
     emit_expr(cg, expr->data.explicit_cast.expr);
-
-    emit_type_name(cg, expr->data.explicit_cast.expr->resolved_type);
-    emit_string(cg, " ");
-    emit_string(cg, temp_name);
-    emit_string(cg, " = ");
-
-    emit_expression_buffer(cg);
-    emit_string(cg, ";\n");
+    char *temp = move_expression_buffer_into_temp();
 
     if (expr->data.explicit_cast.pointer_cast) {
       write_expression("*(");
       emit_expression_type_name(cg, target_type);
       write_expression("*)&");
-      write_expression(temp_name);
+      write_expression(temp);
     } else {
       write_expression("(");
       emit_expression_type_name(cg, target_type); // Uses canonical name
       write_expression(")");
-      write_expression(temp_name);
+      write_expression(temp);
     }
     break;
   }
 
   case AST_EXPR_ARRAY_LITERAL: {
-    char *expr_buffer[256] = {0};
+    char **expr_buffer = temp_alloc(&temp_allocator, expr->data.array_literal.element_count * sizeof(char *));
 
     for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
       emit_expr(cg, expr->data.array_literal.elements[i]);
@@ -3763,17 +3707,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_CALL: {
     Type *func_type = expr->data.call.func->resolved_type;
 
-    char temp_name[32] = {0};
-    get_temporary_name(cg, temp_name, sizeof(temp_name));
-
     emit_expr(cg, expr->data.call.func);
-
-    emit_type_name(cg, expr->data.call.func->resolved_type);
-    emit_string(cg, " ");
-
-    emit_expression_buffer(cg);
-    emit_string(cg, " = ");
-    emit_string(cg, ";\n");
+    char *func_expr = move_expression_buffer_into_temp();
 
     emit_string(cg, "(");
 
