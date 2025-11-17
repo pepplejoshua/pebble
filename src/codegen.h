@@ -55,8 +55,6 @@ typedef struct {
   bool in_defer;
   DeferStack *defer_stack;
 
-  bool lvalue_assignment;
-
   // Temporaries
   size_t temporary_count;
 } Codegen;

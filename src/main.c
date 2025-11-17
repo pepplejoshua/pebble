@@ -1,4 +1,5 @@
 #include "alloc.h"
+#include "temp_alloc.h"
 #include "checker.h"
 #include "codegen.h"
 #include "module.h"
@@ -10,6 +11,7 @@
 
 // Global allocators
 Arena long_lived;
+TempAllocator temp_allocator;
 
 // Debug function to print type table
 // static void debug_print_type_table(void) {
@@ -304,14 +306,14 @@ static bool compile_file(const char *filename) {
 }
 
 int main(int argc, char **argv) {
-  // Initialize compiler systems
-  arena_init(&long_lived, 256 * 1024);
-
   if (argc == 1) {
     print_usage(argv[0]);
-    arena_free(&long_lived);
     return 0;
   }
+
+  // Initialize compiler systems
+  arena_init(&long_lived, 256 * 1024);
+  temp_init(&temp_allocator, 10 * 1024);
 
   initialise_args();
 
@@ -319,6 +321,7 @@ int main(int argc, char **argv) {
   if (!parse_args(argc, argv)) {
     cleanup_args();
     arena_free(&long_lived);
+    temp_free(&temp_allocator);
     return 1;
   }
 
@@ -328,6 +331,7 @@ int main(int argc, char **argv) {
     print_usage(argv[0]);
     cleanup_args();
     arena_free(&long_lived);
+    temp_free(&temp_allocator);
     return 1;
   }
 
@@ -335,6 +339,7 @@ int main(int argc, char **argv) {
   if (!compile_file(compiler_opts.input_file)) {
     cleanup_args();
     arena_free(&long_lived);
+    temp_free(&temp_allocator);
     return 1;
   }
 
@@ -344,10 +349,15 @@ int main(int argc, char **argv) {
     arena_get_stats(&long_lived, &used, &capacity);
     printf("Memory used: %zu bytes (%.2f KB) out of %zu bytes (%.2f KB)\n",
            used, used / 1024.0, capacity, capacity / 1024.0);
+
+    temp_get_stats(&temp_allocator, &capacity);
+    printf("Maximum Temp Memory allocated: %zu bytes (%.2f KB)\n",
+           capacity, capacity / 1024.0);
   }
 
   // Cleanup
   cleanup_args();
   arena_free(&long_lived);
+  temp_free(&temp_allocator);
   return 0;
 }
