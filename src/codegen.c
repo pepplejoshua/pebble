@@ -4130,7 +4130,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     }
 
     write_expression("(");
-    write_expression(type_name);
+    emit_expression_type_name(cg, expr->resolved_type);
     write_expression("){");
 
     if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {
