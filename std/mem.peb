@@ -1,5 +1,7 @@
-extern fn alloca(sz usize) *void;
-extern fn memcpy(dst *void, src *void, sz usize) void;
+extern {
+  fn alloca(sz usize) *void;
+  fn memcpy(dst *void, src *void, sz usize) void;
+}
 
 fn new(size usize) *void {
     let allocator = context.default_allocator;

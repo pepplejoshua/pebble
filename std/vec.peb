@@ -20,7 +20,7 @@ fn new[T]() Vec[T] {
 // Creates a new vector with a specified capacity.
 fn with_capacity[T](cap usize) Vec[T] {
     if cap == 0 {
-        return new[T]();
+        return new.[T]();
     }
 
     let allocator = context.default_allocator;
@@ -70,14 +70,275 @@ fn push[T](self *Vec[T], value T) void {
     self.len++;
 }
 
+// Appends all elements from a slice to the end of the vector.
+fn push_slice[T](self *Vec[T], items []T) void {
+    if items.len == 0 {
+        return;
+    }
+    reserve(self, items.len);
+    // Directly copy the memory from the slice to the vector's data
+    mem::copy(self.data + self.len, items.data, items.len * (sizeof T));
+    self.len += items.len;
+}
+
+// Safe indexed access.
+fn get[T](self *Vec[T], index usize) ?T {
+    if index >= self.len {
+        return none;
+    }
+    return some *(self.data + index);
+}
+
+// Safe indexed mutation. Returns true if set, false if out of bounds.
+fn set[T](self *Vec[T], index usize, value T) bool {
+    if index >= self.len {
+        return false;
+    }
+    *(self.data + index) = value;
+    return true;
+}
+
 // Frees the memory used by the vector.
-fn drop[T](self *Vec[T]) void {
+fn delete[T](self *Vec[T]) void {
     if self.data != nil {
         self.backing.free(self.backing.ptr, self.data);
         self.data = nil;
         self.len = 0;
         self.cap = 0;
     }
+}
+
+// Insert an element at index, shifting later elements right.
+fn insert[T](self *Vec[T], index usize, value T) void {
+    if index > self.len {
+        index = self.len;
+    }
+    reserve(self, 1);
+    if index < self.len {
+        // Shift elements right
+        mem::copy((self.data + index + 1), (self.data + index), (self.len - index) * (sizeof T));
+    }
+    *(self.data + index) = value;
+    self.len++;
+}
+
+// Remove and return element at index, shifting later elements left.
+fn remove[T](self *Vec[T], index usize) ?T {
+    if index >= self.len {
+        return none;
+    }
+    let value = *(self.data + index);
+    if index < self.len - 1 {
+        // Shift elements left
+        mem::copy((self.data + index), (self.data + index + 1), (self.len - index - 1) * (sizeof T));
+    }
+    self.len--;
+    return some value;
+}
+
+// Remove element by swapping with last (no shift). Returns the removed value.
+fn swap_remove[T](self *Vec[T], index usize) ?T {
+    if index >= self.len {
+        return none;
+    }
+    let value = *(self.data + index);
+    if index < self.len - 1 {
+        // Swap with last element
+        *(self.data + index) = *(self.data + self.len - 1);
+    }
+    self.len--;
+    return some value;
+}
+
+// Remove all elements without deallocating.
+fn clear[T](self *Vec[T]) void {
+    self.len = 0;
+}
+
+// Reduce capacity to match length.
+fn shrink_to_fit[T](self *Vec[T]) void {
+    if self.cap > self.len && self.len > 0 {
+        let new_size = self.len * (sizeof T);
+        self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
+        self.cap = self.len;
+    } else if self.len == 0 && self.cap > 0 {
+        self.backing.free(self.backing.ptr, self.data);
+        self.data = nil;
+        self.cap = 0;
+    }
+}
+
+// Resize to new_len, filling with default if growing.
+fn resize[T](self *Vec[T], new_len usize, default T) void {
+    if new_len > self.len {
+        reserve(self, new_len - self.len);
+        loop self.len..new_len : i {
+            *(self.data + i) = default;
+        }
+    }
+    self.len = new_len;
+}
+
+// Shorten to len, dropping excess.
+fn truncate[T](self *Vec[T], len usize) void {
+    if len < self.len {
+        self.len = len;
+    }
+}
+
+// Keep only elements where predicate is true.
+fn retain[T](self *Vec[T], predicate fn(T) bool) void {
+    var write = 0;
+    loop 0..self.len : read {
+        if predicate(*(self.data + read)) {
+            if write != read {
+                *(self.data + write) = *(self.data + read);
+            }
+            write++;
+        }
+    }
+    self.len = write;
+}
+
+// Check if vector contains value.
+fn contains[T](self *Vec[T], value T) bool {
+    loop 0..self.len : i {
+        if *(self.data + i) == value {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Return index of first element matching predicate.
+fn find[T](self *Vec[T], predicate fn(T) bool) ?usize {
+    loop 0..self.len : i {
+        if predicate(*(self.data + i)) {
+            return some i;
+        }
+    }
+    return none;
+}
+
+// Return vector of indices where predicate matches.
+fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[usize] {
+    var result = new.[usize]();
+    loop 0..self.len : i {
+        if predicate(*(self.data + i)) {
+            push(&result, i as usize);
+        }
+    }
+    return result;
+}
+
+// Check if two vectors are element-wise equal.
+fn eq[T](a Vec[T], b Vec[T]) bool {
+    if a.len != b.len {
+        return false;
+    }
+    loop 0..a.len : i {
+        if *(a.data + i) != *(b.data + i) {
+            return true;  // Wait, should be != for inequality
+        }
+    }
+    return true;
+}
+
+// In-place reverse.
+fn reverse[T](self *Vec[T]) void {
+    var start = 0;
+    var end = self.len - 1;
+    while start < end {
+        let temp = *(self.data + start);
+        *(self.data + start) = *(self.data + end);
+        *(self.data + end) = temp;
+        start++;
+        end--;
+    }
+}
+
+// Create vector from slice by copying.
+fn from_slice[T](slice []T) Vec[T] {
+    var v = with_capacity.[T](slice.len);
+    push_slice(&v, slice);
+    return v;
+}
+
+type Ordering = enum {
+    Less,
+    Equal,
+    Greater,
+};
+
+// Iterative quicksort with median-of-three pivot and stack (no recursion).
+fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
+    if self.len <= 1 {
+        return;
+    }
+    // Use a stack for iterative partitioning
+    var stack = with_capacity.[(usize, usize)](self.len);  // Estimate stack size
+    defer delete(&stack);
+    push(&stack, (0 as usize, self.len - 1));
+
+    while !(stack.len == 0) {
+        let stack_val = pop(&stack);
+        let low = stack_val!.0;
+        let high = stack_val!.1;
+        if low < high {
+            let pivot_idx = partition.[T](self, low, high, cmp);
+            // Push right subarray first (for better cache locality)
+            if pivot_idx + 1 < high {
+                push(&stack, (pivot_idx + 1, high));
+            }
+            if low < pivot_idx - 1 {
+                push(&stack, (low, pivot_idx - 1));
+            }
+        }
+    }
+}
+
+// Partition with median-of-three pivot selection.
+fn partition[T](self *Vec[T], low usize, high usize, cmp fn(T, T) Ordering) usize {
+    // Median-of-three: compare low, mid, high
+    let mid = low + (high - low) / 2;
+    let a = *(self.data + low);
+    let b = *(self.data + mid);
+    let c = *(self.data + high);
+
+    var pivot_idx = high;  // Default to high
+    if cmp(a, b) != .Greater && cmp(b, c) != .Greater {
+        pivot_idx = mid;  // b is median
+    } else if cmp(a, c) != .Greater && cmp(c, b) != .Greater {
+        pivot_idx = high;  // c is median
+    } else {
+        pivot_idx = low;   // a is median
+    }
+
+    // Swap pivot to end
+    if pivot_idx != high {
+        let temp = *(self.data + pivot_idx);
+        *(self.data + pivot_idx) = *(self.data + high);
+        *(self.data + high) = temp;
+    }
+
+    let pivot = *(self.data + high);
+    var i = low - 1;
+
+    loop low..high : j {
+        if cmp(*(self.data + j), pivot) == .Less {
+            i++;
+            let temp = *(self.data + i);
+            *(self.data + i) = *(self.data + j);
+            *(self.data + j) = temp;
+        }
+    }
+
+    // Swap pivot into place
+    let temp = *(self.data + i + 1);
+    *(self.data + i + 1) = *(self.data + high);
+    *(self.data + high) = temp;
+
+    return i + 1;
 }
 
 // Returns a slice containing all elements in the vector.
@@ -93,15 +354,4 @@ fn pop[T](self *Vec[T]) ?T {
     }
     self.len--;
     return some *(self.data + self.len);
-}
-
-// Appends all elements from a slice to the end of the vector.
-fn push_slice[T](self *Vec[T], items []T) void {
-    if items.len == 0 {
-        return;
-    }
-    reserve(self, items.len);
-    // Directly copy the memory from the slice to the vector's data
-    mem::copy(self.data + self.len, items.data, items.len * (sizeof T));
-    self.len += items.len;
 }

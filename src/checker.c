@@ -8,6 +8,7 @@
 #include "uthash.h"
 #include <assert.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1131,7 +1132,7 @@ static bool check_function_signature(Symbol *sym) {
   // Resolve return type
   Type *return_type = resolve_type_expression(return_type_expr);
   if (!return_type) {
-    return true; // Error already reported
+    return false; // Error already reported
   }
 
   // Create function type
@@ -1163,7 +1164,6 @@ static bool check_function_signature(Symbol *sym) {
         no_error = false;
         continue;
       }
-
       scope_add_symbol(func_scope, param_sym);
     }
   }
@@ -2695,6 +2695,44 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
                                concrete->data.func.return_type, bindings, loc);
   }
 
+  case AST_TYPE_STRUCT: {
+    // Pattern: struct { T1, T2 }, Concrete must be: struct { Type1, Type2 }
+    if (concrete->kind != TYPE_STRUCT) {
+      checker_error(loc, "type mismatch: expected struct type, got '%s'",
+                    type_name(concrete));
+      return false;
+    }
+
+    if (pattern->data.type_struct.field_count !=
+        concrete->data.struct_data.field_count) {
+      checker_error(loc, "struct element count mismatch: expected %zu, got %zu",
+                    pattern->data.type_struct.field_count,
+                    concrete->data.struct_data.field_count);
+      return false;
+    }
+
+    for (size_t i = 0; i < pattern->data.type_struct.field_count; i++) {
+      char *pattern_field_name = pattern->data.type_struct.field_names[i];
+      char *concrete_field_name = concrete->data.struct_data.field_names[i];
+
+      if (strcmp(pattern_field_name, concrete_field_name) != 0) {
+        checker_error(
+            loc,
+            "struct field mismatch: expected field %zu to be %s, got field %s",
+            i + 1, pattern_field_name, concrete_field_name);
+        return false;
+      }
+
+      if (!match_and_bind_type(pattern->data.type_struct.field_types[i],
+                               concrete->data.struct_data.field_types[i],
+                               bindings, loc)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   case AST_TYPE_TUPLE: {
     // Pattern: (T1, T2, T3), Concrete must be: (Type1, Type2, Type3)
     if (concrete->kind != TYPE_TUPLE) {
@@ -3409,28 +3447,28 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   // Step 6: Add to symbol table
   Symbol *mono_sym = symbol_create(mangled_name, SYMBOL_FUNCTION, mono_func);
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
+  mono_sym->is_mono = true;
 
   // Step 7: Temporarily switch to defining module context for checking
   Module *saved_module = checker_state.current_module;
-  checker_state.current_module = context_module;
+  Scope *saved_scope = current_scope;
+  checker_set_current_module(context_module);
 
+  // Save current scope state (we're likely inside another function)
   // Type-check signature in defining context (local scope parents to it)
   if (!check_function_signature(mono_sym)) {
+    checker_state.current_module = saved_module;
     checker_error(call_loc, "failed to monomorphize function '%s' called here",
                   generic_func->data.func_decl.name);
     return NULL;
   }
 
   // Step 8: Type-check the body
-  // Save current scope state (we're likely inside another function)
-  Scope *saved_scope = current_scope;
-  current_scope = checker_state.current_module->scope;
-
   bool succeeded = check_function_body(mono_sym);
 
   // Restore scope state and current module
+  checker_set_current_module(saved_module);
   current_scope = saved_scope;
-  checker_state.current_module = saved_module;
 
   if (!succeeded) {
     checker_error(
@@ -5722,36 +5760,42 @@ static bool check_function_body(Symbol *sym) {
   checker_state.current_convention = func_type->data.func.convention;
 
   // Check the function body
+  bool had_error = checker_state.has_errors;
+  checker_state.has_errors = false;
   bool definitely_returns = check_statement(body, return_type);
+  bool has_error = checker_state.has_errors;
+  checker_state.has_errors = had_error;
+
+  // Pop back to global scope
+  scope_pop();
 
   // If non-void, ensure all paths return
   if (return_type->kind != TYPE_VOID && !definitely_returns) {
     checker_error(decl->loc,
                   "function '%s' may not return a value on all paths",
                   sym->name);
+    return false;
   }
 
-  // Pop back to global scope
-  scope_pop();
-
-  return !checker_has_errors();
+  return !has_error;
 }
 
 // Now refactor the original function to use it
 bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
+  bool has_error = false;
   // Iterate over all function symbols in global scope
   HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process functions
-    if (sym->kind != SYMBOL_FUNCTION) {
+    if (sym->kind != SYMBOL_FUNCTION || sym->is_mono) {
       continue;
     }
 
-    check_function_body(sym);
+    has_error = check_function_body(sym);
   }
 
-  return !checker_has_errors();
+  return has_error;
 }
 
 // Verify that the entry point exists and has the correct signature

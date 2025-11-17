@@ -1,0 +1,23 @@
+extern {
+  fn assert(cond bool) void;
+  fn exit(code int) void;
+
+  fn malloc(sz usize) *void;
+  fn realloc(ptr *void, sz usize) *void;
+  fn free(ptr *void) void;
+
+  fn strcmp(a str, b str) i32;
+  fn strcpy(dest str, src str) str;
+  fn strncpy(dest str, src str, sz usize) str;
+  fn strncmp(a str, b str, size usize) i32;
+  fn strlen(s str) usize;
+  fn strcat(dest str, src str) str;
+  fn strncat(dest str, src str, sz usize) str;
+  fn strdup(string str) str;
+  fn strndup(string str, sz usize) str;
+  fn atof(string str) f64;
+  fn atol(string str) i64;
+
+  fn memcpy(dest *void, src *void, size usize) *void;
+  fn system(__command str) int;
+}
