@@ -3049,8 +3049,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           // First, evaluate the expression into a temporary variable
           char temp_expr_buf[64];
-          snprintf(temp_expr_buf, sizeof(temp_expr_buf), "__temp_composite_%zu",
-                   i);
+          get_temporary_name(cg, temp_expr_buf, sizeof(temp_expr_buf));
 
           emit_expr(cg, part);
 
@@ -3064,7 +3063,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
           // Create the buffer for formatted output
           char buffer_name[64] = {0};
-          snprintf(buffer_name, sizeof(buffer_name), "__composite_buf_%zu", i);
+          get_temporary_name(cg, buffer_name, sizeof(buffer_name));
 
           emit_string(cg, "char ");
           emit_string(cg, buffer_name);
