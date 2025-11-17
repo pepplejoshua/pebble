@@ -15,7 +15,7 @@ DEPS = $(OBJS:.o=.d)
 .PHONY: clean install uninstall
 
 pebc: $(OBJS)
-	$(CC) $(CFLAGS) -o pebc $(OBJS)
+	$(CC) $(CFLAGS) -o pebc $(OBJS) -fsanitize=address -g
 
 %.o: %.c
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@

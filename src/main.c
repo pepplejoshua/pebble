@@ -89,18 +89,18 @@ static bool compile_file(const char *filename) {
 
     if (!collect_globals(mod->ast->data.block_stmt.stmts,
                          mod->global_node_count)) {
-      printf("Compilation failed during symbol collection in %s\n", mod->filename);
+      printf("Compilation failed during symbol collection in %s\n",
+             mod->filename);
       module_table_cleanup();
       return false;
     }
   }
 
-  Module **all_modules = arena_alloc(&long_lived, total_modules * sizeof(Module *));
+  Module **all_modules =
+      arena_alloc(&long_lived, total_modules * sizeof(Module *));
   {
     size_t i = 0;
-    HASH_ITER(hh, module_table, cur, tmp) {
-      all_modules[i++] = cur->module;
-    }
+    HASH_ITER(hh, module_table, cur, tmp) { all_modules[i++] = cur->module; }
   }
 
   // Sort by import_score N -> 0

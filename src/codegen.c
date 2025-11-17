@@ -1051,7 +1051,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
   for (size_t i = 0; i < sorted_count; i++) {
     TypeEntry *entry = NULL;
     HASH_FIND_STR(canonical_type_table, sorted_types[i], entry);
-    if (entry && entry->type->used) { // Double-check
+    if (entry) {
       emit_type_if_needed(cg, entry->type);
     }
   }
@@ -3618,12 +3618,13 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_STRUCT_LITERAL: {
-    char *type_name = expr->data.struct_literal.qualified_type_name
-                          ? expr->data.struct_literal.qualified_type_name
-                          : expr->resolved_type->canonical_name;
+    // char *type_name = expr->data.struct_literal.qualified_type_name
+    // ? expr->data.struct_literal.qualified_type_name
+    // : expr->resolved_type->canonical_name;
 
     emit_string(cg, "(");
-    emit_string(cg, type_name);
+    emit_type_name(cg, expr->resolved_type);
+    // emit_string(cg, type_name);
     emit_string(cg, "){");
 
     if (expr->resolved_type->kind == TYPE_TAGGED_UNION) {

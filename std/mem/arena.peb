@@ -64,6 +64,8 @@ fn alloc(ptr *void, size usize) *void {
   return data;
 }
 
+// NOTE: This will not copy data as we have no info on old buffer size
+// TODO: Arena should probably track with some kind of header
 fn realloc(ptr, data *void, size usize) *void {
   // Just allocate new buffer for now
   return alloc(ptr, size);
