@@ -1,10 +1,10 @@
 #include "codegen.h"
 #include "alloc.h"
-#include "temp_alloc.h"
 #include "ast.h"
 #include "module.h"
 #include "options.h"
 #include "symbol.h"
+#include "temp_alloc.h"
 #include "type.h"
 #include <assert.h>
 #include <stddef.h>
@@ -1348,14 +1348,18 @@ void emit_sections(Codegen *cg, Module *main_mod) {
   }
 
   if (!compiler_opts.freestanding) {
-    fputs(
-      "static void __pebble_assert(bool condition, const char *what, const char *file, size_t line) {\n"
-      "  if (!condition) {\n"
-      "    __assert_fail(what, file, line, __ASSERT_FUNCTION);\n"
-      "  }\n"
-      "}\n\n",
-      cg->output
-    );
+    fputs("static void __pebble_assert(bool condition, const char *what, const "
+          "char *file, size_t line) {\n"
+          "  if (!condition) {\n"
+          "#ifdef __ASSERT_FUNCTION\n"
+          "    __assert_fail(what, file, line, __ASSERT_FUNCTION);\n"
+          "#else\n"
+          "    (__builtin_expect(!condition, 0) ? __assert (what, file, line) "
+          ": (void)0);\n"
+          "#endif\n"
+          "  }\n"
+          "}\n\n",
+          cg->output);
   }
 
   fputs("typedef struct __pebble_context __pebble_context;\n\n"
@@ -2319,8 +2323,9 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       Arena temp_arena;
       arena_init(&temp_arena, 512);
 
-      // NOTE: Since we're evaluating upfront, we need longer living memory than temp
-      // As the bodies will be evaluated, then temp will be freed and clear these
+      // NOTE: Since we're evaluating upfront, we need longer living memory than
+      // temp As the bodies will be evaluated, then temp will be freed and clear
+      // these
       char **exprs = arena_alloc(&temp_arena, condition_count * sizeof(char *));
 
       size_t expr_count = 0;
@@ -2328,7 +2333,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_expr(cg, cases[i]->data.case_stmt.condition);
         exprs[expr_count++] = move_expression_buffer_into_arena(&temp_arena);
 
-        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+        for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
+             j++) {
           AstNode *alt_case = cases[i]->data.case_stmt.alt_conditions[j];
           AstNode *alt_cond = alt_case->data.case_stmt.condition;
 
@@ -2428,7 +2434,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
           emit_string(cg, exprs[expr_count++]);
           emit_string(cg, ") == 0");
 
-          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count; j++) {
+          for (size_t j = 0; j < cases[i]->data.case_stmt.alt_condition_count;
+               j++) {
             emit_string(cg, " || strcmp(");
 
             emit_string(cg, temporary_name);
@@ -3106,7 +3113,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     }
 
     char temp_format_buf[32] = {0};
-    char *temp_format = get_temporary_name(cg, temp_format_buf, sizeof(temp_format_buf));
+    char *temp_format =
+        get_temporary_name(cg, temp_format_buf, sizeof(temp_format_buf));
 
     // Build the format string
     emit_string(cg, "const char * ");
@@ -3171,7 +3179,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
     // Allocate buffer on stack
     char temp_final_buf[32] = {0};
-    char *temp_final = get_temporary_name(cg, temp_final_buf, sizeof(temp_final_buf));
+    char *temp_final =
+        get_temporary_name(cg, temp_final_buf, sizeof(temp_final_buf));
 
     emit_string(cg, "char *");
     emit_string(cg, temp_final);
@@ -3274,7 +3283,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression("+");
       break;
     case BINOP_SUB:
-      write_expression( "-");
+      write_expression("-");
       break;
     case BINOP_MUL:
       write_expression("*");
@@ -3298,7 +3307,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression("<=");
       break;
     case BINOP_GT:
-      write_expression( ">");
+      write_expression(">");
       break;
     case BINOP_GE:
       write_expression(">=");
@@ -3313,7 +3322,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression("&");
       break;
     case BINOP_BIT_OR:
-      write_expression( "|");
+      write_expression("|");
       break;
     case BINOP_BIT_XOR:
       write_expression("^");
@@ -3350,7 +3359,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       write_expression(temp);
       write_expression(")");
       return;
-    case  UNOP_ADDR:
+    case UNOP_ADDR:
       write_expression("&");
       break;
     case UNOP_BIT_NOT:
@@ -3478,7 +3487,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   case AST_EXPR_ARRAY_LITERAL: {
-    char **expr_buffer = temp_alloc(&temp_allocator, expr->data.array_literal.element_count * sizeof(char *));
+    char **expr_buffer =
+        temp_alloc(&temp_allocator,
+                   expr->data.array_literal.element_count * sizeof(char *));
 
     for (size_t i = 0; i < expr->data.array_literal.element_count; i++) {
       emit_expr(cg, expr->data.array_literal.elements[i]);
@@ -3838,7 +3849,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
     emit_expr(cg, expr->data.call.func);
     char *func_expr = move_expression_buffer_into_temp();
 
-    char **exprs = temp_alloc(&temp_allocator, expr->data.call.arg_count * sizeof(char *));
+    char **exprs =
+        temp_alloc(&temp_allocator, expr->data.call.arg_count * sizeof(char *));
     for (size_t i = 0; i < expr->data.call.arg_count; i++) {
       emit_expr(cg, expr->data.call.args[i]);
       exprs[i] = move_expression_buffer_into_temp();
@@ -3921,7 +3933,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           // No elements
           write_expression("(");
           emit_expression_type_name(cg, variadic_type);
-          write_expression( "){ NULL, 0 }");
+          write_expression("){ NULL, 0 }");
         }
       }
     } else {
@@ -4004,7 +4016,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ";\n");
 
         char *name = base_type->qualified_name ? base_type->qualified_name
-                                                : base_type->canonical_name;
+                                               : base_type->canonical_name;
 
         emit_string(cg, "__pebble_assert(");
         emit_string(cg, temp_name);
@@ -4045,9 +4057,8 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         char temp_name[32] = {0};
         get_temporary_name(cg, temp_name, sizeof(temp_name));
 
-        char *name = object_type->qualified_name
-                          ? object_type->qualified_name
-                          : object_type->canonical_name;
+        char *name = object_type->qualified_name ? object_type->qualified_name
+                                                 : object_type->canonical_name;
 
         emit_expr(cg, object_expr);
 
