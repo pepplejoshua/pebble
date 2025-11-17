@@ -1,4 +1,5 @@
 extern fn alloca(sz usize) *void;
+extern fn memcpy(dst *void, src *void, sz usize) void;
 
 fn new(size usize) *void {
     let allocator = context.default_allocator;
@@ -17,6 +18,10 @@ fn realloc(data *void, size usize) *void {
 fn delete(ptr *void) void {
     let allocator = context.default_allocator;
     allocator.free(allocator.ptr, ptr);
+}
+
+fn copy(dst *void, src *void, sz usize) void {
+    memcpy(dst, src, sz);
 }
 
 fn align_up(value, alignment usize) usize {

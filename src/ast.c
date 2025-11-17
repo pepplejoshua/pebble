@@ -1,4 +1,5 @@
 #include "ast.h"
+#include "alloc.h"
 
 AstNode *clone_ast_node(AstNode *node) {
   if (!node)
@@ -11,6 +12,20 @@ AstNode *clone_ast_node(AstNode *node) {
 
   switch (node->kind) {
   // Declarations
+  case AST_DECL_TYPE: {
+    clone->data.type_decl.name = node->data.type_decl.name;
+    clone->data.type_decl.qualified_name = node->data.type_decl.qualified_name;
+    clone->data.type_decl.full_qualified_name =
+        node->data.type_decl.full_qualified_name;
+    clone->data.type_decl.type_expr =
+        clone_ast_node(node->data.type_decl.type_expr);
+    // Shallow copy
+    clone->data.type_decl.type_params = node->data.type_decl.type_params;
+    clone->data.type_decl.type_params_count =
+        node->data.type_decl.type_params_count;
+    break;
+  }
+
   case AST_DECL_VARIABLE: {
     clone->data.var_decl.name = node->data.var_decl.name;
     clone->data.var_decl.qualified_name = node->data.var_decl.qualified_name;
@@ -244,6 +259,16 @@ AstNode *clone_ast_node(AstNode *node) {
         clone->data.call.args[i] = clone_ast_node(node->data.call.args[i]);
       }
     }
+    if (node->data.call.type_args) {
+      size_t count = node->data.call.type_arg_count;
+      clone->data.call.type_arg_count = count;
+      clone->data.call.type_args =
+          arena_alloc(&long_lived, sizeof(AstNode *) * count);
+      for (size_t i = 0; i < count; i++) {
+        clone->data.call.type_args[i] =
+            clone_ast_node(node->data.call.type_args[i]);
+      }
+    }
     break;
   }
   case AST_EXPR_INDEX: {
@@ -310,6 +335,16 @@ AstNode *clone_ast_node(AstNode *node) {
             node->data.struct_literal.field_names[i];
         clone->data.struct_literal.field_values[i] =
             clone_ast_node(node->data.struct_literal.field_values[i]);
+      }
+    }
+    if (node->data.struct_literal.type_args) {
+      size_t count = node->data.struct_literal.type_arg_count;
+      clone->data.struct_literal.type_arg_count = count;
+      clone->data.struct_literal.type_args =
+          arena_alloc(&long_lived, sizeof(AstNode *) * count);
+      for (size_t i = 0; i < count; i++) {
+        clone->data.struct_literal.type_args[i] =
+            clone_ast_node(node->data.struct_literal.type_args[i]);
       }
     }
     break;
@@ -414,6 +449,16 @@ AstNode *clone_ast_node(AstNode *node) {
   // Type expressionss
   case AST_TYPE_NAMED: {
     clone->data.type_named.name = node->data.type_named.name;
+    if (node->data.type_named.type_args) {
+      size_t count = node->data.type_named.type_arg_count;
+      clone->data.type_named.type_arg_count = count;
+      clone->data.type_named.type_args =
+          arena_alloc(&long_lived, sizeof(AstNode *) * count);
+      for (size_t i = 0; i < count; i++) {
+        clone->data.type_named.type_args[i] =
+            clone_ast_node(node->data.type_named.type_args[i]);
+      }
+    }
     break;
   }
   case AST_TYPE_QUALIFIED_NAMED: {
@@ -421,6 +466,16 @@ AstNode *clone_ast_node(AstNode *node) {
         node->data.type_qualified_named.mod_name;
     clone->data.type_qualified_named.mem_name =
         node->data.type_qualified_named.mem_name;
+    if (node->data.type_qualified_named.type_args) {
+      size_t count = node->data.type_qualified_named.type_arg_count;
+      clone->data.type_qualified_named.type_arg_count = count;
+      clone->data.type_qualified_named.type_args =
+          arena_alloc(&long_lived, sizeof(AstNode *) * count);
+      for (size_t i = 0; i < count; i++) {
+        clone->data.type_qualified_named.type_args[i] =
+            clone_ast_node(node->data.type_qualified_named.type_args[i]);
+      }
+    }
     break;
   }
   case AST_TYPE_POINTER: {
