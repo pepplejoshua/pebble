@@ -4877,7 +4877,7 @@ Type *check_expression(AstNode *expr) {
 
         if (!found) {
           checker_error(expr->loc, "struct '%s' has no field named '%s'",
-                        type_name, field_names[i]);
+                        type_name(struct_type), field_names[i]);
           return NULL;
         }
       }
