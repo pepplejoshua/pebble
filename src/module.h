@@ -3,6 +3,7 @@
 
 #include "ast.h"
 #include "alloc.h"
+#include "wrapped_uthash.h"
 #include "uthash.h"
 #include "symbol.h"
 
