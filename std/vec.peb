@@ -82,7 +82,14 @@ fn push_slice[T](self *Vec[T], items []T) void {
 }
 
 // Safe indexed access.
-fn get[T](self *Vec[T], index usize) ?T {
+fn get[T](self *Vec[T], index usize) ?*T {
+    if index >= self.len {
+        return none;
+    }
+    return some self.data + index;
+}
+
+fn get_value[T](self *Vec[T], index usize) ?T {
     if index >= self.len {
         return none;
     }
