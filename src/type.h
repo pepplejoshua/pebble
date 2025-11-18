@@ -2,6 +2,7 @@
 #define TYPE_H
 
 #include "ast.h"
+#include "wrapped_uthash.h"
 #include "uthash.h"
 #include <stdbool.h>
 #include <stddef.h>

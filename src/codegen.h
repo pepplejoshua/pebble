@@ -5,6 +5,7 @@
 #include "ast.h"
 #include "symbol.h"
 #include "type.h"
+#include "wrapped_uthash.h"
 #include "uthash.h"
 #include "module.h"
 #include <stdio.h>
