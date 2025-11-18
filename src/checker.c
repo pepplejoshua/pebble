@@ -5793,10 +5793,10 @@ bool check_function_bodies(void) {
       continue;
     }
 
-    has_error = check_function_body(sym);
+    has_error = !check_function_body(sym);
   }
 
-  return has_error;
+  return !has_error;
 }
 
 // Verify that the entry point exists and has the correct signature
