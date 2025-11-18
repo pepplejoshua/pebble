@@ -1,9 +1,9 @@
 #include "alloc.h"
-#include "temp_alloc.h"
 #include "checker.h"
 #include "codegen.h"
 #include "module.h"
 #include "options.h"
+#include "temp_alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +54,10 @@ static bool compile_file(const char *filename) {
   printf("Compiling: %s\n", filename);
 
   Module *main_mod = new_module(filename);
+  if (!main_mod) {
+    printf("Compilation failed due to module errors in %s.\n", filename);
+    return false;
+  }
   main_mod->is_main = true;
   bool module_had_error = parse_module(main_mod);
 
@@ -382,8 +386,8 @@ int main(int argc, char **argv) {
            used, used / 1024.0, capacity, capacity / 1024.0);
 
     temp_get_stats(&temp_allocator, &capacity);
-    printf("Maximum Temp Memory allocated: %zu bytes (%.2f KB)\n",
-           capacity, capacity / 1024.0);
+    printf("Maximum Temp Memory allocated: %zu bytes (%.2f KB)\n", capacity,
+           capacity / 1024.0);
   }
 
   // Cleanup

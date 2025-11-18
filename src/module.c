@@ -117,7 +117,7 @@ static char *get_absolute_path(const char *path_literal,
   }
 
   if (realpath(partial_path, resolved_path) == NULL) {
-    printf("failed to get absolute path of '%s'", partial_path);
+    fprintf(stderr, "Failed to get absolute path of '%s'\n", partial_path);
     return NULL;
   }
 
@@ -174,6 +174,9 @@ static char *get_absolute_directory(const char *filepath) {
 
 Module *new_module(const char *partial_path) {
   char *module_abs_path = get_absolute_path(partial_path, partial_path);
+  if (!module_abs_path) {
+    return NULL;
+  }
   char *module_abs_dir = get_absolute_directory(partial_path);
   char *module_filename = get_basename(module_abs_path, false);
   char *module_name = get_basename(module_abs_path, true);
@@ -227,7 +230,6 @@ Module *new_module(const char *partial_path) {
 char *read_file(const char *filepath) {
   FILE *file = fopen(filepath, "rb");
   if (!file) {
-    fprintf(stderr, "Could not open file '%s'\n", filepath);
     return NULL;
   }
 
@@ -257,7 +259,7 @@ char *read_file(const char *filepath) {
 bool parse_module(Module *mod) {
   char *source = read_file(mod->abs_file_path);
   if (!source) {
-    return false;
+    return true;
   }
 
   Parser parser;
@@ -339,8 +341,7 @@ bool collect_all_modules(Module *cur) {
     Module *new_mod = new_module(mod_path);
     bool module_had_error = parse_module(new_mod);
     if (module_had_error) {
-      printf("Compilation failed due to parse errors in %s.\n",
-             new_mod->filename);
+      printf("Compilation failed due to parse errors in %s.\n", mod_path);
       return false;
     }
 
@@ -429,7 +430,8 @@ void qualify_globals_in_module(Module *mod) {
       char *prefix = prepend(mod->name, "__");
       char *full_prefix = prepend(mod->qualified_name, "__");
       node->data.extern_var_decl.qualified_name = prepend(prefix, cur_name);
-      node->data.extern_var_decl.full_qualified_name = prepend(full_prefix, cur_name);
+      node->data.extern_var_decl.full_qualified_name =
+          prepend(full_prefix, cur_name);
       break;
     }
     case AST_DECL_EXTERN_CONSTANT: {
@@ -474,14 +476,16 @@ void qualify_globals_in_module(Module *mod) {
           char *prefix = prepend(mod->name, "__");
           char *full_prefix = prepend(mod->qualified_name, "__");
           decl->data.extern_var_decl.qualified_name = prepend(prefix, cur_name);
-          decl->data.extern_var_decl.full_qualified_name = prepend(full_prefix, cur_name);
+          decl->data.extern_var_decl.full_qualified_name =
+              prepend(full_prefix, cur_name);
           break;
         }
         case AST_DECL_EXTERN_CONSTANT: {
           char *cur_name = decl->data.extern_const_decl.name;
           char *prefix = prepend(mod->name, "__");
           char *full_prefix = prepend(mod->qualified_name, "__");
-          decl->data.extern_const_decl.qualified_name = prepend(prefix, cur_name);
+          decl->data.extern_const_decl.qualified_name =
+              prepend(prefix, cur_name);
           decl->data.extern_const_decl.full_qualified_name =
               prepend(full_prefix, cur_name);
           break;
