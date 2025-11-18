@@ -3217,6 +3217,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
 
   case AST_EXPR_SIZEOF: {
     Type *type = expr->data.sizeof_expr.type_expr->resolved_type;
+    mark_type_used(type);
 
     write_expression("sizeof(");
     emit_expression_type_name(cg, type);

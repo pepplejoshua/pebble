@@ -3576,7 +3576,7 @@ Type *check_expression(AstNode *expr) {
     expr->data.sizeof_expr.type_expr->resolved_type = type;
 
     // sizeof always returns int
-    expr->resolved_type = type_int;
+    expr->resolved_type = type_usize;
     return type_usize;
   }
 
@@ -4164,9 +4164,8 @@ Type *check_expression(AstNode *expr) {
         // C convention cannot call Pebble convention directly
         if (callee_conv == CALL_CONV_PEBBLE &&
             checker_state.current_convention == CALL_CONV_C) {
-          checker_error(
-              expr->loc,
-              "cannot call Pebble convention function from C convention function");
+          checker_error(expr->loc, "cannot call Pebble convention function "
+                                   "from C convention function");
         }
 
         if (is_variadic) {
@@ -4183,7 +4182,8 @@ Type *check_expression(AstNode *expr) {
         } else {
           // Check argument count
           if (arg_count != param_count) {
-            checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
+            checker_error(expr->loc,
+                          "function '%s' expects %zu arguments, got %zu",
                           type_name(func_type), param_count, arg_count);
             return NULL;
           }
