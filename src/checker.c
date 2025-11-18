@@ -1708,6 +1708,8 @@ static bool is_lvalue(AstNode *expr) {
   case AST_EXPR_INDEX:
   case AST_EXPR_MEMBER:
     return true;
+  case AST_EXPR_GROUPED_EXPR:
+    return is_lvalue(expr->data.grouped_expr.inner_expr);
   case AST_EXPR_UNARY_OP:
     return expr->data.unop.op == UNOP_DEREF;
   default:
@@ -2910,6 +2912,7 @@ static void substitute_type_params_in_type(AstNode *type_node,
         type_node->kind = replacement->kind;
         type_node->data = replacement->data;
         type_node->resolved_type = concrete;
+        type_node->loc = replacement->loc;
         return;
       }
     }
@@ -3408,10 +3411,16 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
 
 static bool check_function_body(Symbol *sym);
 
+typedef struct {
+  AstNode *func;
+  Symbol *symbol;
+} MonoResult;
+
 // Monomorphize a generic function with concrete types
-static AstNode *monomorphize_function(AstNode *generic_func,
-                                      TypeBindings *bindings, Location call_loc,
-                                      Module *context_module) {
+static MonoResult monomorphize_function(AstNode *generic_func,
+                                        TypeBindings *bindings,
+                                        Location call_loc,
+                                        Module *context_module) {
   // Step 1: Generate mangled name
   Type **concrete_types =
       arena_alloc(&long_lived, sizeof(Type *) * bindings->count);
@@ -3427,7 +3436,10 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   MonoFuncInstance *existing = NULL;
   HASH_FIND_STR(mono_instances, mangled_name, existing);
   if (existing) {
-    return existing->monomorphized_func;
+    return (MonoResult){
+        .func = existing->monomorphized_func,
+        .symbol = existing->symbol // ← Return cached symbol
+    };
   }
 
   // Step 3: Deep clone the generic function
@@ -3441,6 +3453,31 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   mono_func->data.func_decl.qualified_name = mangled_name;
   mono_func->data.func_decl.full_qualified_name = mangled_name;
 
+  // Create a human-readable name with type arguments
+  // e.g., "get[str, int]"
+  size_t name_len =
+      strlen(generic_func->data.func_decl.name) + 1; // base name + '['
+  for (size_t i = 0; i < bindings->count; i++) {
+    name_len += strlen(type_name(bindings->bindings[i].concrete_type));
+    if (i < bindings->count - 1) {
+      name_len += 2; // ", "
+    }
+  }
+  name_len += 2; // ']' + null terminator
+
+  char *display_name = arena_alloc(&long_lived, name_len);
+  strcpy(display_name, generic_func->data.func_decl.name);
+  strcat(display_name, "[");
+  for (size_t i = 0; i < bindings->count; i++) {
+    strcat(display_name, type_name(bindings->bindings[i].concrete_type));
+    if (i < bindings->count - 1) {
+      strcat(display_name, ", ");
+    }
+  }
+  strcat(display_name, "]");
+
+  mono_func->data.func_decl.name = display_name;
+
   // Clear type parameters (it's now concrete)
   mono_func->data.func_decl.type_param_count = 0;
   mono_func->data.func_decl.type_params = NULL;
@@ -3450,18 +3487,31 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
   mono_sym->is_mono = true;
 
+  // Cache BEFORE type-checking to break recursion cycles
+  MonoFuncInstance *instance =
+      arena_alloc(&long_lived, sizeof(MonoFuncInstance));
+  instance->key = mangled_name;
+  instance->generic_func = generic_func;
+  instance->concrete_types = concrete_types;
+  instance->type_count = bindings->count;
+  instance->monomorphized_func = mono_func;
+  instance->symbol = mono_sym;
+  HASH_ADD_KEYPTR(hh, mono_instances, instance->key, strlen(instance->key),
+                  instance);
+
   // Step 7: Temporarily switch to defining module context for checking
   Module *saved_module = checker_state.current_module;
   Scope *saved_scope = current_scope;
   checker_set_current_module(context_module);
 
-  // Save current scope state (we're likely inside another function)
-  // Type-check signature in defining context (local scope parents to it)
+  // Type-check signature in defining context
   if (!check_function_signature(mono_sym)) {
     checker_state.current_module = saved_module;
+    // Remove from cache if signature check fails
+    HASH_DEL(mono_instances, instance);
     checker_error(call_loc, "failed to monomorphize function '%s' called here",
                   generic_func->data.func_decl.name);
-    return NULL;
+    return (MonoResult){.func = NULL, .symbol = NULL};
   }
 
   // Step 8: Type-check the body
@@ -3472,27 +3522,17 @@ static AstNode *monomorphize_function(AstNode *generic_func,
   current_scope = saved_scope;
 
   if (!succeeded) {
+    // Remove from cache if body check fails
+    HASH_DEL(mono_instances, instance);
     checker_error(
         call_loc,
         "failed to type-check monomorphized function '%s' called here",
         generic_func->data.func_decl.name);
-    return NULL;
+    return (MonoResult){.func = NULL, .symbol = NULL};
   }
 
-  // Step 9: Cache it
-  MonoFuncInstance *instance =
-      arena_alloc(&long_lived, sizeof(MonoFuncInstance));
-  instance->key = mangled_name;
-  instance->generic_func = generic_func;
-  instance->concrete_types = concrete_types;
-  instance->type_count = bindings->count;
-  instance->monomorphized_func = mono_func;
-
-  HASH_ADD_KEYPTR(hh, mono_instances, instance->key, strlen(instance->key),
-                  instance);
-
-  // Step 10: Return the monomorphized function
-  return mono_func;
+  // Step 9: Return the monomorphized function
+  return (MonoResult){.func = mono_func, .symbol = mono_sym};
 }
 
 Type *check_expression(AstNode *expr) {
@@ -3807,7 +3847,9 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
         } else {
-          checker_error(expr->loc, "incompatible types in binary operation");
+          checker_error(expr->loc,
+                        "incompatible types in binary operation: %s and %s",
+                        type_name(left), type_name(right));
           return NULL;
         }
       }
@@ -4110,19 +4152,16 @@ Type *check_expression(AstNode *expr) {
       }
 
       // Monomorphize!
-      AstNode *mono_func = monomorphize_function(generic_decl, &bindings,
-                                                 expr->loc, context_module);
-      if (!mono_func) {
+      MonoResult mono_result = monomorphize_function(generic_decl, &bindings,
+                                                     expr->loc, context_module);
+      if (!mono_result.func) {
         return NULL; // Error already reported
       }
 
-      // Get the monomorphized function's symbol to get its type
-      Symbol *mono_sym =
-          scope_lookup(checker_state.current_module->scope,
-                       checker_state.current_module->scope,
-                       mono_func->data.func_decl.name, expr->loc.file);
+      AstNode *mono_func = mono_result.func;
+      Symbol *mono_sym = mono_result.symbol;
 
-      if (!mono_sym || !mono_sym->type) {
+      if (!mono_sym) {
         checker_error(expr->loc,
                       "internal error: monomorphized function has no type");
         return NULL;
@@ -4164,9 +4203,8 @@ Type *check_expression(AstNode *expr) {
         // C convention cannot call Pebble convention directly
         if (callee_conv == CALL_CONV_PEBBLE &&
             checker_state.current_convention == CALL_CONV_C) {
-          checker_error(
-              expr->loc,
-              "cannot call Pebble convention function from C convention function");
+          checker_error(expr->loc, "cannot call Pebble convention function "
+                                   "from C convention function");
         }
 
         if (is_variadic) {
@@ -4183,7 +4221,8 @@ Type *check_expression(AstNode *expr) {
         } else {
           // Check argument count
           if (arg_count != param_count) {
-            checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
+            checker_error(expr->loc,
+                          "function '%s' expects %zu arguments, got %zu",
                           type_name(func_type), param_count, arg_count);
             return NULL;
           }
@@ -5697,7 +5736,7 @@ static bool check_function_body(Symbol *sym) {
   if (return_type->kind != TYPE_VOID && !definitely_returns) {
     checker_error(decl->loc,
                   "function '%s' may not return a value on all paths",
-                  sym->name);
+                  sym->decl->data.func_decl.name);
     return false;
   }
 
@@ -5708,7 +5747,7 @@ static bool check_function_body(Symbol *sym) {
 bool check_function_bodies(void) {
   Symbol *sym, *tmp;
 
-  bool has_error = false;
+  bool no_error = true;
   // Iterate over all function symbols in global scope
   HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
     // Only process functions
@@ -5716,10 +5755,12 @@ bool check_function_bodies(void) {
       continue;
     }
 
-    has_error = !check_function_body(sym);
+    if (no_error) {
+      no_error = check_function_body(sym);
+    }
   }
 
-  return !has_error;
+  return no_error;
 }
 
 // Verify that the entry point exists and has the correct signature
