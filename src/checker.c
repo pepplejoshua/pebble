@@ -4034,6 +4034,8 @@ Type *check_expression(AstNode *expr) {
       AstNode *generic_decl = call_type->data.generic_decl.decl;
       TypeBindings bindings;
 
+      bool inferred_arguments = false;
+
       if (expr->data.call.type_args != NULL) {
         // Use explicit type arguments instead of inference
         size_t type_arg_count = expr->data.call.type_arg_count;
@@ -4069,11 +4071,6 @@ Type *check_expression(AstNode *expr) {
 
           bindings.bindings[i].concrete_type = concrete_type;
         }
-
-        for (size_t i = 0; i < arg_count; i++) {
-          check_expression(args[i]);
-        }
-
       } else {
         // Infer type arguments from call arguments
         bindings =
@@ -4086,6 +4083,8 @@ Type *check_expression(AstNode *expr) {
             return NULL;
           }
         }
+
+        inferred_arguments = true;
       }
 
       // Determine defining module for monomorphization context
@@ -4152,6 +4151,47 @@ Type *check_expression(AstNode *expr) {
 
       // Now treat it like a normal function call
       call_type = mono_sym->type;
+
+      // NOTE: Inferred will already check arguments and cast them
+      if (inferred_arguments) {
+        // Check arity and convention before exit
+        Type *func_type = call_type;
+        CallingConvention callee_conv = func_type->data.func.convention;
+        size_t param_count = func_type->data.func.param_count;
+        Type *return_type = func_type->data.func.return_type;
+        bool is_variadic = func_type->data.func.is_variadic;
+
+        // C convention cannot call Pebble convention directly
+        if (callee_conv == CALL_CONV_PEBBLE &&
+            checker_state.current_convention == CALL_CONV_C) {
+          checker_error(
+              expr->loc,
+              "cannot call Pebble convention function from C convention function");
+        }
+
+        if (is_variadic) {
+          size_t required_params = param_count - 1;
+
+          // Must have at least required_params arguments
+          if (arg_count < required_params) {
+            checker_error(
+                expr->loc,
+                "variadic function expects at least %zu arguments, got %zu",
+                required_params, arg_count);
+            return NULL;
+          }
+        } else {
+          // Check argument count
+          if (arg_count != param_count) {
+            checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
+                          type_name(func_type), param_count, arg_count);
+            return NULL;
+          }
+        }
+
+        expr->resolved_type = return_type;
+        return return_type;
+      }
     }
 
     // Only reached for non-generic functions
@@ -4177,8 +4217,6 @@ Type *check_expression(AstNode *expr) {
           "cannot call Pebble convention function from C convention function");
     }
 
-    expr->resolved_type = func_type;
-
     // Handle variadic functions
     if (is_variadic) {
       size_t required_params = param_count - 1;
@@ -4187,8 +4225,8 @@ Type *check_expression(AstNode *expr) {
       if (arg_count < required_params) {
         checker_error(
             expr->loc,
-            "variadic function expects at least %zu arguments, got %zu",
-            required_params, arg_count);
+            "variadic function '%s' expects at least %zu arguments, got %zu",
+            type_name(func_type), required_params, arg_count);
         return NULL;
       }
 
@@ -4261,12 +4299,10 @@ Type *check_expression(AstNode *expr) {
         }
       }
     } else {
-      // Non-variadic function
-
       // Check argument count
       if (arg_count != param_count) {
         checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
-                      type_name(expr->resolved_type), param_count, arg_count);
+                      type_name(func_type), param_count, arg_count);
         return NULL;
       }
 
