@@ -117,6 +117,12 @@ static bool compile_file(const char *filename) {
     // Pass 3: Type check globals
     if (!check_globals(mod)) {
       printf("Compilation failed during type checking\n");
+
+      HASH_CLEAR(hh, global_scope->symbols);
+      HASH_CLEAR(hh, type_table);
+      HASH_CLEAR(hh, canonical_type_table);
+      HASH_CLEAR(hh, anonymous_funcs->symbols);
+
       module_table_cleanup();
       return false;
     }
@@ -124,6 +130,12 @@ static bool compile_file(const char *filename) {
     // Pass 4: Type check function bodies
     if (!check_function_bodies()) {
       printf("Compilation failed during function body checking\n");
+
+      HASH_CLEAR(hh, global_scope->symbols);
+      HASH_CLEAR(hh, type_table);
+      HASH_CLEAR(hh, canonical_type_table);
+      HASH_CLEAR(hh, anonymous_funcs->symbols);
+
       module_table_cleanup();
       return false;
     }
@@ -131,12 +143,25 @@ static bool compile_file(const char *filename) {
 
   if (!check_anonymous_functions()) {
     printf("Compilation failed during anonymous function body checking\n");
+
+    HASH_CLEAR(hh, global_scope->symbols);
+    HASH_CLEAR(hh, type_table);
+    HASH_CLEAR(hh, canonical_type_table);
+    HASH_CLEAR(hh, anonymous_funcs->symbols);
+
+    module_table_cleanup();
     return false;
   }
 
   // Pass 5: Verify entry point exists and has correct signature
   if (!verify_entry_point(main_mod)) {
     printf("Compilation failed during entry point verification\n");
+
+    HASH_CLEAR(hh, global_scope->symbols);
+    HASH_CLEAR(hh, type_table);
+    HASH_CLEAR(hh, canonical_type_table);
+    HASH_CLEAR(hh, anonymous_funcs->symbols);
+
     module_table_cleanup();
     return false;
   }
@@ -147,6 +172,12 @@ static bool compile_file(const char *filename) {
   printf("Compilation successful!\n");
 
   if (compiler_opts.check_only) {
+    HASH_CLEAR(hh, global_scope->symbols);
+    HASH_CLEAR(hh, type_table);
+    HASH_CLEAR(hh, canonical_type_table);
+    HASH_CLEAR(hh, anonymous_funcs->symbols);
+
+    module_table_cleanup();
     return true;
   }
 
