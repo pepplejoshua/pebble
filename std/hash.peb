@@ -1,6 +1,5 @@
 import "std:mem";
-
-extern fn strlen(string str) usize;
+import "std:libc";
 
 // String Hashing (FNV-1a algorithm)
 fn hash_str(s str) u64 {
@@ -8,7 +7,7 @@ fn hash_str(s str) u64 {
     let fnv_prime u64 = 1099511628211;
 
     var i = 0;
-    loop 0..strlen(s) : i {
+    loop 0..libc::strlen(s) : i {
         hash = hash ^ (s[i] as u64);
         hash = hash * fnv_prime;
     }
