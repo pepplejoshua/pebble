@@ -1744,6 +1744,8 @@ static const char *get_format_specifier(Type *type) {
     return "%f";
   case TYPE_CHAR:
     return "%c";
+  case TYPE_ENUM:
+    return "%u";
   default:
     return "%s";
   }
@@ -2149,6 +2151,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, "%f");
       } else if (type->kind == TYPE_STRING) {
         emit_string(cg, "%s");
+      } else if (type->kind == TYPE_ENUM) {
+        emit_string(cg, "%u");
       } else {
         emit_string(cg, "%s");
       }

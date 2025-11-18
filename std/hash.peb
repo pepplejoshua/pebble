@@ -1,0 +1,112 @@
+import "std:mem";
+
+extern fn strlen(string str) usize;
+
+// String Hashing (FNV-1a algorithm)
+fn hash_str(s str) u64 {
+    var hash u64 = 14695981039346656037; // FNV offset basis
+    let fnv_prime u64 = 1099511628211;
+
+    var i = 0;
+    loop 0..strlen(s) : i {
+        hash = hash ^ (s[i] as u64);
+        hash = hash * fnv_prime;
+    }
+
+    return hash;
+}
+
+// Integer Hashing (signed)
+fn hash_i8(val i8) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_i16(val i16) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_i32(val i32) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_i64(val i64) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_int(val int) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_isize(val isize) u64 {
+    return hash_u64(val as u64);
+}
+
+// Integer Hashing (unsigned) - splitmix64 inspired
+fn hash_u8(val u8) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_u16(val u16) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_u32(val u32) u64 {
+    return hash_u64(val as u64);
+}
+
+fn hash_u64(val u64) u64 {
+    var x = val;
+    x = x ^ (x >> 30);
+    x = x * 0xbf58476d1ce4e5b9;
+    x = x ^ (x >> 27);
+    x = x * 0x94d049bb133111eb;
+    x = x ^ (x >> 31);
+    return x;
+}
+
+fn hash_usize(val usize) u64 {
+    return hash_u64(val as u64);
+}
+
+// Boolean Hashing
+fn hash_bool(val bool) u64 {
+    if val {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+// Pointer Hashing
+fn hash_ptr[T](ptr *T) u64 {
+    return hash_u64(ptr as u64);
+}
+
+// Character Hashing
+fn hash_char(val char) u64 {
+    return hash_u64(val as u64);
+}
+
+// Byte Array Hashing (FNV-1a for raw bytes)
+fn hash_bytes(data *u8, len usize) u64 {
+    var hash u64 = 14695981039346656037; // FNV offset basis
+    let fnv_prime u64 = 1099511628211;
+
+    var i = 0;
+    loop 0..len : i {
+        hash = hash ^ (*(data + i) as u64);
+        hash = hash * fnv_prime;
+    }
+
+    return hash;
+}
+
+// Helper to combine multiple hashes
+fn hash_combine(seed u64, hash u64) u64 {
+    // Similar to boost::hash_combine
+    // Ensure all operations stay in u64 to avoid signed overflow
+    let shift_left = (seed << 6 as u64);
+    let shift_right = (seed >> 2 as u64);
+    let magic = 0x9e3779b9 as u64;
+    return seed ^ (hash + magic + shift_left + shift_right);
+}
