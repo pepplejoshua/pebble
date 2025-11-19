@@ -13,42 +13,6 @@
 Arena long_lived;
 TempAllocator temp_allocator;
 
-// Debug function to print type table
-// static void debug_print_type_table(void) {
-//   printf("\n=== USER-DEFINED TYPES ===\n");
-
-//   // Print built-ins
-//   printf("'int' -> canonical: 'int'\n");
-//   printf("'float' -> canonical: 'float'\n");
-//   printf("'bool' -> canonical: 'bool'\n");
-//   printf("'str' -> canonical: 'str'\n");
-//   printf("'void' -> canonical: 'void'\n");
-
-//   // Print user-defined types
-//   Symbol *sym, *tmp;
-//   HASH_ITER(hh, global_scope->symbols, sym, tmp) {
-//     if (sym->kind == SYMBOL_TYPE) {
-//       Type *t = type_lookup(sym->name);
-//       printf("'%s' -> ", sym->name);
-//       if (t && t->canonical_name) {
-//         printf("canonical: '%s'\n", t->canonical_name);
-//       } else {
-//         printf("no canonical name yet\n");
-//       }
-//     }
-//   }
-
-//   printf("\n=== CANONICAL TYPES ===\n");
-
-//   // Print canonical type table (deduplicated types)
-//   TypeEntry *entry, *tmp2;
-//   HASH_ITER(hh, canonical_type_table, entry, tmp2) {
-//     printf("'%s'\n", entry->name);
-//   }
-
-//   printf("==========================\n\n");
-// }
-
 // Function to compile a source file
 static bool compile_file(const char *filename) {
   printf("Compiling: %s\n", filename);
@@ -204,18 +168,20 @@ static bool compile_file(const char *filename) {
   int gcc_result = 0;
   // Conditional defaults
   char default_compiler_args[256];
+  const char *user_c_compiler_flags = compiler_opts.c_compiler_flags;
   bool is_gcc = (strstr(compiler_opts.compiler, "gcc") != NULL);
   if (compiler_opts.warnings) {
     if (is_gcc) {
       snprintf(default_compiler_args, sizeof(default_compiler_args),
-               "%s -Wall -Wextra -Wno-discarded-qualifiers", c_filename);
+               "%s %s -Wall -Wextra -Wno-discarded-qualifiers", c_filename,
+               user_c_compiler_flags);
     } else {
       snprintf(default_compiler_args, sizeof(default_compiler_args),
-               "%s -Wall -Wextra", c_filename);
+               "%s %s -Wall -Wextra", c_filename, user_c_compiler_flags);
     }
   } else {
-    snprintf(default_compiler_args, sizeof(default_compiler_args), "%s -w",
-             c_filename);
+    snprintf(default_compiler_args, sizeof(default_compiler_args), "%s %s -w",
+             c_filename, user_c_compiler_flags);
   }
 
   char compiler_args[1024 * 2] = {0};

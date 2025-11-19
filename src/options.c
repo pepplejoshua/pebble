@@ -83,6 +83,7 @@ void initialise_args(void) {
   compiler_opts.generate_only = false;
   compiler_opts.output_exe_name = "output";
   compiler_opts.output_c_name = "output.c";
+  compiler_opts.c_compiler_flags = "";
   compiler_opts.has_main = true;
   compiler_opts.library = LIBRARY_NONE;
   compiler_opts.entry_point = "main";
@@ -393,7 +394,8 @@ void print_usage(const char *program_name) {
   printf("Options:\n");
   printf("  -v, --verbose        Enable verbose output\n");
   printf("  -w, --warnings       Enable C compiler warnings\n");
-  printf("  --check-only         Verify the program without generating any source\n");
+  printf("  --check-only         Verify the program without generating any "
+         "source\n");
   printf("  --keep-c             Keep generated C file (default)\n");
   printf("  --no-keep-c          Remove generated C file after compilation\n");
   printf(
@@ -421,6 +423,8 @@ void print_usage(const char *program_name) {
   printf("\nModule Paths:\n");
   printf("  --std-path           Location of std lib (default: alongside "
          "compiler)\n");
+  printf("  --cc-flags \"flags\" A string of flags to be passed directly to "
+         "the C compiler.");
   printf("\nFreestanding Options:\n");
   printf("  --freestanding       Generate freestanding code (no standard "
          "library)\n");
@@ -556,6 +560,12 @@ bool parse_args(int argc, char **argv) {
         return false;
       }
       compiler_opts.std_path = argv[++i];
+    } else if (strcmp(argv[i], "--cc-flags") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --cc-flags requires an argument\n");
+        return false;
+      }
+      compiler_opts.c_compiler_flags = argv[++i];
     } else if (strcmp(argv[i], "--no-main") == 0) {
       compiler_opts.has_main = false;
     } else if (strcmp(argv[i], "--shared") == 0) {
