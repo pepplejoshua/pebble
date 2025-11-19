@@ -1598,6 +1598,26 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       char *old_section = cg->current_section;
       cg->current_section = "type_defs";
 
+      // NOTE: Recursively emit types required for structured/dependent types,
+      //       otherwise it might emit out of order.
+      if (type->kind == TYPE_ARRAY) {
+        emit_type_if_needed(cg, type->data.array.element);
+      } else if (type->kind == TYPE_TUPLE) {
+        for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+          emit_type_if_needed(cg, type->data.tuple.element_types[i]);
+        }
+      } else if (type->kind == TYPE_STRUCT) {
+        for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
+          emit_type_if_needed(cg, type->data.struct_data.field_types[i]);
+        }
+      } else if (type->kind == TYPE_UNION) {
+        for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+          emit_type_if_needed(cg, type->data.union_data.variant_types[i]);
+        }
+      } else if (type->kind == TYPE_POINTER) {
+        emit_type_if_needed(cg, type->data.ptr.base);
+      }
+
       if (type->kind == TYPE_UNION) {
         emit_string(cg, "union ");
       } else {
