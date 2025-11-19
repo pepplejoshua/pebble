@@ -1558,6 +1558,20 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       emit_dedent(cg);
       emit_indent_spaces(cg);
       emit_string(cg, "};\n");
+
+      // Forward declare variant names table
+      emit_string(cg, "static const char *");
+      emit_string(cg, canonical);
+      emit_string(cg, "__names[] = {\n");
+
+      for (size_t i = 0; i < type->data.enum_data.variant_count; i++) {
+        emit_string(cg, "\"");
+        emit_string(cg, type->data.enum_data.variant_names[i]);
+        emit_string(cg, "\",\n");
+      }
+
+      emit_string(cg, "};\n");
+
       cg->current_section = old_section;
 
       // Insert into defined_types hash to prevent duplicates
@@ -1742,7 +1756,7 @@ static const char *get_format_specifier(Type *type) {
   case TYPE_CHAR:
     return "%c";
   case TYPE_ENUM:
-    return "%u";
+    return ".%s";
   default:
     return "%s";
   }
@@ -1769,6 +1783,10 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
         // Recursively format nested composite types
         build_composite_format_string(cg, field_type);
       } else {
+        if (field_type->kind == TYPE_ENUM && field_type->declared_name) {
+          emit_string(cg, field_type->declared_name);
+        }
+
         // Emit format specifier for builtin types
         emit_string(cg, get_format_specifier(field_type));
       }
@@ -1789,6 +1807,10 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
           elem_type->kind == TYPE_ARRAY) {
         build_composite_format_string(cg, elem_type);
       } else {
+        if (elem_type->kind == TYPE_ENUM && elem_type->declared_name) {
+          emit_string(cg, elem_type->declared_name);
+        }
+
         emit_string(cg, get_format_specifier(elem_type));
       }
     }
@@ -1808,6 +1830,10 @@ static void build_composite_format_string(Codegen *cg, Type *type) {
           elem_type->kind == TYPE_ARRAY) {
         build_composite_format_string(cg, elem_type);
       } else {
+        if (elem_type->kind == TYPE_ENUM && elem_type->declared_name) {
+          emit_string(cg, elem_type->declared_name);
+        }
+
         emit_string(cg, get_format_specifier(elem_type));
       }
     }
@@ -1875,6 +1901,11 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
             emit_string(cg, index);
             emit_string(cg, "]");
           }
+        } else if (field_type->kind == TYPE_ENUM) {
+          emit_string(cg, field_type->canonical_name);
+          emit_string(cg, "__names[");
+          emit_string(cg, field_access);
+          emit_string(cg, "]");
         } else {
           emit_string(cg, field_access);
         }
@@ -1911,7 +1942,14 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
           emit_string(cg, "(");
         }
 
-        emit_string(cg, field_access);
+        if (elem_type->kind == TYPE_ENUM) {
+          emit_string(cg, elem_type->canonical_name);
+          emit_string(cg, "__names[");
+          emit_string(cg, field_access);
+          emit_string(cg, "]");
+        } else {
+          emit_string(cg, field_access);
+        }
 
         if (elem_type->kind == TYPE_BOOL) {
           emit_string(cg, " ? \"true\" : \"false\")");
@@ -1948,7 +1986,14 @@ static void build_composite_args(Codegen *cg, Type *type, const char *base_expr,
           emit_string(cg, "(");
         }
 
-        emit_string(cg, field_access);
+        if (elem_type->kind == TYPE_ENUM) {
+          emit_string(cg, elem_type->canonical_name);
+          emit_string(cg, "__names[");
+          emit_string(cg, field_access);
+          emit_string(cg, "]");
+        } else {
+          emit_string(cg, field_access);
+        }
 
         if (elem_type->kind == TYPE_BOOL) {
           emit_string(cg, " ? \"true\" : \"false\")");
@@ -1989,13 +2034,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
 
       if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
-          type->kind == TYPE_ENUM || type->kind == TYPE_I8 ||
-          type->kind == TYPE_I16 || type->kind == TYPE_I64 ||
-          type->kind == TYPE_ISIZE || type->kind == TYPE_U8 ||
-          type->kind == TYPE_U16 || type->kind == TYPE_U32 ||
-          type->kind == TYPE_U64 || type->kind == TYPE_USIZE ||
-          type->kind == TYPE_CHAR || type->kind == TYPE_F32 ||
-          type->kind == TYPE_F64) {
+          type->kind == TYPE_I8 || type->kind == TYPE_I16 ||
+          type->kind == TYPE_I64 || type->kind == TYPE_ISIZE ||
+          type->kind == TYPE_U8 || type->kind == TYPE_U16 ||
+          type->kind == TYPE_U32 || type->kind == TYPE_U64 ||
+          type->kind == TYPE_USIZE || type->kind == TYPE_CHAR ||
+          type->kind == TYPE_F32 || type->kind == TYPE_F64) {
         emit_expr(cg, stmt->data.print_stmt.exprs[i]);
       } else if (type->kind == TYPE_BOOL) {
         emit_expr(cg, stmt->data.print_stmt.exprs[i]);
@@ -2024,8 +2068,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         } else {
           emit_expr(cg, expr);
         }
-      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE) {
-        // TODO
+      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE) {
         // Print struct/tuple with formatted representation
 
         // Wrap in a statement expression to create temporaries
@@ -2094,6 +2137,14 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
         // Return the buffer as the result
         write_expression(buffer_name);
+      } else if (type->kind == TYPE_ENUM) {
+        emit_expr(cg, stmt->data.print_stmt.exprs[i]);
+        char *expr = move_expression_buffer_into_temp();
+
+        write_expression(type->canonical_name);
+        write_expression("__names[");
+        write_expression(expr);
+        write_expression("]");
       } else {
         // Fallback for truly unknown types
         write_expression("\"");
@@ -2121,8 +2172,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
       Type *type = stmt->data.print_stmt.exprs[i]->resolved_type;
 
-      if (type->kind == TYPE_INT || type->kind == TYPE_I32 ||
-          type->kind == TYPE_ENUM) {
+      if (type->kind == TYPE_INT || type->kind == TYPE_I32) {
         emit_string(cg, "%d");
       } else if (type->kind == TYPE_I8) {
         emit_string(cg, "%hhd");
@@ -2149,7 +2199,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       } else if (type->kind == TYPE_STRING) {
         emit_string(cg, "%s");
       } else if (type->kind == TYPE_ENUM) {
-        emit_string(cg, "%u");
+        if (type->declared_name) {
+          emit_string(cg, type->declared_name);
+        }
+        emit_string(cg, ".%s");
       } else {
         emit_string(cg, "%s");
       }
@@ -3037,13 +3090,15 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         } else if (part_type->kind == TYPE_ENUM) {
           emit_expr(cg, part);
 
-          emit_type_name(cg, part_type);
-          emit_string(cg, " ");
+          emit_string(cg, "const char *");
           emit_string(cg, temp_name);
           emit_string(cg, " = ");
 
+          emit_string(cg, part_type->canonical_name);
+          emit_string(cg, "__names[");
+
           emit_expression_buffer(cg);
-          emit_string(cg, ";\n");
+          emit_string(cg, "];\n");
         } else if (part_type->kind == TYPE_STRUCT ||
                    part_type->kind == TYPE_TUPLE) {
           // Handle struct/tuple: create a formatted buffer
@@ -3097,6 +3152,14 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, " = ");
           emit_string(cg, buffer_name);
           emit_string(cg, ";\n");
+        } else if (part_type->kind == TYPE_ENUM) {
+          emit_expr(cg, part);
+          char *expr = move_expression_buffer_into_temp();
+
+          write_expression(part_type->canonical_name);
+          write_expression("__names[");
+          write_expression(expr);
+          write_expression("]");
         } else {
           // Fallback for other types - output type name like print does
           emit_string(cg, "const char* ");
@@ -3146,8 +3209,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         } else if (part_type->kind == TYPE_CHAR) {
           emit_string(cg, "%c");
         } else if (part_type->kind == TYPE_ENUM) {
-          // TODO: variant name
-          emit_string(cg, "%d");
+          if (part_type->declared_name) {
+            emit_string(cg, part_type->declared_name);
+          }
+          emit_string(cg, ".%s");
         } else {
           // Fallback for other types
           emit_string(cg, "%s");
