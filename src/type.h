@@ -2,6 +2,7 @@
 #define TYPE_H
 
 #include "ast.h"
+#include "symbol.h"
 #include "wrapped_uthash.h"
 #include "uthash.h"
 #include <stdbool.h>
@@ -137,6 +138,7 @@ typedef struct MonoFuncInstance {
   Type **concrete_types;       // [int] or [int, bool]
   size_t type_count;
   AstNode *monomorphized_func; // The specialized function AST
+  Symbol *symbol;
   UT_hash_handle hh;
 } MonoFuncInstance;
 

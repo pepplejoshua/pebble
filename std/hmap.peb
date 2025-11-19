@@ -1,0 +1,231 @@
+import "std:mem";
+
+type EntryState = enum {
+    Empty,      // Never used
+    Tombstone,  // Previously used, now deleted
+    Occupied,   // Actively holds a key-value pair
+};
+
+type Entry[K, V] = struct {
+    key    K;
+    value  V;
+    state  EntryState;
+};
+
+type HashMap[K, V] = struct {
+    entries *Entry[K, V];
+    len     usize;       // number of OCCUPIED entries
+    cap     usize;       // number of slots in table
+    hash_fn fn (K) u64;
+    eq_fn   fn (K, K) bool;
+    backing Allocator;
+};
+
+// Create an empty map with default capacity.
+fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
+    return .{
+        entries = nil,
+        len     = 0,
+        cap     = 0,
+        hash_fn = hash_fn,
+        eq_fn   = eq_fn,
+        backing = context.default_allocator,
+    };
+}
+
+// Create map with specified capacity.
+fn with_capacity[K, V](cap usize, hash_fn fn (K) u64,
+                        eq_fn fn (K, K) bool) HashMap[K, V] {
+    if cap == 0 {
+        return new.[K, V](hash_fn, eq_fn);
+    }
+
+    let allocator = context.default_allocator;
+    let size = cap * (sizeof Entry[K, V]);
+    let ptr *Entry[K, V] = allocator.alloc(allocator.ptr, size);
+
+    // Initialize all states to Empty
+    loop 0..cap : i {
+        (ptr + i).state = .Empty;
+    }
+
+    return .{
+        entries = ptr,
+        len     = 0,
+        cap     = cap,
+        hash_fn = hash_fn,
+        eq_fn   = eq_fn,
+        backing = allocator,
+    };
+}
+
+// Double capacity when load factor > 0.7
+fn maybe_grow[K, V](self *HashMap[K, V]) void {
+    // Always grow if capacity is 0
+    if self.cap == 0 {
+        rehash(self, 8);
+        return;
+    }
+
+    // Check load factor: if < 0.7, no need to grow
+    if (self.len * 10) / self.cap < 7 {
+        return;
+    }
+
+    rehash(self, self.cap * 2);
+}
+
+// Rehash into a new table with new_cap buckets.
+fn rehash[K, V](self *HashMap[K, V], new_cap usize) void {
+    let allocator = self.backing;
+    let new_size = new_cap * (sizeof Entry[K, V]);
+    let new_entries *Entry[K, V] = allocator.alloc(allocator.ptr, new_size);
+
+    // Initialize
+    var i = 0;
+    loop 0..new_cap : i {
+        (new_entries + i).state = .Empty;
+    }
+
+    // Move entries
+    var old_entries = self.entries;
+    var old_cap = self.cap;
+
+    self.entries = new_entries;
+    self.cap = new_cap;
+    self.len = 0;
+
+    // Re-insert old items
+    if old_entries != nil {
+        loop 0..old_cap : j {
+            let e = old_entries + j;
+            if e.state == .Occupied {
+                insert(self, e.key, e.value);
+            }
+        }
+        allocator.free(allocator.ptr, old_entries);
+    }
+}
+
+// Insert or replace a key-value pair.
+fn insert[K, V](self *HashMap[K, V], key K, value V) void {
+    maybe_grow(self);
+
+    let hash = self.hash_fn(key);
+    var index = (hash as usize) % self.cap;
+    var tombstone_index ?usize = none;
+
+    while true {
+        let entry = self.entries + index;
+
+        if entry.state == .Empty {
+            // Prefer first tombstone if found
+            if tombstone_index.is_some {
+                let t = tombstone_index!;
+                let slot = self.entries + t;
+                slot.key = key;
+                slot.value = value;
+                slot.state = .Occupied;
+                self.len += 1;
+            } else {
+                entry.key = key;
+                entry.value = value;
+                entry.state = .Occupied;
+                self.len += 1;
+            }
+            return;
+        }
+
+        if entry.state == .Tombstone && !tombstone_index.is_some {
+            tombstone_index = some index;
+        }
+
+        if entry.state == .Occupied && self.eq_fn(entry.key, key) {
+            entry.value = value; // Replace
+            return;
+        }
+
+        index = (index + 1) % self.cap;
+    }
+}
+
+// Returns a pointer to value or none.
+fn get_by_ref[K, V](self *HashMap[K, V], key K) ?*V {
+    if self.cap == 0 {
+        return none;
+    }
+
+    let hash = self.hash_fn(key);
+    var index = (hash as usize) % self.cap;
+
+    while true {
+        let entry = self.entries + index;
+
+        if entry.state == .Empty {
+            return none;
+        }
+
+        if entry.state == .Occupied && self.eq_fn(entry.key, key) {
+            return some &(entry.value);
+        }
+
+        index = (index + 1) % self.cap;
+    }
+
+    return none;
+}
+
+// Returns a value directly.
+fn get[K, V](self *HashMap[K, V], key K) ?V {
+    let ptr = get_by_ref(self, key);
+    if !ptr.is_some {
+        return none;
+    }
+    return some *(ptr!);
+}
+
+// Remove a key. Returns true if removed.
+fn remove[K, V](self *HashMap[K, V], key K) bool {
+    if self.cap == 0 {
+        return false;
+    }
+
+    let hash = self.hash_fn(key);
+    var index = hash % self.cap;
+
+    while true {
+        let entry = self.entries + index;
+
+        if entry.state == .Empty {
+            return false; // not found
+        }
+
+        if entry.state == .Occupied && self.eq_fn(entry.key, key) {
+            entry.state = .Tombstone;
+            self.len -= 1;
+            return true;
+        }
+
+        index = (index + 1) % self.cap;
+    }
+}
+
+// Delete the entire map and free memory.
+fn delete[K, V](self *HashMap[K, V]) void {
+    if self.entries != nil {
+        self.backing.free(self.backing.ptr, self.entries);
+        self.entries = nil;
+        self.len = 0;
+        self.cap = 0;
+    }
+}
+
+// Remove all key-value pairs but keep capacity.
+fn clear[K, V](self *HashMap[K, V]) void {
+    var i = 0;
+    loop 0..self.cap : i {
+        (self.entries + i).state = .Empty;
+        i += 1;
+    }
+    self.len = 0;
+}

@@ -522,8 +522,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_type_name(cg, sym->type);
           emit_string(cg, " ");
 
-          emit_string(cg,
-                      sym->decl->data.extern_const_decl.full_qualified_name);
+          emit_string(cg, sym->reg_name);
           emit_string(cg, ";\n");
         }
         continue;
@@ -535,7 +534,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_type_name(cg, sym->type);
           emit_string(cg, " ");
 
-          emit_string(cg, sym->decl->data.extern_var_decl.full_qualified_name);
+          emit_string(cg, sym->reg_name);
           emit_string(cg, ";\n");
         }
         continue;
@@ -564,7 +563,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
       emit_string(cg, "extern ");
       emit_type_name(cg, func_type->data.func.return_type);
       emit_string(cg, " ");
-      emit_string(cg, sym->name);
+      emit_string(cg, sym->reg_name);
 
       emit_string(cg, "(");
 
@@ -592,8 +591,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
             emit_type_name(cg, sym->type);
             emit_string(cg, " ");
 
-            emit_string(cg,
-                        sym->decl->data.extern_const_decl.full_qualified_name);
+            emit_string(cg, sym->reg_name);
             emit_string(cg, ";\n");
           }
           continue;
@@ -605,8 +603,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
             emit_type_name(cg, sym->type);
             emit_string(cg, " ");
 
-            emit_string(cg,
-                        sym->decl->data.extern_var_decl.full_qualified_name);
+            emit_string(cg, sym->reg_name);
             emit_string(cg, ";\n");
           }
           continue;
@@ -635,7 +632,7 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "extern ");
         emit_type_name(cg, func_type->data.func.return_type);
         emit_string(cg, " ");
-        emit_string(cg, sym->name);
+        emit_string(cg, sym->reg_name);
 
         emit_string(cg, "(");
 
@@ -1744,6 +1741,8 @@ static const char *get_format_specifier(Type *type) {
     return "%f";
   case TYPE_CHAR:
     return "%c";
+  case TYPE_ENUM:
+    return "%u";
   default:
     return "%s";
   }
@@ -2149,6 +2148,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         emit_string(cg, "%f");
       } else if (type->kind == TYPE_STRING) {
         emit_string(cg, "%s");
+      } else if (type->kind == TYPE_ENUM) {
+        emit_string(cg, "%u");
       } else {
         emit_string(cg, "%s");
       }
