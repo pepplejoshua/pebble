@@ -5479,6 +5479,12 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       Scope *mod_scope = checker_state.current_module->scope;
       Symbol *sym = scope_lookup(mod_scope, current_scope, lhs->data.ident.name,
                                  lhs->loc.file);
+
+      if (!sym) {
+        checker_error(lhs->loc, "'%s' is not defined", lhs->data.ident.name);
+        return false;
+      }
+
       if (sym && sym->kind == SYMBOL_CONSTANT) {
         checker_error(lhs->loc, "cannot assign to constant");
         return false;
