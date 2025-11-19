@@ -150,7 +150,7 @@ fn insert[K, V](self *HashMap[K, V], key K, value V) void {
 }
 
 // Returns a pointer to value or none.
-fn get[K, V](self *HashMap[K, V], key K) ?*V {
+fn get_by_ref[K, V](self *HashMap[K, V], key K) ?*V {
     if self.cap == 0 {
         return none;
     }
@@ -176,8 +176,8 @@ fn get[K, V](self *HashMap[K, V], key K) ?*V {
 }
 
 // Returns a value directly.
-fn get_value[K, V](self *HashMap[K, V], key K) ?V {
-    let ptr = get(self, key);
+fn get[K, V](self *HashMap[K, V], key K) ?V {
+    let ptr = get_by_ref(self, key);
     if !ptr.is_some {
         return none;
     }
