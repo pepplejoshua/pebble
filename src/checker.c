@@ -2872,7 +2872,8 @@ static char *mangle_generic_name(const char *func_name, Type **concrete_types,
   // Calculate total length needed
   for (size_t i = 0; i < type_count; i++) {
     Type *t = concrete_types[i];
-    char *type_str = t->canonical_name ? t->canonical_name : type_name(t);
+    char *type_str =
+        t->canonical_name ? t->canonical_name : compute_canonical_name(t);
     len += 2 + strlen(type_str); // "__" + type name
   }
 
@@ -2883,7 +2884,8 @@ static char *mangle_generic_name(const char *func_name, Type **concrete_types,
   for (size_t i = 0; i < type_count; i++) {
     strcat(result, "__");
     Type *t = concrete_types[i];
-    char *type_str = t->canonical_name ? t->canonical_name : type_name(t);
+    char *type_str =
+        t->canonical_name ? t->canonical_name : compute_canonical_name(t);
     strcat(result, type_str);
   }
 
