@@ -1,5 +1,9 @@
 import "std:mem";
 
+type MemHeader = struct {
+  size usize;
+};
+
 type Slab = struct {
   buffer *u8;
   capacity usize;
@@ -32,18 +36,25 @@ fn alloc(ptr *void, size usize) *void {
 
   let aligned_used = mem::align_up(arena.current.used, alignment);
 
+  let total_size = size + sizeof MemHeader;
+
   // Check if allocation fits in current slab
-  if (aligned_used + size <= arena.current.capacity) {
+  if (aligned_used + total_size <= arena.current.capacity) {
     var ptr = arena.current.buffer + aligned_used;
-    arena.current.used = aligned_used + size;
-    return ptr;
+
+    var header = ptr as *MemHeader;
+    header.size = size;
+
+    arena.current.used = aligned_used + total_size;
+    // offset past header
+    return ptr + sizeof MemHeader;
   }
 
   // Doesn't fit - need a new slab
   // Decide slab size: use default or custom size for large allocations
   var new_slab_size = arena.slab_size;
-  if (size > new_slab_size) {
-    new_slab_size = size + alignment; // Custom size for large allocation
+  if (total_size > new_slab_size) {
+    new_slab_size = total_size + alignment; // Custom size for large allocation
   }
 
   // Allocate new slab
@@ -60,15 +71,57 @@ fn alloc(ptr *void, size usize) *void {
 
   // Allocate from new slab (it's empty so alignment is already satisfied)
   var data = new_slab.buffer as *void;
-  new_slab.used = size;
-  return data;
+  new_slab.used = total_size;
+
+  var header = data as *MemHeader;
+  header.size = size;
+
+  return data + sizeof MemHeader;
 }
 
-// NOTE: This will not copy data as we have no info on old buffer size
-// TODO: Arena should probably track with some kind of header
-fn realloc(ptr, data *void, size usize) *void {
-  // Just allocate new buffer for now
-  return alloc(ptr, size);
+fn realloc(ptr, data *void, new_size usize) *void {
+  let arena *Arena = ptr;
+
+  let header *MemHeader = (data - sizeof MemHeader);
+
+  // Check if address of end of allocation is identical to end of used arena buffer
+  let address_is_end = (data + header.size) == (arena.current.buffer + arena.current.used);
+
+  // There hasn't been any allocations, we can try and resize in place
+  if address_is_end {
+    if new_size > header.size {
+      // We're expanding - see if we can fit in slab
+      let size_diff = new_size - header.size;
+
+      let alignment = 8; // Need alignof
+
+      // Check aligned size as if it were a new allocation to get accurate size
+      let aligned_used = mem::align_up(arena.current.used - (header.size + sizeof MemHeader), alignment);
+
+      let total_size = new_size + sizeof MemHeader;
+
+      // Check new size is capable of fitting in current slab
+      if (aligned_used + total_size <= arena.current.capacity) {
+        arena.current.used = aligned_used + total_size;
+
+        header.size = new_size;
+
+        return data;
+      }
+    } else {
+      // We're shrinking - we can just decrement buffer used and size in header
+      let size_diff = header.size - new_size;
+      arena.current.used -= size_diff;
+      header.size = new_size;
+
+      return data;
+    }
+  }
+
+  // Allocate new buffer and copy data from old allocation
+  let new_data = alloc(ptr, new_size);
+  mem::memcpy(new_data, data, header.size);
+  return new_data;
 }
 
 fn free(ptr, data *void) void {
