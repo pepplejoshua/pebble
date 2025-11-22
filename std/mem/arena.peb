@@ -55,6 +55,17 @@ fn relink_slot(arena *Arena, current *FreeSlot) void {
   }
 }
 
+fn add_free_slot(arena *Arena, slot *FreeSlot) void {
+  if arena.free_head == nil {
+    arena.free_head = slot;
+    arena.free_current = slot;
+  } else {
+    slot.prev = arena.free_current;
+    arena.free_current.next = slot;
+    arena.free_current = arena.free_current.next;
+  }
+}
+
 fn alloc(ptr *void, size usize) *void {
   var arena = ptr as *Arena;
   let alignment = 8; // Need alignof
@@ -156,8 +167,21 @@ fn realloc(ptr, data *void, new_size usize) *void {
     let header *MemHeader = (data - sizeof MemHeader);
     let address_is_end = (data + header.size) == (arena.current.buffer + arena.current.used);
 
-    // There hasn't been any allocations, we can try and resize in place
-    if address_is_end {
+    if !address_is_end && new_size < header.size {
+      // We're shrinking between allocations
+      let size_diff = header.size - new_size;
+      header.size = new_size;
+
+      // We can re-use the gap between the data end and next allocation
+      var slot *FreeSlot = arena.backing.alloc(arena.backing.ptr, sizeof FreeSlot);
+      slot.ptr = (data + header.size) as *u8;
+      slot.size = size_diff;
+
+      add_free_slot(arena, slot);
+
+      return data;
+    } else if address_is_end {
+      // There hasn't been any allocations, we can try and resize in place
       if new_size > header.size {
         // We're expanding - see if we can fit in slab
         let size_diff = new_size - header.size;
@@ -192,14 +216,7 @@ fn realloc(ptr, data *void, new_size usize) *void {
     slot.ptr = header as *u8;
     slot.size = header.size;
 
-    if arena.free_head == nil {
-      arena.free_head = slot;
-      arena.free_current = slot;
-    } else {
-      slot.prev = arena.free_current;
-      arena.free_current.next = slot;
-      arena.free_current = arena.free_current.next;
-    }
+    add_free_slot(arena, slot);
 
     // Allocate new buffer and copy data from old allocation
     let new_data = alloc(ptr, new_size);
