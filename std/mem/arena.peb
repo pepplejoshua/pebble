@@ -1,4 +1,5 @@
 import "std:mem";
+import "std:libc";
 
 type MemHeader = struct {
   size usize;
@@ -67,10 +68,10 @@ fn alloc(ptr *void, size usize) *void {
 
     while current != nil {
       if total_aligned <= current.size {
-        let ptr = current.ptr;
-
-        let header = ptr as *MemHeader;
+        let header = current.ptr as *MemHeader;
         header.size = size;
+
+        let curr_ptr = current.ptr;
 
         // Check if entry needs to be resized or freed
         if total_aligned == current.size {
@@ -84,14 +85,20 @@ fn alloc(ptr *void, size usize) *void {
             // Too small to allocate into
             relink_slot(arena, current);
           } else {
+            // Write new header
+            let new_header = current.ptr as *MemHeader;
+            new_header.size = size_diff;
+
             // Adjust ptr and size
             current.ptr = current.ptr + total_aligned;
-            current.size = size_diff;
+            current.size = size_diff - sizeof MemHeader;
           }
         }
 
+        libc::memset(curr_ptr + sizeof MemHeader, 0, size);
+
         // offset past header
-        return ptr + sizeof MemHeader;
+        return curr_ptr + sizeof MemHeader;
       }
 
       current = current.next;
@@ -144,60 +151,64 @@ fn alloc(ptr *void, size usize) *void {
 fn realloc(ptr, data *void, new_size usize) *void {
   let arena *Arena = ptr;
 
-  let header *MemHeader = (data - sizeof MemHeader);
-
   // Check if address of end of allocation is identical to end of used arena buffer
-  let address_is_end = (data + header.size) == (arena.current.buffer + arena.current.used);
+  if data != nil {
+    let header *MemHeader = (data - sizeof MemHeader);
+    let address_is_end = (data + header.size) == (arena.current.buffer + arena.current.used);
 
-  // There hasn't been any allocations, we can try and resize in place
-  if address_is_end {
-    if new_size > header.size {
-      // We're expanding - see if we can fit in slab
-      let size_diff = new_size - header.size;
+    // There hasn't been any allocations, we can try and resize in place
+    if address_is_end {
+      if new_size > header.size {
+        // We're expanding - see if we can fit in slab
+        let size_diff = new_size - header.size;
 
-      let alignment = 8; // Need alignof
+        let alignment = 8; // Need alignof
 
-      // Check aligned size as if it were a new allocation to get accurate size
-      let aligned_used = mem::align_up(arena.current.used - (header.size + sizeof MemHeader), alignment);
+        // Check aligned size as if it were a new allocation to get accurate size
+        let aligned_used = mem::align_up(arena.current.used - (header.size + sizeof MemHeader), alignment);
 
-      let total_size = new_size + sizeof MemHeader;
+        let total_size = new_size + sizeof MemHeader;
 
-      // Check new size is capable of fitting in current slab
-      if (aligned_used + total_size <= arena.current.capacity) {
-        arena.current.used = aligned_used + total_size;
+        // Check new size is capable of fitting in current slab
+        if (aligned_used + total_size <= arena.current.capacity) {
+          arena.current.used = aligned_used + total_size;
 
+          header.size = new_size;
+
+          return data;
+        }
+      } else {
+        // We're shrinking - we can just decrement buffer used and size in header
+        let size_diff = header.size - new_size;
+        arena.current.used -= size_diff;
         header.size = new_size;
 
         return data;
       }
-    } else {
-      // We're shrinking - we can just decrement buffer used and size in header
-      let size_diff = header.size - new_size;
-      arena.current.used -= size_diff;
-      header.size = new_size;
-
-      return data;
     }
+
+    // We can now re-use this area of memory
+    var slot *FreeSlot = arena.backing.alloc(arena.backing.ptr, sizeof FreeSlot);
+    slot.ptr = header as *u8;
+    slot.size = header.size;
+
+    if arena.free_head == nil {
+      arena.free_head = slot;
+      arena.free_current = slot;
+    } else {
+      slot.prev = arena.free_current;
+      arena.free_current.next = slot;
+      arena.free_current = arena.free_current.next;
+    }
+
+    // Allocate new buffer and copy data from old allocation
+    let new_data = alloc(ptr, new_size);
+    mem::memcpy(new_data, data, header.size);
+    return new_data;
   }
 
-  // We can now re-use this area of memory
-  var slot *FreeSlot = arena.backing.alloc(arena.backing.ptr, sizeof FreeSlot);
-  slot.ptr = header as *u8;
-  slot.size = header.size;
-
-  if arena.free_head == nil {
-    arena.free_head = slot;
-    arena.free_current = slot;
-  } else {
-    slot.prev = arena.free_current;
-    arena.free_current.next = slot;
-    arena.free_current = arena.free_current.next;
-  }
-
-  // Allocate new buffer and copy data from old allocation
-  let new_data = alloc(ptr, new_size);
-  mem::memcpy(new_data, data, header.size);
-  return new_data;
+  // Allocate new buffer (no buffer to copy)
+  return alloc(ptr, new_size);
 }
 
 fn free(ptr, data *void) void {
