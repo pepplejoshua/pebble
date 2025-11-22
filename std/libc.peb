@@ -19,5 +19,6 @@ extern {
   fn atol(string str) i64;
 
   fn memcpy(dest *void, src *void, size usize) *void;
+  fn memset(dest *void, value int, size usize) void;
   fn system(__command str) int;
 }
