@@ -1509,7 +1509,11 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
       emit_string(cg, ")");
 
       emit_string(cg, ";\n");
-    } else {
+    } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
+        type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+        type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
+
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
       } else if (type->kind == TYPE_UNION) {
@@ -1616,6 +1620,10 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
         }
       } else if (type->kind == TYPE_POINTER) {
         emit_type_if_needed(cg, type->data.ptr.base);
+      } else if (type->kind == TYPE_SLICE) {
+        emit_type_if_needed(cg, type->data.slice.element);
+      } else if (type->kind == TYPE_OPTIONAL) {
+        emit_type_if_needed(cg, type->data.optional.base);
       }
 
       if (type->kind == TYPE_UNION) {
@@ -3073,10 +3081,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         } else if (part_type->kind == TYPE_U8 || part_type->kind == TYPE_U16 ||
                    part_type->kind == TYPE_U32 || part_type->kind == TYPE_U64 ||
                    part_type->kind == TYPE_USIZE) {
+          emit_expr(cg, part);
+
           emit_string(cg, "unsigned long long ");
           emit_string(cg, temp_name);
           emit_string(cg, " = (unsigned long long)");
-          emit_expr(cg, part);
 
           emit_expression_buffer(cg);
           emit_string(cg, ";\n");
