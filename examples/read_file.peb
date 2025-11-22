@@ -1,54 +1,22 @@
-extern type FILE;
-extern fn fopen(path str, mode str) *FILE;
-extern fn fread(
-    buf *void, item_size usize,
-    item_count usize, file *FILE
-) usize;
-extern fn fseek(file *FILE, offset int, start int) int;
-extern fn fclose(file *FILE) int;
-extern fn rewind(file *FILE) void;
-extern fn ftell(file *FILE) int;
+import "std:io";
+import "std:string";
 
-extern fn malloc(size usize) *void;
-extern fn free(ptr *void) void;
+fn main(argv []str) int {
+    if argv.len < 2 {
+        print `usage: {argv[0]} <filepath>`;
+        return 0;
+    }
+    var path = argv[1];
+    var file = io::open(path, io::MODE_READ);
 
-fn read_file() *char {
-    var file = fopen("./read_file.peb", "r");
-    if file == nil {
-        print "Could not open file";
-        return nil;
+    if file != nil {
+        var contents = io::read_all(file);
+        defer string::delete(&contents);
+
+        print string::as_str(contents);
+    } else {
+        print "Cannot read ", path, ".";
     }
 
-    let seek_end = 2;
-    fseek(file, 0, seek_end);
-    var file_size = ftell(file);
-    rewind(file);
-
-    var buffer *char = malloc(file_size + 1);
-    if buffer == nil {
-        print "Not enough memory to read file";
-        return nil;
-    }
-
-    print file_size / sizeof char;
-
-    let bytes_read = fread(buffer, sizeof char, file_size, file);
-    if bytes_read < file_size {
-        print "Could not read file";
-        fclose(file);
-        return nil;
-    }
-
-    *(buffer + bytes_read) = '\0';
-    fclose(file);
-    return buffer;
-}
-
-fn main() int {
-    var contents = read_file();
-    if contents != nil {
-        print contents as str;
-        free(contents);
-    }
     return 0;
 }
