@@ -3903,6 +3903,21 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
+        // Check pointer is still valid in slice
+        if (expr->data.index_expr.array->resolved_type->kind == TYPE_SLICE) {
+          emit_string(cg, "__pebble_assert(");
+          emit_string(cg, item);
+          emit_string(cg, "->data");
+          emit_string(cg, ", \"slice pointer use-after-free\", ");
+
+          emit_string(cg, "\"");
+          emit_string(cg, expr->loc.file);
+          emit_string(cg, "\", ");
+
+          emit_string(cg, temp_buf);
+          emit_string(cg, ");\n");
+        }
+
         write_expression(item);
         write_expression("->data[");
         write_expression(index);
