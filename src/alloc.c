@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 // Arena implementation
 void arena_init(Arena *arena, size_t initial_capacity) {
@@ -22,6 +23,8 @@ void arena_init(Arena *arena, size_t initial_capacity) {
   // Initialize arena
   arena->current = slab;
   arena->slab_size = initial_capacity;
+  arena->free_head = NULL;
+  arena->free_current = NULL;
 }
 
 // Helper: align a value up to the given alignment
@@ -71,6 +74,98 @@ void *arena_alloc(Arena *arena, size_t size) {
   return ptr;
 }
 
+static void relink_slot(Arena *arena, FreeSlot *current) {
+  FreeSlot *next = current->next;
+  FreeSlot *prev = current->prev;
+
+  free(current);
+
+  if (prev != NULL) {
+    // Link last slots next as this slots next
+    prev->next = next;
+  } else {
+    // This is head, we can clear
+    arena->free_head = NULL;
+    arena->free_current = NULL;
+  }
+}
+
+static void add_free_slot(Arena *arena, FreeSlot *slot) {
+  if (arena->free_head == NULL) {
+    arena->free_head = slot;
+    arena->free_current = slot;
+  } else {
+    slot->prev = arena->free_current;
+    arena->free_current->next = slot;
+    arena->free_current = arena->free_current->next;
+  }
+}
+
+void *arena_realloc(Arena *arena, void *data, size_t new_size) {
+  // Check if address of end of allocation is identical to end of used arena buffer
+  if (data != NULL) {
+    MemHeader *header = (data - sizeof(MemHeader));
+    bool address_is_end = (data + header->size) == (arena->current->buffer + arena->current->used);
+
+    if (!address_is_end && new_size < header->size) {
+      // We're shrinking between allocations
+      size_t size_diff = header->size - new_size;
+      header->size = new_size;
+
+      // We can re-use the gap between the data end and next allocation
+      FreeSlot *slot = malloc(sizeof(FreeSlot));
+      slot->ptr = data + header->size;
+      slot->size = size_diff;
+
+      add_free_slot(arena, slot);
+
+      return data;
+    } else if (address_is_end) {
+      // There hasn't been any allocations, we can try and resize in place
+      if (new_size > header->size) {
+        // We're expanding - see if we can fit in slab
+        const size_t alignment = _Alignof(max_align_t);
+
+        // Check aligned size as if it were a new allocation to get accurate size
+        size_t aligned_used = align_up(arena->current->used - (header->size + sizeof(MemHeader)), alignment);
+
+        size_t total_size = new_size + sizeof(MemHeader);
+
+        // Check new size is capable of fitting in current slab
+        if (aligned_used + total_size <= arena->current->capacity) {
+          arena->current->used = aligned_used + total_size;
+
+          header->size = new_size;
+
+          return data;
+        }
+      } else {
+        // We're shrinking - we can just decrement buffer used and size in header
+        size_t size_diff = header->size - new_size;
+        arena->current->used -= size_diff;
+        header->size = new_size;
+
+        return data;
+      }
+    }
+
+    // We can now re-use this area of memory
+    FreeSlot *slot = malloc(sizeof(FreeSlot));
+    slot->ptr = (char *)header;
+    slot->size = header->size;
+
+    add_free_slot(arena, slot);
+
+    // Allocate new buffer and copy data from old allocation
+    void *new_data = arena_alloc(arena, new_size);
+    memcpy(new_data, data, header->size);
+    return new_data;
+  }
+
+  // Allocate new buffer (no buffer to copy)
+  return arena_alloc(arena, new_size);
+}
+
 void arena_free(Arena *arena) {
   Slab *current = arena->current;
 
@@ -80,6 +175,17 @@ void arena_free(Arena *arena) {
     free(current->buffer); // Free the slab's buffer
     free(current);         // Free the slab struct itself
     current = next;
+  }
+
+  // Free the free list
+  if (arena->free_head != NULL) {
+    FreeSlot *current_free = arena->free_head;
+
+    while (current_free != NULL) {
+      FreeSlot *next = current_free->next;
+      free(current_free);
+      current_free = next;
+    }
   }
 
   // Reset arena to empty state
