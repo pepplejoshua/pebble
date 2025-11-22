@@ -8,6 +8,21 @@ fn new(size usize) *void {
     return allocator.alloc(allocator.ptr, size);
 }
 
+fn new_typed[T]() *T {
+  return new(sizeof T);
+}
+
+fn new_slice[T](count usize) []T {
+  let allocator = context.default_allocator;
+  let ptr *T = allocator.alloc(allocator.ptr, count * (sizeof T));
+  return ptr[:count];
+}
+
+fn delete_slice[T](slice *[]T) void {
+  delete(slice.data);
+  slice.data = nil;
+}
+
 fn stack_new(size usize) *void {
   return alloca(size);
 }
