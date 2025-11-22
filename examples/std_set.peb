@@ -1,0 +1,24 @@
+import "std:hash";
+import "std:set";
+
+fn main() int {
+    let strings = [
+        "123",
+        "456",
+        "789"
+    ];
+
+    var s = set::new.[str](hash::hash_str, fn (a, b str) bool => a == b);
+    defer set::delete(&s);
+
+    loop 0..strings.len : i {
+        set::insert(&s, strings[i]);
+    }
+
+    var x = "123";
+
+    print `set contains 123? {set::contains(&s, "123")}`;
+    print `set contains 345? {set::contains(&s, "345")}`;
+
+    return 0;
+}

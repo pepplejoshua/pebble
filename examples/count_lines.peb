@@ -1,0 +1,47 @@
+import "std:vec";
+import "std:io";
+import "std:string";
+
+fn count_lines(file_path str) usize {
+    var file = io::open(file_path, io::MODE_READ);
+    defer io::close(file);
+
+    if file == nil {
+        print `unable to read {file_path}`;
+        return 0;
+    }
+
+    var contents = io::read_all(file);
+    defer string::delete(&contents);
+
+    var file_slice = string::as_slice(contents);
+    var v = vec::from_slice(file_slice);
+    defer vec::delete(&v);
+    var all_newlines = vec::find_all(&v, fn (ch char) bool => ch == '\n');
+    print `{file_path} has {all_newlines.len} lines.`;
+    return all_newlines.len;
+}
+
+fn main() int {
+    var file_paths = [
+        "std/func.peb",
+        "std/hash.peb",
+        "std/hmap.peb",
+        "std/io.peb",
+        "std/libc.peb",
+        "std/mem.peb",
+        "std/set.peb",
+        "std/string.peb",
+        "std/vec.peb",
+        "std/mem/arena.peb"
+    ];
+
+    var sum usize = 0;
+    loop 0..file_paths.len : i {
+        sum += count_lines(file_paths[i]);
+    }
+
+    print `total lines in std: {sum}`;
+
+    return 0;
+}
