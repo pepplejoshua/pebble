@@ -1,7 +1,7 @@
 # pebble
 A statically-typed systems programming language built from scratch in C using a multi-pass compiler architecture.
 
-Pebble compiles to C, providing low-level control with modern language features including modules, optionals, slices, defer statements, and a unique context-based allocator system.
+Pebble compiles to C, providing low-level control with modern language features including modules, optionals, slices, defer statements, and a context-based allocator system inspired by Odin.
 
 ## Quick Start
 
@@ -9,24 +9,25 @@ Pebble compiles to C, providing low-level control with modern language features 
 ```sh
 make          # Build the peb compiler
 make clean    # Clean build artifacts
+make install  # Build and install the peb compiler and std lib to your bin/ path
 ```
 
 ### Usage
 ```sh
 # Compile a Pebble source file
-./peb program.peb
+./pebc program.peb
 
 # Compile with options
-./peb program.peb -o myapp --warnings
+./pebc program.peb -o myapp --warnings
 
 # Generate C without compiling
-./peb program.peb --generate-only --keep-c-file
+./pebc program.peb --generate-only --keep-c-file
 
 # Compile in freestanding mode (no stdlib)
-./peb program.peb --freestanding
+./pebc program.peb --freestanding
 
 # Link with libraries
-./peb program.peb -l pthread -L /usr/local/lib -I /usr/local/include
+./pebc program.peb -l pthread -L /usr/local/lib -I /usr/local/include
 ```
 
 ## Language Features
@@ -46,6 +47,17 @@ fn square(x int) int => x * x
 // Variadic function
 fn sum(...values []int) int {
     // Implementation
+}
+
+// Generic function
+fn map[T, Ret](items []T, operation fn(T) Ret) []Ret {
+    var result = (mem::new(items.len * sizeof Ret) as *Ret)[:items.len];
+
+    loop 0..items.len : i {
+        result[i] = operation(items[i]);
+    }
+
+    return result;
 }
 ```
 
@@ -161,8 +173,33 @@ type Point = struct {
     y float;
 };
 
-var p Point = Point.{ x: 10.0, y: 20.0 };
+var p Point = Point.{ x = 10.0, y = 20.0 };
 var px = p.x;
+
+// Generic structs
+type Entry[K, V] = struct {
+    key    K;
+    value  V;
+    state  EntryState;
+};
+
+type HashMap[K, V] = struct {
+    entries *Entry[K, V];
+    len     usize;       // number of OCCUPIED entries
+    cap     usize;       // number of slots in table
+    hash_fn fn (K) u64;
+    eq_fn   fn (K, K) bool;
+    backing Allocator;
+};
+
+var names = HashMap.[str, int]{
+	entries = nil,
+	len = 0,
+	cap = 0,
+	hash_fn = hash::hash_str,
+	eq_fn = fn (a, b str) bool => libc::strcmp(a, b) == 0,
+	backing = context.default_allocator,
+};
 ```
 
 **Tuples:**
@@ -384,28 +421,50 @@ This enables:
 
 ## Standard Library
 
-### std:mem
-Memory allocation utilities:
+### std:mem/arena
+Arena allocator for efficient bulk memory allocation and deallocation in slabs:
 ```go
-import "std:mem";
+import "std:mem/arena";
 
-var ptr = mem::new(1024);           // Allocate 1024 bytes
-defer mem::delete(ptr);             // Free memory
+var arena Arena;
+arena::init(&arena, 4096, context.default_allocator);
+defer arena::destroy(&arena);
 
-var aligned = mem::align_up(size, 16);  // Align to 16 bytes
+var alloc = arena::allocator(&arena);
+// Use alloc.alloc and alloc.free for allocations within the arena
 ```
 
-### std:string
-Growable string type:
+### std:func
+Functional programming utilities for working with slices:
 ```go
-import "std:string";
+import "std:func";
 
-var s = string::new();
-defer string::delete(s);
+var numbers = [1, 2, 3, 4, 5];
+var doubled = func::map(numbers, fn(x int) int => x * 2);
+var evens = func::filter(numbers, fn(x int) bool => x % 2 == 0);
+var sum = func::reduce(numbers, 0, fn(acc int, x int) int => acc + x);
+```
 
-string::push_char(s, 'H');
-string::push_str(s, "ello");
-print string::to_str(s);
+### std:hash
+Hash functions for various data types (e.g., strings via FNV-1a, integers via splitmix64):
+```go
+import "std:hash";
+
+var str_hash = hash::hash_str("hello");
+var int_hash = hash::hash_int(42);
+var bytes_hash = hash::hash_bytes(&data, len);
+```
+
+### std:hmap
+Generic hash map data structure for key-value storage:
+```go
+import "std:hmap";
+
+var map = hmap::new(hash::hash_str, fn(a str, b str) bool => libc::strcmp(a, b) == 0);
+defer hmap::delete(&map);
+
+hmap::insert(&map, "key", 42);
+var value = hmap::get(&map, "key");
 ```
 
 ### std:io
@@ -433,6 +492,69 @@ io::delete("old.txt");
 io::rename_path("old.txt", "new.txt");
 ```
 
+### std:libc
+Bindings to C standard library functions:
+```go
+import "std:libc";
+
+var len = libc::strlen("hello");
+var copy = libc::strcpy(dest, "source");
+libc::free(libc::malloc(1024));
+```
+
+### std:mem
+Memory allocation utilities:
+```go
+import "std:mem";
+
+var ptr = mem::new(1024);           // Allocate 1024 bytes
+defer mem::delete(ptr);             // Free memory
+
+var aligned = mem::align_up(size, 16);  // Align to 16 bytes
+```
+
+### std:set 
+Generic set data structure for unique key storage:
+```go
+import "std:set";
+
+var set = set::new(hash::hash_str, fn(a str, b str) bool => libc::strcmp(a, b) == 0);
+defer set::delete(&set);
+
+set::insert(&set, "item");
+if set::contains(&set, "item") {
+    print "Found";
+}
+```
+
+### std:string
+Growable string type:
+```go
+import "std:string";
+
+var s = string::new();
+defer string::delete(s);
+
+string::push_char(s, 'H');
+string::push_str(s, "ello");
+print string::to_str(s);
+```
+
+### std:vec
+Dynamic array (vector) type for resizable sequences:
+```go
+import "std:vec";
+
+var v = vec::new.[int]();
+defer vec::delete(&v);
+
+vec::push(&v, 10);
+vec::push(&v, 20);
+var first = vec::get(&v, 0);
+vec::remove(&v, 0);  // Remove element
+```
+
+
 ## Compiler Options
 
 ### Basic Options
@@ -445,6 +567,7 @@ io::rename_path("old.txt", "new.txt");
 --compiler <compiler>      Specify C compiler (autodetects gcc/clang/cc)
 -o <name>                  Output executable name (default: output)
 -c <name>                  Output C file name (default: output.c)
+--check-only               Verify the program without generating any source
 ```
 
 ### Library & Include Options
@@ -454,6 +577,7 @@ io::rename_path("old.txt", "new.txt");
 -I <path>                  Add include search path
 --header <name>            Include local header in source
 --sys-header <name>        Include system header in source
+--cc-flags <flags>         Pass flags directly to the C compiler
 ```
 
 ### Module Paths
@@ -480,44 +604,27 @@ io::rename_path("old.txt", "new.txt");
 ### Examples
 ```sh
 # Compile with pthread
-./peb server.peb -l pthread -o server
+./pebc server.peb -l pthread -o server
 
 # Generate shared library
-./peb mylib.peb --shared -o libmylib
+./pebc mylib.peb --shared -o libmylib
 
 # Freestanding for embedded
-./peb kernel.peb --freestanding --entry-point kernel_main
+./pebc kernel.peb --freestanding --entry-point kernel_main
 
 # Custom C compiler with includes
-./peb app.peb --compiler clang -I ./include -L ./lib -l mylib
+./pebc app.peb --compiler clang -I ./include -L ./lib -l mylib
 
 # Keep C file for debugging
-./peb program.peb --keep-c --generate-only
+./pebc program.peb --keep-c --generate-only
 
 # Object file without entry point
-./peb module.peb --no-main -o module.o
+./pebc module.peb --no-main -o module.o
 ```
-
-## Compiler Architecture
-
-Pebble uses a **5-pass compilation strategy**:
-
-1. **Pass 1**: Lexical analysis + Parsing → AST
-2. **Pass 2**: Global symbol collection → Symbol table
-3. **Pass 3**: Type resolution and canonicalization → Type system
-4. **Pass 4**: Type checking and function body validation → Verified AST
-5. **Pass 5**: Entry point verification and C code generation → Executable
-
-This approach enables:
-- **Forward references**: Declare types/functions in any order
-- **Type safety**: Comprehensive compile-time checking
-- **Clear errors**: Precise location information for all diagnostics
-- **Multi-module**: Automatic dependency resolution
-- **Incremental development**: Test each phase independently
 
 ### Code Generation
 
-Pebble compiles to C as an intermediate representation:
+Pebble compiles to C:
 1. Generates type-safe C code with proper struct declarations
 2. Handles type dependencies with topological sorting
 3. Emits context plumbing for Pebble calling convention
@@ -539,16 +646,3 @@ Pebble compiles to C as an intermediate representation:
 - **Type System**: Structural typing with nominal type aliases
 - **Error Handling**: Optionals and explicit error codes (no exceptions)
 - **Compilation Speed**: Fast single-pass C generation after type checking
-
-## Project Status
-
-Pebble is a personal project for learning compiler construction in C. The compiler is functional and supports:
-- ✅ Complete lexer and parser
-- ✅ Multi-module compilation
-- ✅ Full type system with inference
-- ✅ C code generation
-- ✅ Standard library (mem, string, io)
-- ✅ Extern FFI system
-- ✅ Context-based allocator convention
-- ✅ Defer statements
-- ✅ Pattern matching (switch/case)
