@@ -502,6 +502,18 @@ var copy = libc::strcpy(dest, "source");
 libc::free(libc::malloc(1024));
 ```
 
+### std:math
+Mathematical utilities and bindings to C math library functions:
+```go
+import "std:math";
+
+var dist = math::sqrt(25.0);          // 5.0
+var sine = math::sin(math::PI / 2);   // 1.0
+var power = math::pow(2.0, 3.0);      // 8.0
+var max_val = math::max(10, 20);      // 20
+var clamped = math::clamp(15, 0, 10); // 10
+```
+
 ### std:mem
 Memory allocation utilities:
 ```go

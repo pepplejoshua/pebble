@@ -1,0 +1,38 @@
+import "std:libc";
+
+extern {
+    fn sqrt(x f64) f64;
+    fn sin(x f64) f64;
+    fn cos(x f64) f64;
+    fn tan(x f64) f64;
+    fn pow(x f64, y f64) f64;
+    fn log(x f64) f64;
+    fn log10(x f64) f64;
+    fn exp(x f64) f64;
+    fn floor(x f64) f64;
+    fn ceil(x f64) f64;
+    fn fabs(x f64) f64;
+    fn fmod(x f64, y f64) f64;
+}
+
+let PI = 3.141593;
+let E = 2.718282;
+
+fn abs[T](x T) T {
+    if x < 0 { return -x; }
+    return x;
+}
+
+fn min[T](a T, b T) T {
+    if a < b { return a; }
+    return b;
+}
+
+fn max[T](a T, b T) T {
+    if a > b { return a; }
+    return b;
+}
+
+fn clamp[T](x T, lo T, hi T) T {
+    return max(lo, min(x, hi));
+}
