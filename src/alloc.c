@@ -65,15 +65,16 @@ void *arena_alloc(Arena *arena, size_t size) {
 
   const size_t alignment = _Alignof(max_align_t);
   size_t aligned_used = align_up(arena->current->used, alignment);
-  size_t aligned_size = align_up(sizeof(MemHeader) + size, alignment);
+  size_t aligned_size = align_up(size, alignment);
+  size_t aligned_total_size = align_up(sizeof(MemHeader) + aligned_size, alignment);
 
-  if (aligned_used + aligned_size <= arena->current->capacity) {
+  if (aligned_used + aligned_total_size <= arena->current->capacity) {
     char *ptr = arena->current->buffer + aligned_used;
 
     MemHeader *header = (MemHeader *)ptr;
     header->size = aligned_size;
 
-    arena->current->used = aligned_used + aligned_size;
+    arena->current->used = aligned_used + aligned_total_size;
 
     return ptr + sizeof(MemHeader);
   }
@@ -81,8 +82,8 @@ void *arena_alloc(Arena *arena, size_t size) {
   // Doesn't fit - need a new slab
   // Decide slab size: use default or custom size for large allocations
   size_t new_slab_size = arena->slab_size;
-  if (aligned_size > new_slab_size) {
-    new_slab_size = align_up(aligned_size + alignment, alignment); // Custom size for large allocation
+  if (aligned_total_size > new_slab_size) {
+    new_slab_size = align_up(aligned_total_size + alignment, alignment); // Custom size for large allocation
   }
 
   // Allocate new slab
@@ -94,7 +95,7 @@ void *arena_alloc(Arena *arena, size_t size) {
   memset(new_slab->buffer, 0, new_slab_size);
 
   new_slab->capacity = new_slab_size;
-  new_slab->used = aligned_size;
+  new_slab->used = aligned_total_size;
   new_slab->next = arena->current;
 
   // Link new slab and make it current
