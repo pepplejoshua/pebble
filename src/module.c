@@ -110,8 +110,11 @@ static char *get_absolute_path(const char *path_literal,
       char *code_path = prepend(module_path, ".peb");
       return code_path;
     } else {
-      char *module_path = prepend(compiler_opts.std_path, path_literal + 4);
+      char *path = str_dup(compiler_opts.std_path);
+      char *module_path = prepend(path, path_literal + 4);
       char *code_path = prepend(module_path, ".peb");
+
+      printf("code_path = \"%s\"\n", code_path);
       return code_path;
     }
   }

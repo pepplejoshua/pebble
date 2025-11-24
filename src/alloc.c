@@ -1,5 +1,6 @@
 #include "alloc.h"
 #include <assert.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,48 +33,6 @@ static size_t align_up(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-void *arena_alloc(Arena *arena, size_t size) {
-  // Alignment requirement (typically 8 or 16 bytes)
-  const size_t alignment = _Alignof(max_align_t);
-
-  // Align the current position
-  size_t aligned_used = align_up(arena->current->used, alignment);
-
-  // Check if allocation fits in current slab
-  if (aligned_used + size <= arena->current->capacity) {
-    void *ptr = arena->current->buffer + aligned_used;
-    arena->current->used = aligned_used + size;
-    return ptr;
-  }
-
-  // Doesn't fit - need a new slab
-  // Decide slab size: use default or custom size for large allocations
-  size_t new_slab_size = arena->slab_size;
-  if (size > new_slab_size) {
-    new_slab_size = size + alignment; // Custom size for large allocation
-  }
-
-  // Allocate new slab
-  Slab *new_slab = malloc(sizeof(Slab));
-  assert(new_slab && "Slab allocation failed");
-
-  new_slab->buffer = malloc(new_slab_size);
-  assert(new_slab->buffer && "Slab buffer allocation failed");
-  memset(new_slab->buffer, 0, new_slab_size);
-
-  new_slab->capacity = new_slab_size;
-  new_slab->used = 0;
-  new_slab->next = arena->current;
-
-  // Link new slab and make it current
-  arena->current = new_slab;
-
-  // Allocate from new slab (it's empty so alignment is already satisfied)
-  void *ptr = new_slab->buffer;
-  new_slab->used = size;
-  return ptr;
-}
-
 static void relink_slot(Arena *arena, FreeSlot *current) {
   FreeSlot *next = current->next;
   FreeSlot *prev = current->prev;
@@ -99,6 +58,54 @@ static void add_free_slot(Arena *arena, FreeSlot *slot) {
     arena->free_current->next = slot;
     arena->free_current = arena->free_current->next;
   }
+}
+
+void *arena_alloc(Arena *arena, size_t size) {
+  assert(arena && arena->current && arena->current->buffer);
+
+  const size_t alignment = _Alignof(max_align_t);
+  size_t aligned_used = align_up(arena->current->used, alignment);
+  size_t aligned_size = align_up(sizeof(MemHeader) + size, alignment);
+
+  if (aligned_used + aligned_size <= arena->current->capacity) {
+    char *ptr = arena->current->buffer + aligned_used;
+
+    MemHeader *header = (MemHeader *)ptr;
+    header->size = aligned_size;
+
+    arena->current->used = aligned_used + aligned_size;
+
+    return ptr + sizeof(MemHeader);
+  }
+
+  // Doesn't fit - need a new slab
+  // Decide slab size: use default or custom size for large allocations
+  size_t new_slab_size = arena->slab_size;
+  if (aligned_size > new_slab_size) {
+    new_slab_size = align_up(aligned_size + alignment, alignment); // Custom size for large allocation
+  }
+
+  // Allocate new slab
+  Slab *new_slab = malloc(sizeof(Slab));
+  assert(new_slab && "Slab allocation failed");
+
+  new_slab->buffer = malloc(new_slab_size);
+  assert(new_slab->buffer && "Slab buffer allocation failed");
+  memset(new_slab->buffer, 0, new_slab_size);
+
+  new_slab->capacity = new_slab_size;
+  new_slab->used = aligned_size;
+  new_slab->next = arena->current;
+
+  // Link new slab and make it current
+  arena->current = new_slab;
+
+  // Allocate from new slab (it's empty so alignment is already satisfied)
+  char *ptr = new_slab->buffer;
+  MemHeader *header = (MemHeader *)ptr;
+  header->size = aligned_size;
+
+  return ptr + sizeof(MemHeader);
 }
 
 void *arena_realloc(Arena *arena, void *data, size_t new_size) {
@@ -209,8 +216,9 @@ void arena_get_stats(Arena *arena, size_t *used, size_t *capacity) {
 char *str_dup(const char *str) {
   if (!str)
     return NULL;
-  size_t len = strlen(str) + 1; // Include null terminator
-  char *copy = arena_alloc(&long_lived, len);
+  size_t len = strlen(str); // Include null terminator
+  char *copy = arena_alloc(&long_lived, len + 1);
   memcpy(copy, str, len); // Copies the '\0' too
+  copy[len] = '\0';
   return copy;
 }
