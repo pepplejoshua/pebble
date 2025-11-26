@@ -756,8 +756,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "__pebble_context context");
       }
 
+      if (sym->decl->data.func_decl.receiver_param) {
+        if (conv == CALL_CONV_PEBBLE) {
+          emit_string(cg, ", ");
+        }
+        emit_type_name(cg, func->data.func.recvr_type);
+        emit_string(cg, " ");
+        emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
+      }
+
       for (size_t i = 0; i < param_count; i++) {
-        if (conv == CALL_CONV_PEBBLE || i > 0)
+        if (conv == CALL_CONV_PEBBLE || i > 0 ||
+            sym->decl->data.func_decl.receiver_param)
           emit_string(cg, ", ");
         emit_type_name(cg, func->data.func.param_types[i]);
         emit_string(cg, " ");
@@ -794,8 +804,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, "__pebble_context context");
         }
 
+        if (sym->decl->data.func_decl.receiver_param) {
+          if (conv == CALL_CONV_PEBBLE) {
+            emit_string(cg, ", ");
+          }
+          emit_type_name(cg, func->data.func.recvr_type);
+          emit_string(cg, " ");
+          emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
+        }
+
         for (size_t i = 0; i < param_count; i++) {
-          if (conv == CALL_CONV_PEBBLE || i > 0)
+          if (conv == CALL_CONV_PEBBLE || i > 0 ||
+              sym->decl->data.func_decl.receiver_param)
             emit_string(cg, ", ");
           emit_type_name(cg, func->data.func.param_types[i]);
           emit_string(cg, " ");
@@ -912,8 +932,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "__pebble_context context");
       }
 
+      if (sym->decl->data.func_decl.receiver_param) {
+        if (conv == CALL_CONV_PEBBLE) {
+          emit_string(cg, ", ");
+        }
+        emit_type_name(cg, sym->type->data.func.recvr_type);
+        emit_string(cg, " ");
+        emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
+      }
+
       for (size_t i = 0; i < param_count; i++) {
-        if (conv == CALL_CONV_PEBBLE || i > 0)
+        if (conv == CALL_CONV_PEBBLE || i > 0 ||
+            sym->decl->data.func_decl.receiver_param)
           emit_string(cg, ", ");
         emit_type_name(cg, sym->type->data.func.param_types[i]);
         emit_string(cg, " ");
@@ -968,8 +998,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, "__pebble_context context");
         }
 
+        if (sym->decl->data.func_decl.receiver_param) {
+          if (conv == CALL_CONV_PEBBLE) {
+            emit_string(cg, ", ");
+          }
+          emit_type_name(cg, sym->type->data.func.recvr_type);
+          emit_string(cg, " ");
+          emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
+        }
+
         for (size_t i = 0; i < param_count; i++) {
-          if (conv == CALL_CONV_PEBBLE || i > 0)
+          if (conv == CALL_CONV_PEBBLE || i > 0 ||
+              sym->decl->data.func_decl.receiver_param)
             emit_string(cg, ", ");
           emit_type_name(cg, sym->type->data.func.param_types[i]);
           emit_string(cg, " ");
@@ -1510,9 +1550,9 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 
       emit_string(cg, ";\n");
     } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
-        type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
-        type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
+               type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+               type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+               type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
 
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
@@ -2096,7 +2136,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         } else {
           emit_expr(cg, expr);
         }
-      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE) {
+      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY ||
+                 type->kind == TYPE_TUPLE) {
         // Print struct/tuple with formatted representation
 
         // Wrap in a statement expression to create temporaries
