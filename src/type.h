@@ -67,6 +67,12 @@ struct Type {
   Type **generic_type_args;      // [int, string] for GenericType[int, string]
   size_t generic_type_arg_count; // 2
 
+  // For methods linked to this type
+  char **method_names;
+  Type **method_types;
+  size_t method_count;
+  size_t method_cap;
+
   union {
     struct {
       Type *base; // Base type for pointer
@@ -102,6 +108,7 @@ struct Type {
 
     struct {
       CallingConvention convention;
+      Type *recvr_type;   // Receiver type for methods
       Type **param_types; // Parameter types
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
@@ -187,7 +194,7 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
 Type *type_create_enum(char **variant_names, size_t variant_count, bool canonicalize, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
-Type *type_create_function(Type **param_types, size_t param_count,
+Type *type_create_function(Type *recvr_type, Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
                            Location loc);

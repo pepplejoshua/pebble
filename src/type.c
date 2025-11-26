@@ -49,6 +49,10 @@ Type *type_create(TypeKind kind, Location loc) {
   type->kind = kind;
   type->loc = loc;
   type->used = false;
+  type->method_names = NULL;
+  type->method_types = NULL;
+  type->method_count = 0;
+  type->method_cap = 0;
   return type;
 }
 
@@ -394,10 +398,10 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
 
 // Create function type (no caching)
 // Create function type (with deduplication)
-Type *type_create_function(Type **param_types, size_t param_count,
-                           Type *return_type, bool is_variadic,
-                           bool canonicalize, CallingConvention convention,
-                           Location loc) {
+Type *type_create_function(Type *recvr_type, Type **param_types,
+                           size_t param_count, Type *return_type,
+                           bool is_variadic, bool canonicalize,
+                           CallingConvention convention, Location loc) {
   assert(return_type);
 
   if (canonicalize) {
@@ -407,6 +411,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
                  .data.func.param_count = param_count,
                  .data.func.return_type = return_type,
                  .data.func.is_variadic = is_variadic,
+                 .data.func.recvr_type = recvr_type,
                  .canonical_name = NULL};
 
     char *canonical_name = compute_canonical_name(&temp);
@@ -615,21 +620,22 @@ void type_system_init(void) {
   Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   alloc_param_types[0] = void_ptr;
   alloc_param_types[1] = type_usize;
-  Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr, false,
-                                          false, CALL_CONV_PEBBLE, loc);
+  Type *alloc_fn_t = type_create_function(NULL, alloc_param_types, 2, void_ptr,
+                                          false, false, CALL_CONV_PEBBLE, loc);
 
   Type **realloc_param_types = arena_alloc(&long_lived, 3 * sizeof(Type *));
   realloc_param_types[0] = void_ptr;
   realloc_param_types[1] = void_ptr;
   realloc_param_types[2] = type_usize;
-  Type *realloc_fn_t = type_create_function(
-      realloc_param_types, 3, void_ptr, false, false, CALL_CONV_PEBBLE, loc);
+  Type *realloc_fn_t =
+      type_create_function(NULL, realloc_param_types, 3, void_ptr, false, false,
+                           CALL_CONV_PEBBLE, loc);
 
   Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   free_param_types[0] = void_ptr;
   free_param_types[1] = void_ptr;
-  Type *free_fn_t = type_create_function(free_param_types, 2, type_void, false,
-                                         false, CALL_CONV_PEBBLE, loc);
+  Type *free_fn_t = type_create_function(NULL, free_param_types, 2, type_void,
+                                         false, false, CALL_CONV_PEBBLE, loc);
 
   char **allocator_field_names = arena_alloc(&long_lived, 4 * sizeof(char *));
   allocator_field_names[0] = "ptr";
@@ -902,6 +908,12 @@ char *compute_canonical_name(Type *type) {
       break;
     }
 
+    char *recvr_name = NULL;
+    if (type->data.func.recvr_type) {
+      recvr_name = compute_canonical_name(type->data.func.recvr_type);
+      total_len += strlen(recvr_name) + 1;
+    }
+
     char **param_names = NULL;
     if (type->data.func.param_count > 0) {
       param_names = arena_alloc(&long_lived,
@@ -927,6 +939,11 @@ char *compute_canonical_name(Type *type) {
     case CALL_CONV_PEBBLE:
       strcat(result, "_pebble_");
       break;
+    }
+
+    if (recvr_name) {
+      strcat(result, "_");
+      strcat(result, recvr_name);
     }
 
     if (type->data.func.param_count > 0) {
