@@ -1086,11 +1086,13 @@ static bool check_function_signature(Symbol *sym) {
   size_t param_count = 0;
   AstNode *return_type_expr;
   CallingConvention convention = CALL_CONV_C;
+  FuncParam *receiver = NULL;
 
   if (decl->kind == AST_DECL_FUNCTION) {
     params = decl->data.func_decl.params;
     param_count = decl->data.func_decl.param_count;
     return_type_expr = decl->data.func_decl.return_type;
+    receiver = decl->data.func_decl.receiver_param;
 
     check_convention(decl->data.func_decl.convention);
 
@@ -1107,6 +1109,14 @@ static bool check_function_signature(Symbol *sym) {
   int is_variadic = -1;
 
   // Resolve parameter types
+  Type *recvr_type = NULL;
+  if (receiver) {
+    recvr_type = resolve_type_expression(receiver->type);
+    if (!recvr_type) {
+      return false; // Error already reported
+    }
+  }
+
   Type **param_types = NULL;
   if (param_count > 0) {
     param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
@@ -1137,9 +1147,50 @@ static bool check_function_signature(Symbol *sym) {
   }
 
   // Create function type
-  sym->type = type_create_function(param_types, param_count, return_type,
-                                   is_variadic != -1, false, convention,
-                                   sym->decl->loc);
+  sym->type =
+      type_create_function(recvr_type, param_types, param_count, return_type,
+                           is_variadic != -1, true, convention, sym->decl->loc);
+
+  // Link the function as a method on the receiver
+  if (receiver) {
+    // Get the base type of the type, since we could have a pointer to another
+    // type here
+    Type *base_type = recvr_type;
+    while (true) {
+      if (base_type->kind == TYPE_POINTER) {
+        base_type = base_type->data.ptr.base;
+      } else {
+        break;
+      }
+    }
+
+    // Make sure that name does not already exist
+    for (size_t i = 0; i < base_type->method_count; i++) {
+      if (strcmp(base_type->method_names[i], sym->name) == 0) {
+        // Redefinition
+        checker_error(sym->decl->loc,
+                      "Redefinition of method '%s' on type '%s'", sym->name,
+                      type_name(base_type));
+        return false;
+      }
+    }
+
+    if (base_type->method_count + 1 >= base_type->method_cap) {
+      size_t new_cap =
+          base_type->method_cap == 0 ? 4 : base_type->method_cap * 2;
+      Type **new_methods = arena_alloc(&long_lived, sizeof(Type *) * new_cap);
+      memcpy(new_methods, base_type->method_types, base_type->method_cap);
+      char **new_names = arena_alloc(&long_lived, sizeof(char *) * new_cap);
+      memcpy(new_names, base_type->method_names, base_type->method_cap);
+      base_type->method_types = new_methods;
+      base_type->method_names = new_names;
+      base_type->method_cap = new_cap;
+    }
+
+    base_type->method_names[base_type->method_count] = sym->name;
+    base_type->method_types[base_type->method_count] = sym->type;
+    base_type->method_count++;
+  }
 
   // Add parameters as symbols in the function scope
   bool no_error = true;
@@ -1147,6 +1198,14 @@ static bool check_function_signature(Symbol *sym) {
     // Create function's local scope with global as parent
     Scope *func_scope = scope_create(checker_state.current_module->scope);
     sym->data.func.local_scope = func_scope;
+
+    if (receiver) {
+      Symbol *recvr_sym = symbol_create(receiver->name, SYMBOL_VARIABLE, decl);
+      recvr_sym->type = recvr_type;
+      recvr_sym->data.var.is_global = false;
+      scope_add_symbol(func_scope, recvr_sym);
+    }
+
     for (size_t i = 0; i < param_count; i++) {
       if (!param_types[i]) {
         continue; // Skip if type resolution failed
@@ -1644,9 +1703,9 @@ Type *resolve_type_expression(AstNode *type_expr) {
     CallingConvention convention =
         convention_from_node(type_expr->data.type_function.convention);
 
-    return type_create_function(param_types, param_count, return_type, false,
-                                !checker_state.in_type_resolution, convention,
-                                loc);
+    return type_create_function(NULL, param_types, param_count, return_type,
+                                false, !checker_state.in_type_resolution,
+                                convention, loc);
   }
 
   case AST_TYPE_TUPLE: {
@@ -5052,7 +5111,7 @@ Type *check_expression(AstNode *expr) {
 
     // Add function as symbol
     Type *fn_type = type_create_function(
-        param_types, param_count, return_type, is_variadic != -1,
+        NULL, param_types, param_count, return_type, is_variadic != -1,
         !checker_state.in_type_resolution, convention, loc);
 
     char *fn_symbol_name = next_anonymous_function_name();
