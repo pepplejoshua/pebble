@@ -1166,13 +1166,58 @@ static bool check_function_signature(Symbol *sym) {
 
     // Make sure that name does not already exist
     for (size_t i = 0; i < base_type->method_count; i++) {
-      if (strcmp(base_type->method_names[i], sym->name) == 0) {
+      if (strcmp(base_type->method_qualified_names[i], sym->name) == 0) {
         // Redefinition
         checker_error(sym->decl->loc,
-                      "Redefinition of method '%s' on type '%s'", sym->name,
+                      "Redefinition of method '%s' on type '%s'", sym->reg_name,
                       type_name(base_type));
         return false;
       }
+    }
+
+    // Make sure that if this is a struct / union enum
+    // we are not using a name that already exists on it
+    switch (base_type->kind) {
+    case TYPE_STRUCT: {
+      for (size_t i = 0; i < base_type->data.struct_data.field_count; i++) {
+        if (strcmp(base_type->data.struct_data.field_names[i], sym->reg_name) ==
+            0) {
+          // Colliding names
+          checker_error(sym->decl->loc,
+                        "Struct '%s' already has a field named '%s'",
+                        type_name(base_type), sym->reg_name);
+          return false;
+        }
+      }
+      break;
+    }
+    case TYPE_UNION: {
+      for (size_t i = 0; i < base_type->data.union_data.variant_count; i++) {
+        if (strcmp(base_type->data.union_data.variant_names[i],
+                   sym->reg_name) == 0) {
+          // Colliding names
+          checker_error(sym->decl->loc,
+                        "Union '%s' already has a variant named '%s'",
+                        type_name(base_type), sym->reg_name);
+          return false;
+        }
+      }
+      break;
+    }
+    case TYPE_ENUM: {
+      for (size_t i = 0; i < base_type->data.enum_data.variant_count; i++) {
+        if (strcmp(base_type->data.enum_data.variant_names[i], sym->reg_name) ==
+            0) {
+          // Colliding names
+          checker_error(sym->decl->loc,
+                        "Enum '%s' already has a variant named '%s'",
+                        type_name(base_type), sym->name);
+          return false;
+        }
+      }
+    }
+    default:
+      break;
     }
 
     if (base_type->method_count + 1 >= base_type->method_cap) {
@@ -1181,13 +1226,19 @@ static bool check_function_signature(Symbol *sym) {
       Type **new_methods = arena_alloc(&long_lived, sizeof(Type *) * new_cap);
       memcpy(new_methods, base_type->method_types, base_type->method_cap);
       char **new_names = arena_alloc(&long_lived, sizeof(char *) * new_cap);
-      memcpy(new_names, base_type->method_names, base_type->method_cap);
+      memcpy(new_names, base_type->method_reg_names, base_type->method_cap);
+      char **new_qualified_names =
+          arena_alloc(&long_lived, sizeof(char *) * new_cap);
+      memcpy(new_qualified_names, base_type->method_qualified_names,
+             base_type->method_cap);
       base_type->method_types = new_methods;
-      base_type->method_names = new_names;
+      base_type->method_reg_names = new_names;
+      base_type->method_qualified_names = new_qualified_names;
       base_type->method_cap = new_cap;
     }
 
-    base_type->method_names[base_type->method_count] = sym->name;
+    base_type->method_reg_names[base_type->method_count] = sym->reg_name;
+    base_type->method_qualified_names[base_type->method_count] = sym->name;
     base_type->method_types[base_type->method_count] = sym->type;
     base_type->method_count++;
   }

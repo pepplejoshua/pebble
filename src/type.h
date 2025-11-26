@@ -68,7 +68,8 @@ struct Type {
   size_t generic_type_arg_count; // 2
 
   // For methods linked to this type
-  char **method_names;
+  char **method_reg_names;
+  char **method_qualified_names;
   Type **method_types;
   size_t method_count;
   size_t method_cap;

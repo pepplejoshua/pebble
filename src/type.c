@@ -49,7 +49,8 @@ Type *type_create(TypeKind kind, Location loc) {
   type->kind = kind;
   type->loc = loc;
   type->used = false;
-  type->method_names = NULL;
+  type->method_reg_names = NULL;
+  type->method_qualified_names = NULL;
   type->method_types = NULL;
   type->method_count = 0;
   type->method_cap = 0;
