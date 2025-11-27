@@ -3353,6 +3353,12 @@ static void substitute_function_types(AstNode *func_decl,
                                    bindings);
   }
 
+  // Substitute in receiver type
+  if (func_decl->data.func_decl.receiver_param) {
+    substitute_type_params_in_type(
+        func_decl->data.func_decl.receiver_param->type, bindings);
+  }
+
   // Substitute in return type
   substitute_type_params_in_type(func_decl->data.func_decl.return_type,
                                  bindings);
@@ -3863,6 +3869,28 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    // Handle direct references to methods
+    if (sym->type->data.func.recvr_type) {
+      Type *method_type = sym->type;
+
+      // Return the DESUGARED function type (receiver as first param)
+      size_t new_param_count = method_type->data.func.param_count + 1;
+      Type **new_param_types =
+          arena_alloc(&long_lived, sizeof(Type *) * new_param_count);
+      new_param_types[0] = method_type->data.func.recvr_type;
+      memcpy(new_param_types + 1, method_type->data.func.param_types,
+             sizeof(Type *) * method_type->data.func.param_count);
+
+      Type *desugared_type =
+          type_create_function(NULL, new_param_types, new_param_count,
+                               method_type->data.func.return_type,
+                               method_type->data.func.is_variadic, true,
+                               method_type->data.func.convention, expr->loc);
+
+      expr->resolved_type = desugared_type;
+      return desugared_type;
+    }
+
     expr->resolved_type = sym->type;
     return sym->type;
   }
@@ -4166,6 +4194,70 @@ Type *check_expression(AstNode *expr) {
     Type *call_type = check_expression(func_expr);
     if (call_type == NULL) {
       return NULL;
+    }
+
+    if (func_expr->kind == AST_EXPR_METHOD_REF) {
+      AstNode *receiver = func_expr->data.method_ref.receiver;
+      Type *method_type = func_expr->data.method_ref.method_type;
+      char *method_name = func_expr->data.method_ref.method_qualified_name;
+      char *member_name = func_expr->data.method_ref.method_name;
+
+      // Auto-adjust receiver type (& or *)
+      AstNode *adjusted_receiver = receiver;
+      Type *receiver_type = receiver->resolved_type;
+      Type *expected_receiver = method_type->data.func.recvr_type;
+
+      // Auto-insert & or * as needed
+      if (receiver_type->kind != TYPE_POINTER &&
+          expected_receiver->kind == TYPE_POINTER &&
+          type_equals(receiver_type, expected_receiver->data.ptr.base)) {
+
+        // Need to take address: d -> &d
+        AstNode *addr_node = arena_alloc(&long_lived, sizeof(AstNode));
+        addr_node->kind = AST_EXPR_UNARY_OP;
+        addr_node->loc = receiver->loc;
+        addr_node->data.unop.op = UNOP_ADDR;
+        addr_node->data.unop.operand = receiver;
+        addr_node->resolved_type = expected_receiver;
+        adjusted_receiver = addr_node;
+      } else if (receiver_type->kind == TYPE_POINTER &&
+                 expected_receiver->kind != TYPE_POINTER &&
+                 type_equals(receiver_type->data.ptr.base, expected_receiver)) {
+
+        // Need to deref: ptr -> *ptr
+        AstNode *deref_node = arena_alloc(&long_lived, sizeof(AstNode));
+        deref_node->kind = AST_EXPR_UNARY_OP;
+        deref_node->loc = receiver->loc;
+        deref_node->data.unop.op = UNOP_DEREF;
+        deref_node->data.unop.operand = receiver;
+        deref_node->resolved_type = expected_receiver;
+        adjusted_receiver = deref_node;
+      }
+
+      // Create identifier for the function
+      AstNode *new_func = arena_alloc(&long_lived, sizeof(AstNode));
+      new_func->kind = AST_EXPR_IDENTIFIER;
+      new_func->loc = func_expr->loc;
+      new_func->data.ident.name = member_name;
+      new_func->data.ident.qualified_name = method_name;
+      new_func->data.ident.full_qualified_name = method_name;
+      new_func->resolved_type = call_type; // Already desugared type
+
+      // Prepend receiver to args
+      size_t new_arg_count = expr->data.call.arg_count + 1;
+      AstNode **new_args =
+          arena_alloc(&long_lived, sizeof(AstNode *) * new_arg_count);
+      new_args[0] = adjusted_receiver;
+      memcpy(new_args + 1, expr->data.call.args,
+             sizeof(AstNode *) * expr->data.call.arg_count);
+
+      expr->data.call.func = new_func;
+      expr->data.call.args = new_args;
+      expr->data.call.arg_count = new_arg_count;
+
+      func_expr = new_func;
+      args = new_args;
+      arg_count = new_arg_count;
     }
 
     // Check if this is a generic function
@@ -4679,8 +4771,38 @@ Type *check_expression(AstNode *expr) {
       // Handle potential method access
       for (size_t i = 0; i < base_type->method_count; i++) {
         if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
-          expr->resolved_type = base_type->method_types[i];
-          return base_type->method_types[i];
+          Type *method_type = base_type->method_types[i];
+
+          // Create a method reference node that wraps this member access
+          AstNode *method_ref = arena_alloc(&long_lived, sizeof(AstNode));
+          method_ref->kind = AST_EXPR_METHOD_REF;
+          method_ref->loc = expr->loc;
+          method_ref->data.method_ref.receiver = expr->data.member_expr.object;
+          method_ref->data.method_ref.method_qualified_name =
+              base_type->method_qualified_names[i];
+          method_ref->data.method_ref.method_name =
+              base_type->method_reg_names[i];
+          method_ref->data.method_ref.method_type = method_type;
+
+          // Return the DESUGARED function type (receiver as first param)
+          size_t new_param_count = method_type->data.func.param_count + 1;
+          Type **new_param_types =
+              arena_alloc(&long_lived, sizeof(Type *) * new_param_count);
+          new_param_types[0] = method_type->data.func.recvr_type;
+          memcpy(new_param_types + 1, method_type->data.func.param_types,
+                 sizeof(Type *) * method_type->data.func.param_count);
+
+          Type *desugared_type = type_create_function(
+              NULL, new_param_types, new_param_count,
+              method_type->data.func.return_type,
+              method_type->data.func.is_variadic, true,
+              method_type->data.func.convention, expr->loc);
+
+          method_ref->resolved_type = desugared_type;
+
+          // REPLACE the member expr with method_ref
+          *expr = *method_ref;
+          return desugared_type;
         }
       }
 
@@ -5725,6 +5847,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Add to current scope
     Symbol *var_sym = symbol_create(name, SYMBOL_VARIABLE, stmt);
     var_sym->type = var_type;
+    var_sym->reg_name = name;
     var_sym->data.var.is_global = false;
     stmt->resolved_type = var_type;
     scope_add_symbol(current_scope, var_sym);
@@ -5800,6 +5923,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Add to current scope
     Symbol *const_sym = symbol_create(name, SYMBOL_CONSTANT, stmt);
     const_sym->type = const_type;
+    const_sym->reg_name = name;
     stmt->resolved_type = const_type;
     scope_add_symbol(current_scope, const_sym);
     return false;

@@ -109,11 +109,11 @@ struct Type {
 
     struct {
       CallingConvention convention;
-      Type *recvr_type;   // Receiver type for methods
       Type **param_types; // Parameter types
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
       bool is_variadic;
+      Type *recvr_type;   // Receiver type for methods
     } func;
 
     struct {

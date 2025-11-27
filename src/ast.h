@@ -63,6 +63,7 @@ typedef enum {
   AST_EXPR_IMPLICIT_CAST,
   AST_EXPR_SIZEOF,
   AST_EXPR_EXPLICIT_CAST,
+  AST_EXPR_METHOD_REF,
   AST_EXPR_GROUPED_EXPR,
   AST_EXPR_SOME,          // some expr
   AST_EXPR_LITERAL_NONE,  // none
@@ -307,6 +308,12 @@ struct AstNode {
       AstNode *object;
       char *member;
     } member_expr;
+    struct {
+        AstNode *receiver;            // NULL for unbound reference
+        char *method_qualified_name;
+        char *method_name;
+        Type *method_type;            // Original type with receiver separate
+    } method_ref;
     struct {
       char *member;
     } partial_member_expr;

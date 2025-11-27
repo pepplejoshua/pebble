@@ -3022,6 +3022,9 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   switch (expr->kind) {
+  case AST_EXPR_METHOD_REF:
+    write_expression(expr->data.method_ref.method_qualified_name);
+    break;
   case AST_EXPR_CONTEXT:
     write_expression("context");
     break;
