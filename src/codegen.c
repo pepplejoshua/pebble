@@ -756,15 +756,6 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "__pebble_context context");
       }
 
-      if (sym->decl->data.func_decl.receiver_param) {
-        if (conv == CALL_CONV_PEBBLE) {
-          emit_string(cg, ", ");
-        }
-        emit_type_name(cg, func->data.func.recvr_type);
-        emit_string(cg, " ");
-        emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
-      }
-
       for (size_t i = 0; i < param_count; i++) {
         if (conv == CALL_CONV_PEBBLE || i > 0 ||
             sym->decl->data.func_decl.receiver_param)
@@ -802,15 +793,6 @@ void emit_program(Codegen *cg, Module *main_mod) {
         CallingConvention conv = func->data.func.convention;
         if (conv == CALL_CONV_PEBBLE) {
           emit_string(cg, "__pebble_context context");
-        }
-
-        if (sym->decl->data.func_decl.receiver_param) {
-          if (conv == CALL_CONV_PEBBLE) {
-            emit_string(cg, ", ");
-          }
-          emit_type_name(cg, func->data.func.recvr_type);
-          emit_string(cg, " ");
-          emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
         }
 
         for (size_t i = 0; i < param_count; i++) {
@@ -932,15 +914,6 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "__pebble_context context");
       }
 
-      if (sym->decl->data.func_decl.receiver_param) {
-        if (conv == CALL_CONV_PEBBLE) {
-          emit_string(cg, ", ");
-        }
-        emit_type_name(cg, sym->type->data.func.recvr_type);
-        emit_string(cg, " ");
-        emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
-      }
-
       for (size_t i = 0; i < param_count; i++) {
         if (conv == CALL_CONV_PEBBLE || i > 0 ||
             sym->decl->data.func_decl.receiver_param)
@@ -996,15 +969,6 @@ void emit_program(Codegen *cg, Module *main_mod) {
         CallingConvention conv = sym->type->data.func.convention;
         if (conv == CALL_CONV_PEBBLE) {
           emit_string(cg, "__pebble_context context");
-        }
-
-        if (sym->decl->data.func_decl.receiver_param) {
-          if (conv == CALL_CONV_PEBBLE) {
-            emit_string(cg, ", ");
-          }
-          emit_type_name(cg, sym->type->data.func.recvr_type);
-          emit_string(cg, " ");
-          emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
         }
 
         for (size_t i = 0; i < param_count; i++) {

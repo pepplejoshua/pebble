@@ -109,7 +109,7 @@ struct Type {
 
     struct {
       CallingConvention convention;
-      Type *recvr_type;   // Receiver type for methods
+      bool is_method;
       Type **param_types; // Parameter types
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
@@ -195,7 +195,7 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
 Type *type_create_enum(char **variant_names, size_t variant_count, bool canonicalize, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
-Type *type_create_function(Type *recvr_type, Type **param_types, size_t param_count,
+Type *type_create_function(bool is_method, Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
                            Location loc);

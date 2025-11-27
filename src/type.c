@@ -399,7 +399,7 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
 
 // Create function type (no caching)
 // Create function type (with deduplication)
-Type *type_create_function(Type *recvr_type, Type **param_types,
+Type *type_create_function(bool is_method, Type **param_types,
                            size_t param_count, Type *return_type,
                            bool is_variadic, bool canonicalize,
                            CallingConvention convention, Location loc) {
@@ -412,7 +412,7 @@ Type *type_create_function(Type *recvr_type, Type **param_types,
                  .data.func.param_count = param_count,
                  .data.func.return_type = return_type,
                  .data.func.is_variadic = is_variadic,
-                 .data.func.recvr_type = recvr_type,
+                 .data.func.is_method = is_method,
                  .canonical_name = NULL};
 
     char *canonical_name = compute_canonical_name(&temp);
@@ -909,12 +909,6 @@ char *compute_canonical_name(Type *type) {
       break;
     }
 
-    char *recvr_name = NULL;
-    if (type->data.func.recvr_type) {
-      recvr_name = compute_canonical_name(type->data.func.recvr_type);
-      total_len += strlen(recvr_name) + 1;
-    }
-
     char **param_names = NULL;
     if (type->data.func.param_count > 0) {
       param_names = arena_alloc(&long_lived,
@@ -940,11 +934,6 @@ char *compute_canonical_name(Type *type) {
     case CALL_CONV_PEBBLE:
       strcat(result, "_pebble_");
       break;
-    }
-
-    if (recvr_name) {
-      strcat(result, "_");
-      strcat(result, recvr_name);
     }
 
     if (type->data.func.param_count > 0) {

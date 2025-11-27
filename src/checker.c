@@ -1110,17 +1110,25 @@ static bool check_function_signature(Symbol *sym) {
 
   // Resolve parameter types
   Type *recvr_type = NULL;
+  bool is_method = false;
   if (receiver) {
     recvr_type = resolve_type_expression(receiver->type);
     if (!recvr_type) {
       return false; // Error already reported
     }
+    param_count++;
+    is_method = true;
   }
 
   Type **param_types = NULL;
   if (param_count > 0) {
     param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
-    for (size_t i = 0; i < param_count; i++) {
+    if (is_method) {
+      param_types[0] = recvr_type;
+    }
+
+    for (size_t pt_i = (is_method ? 1 : 0); pt_i < param_count; pt_i++) {
+      size_t i = is_method ? pt_i - 1 : pt_i;
       if (is_variadic != -1) {
         checker_error(decl->loc,
                       "Parameter '%s' is marked as variadic but parameter "
@@ -1132,10 +1140,10 @@ static bool check_function_signature(Symbol *sym) {
         is_variadic = (int)i;
       }
 
-      param_types[i] = resolve_type_expression(params[i].type);
-      if (!param_types[i]) {
+      param_types[pt_i] = resolve_type_expression(params[i].type);
+      if (!param_types[pt_i]) {
         // Error already reported, but keep going to check other params
-        param_types[i] = type_int; // Use placeholder to continue
+        param_types[pt_i] = type_int; // Use placeholder to continue
       }
     }
   }
@@ -1147,10 +1155,11 @@ static bool check_function_signature(Symbol *sym) {
   }
 
   // Create function type
-  sym->type =
-      type_create_function(recvr_type, param_types, param_count, return_type,
-                           is_variadic != -1, true, convention, sym->decl->loc);
+  sym->type = type_create_function(recvr_type != NULL, param_types, param_count,
+                                   return_type, is_variadic != -1, true,
+                                   convention, sym->decl->loc);
 
+  printf("%s\n", type_name(sym->type));
   // Link the function as a method on the receiver
   if (receiver) {
     // Get the base type of the type, since we could have a pointer to another
@@ -1257,12 +1266,13 @@ static bool check_function_signature(Symbol *sym) {
       scope_add_symbol(func_scope, recvr_sym);
     }
 
-    for (size_t i = 0; i < param_count; i++) {
-      if (!param_types[i]) {
+    for (size_t pt_i = (is_method ? 1 : 0); pt_i < param_count; pt_i++) {
+      if (!param_types[pt_i]) {
         continue; // Skip if type resolution failed
       }
 
       // Create parameter symbol
+      size_t i = is_method ? pt_i - 1 : pt_i;
       Symbol *param_sym = symbol_create(params[i].name, SYMBOL_VARIABLE, decl);
       param_sym->type = param_types[i];
       param_sym->data.var.is_global = false; // Parameters are local
@@ -4635,6 +4645,13 @@ Type *check_expression(AstNode *expr) {
 
       // Verify it's a valid number
       if (*endptr != '\0' || index < 0) {
+        // Handle potential method access
+        for (size_t i = 0; i < base_type->method_count; i++) {
+          if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+            expr->resolved_type = base_type->method_types[i];
+            return base_type->method_types[i];
+          }
+        }
         checker_error(expr->loc, "tuple field must be a non-negative integer");
         return NULL;
       }
@@ -4658,6 +4675,13 @@ Type *check_expression(AstNode *expr) {
             type_create_pointer(base_type->data.slice.element, true, expr->loc);
         return expr->resolved_type;
       } else {
+        // Handle potential method access
+        for (size_t i = 0; i < base_type->method_count; i++) {
+          if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+            expr->resolved_type = base_type->method_types[i];
+            return base_type->method_types[i];
+          }
+        }
         checker_error(expr->loc, "slice has only 'data' and 'len' fields");
         return NULL;
       }
@@ -4666,6 +4690,13 @@ Type *check_expression(AstNode *expr) {
         expr->resolved_type = type_usize;
         return type_usize;
       } else {
+        // Handle potential method access
+        for (size_t i = 0; i < base_type->method_count; i++) {
+          if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+            expr->resolved_type = base_type->method_types[i];
+            return base_type->method_types[i];
+          }
+        }
         checker_error(expr->loc, "array has only 'len' field");
         return NULL;
       }
@@ -4673,6 +4704,13 @@ Type *check_expression(AstNode *expr) {
       if (strcmp(field_name, "is_some") == 0) {
         expr->resolved_type = type_bool;
         return type_bool;
+      }
+      // Handle potential method access
+      for (size_t i = 0; i < base_type->method_count; i++) {
+        if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+          expr->resolved_type = base_type->method_types[i];
+          return base_type->method_types[i];
+        }
       }
       checker_error(expr->loc, "%s has only 'is_some' field",
                     type_name(base_type));
@@ -4691,6 +4729,14 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
+      // Handle potential method access
+      for (size_t i = 0; i < base_type->method_count; i++) {
+        if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+          expr->resolved_type = base_type->method_types[i];
+          return base_type->method_types[i];
+        }
+      }
+
       checker_error(expr->loc, "struct has no field named '%s'", field_name);
       return NULL;
     } else if (base_type->kind == TYPE_UNION ||
@@ -4706,6 +4752,14 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
+      // Handle potential method access
+      for (size_t i = 0; i < base_type->method_count; i++) {
+        if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+          expr->resolved_type = base_type->method_types[i];
+          return base_type->method_types[i];
+        }
+      }
+
       checker_error(expr->loc, "union has no field named '%s'", field_name);
       return NULL;
     } else if (base_type->kind == TYPE_ENUM) {
@@ -4716,6 +4770,14 @@ Type *check_expression(AstNode *expr) {
         if (strcmp(variant_names[i], field_name) == 0) {
           expr->resolved_type = base_type;
           return base_type;
+        }
+      }
+
+      // Handle potential method access
+      for (size_t i = 0; i < base_type->method_count; i++) {
+        if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+          expr->resolved_type = base_type->method_types[i];
+          return base_type->method_types[i];
         }
       }
 
