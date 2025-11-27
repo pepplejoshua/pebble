@@ -1155,92 +1155,77 @@ static bool check_function_signature(Symbol *sym) {
   if (receiver) {
     // Get the base type of the type, since we could have a pointer to another
     // type here
-    Type *base_type = recvr_type;
-    while (true) {
-      if (base_type->kind == TYPE_POINTER) {
-        base_type = base_type->data.ptr.base;
-      } else {
-        break;
+    Type *base = recvr_type;
+    switch (base->kind) {
+    case TYPE_POINTER: {
+      base = base->data.ptr.base;
+      if (base->kind != TYPE_STRUCT) {
+        checker_error(decl->loc,
+                      "Attempt to define method %s on non-struct type '%s'",
+                      sym->reg_name, type_name(base));
+        return false;
       }
+      break;
+    }
+    case TYPE_STRUCT:
+      break;
+    default:
+      checker_error(decl->loc,
+                    "Attempt to define method %s on non-struct type '%s'",
+                    sym->reg_name, type_name(recvr_type));
+      return false;
     }
 
     // Make sure that name does not already exist
-    for (size_t i = 0; i < base_type->method_count; i++) {
-      if (strcmp(base_type->method_qualified_names[i], sym->name) == 0) {
+    for (size_t i = 0; i < base->method_count; i++) {
+      if (strcmp(base->method_qualified_names[i], sym->name) == 0) {
         // Redefinition
         checker_error(sym->decl->loc,
                       "Redefinition of method '%s' on type '%s'", sym->reg_name,
-                      type_name(base_type));
+                      type_name(base));
         return false;
       }
     }
 
     // Make sure that if this is a struct / union enum
     // we are not using a name that already exists on it
-    switch (base_type->kind) {
+    switch (base->kind) {
     case TYPE_STRUCT: {
-      for (size_t i = 0; i < base_type->data.struct_data.field_count; i++) {
-        if (strcmp(base_type->data.struct_data.field_names[i], sym->reg_name) ==
-            0) {
+      for (size_t i = 0; i < base->data.struct_data.field_count; i++) {
+        if (strcmp(base->data.struct_data.field_names[i], sym->reg_name) == 0) {
           // Colliding names
           checker_error(sym->decl->loc,
                         "Struct '%s' already has a field named '%s'",
-                        type_name(base_type), sym->reg_name);
+                        type_name(base), sym->reg_name);
           return false;
         }
       }
       break;
-    }
-    case TYPE_UNION: {
-      for (size_t i = 0; i < base_type->data.union_data.variant_count; i++) {
-        if (strcmp(base_type->data.union_data.variant_names[i],
-                   sym->reg_name) == 0) {
-          // Colliding names
-          checker_error(sym->decl->loc,
-                        "Union '%s' already has a variant named '%s'",
-                        type_name(base_type), sym->reg_name);
-          return false;
-        }
-      }
-      break;
-    }
-    case TYPE_ENUM: {
-      for (size_t i = 0; i < base_type->data.enum_data.variant_count; i++) {
-        if (strcmp(base_type->data.enum_data.variant_names[i], sym->reg_name) ==
-            0) {
-          // Colliding names
-          checker_error(sym->decl->loc,
-                        "Enum '%s' already has a variant named '%s'",
-                        type_name(base_type), sym->name);
-          return false;
-        }
-      }
     }
     default:
       break;
     }
 
-    if (base_type->method_count + 1 >= base_type->method_cap) {
-      size_t new_cap =
-          base_type->method_cap == 0 ? 4 : base_type->method_cap * 2;
+    if (base->method_count + 1 >= base->method_cap) {
+      size_t new_cap = base->method_cap == 0 ? 4 : base->method_cap * 2;
       Type **new_methods = arena_alloc(&long_lived, sizeof(Type *) * new_cap);
-      memcpy(new_methods, base_type->method_types, base_type->method_cap);
+      memcpy(new_methods, base->method_types, base->method_cap);
       char **new_names = arena_alloc(&long_lived, sizeof(char *) * new_cap);
-      memcpy(new_names, base_type->method_reg_names, base_type->method_cap);
+      memcpy(new_names, base->method_reg_names, base->method_cap);
       char **new_qualified_names =
           arena_alloc(&long_lived, sizeof(char *) * new_cap);
-      memcpy(new_qualified_names, base_type->method_qualified_names,
-             base_type->method_cap);
-      base_type->method_types = new_methods;
-      base_type->method_reg_names = new_names;
-      base_type->method_qualified_names = new_qualified_names;
-      base_type->method_cap = new_cap;
+      memcpy(new_qualified_names, base->method_qualified_names,
+             base->method_cap);
+      base->method_types = new_methods;
+      base->method_reg_names = new_names;
+      base->method_qualified_names = new_qualified_names;
+      base->method_cap = new_cap;
     }
 
-    base_type->method_reg_names[base_type->method_count] = sym->reg_name;
-    base_type->method_qualified_names[base_type->method_count] = sym->name;
-    base_type->method_types[base_type->method_count] = sym->type;
-    base_type->method_count++;
+    base->method_reg_names[base->method_count] = sym->reg_name;
+    base->method_qualified_names[base->method_count] = sym->name;
+    base->method_types[base->method_count] = sym->type;
+    base->method_count++;
   }
 
   // Add parameters as symbols in the function scope
@@ -4688,6 +4673,14 @@ Type *check_expression(AstNode *expr) {
         if (strcmp(field_names[i], field_name) == 0) {
           expr->resolved_type = field_types[i];
           return field_types[i];
+        }
+      }
+
+      // Handle potential method access
+      for (size_t i = 0; i < base_type->method_count; i++) {
+        if (strcmp(base_type->method_reg_names[i], field_name) == 0) {
+          expr->resolved_type = base_type->method_types[i];
+          return base_type->method_types[i];
         }
       }
 
