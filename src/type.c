@@ -912,7 +912,7 @@ char *compute_canonical_name(Type *type) {
     char *recvr_name = NULL;
     if (type->data.func.recvr_type) {
       recvr_name = compute_canonical_name(type->data.func.recvr_type);
-      total_len += strlen(recvr_name) + 1;
+      total_len += strlen(recvr_name) + 6;
     }
 
     char **param_names = NULL;
@@ -943,7 +943,7 @@ char *compute_canonical_name(Type *type) {
     }
 
     if (recvr_name) {
-      strcat(result, "_");
+      strcat(result, "_RECV_");
       strcat(result, recvr_name);
     }
 
@@ -1054,6 +1054,12 @@ char *type_name(Type *type) {
       len += 4; // "c" + space
     }
 
+    char *receiver_type_name = NULL;
+    if (type->data.func.recvr_type) {
+      receiver_type_name = type_name(type->data.func.recvr_type);
+      len += strlen(receiver_type_name + 3);
+    }
+
     for (size_t i = 0; i < num_params; i++) {
       param_ty_names[i] = type_name(type->data.func.param_types[i]);
       len += strlen(param_ty_names[i]);
@@ -1066,13 +1072,27 @@ char *type_name(Type *type) {
 
     // Step 2: Build the string
     char *fn_str = arena_alloc(&long_lived, len);
-    size_t offset = 4;
+    size_t offset = 3;
     if (conv == CALL_CONV_C) {
-      strcpy(fn_str, "fn \"c\" (");
-      offset = 8;
+      strcpy(fn_str, "fn \"c\" ");
+      offset = 7;
     } else {
-      strcpy(fn_str, "fn (");
+      strcpy(fn_str, "fn ");
     }
+
+    if (type->data.func.recvr_type) {
+      memcpy(fn_str + offset, "(", 1);
+      offset += 1;
+      size_t receiver_len = strlen(receiver_type_name);
+      memcpy(fn_str + offset, receiver_type_name, receiver_len);
+      offset += receiver_len;
+      memcpy(fn_str + offset, ") ", 2);
+      offset += 2;
+    }
+
+    memcpy(fn_str + offset, "(", 1);
+    offset += 1;
+
     for (size_t i = 0; i < num_params; i++) {
       size_t param_len = strlen(param_ty_names[i]);
       memcpy(fn_str + offset, param_ty_names[i], param_len);
