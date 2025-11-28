@@ -3870,7 +3870,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Handle direct references to methods
-    if (sym->type->data.func.recvr_type) {
+    if (sym->type->kind == TYPE_FUNCTION && sym->type->data.func.recvr_type) {
       Type *method_type = sym->type;
 
       // Return the DESUGARED function type (receiver as first param)
@@ -4902,6 +4902,28 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "'%s::%s' cannot be used as a value",
                     module_expr->data.ident.name, member_name);
       return NULL;
+    }
+
+    // Handle direct references to methods
+    if (sym->type->kind == TYPE_FUNCTION && sym->type->data.func.recvr_type) {
+      Type *method_type = sym->type;
+
+      // Return the DESUGARED function type (receiver as first param)
+      size_t new_param_count = method_type->data.func.param_count + 1;
+      Type **new_param_types =
+          arena_alloc(&long_lived, sizeof(Type *) * new_param_count);
+      new_param_types[0] = method_type->data.func.recvr_type;
+      memcpy(new_param_types + 1, method_type->data.func.param_types,
+             sizeof(Type *) * method_type->data.func.param_count);
+
+      Type *desugared_type =
+          type_create_function(NULL, new_param_types, new_param_count,
+                               method_type->data.func.return_type,
+                               method_type->data.func.is_variadic, true,
+                               method_type->data.func.convention, expr->loc);
+
+      expr->resolved_type = desugared_type;
+      return desugared_type;
     }
 
     expr->resolved_type = sym->type;
