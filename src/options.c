@@ -144,12 +144,9 @@ void append_library_string(char *str) {
       compiler_opts.linked_libraries_capacity) {
     size_t new_cap = compiler_opts.linked_libraries_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
-
-    char **new_libraries = arena_alloc(&long_lived, new_cap * sizeof(char *));
-    memcpy(new_libraries, compiler_opts.linked_libraries,
-           compiler_opts.linked_libraries_count * sizeof(char *));
-
-    compiler_opts.linked_libraries = new_libraries;
+    compiler_opts.linked_libraries = arena_realloc(
+        &long_lived, compiler_opts.linked_libraries,
+        new_cap * sizeof(char *));
   }
 
   compiler_opts.linked_libraries[compiler_opts.linked_libraries_count++] =
@@ -182,12 +179,8 @@ void append_library_path_string(char *str) {
     size_t new_cap = compiler_opts.lib_paths_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
 
-    char **new_library_paths =
-        arena_alloc(&long_lived, new_cap * sizeof(char *));
-    memcpy(new_library_paths, compiler_opts.lib_paths,
-           compiler_opts.lib_paths_count * sizeof(char *));
-
-    compiler_opts.lib_paths = new_library_paths;
+    compiler_opts.lib_paths =
+        arena_realloc(&long_lived, compiler_opts.lib_paths, new_cap * sizeof(char *));
   }
 
   compiler_opts.lib_paths[compiler_opts.lib_paths_count++] =
@@ -222,12 +215,8 @@ void append_include_path_string(char *str) {
     size_t new_cap = compiler_opts.include_paths_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
 
-    char **new_include_paths =
-        arena_alloc(&long_lived, new_cap * sizeof(char *));
-    memcpy(new_include_paths, compiler_opts.include_paths,
-           compiler_opts.include_paths_count * sizeof(char *));
-
-    compiler_opts.include_paths = new_include_paths;
+    compiler_opts.include_paths =
+        arena_realloc(&long_lived, compiler_opts.include_paths, new_cap * sizeof(char *));
   }
 
   compiler_opts.include_paths[compiler_opts.include_paths_count++] =
@@ -262,11 +251,7 @@ void append_header_string(char *str) {
     size_t new_cap = compiler_opts.local_headers_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
 
-    char **new_headers = arena_alloc(&long_lived, new_cap * sizeof(char *));
-    memcpy(new_headers, compiler_opts.local_headers,
-           compiler_opts.local_headers_count * sizeof(char *));
-
-    compiler_opts.local_headers = new_headers;
+    compiler_opts.local_headers = arena_realloc(&long_lived, compiler_opts.local_headers, new_cap * sizeof(char *));
   }
 
   compiler_opts.local_headers[compiler_opts.local_headers_count++] =
@@ -300,11 +285,7 @@ void append_system_header_string(char *str) {
     size_t new_cap = compiler_opts.system_headers_capacity;
     new_cap = new_cap == 0 ? 4 : new_cap * 2;
 
-    char **new_headers = arena_alloc(&long_lived, new_cap * sizeof(char *));
-    memcpy(new_headers, compiler_opts.system_headers,
-           compiler_opts.system_headers_count * sizeof(char *));
-
-    compiler_opts.system_headers = new_headers;
+    compiler_opts.system_headers = arena_realloc(&long_lived, compiler_opts.system_headers, new_cap * sizeof(char *));
   }
 
   compiler_opts.system_headers[compiler_opts.system_headers_count++] =

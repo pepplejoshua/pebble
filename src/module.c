@@ -369,12 +369,9 @@ bool collect_all_modules(Module *cur) {
 void append_module(Module *module, Module *imported) {
   if (module->import_count >= module->import_capacity) {
     module->import_capacity *= 2;
-    Module **new_modules =
-        arena_alloc(&long_lived, module->import_capacity * sizeof(Module *));
-    memcpy(new_modules, module->imported_modules,
-           module->import_count * sizeof(Module *));
-
-    module->imported_modules = new_modules;
+    module->imported_modules = arena_realloc(
+        &long_lived, module->imported_modules,
+        module->import_capacity * sizeof(Module *));
   }
 
   module->imported_modules[module->import_count++] = imported;

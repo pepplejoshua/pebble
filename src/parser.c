@@ -379,10 +379,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
 
       if (param_count >= param_capacity) {
         param_capacity *= 2;
-        FuncParam *new_params =
-            arena_alloc(&long_lived, param_capacity * sizeof(FuncParam));
-        memcpy(new_params, params, param_count * sizeof(FuncParam));
-        params = new_params;
+        params = arena_realloc(&long_lived, params, param_capacity * sizeof(FuncParam));
       }
 
       bool is_variadic = parser_match(parser, TOKEN_ELLIPSIS);
@@ -527,10 +524,7 @@ AstNode *parse_extern(Parser *parser) {
            parser_check(parser, TOKEN_LET) || parser_check(parser, TOKEN_VAR)) {
       if (count >= capacity) {
         capacity *= 2;
-        AstNode **new_externs =
-            arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-        memcpy(new_externs, externs, count * sizeof(AstNode *));
-        externs = new_externs;
+        externs = arena_realloc(&long_lived, externs, capacity * sizeof(AstNode *));
       }
 
       if (parser_match(parser, TOKEN_FN)) {
@@ -833,10 +827,7 @@ AstNode *parse_print_stmt(Parser *parser) {
   while (parser_match(parser, TOKEN_COMMA)) {
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_exprs =
-          arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-      memcpy(new_exprs, exprs, count * sizeof(AstNode *));
-      exprs = new_exprs;
+      exprs = arena_realloc(&long_lived, exprs, capacity * sizeof(AstNode *));
     }
 
     exprs[count++] = parse_expression(parser);
@@ -888,10 +879,7 @@ AstNode *parse_switch_stmt(Parser *parser) {
   while (parser_match(parser, TOKEN_CASE)) {
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_cases =
-          arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-      memcpy(new_cases, cases, count * sizeof(AstNode *));
-      cases = new_cases;
+      cases = arena_realloc(&long_lived, cases, capacity * sizeof(AstNode *));
     }
 
     AstNode *_case = alloc_node(AST_STMT_CASE, parser->previous.location);
@@ -907,11 +895,8 @@ AstNode *parse_switch_stmt(Parser *parser) {
       do {
         if (alt_condition_count >= capacity) {
           capacity *= 2;
-          AstNode **new_alt_cases =
-              arena_alloc(&long_lived, sizeof(AstNode *) * capacity);
-          memcpy(new_alt_cases, alt_cases,
-                 alt_condition_count * sizeof(AstNode *));
-          alt_cases = new_alt_cases;
+          alt_cases =
+              arena_realloc(&long_lived, alt_cases, sizeof(AstNode *) * capacity);
         }
 
         AstNode *alt_case =
@@ -1499,9 +1484,7 @@ AstNode *parse_postfix(Parser *parser) {
         do {
           if (type_arg_count >= type_arg_capacity) {
             type_arg_capacity *= 2;
-            AstNode **new_args = arena_alloc(&long_lived, sizeof(AstNode *));
-            memcpy(new_args, type_args, type_arg_count * sizeof(AstNode *));
-            type_args = new_args;
+            type_args = arena_realloc(&long_lived, type_args, sizeof(AstNode *));
           }
           type_args[type_arg_count++] = parse_type_expression(parser);
         } while (parser_match(parser, TOKEN_COMMA));
@@ -1546,14 +1529,10 @@ AstNode *parse_postfix(Parser *parser) {
               // Grow arrays if needed
               if (count >= capacity) {
                 capacity *= 2;
-                char **new_names =
-                    arena_alloc(&long_lived, capacity * sizeof(char *));
-                AstNode **new_values =
-                    arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-                memcpy(new_names, field_names, count * sizeof(char *));
-                memcpy(new_values, field_values, count * sizeof(AstNode *));
-                field_names = new_names;
-                field_values = new_values;
+                field_names =
+                    arena_realloc(&long_lived, field_names, capacity * sizeof(char *));
+                field_values =
+                    arena_realloc(&long_lived, field_values, capacity * sizeof(AstNode *));
               }
 
               // Parse field: IDENTIFIER = EXPR
@@ -1631,14 +1610,10 @@ AstNode *parse_postfix(Parser *parser) {
             // Grow arrays if needed
             if (count >= capacity) {
               capacity *= 2;
-              char **new_names =
-                  arena_alloc(&long_lived, capacity * sizeof(char *));
-              AstNode **new_values =
-                  arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-              memcpy(new_names, field_names, count * sizeof(char *));
-              memcpy(new_values, field_values, count * sizeof(AstNode *));
-              field_names = new_names;
-              field_values = new_values;
+              field_names =
+                  arena_realloc(&long_lived, field_names, capacity * sizeof(char *));
+              field_values =
+                  arena_realloc(&long_lived, field_values, capacity * sizeof(AstNode *));
             }
 
             // Parse field: IDENTIFIER = EXPR
@@ -1712,10 +1687,7 @@ AstNode *parse_call(Parser *parser, AstNode *func) {
 
       if (arg_count >= arg_capacity) {
         arg_capacity *= 2;
-        AstNode **new_args =
-            arena_alloc(&long_lived, arg_capacity * sizeof(AstNode *));
-        memcpy(new_args, args, arg_count * sizeof(AstNode *));
-        args = new_args;
+        args = arena_realloc(&long_lived, args, arg_capacity * sizeof(AstNode *));
       }
 
       args[arg_count++] = parse_expression(parser);
@@ -1824,10 +1796,7 @@ static AstNode *parse_interpolated_string(Parser *parser) {
     // Grow array if needed
     if (count >= capacity) {
       capacity *= 2;
-      AstNode **new_array =
-          arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-      memcpy(new_array, parts, count * sizeof(AstNode *));
-      parts = new_array;
+      parts = arena_realloc(&long_lived, parts, capacity * sizeof(AstNode *));
     }
 
     if (parser_match(parser, TOKEN_STRING)) {
@@ -1944,10 +1913,7 @@ AstNode *parse_primary(Parser *parser) {
         // Grow array if needed
         if (count >= capacity) {
           capacity *= 2;
-          AstNode **new_array =
-              arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-          memcpy(new_array, elements, count * sizeof(AstNode *));
-          elements = new_array;
+          elements = arena_realloc(&long_lived, elements, capacity * sizeof(AstNode *));
         }
 
         elements[count++] = parse_expression(parser);

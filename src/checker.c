@@ -563,9 +563,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
         size_t needed = offset + 1 + strlen(elem_name) + 1;
         if (needed > capacity) {
           capacity = needed * 2;
-          char *new_buf = arena_alloc(&long_lived, capacity);
-          memcpy(new_buf, canonical_name, offset);
-          canonical_name = new_buf;
+          canonical_name = arena_realloc(&long_lived, canonical_name, capacity);
         }
 
         offset += snprintf(canonical_name + offset, capacity - offset, "_%s",
@@ -602,9 +600,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
             offset + 1 + strlen(field_name) + 1 + strlen(type_name) + 1;
         if (needed > capacity) {
           capacity = needed * 2;
-          char *new_buf = arena_alloc(&long_lived, capacity);
-          memcpy(new_buf, canonical_name, offset);
-          canonical_name = new_buf;
+          canonical_name = arena_realloc(&long_lived, canonical_name, capacity);
         }
 
         offset += snprintf(canonical_name + offset, capacity - offset, "_%s_%s",
@@ -642,9 +638,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
             offset + 1 + strlen(field_name) + 1 + strlen(type_name) + 1;
         if (needed > capacity) {
           capacity = needed * 2;
-          char *new_buf = arena_alloc(&long_lived, capacity);
-          memcpy(new_buf, canonical_name, offset);
-          canonical_name = new_buf;
+          canonical_name = arena_realloc(&long_lived, canonical_name, capacity);
         }
 
         offset += snprintf(canonical_name + offset, capacity - offset, "_%s_%s",
@@ -671,9 +665,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
         size_t needed = offset + 1 + strlen(variant) + 1;
         if (needed > capacity) {
           capacity = needed * 2;
-          char *new_buf = arena_alloc(&long_lived, capacity);
-          memcpy(new_buf, canonical_name, offset);
-          canonical_name = new_buf;
+          canonical_name = arena_realloc(&long_lived, canonical_name, capacity);
         }
 
         offset += snprintf(canonical_name + offset, capacity - offset, "_%s",
@@ -1982,15 +1974,12 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     new_struct->data.struct_literal.field_count =
         target_type->data.struct_data.field_count;
     new_struct->data.struct_literal.field_names =
-        arena_alloc(&long_lived,
+        arena_realloc(&long_lived, new_struct->data.struct_literal.field_names,
                     sizeof(char *) * target_type->data.struct_data.field_count);
-    memcpy(new_struct->data.struct_literal.field_names,
-           expr->data.struct_literal.field_names,
-           sizeof(char *) * target_type->data.struct_data.field_count);
 
     new_struct->data.struct_literal.field_values =
-        arena_alloc(&long_lived, sizeof(AstNode *) *
-                                     target_type->data.struct_data.field_count);
+        arena_realloc(&long_lived, new_struct->data.struct_literal.field_values,
+          sizeof(AstNode *) * target_type->data.struct_data.field_count);
 
     // Recursively cast each element
     for (size_t i = 0; i < expr_type->data.struct_data.field_count; i++) {
