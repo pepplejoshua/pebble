@@ -1,6 +1,6 @@
 import "std:libc";
 
-extern {
+extern "m" {
     fn sqrt(x f64) f64;
     fn sin(x f64) f64;
     fn cos(x f64) f64;

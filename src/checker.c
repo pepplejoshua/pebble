@@ -1076,6 +1076,12 @@ static bool check_function_signature(Symbol *sym) {
   // Handle generic functions - give them a special type
   if (decl->kind == AST_DECL_FUNCTION &&
       decl->data.func_decl.type_param_count > 0) {
+    // Determine if we are handling a generic method
+    if (decl->data.func_decl.receiver_param) {
+      checker_error(decl->loc, "Generic methods are currently not supported");
+      return false;
+    }
+
     Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
     generic_type->data.generic_decl.decl = decl;
     sym->type = generic_type;
@@ -3534,6 +3540,7 @@ static MonoResult monomorphize_function(AstNode *generic_func,
   char *mangled_name =
       mangle_generic_name(generic_func->data.func_decl.full_qualified_name,
                           concrete_types, bindings->count);
+  char *reg_name = generic_func->data.func_decl.name;
 
   // Step 2: Check cache - return if already monomorphized
   MonoFuncInstance *existing = NULL;
@@ -3589,6 +3596,7 @@ static MonoResult monomorphize_function(AstNode *generic_func,
   Symbol *mono_sym = symbol_create(mangled_name, SYMBOL_FUNCTION, mono_func);
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
   mono_sym->is_mono = true;
+  mono_sym->reg_name = reg_name;
 
   // Cache BEFORE type-checking to break recursion cycles
   MonoFuncInstance *instance =
