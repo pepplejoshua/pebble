@@ -1157,24 +1157,8 @@ static bool check_function_signature(Symbol *sym) {
     // Get the base type of the type, since we could have a pointer to another
     // type here
     Type *base = recvr_type;
-    switch (base->kind) {
-    case TYPE_POINTER: {
+    while (base->kind == TYPE_POINTER) {
       base = base->data.ptr.base;
-      if (base->kind != TYPE_STRUCT) {
-        checker_error(decl->loc,
-                      "Attempt to define method %s on non-struct type '%s'",
-                      sym->reg_name, type_name(base));
-        return false;
-      }
-      break;
-    }
-    case TYPE_STRUCT:
-      break;
-    default:
-      checker_error(decl->loc,
-                    "Attempt to define method %s on non-struct type '%s'",
-                    sym->reg_name, type_name(recvr_type));
-      return false;
     }
 
     // Make sure that if this is a struct / union enum
@@ -1192,6 +1176,18 @@ static bool check_function_signature(Symbol *sym) {
       }
       break;
     }
+    case TYPE_UNION: {
+      for (size_t i = 0; i < base->data.union_data.variant_count; i++) {
+        if (strcmp(base->data.union_data.variant_names[i], sym->reg_name) ==
+            0) {
+          // Colliding names
+          checker_error(sym->decl->loc,
+                        "Union '%s' already has a variant named '%s'",
+                        type_name(base), sym->reg_name);
+          return false;
+        }
+      }
+    }
     default:
       break;
     }
@@ -1201,6 +1197,17 @@ static bool check_function_signature(Symbol *sym) {
       memset(base->method_data, 0, sizeof(MethodData));
     }
     MethodData *md = base->method_data;
+
+    // Make sure that name does not already exist
+    for (size_t i = 0; i < md->method_count; i++) {
+      if (strcmp(md->method_reg_names[i], sym->reg_name) == 0) {
+        // Redefinition
+        checker_warning(sym->decl->loc,
+                        "Found existing method '%s' on type '%s'",
+                        sym->reg_name, type_name(base));
+        checker_warning(md->method_types[i]->loc, "It was first declared here");
+      }
+    }
 
     // Track the function on the type for UFCS support
     if (md->method_count + 1 >= md->method_cap) {
@@ -4800,6 +4807,34 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "enum has no variant named '%s'", field_name);
       return NULL;
     } else {
+      MethodData *md = base_type->method_data;
+
+      if (md) {
+        // Handle potential method access
+        for (size_t i = 0; i < md->method_count; i++) {
+          if (strcmp(md->method_reg_names[i], field_name) == 0) {
+            Type *method_type = md->method_types[i];
+
+            // Create a method reference node that wraps this member access
+            AstNode *method_ref = arena_alloc(&long_lived, sizeof(AstNode));
+            method_ref->kind = AST_EXPR_METHOD_REF;
+            method_ref->loc = expr->loc;
+            method_ref->data.method_ref.receiver =
+                expr->data.member_expr.object;
+            method_ref->data.method_ref.method_qualified_name =
+                md->method_qualified_names[i];
+            method_ref->data.method_ref.method_name = md->method_reg_names[i];
+            method_ref->data.method_ref.method_type = method_type;
+
+            method_ref->resolved_type = method_type;
+
+            // REPLACE the member expr with method_ref
+            *expr = *method_ref;
+            return method_type;
+          }
+        }
+      }
+
       checker_error(object_expr->loc,
                     "member access requires struct, enum, array, "
                     "slice, or pointer to one of these");

@@ -419,6 +419,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
     Type *type = arena_alloc(&long_lived, sizeof(Type));
     *type = temp;
     type->canonical_name = canonical_name;
+    type->loc = loc;
     canonical_register(canonical_name, type);
     return type;
   } else {

@@ -64,9 +64,9 @@ typedef struct {
   size_t method_cap;
 
   // For generic functions linked to this type
-  AstNode **gen_decl;
-  size_t gen_func_count;
-  size_t gen_func_cap;
+  AstNode **generic_decl;
+  size_t gen_count;
+  size_t gen_cap;
 } MethodData;
 
 // Type structure
