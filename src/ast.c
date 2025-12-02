@@ -82,17 +82,6 @@ AstNode *clone_ast_node(AstNode *node) {
       clone->data.func_decl.params = NULL;
     }
 
-    if (node->data.func_decl.receiver_param) {
-      clone->data.func_decl.receiver_param =
-          arena_alloc(&long_lived, sizeof(FuncParam));
-      clone->data.func_decl.receiver_param->is_variadic = false;
-      clone->data.func_decl.receiver_param->name =
-          node->data.func_decl.receiver_param->name;
-      clone->data.func_decl.receiver_param->type =
-          clone_ast_node(node->data.func_decl.receiver_param->type);
-    } else {
-      clone->data.func_decl.receiver_param = NULL;
-    }
     break;
   }
 

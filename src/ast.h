@@ -129,7 +129,6 @@ struct AstNode {
       char *name;
       char *qualified_name;
       char *full_qualified_name;
-      FuncParam *receiver_param;
       FuncParam *params;
       size_t param_count;
       AstNode *return_type;
@@ -307,6 +306,7 @@ struct AstNode {
     struct {
       AstNode *object;
       char *member;
+      bool method_ref;
     } member_expr;
     struct {
         AstNode *receiver;            // NULL for unbound reference

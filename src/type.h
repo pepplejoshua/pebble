@@ -54,6 +54,21 @@ typedef enum {
   CALL_CONV_PEBBLE,
 } CallingConvention;
 
+typedef struct {
+  // For functions linked to this type
+  // For methods linked to this type
+  char **method_reg_names;
+  char **method_qualified_names;
+  Type **method_types;
+  size_t method_count;
+  size_t method_cap;
+
+  // For generic functions linked to this type
+  AstNode **gen_decl;
+  size_t gen_func_count;
+  size_t gen_func_cap;
+} MethodData;
+
 // Type structure
 struct Type {
   TypeKind kind;
@@ -67,12 +82,9 @@ struct Type {
   Type **generic_type_args;      // [int, string] for GenericType[int, string]
   size_t generic_type_arg_count; // 2
 
-  // For methods linked to this type
-  char **method_reg_names;
-  char **method_qualified_names;
-  Type **method_types;
-  size_t method_count;
-  size_t method_cap;
+  // For functions linked to the type to support UFCS
+  // (Uniform Function Calling Syntax)
+  MethodData *method_data;
 
   union {
     struct {
@@ -113,7 +125,6 @@ struct Type {
       size_t param_count; // Number of parameters
       Type *return_type;  // Return type
       bool is_variadic;
-      Type *recvr_type;   // Receiver type for methods
     } func;
 
     struct {
@@ -195,7 +206,7 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
 Type *type_create_enum(char **variant_names, size_t variant_count, bool canonicalize, Location loc);
 Type *type_create_tuple(Type **element_types, size_t element_count,
                         bool canonicalize, Location loc);
-Type *type_create_function(Type *recvr_type, Type **param_types, size_t param_count,
+Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
                            Location loc);
