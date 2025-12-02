@@ -322,8 +322,7 @@ AstNode *parse_import_stmt(Parser *parser) {
 }
 
 static AstNode *parse_function(Parser *parser, Location location, char *name,
-                               bool inlined, AstNode *convention,
-                               FuncParam *receiver) {
+                               bool inlined, AstNode *convention) {
   // Handle generic parameters
   // [GenericType, U]
   Token *type_params;
@@ -473,7 +472,6 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
     func->data.func_decl.convention = convention;
     func->data.func_decl.type_params = type_params;
     func->data.func_decl.type_param_count = type_param_count;
-    func->data.func_decl.receiver_param = receiver;
   } else {
     // Anonymous function
     func = alloc_node(AST_EXPR_FUNCTION, location);
@@ -503,24 +501,11 @@ AstNode *parse_function_decl(Parser *parser) {
     convention->data.str_lit.value = str_dup(parser->previous.lexeme);
   }
 
-  // fn (instanceName instanceType) name(params) return_type ...
-  FuncParam *receiver = NULL;
-  if (parser_match(parser, TOKEN_LPAREN)) {
-    receiver = arena_alloc(&long_lived, sizeof(FuncParam));
-    receiver->is_variadic = false;
-    Token receiver_name =
-        parser_consume(parser, TOKEN_IDENTIFIER, "Expected receiver name");
-    receiver->name = receiver_name.lexeme;
-    receiver->type = parse_type_expression(parser);
-    parser_consume(parser, TOKEN_RPAREN,
-                   "Expected ')' to terminate receiver argument");
-  }
-
   Token name =
       parser_consume(parser, TOKEN_IDENTIFIER, "Expected function name");
 
-  return parse_function(parser, name.location, name.lexeme, inlined, convention,
-                        receiver);
+  return parse_function(parser, name.location, name.lexeme, inlined,
+                        convention);
 }
 
 AstNode *parse_extern(Parser *parser) {
@@ -2094,7 +2079,7 @@ AstNode *parse_primary(Parser *parser) {
     }
 
     return parse_function(parser, parser->previous.location, NULL, inlined,
-                          convention, NULL);
+                          convention);
   }
 
   // Anonymous struct literal

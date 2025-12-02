@@ -756,18 +756,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "__pebble_context context");
       }
 
-      if (sym->decl->data.func_decl.receiver_param) {
-        if (conv == CALL_CONV_PEBBLE) {
-          emit_string(cg, ", ");
-        }
-        emit_type_name(cg, func->data.func.recvr_type);
-        emit_string(cg, " ");
-        emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
-      }
-
       for (size_t i = 0; i < param_count; i++) {
-        if (conv == CALL_CONV_PEBBLE || i > 0 ||
-            sym->decl->data.func_decl.receiver_param)
+        if (conv == CALL_CONV_PEBBLE || i > 0)
           emit_string(cg, ", ");
         emit_type_name(cg, func->data.func.param_types[i]);
         emit_string(cg, " ");
@@ -804,18 +794,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, "__pebble_context context");
         }
 
-        if (sym->decl->data.func_decl.receiver_param) {
-          if (conv == CALL_CONV_PEBBLE) {
-            emit_string(cg, ", ");
-          }
-          emit_type_name(cg, func->data.func.recvr_type);
-          emit_string(cg, " ");
-          emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
-        }
-
         for (size_t i = 0; i < param_count; i++) {
-          if (conv == CALL_CONV_PEBBLE || i > 0 ||
-              sym->decl->data.func_decl.receiver_param)
+          if (conv == CALL_CONV_PEBBLE || i > 0)
             emit_string(cg, ", ");
           emit_type_name(cg, func->data.func.param_types[i]);
           emit_string(cg, " ");
@@ -932,18 +912,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, "__pebble_context context");
       }
 
-      if (sym->decl->data.func_decl.receiver_param) {
-        if (conv == CALL_CONV_PEBBLE) {
-          emit_string(cg, ", ");
-        }
-        emit_type_name(cg, sym->type->data.func.recvr_type);
-        emit_string(cg, " ");
-        emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
-      }
-
       for (size_t i = 0; i < param_count; i++) {
-        if (conv == CALL_CONV_PEBBLE || i > 0 ||
-            sym->decl->data.func_decl.receiver_param)
+        if (conv == CALL_CONV_PEBBLE || i > 0)
           emit_string(cg, ", ");
         emit_type_name(cg, sym->type->data.func.param_types[i]);
         emit_string(cg, " ");
@@ -998,18 +968,8 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, "__pebble_context context");
         }
 
-        if (sym->decl->data.func_decl.receiver_param) {
-          if (conv == CALL_CONV_PEBBLE) {
-            emit_string(cg, ", ");
-          }
-          emit_type_name(cg, sym->type->data.func.recvr_type);
-          emit_string(cg, " ");
-          emit_string(cg, sym->decl->data.func_decl.receiver_param->name);
-        }
-
         for (size_t i = 0; i < param_count; i++) {
-          if (conv == CALL_CONV_PEBBLE || i > 0 ||
-              sym->decl->data.func_decl.receiver_param)
+          if (conv == CALL_CONV_PEBBLE || i > 0)
             emit_string(cg, ", ");
           emit_type_name(cg, sym->type->data.func.param_types[i]);
           emit_string(cg, " ");
@@ -3025,6 +2985,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   case AST_EXPR_METHOD_REF:
     write_expression(expr->data.method_ref.method_qualified_name);
     break;
+
   case AST_EXPR_CONTEXT:
     write_expression("context");
     break;
