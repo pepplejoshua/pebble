@@ -639,7 +639,7 @@ void type_system_init(void) {
   allocator_field_names[2] = "realloc";
   allocator_field_names[3] = "free";
 
-  Type **allocator_types = arena_alloc(&long_lived, 3 * sizeof(Type *));
+  Type **allocator_types = arena_alloc(&long_lived, 4 * sizeof(Type *));
   allocator_types[0] = void_ptr;
   allocator_types[1] = alloc_fn_t;
   allocator_types[2] = realloc_fn_t;
