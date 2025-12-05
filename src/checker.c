@@ -1146,7 +1146,8 @@ static bool check_function_signature(Symbol *sym) {
   // Link the function as a method on the receiver
   FuncParam *receiver = NULL;
   Type *recvr_type = NULL;
-  if (decl->data.func_decl.param_count > 0) {
+  if (decl->kind != AST_DECL_EXTERN_FUNC &&
+      decl->data.func_decl.param_count > 0) {
     receiver = decl->data.func_decl.params;
     if (!receiver->is_variadic) {
       recvr_type = param_types[0];
@@ -1187,6 +1188,7 @@ static bool check_function_signature(Symbol *sym) {
           return false;
         }
       }
+      break;
     }
     default:
       break;
@@ -1213,12 +1215,15 @@ static bool check_function_signature(Symbol *sym) {
     if (md->method_count + 1 >= md->method_cap) {
       size_t new_cap = md->method_cap == 0 ? 4 : md->method_cap * 2;
       Type **new_methods = arena_alloc(&long_lived, sizeof(Type *) * new_cap);
-      memcpy(new_methods, md->method_types, md->method_cap);
+      memcpy(new_methods, md->method_types, sizeof(Type *) * md->method_count);
       char **new_names = arena_alloc(&long_lived, sizeof(char *) * new_cap);
-      memcpy(new_names, md->method_reg_names, md->method_cap);
+      memcpy(new_names, md->method_reg_names,
+             sizeof(char *) * md->method_count);
       char **new_qualified_names =
           arena_alloc(&long_lived, sizeof(char *) * new_cap);
-      memcpy(new_qualified_names, md->method_qualified_names, md->method_cap);
+      memcpy(new_qualified_names, md->method_qualified_names,
+             sizeof(char *) * md->method_count);
+
       md->method_types = new_methods;
       md->method_reg_names = new_names;
       md->method_qualified_names = new_qualified_names;
