@@ -1510,9 +1510,9 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 
       emit_string(cg, ";\n");
     } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
-        type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
-        type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
+               type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+               type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+               type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
 
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
@@ -2096,7 +2096,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         } else {
           emit_expr(cg, expr);
         }
-      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE) {
+      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY ||
+                 type->kind == TYPE_TUPLE) {
         // Print struct/tuple with formatted representation
 
         // Wrap in a statement expression to create temporaries
@@ -2981,6 +2982,10 @@ void emit_expr(Codegen *cg, AstNode *expr) {
   }
 
   switch (expr->kind) {
+  case AST_EXPR_METHOD_REF:
+    write_expression(expr->data.method_ref.method_qualified_name);
+    break;
+
   case AST_EXPR_CONTEXT:
     write_expression("context");
     break;

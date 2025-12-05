@@ -81,6 +81,7 @@ AstNode *clone_ast_node(AstNode *node) {
     } else {
       clone->data.func_decl.params = NULL;
     }
+
     break;
   }
 

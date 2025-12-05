@@ -49,6 +49,7 @@ Type *type_create(TypeKind kind, Location loc) {
   type->kind = kind;
   type->loc = loc;
   type->used = false;
+  type->method_data = NULL;
   return type;
 }
 
@@ -418,6 +419,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
     Type *type = arena_alloc(&long_lived, sizeof(Type));
     *type = temp;
     type->canonical_name = canonical_name;
+    type->loc = loc;
     canonical_register(canonical_name, type);
     return type;
   } else {
@@ -1048,13 +1050,17 @@ char *type_name(Type *type) {
 
     // Step 2: Build the string
     char *fn_str = arena_alloc(&long_lived, len);
-    size_t offset = 4;
+    size_t offset = 3;
     if (conv == CALL_CONV_C) {
-      strcpy(fn_str, "fn \"c\" (");
-      offset = 8;
+      strcpy(fn_str, "fn \"c\" ");
+      offset = 7;
     } else {
-      strcpy(fn_str, "fn (");
+      strcpy(fn_str, "fn ");
     }
+
+    memcpy(fn_str + offset, "(", 1);
+    offset += 1;
+
     for (size_t i = 0; i < num_params; i++) {
       size_t param_len = strlen(param_ty_names[i]);
       memcpy(fn_str + offset, param_ty_names[i], param_len);

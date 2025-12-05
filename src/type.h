@@ -54,6 +54,21 @@ typedef enum {
   CALL_CONV_PEBBLE,
 } CallingConvention;
 
+typedef struct {
+  // For functions linked to this type
+  // For methods linked to this type
+  char **method_reg_names;
+  char **method_qualified_names;
+  Type **method_types;
+  size_t method_count;
+  size_t method_cap;
+
+  // For generic functions linked to this type
+  AstNode **generic_decl;
+  size_t gen_count;
+  size_t gen_cap;
+} MethodData;
+
 // Type structure
 struct Type {
   TypeKind kind;
@@ -66,6 +81,10 @@ struct Type {
   // For monomorphized generics, store what it was specialized with
   Type **generic_type_args;      // [int, string] for GenericType[int, string]
   size_t generic_type_arg_count; // 2
+
+  // For functions linked to the type to support UFCS
+  // (Uniform Function Calling Syntax)
+  MethodData *method_data;
 
   union {
     struct {

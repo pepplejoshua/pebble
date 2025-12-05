@@ -324,7 +324,7 @@ AstNode *parse_import_stmt(Parser *parser) {
 static AstNode *parse_function(Parser *parser, Location location, char *name,
                                bool inlined, AstNode *convention) {
   // Handle generic parameters
-  // <GenericType, U>
+  // [GenericType, U]
   Token *type_params;
   size_t type_param_count = 0;
   if (parser_match(parser, TOKEN_LBRACKET)) {
@@ -491,9 +491,10 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
 AstNode *parse_function_decl(Parser *parser) {
   // fn name(params) return_type { body }
   // fn name(params) return_type => expr
-
+  // fn inline name(params) return_type ...
   bool inlined = parser_match(parser, TOKEN_INLINE);
 
+  // fn "c" name(params) ...
   AstNode *convention = NULL;
   if (parser_match(parser, TOKEN_STRING)) {
     convention = alloc_node(AST_EXPR_LITERAL_STRING, parser->previous.location);

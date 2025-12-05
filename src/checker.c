@@ -23,6 +23,7 @@ typedef struct {
   bool has_errors;
   int error_count;
   bool in_type_resolution;
+  bool require_type_args_for_resolution;
   bool in_loop;
   bool in_defer;
   size_t anonymous_functions;
@@ -36,6 +37,7 @@ void checker_init(Module *main_mod) {
   checker_state.has_errors = false;
   checker_state.error_count = 0;
   checker_state.in_type_resolution = false;
+  checker_state.require_type_args_for_resolution = false;
   checker_state.in_loop = false;
   checker_state.anonymous_functions = 0;
   checker_state.current_module = main_mod;
@@ -1137,9 +1139,102 @@ static bool check_function_signature(Symbol *sym) {
   }
 
   // Create function type
-  sym->type = type_create_function(param_types, param_count, return_type,
-                                   is_variadic != -1, false, convention,
-                                   sym->decl->loc);
+  sym->type =
+      type_create_function(param_types, param_count, return_type,
+                           is_variadic != -1, true, convention, sym->decl->loc);
+
+  // Link the function as a method on the receiver
+  FuncParam *receiver = NULL;
+  Type *recvr_type = NULL;
+  if (decl->kind != AST_DECL_EXTERN_FUNC &&
+      decl->data.func_decl.param_count > 0) {
+    receiver = decl->data.func_decl.params;
+    if (!receiver->is_variadic) {
+      recvr_type = param_types[0];
+    }
+  }
+
+  if (receiver) {
+    // Get the base type of the type, since we could have a pointer to another
+    // type here
+    Type *base = recvr_type;
+    while (base->kind == TYPE_POINTER) {
+      base = base->data.ptr.base;
+    }
+
+    // Make sure that if this is a struct / union enum
+    // we are not using a name that already exists on it
+    switch (base->kind) {
+    case TYPE_STRUCT: {
+      for (size_t i = 0; i < base->data.struct_data.field_count; i++) {
+        if (strcmp(base->data.struct_data.field_names[i], sym->reg_name) == 0) {
+          // Colliding names
+          checker_error(sym->decl->loc,
+                        "Struct '%s' already has a field named '%s'",
+                        type_name(base), sym->reg_name);
+          return false;
+        }
+      }
+      break;
+    }
+    case TYPE_UNION: {
+      for (size_t i = 0; i < base->data.union_data.variant_count; i++) {
+        if (strcmp(base->data.union_data.variant_names[i], sym->reg_name) ==
+            0) {
+          // Colliding names
+          checker_error(sym->decl->loc,
+                        "Union '%s' already has a variant named '%s'",
+                        type_name(base), sym->reg_name);
+          return false;
+        }
+      }
+      break;
+    }
+    default:
+      break;
+    }
+
+    if (!base->method_data) {
+      base->method_data = arena_alloc(&long_lived, sizeof(MethodData));
+      memset(base->method_data, 0, sizeof(MethodData));
+    }
+    MethodData *md = base->method_data;
+
+    // Make sure that name does not already exist
+    for (size_t i = 0; i < md->method_count; i++) {
+      if (strcmp(md->method_reg_names[i], sym->reg_name) == 0) {
+        // Redefinition
+        checker_warning(sym->decl->loc,
+                        "Found existing method '%s' on type '%s'",
+                        sym->reg_name, type_name(base));
+        checker_warning(md->method_types[i]->loc, "It was first declared here");
+      }
+    }
+
+    // Track the function on the type for UFCS support
+    if (md->method_count + 1 >= md->method_cap) {
+      size_t new_cap = md->method_cap == 0 ? 4 : md->method_cap * 2;
+      Type **new_methods = arena_alloc(&long_lived, sizeof(Type *) * new_cap);
+      memcpy(new_methods, md->method_types, sizeof(Type *) * md->method_count);
+      char **new_names = arena_alloc(&long_lived, sizeof(char *) * new_cap);
+      memcpy(new_names, md->method_reg_names,
+             sizeof(char *) * md->method_count);
+      char **new_qualified_names =
+          arena_alloc(&long_lived, sizeof(char *) * new_cap);
+      memcpy(new_qualified_names, md->method_qualified_names,
+             sizeof(char *) * md->method_count);
+
+      md->method_types = new_methods;
+      md->method_reg_names = new_names;
+      md->method_qualified_names = new_qualified_names;
+      md->method_cap = new_cap;
+    }
+
+    md->method_reg_names[md->method_count] = sym->reg_name;
+    md->method_qualified_names[md->method_count] = sym->name;
+    md->method_types[md->method_count] = sym->type;
+    md->method_count++;
+  }
 
   // Add parameters as symbols in the function scope
   bool no_error = true;
@@ -1147,6 +1242,7 @@ static bool check_function_signature(Symbol *sym) {
     // Create function's local scope with global as parent
     Scope *func_scope = scope_create(checker_state.current_module->scope);
     sym->data.func.local_scope = func_scope;
+
     for (size_t i = 0; i < param_count; i++) {
       if (!param_types[i]) {
         continue; // Skip if type resolution failed
@@ -1327,6 +1423,11 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Handle generic types
     if (type->kind == TYPE_GENERIC_TYPE_DECL) {
       if (type_arg_count == 0) {
+        if (!checker_state.require_type_args_for_resolution) {
+          // We are not expecting to actually make the concrete type just yet
+          // This is useful for handling generic methods on generic types
+          return type;
+        }
         checker_error(type_expr->loc,
                       "generic type '%s' requires type arguments", name);
         return NULL;
@@ -1376,6 +1477,11 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Handle generic types in qualified names
     if (type->kind == TYPE_GENERIC_TYPE_DECL) {
       if (type_arg_count == 0) {
+        if (!checker_state.require_type_args_for_resolution) {
+          // We are not expecting to actually make the concrete type just yet
+          // This is useful for handling generic methods on generic types
+          return type;
+        }
         checker_error(type_expr->loc,
                       "generic type '%s::%s' requires type arguments", mod,
                       mem);
@@ -3433,6 +3539,7 @@ static MonoResult monomorphize_function(AstNode *generic_func,
   char *mangled_name =
       mangle_generic_name(generic_func->data.func_decl.full_qualified_name,
                           concrete_types, bindings->count);
+  char *reg_name = generic_func->data.func_decl.name;
 
   // Step 2: Check cache - return if already monomorphized
   MonoFuncInstance *existing = NULL;
@@ -3488,6 +3595,7 @@ static MonoResult monomorphize_function(AstNode *generic_func,
   Symbol *mono_sym = symbol_create(mangled_name, SYMBOL_FUNCTION, mono_func);
   scope_add_symbol(checker_state.current_module->scope, mono_sym);
   mono_sym->is_mono = true;
+  mono_sym->reg_name = reg_name;
 
   // Cache BEFORE type-checking to break recursion cycles
   MonoFuncInstance *instance =
@@ -4073,6 +4181,70 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    if (func_expr->kind == AST_EXPR_METHOD_REF) {
+      AstNode *receiver = func_expr->data.method_ref.receiver;
+      Type *method_type = func_expr->data.method_ref.method_type;
+      char *method_name = func_expr->data.method_ref.method_qualified_name;
+      char *member_name = func_expr->data.method_ref.method_name;
+
+      // Auto-adjust receiver type (& or *)
+      AstNode *adjusted_receiver = receiver;
+      Type *receiver_type = receiver->resolved_type;
+      Type *expected_receiver = method_type->data.func.param_types[0];
+
+      // Auto-insert & or * as needed
+      if (receiver_type->kind != TYPE_POINTER &&
+          expected_receiver->kind == TYPE_POINTER &&
+          type_equals(receiver_type, expected_receiver->data.ptr.base)) {
+
+        // Need to take address: d -> &d
+        AstNode *addr_node = arena_alloc(&long_lived, sizeof(AstNode));
+        addr_node->kind = AST_EXPR_UNARY_OP;
+        addr_node->loc = receiver->loc;
+        addr_node->data.unop.op = UNOP_ADDR;
+        addr_node->data.unop.operand = receiver;
+        addr_node->resolved_type = expected_receiver;
+        adjusted_receiver = addr_node;
+      } else if (receiver_type->kind == TYPE_POINTER &&
+                 expected_receiver->kind != TYPE_POINTER &&
+                 type_equals(receiver_type->data.ptr.base, expected_receiver)) {
+
+        // Need to deref: ptr -> *ptr
+        AstNode *deref_node = arena_alloc(&long_lived, sizeof(AstNode));
+        deref_node->kind = AST_EXPR_UNARY_OP;
+        deref_node->loc = receiver->loc;
+        deref_node->data.unop.op = UNOP_DEREF;
+        deref_node->data.unop.operand = receiver;
+        deref_node->resolved_type = expected_receiver;
+        adjusted_receiver = deref_node;
+      }
+
+      // Create identifier for the function
+      AstNode *new_func = arena_alloc(&long_lived, sizeof(AstNode));
+      new_func->kind = AST_EXPR_IDENTIFIER;
+      new_func->loc = func_expr->loc;
+      new_func->data.ident.name = member_name;
+      new_func->data.ident.qualified_name = method_name;
+      new_func->data.ident.full_qualified_name = method_name;
+      new_func->resolved_type = call_type; // Already desugared type
+
+      // Prepend receiver to args
+      size_t new_arg_count = expr->data.call.arg_count + 1;
+      AstNode **new_args =
+          arena_alloc(&long_lived, sizeof(AstNode *) * new_arg_count);
+      new_args[0] = adjusted_receiver;
+      memcpy(new_args + 1, expr->data.call.args,
+             sizeof(AstNode *) * expr->data.call.arg_count);
+
+      expr->data.call.func = new_func;
+      expr->data.call.args = new_args;
+      expr->data.call.arg_count = new_arg_count;
+
+      func_expr = new_func;
+      args = new_args;
+      arg_count = new_arg_count;
+    }
+
     // Check if this is a generic function
     if (call_type->kind == TYPE_GENERIC_FUNCTION) {
       AstNode *generic_decl = call_type->data.generic_decl.decl;
@@ -4581,6 +4753,34 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
+      MethodData *md = base_type->method_data;
+
+      if (md) {
+        // Handle potential method access
+        for (size_t i = 0; i < md->method_count; i++) {
+          if (strcmp(md->method_reg_names[i], field_name) == 0) {
+            Type *method_type = md->method_types[i];
+
+            // Create a method reference node that wraps this member access
+            AstNode *method_ref = arena_alloc(&long_lived, sizeof(AstNode));
+            method_ref->kind = AST_EXPR_METHOD_REF;
+            method_ref->loc = expr->loc;
+            method_ref->data.method_ref.receiver =
+                expr->data.member_expr.object;
+            method_ref->data.method_ref.method_qualified_name =
+                md->method_qualified_names[i];
+            method_ref->data.method_ref.method_name = md->method_reg_names[i];
+            method_ref->data.method_ref.method_type = method_type;
+
+            method_ref->resolved_type = method_type;
+
+            // REPLACE the member expr with method_ref
+            *expr = *method_ref;
+            return method_type;
+          }
+        }
+      }
+
       checker_error(expr->loc, "struct has no field named '%s'", field_name);
       return NULL;
     } else if (base_type->kind == TYPE_UNION ||
@@ -4612,6 +4812,34 @@ Type *check_expression(AstNode *expr) {
       checker_error(expr->loc, "enum has no variant named '%s'", field_name);
       return NULL;
     } else {
+      MethodData *md = base_type->method_data;
+
+      if (md) {
+        // Handle potential method access
+        for (size_t i = 0; i < md->method_count; i++) {
+          if (strcmp(md->method_reg_names[i], field_name) == 0) {
+            Type *method_type = md->method_types[i];
+
+            // Create a method reference node that wraps this member access
+            AstNode *method_ref = arena_alloc(&long_lived, sizeof(AstNode));
+            method_ref->kind = AST_EXPR_METHOD_REF;
+            method_ref->loc = expr->loc;
+            method_ref->data.method_ref.receiver =
+                expr->data.member_expr.object;
+            method_ref->data.method_ref.method_qualified_name =
+                md->method_qualified_names[i];
+            method_ref->data.method_ref.method_name = md->method_reg_names[i];
+            method_ref->data.method_ref.method_type = method_type;
+
+            method_ref->resolved_type = method_type;
+
+            // REPLACE the member expr with method_ref
+            *expr = *method_ref;
+            return method_type;
+          }
+        }
+      }
+
       checker_error(object_expr->loc,
                     "member access requires struct, enum, array, "
                     "slice, or pointer to one of these");
@@ -5622,6 +5850,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Add to current scope
     Symbol *var_sym = symbol_create(name, SYMBOL_VARIABLE, stmt);
     var_sym->type = var_type;
+    var_sym->reg_name = name;
     var_sym->data.var.is_global = false;
     stmt->resolved_type = var_type;
     scope_add_symbol(current_scope, var_sym);
@@ -5697,6 +5926,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Add to current scope
     Symbol *const_sym = symbol_create(name, SYMBOL_CONSTANT, stmt);
     const_sym->type = const_type;
+    const_sym->reg_name = name;
     stmt->resolved_type = const_type;
     scope_add_symbol(current_scope, const_sym);
     return false;
