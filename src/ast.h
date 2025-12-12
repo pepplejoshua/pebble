@@ -305,6 +305,8 @@ struct AstNode {
     struct {
       AstNode *object;
       char *member;
+      bool is_method_ref;
+      char *method_qualified_name;
     } member_expr;
     struct {
       char *member;
@@ -411,6 +413,8 @@ struct AstNode {
       char **field_names;
       AstNode **field_types;
       size_t field_count;
+      AstNode **methods;
+      size_t method_count;
     } type_struct;
     struct {
       bool is_tagged;
