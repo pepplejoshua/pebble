@@ -5003,7 +5003,33 @@ Type *check_expression(AstNode *expr) {
         char *qualified_name = method_qualified_names[i];
         char *reg_name = method_reg_names[i];
         if (strcmp(reg_name, field_name) == 0) {
-          // Found the method!
+          // Check if this is an associated function by examining the
+          // function type
+          Type *method_func_type = method_types[i];
+          if (method_func_type->kind == TYPE_FUNCTION) {
+            bool is_associated = true;
+
+            if (method_func_type->data.func.param_count > 0) {
+              Type *first_param_type =
+                  method_func_type->data.func.param_types[0];
+              // If first param is the struct type (or pointer to it), it's an
+              // instance method
+              if (first_param_type == base_type ||
+                  (first_param_type->kind == TYPE_POINTER &&
+                   first_param_type->data.ptr.base == base_type)) {
+                is_associated = false;
+              }
+            }
+
+            if (is_associated) {
+              checker_error(expr->loc,
+                            "Cannot call associated function '%s' on instance, "
+                            "use '%s.%s' instead",
+                            reg_name, type_name(base_type), reg_name);
+              return NULL;
+            }
+          }
+
           expr->data.member_expr.is_method_ref = true;
           expr->data.member_expr.method_qualified_name = qualified_name;
           expr->resolved_type = method_types[i];
