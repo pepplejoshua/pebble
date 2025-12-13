@@ -86,6 +86,10 @@ struct Type {
       Type **field_types; // Array of field types
       size_t field_count; // Number of fields
       bool builtin;
+      char **method_qualified_names;
+      char **method_reg_names;
+      Type **method_types;
+      size_t method_count;
     } struct_data;
 
     struct {

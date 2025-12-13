@@ -102,6 +102,8 @@ Symbol *symbol_create(const char *name, SymbolKind kind, AstNode *decl) {
   symbol->decl = decl;
   symbol->type = NULL; // Filled in pass 3
   symbol->is_mono = false;
+  symbol->is_method = false;
+  symbol->containing_struct_type = NULL;
 
   // Initialize kind-specific data
   switch (kind) {
