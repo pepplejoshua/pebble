@@ -4755,6 +4755,156 @@ Type *check_expression(AstNode *expr) {
     AstNode *object_expr = expr->data.member_expr.object;
     const char *field_name = expr->data.member_expr.member;
 
+    // Check if the object is a type. This will allow associated function access
+    if (object_expr->kind == AST_EXPR_IDENTIFIER) {
+      // TODO: Handle case where there are type arguments.
+      Symbol *sym = scope_lookup(checker_state.current_module->scope,
+                                 current_scope, object_expr->data.ident.name,
+                                 checker_state.current_module->name);
+
+      if (sym && sym->kind == SYMBOL_TYPE) {
+        // Check for associated function
+        Type *type = sym->type;
+        if (type->kind != TYPE_STRUCT) {
+          checker_error(expr->loc,
+                        "Only struct types can have associated functions");
+          return NULL;
+        }
+
+        // Look through the struct's methods for associated functions
+        size_t method_count = type->data.struct_data.method_count;
+        char **method_qualified_names =
+            type->data.struct_data.method_qualified_names;
+        char **method_reg_names = type->data.struct_data.method_reg_names;
+        Type **method_types = type->data.struct_data.method_types;
+
+        for (size_t i = 0; i < method_count; i++) {
+          if (!method_qualified_names[i] || !method_types[i] ||
+              !method_reg_names[i]) {
+            continue;
+          }
+
+          char *reg_name = method_reg_names[i];
+          if (strcmp(reg_name, field_name) == 0) {
+            // Check if it's an associated function by checking the actual
+            // function
+            char *qualified_name = method_qualified_names[i];
+            Symbol *method_sym = scope_lookup_local(
+                checker_state.current_module->scope, qualified_name);
+
+            if (method_sym && method_sym->decl &&
+                method_sym->decl->kind == AST_DECL_FUNCTION) {
+              AstNode *method_decl = method_sym->decl;
+              bool is_associated = true;
+
+              if (method_decl->data.func_decl.param_count > 0) {
+                FuncParam *first_param = &method_decl->data.func_decl.params[0];
+                if (strcmp(first_param->name, "self") == 0) {
+                  is_associated = false;
+                }
+              }
+
+              if (is_associated) {
+                // Found associated function!
+                expr->data.member_expr.is_method_ref = true;
+                expr->data.member_expr.is_associated_function = true;
+                expr->data.member_expr.method_qualified_name = qualified_name;
+                expr->resolved_type = method_types[i];
+                return method_types[i];
+              } else {
+                checker_error(expr->loc,
+                              "Cannot call instance method '%s' on type",
+                              reg_name);
+                return NULL;
+              }
+            }
+          }
+        }
+
+        checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+                      type_name(type), field_name);
+        return NULL;
+      }
+    } else if (object_expr->kind == AST_EXPR_MODULE_MEMBER) {
+      AstNode *module_expr = object_expr->data.mod_member_expr.module;
+      const char *member_name = object_expr->data.mod_member_expr.member;
+
+      Module *module = lookup_imported_module(checker_state.current_module,
+                                              module_expr->data.ident.name);
+      if (!module) {
+        checker_error(expr->loc, "cannot find module '%s'",
+                      module_expr->data.ident.name);
+        return NULL;
+      }
+
+      char *prefix = prepend(module->name, "__");
+      char *qualified_name = prepend(prefix, member_name);
+      Symbol *sym = scope_lookup_local(module->scope, qualified_name);
+
+      if (sym && sym->kind == SYMBOL_TYPE && sym->type->kind == TYPE_STRUCT) {
+        // Copy the same method lookup logic from the local type case
+        Type *type = sym->type;
+        size_t method_count = type->data.struct_data.method_count;
+        char **method_qualified_names =
+            type->data.struct_data.method_qualified_names;
+        char **method_reg_names = type->data.struct_data.method_reg_names;
+        Type **method_types = type->data.struct_data.method_types;
+
+        for (size_t i = 0; i < method_count; i++) {
+          if (!method_qualified_names[i] || !method_types[i] ||
+              !method_reg_names[i]) {
+            continue;
+          }
+
+          char *reg_name = method_reg_names[i];
+          if (strcmp(reg_name, field_name) == 0) {
+            char *qualified_method_name = method_qualified_names[i];
+            Symbol *method_sym =
+                scope_lookup_local(module->scope, qualified_method_name);
+
+            if (method_sym && method_sym->decl &&
+                method_sym->decl->kind == AST_DECL_FUNCTION) {
+              AstNode *method_decl = method_sym->decl;
+              bool is_associated = true;
+
+              if (method_decl->data.func_decl.param_count > 0) {
+                FuncParam *first_param = &method_decl->data.func_decl.params[0];
+                if (strcmp(first_param->name, "self") == 0) {
+                  is_associated = false;
+                }
+              }
+
+              if (is_associated) {
+                expr->data.member_expr.is_method_ref = true;
+                expr->data.member_expr.is_associated_function = true;
+                expr->data.member_expr.method_qualified_name =
+                    qualified_method_name;
+                expr->resolved_type = method_types[i];
+                return method_types[i];
+              } else {
+                checker_error(expr->loc,
+                              "Cannot call instance method '%s' on type",
+                              reg_name);
+                return NULL;
+              }
+            }
+          }
+        }
+
+        checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+                      type_name(type), field_name);
+        return NULL;
+      } else if (sym) {
+        checker_error(expr->loc, "'%s::%s' is not a struct type",
+                      module_expr->data.ident.name, member_name);
+        return NULL;
+      } else {
+        checker_error(expr->loc, "undefined name '%s::%s'",
+                      module_expr->data.ident.name, member_name);
+        return NULL;
+      }
+    }
+
     // Check the object expression
     Type *object_type = check_expression(object_expr);
     if (!object_type) {
