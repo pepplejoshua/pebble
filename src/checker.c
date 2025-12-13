@@ -1130,10 +1130,21 @@ static bool check_function_signature(Symbol *sym) {
     }
   }
 
+  // Resolve return type
+  Type *return_type = resolve_type_expression(return_type_expr);
+  if (!return_type) {
+    return false; // Error already reported
+  }
+
+  // Create function type
+  sym->type = type_create_function(param_types, param_count, return_type,
+                                   is_variadic != -1, false, convention,
+                                   sym->decl->loc);
+
   Type *receiver_struct_type = NULL;
-  if (sym->is_method && decl->kind == AST_DECL_FUNCTION && param_count > 0) {
+  if (sym->is_method && decl->kind == AST_DECL_FUNCTION) {
     // First parameter must be named "self"
-    if (strcmp(params[0].name, "self") == 0) {
+    if (param_count > 0 && strcmp(params[0].name, "self") == 0) {
       // Extract receiver type from self parameter
       Type *self_type = param_types[0];
 
@@ -1151,7 +1162,7 @@ static bool check_function_signature(Symbol *sym) {
                       decl->data.func_decl.name);
         receiver_struct_type = NULL;
       } else {
-        // NEW: Validate that self type matches the containing struct
+        // Validate that self type matches the containing struct
         if (!type_equals(receiver_struct_type, sym->containing_struct_type)) {
           checker_error(decl->loc,
                         "Method '%s' self parameter type '%s' doesn't match "
@@ -1163,20 +1174,23 @@ static bool check_function_signature(Symbol *sym) {
         }
       }
     } else {
-      // TODO: associated function
+      // Associated function - first param is NOT "self" (or no params)
+      // Store its type on the containing struct
+      if (sym->containing_struct_type) {
+        char *qualified_name = decl->data.func_decl.qualified_name;
+        Type *struct_type = sym->containing_struct_type;
+
+        for (size_t i = 0; i < struct_type->data.struct_data.method_count;
+             i++) {
+          if (strcmp(struct_type->data.struct_data.method_qualified_names[i],
+                     qualified_name) == 0) {
+            struct_type->data.struct_data.method_types[i] = sym->type;
+            break;
+          }
+        }
+      }
     }
   }
-
-  // Resolve return type
-  Type *return_type = resolve_type_expression(return_type_expr);
-  if (!return_type) {
-    return false; // Error already reported
-  }
-
-  // Create function type
-  sym->type = type_create_function(param_types, param_count, return_type,
-                                   is_variadic != -1, false, convention,
-                                   sym->decl->loc);
 
   if (receiver_struct_type) {
     char *qualified_name = decl->data.func_decl.qualified_name;
@@ -4211,86 +4225,107 @@ Type *check_expression(AstNode *expr) {
 
     if (func_expr->kind == AST_EXPR_MEMBER &&
         func_expr->data.member_expr.is_method_ref) {
-      // Rewrite it as a function call
-      AstNode *object = func_expr->data.member_expr.object;
       char *qualified_method_name =
           func_expr->data.member_expr.method_qualified_name;
 
-      // Get the method's function type to check the first parameter (self) type
-      Type *method_func_type = call_type;
-      if (method_func_type->kind != TYPE_FUNCTION ||
-          method_func_type->data.func.param_count == 0) {
-        checker_error(func_expr->loc, "Invalid method type");
-        return NULL;
-      }
+      if (func_expr->data.member_expr.is_associated_function) {
+        // Associated function call - just rewrite to qualified name, no
+        // receiver
+        AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
+        memset(qualified_func, 0, sizeof(AstNode));
+        qualified_func->kind = AST_EXPR_IDENTIFIER;
+        qualified_func->loc = func_expr->loc;
+        qualified_func->data.ident.name = qualified_method_name;
+        qualified_func->data.ident.qualified_name = qualified_method_name;
+        qualified_func->data.ident.full_qualified_name = qualified_method_name;
+        qualified_func->resolved_type = call_type;
 
-      Type *expected_self_type = method_func_type->data.func.param_types[0];
-      Type *actual_object_type = object->resolved_type;
+        // No argument prepending for associated functions
+        expr->data.call.func = qualified_func;
+        func_expr = qualified_func;
+        // args and arg_count stay the same
+      } else {
+        // Instance method call - rewrite with receiver conversion
+        AstNode *object = func_expr->data.member_expr.object;
 
-      // Handle automatic pointer conversion for self parameter
-      AstNode *converted_object = object;
-      if (!type_equals(actual_object_type, expected_self_type)) {
-        // Try automatic conversions
-        if (expected_self_type->kind == TYPE_POINTER &&
-            type_equals(actual_object_type,
-                        expected_self_type->data.ptr.base)) {
-          // Method expects pointer, object is value → take address
-          AstNode *addr_expr = arena_alloc(&long_lived, sizeof(AstNode));
-          memset(addr_expr, 0, sizeof(AstNode));
-          addr_expr->kind = AST_EXPR_UNARY_OP;
-          addr_expr->loc = object->loc;
-          addr_expr->data.unop.op = UNOP_ADDR;
-          addr_expr->data.unop.operand = object;
-          addr_expr->resolved_type = expected_self_type;
-          converted_object = addr_expr;
-        } else if (actual_object_type->kind == TYPE_POINTER &&
-                   type_equals(actual_object_type->data.ptr.base,
-                               expected_self_type)) {
-          // Method expects value, object is pointer → dereference
-          AstNode *deref_expr = arena_alloc(&long_lived, sizeof(AstNode));
-          memset(deref_expr, 0, sizeof(AstNode));
-          deref_expr->kind = AST_EXPR_UNARY_OP;
-          deref_expr->loc = object->loc;
-          deref_expr->data.unop.op = UNOP_DEREF;
-          deref_expr->data.unop.operand = object;
-          deref_expr->resolved_type = expected_self_type;
-          converted_object = deref_expr;
-        } else {
-          checker_error(object->loc,
-                        "Method call type mismatch: method expects %s, got %s",
-                        type_name(expected_self_type),
-                        type_name(actual_object_type));
+        // Get the method's function type to check the first parameter (self)
+        // type
+        Type *method_func_type = call_type;
+        if (method_func_type->kind != TYPE_FUNCTION ||
+            method_func_type->data.func.param_count == 0) {
+          checker_error(func_expr->loc, "Invalid method type");
           return NULL;
         }
+
+        Type *expected_self_type = method_func_type->data.func.param_types[0];
+        Type *actual_object_type = object->resolved_type;
+
+        // Handle automatic pointer conversion for self parameter
+        AstNode *converted_object = object;
+        if (!type_equals(actual_object_type, expected_self_type)) {
+          // Try automatic conversions
+          if (expected_self_type->kind == TYPE_POINTER &&
+              type_equals(actual_object_type,
+                          expected_self_type->data.ptr.base)) {
+            // Method expects pointer, object is value → take address
+            AstNode *addr_expr = arena_alloc(&long_lived, sizeof(AstNode));
+            memset(addr_expr, 0, sizeof(AstNode));
+            addr_expr->kind = AST_EXPR_UNARY_OP;
+            addr_expr->loc = object->loc;
+            addr_expr->data.unop.op = UNOP_ADDR;
+            addr_expr->data.unop.operand = object;
+            addr_expr->resolved_type = expected_self_type;
+            converted_object = addr_expr;
+          } else if (actual_object_type->kind == TYPE_POINTER &&
+                     type_equals(actual_object_type->data.ptr.base,
+                                 expected_self_type)) {
+            // Method expects value, object is pointer → dereference
+            AstNode *deref_expr = arena_alloc(&long_lived, sizeof(AstNode));
+            memset(deref_expr, 0, sizeof(AstNode));
+            deref_expr->kind = AST_EXPR_UNARY_OP;
+            deref_expr->loc = object->loc;
+            deref_expr->data.unop.op = UNOP_DEREF;
+            deref_expr->data.unop.operand = object;
+            deref_expr->resolved_type = expected_self_type;
+            converted_object = deref_expr;
+          } else {
+            checker_error(
+                object->loc,
+                "Method call type mismatch: method expects %s, got %s",
+                type_name(expected_self_type), type_name(actual_object_type));
+            return NULL;
+          }
+        }
+
+        // Create new identifier for the qualified method name
+        AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
+        memset(qualified_func, 0, sizeof(AstNode));
+        qualified_func->kind = AST_EXPR_IDENTIFIER;
+        qualified_func->loc = func_expr->loc;
+        qualified_func->data.ident.name = qualified_method_name;
+        qualified_func->data.ident.qualified_name = qualified_method_name;
+        qualified_func->data.ident.full_qualified_name = qualified_method_name;
+        qualified_func->resolved_type = call_type;
+
+        // Prepend object to the arguments
+        size_t new_arg_count = arg_count + 1;
+        AstNode **new_args =
+            arena_alloc(&long_lived, new_arg_count * sizeof(AstNode *));
+
+        new_args[0] = converted_object;
+        if (arg_count > 0) {
+          memcpy(&new_args[1], args, arg_count * sizeof(AstNode *));
+        }
+
+        // Update the call expression
+        expr->data.call.func = qualified_func;
+        expr->data.call.args = new_args;
+        expr->data.call.arg_count = new_arg_count;
+
+        func_expr = qualified_func;
+        args = new_args;
+        arg_count = new_arg_count;
       }
-
-      // Create new ientifier for the qualified method name
-      AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
-      memset(qualified_func, 0, sizeof(AstNode));
-      qualified_func->kind = AST_EXPR_IDENTIFIER;
-      qualified_func->loc = func_expr->loc;
-      qualified_func->data.ident.name = qualified_method_name;
-      qualified_func->data.ident.full_qualified_name = qualified_method_name;
-      qualified_func->resolved_type = call_type;
-
-      // Prepend object to the arguments
-      size_t new_arg_count = arg_count + 1;
-      AstNode **new_args =
-          arena_alloc(&long_lived, new_arg_count * sizeof(AstNode *));
-
-      new_args[0] = converted_object;
-      if (arg_count > 0) {
-        memcpy(&new_args[1], args, arg_count * sizeof(AstNode *));
-      }
-
-      // Update the call expression
-      expr->data.call.func = qualified_func;
-      expr->data.call.args = new_args;
-      expr->data.call.arg_count = new_arg_count;
-
-      func_expr = qualified_func;
-      args = new_args;
-      arg_count = new_arg_count;
     }
 
     // Check if this is a generic function
