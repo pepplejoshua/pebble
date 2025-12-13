@@ -399,25 +399,25 @@ char *prepend(const char *prefix, const char *base) {
 }
 
 static void qualify_methods_in_struct(AstNode *type_expr,
-                                      const char *qualified_type_name,
-                                      Module *mod) {
+                                      AstNode *parent_node) {
   if (!type_expr || type_expr->kind != AST_TYPE_STRUCT) {
     return;
   }
 
   AstNode **methods = type_expr->data.type_struct.methods;
   size_t method_count = type_expr->data.type_struct.method_count;
+  const char *qualified_name = parent_node->data.type_decl.qualified_name;
+  const char *full_qualified_name =
+      parent_node->data.type_decl.full_qualified_name;
 
   for (size_t i = 0; i < method_count; i++) {
     AstNode *method = methods[i];
 
     char *method_name = method->data.func_decl.name;
-    char *method_prefix = prepend(qualified_type_name, "__");
-    char *method_qualified_name = prepend(method_prefix, method_name);
-
-    char *method_full_prefix = prepend(mod->qualified_name, "__");
-    method_full_prefix = prepend(method_full_prefix, "__");
-    char *method_full_qualified = prepend(method_full_prefix, method_name);
+    char *q_prefix = prepend(qualified_name, "__");
+    char *method_qualified_name = prepend(q_prefix, method_name);
+    char *fq_prefix = prepend(full_qualified_name, "__");
+    char *method_full_qualified = prepend(fq_prefix, method_name);
 
     method->data.func_decl.qualified_name = method_qualified_name;
     method->data.func_decl.full_qualified_name = method_full_qualified;
@@ -574,8 +574,7 @@ void qualify_globals_in_module(Module *mod) {
 
       AstNode *type_expr = node->data.type_decl.type_expr;
       if (type_expr && type_expr->kind == AST_TYPE_STRUCT) {
-        qualify_methods_in_struct(type_expr,
-                                  node->data.type_decl.qualified_name, mod);
+        qualify_methods_in_struct(type_expr, node);
       }
       break;
     }
