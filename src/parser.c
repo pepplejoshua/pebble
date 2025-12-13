@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syslimits.h>
 
 // External allocator
 extern Arena long_lived;
@@ -1513,6 +1514,7 @@ AstNode *parse_postfix(Parser *parser) {
 
         // Must be followed by ( for function calls
         // Or { for struct literals
+        // Or . for associated function access
         if (parser_match(parser, TOKEN_LPAREN)) {
           // Parse arguments
           expr = parse_call(parser, expr);
@@ -1593,8 +1595,22 @@ AstNode *parse_postfix(Parser *parser) {
           expr->data.struct_literal.type_args = type_args;
           expr->data.struct_literal.type_arg_count = type_arg_count;
           return expr;
+        } else if (parser_match(parser, TOKEN_DOT)) {
+          // Type.[Args].member syntax
+          Token member =
+              parser_consume(parser, TOKEN_IDENTIFIER,
+                             "Expected member name after generic type");
+
+          AstNode *member_expr = alloc_node(AST_EXPR_MEMBER, expr->loc);
+          member_expr->data.member_expr.object = expr;
+          member_expr->data.member_expr.member = str_dup(member.lexeme);
+          member_expr->data.member_expr.type_args = type_args;
+          member_expr->data.member_expr.type_arg_count = type_arg_count;
+
+          expr = member_expr;
         } else {
-          parser_error(parser, "Expected '(' or '{' after type arguments");
+          parser_error(parser,
+                       "Expected '(' or '{' or '.' after type arguments");
           return NULL;
         }
       }

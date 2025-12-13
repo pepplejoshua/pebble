@@ -307,6 +307,8 @@ struct AstNode {
       char *member;
       bool is_method_ref;
       char *method_qualified_name;
+      AstNode **type_args;
+      size_t type_arg_count;
     } member_expr;
     struct {
       char *member;
