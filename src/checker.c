@@ -1141,6 +1141,70 @@ static bool check_function_signature(Symbol *sym) {
                                    is_variadic != -1, false, convention,
                                    sym->decl->loc);
 
+  Type *receiver_struct_type = NULL;
+  if (sym->is_method && decl->kind == AST_DECL_FUNCTION) {
+    // First parameter must be named "self"
+    if (param_count > 0 && strcmp(params[0].name, "self") == 0) {
+      // Extract receiver type from self parameter
+      Type *self_type = param_types[0];
+
+      // Handle both value and pointer receivers
+      if (self_type->kind == TYPE_POINTER) {
+        receiver_struct_type = self_type->data.ptr.base;
+      } else {
+        receiver_struct_type = self_type;
+      }
+
+      if (receiver_struct_type->kind != TYPE_STRUCT) {
+        checker_error(decl->loc,
+                      "Method '%s' self parameter must be a struct type or "
+                      "pointer to struct type",
+                      decl->data.func_decl.name);
+        receiver_struct_type = NULL;
+      } else {
+        // Validate that self type matches the containing struct
+        if (!type_equals(receiver_struct_type, sym->containing_struct_type)) {
+          checker_error(decl->loc,
+                        "Method '%s' self parameter type '%s' doesn't match "
+                        "containing struct '%s'",
+                        decl->data.func_decl.name,
+                        type_name(receiver_struct_type),
+                        type_name(sym->containing_struct_type));
+          receiver_struct_type = NULL;
+        }
+      }
+    } else {
+      // Associated function - first param is NOT "self" (or no params)
+      // Store its type on the containing struct
+      if (sym->containing_struct_type) {
+        char *qualified_name = decl->data.func_decl.qualified_name;
+        Type *struct_type = sym->containing_struct_type;
+
+        for (size_t i = 0; i < struct_type->data.struct_data.method_count;
+             i++) {
+          if (strcmp(struct_type->data.struct_data.method_qualified_names[i],
+                     qualified_name) == 0) {
+            struct_type->data.struct_data.method_types[i] = sym->type;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (receiver_struct_type) {
+    char *qualified_name = decl->data.func_decl.qualified_name;
+    for (size_t i = 0; i < receiver_struct_type->data.struct_data.method_count;
+         i++) {
+      if (strcmp(
+              receiver_struct_type->data.struct_data.method_qualified_names[i],
+              qualified_name) == 0) {
+        receiver_struct_type->data.struct_data.method_types[i] = sym->type;
+        break;
+      }
+    }
+  }
+
   // Add parameters as symbols in the function scope
   bool no_error = true;
   if (sym->kind == SYMBOL_FUNCTION) {
@@ -1276,9 +1340,95 @@ bool check_anonymous_functions(void) {
   return !checker_has_errors();
 }
 
+static void collect_methods(void) {
+  Symbol *sym, *tmp;
+
+  // Iterate over all type symbols
+  HASH_ITER(hh, checker_state.current_module->scope->symbols, sym, tmp) {
+    if (sym->kind != SYMBOL_TYPE) {
+      continue;
+    }
+
+    // Only struct types have methods
+    if (!sym->type || sym->type->kind != TYPE_STRUCT) {
+      continue;
+    }
+
+    // Get the type declaration AST node
+    AstNode *type_decl = sym->decl;
+    if (type_decl->kind != AST_DECL_TYPE) {
+      continue;
+    }
+
+    // Get the struct type expression
+    AstNode *type_expr = type_decl->data.type_decl.type_expr;
+    if (!type_expr || type_expr->kind != AST_TYPE_STRUCT) {
+      continue;
+    }
+
+    // Extract methods from the struct
+    size_t method_count = type_expr->data.type_struct.method_count;
+    AstNode **methods = type_expr->data.type_struct.methods;
+
+    if (method_count == 0) {
+      continue;
+    }
+
+    // Allocate arrays for the struct type's method info
+    sym->type->data.struct_data.method_qualified_names =
+        arena_alloc(&long_lived, method_count * sizeof(char *));
+    sym->type->data.struct_data.method_reg_names =
+        arena_alloc(&long_lived, method_count * sizeof(char *));
+    sym->type->data.struct_data.method_types =
+        arena_alloc(&long_lived, method_count * sizeof(Type *));
+    sym->type->data.struct_data.method_count = method_count;
+
+    // Register each method as a function symbol
+    for (size_t i = 0; i < method_count; i++) {
+      AstNode *method = methods[i];
+
+      if (method->kind != AST_DECL_FUNCTION) {
+        continue;
+      }
+
+      // Methods should already have qualified names from module.c
+      char *qualified_name = method->data.func_decl.full_qualified_name;
+      char *reg_name = method->data.func_decl.name;
+      if (!qualified_name) {
+        checker_error(method->loc, "Method missing qualified name");
+        continue;
+      }
+
+      // Check for duplicates
+      Symbol *existing = scope_lookup_local(checker_state.current_module->scope,
+                                            qualified_name);
+      if (existing) {
+        checker_error(method->loc, "Duplicate declaration '%s'",
+                      method->data.func_decl.name);
+        continue;
+      }
+
+      // Create symbol for the method
+      Symbol *method_sym =
+          symbol_create(qualified_name, SYMBOL_FUNCTION, method);
+      method_sym->reg_name = method->data.func_decl.name;
+      method_sym->is_method = true;
+      method_sym->containing_struct_type = sym->type;
+
+      scope_add_symbol(checker_state.current_module->scope, method_sym);
+
+      // Store method info on the struct type (will set types during signature
+      // checking)
+      sym->type->data.struct_data.method_qualified_names[i] = qualified_name;
+      sym->type->data.struct_data.method_reg_names[i] = reg_name;
+    }
+  }
+}
+
 // Main entry point for Pass 3
 bool check_globals(Module *module) {
   check_type_declarations(module);
+  collect_methods();
   check_global_constants();
   check_global_variables();
   check_function_signatures();
@@ -4073,6 +4223,111 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     }
 
+    if (func_expr->kind == AST_EXPR_MEMBER &&
+        func_expr->data.member_expr.is_method_ref) {
+      char *qualified_method_name =
+          func_expr->data.member_expr.method_qualified_name;
+
+      if (func_expr->data.member_expr.is_associated_function) {
+        // Associated function call - just rewrite to qualified name, no
+        // receiver
+        AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
+        memset(qualified_func, 0, sizeof(AstNode));
+        qualified_func->kind = AST_EXPR_IDENTIFIER;
+        qualified_func->loc = func_expr->loc;
+        qualified_func->data.ident.name = qualified_method_name;
+        qualified_func->data.ident.qualified_name = qualified_method_name;
+        qualified_func->data.ident.full_qualified_name = qualified_method_name;
+        qualified_func->resolved_type = call_type;
+
+        // No argument prepending for associated functions
+        expr->data.call.func = qualified_func;
+        func_expr = qualified_func;
+        // args and arg_count stay the same
+      } else {
+        // Instance method call - rewrite with receiver conversion
+        AstNode *object = func_expr->data.member_expr.object;
+
+        // Get the method's function type to check the first parameter (self)
+        // type
+        Type *method_func_type = call_type;
+        if (method_func_type->kind != TYPE_FUNCTION ||
+            method_func_type->data.func.param_count == 0) {
+          checker_error(func_expr->loc, "Invalid method type");
+          return NULL;
+        }
+
+        Type *expected_self_type = method_func_type->data.func.param_types[0];
+        Type *actual_object_type = object->resolved_type;
+
+        // Handle automatic pointer conversion for self parameter
+        AstNode *converted_object = object;
+        if (!type_equals(actual_object_type, expected_self_type)) {
+          // Try automatic conversions
+          if (expected_self_type->kind == TYPE_POINTER &&
+              type_equals(actual_object_type,
+                          expected_self_type->data.ptr.base)) {
+            // Method expects pointer, object is value → take address
+            AstNode *addr_expr = arena_alloc(&long_lived, sizeof(AstNode));
+            memset(addr_expr, 0, sizeof(AstNode));
+            addr_expr->kind = AST_EXPR_UNARY_OP;
+            addr_expr->loc = object->loc;
+            addr_expr->data.unop.op = UNOP_ADDR;
+            addr_expr->data.unop.operand = object;
+            addr_expr->resolved_type = expected_self_type;
+            converted_object = addr_expr;
+          } else if (actual_object_type->kind == TYPE_POINTER &&
+                     type_equals(actual_object_type->data.ptr.base,
+                                 expected_self_type)) {
+            // Method expects value, object is pointer → dereference
+            AstNode *deref_expr = arena_alloc(&long_lived, sizeof(AstNode));
+            memset(deref_expr, 0, sizeof(AstNode));
+            deref_expr->kind = AST_EXPR_UNARY_OP;
+            deref_expr->loc = object->loc;
+            deref_expr->data.unop.op = UNOP_DEREF;
+            deref_expr->data.unop.operand = object;
+            deref_expr->resolved_type = expected_self_type;
+            converted_object = deref_expr;
+          } else {
+            checker_error(
+                object->loc,
+                "Method call type mismatch: method expects %s, got %s",
+                type_name(expected_self_type), type_name(actual_object_type));
+            return NULL;
+          }
+        }
+
+        // Create new identifier for the qualified method name
+        AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
+        memset(qualified_func, 0, sizeof(AstNode));
+        qualified_func->kind = AST_EXPR_IDENTIFIER;
+        qualified_func->loc = func_expr->loc;
+        qualified_func->data.ident.name = qualified_method_name;
+        qualified_func->data.ident.qualified_name = qualified_method_name;
+        qualified_func->data.ident.full_qualified_name = qualified_method_name;
+        qualified_func->resolved_type = call_type;
+
+        // Prepend object to the arguments
+        size_t new_arg_count = arg_count + 1;
+        AstNode **new_args =
+            arena_alloc(&long_lived, new_arg_count * sizeof(AstNode *));
+
+        new_args[0] = converted_object;
+        if (arg_count > 0) {
+          memcpy(&new_args[1], args, arg_count * sizeof(AstNode *));
+        }
+
+        // Update the call expression
+        expr->data.call.func = qualified_func;
+        expr->data.call.args = new_args;
+        expr->data.call.arg_count = new_arg_count;
+
+        func_expr = qualified_func;
+        args = new_args;
+        arg_count = new_arg_count;
+      }
+    }
+
     // Check if this is a generic function
     if (call_type->kind == TYPE_GENERIC_FUNCTION) {
       AstNode *generic_decl = call_type->data.generic_decl.decl;
@@ -4500,6 +4755,156 @@ Type *check_expression(AstNode *expr) {
     AstNode *object_expr = expr->data.member_expr.object;
     const char *field_name = expr->data.member_expr.member;
 
+    // Check if the object is a type. This will allow associated function access
+    if (object_expr->kind == AST_EXPR_IDENTIFIER) {
+      // TODO: Handle case where there are type arguments.
+      Symbol *sym = scope_lookup(checker_state.current_module->scope,
+                                 current_scope, object_expr->data.ident.name,
+                                 checker_state.current_module->name);
+
+      if (sym && sym->kind == SYMBOL_TYPE) {
+        // Check for associated function
+        Type *type = sym->type;
+        if (type->kind != TYPE_STRUCT) {
+          checker_error(expr->loc,
+                        "Only struct types can have associated functions");
+          return NULL;
+        }
+
+        // Look through the struct's methods for associated functions
+        size_t method_count = type->data.struct_data.method_count;
+        char **method_qualified_names =
+            type->data.struct_data.method_qualified_names;
+        char **method_reg_names = type->data.struct_data.method_reg_names;
+        Type **method_types = type->data.struct_data.method_types;
+
+        for (size_t i = 0; i < method_count; i++) {
+          if (!method_qualified_names[i] || !method_types[i] ||
+              !method_reg_names[i]) {
+            continue;
+          }
+
+          char *reg_name = method_reg_names[i];
+          if (strcmp(reg_name, field_name) == 0) {
+            // Check if it's an associated function by checking the actual
+            // function
+            char *qualified_name = method_qualified_names[i];
+            Symbol *method_sym = scope_lookup_local(
+                checker_state.current_module->scope, qualified_name);
+
+            if (method_sym && method_sym->decl &&
+                method_sym->decl->kind == AST_DECL_FUNCTION) {
+              AstNode *method_decl = method_sym->decl;
+              bool is_associated = true;
+
+              if (method_decl->data.func_decl.param_count > 0) {
+                FuncParam *first_param = &method_decl->data.func_decl.params[0];
+                if (strcmp(first_param->name, "self") == 0) {
+                  is_associated = false;
+                }
+              }
+
+              if (is_associated) {
+                // Found associated function!
+                expr->data.member_expr.is_method_ref = true;
+                expr->data.member_expr.is_associated_function = true;
+                expr->data.member_expr.method_qualified_name = qualified_name;
+                expr->resolved_type = method_types[i];
+                return method_types[i];
+              } else {
+                checker_error(expr->loc,
+                              "Cannot call instance method '%s' on type",
+                              reg_name);
+                return NULL;
+              }
+            }
+          }
+        }
+
+        checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+                      type_name(type), field_name);
+        return NULL;
+      }
+    } else if (object_expr->kind == AST_EXPR_MODULE_MEMBER) {
+      AstNode *module_expr = object_expr->data.mod_member_expr.module;
+      const char *member_name = object_expr->data.mod_member_expr.member;
+
+      Module *module = lookup_imported_module(checker_state.current_module,
+                                              module_expr->data.ident.name);
+      if (!module) {
+        checker_error(expr->loc, "cannot find module '%s'",
+                      module_expr->data.ident.name);
+        return NULL;
+      }
+
+      char *prefix = prepend(module->name, "__");
+      char *qualified_name = prepend(prefix, member_name);
+      Symbol *sym = scope_lookup_local(module->scope, qualified_name);
+
+      if (sym && sym->kind == SYMBOL_TYPE && sym->type->kind == TYPE_STRUCT) {
+        // Copy the same method lookup logic from the local type case
+        Type *type = sym->type;
+        size_t method_count = type->data.struct_data.method_count;
+        char **method_qualified_names =
+            type->data.struct_data.method_qualified_names;
+        char **method_reg_names = type->data.struct_data.method_reg_names;
+        Type **method_types = type->data.struct_data.method_types;
+
+        for (size_t i = 0; i < method_count; i++) {
+          if (!method_qualified_names[i] || !method_types[i] ||
+              !method_reg_names[i]) {
+            continue;
+          }
+
+          char *reg_name = method_reg_names[i];
+          if (strcmp(reg_name, field_name) == 0) {
+            char *qualified_method_name = method_qualified_names[i];
+            Symbol *method_sym =
+                scope_lookup_local(module->scope, qualified_method_name);
+
+            if (method_sym && method_sym->decl &&
+                method_sym->decl->kind == AST_DECL_FUNCTION) {
+              AstNode *method_decl = method_sym->decl;
+              bool is_associated = true;
+
+              if (method_decl->data.func_decl.param_count > 0) {
+                FuncParam *first_param = &method_decl->data.func_decl.params[0];
+                if (strcmp(first_param->name, "self") == 0) {
+                  is_associated = false;
+                }
+              }
+
+              if (is_associated) {
+                expr->data.member_expr.is_method_ref = true;
+                expr->data.member_expr.is_associated_function = true;
+                expr->data.member_expr.method_qualified_name =
+                    qualified_method_name;
+                expr->resolved_type = method_types[i];
+                return method_types[i];
+              } else {
+                checker_error(expr->loc,
+                              "Cannot call instance method '%s' on type",
+                              reg_name);
+                return NULL;
+              }
+            }
+          }
+        }
+
+        checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+                      type_name(type), field_name);
+        return NULL;
+      } else if (sym) {
+        checker_error(expr->loc, "'%s::%s' is not a struct type",
+                      module_expr->data.ident.name, member_name);
+        return NULL;
+      } else {
+        checker_error(expr->loc, "undefined name '%s::%s'",
+                      module_expr->data.ident.name, member_name);
+        return NULL;
+      }
+    }
+
     // Check the object expression
     Type *object_type = check_expression(object_expr);
     if (!object_type) {
@@ -4581,7 +4986,59 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
-      checker_error(expr->loc, "struct has no field named '%s'", field_name);
+      size_t method_count = base_type->data.struct_data.method_count;
+      char **method_qualified_names =
+          base_type->data.struct_data.method_qualified_names;
+      char **method_reg_names = base_type->data.struct_data.method_reg_names;
+      Type **method_types = base_type->data.struct_data.method_types;
+
+      for (size_t i = 0; i < method_count; i++) {
+        if (!method_qualified_names[i] || !method_types[i] ||
+            !method_reg_names[i]) {
+          continue; // Method not fully resolved yet
+        }
+
+        // Extract method name from qualified name
+        // qualified name is like "module__Struct__methodName"
+        char *qualified_name = method_qualified_names[i];
+        char *reg_name = method_reg_names[i];
+        if (strcmp(reg_name, field_name) == 0) {
+          // Check if this is an associated function by examining the
+          // function type
+          Type *method_func_type = method_types[i];
+          if (method_func_type->kind == TYPE_FUNCTION) {
+            bool is_associated = true;
+
+            if (method_func_type->data.func.param_count > 0) {
+              Type *first_param_type =
+                  method_func_type->data.func.param_types[0];
+              // If first param is the struct type (or pointer to it), it's an
+              // instance method
+              if (first_param_type == base_type ||
+                  (first_param_type->kind == TYPE_POINTER &&
+                   first_param_type->data.ptr.base == base_type)) {
+                is_associated = false;
+              }
+            }
+
+            if (is_associated) {
+              checker_error(expr->loc,
+                            "Cannot call associated function '%s' on instance, "
+                            "use '%s.%s' instead",
+                            reg_name, type_name(base_type), reg_name);
+              return NULL;
+            }
+          }
+
+          expr->data.member_expr.is_method_ref = true;
+          expr->data.member_expr.method_qualified_name = qualified_name;
+          expr->resolved_type = method_types[i];
+          return method_types[i];
+        }
+      }
+
+      checker_error(expr->loc, "struct %s has no field or method named '%s'",
+                    type_name(base_type), field_name);
       return NULL;
     } else if (base_type->kind == TYPE_UNION ||
                base_type->kind == TYPE_TAGGED_UNION) {
@@ -4741,6 +5198,9 @@ Type *check_expression(AstNode *expr) {
           arena_alloc(&long_lived, field_count * sizeof(Type *));
       for (size_t i = 0; i < field_count; i++) {
         field_types[i] = check_expression(field_values[i]);
+        if (!field_types[i]) {
+          return NULL;
+        }
       }
 
       Type *struct_type =
