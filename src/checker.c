@@ -4867,6 +4867,49 @@ Type *check_expression(AstNode *expr) {
           }
         }
 
+        // Search generic method templates if regular methods didn't match
+        size_t generic_method_count =
+            type->data.struct_data.generic_method_count;
+        Symbol **generic_method_symbols =
+            type->data.struct_data.generic_method_symbols;
+        char **generic_method_reg_names =
+            type->data.struct_data.generic_method_reg_names;
+
+        for (size_t i = 0; i < generic_method_count; i++) {
+          if (!generic_method_symbols[i] || !generic_method_reg_names[i]) {
+            continue;
+          }
+
+          char *reg_name = generic_method_reg_names[i];
+          if (strcmp(reg_name, field_name) == 0) {
+            // Check if it's an associated function (no self parameter)
+            AstNode *method_decl = generic_method_symbols[i]->decl;
+            bool is_associated = true;
+
+            if (method_decl->data.func_decl.param_count > 0) {
+              FuncParam *first_param = &method_decl->data.func_decl.params[0];
+              if (strcmp(first_param->name, "self") == 0) {
+                is_associated = false;
+              }
+            }
+
+            if (is_associated) {
+              // Found generic associated function!
+              expr->data.member_expr.is_method_ref = true;
+              expr->data.member_expr.is_associated_function = true;
+              expr->data.member_expr.method_qualified_name =
+                  generic_method_symbols[i]->name;
+              expr->resolved_type = generic_method_symbols[i]->type;
+              return generic_method_symbols[i]->type;
+            } else {
+              checker_error(expr->loc,
+                            "Cannot call instance method '%s' on type",
+                            reg_name);
+              return NULL;
+            }
+          }
+        }
+
         checker_error(expr->loc, "Type '%s' has no associated function '%s'",
                       type_name(type), field_name);
         return NULL;
@@ -4933,6 +4976,49 @@ Type *check_expression(AstNode *expr) {
                               reg_name);
                 return NULL;
               }
+            }
+          }
+        }
+
+        // Search generic method templates for associated functions
+        size_t generic_method_count =
+            type->data.struct_data.generic_method_count;
+        Symbol **generic_method_symbols =
+            type->data.struct_data.generic_method_symbols;
+        char **generic_method_reg_names =
+            type->data.struct_data.generic_method_reg_names;
+
+        for (size_t i = 0; i < generic_method_count; i++) {
+          if (!generic_method_symbols[i] || !generic_method_reg_names[i]) {
+            continue;
+          }
+
+          char *reg_name = generic_method_reg_names[i];
+          if (strcmp(reg_name, field_name) == 0) {
+            // Check if it's an associated function (no self parameter)
+            AstNode *method_decl = generic_method_symbols[i]->decl;
+            bool is_associated = true;
+
+            if (method_decl->data.func_decl.param_count > 0) {
+              FuncParam *first_param = &method_decl->data.func_decl.params[0];
+              if (strcmp(first_param->name, "self") == 0) {
+                is_associated = false;
+              }
+            }
+
+            if (is_associated) {
+              // Found generic associated function!
+              expr->data.member_expr.is_method_ref = true;
+              expr->data.member_expr.is_associated_function = true;
+              expr->data.member_expr.method_qualified_name =
+                  generic_method_symbols[i]->name;
+              expr->resolved_type = generic_method_symbols[i]->type;
+              return generic_method_symbols[i]->type;
+            } else {
+              checker_error(expr->loc,
+                            "Cannot call instance method '%s' on type",
+                            reg_name);
+              return NULL;
             }
           }
         }
@@ -5080,6 +5166,49 @@ Type *check_expression(AstNode *expr) {
           expr->data.member_expr.method_qualified_name = qualified_name;
           expr->resolved_type = method_types[i];
           return method_types[i];
+        }
+      }
+
+      // Search generic method templates if regular methods didn't match
+      size_t generic_method_count =
+          base_type->data.struct_data.generic_method_count;
+      Symbol **generic_method_symbols =
+          base_type->data.struct_data.generic_method_symbols;
+      char **generic_method_reg_names =
+          base_type->data.struct_data.generic_method_reg_names;
+
+      for (size_t i = 0; i < generic_method_count; i++) {
+        if (!generic_method_symbols[i] || !generic_method_reg_names[i]) {
+          continue;
+        }
+
+        char *reg_name = generic_method_reg_names[i];
+        if (strcmp(reg_name, field_name) == 0) {
+          // Found generic method - check if it's an instance method
+          AstNode *method_decl = generic_method_symbols[i]->decl;
+          bool is_instance_method = false;
+
+          if (method_decl->data.func_decl.param_count > 0) {
+            FuncParam *first_param = &method_decl->data.func_decl.params[0];
+            if (strcmp(first_param->name, "self") == 0) {
+              is_instance_method = true;
+            }
+          }
+
+          if (is_instance_method) {
+            // Found generic instance method!
+            expr->data.member_expr.is_method_ref = true;
+            expr->data.member_expr.method_qualified_name =
+                generic_method_symbols[i]->name;
+            expr->resolved_type = generic_method_symbols[i]->type;
+            return generic_method_symbols[i]->type;
+          } else {
+            checker_error(expr->loc,
+                          "Cannot call associated function '%s' on instance, "
+                          "use '%s.%s' instead",
+                          reg_name, type_name(base_type), reg_name);
+            return NULL;
+          }
         }
       }
 
