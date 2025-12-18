@@ -4297,13 +4297,32 @@ Type *check_expression(AstNode *expr) {
         // Get the method's function type to check the first parameter (self)
         // type
         Type *method_func_type = call_type;
-        if (method_func_type->kind != TYPE_FUNCTION ||
-            method_func_type->data.func.param_count == 0) {
+        Type *expected_self_type = NULL;
+
+        if (method_func_type->kind == TYPE_FUNCTION) {
+          if (method_func_type->data.func.param_count == 0) {
+            checker_error(func_expr->loc, "Invalid method type");
+            return NULL;
+          }
+          expected_self_type = method_func_type->data.func.param_types[0];
+        } else if (method_func_type->kind == TYPE_GENERIC_FUNCTION) {
+          AstNode *generic_decl = method_func_type->data.generic_decl.decl;
+          if (generic_decl->data.func_decl.param_count == 0) {
+            checker_error(func_expr->loc, "Invalid method type");
+            return NULL;
+          }
+          // Get the first parameter's type from the AST and resolve it
+          FuncParam *first_param = &generic_decl->data.func_decl.params[0];
+          expected_self_type = resolve_type_expression(first_param->type);
+          if (!expected_self_type) {
+            checker_error(func_expr->loc,
+                          "Could not resolve self parameter type");
+            return NULL;
+          }
+        } else {
           checker_error(func_expr->loc, "Invalid method type");
           return NULL;
         }
-
-        Type *expected_self_type = method_func_type->data.func.param_types[0];
         Type *actual_object_type = object->resolved_type;
 
         // Handle automatic pointer conversion for self parameter
