@@ -1374,16 +1374,43 @@ static void collect_methods(void) {
       continue;
     }
 
-    // Allocate arrays for the struct type's method info
-    sym->type->data.struct_data.method_qualified_names =
-        arena_alloc(&long_lived, method_count * sizeof(char *));
-    sym->type->data.struct_data.method_reg_names =
-        arena_alloc(&long_lived, method_count * sizeof(char *));
-    sym->type->data.struct_data.method_types =
-        arena_alloc(&long_lived, method_count * sizeof(Type *));
-    sym->type->data.struct_data.method_count = method_count;
+    // Separate generic and regular methods
+    size_t regular_method_count = 0;
+    size_t generic_method_count = 0;
+    for (size_t i = 0; i < method_count; i++) {
+      AstNode *method = methods[i];
+      if (method->kind == AST_DECL_FUNCTION) {
+        if (method->data.func_decl.type_param_count > 0) {
+          generic_method_count++;
+        } else {
+          regular_method_count++;
+        }
+      }
+    }
+
+    // Allocate arrays for regular methods
+    if (regular_method_count > 0) {
+      sym->type->data.struct_data.method_qualified_names =
+          arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+      sym->type->data.struct_data.method_reg_names =
+          arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+      sym->type->data.struct_data.method_types =
+          arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
+      sym->type->data.struct_data.method_count = regular_method_count;
+    }
+
+    // Allocate arrays for generic methods
+    if (generic_method_count > 0) {
+      sym->type->data.struct_data.generic_method_symbols =
+          arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
+      sym->type->data.struct_data.generic_method_reg_names =
+          arena_alloc(&long_lived, generic_method_count * sizeof(char *));
+      sym->type->data.struct_data.generic_method_count = generic_method_count;
+    }
 
     // Register each method as a function symbol
+    size_t regular_idx = 0;
+    size_t generic_idx = 0;
     for (size_t i = 0; i < method_count; i++) {
       AstNode *method = methods[i];
 
@@ -1417,10 +1444,29 @@ static void collect_methods(void) {
 
       scope_add_symbol(checker_state.current_module->scope, method_sym);
 
-      // Store method info on the struct type (will set types during signature
-      // checking)
-      sym->type->data.struct_data.method_qualified_names[i] = qualified_name;
-      sym->type->data.struct_data.method_reg_names[i] = reg_name;
+      // Store in appropriate array (generic vs regular)
+      if (method->data.func_decl.type_param_count > 0) {
+        // Generic method
+        Symbol *method_sym =
+            symbol_create(qualified_name, SYMBOL_FUNCTION, method);
+        method_sym->reg_name = method->data.func_decl.name;
+        method_sym->is_method = true;
+        method_sym->containing_struct_type = sym->type;
+
+        scope_add_symbol(checker_state.current_module->scope, method_sym);
+
+        sym->type->data.struct_data.generic_method_symbols[generic_idx] =
+            method_sym;
+        sym->type->data.struct_data.generic_method_reg_names[generic_idx] =
+            reg_name;
+        generic_idx++;
+      } else {
+        // Regular method
+        sym->type->data.struct_data.method_qualified_names[regular_idx] =
+            qualified_name;
+        sym->type->data.struct_data.method_reg_names[regular_idx] = reg_name;
+        regular_idx++;
+      }
     }
   }
 }
