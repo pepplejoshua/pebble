@@ -5047,6 +5047,185 @@ Type *check_expression(AstNode *expr) {
     AstNode *object_expr = expr->data.member_expr.object;
     const char *field_name = expr->data.member_expr.member;
 
+    // Handle generic type access like Type.[X].method or
+    // module::Type.[X].method
+    if (expr->data.member_expr.type_args &&
+        expr->data.member_expr.type_arg_count > 0) {
+      // Step 1: Find the base generic type declaration
+      AstNode *generic_struct_decl = NULL;
+      Module *target_module = checker_state.current_module;
+
+      if (object_expr->kind == AST_EXPR_IDENTIFIER) {
+        // Local type like Cell.[int].new
+        Symbol *sym = scope_lookup(checker_state.current_module->scope,
+                                   current_scope, object_expr->data.ident.name,
+                                   checker_state.current_module->name);
+        if (!sym || sym->kind != SYMBOL_TYPE) {
+          checker_error(expr->loc, "'%s' is not a type",
+                        object_expr->data.ident.name);
+          return NULL;
+        }
+        if (sym->type->kind != TYPE_GENERIC_TYPE_DECL) {
+          checker_error(expr->loc, "'%s' is not a generic type",
+                        object_expr->data.ident.name);
+          return NULL;
+        }
+        generic_struct_decl = sym->type->data.generic_decl.decl;
+      } else if (object_expr->kind == AST_EXPR_MODULE_MEMBER) {
+        // Module-qualified type like x::Cell.[int].new
+        AstNode *module_expr = object_expr->data.mod_member_expr.module;
+        const char *member_name = object_expr->data.mod_member_expr.member;
+
+        target_module = lookup_imported_module(checker_state.current_module,
+                                               module_expr->data.ident.name);
+        if (!target_module) {
+          checker_error(expr->loc, "cannot find module '%s'",
+                        module_expr->data.ident.name);
+          return NULL;
+        }
+
+        char *prefix = prepend(target_module->name, "__");
+        char *qualified_name = prepend(prefix, member_name);
+        Symbol *sym = scope_lookup_local(target_module->scope, qualified_name);
+
+        if (!sym || sym->kind != SYMBOL_TYPE) {
+          checker_error(expr->loc, "'%s::%s' is not a type",
+                        module_expr->data.ident.name, member_name);
+          return NULL;
+        }
+        if (sym->type->kind != TYPE_GENERIC_TYPE_DECL) {
+          checker_error(expr->loc, "'%s::%s' is not a generic type",
+                        module_expr->data.ident.name, member_name);
+          return NULL;
+        }
+        generic_struct_decl = sym->type->data.generic_decl.decl;
+      } else {
+        checker_error(expr->loc, "Invalid generic type access");
+        return NULL;
+      }
+
+      // Step 2: Monomorphize the generic struct in the correct module context
+      // Specialized methods should be created in the module where the generic
+      // type was defined
+      Module *saved_current_module = checker_state.current_module;
+      checker_state.current_module = target_module;
+      Type *specialized_type = monomorphize_struct_type(
+          generic_struct_decl, expr->data.member_expr.type_args,
+          expr->data.member_expr.type_arg_count, expr->loc);
+
+      // Restore original module context
+      checker_state.current_module = saved_current_module;
+
+      if (!specialized_type) {
+        return NULL; // Error already reported
+      }
+
+      // Step 3: Look up the associated function on the specialized type
+      // Search regular (concrete) methods first
+      size_t method_count = specialized_type->data.struct_data.method_count;
+      char **method_qualified_names =
+          specialized_type->data.struct_data.method_qualified_names;
+      char **method_reg_names =
+          specialized_type->data.struct_data.method_reg_names;
+      Type **method_types = specialized_type->data.struct_data.method_types;
+
+      for (size_t i = 0; i < method_count; i++) {
+        if (!method_qualified_names[i] || !method_types[i] ||
+            !method_reg_names[i]) {
+          continue;
+        }
+
+        char *reg_name = method_reg_names[i];
+        if (strcmp(reg_name, field_name) == 0) {
+          char *qualified_name = method_qualified_names[i];
+          // Try target module first (where the original type was defined)
+          Symbol *method_sym =
+              scope_lookup_local(target_module->scope, qualified_name);
+
+          // If not found, try current module (where specialization might have
+          // happened)
+          if (!method_sym) {
+            method_sym = scope_lookup_local(checker_state.current_module->scope,
+                                            qualified_name);
+          }
+
+          if (method_sym && method_sym->decl &&
+              method_sym->decl->kind == AST_DECL_FUNCTION) {
+            AstNode *method_decl = method_sym->decl;
+            bool is_associated = true;
+
+            if (method_decl->data.func_decl.param_count > 0) {
+              FuncParam *first_param = &method_decl->data.func_decl.params[0];
+              if (strcmp(first_param->name, "self") == 0) {
+                is_associated = false;
+              }
+            }
+
+            if (is_associated) {
+              // Found associated function!
+              expr->data.member_expr.is_method_ref = true;
+              expr->data.member_expr.is_associated_function = true;
+              expr->data.member_expr.method_qualified_name = qualified_name;
+              expr->resolved_type = method_types[i];
+              return method_types[i];
+            } else {
+              checker_error(expr->loc,
+                            "Cannot call instance method '%s' on type",
+                            reg_name);
+              return NULL;
+            }
+          }
+        }
+      }
+
+      // Step 4: Search generic method templates if not found in concrete
+      // methods
+      size_t generic_method_count =
+          specialized_type->data.struct_data.generic_method_count;
+      Symbol **generic_method_symbols =
+          specialized_type->data.struct_data.generic_method_symbols;
+      char **generic_method_reg_names =
+          specialized_type->data.struct_data.generic_method_reg_names;
+
+      for (size_t i = 0; i < generic_method_count; i++) {
+        if (!generic_method_symbols[i] || !generic_method_reg_names[i]) {
+          continue;
+        }
+
+        char *reg_name = generic_method_reg_names[i];
+        if (strcmp(reg_name, field_name) == 0) {
+          AstNode *method_decl = generic_method_symbols[i]->decl;
+          bool is_associated = true;
+
+          if (method_decl->data.func_decl.param_count > 0) {
+            FuncParam *first_param = &method_decl->data.func_decl.params[0];
+            if (strcmp(first_param->name, "self") == 0) {
+              is_associated = false;
+            }
+          }
+
+          if (is_associated) {
+            // Found generic associated function!
+            expr->data.member_expr.is_method_ref = true;
+            expr->data.member_expr.is_associated_function = true;
+            expr->data.member_expr.method_qualified_name =
+                generic_method_symbols[i]->name;
+            expr->resolved_type = generic_method_symbols[i]->type;
+            return generic_method_symbols[i]->type;
+          } else {
+            checker_error(expr->loc, "Cannot call instance method '%s' on type",
+                          reg_name);
+            return NULL;
+          }
+        }
+      }
+
+      // Step 5: If not found, report error
+      checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+                    type_name(specialized_type), field_name);
+      return NULL;
+    }
+
     // Check if the object is a type. This will allow associated function access
     if (object_expr->kind == AST_EXPR_IDENTIFIER) {
       // TODO: Handle case where there are type arguments.
