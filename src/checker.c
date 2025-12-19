@@ -1447,14 +1447,6 @@ static void collect_methods(void) {
       // Store in appropriate array (generic vs regular)
       if (method->data.func_decl.type_param_count > 0) {
         // Generic method
-        Symbol *method_sym =
-            symbol_create(qualified_name, SYMBOL_FUNCTION, method);
-        method_sym->reg_name = method->data.func_decl.name;
-        method_sym->is_method = true;
-        method_sym->containing_struct_type = sym->type;
-
-        scope_add_symbol(checker_state.current_module->scope, method_sym);
-
         sym->type->data.struct_data.generic_method_symbols[generic_idx] =
             method_sym;
         sym->type->data.struct_data.generic_method_reg_names[generic_idx] =
@@ -3512,6 +3504,8 @@ static bool check_type_has_cycles(Type *type, Visited **visited) {
   return cycle_detected;
 }
 
+static bool check_function_body(Symbol *sym);
+
 // Main monomorphization function
 static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
                                       AstNode **type_args,
@@ -3604,10 +3598,243 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   // Step 10: Final canonicalization (dedup + name)
   canonicalize_type(&placeholder);
 
+  // Step 11 (NEW): Process methods with partial substitution
+  if (specialized_expr->kind == AST_TYPE_STRUCT &&
+      specialized_expr->data.type_struct.method_count > 0) {
+
+    size_t method_count = specialized_expr->data.type_struct.method_count;
+    AstNode **methods = specialized_expr->data.type_struct.methods;
+
+    // Temporary arrays on the stack/malloc to collect results
+    char **temp_method_qualified_names = malloc(method_count * sizeof(char *));
+    char **temp_method_reg_names = malloc(method_count * sizeof(char *));
+    Type **temp_method_types = malloc(method_count * sizeof(Type *));
+    Symbol **temp_generic_method_symbols =
+        malloc(method_count * sizeof(Symbol *));
+    char **temp_generic_method_reg_names =
+        malloc(method_count * sizeof(char *));
+
+    size_t regular_idx = 0;
+    size_t generic_idx = 0;
+
+    Symbol **concrete_methods_to_check =
+        malloc(method_count * sizeof(Symbol *));
+    size_t concrete_methods_count = 0;
+
+    // Process each method
+    for (size_t i = 0; i < method_count; i++) {
+      AstNode *method = methods[i];
+
+      // Clone the method AST node
+      AstNode *cloned_method = clone_ast_node(method);
+
+      char *qualified_name = cloned_method->data.func_decl.full_qualified_name;
+      char *reg_name = cloned_method->data.func_decl.name;
+
+      // Inherit parent type parameters (avoiding duplicates)
+      size_t parent_type_param_count =
+          generic_struct_decl->data.type_decl.type_params_count;
+      Token *parent_type_params =
+          generic_struct_decl->data.type_decl.type_params;
+
+      // Create new combined type param list: [method_params...,
+      // parent_params...] but skip parent params that are already in method
+      // params
+      size_t total_type_param_count =
+          cloned_method->data.func_decl.type_param_count;
+      Token *combined_type_params = arena_alloc(
+          &long_lived, (cloned_method->data.func_decl.type_param_count +
+                        parent_type_param_count) *
+                           sizeof(Token));
+
+      // Copy method's own type params first
+      memcpy(combined_type_params, cloned_method->data.func_decl.type_params,
+             cloned_method->data.func_decl.type_param_count * sizeof(Token));
+
+      // Append parent params that aren't already in method params
+      for (size_t j = 0; j < parent_type_param_count; j++) {
+        bool already_exists = false;
+        for (size_t k = 0; k < cloned_method->data.func_decl.type_param_count;
+             k++) {
+          if (strcmp(parent_type_params[j].lexeme,
+                     cloned_method->data.func_decl.type_params[k].lexeme) ==
+              0) {
+            already_exists = true;
+            break;
+          }
+        }
+        if (!already_exists) {
+          combined_type_params[total_type_param_count++] =
+              parent_type_params[j];
+        }
+      }
+
+      // Update the cloned method with combined params
+      cloned_method->data.func_decl.type_params = combined_type_params;
+      cloned_method->data.func_decl.type_param_count = total_type_param_count;
+
+      // Apply partial substitution using substitute_function_types
+      substitute_function_types(cloned_method, &bindings);
+
+      // Update type param list - remove substituted params, keep unbound ones
+      size_t new_type_param_count = 0;
+      Token *new_type_params = arena_alloc(
+          &long_lived,
+          cloned_method->data.func_decl.type_param_count * sizeof(Token));
+
+      for (size_t j = 0; j < cloned_method->data.func_decl.type_param_count;
+           j++) {
+        const char *param_name =
+            cloned_method->data.func_decl.type_params[j].lexeme;
+
+        // Check if this param was substituted in bindings
+        bool was_substituted = false;
+        for (size_t k = 0; k < bindings.count; k++) {
+          if (strcmp(param_name, bindings.bindings[k].param_name) == 0) {
+            was_substituted = true;
+            break;
+          }
+        }
+
+        // Keep params that weren't substituted
+        if (!was_substituted) {
+          new_type_params[new_type_param_count++] =
+              cloned_method->data.func_decl.type_params[j];
+        }
+      }
+
+      cloned_method->data.func_decl.type_params = new_type_params;
+      cloned_method->data.func_decl.type_param_count = new_type_param_count;
+
+      if (cloned_method->data.func_decl.type_param_count > 0) {
+        // Still generic - create symbol and store in temp generic arrays
+        Symbol *method_sym =
+            symbol_create(qualified_name, SYMBOL_FUNCTION, cloned_method);
+        method_sym->reg_name = reg_name;
+        method_sym->is_method = true;
+        method_sym->containing_struct_type = placeholder;
+        scope_add_symbol(checker_state.current_module->scope, method_sym);
+
+        temp_generic_method_symbols[generic_idx] = method_sym;
+        temp_generic_method_reg_names[generic_idx] = reg_name;
+        generic_idx++;
+      } else {
+        // Now concrete - create symbol and store in temp regular arrays
+        // Mangle the concrete method name
+        char *mangled_method_name = mangle_generic_name(
+            qualified_name, concrete_types, type_param_count);
+
+        // Update cloned method AST with mangled name
+        cloned_method->data.func_decl.name = mangled_method_name;
+        cloned_method->data.func_decl.qualified_name = mangled_method_name;
+        cloned_method->data.func_decl.full_qualified_name = mangled_method_name;
+
+        // Create human-readable display name with type args
+        // Example: "push[int]"
+        size_t display_name_len = strlen(reg_name) + 1; // base name + '['
+        for (size_t j = 0; j < type_param_count; j++) {
+          display_name_len += strlen(type_name(concrete_types[j]));
+          if (j < type_param_count - 1) {
+            display_name_len += 2; // ", "
+          }
+        }
+        display_name_len += 2; // ']' + null terminator
+
+        char *display_name = arena_alloc(&long_lived, display_name_len);
+        strcpy(display_name, reg_name);
+        strcat(display_name, "[");
+        for (size_t j = 0; j < type_param_count; j++) {
+          strcat(display_name, type_name(concrete_types[j]));
+          if (j < type_param_count - 1) {
+            strcat(display_name, ", ");
+          }
+        }
+        strcat(display_name, "]");
+
+        // Update cloned method with display name
+        cloned_method->data.func_decl.name = display_name;
+
+        Symbol *method_sym =
+            symbol_create(mangled_method_name, SYMBOL_FUNCTION, cloned_method);
+        method_sym->reg_name = reg_name;
+        method_sym->is_method = true;
+        method_sym->is_mono = true;
+        method_sym->containing_struct_type = placeholder;
+        scope_add_symbol(checker_state.current_module->scope, method_sym);
+
+        // Store using the mangled name
+        temp_method_qualified_names[regular_idx] = mangled_method_name;
+        temp_method_reg_names[regular_idx] = reg_name;
+        temp_method_types[regular_idx] = NULL;
+        regular_idx++;
+
+        concrete_methods_to_check[concrete_methods_count++] = method_sym;
+      }
+    }
+
+    // Now arena_alloc the final arrays with correct sizes and copy
+    if (regular_idx > 0) {
+      placeholder->data.struct_data.method_qualified_names =
+          arena_alloc(&long_lived, regular_idx * sizeof(char *));
+      placeholder->data.struct_data.method_reg_names =
+          arena_alloc(&long_lived, regular_idx * sizeof(char *));
+      placeholder->data.struct_data.method_types =
+          arena_alloc(&long_lived, regular_idx * sizeof(Type *));
+      memcpy(placeholder->data.struct_data.method_qualified_names,
+             temp_method_qualified_names, regular_idx * sizeof(char *));
+      memcpy(placeholder->data.struct_data.method_reg_names,
+             temp_method_reg_names, regular_idx * sizeof(char *));
+      memcpy(placeholder->data.struct_data.method_types, temp_method_types,
+             regular_idx * sizeof(Type *));
+      placeholder->data.struct_data.method_count = regular_idx;
+    }
+
+    if (generic_idx > 0) {
+      placeholder->data.struct_data.generic_method_symbols =
+          arena_alloc(&long_lived, generic_idx * sizeof(Symbol *));
+      placeholder->data.struct_data.generic_method_reg_names =
+          arena_alloc(&long_lived, generic_idx * sizeof(char *));
+      memcpy(placeholder->data.struct_data.generic_method_symbols,
+             temp_generic_method_symbols, generic_idx * sizeof(Symbol *));
+      memcpy(placeholder->data.struct_data.generic_method_reg_names,
+             temp_generic_method_reg_names, generic_idx * sizeof(char *));
+      placeholder->data.struct_data.generic_method_count = generic_idx;
+    }
+
+    // Free temporary arrays
+    free(temp_method_qualified_names);
+    free(temp_method_reg_names);
+    free(temp_method_types);
+    free(temp_generic_method_symbols);
+    free(temp_generic_method_reg_names);
+
+    // Check all concrete methods
+    Scope *saved_scope = current_scope;
+    for (size_t i = 0; i < concrete_methods_count; i++) {
+      Symbol *method_sym = concrete_methods_to_check[i];
+
+      // Check signature
+      current_scope = checker_state.current_module->scope;
+      if (check_function_signature(method_sym)) {
+        for (size_t j = 0; j < regular_idx; j++) {
+          if (strcmp(placeholder->data.struct_data.method_qualified_names[j],
+                     method_sym->name) == 0) {
+            placeholder->data.struct_data.method_types[j] = method_sym->type;
+            break;
+          }
+        }
+
+        // Check body
+        check_function_body(method_sym);
+      }
+    }
+    current_scope = saved_scope;
+
+    free(concrete_methods_to_check);
+  }
+
   return placeholder;
 }
-
-static bool check_function_body(Symbol *sym);
 
 typedef struct {
   AstNode *func;
