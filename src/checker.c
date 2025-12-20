@@ -3713,6 +3713,9 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
         method_sym->containing_struct_type = placeholder;
+        Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
+        gen_type->data.generic_decl.decl = cloned_method;
+        method_sym->type = gen_type;
         scope_add_symbol(checker_state.current_module->scope, method_sym);
 
         temp_generic_method_symbols[generic_idx] = method_sym;
