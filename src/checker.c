@@ -3810,6 +3810,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
 
     // Check all concrete methods
     Scope *saved_scope = current_scope;
+    bool has_error = false;
     for (size_t i = 0; i < concrete_methods_count; i++) {
       Symbol *method_sym = concrete_methods_to_check[i];
 
@@ -3823,6 +3824,14 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
             break;
           }
         }
+      } else {
+        has_error = true;
+      }
+    }
+
+    if (!has_error) {
+      for (size_t i = 0; i < concrete_methods_count; i++) {
+        Symbol *method_sym = concrete_methods_to_check[i];
 
         // Check body
         check_function_body(method_sym);

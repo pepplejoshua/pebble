@@ -1,0 +1,22 @@
+import "std:hash";
+import "std:hmap";
+
+fn main() int {
+    let strings = [
+        "123",
+        "456",
+        "789"
+    ];
+
+    var s = hmap::new.[str, usize](
+        hash::hash_str,
+        fn (a, b str) bool => a == b
+    );
+
+    loop 0..strings.len : i {
+        s.insert(strings[i], i);
+    }
+
+    return 0;
+
+}
