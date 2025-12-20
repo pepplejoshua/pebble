@@ -5,6 +5,240 @@ type Vec[T] = struct {
     len usize;
     cap usize;
     backing Allocator;
+
+    // Ensures the vector can hold at least `additional` more elements without reallocating.
+    fn reserve[T](self *Vec[T], additional usize) void {
+        if self.len + additional > self.cap {
+            let needed = self.len + additional;
+            var new_cap = 0;
+            if self.cap == 0 {
+                new_cap = 4;
+            } else {
+                new_cap = self.cap;
+            }
+            while new_cap < needed {
+                new_cap *= 2;
+            }
+
+            let new_size = new_cap * (sizeof T);
+            if self.data == nil {
+                // First allocation
+                let allocator = context.default_allocator;
+                self.backing = allocator;
+                self.data = self.backing.alloc(self.backing.ptr, new_size) as *T;
+            } else {
+                // Reallocation
+                self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
+            }
+            self.cap = new_cap;
+        }
+    }
+
+    // Adds an element to the end of the vector.
+    fn push[T](self *Vec[T], value T) void {
+        self.reserve(1);
+        *(self.data + self.len) = value;
+        self.len++;
+    }
+
+    // Appends all elements from a slice to the end of the vector.
+    fn push_slice[T](self *Vec[T], items []T) void {
+        if items.len == 0 {
+            return;
+        }
+        self.reserve(items.len);
+        // Directly copy the memory from the slice to the vector's data
+        mem::copy(self.data + self.len, items.data, items.len * (sizeof T));
+        self.len += items.len;
+    }
+
+    // Safe indexed access.
+    fn get_by_ref[T](self *Vec[T], index usize) ?*T {
+        if index >= self.len {
+            return none;
+        }
+        return some self.data + index;
+    }
+
+    fn get[T](self *Vec[T], index usize) ?T {
+        if index >= self.len {
+            return none;
+        }
+        return some *(self.data + index);
+    }
+
+    // Safe indexed mutation. Returns true if set, false if out of bounds.
+    fn set[T](self *Vec[T], index usize, value T) bool {
+        if index >= self.len {
+            return false;
+        }
+        *(self.data + index) = value;
+        return true;
+    }
+
+    // Insert an element at index, shifting later elements right.
+    fn insert[T](self *Vec[T], index usize, value T) void {
+        if index > self.len {
+            index = self.len;
+        }
+        self.reserve(1);
+        if index < self.len {
+            // Shift elements right
+            mem::copy((self.data + index + 1), (self.data + index), (self.len - index) * (sizeof T));
+        }
+        *(self.data + index) = value;
+        self.len++;
+    }
+
+    // Remove and return element at index, shifting later elements left.
+    fn remove[T](self *Vec[T], index usize) ?T {
+        if index >= self.len {
+            return none;
+        }
+        let value = *(self.data + index);
+        if index < self.len - 1 {
+            // Shift elements left
+            mem::copy((self.data + index), (self.data + index + 1), (self.len - index - 1) * (sizeof T));
+        }
+        self.len--;
+        return some value;
+    }
+
+    // Remove element by swapping with last (no shift). Returns the removed value.
+    fn swap_remove[T](self *Vec[T], index usize) ?T {
+        if index >= self.len {
+            return none;
+        }
+        let value = *(self.data + index);
+        if index < self.len - 1 {
+            // Swap with last element
+            *(self.data + index) = *(self.data + self.len - 1);
+        }
+        self.len--;
+        return some value;
+    }
+
+    // Remove all elements without deallocating.
+    fn clear[T](self *Vec[T]) void {
+        self.len = 0;
+    }
+
+    // Reduce capacity to match length.
+    fn shrink_to_fit[T](self *Vec[T]) void {
+        if self.cap > self.len && self.len > 0 {
+            let new_size = self.len * (sizeof T);
+            self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
+            self.cap = self.len;
+        } else if self.len == 0 && self.cap > 0 {
+            self.backing.free(self.backing.ptr, self.data);
+            self.data = nil;
+            self.cap = 0;
+        }
+    }
+
+    // Resize to new_len, filling with default if growing.
+    fn resize[T](self *Vec[T], new_len usize, fill T) void {
+        if new_len > self.len {
+            self.reserve(new_len - self.len);
+            loop self.len..new_len : i {
+                *(self.data + i) = fill;
+            }
+        }
+        self.len = new_len;
+    }
+
+    // Shorten to len, dropping excess.
+    fn truncate[T](self *Vec[T], len usize) void {
+        if len < self.len {
+            self.len = len;
+        }
+    }
+
+    // Keep only elements where predicate is true.
+    fn retain[T](self *Vec[T], predicate fn(T) bool) void {
+        var write = 0;
+        loop 0..self.len : read {
+            if predicate(*(self.data + read)) {
+                if write != read {
+                    *(self.data + write) = *(self.data + read);
+                }
+                write++;
+            }
+        }
+        self.len = write;
+    }
+
+    // Check if vector contains value.
+    fn contains[T](self *Vec[T], value T) bool {
+        loop 0..self.len : i {
+            if *(self.data + i) == value {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Return index of first element matching predicate.
+    fn find[T](self *Vec[T], predicate fn(T) bool) ?usize {
+        loop 0..self.len : i {
+            if predicate(*(self.data + i)) {
+                return some i;
+            }
+        }
+        return none;
+    }
+
+    // Return vector of indices where predicate matches.
+    fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[usize] {
+        var result = new.[usize]();
+        loop 0..self.len : i {
+            if predicate(*(self.data + i)) {
+                result.push(i as usize);
+            }
+        }
+        return result;
+    }
+
+    // Check if two vectors are element-wise equal.
+    fn eq[T](self Vec[T], b Vec[T]) bool {
+        if self.len != b.len {
+            return false;
+        }
+        loop 0..self.len : i {
+            if *(self.data + i) != *(b.data + i) {
+                return true;  // Wait, should be != for inequality
+            }
+        }
+        return true;
+    }
+
+    // In-place reverse.
+    fn reverse[T](self *Vec[T]) void {
+        var start = 0;
+        var end = self.len - 1;
+        while start < end {
+            let temp = *(self.data + start);
+            *(self.data + start) = *(self.data + end);
+            *(self.data + end) = temp;
+            start++;
+            end--;
+        }
+    }
+
+    // Returns a slice containing all elements in the vector.
+    fn as_slice[T](self *Vec[T]) []T {
+        return self.data[:self.len];
+    }
+
+    // Removes the last element from the vector and returns it.
+    // Returns none if the vector is empty.
+    fn pop[T](self *Vec[T]) ?T {
+        if self.len == 0 {
+            return none;
+        }
+        self.len--;
+        return some *(self.data + self.len);
+    }
 };
 
 // Creates a new, empty vector.
@@ -35,76 +269,6 @@ fn with_capacity[T](cap usize) Vec[T] {
     };
 }
 
-// Ensures the vector can hold at least `additional` more elements without reallocating.
-fn reserve[T](self *Vec[T], additional usize) void {
-    if self.len + additional > self.cap {
-        let needed = self.len + additional;
-        var new_cap = 0;
-        if self.cap == 0 {
-            new_cap = 4;
-        } else {
-            new_cap = self.cap;
-        }
-        while new_cap < needed {
-            new_cap *= 2;
-        }
-
-        let new_size = new_cap * (sizeof T);
-        if self.data == nil {
-            // First allocation
-            let allocator = context.default_allocator;
-            self.backing = allocator;
-            self.data = self.backing.alloc(self.backing.ptr, new_size) as *T;
-        } else {
-            // Reallocation
-            self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
-        }
-        self.cap = new_cap;
-    }
-}
-
-// Adds an element to the end of the vector.
-fn push[T](self *Vec[T], value T) void {
-    reserve(self, 1);
-    *(self.data + self.len) = value;
-    self.len++;
-}
-
-// Appends all elements from a slice to the end of the vector.
-fn push_slice[T](self *Vec[T], items []T) void {
-    if items.len == 0 {
-        return;
-    }
-    reserve(self, items.len);
-    // Directly copy the memory from the slice to the vector's data
-    mem::copy(self.data + self.len, items.data, items.len * (sizeof T));
-    self.len += items.len;
-}
-
-// Safe indexed access.
-fn get_by_ref[T](self *Vec[T], index usize) ?*T {
-    if index >= self.len {
-        return none;
-    }
-    return some self.data + index;
-}
-
-fn get[T](self *Vec[T], index usize) ?T {
-    if index >= self.len {
-        return none;
-    }
-    return some *(self.data + index);
-}
-
-// Safe indexed mutation. Returns true if set, false if out of bounds.
-fn set[T](self *Vec[T], index usize, value T) bool {
-    if index >= self.len {
-        return false;
-    }
-    *(self.data + index) = value;
-    return true;
-}
-
 // Frees the memory used by the vector.
 fn delete[T](self *Vec[T]) void {
     if self.data != nil {
@@ -115,168 +279,15 @@ fn delete[T](self *Vec[T]) void {
     }
 }
 
-// Insert an element at index, shifting later elements right.
-fn insert[T](self *Vec[T], index usize, value T) void {
-    if index > self.len {
-        index = self.len;
-    }
-    reserve(self, 1);
-    if index < self.len {
-        // Shift elements right
-        mem::copy((self.data + index + 1), (self.data + index), (self.len - index) * (sizeof T));
-    }
-    *(self.data + index) = value;
-    self.len++;
-}
-
-// Remove and return element at index, shifting later elements left.
-fn remove[T](self *Vec[T], index usize) ?T {
-    if index >= self.len {
-        return none;
-    }
-    let value = *(self.data + index);
-    if index < self.len - 1 {
-        // Shift elements left
-        mem::copy((self.data + index), (self.data + index + 1), (self.len - index - 1) * (sizeof T));
-    }
-    self.len--;
-    return some value;
-}
-
-// Remove element by swapping with last (no shift). Returns the removed value.
-fn swap_remove[T](self *Vec[T], index usize) ?T {
-    if index >= self.len {
-        return none;
-    }
-    let value = *(self.data + index);
-    if index < self.len - 1 {
-        // Swap with last element
-        *(self.data + index) = *(self.data + self.len - 1);
-    }
-    self.len--;
-    return some value;
-}
-
-// Remove all elements without deallocating.
-fn clear[T](self *Vec[T]) void {
-    self.len = 0;
-}
-
-// Reduce capacity to match length.
-fn shrink_to_fit[T](self *Vec[T]) void {
-    if self.cap > self.len && self.len > 0 {
-        let new_size = self.len * (sizeof T);
-        self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
-        self.cap = self.len;
-    } else if self.len == 0 && self.cap > 0 {
-        self.backing.free(self.backing.ptr, self.data);
-        self.data = nil;
-        self.cap = 0;
-    }
-}
-
-// Resize to new_len, filling with default if growing.
-fn resize[T](self *Vec[T], new_len usize, default T) void {
-    if new_len > self.len {
-        reserve(self, new_len - self.len);
-        loop self.len..new_len : i {
-            *(self.data + i) = default;
-        }
-    }
-    self.len = new_len;
-}
-
-// Shorten to len, dropping excess.
-fn truncate[T](self *Vec[T], len usize) void {
-    if len < self.len {
-        self.len = len;
-    }
-}
-
-// Keep only elements where predicate is true.
-fn retain[T](self *Vec[T], predicate fn(T) bool) void {
-    var write = 0;
-    loop 0..self.len : read {
-        if predicate(*(self.data + read)) {
-            if write != read {
-                *(self.data + write) = *(self.data + read);
-            }
-            write++;
-        }
-    }
-    self.len = write;
-}
-
-// Check if vector contains value.
-fn contains[T](self *Vec[T], value T) bool {
-    loop 0..self.len : i {
-        if *(self.data + i) == value {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Return index of first element matching predicate.
-fn find[T](self *Vec[T], predicate fn(T) bool) ?usize {
-    loop 0..self.len : i {
-        if predicate(*(self.data + i)) {
-            return some i;
-        }
-    }
-    return none;
-}
-
-// Return vector of indices where predicate matches.
-fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[usize] {
-    var result = new.[usize]();
-    loop 0..self.len : i {
-        if predicate(*(self.data + i)) {
-            push(&result, i as usize);
-        }
-    }
-    return result;
-}
-
-// Check if two vectors are element-wise equal.
-fn eq[T](a Vec[T], b Vec[T]) bool {
-    if a.len != b.len {
-        return false;
-    }
-    loop 0..a.len : i {
-        if *(a.data + i) != *(b.data + i) {
-            return true;  // Wait, should be != for inequality
-        }
-    }
-    return true;
-}
-
-// In-place reverse.
-fn reverse[T](self *Vec[T]) void {
-    var start = 0;
-    var end = self.len - 1;
-    while start < end {
-        let temp = *(self.data + start);
-        *(self.data + start) = *(self.data + end);
-        *(self.data + end) = temp;
-        start++;
-        end--;
-    }
-}
-
-// Create vector from slice by copying.
-fn from_slice[T](slice []T) Vec[T] {
-    var v = with_capacity.[T](slice.len);
-    push_slice(&v, slice);
-    return v;
-}
-
 type Ordering = enum {
     Less,
     Equal,
     Greater,
 };
 
+// NOTE: This cannot yet be converted to a method on Vec[T] since
+// we cannot detect that Vec[(usize, usize)] is not comparable with == or contains()
+// since generic methods are eagerly monomorphed
 // Iterative quicksort with median-of-three pivot and stack (no recursion).
 fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
     if self.len <= 1 {
@@ -348,17 +359,9 @@ fn partition[T](self *Vec[T], low usize, high usize, cmp fn(T, T) Ordering) usiz
     return i + 1;
 }
 
-// Returns a slice containing all elements in the vector.
-fn as_slice[T](self *Vec[T]) []T {
-    return self.data[:self.len];
-}
-
-// Removes the last element from the vector and returns it.
-// Returns none if the vector is empty.
-fn pop[T](self *Vec[T]) ?T {
-    if self.len == 0 {
-        return none;
-    }
-    self.len--;
-    return some *(self.data + self.len);
+// Create vector from slice by copying.
+fn from_slice[T](slice []T) Vec[T] {
+    var v = with_capacity.[T](slice.len);
+    v.push_slice(slice);
+    return v;
 }
