@@ -274,9 +274,9 @@ fn delete[T](self *Vec[T]) void {
     if self.data != nil {
         self.backing.free(self.backing.ptr, self.data);
         self.data = nil;
-        self.len = 0;
-        self.cap = 0;
     }
+    self.len = 0;
+    self.cap = 0;
 }
 
 type Ordering = enum {
@@ -285,9 +285,13 @@ type Ordering = enum {
     Greater,
 };
 
-// NOTE: This cannot yet be converted to a method on Vec[T] since
-// we cannot detect that Vec[(usize, usize)] is not comparable with == or contains()
-// since generic methods are eagerly monomorphed
+// This cannot be made a method, because of this line:
+// var stack = with_capacity.[(usize, usize)](self.len);  // Estimate stack size
+// Vec.contains() performs a == comparison, which is not supported for (usize, usize)
+// type and will prevent the creation of that Vec object.
+// I am considering what the right way to handle this is. I am probably going to go the
+// way I went for the HashMap type where an eq_fn fn (T, T) bool is required each time
+// a Vec is made (either through new, with_capacity, from_slice) or whatever
 // Iterative quicksort with median-of-three pivot and stack (no recursion).
 fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
     if self.len <= 1 {
@@ -306,10 +310,10 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
             let pivot_idx = partition.[T](self, low, high, cmp);
             // Push right subarray first (for better cache locality)
             if pivot_idx + 1 < high {
-                push(&stack, (pivot_idx + 1, high));
+                stack.push((pivot_idx + 1, high));
             }
             if low < pivot_idx - 1 {
-                push(&stack, (low, pivot_idx - 1));
+                stack.push((low, pivot_idx - 1));
             }
         }
     }
