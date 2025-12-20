@@ -12,13 +12,13 @@ fn main() int {
     defer set::delete(&s);
 
     loop 0..strings.len : i {
-        set::insert(&s, strings[i]);
+        s.insert(strings[i]);
     }
 
     var x = "123";
 
-    print `set contains 123? {set::contains(&s, "123")}`;
-    print `set contains 345? {set::contains(&s, "345")}`;
+    print `set contains 123? {s.contains("123")}`;
+    print `set contains 345? {s.contains("345")}`;
 
     return 0;
 }

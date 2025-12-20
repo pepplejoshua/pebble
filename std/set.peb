@@ -18,6 +18,156 @@ type Set[K] = struct {
     hash_fn fn (K) u64;
     eq_fn   fn (K, K) bool;
     backing Allocator;
+
+    // Double capacity when load factor > 0.7
+    fn maybe_grow[K](self *Set[K]) void {
+        // Always grow if capacity is 0
+        if self.cap == 0 {
+            self.rehash(8);
+            return;
+        }
+
+        // Check load factor: if < 0.7, no need to grow
+        if (self.len * 10) / self.cap < 7 {
+            return;
+        }
+
+        self.rehash(self.cap * 2);
+    }
+
+    // Rehash into a new table with new_cap buckets.
+    fn rehash[K](self *Set[K], new_cap usize) void {
+        let allocator = self.backing;
+        let new_size = new_cap * (sizeof Entry[K]);
+        let new_entries *Entry[K] = allocator.alloc(allocator.ptr, new_size);
+
+        // Initialize
+        var i = 0;
+        loop 0..new_cap : i {
+            (new_entries + i).state = .Empty;
+        }
+
+        // Move entries
+        var old_entries = self.entries;
+        var old_cap = self.cap;
+
+        self.entries = new_entries;
+        self.cap = new_cap;
+        self.len = 0;
+
+        // Re-insert old items
+        if old_entries != nil {
+            loop 0..old_cap : j {
+                let e = old_entries + j;
+                if e.state == .Occupied {
+                    self.insert(e.key);
+                }
+            }
+            allocator.free(allocator.ptr, old_entries);
+        }
+    }
+
+    // Insert or replace a key entry.
+    fn insert[K](self *Set[K], key K) void {
+        self.maybe_grow();
+
+        let hash = self.hash_fn(key);
+        var index = (hash as usize) % self.cap;
+        var tombstone_index ?usize = none;
+
+        while true {
+            let entry = self.entries + index;
+
+            if entry.state == .Empty {
+                // Prefer first tombstone if found
+                if tombstone_index.is_some {
+                    let t = tombstone_index!;
+                    let slot = self.entries + t;
+                    slot.key = key;
+                    slot.state = .Occupied;
+                    self.len += 1;
+                } else {
+                    entry.key = key;
+                    entry.state = .Occupied;
+                    self.len += 1;
+                }
+                return;
+            }
+
+            if entry.state == .Tombstone && !tombstone_index.is_some {
+                tombstone_index = some index;
+            }
+
+            if entry.state == .Occupied && self.eq_fn(entry.key, key) {
+                return; // Do nothing
+            }
+
+            index = (index + 1) % self.cap;
+        }
+    }
+
+    // Check if the set contains a key
+    fn contains[K](self *Set[K], key K) bool {
+        if self.cap == 0 {
+            return false;
+        }
+
+        let hash = self.hash_fn(key);
+        var index = (hash as usize) % self.cap;
+
+        while true {
+            let entry = self.entries + index;
+
+            if entry.state == .Empty {
+                return false;
+            }
+
+            if entry.state == .Occupied && self.eq_fn(entry.key, key) {
+                return true;
+            }
+
+            index = (index + 1) % self.cap;
+        }
+
+        return false;
+    }
+
+    // Remove a key. Returns true if removed.
+    fn remove[K](self *Set[K], key K) bool {
+        if self.cap == 0 {
+            return false;
+        }
+
+        let hash = self.hash_fn(key);
+        var index = (hash as usize) % self.cap;
+
+        while true {
+            let entry = self.entries + index;
+
+            if entry.state == .Empty {
+                return false; // not found
+            }
+
+            if entry.state == .Occupied && self.eq_fn(entry.key, key) {
+                entry.state = .Tombstone;
+                self.len -= 1;
+                return true;
+            }
+
+            index = (index + 1) % self.cap;
+        }
+
+        return false;
+    }
+
+    // Remove all key entries but keep capacity.
+    fn clear[K](self *Set[K]) void {
+        var i = 0;
+        loop 0..self.cap : i {
+            (self.entries + i).state = .Empty;
+        }
+        self.len = 0;
+    }
 };
 
 // Create an empty set with default capacity.
@@ -58,145 +208,6 @@ fn with_capacity[K](cap usize, hash_fn fn (K) u64,
     };
 }
 
-// Double capacity when load factor > 0.7
-fn maybe_grow[K](self *Set[K]) void {
-    // Always grow if capacity is 0
-    if self.cap == 0 {
-        rehash(self, 8);
-        return;
-    }
-
-    // Check load factor: if < 0.7, no need to grow
-    if (self.len * 10) / self.cap < 7 {
-        return;
-    }
-
-    rehash(self, self.cap * 2);
-}
-
-// Rehash into a new table with new_cap buckets.
-fn rehash[K](self *Set[K], new_cap usize) void {
-    let allocator = self.backing;
-    let new_size = new_cap * (sizeof Entry[K]);
-    let new_entries *Entry[K] = allocator.alloc(allocator.ptr, new_size);
-
-    // Initialize
-    var i = 0;
-    loop 0..new_cap : i {
-        (new_entries + i).state = .Empty;
-    }
-
-    // Move entries
-    var old_entries = self.entries;
-    var old_cap = self.cap;
-
-    self.entries = new_entries;
-    self.cap = new_cap;
-    self.len = 0;
-
-    // Re-insert old items
-    if old_entries != nil {
-        loop 0..old_cap : j {
-            let e = old_entries + j;
-            if e.state == .Occupied {
-                insert(self, e.key);
-            }
-        }
-        allocator.free(allocator.ptr, old_entries);
-    }
-}
-
-// Insert or replace a key entry.
-fn insert[K](self *Set[K], key K) void {
-    maybe_grow(self);
-
-    let hash = self.hash_fn(key);
-    var index = (hash as usize) % self.cap;
-    var tombstone_index ?usize = none;
-
-    while true {
-        let entry = self.entries + index;
-
-        if entry.state == .Empty {
-            // Prefer first tombstone if found
-            if tombstone_index.is_some {
-                let t = tombstone_index!;
-                let slot = self.entries + t;
-                slot.key = key;
-                slot.state = .Occupied;
-                self.len += 1;
-            } else {
-                entry.key = key;
-                entry.state = .Occupied;
-                self.len += 1;
-            }
-            return;
-        }
-
-        if entry.state == .Tombstone && !tombstone_index.is_some {
-            tombstone_index = some index;
-        }
-
-        if entry.state == .Occupied && self.eq_fn(entry.key, key) {
-            return; // Do nothing
-        }
-
-        index = (index + 1) % self.cap;
-    }
-}
-
-// Check if the set contains a key
-fn contains[K](self *Set[K], key K) bool {
-    if self.cap == 0 {
-        return false;
-    }
-
-    let hash = self.hash_fn(key);
-    var index = (hash as usize) % self.cap;
-
-    while true {
-        let entry = self.entries + index;
-
-        if entry.state == .Empty {
-            return false;
-        }
-
-        if entry.state == .Occupied && self.eq_fn(entry.key, key) {
-            return true;
-        }
-
-        index = (index + 1) % self.cap;
-    }
-
-    return false;
-}
-
-// Remove a key. Returns true if removed.
-fn remove[K](self *Set[K], key K) bool {
-    if self.cap == 0 {
-        return false;
-    }
-
-    let hash = self.hash_fn(key);
-    var index = hash % self.cap;
-
-    while true {
-        let entry = self.entries + index;
-
-        if entry.state == .Empty {
-            return false; // not found
-        }
-
-        if entry.state == .Occupied && self.eq_fn(entry.key, key) {
-            entry.state = .Tombstone;
-            self.len -= 1;
-            return true;
-        }
-
-        index = (index + 1) % self.cap;
-    }
-}
-
 // Delete the entire set and free memory.
 fn delete[K](self *Set[K]) void {
     if self.entries != nil {
@@ -205,13 +216,4 @@ fn delete[K](self *Set[K]) void {
         self.len = 0;
         self.cap = 0;
     }
-}
-
-// Remove all key entries but keep capacity.
-fn clear[K, V](self *HashMap[K, V]) void {
-    var i = 0;
-    loop 0..self.cap : i {
-        (self.entries + i).state = .Empty;
-    }
-    self.len = 0;
 }
