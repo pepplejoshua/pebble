@@ -13,7 +13,7 @@ fn main(argv []str) int {
         var contents = io::read_all(file);
         defer string::delete(&contents);
 
-        print string::as_str(contents);
+        print contents.as_str();
     } else {
         print "Cannot read ", path, ".";
     }

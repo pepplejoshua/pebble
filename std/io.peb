@@ -105,7 +105,7 @@ fn read_all(file *FILE) string::String {
     var s = string::new();
     var needed usize = size + 1; // +1 for null terminator
     if needed > s.capacity {
-        string::grow(&s, needed);
+        s.grow(needed);
     }
 
     var bytes_read = fread(s.data, 1, size, file);
@@ -144,7 +144,7 @@ fn read_line(file *FILE) string::String {
             }
         }
 
-        string::push_char(&s, ch);
+        s.push_char(ch);
         if ch == '\n' {
             // strip trailing \n
             s.len += -1;
@@ -226,7 +226,7 @@ fn get_file_error(file *FILE) string::String {
     if strlen(err_msg) == 0 { return string::new(); }
 
     var s = string::new();
-    string::push_str(&s, err_msg);
+    s.push_str(err_msg);
     return s;
 }
 
