@@ -518,6 +518,20 @@ AstNode *clone_ast_node(AstNode *node) {
             clone_ast_node(node->data.type_struct.field_types[i]);
       }
     }
+
+    // Clone methods
+    clone->data.type_struct.method_count = node->data.type_struct.method_count;
+    if (node->data.type_struct.method_count > 0) {
+      clone->data.type_struct.methods = arena_alloc(
+          &long_lived, sizeof(AstNode *) * node->data.type_struct.method_count);
+      for (size_t i = 0; i < node->data.type_struct.method_count; i++) {
+        clone->data.type_struct.methods[i] =
+            clone_ast_node(node->data.type_struct.methods[i]);
+      }
+    } else {
+      clone->data.type_struct.methods = NULL;
+    }
+
     break;
   }
   case AST_TYPE_FUNCTION: {

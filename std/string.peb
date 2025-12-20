@@ -11,6 +11,199 @@ type String = struct {
     data *char;
     len usize;
     capacity usize;
+
+    fn grow(self *String, new_cap usize) void {
+        self.data = mem::realloc(self.data, (sizeof char) * new_cap);
+        self.capacity = new_cap;
+    }
+
+    fn push_char(self *String, c char) void {
+        if self.len + 1 >= self.capacity {
+            self.grow(self.capacity * 2);
+        }
+
+        *(self.data + self.len) = c;
+        self.len++;
+        *(self.data + self.len) = '\0';
+    }
+
+    fn push_str(self *String, new_str str) void {
+        var len = strlen(new_str);
+        if (len == 0) {
+            return; // Nothing to append
+        }
+
+        // Reserve space for the new string plus null terminator
+        self.reserve(len);
+
+        // Copy the new string
+        var dst = self.data + self.len;
+        var src = new_str;
+        mem::copy(dst, src, len);
+
+        // Update length and null-terminate
+        self.len += len;
+        *(self.data + self.len) = '\0';
+    }
+
+    fn reserve(self *String, additional usize) void {
+        var needed = self.len + additional + 1;
+        if (needed > self.capacity) {
+            var new_cap = self.capacity;
+            if (new_cap == 0) {
+                new_cap = 16; // Minimum capacity
+            }
+            while (new_cap < needed) {
+                new_cap = new_cap * 2;
+            }
+            self.grow(new_cap);
+        }
+    }
+
+    fn as_str(self String) str {
+        if self.data == nil {
+            return "";
+        }
+        return self.data as str;
+    }
+
+    fn as_slice(self String) []char {
+        return self.data[:self.len];
+    }
+
+    fn is_empty(self String) bool {
+        return self.len == 0;
+    }
+
+    fn clear(self *String) void {
+        self.len = 0;
+        if (self.data != nil) {
+            *self.data = '\0';
+        }
+    }
+
+    fn shrink_to_fit(self *String) void {
+        if (self.capacity > self.len + 1) {
+            if (self.len == 0) {
+                if (self.data != nil) {
+                    mem::delete(self.data);
+                    self.data = nil;
+                }
+                self.capacity = 0;
+            } else {
+                self.data = mem::realloc(self.data, self.len + 1);
+                self.capacity = self.len + 1;
+            }
+        }
+    }
+
+    fn eq(self String, b String) bool {
+        if (self.len != b.len) {
+            return false;
+        }
+        if (self.len == 0) {
+            return true; // Both empty
+        }
+        return memcmp(self.data, b.data, self.len) == 0;
+    }
+
+    fn starts_with(self String, prefix str) bool {
+        var prefix_len = strlen(prefix);
+        if (prefix_len > self.len) {
+            return false;
+        }
+        return memcmp(self.data, prefix, prefix_len) == 0;
+    }
+
+    fn ends_with(self String, suffix str) bool {
+        var suffix_len = strlen(suffix);
+        if (suffix_len > self.len) {
+            return false;
+        }
+        var start_pos = self.len - suffix_len;
+        return memcmp((self.data + start_pos), suffix, suffix_len) == 0;
+    }
+
+    fn find(self String, needle str) ?isize {
+        var needle_len = strlen(needle);
+        if (needle_len == 0) {
+            return some 0;
+        }
+        if (needle_len > self.len) {
+            return none; // Not found
+        }
+
+        var i = 0;
+        while (i <= self.len - needle_len) {
+            if (memcmp((self.data + i), needle, needle_len) == 0) {
+                return some i;
+            }
+            i++;
+        }
+        return none; // Not found
+    }
+
+    fn substr(self String, start usize, count usize) String {
+        if (start >= self.len) {
+            return new();
+        }
+        var actual_count = count;
+        if (start + count > self.len) {
+            actual_count = self.len - start;
+        }
+
+        var result = new();
+        result.reserve(actual_count);
+
+        if (actual_count > 0) {
+            mem::copy(result.data, (self.data + start), actual_count);
+            result.len = actual_count;
+            *(result.data + result.len) = '\0';
+        }
+
+        return result;
+    }
+
+    fn insert(self *String, pos usize, new_str str) void {
+        var insert_len = strlen(new_str);
+        if (insert_len == 0) {
+            return; // Nothing to insert
+        }
+
+        if (pos > self.len) {
+            pos = self.len; // Clamp to end
+        }
+
+        self.reserve(insert_len);
+
+        // Shift existing data
+        if (pos < self.len) {
+            mem::copy((self.data + pos + insert_len), (self.data + pos), self.len - pos);
+        }
+
+        // Insert new data
+        mem::copy((self.data + pos), new_str, insert_len);
+        self.len += insert_len;
+        *(self.data + self.len) = '\0';
+    }
+
+    fn remove(self *String, pos usize, count usize) void {
+        if (pos >= self.len || count == 0) {
+            return; // Nothing to remove
+        }
+
+        var actual_count = count;
+        if (pos + count > self.len) {
+            actual_count = self.len - pos;
+        }
+
+        if (pos + actual_count < self.len) {
+            mem::copy((self.data + pos), (self.data + pos + actual_count), self.len - pos - actual_count);
+        }
+
+        self.len -= actual_count;
+        *(self.data + self.len) = '\0';
+    }
 };
 
 fn new() String {
@@ -28,197 +221,4 @@ fn delete(s *String) void {
     s.data = nil;
     s.len = 0;
     s.capacity = 0;
-}
-
-fn grow(s *String, new_cap usize) void {
-    s.data = mem::realloc(s.data, (sizeof char) * new_cap);
-    s.capacity = new_cap;
-}
-
-fn push_char(s *String, c char) void {
-    if s.len + 1 >= s.capacity {
-        grow(s, s.capacity * 2);
-    }
-
-    *(s.data + s.len) = c;
-    s.len++;
-    *(s.data + s.len) = '\0';
-}
-
-fn push_str(s *String, new_str str) void {
-    var len = strlen(new_str);
-    if (len == 0) {
-        return; // Nothing to append
-    }
-
-    // Reserve space for the new string plus null terminator
-    reserve(s, len);
-
-    // Copy the new string
-    var dst = s.data + s.len;
-    var src = new_str;
-    mem::copy(dst, src, len);
-
-    // Update length and null-terminate
-    s.len += len;
-    *(s.data + s.len) = '\0';
-}
-
-fn reserve(s *String, additional usize) void {
-    var needed = s.len + additional + 1;
-    if (needed > s.capacity) {
-        var new_cap = s.capacity;
-        if (new_cap == 0) {
-            new_cap = 16; // Minimum capacity
-        }
-        while (new_cap < needed) {
-            new_cap = new_cap * 2;
-        }
-        grow(s, new_cap);
-    }
-}
-
-fn as_str(s String) str {
-    if s.data == nil {
-        return "";
-    }
-    return s.data as str;
-}
-
-fn as_slice(s String) []char {
-    return s.data[:s.len];
-}
-
-fn is_empty(s String) bool {
-    return s.len == 0;
-}
-
-fn clear(s *String) void {
-    s.len = 0;
-    if (s.data != nil) {
-        *s.data = '\0';
-    }
-}
-
-fn shrink_to_fit(s *String) void {
-    if (s.capacity > s.len + 1) {
-        if (s.len == 0) {
-            if (s.data != nil) {
-                mem::delete(s.data);
-                s.data = nil;
-            }
-            s.capacity = 0;
-        } else {
-            s.data = mem::realloc(s.data, s.len + 1);
-            s.capacity = s.len + 1;
-        }
-    }
-}
-
-fn eq(a String, b String) bool {
-    if (a.len != b.len) {
-        return false;
-    }
-    if (a.len == 0) {
-        return true; // Both empty
-    }
-    return memcmp(a.data, b.data, a.len) == 0;
-}
-
-fn starts_with(s String, prefix str) bool {
-    var prefix_len = strlen(prefix);
-    if (prefix_len > s.len) {
-        return false;
-    }
-    return memcmp(s.data, prefix, prefix_len) == 0;
-}
-
-fn ends_with(s String, suffix str) bool {
-    var suffix_len = strlen(suffix);
-    if (suffix_len > s.len) {
-        return false;
-    }
-    var start_pos = s.len - suffix_len;
-    return memcmp((s.data + start_pos), suffix, suffix_len) == 0;
-}
-
-fn find(s String, needle str) ?isize {
-    var needle_len = strlen(needle);
-    if (needle_len == 0) {
-        return some 0;
-    }
-    if (needle_len > s.len) {
-        return none; // Not found
-    }
-
-    var i = 0;
-    while (i <= s.len - needle_len) {
-        if (memcmp((s.data + i), needle, needle_len) == 0) {
-            return some i;
-        }
-        i++;
-    }
-    return none; // Not found
-}
-
-fn substr(s String, start usize, count usize) String {
-    if (start >= s.len) {
-        return new();
-    }
-    var actual_count = count;
-    if (start + count > s.len) {
-        actual_count = s.len - start;
-    }
-
-    var result = new();
-    reserve(&result, actual_count);
-
-    if (actual_count > 0) {
-        mem::copy(result.data, (s.data + start), actual_count);
-        result.len = actual_count;
-        *(result.data + result.len) = '\0';
-    }
-
-    return result;
-}
-
-fn insert(s *String, pos usize, new_str str) void {
-    var insert_len = strlen(new_str);
-    if (insert_len == 0) {
-        return; // Nothing to insert
-    }
-
-    if (pos > s.len) {
-        pos = s.len; // Clamp to end
-    }
-
-    reserve(s, insert_len);
-
-    // Shift existing data
-    if (pos < s.len) {
-        mem::copy((s.data + pos + insert_len), (s.data + pos), s.len - pos);
-    }
-
-    // Insert new data
-    mem::copy((s.data + pos), new_str, insert_len);
-    s.len += insert_len;
-    *(s.data + s.len) = '\0';
-}
-
-fn remove(s *String, pos usize, count usize) void {
-    if (pos >= s.len || count == 0) {
-        return; // Nothing to remove
-    }
-
-    var actual_count = count;
-    if (pos + count > s.len) {
-        actual_count = s.len - pos;
-    }
-
-    if (pos + actual_count < s.len) {
-        mem::copy((s.data + pos), (s.data + pos + actual_count), s.len - pos - actual_count);
-    }
-
-    s.len -= actual_count;
-    *(s.data + s.len) = '\0';
 }

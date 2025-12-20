@@ -14,10 +14,10 @@ fn count_lines(file_path str) usize {
     var contents = io::read_all(file);
     defer string::delete(&contents);
 
-    var file_slice = string::as_slice(contents);
+    var file_slice = contents.as_slice();
     var v = vec::from_slice(file_slice);
     defer vec::delete(&v);
-    var all_newlines = vec::find_all(&v, fn (ch char) bool => ch == '\n');
+    var all_newlines = v.find_all(fn (ch char) bool => ch == '\n');
     print `{file_path} has {all_newlines.len} lines.`;
     return all_newlines.len;
 }

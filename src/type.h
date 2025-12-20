@@ -90,6 +90,10 @@ struct Type {
       char **method_reg_names;
       Type **method_types;
       size_t method_count;
+
+      Symbol **generic_method_symbols;
+      char **generic_method_reg_names;
+      size_t generic_method_count;
     } struct_data;
 
     struct {
