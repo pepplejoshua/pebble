@@ -219,6 +219,39 @@ type Color = enum {
 var output_col = Color.RED;
 ```
 
+**Unions:**
+```go
+// Untagged union
+type Value = union {
+	int_val i32;
+	float_val f32;
+	bool_val bool;
+};
+
+var val = Value.{ int_val = 32 };
+var other Value;
+other.int_val = 32;
+print other.float_val; // Undefined behaviour. Could be garbage data
+
+// Tagged union
+type Data = union enum {
+	Int i32;
+	Float f32;
+	Bool bool;
+};
+
+var data = Data.{ Int = 42 };
+//print data.Float; // Runtime error
+print data.Int; // Safe
+
+switch data {
+    case Int: print `Got integer: {data.Int}`;
+    case Float: print `Got Float: {data.Float}`;
+    else: print `Got Bool: {data.Bool}`;
+    // Can also be case Bool instead of the `else:` case
+}
+````
+
 **Optionals:**
 ```go
 var maybe ?int = some 42;

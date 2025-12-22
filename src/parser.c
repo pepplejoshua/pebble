@@ -2461,7 +2461,7 @@ AstNode *parse_type_expression(Parser *parser) {
     return type;
   }
 
-  // Union type: union (enum+) { field1 type1, field2 type2, ... }
+  // Union type: union (enum+) { field1 type1; field2 type2; ... }
   if (parser_match(parser, TOKEN_UNION)) {
     Location loc = parser->previous.location;
 
