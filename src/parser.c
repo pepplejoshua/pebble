@@ -2334,7 +2334,7 @@ AstNode *parse_type_expression(Parser *parser) {
     }
   }
 
-  // Struct type: struct { field1 type1, field2 type2, ... }
+  // Struct type: struct { field1 type1; field2 type2; ... }
   if (parser_match(parser, TOKEN_STRUCT)) {
     Location loc = parser->previous.location;
 
