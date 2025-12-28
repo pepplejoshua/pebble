@@ -1510,9 +1510,9 @@ void emit_type_if_needed(Codegen *cg, Type *type) {
 
       emit_string(cg, ";\n");
     } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_TUPLE ||
-        type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
-        type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
-        type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
+               type->kind == TYPE_ARRAY || type->kind == TYPE_SLICE ||
+               type->kind == TYPE_OPTIONAL || type->kind == TYPE_UNION ||
+               type->kind == TYPE_TAGGED_UNION || type->kind == TYPE_ENUM) {
 
       if (type->kind == TYPE_ENUM) {
         emit_string(cg, "typedef enum ");
@@ -2096,7 +2096,8 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         } else {
           emit_expr(cg, expr);
         }
-      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY || type->kind == TYPE_TUPLE) {
+      } else if (type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY ||
+                 type->kind == TYPE_TUPLE) {
         // Print struct/tuple with formatted representation
 
         // Wrap in a statement expression to create temporaries
@@ -2819,6 +2820,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
   case AST_STMT_ASSIGN: {
     emit_indent_spaces(cg);
+    emit_string(cg, "// assign\n");
 
     AstNode *lhs = stmt->data.assign_stmt.lhs;
 
@@ -2829,15 +2831,10 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
         lhs->data.member_expr.object->resolved_type->kind ==
             TYPE_TAGGED_UNION) {
 
-      emit_expr(cg, lhs->data.member_expr.object);
-
       emit_type_name(cg, lhs->data.member_expr.object->resolved_type);
       emit_string(cg, " ");
       emit_string(cg, temp_name);
       emit_string(cg, " = ");
-
-      emit_expression_buffer(cg);
-      emit_string(cg, ";\n");
 
       const char *member = lhs->data.member_expr.member;
       Type *tagged_type = lhs->data.member_expr.object->resolved_type;
@@ -2861,6 +2858,12 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
 
       emit_expression_buffer(cg);
       emit_string(cg, " } };\n");
+
+      emit_expr(cg, lhs->data.member_expr.object);
+      emit_expression_buffer(cg);
+      emit_string(cg, " = ");
+      emit_string(cg, temp_name);
+      emit_string(cg, ";\n");
 
       return;
     }
