@@ -1349,8 +1349,10 @@ static void collect_methods(void) {
       continue;
     }
 
-    // Only struct types have methods
-    if (!sym->type || sym->type->kind != TYPE_STRUCT) {
+    // Only struct and union types have methods
+    if (!sym->type ||
+        (sym->type->kind != TYPE_STRUCT && sym->type->kind != TYPE_UNION &&
+         sym->type->kind != TYPE_TAGGED_UNION)) {
       continue;
     }
 
@@ -1360,15 +1362,23 @@ static void collect_methods(void) {
       continue;
     }
 
-    // Get the struct type expression
+    // Get the struct or union type expression
     AstNode *type_expr = type_decl->data.type_decl.type_expr;
-    if (!type_expr || type_expr->kind != AST_TYPE_STRUCT) {
+    if (!type_expr || (type_expr->kind != AST_TYPE_STRUCT &&
+                       type_expr->kind != AST_TYPE_UNION)) {
       continue;
     }
 
-    // Extract methods from the struct
-    size_t method_count = type_expr->data.type_struct.method_count;
-    AstNode **methods = type_expr->data.type_struct.methods;
+    // Extract methods from the struct or union
+    size_t method_count;
+    AstNode **methods;
+    if (type_expr->kind == AST_TYPE_STRUCT) {
+      method_count = type_expr->data.type_struct.method_count;
+      methods = type_expr->data.type_struct.methods;
+    } else { // AST_TYPE_UNION
+      method_count = type_expr->data.type_union.method_count;
+      methods = type_expr->data.type_union.methods;
+    }
 
     if (method_count == 0) {
       continue;
@@ -1390,22 +1400,40 @@ static void collect_methods(void) {
 
     // Allocate arrays for regular methods
     if (regular_method_count > 0) {
-      sym->type->data.struct_data.method_qualified_names =
-          arena_alloc(&long_lived, regular_method_count * sizeof(char *));
-      sym->type->data.struct_data.method_reg_names =
-          arena_alloc(&long_lived, regular_method_count * sizeof(char *));
-      sym->type->data.struct_data.method_types =
-          arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
-      sym->type->data.struct_data.method_count = regular_method_count;
+      if (sym->type->kind == TYPE_STRUCT) {
+        sym->type->data.struct_data.method_qualified_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.struct_data.method_reg_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.struct_data.method_types =
+            arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
+        sym->type->data.struct_data.method_count = regular_method_count;
+      } else { // TYPE_UNION or TYPE_TAGGED_UNION
+        sym->type->data.union_data.method_qualified_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.union_data.method_reg_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.union_data.method_types =
+            arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
+        sym->type->data.union_data.method_count = regular_method_count;
+      }
     }
 
     // Allocate arrays for generic methods
     if (generic_method_count > 0) {
-      sym->type->data.struct_data.generic_method_symbols =
-          arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
-      sym->type->data.struct_data.generic_method_reg_names =
-          arena_alloc(&long_lived, generic_method_count * sizeof(char *));
-      sym->type->data.struct_data.generic_method_count = generic_method_count;
+      if (sym->type->kind == TYPE_STRUCT) {
+        sym->type->data.struct_data.generic_method_symbols =
+            arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
+        sym->type->data.struct_data.generic_method_reg_names =
+            arena_alloc(&long_lived, generic_method_count * sizeof(char *));
+        sym->type->data.struct_data.generic_method_count = generic_method_count;
+      } else { // TYPE_UNION or TYPE_TAGGED_UNION
+        sym->type->data.union_data.generic_method_symbols =
+            arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
+        sym->type->data.union_data.generic_method_reg_names =
+            arena_alloc(&long_lived, generic_method_count * sizeof(char *));
+        sym->type->data.union_data.generic_method_count = generic_method_count;
+      }
     }
 
     // Register each method as a function symbol
@@ -1447,16 +1475,29 @@ static void collect_methods(void) {
       // Store in appropriate array (generic vs regular)
       if (method->data.func_decl.type_param_count > 0) {
         // Generic method
-        sym->type->data.struct_data.generic_method_symbols[generic_idx] =
-            method_sym;
-        sym->type->data.struct_data.generic_method_reg_names[generic_idx] =
-            reg_name;
+        if (sym->type->kind == TYPE_STRUCT) {
+          sym->type->data.struct_data.generic_method_symbols[generic_idx] =
+              method_sym;
+          sym->type->data.struct_data.generic_method_reg_names[generic_idx] =
+              reg_name;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          sym->type->data.union_data.generic_method_symbols[generic_idx] =
+              method_sym;
+          sym->type->data.union_data.generic_method_reg_names[generic_idx] =
+              reg_name;
+        }
         generic_idx++;
       } else {
         // Regular method
-        sym->type->data.struct_data.method_qualified_names[regular_idx] =
-            qualified_name;
-        sym->type->data.struct_data.method_reg_names[regular_idx] = reg_name;
+        if (sym->type->kind == TYPE_STRUCT) {
+          sym->type->data.struct_data.method_qualified_names[regular_idx] =
+              qualified_name;
+          sym->type->data.struct_data.method_reg_names[regular_idx] = reg_name;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          sym->type->data.union_data.method_qualified_names[regular_idx] =
+              qualified_name;
+          sym->type->data.union_data.method_reg_names[regular_idx] = reg_name;
+        }
         regular_idx++;
       }
     }

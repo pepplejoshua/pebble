@@ -82,10 +82,12 @@ struct Type {
     } slice;
 
     struct {
+      bool builtin;
+
       char **field_names; // Array of field names
       Type **field_types; // Array of field types
       size_t field_count; // Number of fields
-      bool builtin;
+
       char **method_qualified_names;
       char **method_reg_names;
       Type **method_types;
@@ -101,6 +103,15 @@ struct Type {
       char **variant_names; // Array of variant names
       Type **variant_types; // Array of variant types
       size_t variant_count; // Number of variants
+
+      char **method_qualified_names;
+       char **method_reg_names;
+       Type **method_types;
+       size_t method_count;
+
+       Symbol **generic_method_symbols;
+       char **generic_method_reg_names;
+       size_t generic_method_count;
     } union_data;
 
     struct {
