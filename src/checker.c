@@ -3465,6 +3465,10 @@ static void substitute_type_params_in_expr(AstNode *expr,
 
   case AST_EXPR_MEMBER:
     substitute_type_params_in_expr(expr->data.member_expr.object, bindings);
+    for (size_t i = 0; i < expr->data.member_expr.type_arg_count; i++) {
+      substitute_type_params_in_type(expr->data.member_expr.type_args[i],
+                                     bindings);
+    }
     break;
 
   case AST_EXPR_MODULE_MEMBER:
