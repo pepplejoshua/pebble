@@ -2828,20 +2828,31 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     get_temporary_name(cg, temp_name, sizeof(temp_name));
 
     if ((int)stmt->data.assign_stmt.op == -1 && lhs->kind == AST_EXPR_MEMBER &&
-        lhs->data.member_expr.object->resolved_type->kind ==
-            TYPE_TAGGED_UNION) {
-
-      emit_type_name(cg, lhs->data.member_expr.object->resolved_type);
-      emit_string(cg, " ");
-      emit_string(cg, temp_name);
-      emit_string(cg, " = ");
+        (lhs->data.member_expr.object->resolved_type->kind ==
+             TYPE_TAGGED_UNION ||
+         (lhs->data.member_expr.object->resolved_type->kind == TYPE_POINTER &&
+          lhs->data.member_expr.object->resolved_type->data.ptr.base->kind ==
+              TYPE_TAGGED_UNION))) {
 
       const char *member = lhs->data.member_expr.member;
-      Type *tagged_type = lhs->data.member_expr.object->resolved_type;
+      Type *object_type = lhs->data.member_expr.object->resolved_type;
+      Type *tagged_type;
+      bool is_pointer = false;
+
+      if (object_type->kind == TYPE_POINTER) {
+        tagged_type = object_type->data.ptr.base;
+        is_pointer = true;
+      } else {
+        tagged_type = object_type;
+        is_pointer = false;
+      }
 
       const char *type_name = tagged_type->canonical_name;
 
       emit_expr(cg, stmt->data.assign_stmt.rhs);
+
+      emit_type_name(cg, tagged_type);
+      emit_string(cg, " ");
 
       emit_string(cg, temp_name);
       emit_string(cg, " = (");
@@ -2860,7 +2871,13 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       emit_string(cg, " } };\n");
 
       emit_expr(cg, lhs->data.member_expr.object);
-      emit_expression_buffer(cg);
+      if (is_pointer) {
+        emit_string(cg, "(*");
+        emit_expression_buffer(cg);
+        emit_string(cg, ")");
+      } else {
+        emit_expression_buffer(cg);
+      }
       emit_string(cg, " = ");
       emit_string(cg, temp_name);
       emit_string(cg, ";\n");
@@ -2919,6 +2936,7 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     temp_reset(&temp_allocator);
     break;
   }
+
   case AST_DECL_VARIABLE: {
     if (stmt->data.var_decl.init) {
       emit_expr(cg, stmt->data.var_decl.init);
