@@ -1141,7 +1141,7 @@ static bool check_function_signature(Symbol *sym) {
                                    is_variadic != -1, false, convention,
                                    sym->decl->loc);
 
-  Type *receiver_struct_type = NULL;
+  Type *receiver_type = NULL;
   if (sym->is_method && decl->kind == AST_DECL_FUNCTION) {
     // First parameter must be named "self"
     if (param_count > 0 && strcmp(params[0].name, "self") == 0) {
@@ -1150,27 +1150,29 @@ static bool check_function_signature(Symbol *sym) {
 
       // Handle both value and pointer receivers
       if (self_type->kind == TYPE_POINTER) {
-        receiver_struct_type = self_type->data.ptr.base;
+        receiver_type = self_type->data.ptr.base;
       } else {
-        receiver_struct_type = self_type;
+        receiver_type = self_type;
       }
 
-      if (receiver_struct_type->kind != TYPE_STRUCT) {
-        checker_error(decl->loc,
-                      "Method '%s' self parameter must be a struct type or "
-                      "pointer to struct type",
-                      decl->data.func_decl.name);
-        receiver_struct_type = NULL;
+      if (receiver_type->kind != TYPE_STRUCT &&
+          receiver_type->kind != TYPE_UNION &&
+          receiver_type->kind != TYPE_TAGGED_UNION) {
+        checker_error(
+            decl->loc,
+            "Method '%s' self parameter must be a struct or union type or "
+            "pointer to struct/union type",
+            decl->data.func_decl.name);
+        receiver_type = NULL;
       } else {
-        // Validate that self type matches the containing struct
-        if (!type_equals(receiver_struct_type, sym->containing_struct_type)) {
+        // Validate that self type matches the containing struct/union
+        if (!type_equals(receiver_type, sym->containing_struct_type)) {
           checker_error(decl->loc,
                         "Method '%s' self parameter type '%s' doesn't match "
                         "containing struct '%s'",
-                        decl->data.func_decl.name,
-                        type_name(receiver_struct_type),
+                        decl->data.func_decl.name, type_name(receiver_type),
                         type_name(sym->containing_struct_type));
-          receiver_struct_type = NULL;
+          receiver_type = NULL;
         }
       }
     } else {
@@ -1192,14 +1194,12 @@ static bool check_function_signature(Symbol *sym) {
     }
   }
 
-  if (receiver_struct_type) {
+  if (receiver_type) {
     char *qualified_name = decl->data.func_decl.qualified_name;
-    for (size_t i = 0; i < receiver_struct_type->data.struct_data.method_count;
-         i++) {
-      if (strcmp(
-              receiver_struct_type->data.struct_data.method_qualified_names[i],
-              qualified_name) == 0) {
-        receiver_struct_type->data.struct_data.method_types[i] = sym->type;
+    for (size_t i = 0; i < receiver_type->data.struct_data.method_count; i++) {
+      if (strcmp(receiver_type->data.struct_data.method_qualified_names[i],
+                 qualified_name) == 0) {
+        receiver_type->data.struct_data.method_types[i] = sym->type;
         break;
       }
     }
