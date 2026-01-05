@@ -32,7 +32,7 @@ struct Symbol {
   Type *type;      // Type (NULL initially, filled in pass 3)
   bool is_mono;
   bool is_method;
-  Type *containing_struct_type; // For methods to show the struct they belong to
+  Type *containing_type; // For methods to show the struct they belong to
 
   // Kind-specific data
   union {

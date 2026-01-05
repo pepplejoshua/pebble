@@ -250,7 +250,43 @@ switch data {
     else: print `Got Bool: {data.Bool}`;
     // Can also be case Bool instead of the `else:` case
 }
-````
+
+// Unions with methods (like structs)
+type Result[T, E] = union enum {
+    Ok T;
+    Err E;
+
+    // Associated function (constructor)
+    fn ok(value T) Result[T, E] {
+        return Result.[T, E]{ Ok = value };
+    }
+
+    // Instance method
+    fn is_ok(self Result[T, E]) bool {
+        switch self {
+            case Ok: return true;
+            case Err: return false;
+        }
+    }
+
+    // Generic method
+    fn map[U](self Result[T, E], f fn(T) U) Result[U, E] {
+        switch self {
+            case Ok: return Result.[U, E].ok(f(self.Ok));
+            case Err: return Result.[U, E].err(self.Err);
+        }
+    }
+};
+
+var success = Result.[i32, str].ok(42);
+var failure = Result.[i32, str].err("error");
+
+print success.is_ok();  // true
+print failure.is_ok();  // false
+
+// Partially-generic method call
+var doubled = success.map.[i32](fn(x i32) i32 => x * 2);
+```
 
 **Optionals:**
 ```go
@@ -496,8 +532,8 @@ import "std:hmap";
 var map = hmap::new(hash::hash_str, fn(a str, b str) bool => libc::strcmp(a, b) == 0);
 defer hmap::delete(&map);
 
-hmap::insert(&map, "key", 42);
-var value = hmap::get(&map, "key");
+map.insert("key", 42);
+var value = map.get("key");
 ```
 
 ### std:io
@@ -563,11 +599,11 @@ Generic set data structure for unique key storage:
 ```go
 import "std:set";
 
-var set = set::new(hash::hash_str, fn(a str, b str) bool => libc::strcmp(a, b) == 0);
+var s = set::new(hash::hash_str, fn(a str, b str) bool => libc::strcmp(a, b) == 0);
 defer set::delete(&set);
 
-set::insert(&set, "item");
-if set::contains(&set, "item") {
+s.insert("item");
+if s.contains("item") {
     print "Found";
 }
 ```
@@ -580,9 +616,9 @@ import "std:string";
 var s = string::new();
 defer string::delete(s);
 
-string::push_char(s, 'H');
-string::push_str(s, "ello");
-print string::to_str(s);
+s.push_char('H');
+s.push_str("ello");
+print s.to_str(s);
 ```
 
 ### std:vec
@@ -593,10 +629,10 @@ import "std:vec";
 var v = vec::new.[int]();
 defer vec::delete(&v);
 
-vec::push(&v, 10);
-vec::push(&v, 20);
-var first = vec::get(&v, 0);
-vec::remove(&v, 0);  // Remove element
+v.push(10);
+v.push(20);
+var first = v.get(0);
+v.remove(0);  // Remove element
 ```
 
 

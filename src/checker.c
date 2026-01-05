@@ -1166,21 +1166,21 @@ static bool check_function_signature(Symbol *sym) {
         receiver_type = NULL;
       } else {
         // Validate that self type matches the containing struct/union
-        if (!type_equals(receiver_type, sym->containing_struct_type)) {
+        if (!type_equals(receiver_type, sym->containing_type)) {
           checker_error(decl->loc,
                         "Method '%s' self parameter type '%s' doesn't match "
                         "containing struct '%s'",
                         decl->data.func_decl.name, type_name(receiver_type),
-                        type_name(sym->containing_struct_type));
+                        type_name(sym->containing_type));
           receiver_type = NULL;
         }
       }
     } else {
       // Associated function - first param is NOT "self" (or no params)
       // Store its type on the containing struct or union
-      if (sym->containing_struct_type) {
+      if (sym->containing_type) {
         char *qualified_name = decl->data.func_decl.qualified_name;
-        Type *containing_type = sym->containing_struct_type;
+        Type *containing_type = sym->containing_type;
 
         size_t method_count;
         char **method_qualified_names;
@@ -1498,7 +1498,7 @@ static void collect_methods(void) {
           symbol_create(qualified_name, SYMBOL_FUNCTION, method);
       method_sym->reg_name = method->data.func_decl.name;
       method_sym->is_method = true;
-      method_sym->containing_struct_type = sym->type;
+      method_sym->containing_type = sym->type;
 
       scope_add_symbol(checker_state.current_module->scope, method_sym);
 
@@ -1551,6 +1551,10 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
                                       AstNode **type_args,
                                       size_t type_arg_count, Location call_loc);
 
+static Type *monomorphize_union_type(AstNode *generic_union_decl,
+                                     AstNode **type_args, size_t type_arg_count,
+                                     Location call_loc);
+
 Type *resolve_type_expression(AstNode *type_expr) {
   if (!type_expr) {
     return NULL;
@@ -1591,9 +1595,20 @@ Type *resolve_type_expression(AstNode *type_expr) {
         return NULL;
       }
 
-      // Monomorphize the generic struct
-      type = monomorphize_struct_type(type->data.generic_decl.decl, type_args,
-                                      type_arg_count, type_expr->loc);
+      // Check if this is a struct or union generic type
+      AstNode *generic_decl = type->data.generic_decl.decl;
+      AstNode *type_body = generic_decl->data.type_decl.type_expr;
+
+      if (type_body->kind == AST_TYPE_STRUCT) {
+        type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
+                                        type_expr->loc);
+      } else if (type_body->kind == AST_TYPE_UNION) {
+        type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
+                                       type_expr->loc);
+      } else {
+        checker_error(type_expr->loc, "unsupported generic type");
+        return NULL;
+      }
     } else if (type_arg_count > 0) {
       // Non-generic type with type arguments
       checker_error(type_expr->loc,
@@ -1641,8 +1656,20 @@ Type *resolve_type_expression(AstNode *type_expr) {
         return NULL;
       }
 
-      type = monomorphize_struct_type(type->data.generic_decl.decl, type_args,
-                                      type_arg_count, type_expr->loc);
+      // Check if this is a struct or union generic type
+      AstNode *generic_decl = type->data.generic_decl.decl;
+      AstNode *type_body = generic_decl->data.type_decl.type_expr;
+
+      if (type_body->kind == AST_TYPE_STRUCT) {
+        type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
+                                        type_expr->loc);
+      } else if (type_body->kind == AST_TYPE_UNION) {
+        type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
+                                       type_expr->loc);
+      } else {
+        checker_error(type_expr->loc, "unsupported generic type");
+        return NULL;
+      }
     } else if (type_arg_count > 0) {
       checker_error(type_expr->loc,
                     "type '%s::%s' is not generic but has %zu type arguments",
@@ -2549,7 +2576,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "Switch is non-exhaustive and is missing %d values(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
-                    missing_items, switch_type->canonical_name);
+                    missing_items, type_name(switch_type));
     }
   }
 
@@ -2629,7 +2656,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "Switch is non-exhaustive and is missing %d variant(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
-                    missing_items, switch_type->canonical_name);
+                    missing_items, type_name(switch_type));
     }
 
     return;
@@ -2688,6 +2715,23 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
               break;
             }
           }
+        } else if (_case->kind == AST_EXPR_IDENTIFIER) {
+          // Handle identifier cases for tagged union variants
+          const char *variant_name = _case->data.ident.name;
+
+          // Find which variant this identifier matches
+          for (size_t j = 0; j < variant_count; j++) {
+            if (strcmp(variant_name, variant_names[j]) == 0) {
+              if (covered[j]) {
+                checker_error(_case->loc,
+                              "Switch case %zu has already covered the variant "
+                              "\"%s\" in a previous case.",
+                              i + 1, variant_name);
+              }
+              covered[j] = true;
+              break;
+            }
+          }
         }
       }
     }
@@ -2713,7 +2757,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "Switch is non-exhaustive and is missing %d variant(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
-                    missing_items, switch_type->canonical_name);
+                    missing_items, type_name(switch_type));
     }
 
     return;
@@ -3421,6 +3465,10 @@ static void substitute_type_params_in_expr(AstNode *expr,
 
   case AST_EXPR_MEMBER:
     substitute_type_params_in_expr(expr->data.member_expr.object, bindings);
+    for (size_t i = 0; i < expr->data.member_expr.type_arg_count; i++) {
+      substitute_type_params_in_type(expr->data.member_expr.type_args[i],
+                                     bindings);
+    }
     break;
 
   case AST_EXPR_MODULE_MEMBER:
@@ -3563,6 +3611,14 @@ static bool check_type_has_cycles(Type *type, Visited **visited) {
         break;
       }
     }
+  } else if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+    for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+      if (check_type_has_cycles(type->data.union_data.variant_types[i],
+                                visited)) {
+        cycle_detected = true;
+        break;
+      }
+    }
   } else if (type->kind == TYPE_ARRAY) {
     cycle_detected = check_type_has_cycles(type->data.array.element, visited);
   } else if (type->kind == TYPE_POINTER) {
@@ -3577,7 +3633,7 @@ static bool check_type_has_cycles(Type *type, Visited **visited) {
 
 static bool check_function_body(Symbol *sym);
 
-// Main monomorphization function
+// Struct monomorphization function
 static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
                                       AstNode **type_args,
                                       size_t type_arg_count,
@@ -3783,7 +3839,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
             symbol_create(qualified_name, SYMBOL_FUNCTION, cloned_method);
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
-        method_sym->containing_struct_type = placeholder;
+        method_sym->containing_type = placeholder;
         Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
         gen_type->data.generic_decl.decl = cloned_method;
         method_sym->type = gen_type;
@@ -3833,7 +3889,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
         method_sym->is_mono = true;
-        method_sym->containing_struct_type = placeholder;
+        method_sym->containing_type = placeholder;
         scope_add_symbol(checker_state.current_module->scope, method_sym);
 
         // Store using the mangled name
@@ -3895,6 +3951,348 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
           if (strcmp(placeholder->data.struct_data.method_qualified_names[j],
                      method_sym->name) == 0) {
             placeholder->data.struct_data.method_types[j] = method_sym->type;
+            break;
+          }
+        }
+      } else {
+        has_error = true;
+      }
+    }
+
+    if (!has_error) {
+      for (size_t i = 0; i < concrete_methods_count; i++) {
+        Symbol *method_sym = concrete_methods_to_check[i];
+
+        // Check body
+        check_function_body(method_sym);
+      }
+    }
+    current_scope = saved_scope;
+
+    free(concrete_methods_to_check);
+  }
+
+  return placeholder;
+}
+
+// Union monomorphization function
+static Type *monomorphize_union_type(AstNode *generic_union_decl,
+                                     AstNode **type_args, size_t type_arg_count,
+                                     Location call_loc) {
+  size_t type_param_count =
+      generic_union_decl->data.type_decl.type_params_count;
+
+  if (type_arg_count != type_param_count) {
+    checker_error(call_loc, "type '%s' expects %zu type arguments, got %zu",
+                  generic_union_decl->data.type_decl.name, type_param_count,
+                  type_arg_count);
+    return NULL;
+  }
+
+  // Step 1: Resolve type args
+  TypeBindings bindings = {0};
+  bindings.count = type_param_count;
+  bindings.bindings =
+      arena_alloc(&long_lived, sizeof(TypeBinding) * type_param_count);
+  Type **concrete_types =
+      arena_alloc(&long_lived, sizeof(Type *) * type_param_count);
+
+  for (size_t i = 0; i < type_param_count; i++) {
+    bindings.bindings[i].param_name =
+        generic_union_decl->data.type_decl.type_params[i].lexeme;
+    Type *concrete = resolve_type_expression(type_args[i]);
+    if (!concrete)
+      return NULL;
+    bindings.bindings[i].concrete_type = concrete;
+    concrete_types[i] = concrete;
+  }
+
+  // Step 2: Mangle name
+  char *mangled_name = mangle_generic_name(
+      generic_union_decl->data.type_decl.full_qualified_name, concrete_types,
+      type_param_count);
+
+  // Step 3: Check cache
+  Type *existing = type_lookup(mangled_name, generic_union_decl->loc.file);
+  if (existing) {
+    return existing;
+  }
+
+  // Step 4: Create placeholder EARLY
+  Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
+  placeholder->declared_name = generic_union_decl->data.type_decl.name;
+  type_register(mangled_name, placeholder);
+
+  // Step 5: Clone + substitute
+  AstNode *type_expr = generic_union_decl->data.type_decl.type_expr;
+  AstNode *specialized_expr = clone_ast_node(type_expr);
+  substitute_type_params_in_type(specialized_expr, &bindings);
+
+  // Step 6: Resolve body — may hit placeholder (safe)
+  checker_state.in_type_resolution = true;
+  Type *resolved_body = resolve_type_expression(specialized_expr);
+  checker_state.in_type_resolution = false;
+
+  // Step 7: NOW update placeholder
+  char *saved_declared_name = placeholder->declared_name;
+  if (resolved_body) {
+    *placeholder = *resolved_body;
+    placeholder->canonical_name = NULL;
+    placeholder->qualified_name = mangled_name;
+    placeholder->declared_name = saved_declared_name;
+  }
+
+  // Step 8: Track generic args
+  placeholder->generic_type_args = concrete_types;
+  placeholder->generic_type_arg_count = type_arg_count;
+
+  // Step 9: Check for cycles BEFORE canonicalization
+  Visited *visited = NULL;
+  bool has_cycle = check_type_has_cycles(placeholder, &visited);
+
+  // Clean up visited set
+  Visited *curr, *tmp;
+  HASH_ITER(hh, visited, curr, tmp) { HASH_DEL(visited, curr); }
+
+  if (has_cycle) {
+    checker_error(
+        call_loc,
+        "recursive type '%s' has infinite size (use pointer for indirection)",
+        placeholder->declared_name);
+    return NULL;
+  }
+
+  // Step 10: Canonicalize
+  canonicalize_type(&placeholder);
+
+  // Step 11: Process methods with partial substitution
+  if (specialized_expr->kind == AST_TYPE_UNION &&
+      specialized_expr->data.type_union.method_count > 0) {
+
+    size_t method_count = specialized_expr->data.type_union.method_count;
+    AstNode **methods = specialized_expr->data.type_union.methods;
+
+    // Temporary arrays to collect results
+    char **temp_method_qualified_names = malloc(method_count * sizeof(char *));
+    char **temp_method_reg_names = malloc(method_count * sizeof(char *));
+    Type **temp_method_types = malloc(method_count * sizeof(Type *));
+    Symbol **temp_generic_method_symbols =
+        malloc(method_count * sizeof(Symbol *));
+    char **temp_generic_method_reg_names =
+        malloc(method_count * sizeof(char *));
+
+    size_t regular_idx = 0;
+    size_t generic_idx = 0;
+
+    Symbol **concrete_methods_to_check =
+        malloc(method_count * sizeof(Symbol *));
+    size_t concrete_methods_count = 0;
+
+    // Process each method
+    for (size_t i = 0; i < method_count; i++) {
+      AstNode *method = methods[i];
+
+      // Clone the method AST node
+      AstNode *cloned_method = clone_ast_node(method);
+
+      char *qualified_name = cloned_method->data.func_decl.full_qualified_name;
+      char *reg_name = cloned_method->data.func_decl.name;
+
+      // Inherit parent type parameters (avoiding duplicates)
+      size_t parent_type_param_count =
+          generic_union_decl->data.type_decl.type_params_count;
+      Token *parent_type_params =
+          generic_union_decl->data.type_decl.type_params;
+
+      // Create new combined type param list: [method_params...,
+      // parent_params...] but skip parent params that are already in method
+      // params
+      size_t total_type_param_count =
+          cloned_method->data.func_decl.type_param_count;
+      Token *combined_type_params = arena_alloc(
+          &long_lived, (cloned_method->data.func_decl.type_param_count +
+                        parent_type_param_count) *
+                           sizeof(Token));
+
+      // Copy method's own type params first
+      memcpy(combined_type_params, cloned_method->data.func_decl.type_params,
+             cloned_method->data.func_decl.type_param_count * sizeof(Token));
+
+      // Append parent params that aren't already in method params
+      for (size_t j = 0; j < parent_type_param_count; j++) {
+        bool already_exists = false;
+        for (size_t k = 0; k < cloned_method->data.func_decl.type_param_count;
+             k++) {
+          if (strcmp(parent_type_params[j].lexeme,
+                     cloned_method->data.func_decl.type_params[k].lexeme) ==
+              0) {
+            already_exists = true;
+            break;
+          }
+        }
+        if (!already_exists) {
+          combined_type_params[total_type_param_count++] =
+              parent_type_params[j];
+        }
+      }
+
+      // Update the cloned method with combined params
+      cloned_method->data.func_decl.type_params = combined_type_params;
+      cloned_method->data.func_decl.type_param_count = total_type_param_count;
+
+      // Apply partial substitution using substitute_function_types
+      substitute_function_types(cloned_method, &bindings);
+
+      // Update type param list - remove substituted params, keep unbound ones
+      size_t new_type_param_count = 0;
+      Token *new_type_params = arena_alloc(
+          &long_lived,
+          cloned_method->data.func_decl.type_param_count * sizeof(Token));
+
+      for (size_t j = 0; j < cloned_method->data.func_decl.type_param_count;
+           j++) {
+        const char *param_name =
+            cloned_method->data.func_decl.type_params[j].lexeme;
+
+        // Check if this param was substituted in bindings
+        bool was_substituted = false;
+        for (size_t k = 0; k < bindings.count; k++) {
+          if (strcmp(param_name, bindings.bindings[k].param_name) == 0) {
+            was_substituted = true;
+            break;
+          }
+        }
+
+        // Keep params that weren't substituted
+        if (!was_substituted) {
+          new_type_params[new_type_param_count++] =
+              cloned_method->data.func_decl.type_params[j];
+        }
+      }
+
+      cloned_method->data.func_decl.type_params = new_type_params;
+      cloned_method->data.func_decl.type_param_count = new_type_param_count;
+
+      if (cloned_method->data.func_decl.type_param_count > 0) {
+        // Still generic - create symbol and store in temp generic arrays
+        Symbol *method_sym =
+            symbol_create(qualified_name, SYMBOL_FUNCTION, cloned_method);
+        method_sym->reg_name = reg_name;
+        method_sym->is_method = true;
+        method_sym->containing_type = placeholder;
+
+        Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
+        gen_type->data.generic_decl.decl = cloned_method;
+        method_sym->type = gen_type;
+        scope_add_symbol(checker_state.current_module->scope, method_sym);
+
+        temp_generic_method_symbols[generic_idx] = method_sym;
+        temp_generic_method_reg_names[generic_idx] = reg_name;
+        generic_idx++;
+      } else {
+        // Now concrete - create symbol and store in temp regular arrays
+        // Mangle the concrete method name
+        char *mangled_method_name = mangle_generic_name(
+            qualified_name, concrete_types, type_param_count);
+
+        // Update cloned method AST with mangled name
+        cloned_method->data.func_decl.name = mangled_method_name;
+        cloned_method->data.func_decl.qualified_name = mangled_method_name;
+        cloned_method->data.func_decl.full_qualified_name = mangled_method_name;
+
+        // Create human-readable display name with type args
+        // Example: "push[int]"
+        size_t display_name_len = strlen(reg_name) + 1; // base name + '['
+        for (size_t j = 0; j < type_param_count; j++) {
+          display_name_len += strlen(type_name(concrete_types[j]));
+          if (j < type_param_count - 1) {
+            display_name_len += 2; // ", "
+          }
+        }
+        display_name_len += 2; // ']' + null terminator
+
+        char *display_name = arena_alloc(&long_lived, display_name_len);
+        strcpy(display_name, reg_name);
+        strcat(display_name, "[");
+        for (size_t j = 0; j < type_param_count; j++) {
+          strcat(display_name, type_name(concrete_types[j]));
+          if (j < type_param_count - 1) {
+            strcat(display_name, ", ");
+          }
+        }
+        strcat(display_name, "]");
+
+        // Update cloned method with display name
+        cloned_method->data.func_decl.name = display_name;
+
+        Symbol *method_sym =
+            symbol_create(mangled_method_name, SYMBOL_FUNCTION, cloned_method);
+        method_sym->reg_name = reg_name;
+        method_sym->is_method = true;
+        method_sym->is_mono = true;
+        method_sym->containing_type = placeholder;
+        scope_add_symbol(checker_state.current_module->scope, method_sym);
+
+        // Store using the mangled name
+        temp_method_qualified_names[regular_idx] = mangled_method_name;
+        temp_method_reg_names[regular_idx] = reg_name;
+        temp_method_types[regular_idx] = NULL;
+        regular_idx++;
+
+        concrete_methods_to_check[concrete_methods_count++] = method_sym;
+      }
+    }
+
+    // Allocate and copy regular method arrays
+    if (regular_idx > 0) {
+      placeholder->data.union_data.method_qualified_names =
+          arena_alloc(&long_lived, regular_idx * sizeof(char *));
+      placeholder->data.union_data.method_reg_names =
+          arena_alloc(&long_lived, regular_idx * sizeof(char *));
+      placeholder->data.union_data.method_types =
+          arena_alloc(&long_lived, regular_idx * sizeof(Type *));
+      memcpy(placeholder->data.union_data.method_qualified_names,
+             temp_method_qualified_names, regular_idx * sizeof(char *));
+      memcpy(placeholder->data.union_data.method_reg_names,
+             temp_method_reg_names, regular_idx * sizeof(char *));
+      memcpy(placeholder->data.union_data.method_types, temp_method_types,
+             regular_idx * sizeof(Type *));
+      placeholder->data.union_data.method_count = regular_idx;
+    }
+
+    // Allocate and copy generic method arrays
+    if (generic_idx > 0) {
+      placeholder->data.union_data.generic_method_symbols =
+          arena_alloc(&long_lived, generic_idx * sizeof(Symbol *));
+      placeholder->data.union_data.generic_method_reg_names =
+          arena_alloc(&long_lived, generic_idx * sizeof(char *));
+      memcpy(placeholder->data.union_data.generic_method_symbols,
+             temp_generic_method_symbols, generic_idx * sizeof(Symbol *));
+      memcpy(placeholder->data.union_data.generic_method_reg_names,
+             temp_generic_method_reg_names, generic_idx * sizeof(char *));
+      placeholder->data.union_data.generic_method_count = generic_idx;
+    }
+
+    // Free temporary arrays
+    free(temp_method_qualified_names);
+    free(temp_method_reg_names);
+    free(temp_method_types);
+    free(temp_generic_method_symbols);
+    free(temp_generic_method_reg_names);
+
+    // Check all concrete methods
+    Scope *saved_scope = current_scope;
+    bool has_error = false;
+    for (size_t i = 0; i < concrete_methods_count; i++) {
+      Symbol *method_sym = concrete_methods_to_check[i];
+
+      // Check signature
+      current_scope = checker_state.current_module->scope;
+      if (check_function_signature(method_sym)) {
+        for (size_t j = 0; j < regular_idx; j++) {
+          if (strcmp(placeholder->data.union_data.method_qualified_names[j],
+                     method_sym->name) == 0) {
+            placeholder->data.union_data.method_types[j] = method_sym->type;
             break;
           }
         }
@@ -5192,9 +5590,22 @@ Type *check_expression(AstNode *expr) {
       // type was defined
       Module *saved_current_module = checker_state.current_module;
       checker_state.current_module = target_module;
-      Type *specialized_type = monomorphize_struct_type(
-          generic_struct_decl, expr->data.member_expr.type_args,
-          expr->data.member_expr.type_arg_count, expr->loc);
+      // Check if this is a struct or union generic type
+      AstNode *type_body = generic_struct_decl->data.type_decl.type_expr;
+      Type *specialized_type;
+
+      if (type_body->kind == AST_TYPE_STRUCT) {
+        specialized_type = monomorphize_struct_type(
+            generic_struct_decl, expr->data.member_expr.type_args,
+            expr->data.member_expr.type_arg_count, expr->loc);
+      } else if (type_body->kind == AST_TYPE_UNION) {
+        specialized_type = monomorphize_union_type(
+            generic_struct_decl, expr->data.member_expr.type_args,
+            expr->data.member_expr.type_arg_count, expr->loc);
+      } else {
+        checker_error(expr->loc, "unsupported generic type");
+        specialized_type = NULL;
+      }
 
       // Restore original module context
       checker_state.current_module = saved_current_module;
@@ -6039,11 +6450,19 @@ Type *check_expression(AstNode *expr) {
         // Explicit generic instantiation 'GenericTypeName.[...]{ ... }'
         AstNode *generic_decl = type_of->data.generic_decl.decl;
 
-        // Monomorphize the struct type
-        type_of = monomorphize_struct_type(generic_decl, type_args,
-                                           type_arg_count, expr->loc);
-        if (!type_of)
-          return NULL;
+        // Check if this is a struct or union generic type
+        AstNode *type_body = generic_decl->data.type_decl.type_expr;
+
+        if (type_body->kind == AST_TYPE_STRUCT) {
+          type_of = monomorphize_struct_type(generic_decl, type_args,
+                                             type_arg_count, expr->loc);
+        } else if (type_body->kind == AST_TYPE_UNION) {
+          type_of = monomorphize_union_type(generic_decl, type_args,
+                                            type_arg_count, expr->loc);
+        } else {
+          checker_error(expr->loc, "unsupported generic type");
+          type_of = NULL;
+        }
       } else {
         // Error: GenericStruct.{ ... }
         checker_error(expr->loc,
@@ -6529,13 +6948,24 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         }
       }
 
+      // Track if exhaustiveness check passes
+      bool exhaustiveness_passed = true;
       if (!had_error) {
+        bool errors_before = checker_has_errors();
         check_switch_is_exhaustive(stmt, cond->resolved_type);
+        exhaustiveness_passed = (checker_has_errors() == errors_before);
       }
+
+      // For tagged unions: exhaustive = no default case AND exhaustiveness
+      // check passed
+      bool is_tagged_union =
+          (cond_type->kind == TYPE_TAGGED_UNION ||
+           (cond_type->kind == TYPE_POINTER &&
+            cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION));
 
       bool else_returns =
           default_case ? check_statement(default_case, expected_return_type)
-                       : false;
+                       : (is_tagged_union && exhaustiveness_passed);
 
       return cases_return && else_returns;
     }
