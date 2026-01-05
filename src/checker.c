@@ -23,6 +23,7 @@ typedef struct {
   bool has_errors;
   int error_count;
   bool in_type_resolution;
+  bool in_type_alias_resolution;
   bool in_loop;
   bool in_defer;
   size_t anonymous_functions;
@@ -36,6 +37,7 @@ void checker_init(Module *main_mod) {
   checker_state.has_errors = false;
   checker_state.error_count = 0;
   checker_state.in_type_resolution = false;
+  checker_state.in_type_alias_resolution = false;
   checker_state.in_loop = false;
   checker_state.anonymous_functions = 0;
   checker_state.current_module = main_mod;
@@ -753,7 +755,8 @@ static void canonicalize_types(Module *module) {
       // Type hasn't been canonicalized yet
       // Don't attempt to canonicalize opaque types
       if (sym->type->kind != TYPE_OPAQUE &&
-          sym->type->kind != TYPE_GENERIC_TYPE_DECL)
+          sym->type->kind != TYPE_GENERIC_TYPE_DECL &&
+          sym->type->kind != TYPE_GENERIC_FUNCTION)
         canonicalize_type(&(sym->type));
 
       // Keep type_table in sync (important for deduplication)
@@ -807,7 +810,9 @@ static void check_type_declarations(Module *module) {
     for (size_t i = 0; i < worklist_size; i++) {
       sym = worklist[i];
       AstNode *type_expr = sym->decl->data.type_decl.type_expr;
+      checker_state.in_type_alias_resolution = true;
       Type *resolved = resolve_type_expression(type_expr);
+      checker_state.in_type_alias_resolution = false;
 
       if (resolved) {
         Type *placeholder = type_lookup(sym->name, sym->decl->loc.file);
@@ -1572,7 +1577,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
-      if (checker_state.in_type_resolution) { // ADD THIS CHECK
+      if (checker_state.in_type_resolution) {
         Scope *mod_scope = checker_state.current_module->scope;
         Symbol *sym =
             scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
@@ -1590,9 +1595,15 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Handle generic types
     if (type->kind == TYPE_GENERIC_TYPE_DECL) {
       if (type_arg_count == 0) {
-        checker_error(type_expr->loc,
-                      "generic type '%s' requires type arguments", name);
-        return NULL;
+        if (checker_state.in_type_alias_resolution) {
+          // Allow: type Result = SomeGeneric
+          return type;
+        } else {
+          // Disallow: struct { field SomeGeneric; }
+          checker_error(type_expr->loc,
+                        "generic type '%s' requires type arguments", name);
+          return NULL;
+        }
       }
 
       // Check if this is a struct or union generic type
@@ -1650,10 +1661,16 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Handle generic types in qualified names
     if (type->kind == TYPE_GENERIC_TYPE_DECL) {
       if (type_arg_count == 0) {
-        checker_error(type_expr->loc,
-                      "generic type '%s::%s' requires type arguments", mod,
-                      mem);
-        return NULL;
+        if (checker_state.in_type_alias_resolution) {
+          // Allow: type Result = SomeGeneric
+          return type;
+        } else {
+          // Disallow: struct { field SomeGeneric; }
+          checker_error(type_expr->loc,
+                        "generic type '%s::%s' requires type arguments", mod,
+                        mem);
+          return NULL;
+        }
       }
 
       // Check if this is a struct or union generic type
