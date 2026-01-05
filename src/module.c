@@ -398,14 +398,23 @@ char *prepend(const char *prefix, const char *base) {
   return result;
 }
 
-static void qualify_methods_in_struct(AstNode *type_expr,
-                                      AstNode *parent_node) {
-  if (!type_expr || type_expr->kind != AST_TYPE_STRUCT) {
+static void qualify_methods_in_type(AstNode *type_expr, AstNode *parent_node) {
+  if (!type_expr || (type_expr->kind != AST_TYPE_STRUCT &&
+                     type_expr->kind != AST_TYPE_UNION)) {
     return;
   }
 
-  AstNode **methods = type_expr->data.type_struct.methods;
-  size_t method_count = type_expr->data.type_struct.method_count;
+  AstNode **methods;
+  size_t method_count;
+
+  if (type_expr->kind == AST_TYPE_STRUCT) {
+    methods = type_expr->data.type_struct.methods;
+    method_count = type_expr->data.type_struct.method_count;
+  } else { // AST_TYPE_UNION
+    methods = type_expr->data.type_union.methods;
+    method_count = type_expr->data.type_union.method_count;
+  }
+
   const char *qualified_name = parent_node->data.type_decl.qualified_name;
   const char *full_qualified_name =
       parent_node->data.type_decl.full_qualified_name;
@@ -573,8 +582,9 @@ void qualify_globals_in_module(Module *mod) {
       node->data.type_decl.full_qualified_name = prepend(full_prefix, cur_name);
 
       AstNode *type_expr = node->data.type_decl.type_expr;
-      if (type_expr && type_expr->kind == AST_TYPE_STRUCT) {
-        qualify_methods_in_struct(type_expr, node);
+      if (type_expr && (type_expr->kind == AST_TYPE_STRUCT ||
+                        type_expr->kind == AST_TYPE_UNION)) {
+        qualify_methods_in_type(type_expr, node);
       }
       break;
     }
