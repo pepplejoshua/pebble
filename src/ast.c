@@ -287,6 +287,29 @@ AstNode *clone_ast_node(AstNode *node) {
     clone->data.member_expr.object =
         clone_ast_node(node->data.member_expr.object);
     clone->data.member_expr.member = node->data.member_expr.member;
+
+    // Clone type_args array
+    clone->data.member_expr.type_arg_count =
+        node->data.member_expr.type_arg_count;
+    if (node->data.member_expr.type_arg_count > 0) {
+      clone->data.member_expr.type_args =
+          arena_alloc(&long_lived, node->data.member_expr.type_arg_count *
+                                       sizeof(AstNode *));
+      for (size_t i = 0; i < node->data.member_expr.type_arg_count; i++) {
+        clone->data.member_expr.type_args[i] =
+            clone_ast_node(node->data.member_expr.type_args[i]);
+      }
+    } else {
+      clone->data.member_expr.type_args = NULL;
+    }
+
+    // Clone other member_expr fields
+    clone->data.member_expr.is_method_ref =
+        node->data.member_expr.is_method_ref;
+    clone->data.member_expr.is_associated_function =
+        node->data.member_expr.is_associated_function;
+    clone->data.member_expr.method_qualified_name =
+        node->data.member_expr.method_qualified_name;
     break;
   }
   case AST_EXPR_MODULE_MEMBER: {
