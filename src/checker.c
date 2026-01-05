@@ -1177,16 +1177,30 @@ static bool check_function_signature(Symbol *sym) {
       }
     } else {
       // Associated function - first param is NOT "self" (or no params)
-      // Store its type on the containing struct
+      // Store its type on the containing struct or union
       if (sym->containing_struct_type) {
         char *qualified_name = decl->data.func_decl.qualified_name;
-        Type *struct_type = sym->containing_struct_type;
+        Type *containing_type = sym->containing_struct_type;
 
-        for (size_t i = 0; i < struct_type->data.struct_data.method_count;
-             i++) {
-          if (strcmp(struct_type->data.struct_data.method_qualified_names[i],
-                     qualified_name) == 0) {
-            struct_type->data.struct_data.method_types[i] = sym->type;
+        size_t method_count;
+        char **method_qualified_names;
+        Type **method_types;
+
+        if (containing_type->kind == TYPE_STRUCT) {
+          method_count = containing_type->data.struct_data.method_count;
+          method_qualified_names =
+              containing_type->data.struct_data.method_qualified_names;
+          method_types = containing_type->data.struct_data.method_types;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          method_count = containing_type->data.union_data.method_count;
+          method_qualified_names =
+              containing_type->data.union_data.method_qualified_names;
+          method_types = containing_type->data.union_data.method_types;
+        }
+
+        for (size_t i = 0; i < method_count; i++) {
+          if (strcmp(method_qualified_names[i], qualified_name) == 0) {
+            method_types[i] = sym->type;
             break;
           }
         }
@@ -1196,10 +1210,26 @@ static bool check_function_signature(Symbol *sym) {
 
   if (receiver_type) {
     char *qualified_name = decl->data.func_decl.qualified_name;
-    for (size_t i = 0; i < receiver_type->data.struct_data.method_count; i++) {
-      if (strcmp(receiver_type->data.struct_data.method_qualified_names[i],
-                 qualified_name) == 0) {
-        receiver_type->data.struct_data.method_types[i] = sym->type;
+
+    size_t method_count;
+    char **method_qualified_names;
+    Type **method_types;
+
+    if (receiver_type->kind == TYPE_STRUCT) {
+      method_count = receiver_type->data.struct_data.method_count;
+      method_qualified_names =
+          receiver_type->data.struct_data.method_qualified_names;
+      method_types = receiver_type->data.struct_data.method_types;
+    } else { // TYPE_UNION or TYPE_TAGGED_UNION
+      method_count = receiver_type->data.union_data.method_count;
+      method_qualified_names =
+          receiver_type->data.union_data.method_qualified_names;
+      method_types = receiver_type->data.union_data.method_types;
+    }
+
+    for (size_t i = 0; i < method_count; i++) {
+      if (strcmp(method_qualified_names[i], qualified_name) == 0) {
+        method_types[i] = sym->type;
         break;
       }
     }
@@ -6487,6 +6517,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
                       "switch condition must be integral, "
                       "char, enum, string or tagged union. Got '%s'.",
                       type_name(cond_type));
+        return NULL;
         had_error = true;
       }
 
