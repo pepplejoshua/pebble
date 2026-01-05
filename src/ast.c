@@ -603,6 +603,20 @@ AstNode *clone_ast_node(AstNode *node) {
             clone_ast_node(node->data.type_union.variant_types[i]);
       }
     }
+
+    // Clone methods
+    clone->data.type_union.method_count = node->data.type_union.method_count;
+    if (node->data.type_union.method_count > 0) {
+      clone->data.type_union.methods = arena_alloc(
+          &long_lived, sizeof(AstNode *) * node->data.type_union.method_count);
+      for (size_t i = 0; i < node->data.type_union.method_count; i++) {
+        clone->data.type_union.methods[i] =
+            clone_ast_node(node->data.type_union.methods[i]);
+      }
+    } else {
+      clone->data.type_union.methods = NULL;
+    }
+
     break;
   }
   default:

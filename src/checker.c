@@ -1141,7 +1141,7 @@ static bool check_function_signature(Symbol *sym) {
                                    is_variadic != -1, false, convention,
                                    sym->decl->loc);
 
-  Type *receiver_struct_type = NULL;
+  Type *receiver_type = NULL;
   if (sym->is_method && decl->kind == AST_DECL_FUNCTION) {
     // First parameter must be named "self"
     if (param_count > 0 && strcmp(params[0].name, "self") == 0) {
@@ -1150,41 +1150,57 @@ static bool check_function_signature(Symbol *sym) {
 
       // Handle both value and pointer receivers
       if (self_type->kind == TYPE_POINTER) {
-        receiver_struct_type = self_type->data.ptr.base;
+        receiver_type = self_type->data.ptr.base;
       } else {
-        receiver_struct_type = self_type;
+        receiver_type = self_type;
       }
 
-      if (receiver_struct_type->kind != TYPE_STRUCT) {
-        checker_error(decl->loc,
-                      "Method '%s' self parameter must be a struct type or "
-                      "pointer to struct type",
-                      decl->data.func_decl.name);
-        receiver_struct_type = NULL;
+      if (receiver_type->kind != TYPE_STRUCT &&
+          receiver_type->kind != TYPE_UNION &&
+          receiver_type->kind != TYPE_TAGGED_UNION) {
+        checker_error(
+            decl->loc,
+            "Method '%s' self parameter must be a struct or union type or "
+            "pointer to struct/union type",
+            decl->data.func_decl.name);
+        receiver_type = NULL;
       } else {
-        // Validate that self type matches the containing struct
-        if (!type_equals(receiver_struct_type, sym->containing_struct_type)) {
+        // Validate that self type matches the containing struct/union
+        if (!type_equals(receiver_type, sym->containing_struct_type)) {
           checker_error(decl->loc,
                         "Method '%s' self parameter type '%s' doesn't match "
                         "containing struct '%s'",
-                        decl->data.func_decl.name,
-                        type_name(receiver_struct_type),
+                        decl->data.func_decl.name, type_name(receiver_type),
                         type_name(sym->containing_struct_type));
-          receiver_struct_type = NULL;
+          receiver_type = NULL;
         }
       }
     } else {
       // Associated function - first param is NOT "self" (or no params)
-      // Store its type on the containing struct
+      // Store its type on the containing struct or union
       if (sym->containing_struct_type) {
         char *qualified_name = decl->data.func_decl.qualified_name;
-        Type *struct_type = sym->containing_struct_type;
+        Type *containing_type = sym->containing_struct_type;
 
-        for (size_t i = 0; i < struct_type->data.struct_data.method_count;
-             i++) {
-          if (strcmp(struct_type->data.struct_data.method_qualified_names[i],
-                     qualified_name) == 0) {
-            struct_type->data.struct_data.method_types[i] = sym->type;
+        size_t method_count;
+        char **method_qualified_names;
+        Type **method_types;
+
+        if (containing_type->kind == TYPE_STRUCT) {
+          method_count = containing_type->data.struct_data.method_count;
+          method_qualified_names =
+              containing_type->data.struct_data.method_qualified_names;
+          method_types = containing_type->data.struct_data.method_types;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          method_count = containing_type->data.union_data.method_count;
+          method_qualified_names =
+              containing_type->data.union_data.method_qualified_names;
+          method_types = containing_type->data.union_data.method_types;
+        }
+
+        for (size_t i = 0; i < method_count; i++) {
+          if (strcmp(method_qualified_names[i], qualified_name) == 0) {
+            method_types[i] = sym->type;
             break;
           }
         }
@@ -1192,14 +1208,28 @@ static bool check_function_signature(Symbol *sym) {
     }
   }
 
-  if (receiver_struct_type) {
+  if (receiver_type) {
     char *qualified_name = decl->data.func_decl.qualified_name;
-    for (size_t i = 0; i < receiver_struct_type->data.struct_data.method_count;
-         i++) {
-      if (strcmp(
-              receiver_struct_type->data.struct_data.method_qualified_names[i],
-              qualified_name) == 0) {
-        receiver_struct_type->data.struct_data.method_types[i] = sym->type;
+
+    size_t method_count;
+    char **method_qualified_names;
+    Type **method_types;
+
+    if (receiver_type->kind == TYPE_STRUCT) {
+      method_count = receiver_type->data.struct_data.method_count;
+      method_qualified_names =
+          receiver_type->data.struct_data.method_qualified_names;
+      method_types = receiver_type->data.struct_data.method_types;
+    } else { // TYPE_UNION or TYPE_TAGGED_UNION
+      method_count = receiver_type->data.union_data.method_count;
+      method_qualified_names =
+          receiver_type->data.union_data.method_qualified_names;
+      method_types = receiver_type->data.union_data.method_types;
+    }
+
+    for (size_t i = 0; i < method_count; i++) {
+      if (strcmp(method_qualified_names[i], qualified_name) == 0) {
+        method_types[i] = sym->type;
         break;
       }
     }
@@ -1349,8 +1379,10 @@ static void collect_methods(void) {
       continue;
     }
 
-    // Only struct types have methods
-    if (!sym->type || sym->type->kind != TYPE_STRUCT) {
+    // Only struct and union types have methods
+    if (!sym->type ||
+        (sym->type->kind != TYPE_STRUCT && sym->type->kind != TYPE_UNION &&
+         sym->type->kind != TYPE_TAGGED_UNION)) {
       continue;
     }
 
@@ -1360,15 +1392,23 @@ static void collect_methods(void) {
       continue;
     }
 
-    // Get the struct type expression
+    // Get the struct or union type expression
     AstNode *type_expr = type_decl->data.type_decl.type_expr;
-    if (!type_expr || type_expr->kind != AST_TYPE_STRUCT) {
+    if (!type_expr || (type_expr->kind != AST_TYPE_STRUCT &&
+                       type_expr->kind != AST_TYPE_UNION)) {
       continue;
     }
 
-    // Extract methods from the struct
-    size_t method_count = type_expr->data.type_struct.method_count;
-    AstNode **methods = type_expr->data.type_struct.methods;
+    // Extract methods from the struct or union
+    size_t method_count;
+    AstNode **methods;
+    if (type_expr->kind == AST_TYPE_STRUCT) {
+      method_count = type_expr->data.type_struct.method_count;
+      methods = type_expr->data.type_struct.methods;
+    } else { // AST_TYPE_UNION
+      method_count = type_expr->data.type_union.method_count;
+      methods = type_expr->data.type_union.methods;
+    }
 
     if (method_count == 0) {
       continue;
@@ -1390,22 +1430,40 @@ static void collect_methods(void) {
 
     // Allocate arrays for regular methods
     if (regular_method_count > 0) {
-      sym->type->data.struct_data.method_qualified_names =
-          arena_alloc(&long_lived, regular_method_count * sizeof(char *));
-      sym->type->data.struct_data.method_reg_names =
-          arena_alloc(&long_lived, regular_method_count * sizeof(char *));
-      sym->type->data.struct_data.method_types =
-          arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
-      sym->type->data.struct_data.method_count = regular_method_count;
+      if (sym->type->kind == TYPE_STRUCT) {
+        sym->type->data.struct_data.method_qualified_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.struct_data.method_reg_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.struct_data.method_types =
+            arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
+        sym->type->data.struct_data.method_count = regular_method_count;
+      } else { // TYPE_UNION or TYPE_TAGGED_UNION
+        sym->type->data.union_data.method_qualified_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.union_data.method_reg_names =
+            arena_alloc(&long_lived, regular_method_count * sizeof(char *));
+        sym->type->data.union_data.method_types =
+            arena_alloc(&long_lived, regular_method_count * sizeof(Type *));
+        sym->type->data.union_data.method_count = regular_method_count;
+      }
     }
 
     // Allocate arrays for generic methods
     if (generic_method_count > 0) {
-      sym->type->data.struct_data.generic_method_symbols =
-          arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
-      sym->type->data.struct_data.generic_method_reg_names =
-          arena_alloc(&long_lived, generic_method_count * sizeof(char *));
-      sym->type->data.struct_data.generic_method_count = generic_method_count;
+      if (sym->type->kind == TYPE_STRUCT) {
+        sym->type->data.struct_data.generic_method_symbols =
+            arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
+        sym->type->data.struct_data.generic_method_reg_names =
+            arena_alloc(&long_lived, generic_method_count * sizeof(char *));
+        sym->type->data.struct_data.generic_method_count = generic_method_count;
+      } else { // TYPE_UNION or TYPE_TAGGED_UNION
+        sym->type->data.union_data.generic_method_symbols =
+            arena_alloc(&long_lived, generic_method_count * sizeof(Symbol *));
+        sym->type->data.union_data.generic_method_reg_names =
+            arena_alloc(&long_lived, generic_method_count * sizeof(char *));
+        sym->type->data.union_data.generic_method_count = generic_method_count;
+      }
     }
 
     // Register each method as a function symbol
@@ -1447,16 +1505,29 @@ static void collect_methods(void) {
       // Store in appropriate array (generic vs regular)
       if (method->data.func_decl.type_param_count > 0) {
         // Generic method
-        sym->type->data.struct_data.generic_method_symbols[generic_idx] =
-            method_sym;
-        sym->type->data.struct_data.generic_method_reg_names[generic_idx] =
-            reg_name;
+        if (sym->type->kind == TYPE_STRUCT) {
+          sym->type->data.struct_data.generic_method_symbols[generic_idx] =
+              method_sym;
+          sym->type->data.struct_data.generic_method_reg_names[generic_idx] =
+              reg_name;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          sym->type->data.union_data.generic_method_symbols[generic_idx] =
+              method_sym;
+          sym->type->data.union_data.generic_method_reg_names[generic_idx] =
+              reg_name;
+        }
         generic_idx++;
       } else {
         // Regular method
-        sym->type->data.struct_data.method_qualified_names[regular_idx] =
-            qualified_name;
-        sym->type->data.struct_data.method_reg_names[regular_idx] = reg_name;
+        if (sym->type->kind == TYPE_STRUCT) {
+          sym->type->data.struct_data.method_qualified_names[regular_idx] =
+              qualified_name;
+          sym->type->data.struct_data.method_reg_names[regular_idx] = reg_name;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          sym->type->data.union_data.method_qualified_names[regular_idx] =
+              qualified_name;
+          sym->type->data.union_data.method_reg_names[regular_idx] = reg_name;
+        }
         regular_idx++;
       }
     }
@@ -5240,7 +5311,6 @@ Type *check_expression(AstNode *expr) {
 
     // Check if the object is a type. This will allow associated function access
     if (object_expr->kind == AST_EXPR_IDENTIFIER) {
-      // TODO: Handle case where there are type arguments.
       Symbol *sym = scope_lookup(checker_state.current_module->scope,
                                  current_scope, object_expr->data.ident.name,
                                  checker_state.current_module->name);
@@ -5248,18 +5318,32 @@ Type *check_expression(AstNode *expr) {
       if (sym && sym->kind == SYMBOL_TYPE) {
         // Check for associated function
         Type *type = sym->type;
-        if (type->kind != TYPE_STRUCT) {
-          checker_error(expr->loc,
-                        "Only struct types can have associated functions");
+        if (type->kind != TYPE_STRUCT && type->kind != TYPE_UNION &&
+            type->kind != TYPE_TAGGED_UNION) {
+          checker_error(
+              expr->loc,
+              "Only struct and union types can have associated functions");
           return NULL;
         }
 
-        // Look through the struct's methods for associated functions
-        size_t method_count = type->data.struct_data.method_count;
-        char **method_qualified_names =
-            type->data.struct_data.method_qualified_names;
-        char **method_reg_names = type->data.struct_data.method_reg_names;
-        Type **method_types = type->data.struct_data.method_types;
+        // Look through the struct's or union's methods for associated functions
+        size_t method_count;
+        char **method_qualified_names;
+        char **method_reg_names;
+        Type **method_types;
+
+        if (type->kind == TYPE_STRUCT) {
+          method_count = type->data.struct_data.method_count;
+          method_qualified_names =
+              type->data.struct_data.method_qualified_names;
+          method_reg_names = type->data.struct_data.method_reg_names;
+          method_types = type->data.struct_data.method_types;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          method_count = type->data.union_data.method_count;
+          method_qualified_names = type->data.union_data.method_qualified_names;
+          method_reg_names = type->data.union_data.method_reg_names;
+          method_types = type->data.union_data.method_types;
+        }
 
         for (size_t i = 0; i < method_count; i++) {
           if (!method_qualified_names[i] || !method_types[i] ||
@@ -5305,12 +5389,22 @@ Type *check_expression(AstNode *expr) {
         }
 
         // Search generic method templates if regular methods didn't match
-        size_t generic_method_count =
-            type->data.struct_data.generic_method_count;
-        Symbol **generic_method_symbols =
-            type->data.struct_data.generic_method_symbols;
-        char **generic_method_reg_names =
-            type->data.struct_data.generic_method_reg_names;
+        size_t generic_method_count;
+        Symbol **generic_method_symbols;
+        char **generic_method_reg_names;
+
+        if (type->kind == TYPE_STRUCT) {
+          generic_method_count = type->data.struct_data.generic_method_count;
+          generic_method_symbols =
+              type->data.struct_data.generic_method_symbols;
+          generic_method_reg_names =
+              type->data.struct_data.generic_method_reg_names;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          generic_method_count = type->data.union_data.generic_method_count;
+          generic_method_symbols = type->data.union_data.generic_method_symbols;
+          generic_method_reg_names =
+              type->data.union_data.generic_method_reg_names;
+        }
 
         for (size_t i = 0; i < generic_method_count; i++) {
           if (!generic_method_symbols[i] || !generic_method_reg_names[i]) {
@@ -5367,14 +5461,28 @@ Type *check_expression(AstNode *expr) {
       char *qualified_name = prepend(prefix, member_name);
       Symbol *sym = scope_lookup_local(module->scope, qualified_name);
 
-      if (sym && sym->kind == SYMBOL_TYPE && sym->type->kind == TYPE_STRUCT) {
+      if (sym && sym->kind == SYMBOL_TYPE &&
+          (sym->type->kind == TYPE_STRUCT || sym->type->kind == TYPE_UNION ||
+           sym->type->kind == TYPE_TAGGED_UNION)) {
         // Copy the same method lookup logic from the local type case
         Type *type = sym->type;
-        size_t method_count = type->data.struct_data.method_count;
-        char **method_qualified_names =
-            type->data.struct_data.method_qualified_names;
-        char **method_reg_names = type->data.struct_data.method_reg_names;
-        Type **method_types = type->data.struct_data.method_types;
+        size_t method_count;
+        char **method_qualified_names;
+        char **method_reg_names;
+        Type **method_types;
+
+        if (type->kind == TYPE_STRUCT) {
+          method_count = type->data.struct_data.method_count;
+          method_qualified_names =
+              type->data.struct_data.method_qualified_names;
+          method_reg_names = type->data.struct_data.method_reg_names;
+          method_types = type->data.struct_data.method_types;
+        } else { // TYPE_UNION or TYPE_TAGGED_UNION
+          method_count = type->data.union_data.method_count;
+          method_qualified_names = type->data.union_data.method_qualified_names;
+          method_reg_names = type->data.union_data.method_reg_names;
+          method_types = type->data.union_data.method_types;
+        }
 
         for (size_t i = 0; i < method_count; i++) {
           if (!method_qualified_names[i] || !method_types[i] ||
@@ -5654,6 +5762,7 @@ Type *check_expression(AstNode *expr) {
       return NULL;
     } else if (base_type->kind == TYPE_UNION ||
                base_type->kind == TYPE_TAGGED_UNION) {
+      // First check union variants
       size_t variant_count = base_type->data.union_data.variant_count;
       char **variant_names = base_type->data.union_data.variant_names;
       Type **variant_types = base_type->data.union_data.variant_types;
@@ -5665,7 +5774,100 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
-      checker_error(expr->loc, "union has no field named '%s'", field_name);
+      // Then check union methods (same logic as struct methods)
+      size_t method_count = base_type->data.union_data.method_count;
+      char **method_qualified_names =
+          base_type->data.union_data.method_qualified_names;
+      char **method_reg_names = base_type->data.union_data.method_reg_names;
+      Type **method_types = base_type->data.union_data.method_types;
+
+      for (size_t i = 0; i < method_count; i++) {
+        if (!method_qualified_names[i] || !method_types[i] ||
+            !method_reg_names[i]) {
+          continue; // Method not fully resolved yet
+        }
+
+        char *qualified_name = method_qualified_names[i];
+        char *reg_name = method_reg_names[i];
+        if (strcmp(reg_name, field_name) == 0) {
+          // Check if this is an associated function
+          Type *method_func_type = method_types[i];
+          if (method_func_type->kind == TYPE_FUNCTION) {
+            bool is_associated = true;
+
+            if (method_func_type->data.func.param_count > 0) {
+              Type *first_param_type =
+                  method_func_type->data.func.param_types[0];
+              // If first param is the union type (or pointer to it), it's an
+              // instance method
+              if (first_param_type == base_type ||
+                  (first_param_type->kind == TYPE_POINTER &&
+                   first_param_type->data.ptr.base == base_type)) {
+                is_associated = false;
+              }
+            }
+
+            if (is_associated) {
+              checker_error(expr->loc,
+                            "Cannot call associated function '%s' on instance, "
+                            "use '%s.%s' instead",
+                            reg_name, type_name(base_type), reg_name);
+              return NULL;
+            }
+          }
+
+          expr->data.member_expr.is_method_ref = true;
+          expr->data.member_expr.method_qualified_name = qualified_name;
+          expr->resolved_type = method_types[i];
+          return method_types[i];
+        }
+      }
+
+      // Then check generic methods (same as structs)
+      size_t generic_method_count =
+          base_type->data.union_data.generic_method_count;
+      Symbol **generic_method_symbols =
+          base_type->data.union_data.generic_method_symbols;
+      char **generic_method_reg_names =
+          base_type->data.union_data.generic_method_reg_names;
+
+      for (size_t i = 0; i < generic_method_count; i++) {
+        if (!generic_method_symbols[i] || !generic_method_reg_names[i]) {
+          continue;
+        }
+
+        char *reg_name = generic_method_reg_names[i];
+        if (strcmp(reg_name, field_name) == 0) {
+          // Found generic method - check if it's an instance method
+          AstNode *method_decl = generic_method_symbols[i]->decl;
+          bool is_instance_method = false;
+
+          if (method_decl->data.func_decl.param_count > 0) {
+            FuncParam *first_param = &method_decl->data.func_decl.params[0];
+            if (strcmp(first_param->name, "self") == 0) {
+              is_instance_method = true;
+            }
+          }
+
+          if (is_instance_method) {
+            // Found generic instance method!
+            expr->data.member_expr.is_method_ref = true;
+            expr->data.member_expr.method_qualified_name =
+                generic_method_symbols[i]->name;
+            expr->resolved_type = generic_method_symbols[i]->type;
+            return generic_method_symbols[i]->type;
+          } else {
+            checker_error(expr->loc,
+                          "Cannot call associated function '%s' on instance, "
+                          "use '%s.%s' instead",
+                          reg_name, type_name(base_type), reg_name);
+            return NULL;
+          }
+        }
+      }
+
+      checker_error(expr->loc, "union %s has no variant or method named '%s'",
+                    type_name(base_type), field_name);
       return NULL;
     } else if (base_type->kind == TYPE_ENUM) {
       char **variant_names = base_type->data.enum_data.variant_names;
@@ -6315,6 +6517,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
                       "switch condition must be integral, "
                       "char, enum, string or tagged union. Got '%s'.",
                       type_name(cond_type));
+        return NULL;
         had_error = true;
       }
 

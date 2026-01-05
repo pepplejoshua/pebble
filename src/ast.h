@@ -424,6 +424,8 @@ struct AstNode {
       char **variant_names;
       AstNode **variant_types;
       size_t variant_count;
+      AstNode **methods;
+      size_t method_count;
     } type_union;
     struct {
       char **variant_names;

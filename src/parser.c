@@ -2334,7 +2334,7 @@ AstNode *parse_type_expression(Parser *parser) {
     }
   }
 
-  // Struct type: struct { field1 type1, field2 type2, ... }
+  // Struct type: struct { field1 type1; field2 type2; ... }
   if (parser_match(parser, TOKEN_STRUCT)) {
     Location loc = parser->previous.location;
 
@@ -2474,16 +2474,47 @@ AstNode *parse_type_expression(Parser *parser) {
     AstNode **field_types = NULL;
     size_t count = 0;
     size_t capacity = 4;
+    AstNode **methods = NULL;
+    size_t method_count = 0;
+    size_t method_cap = 4;
 
     field_names = arena_alloc(&long_lived, capacity * sizeof(char *));
     field_types = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+    methods = arena_alloc(&long_lived, method_cap * sizeof(AstNode *));
 
-    // Allow empty struct
-    if (!parser_check(parser, TOKEN_RBRACE)) {
-      do {
-        if (parser_check(parser, TOKEN_RBRACE)) {
-          break;
+    // Allow empty struct - change from if to while loop to handle methods
+    while (!parser_check(parser, TOKEN_RBRACE)) {
+      // Check if this is a function (method)
+      if (parser_check(parser, TOKEN_FN)) {
+        parser_advance(parser);
+        AstNode *method = parse_function_decl(parser);
+        if (!method) {
+          return NULL;
         }
+
+        // Grow methods array if needed
+        if (method_count >= method_cap) {
+          method_cap *= 2;
+          AstNode **new_methods =
+              arena_alloc(&long_lived, method_cap * sizeof(AstNode *));
+          memcpy(new_methods, methods, method_count * sizeof(AstNode *));
+          methods = new_methods;
+        }
+
+        methods[method_count++] = method;
+        continue;
+      }
+
+      // Parse field: IDENTIFIER (, IDENTIFIER ...) TYPE
+      if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+        parser_error(parser, "Expected field name");
+        return NULL;
+      }
+      parser_advance(parser);
+      Token field_name = parser->previous;
+
+      if (parser_check(parser, TOKEN_COMMA)) {
+        size_t current_count = count;
 
         // Grow arrays if needed
         if (count >= capacity) {
@@ -2498,64 +2529,69 @@ AstNode *parse_type_expression(Parser *parser) {
           field_types = new_types;
         }
 
-        // Parse field: IDENTIFIER (, IDENTIFIER ...) TYPE
-        if (!parser_check(parser, TOKEN_IDENTIFIER)) {
-          parser_error(parser, "Expected field name");
-          return NULL;
-        }
-        parser_advance(parser);
-        Token field_name = parser->previous;
+        field_names[count++] = str_dup(field_name.lexeme);
 
-        if (parser_check(parser, TOKEN_COMMA)) {
-          size_t current_count = count;
-
-          field_names[count++] = str_dup(field_name.lexeme);
-
-          while (parser_match(parser, TOKEN_COMMA)) {
-            if (!parser_check(parser, TOKEN_IDENTIFIER)) {
-              parser_error(parser, "Expected field name");
-              return NULL;
-            }
-            parser_advance(parser);
-            Token field_name = parser->previous;
-
-            // Grow arrays if needed
-            if (count >= capacity) {
-              capacity *= 2;
-              char **new_names =
-                  arena_alloc(&long_lived, capacity * sizeof(char *));
-              AstNode **new_types =
-                  arena_alloc(&long_lived, capacity * sizeof(AstNode *));
-              memcpy(new_names, field_names, count * sizeof(char *));
-              memcpy(new_types, field_types, count * sizeof(AstNode *));
-              field_names = new_names;
-              field_types = new_types;
-            }
-
-            field_names[count++] = str_dup(field_name.lexeme);
-          }
-
-          field_types[current_count] = parse_type_expression(parser);
-          if (!field_types[current_count]) {
+        while (parser_match(parser, TOKEN_COMMA)) {
+          if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+            parser_error(parser, "Expected field name");
             return NULL;
           }
+          parser_advance(parser);
+          Token field_name = parser->previous;
 
-          // Copy type to all fields
-          for (size_t i = current_count + 1; i < count; i++) {
-            field_types[i] = field_types[current_count];
+          // Grow arrays if needed
+          if (count >= capacity) {
+            capacity *= 2;
+            char **new_names =
+                arena_alloc(&long_lived, capacity * sizeof(char *));
+            AstNode **new_types =
+                arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+            memcpy(new_names, field_names, count * sizeof(char *));
+            memcpy(new_types, field_types, count * sizeof(AstNode *));
+            field_names = new_names;
+            field_types = new_types;
           }
 
-          continue;
+          field_names[count++] = str_dup(field_name.lexeme);
         }
 
-        field_names[count] = str_dup(field_name.lexeme);
-        field_types[count] = parse_type_expression(parser);
-        if (!field_types[count]) {
+        field_types[current_count] = parse_type_expression(parser);
+        if (!field_types[current_count]) {
           return NULL;
         }
-        count++;
 
-      } while (parser_match(parser, TOKEN_SEMICOLON));
+        // Copy type to all fields
+        for (size_t i = current_count + 1; i < count; i++) {
+          field_types[i] = field_types[current_count];
+        }
+
+        // Expect semicolon after field(s) - add this for consistency with
+        // structs
+        parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after variant");
+        continue;
+      }
+
+      // Grow arrays if needed
+      if (count >= capacity) {
+        capacity *= 2;
+        char **new_names = arena_alloc(&long_lived, capacity * sizeof(char *));
+        AstNode **new_types =
+            arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+        memcpy(new_names, field_names, count * sizeof(char *));
+        memcpy(new_types, field_types, count * sizeof(AstNode *));
+        field_names = new_names;
+        field_types = new_types;
+      }
+
+      field_names[count] = str_dup(field_name.lexeme);
+      field_types[count] = parse_type_expression(parser);
+      if (!field_types[count]) {
+        return NULL;
+      }
+      count++;
+
+      // Expect semicolon after field - add this for consistency
+      parser_consume(parser, TOKEN_SEMICOLON, "Expected ';' after variant");
     }
 
     parser_consume(parser, TOKEN_RBRACE, "Expected '}' after union fields");
@@ -2565,6 +2601,8 @@ AstNode *parse_type_expression(Parser *parser) {
     type->data.type_union.variant_names = field_names;
     type->data.type_union.variant_types = field_types;
     type->data.type_union.variant_count = count;
+    type->data.type_union.methods = methods;
+    type->data.type_union.method_count = method_count;
     return type;
   }
 
