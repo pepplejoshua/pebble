@@ -1595,9 +1595,20 @@ Type *resolve_type_expression(AstNode *type_expr) {
         return NULL;
       }
 
-      // Monomorphize the generic struct
-      type = monomorphize_struct_type(type->data.generic_decl.decl, type_args,
-                                      type_arg_count, type_expr->loc);
+      // Check if this is a struct or union generic type
+      AstNode *generic_decl = type->data.generic_decl.decl;
+      AstNode *type_body = generic_decl->data.type_decl.type_expr;
+
+      if (type_body->kind == AST_TYPE_STRUCT) {
+        type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
+                                        type_expr->loc);
+      } else if (type_body->kind == AST_TYPE_UNION) {
+        type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
+                                       type_expr->loc);
+      } else {
+        checker_error(type_expr->loc, "unsupported generic type");
+        return NULL;
+      }
     } else if (type_arg_count > 0) {
       // Non-generic type with type arguments
       checker_error(type_expr->loc,
@@ -1645,8 +1656,20 @@ Type *resolve_type_expression(AstNode *type_expr) {
         return NULL;
       }
 
-      type = monomorphize_struct_type(type->data.generic_decl.decl, type_args,
-                                      type_arg_count, type_expr->loc);
+      // Check if this is a struct or union generic type
+      AstNode *generic_decl = type->data.generic_decl.decl;
+      AstNode *type_body = generic_decl->data.type_decl.type_expr;
+
+      if (type_body->kind == AST_TYPE_STRUCT) {
+        type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
+                                        type_expr->loc);
+      } else if (type_body->kind == AST_TYPE_UNION) {
+        type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
+                                       type_expr->loc);
+      } else {
+        checker_error(type_expr->loc, "unsupported generic type");
+        return NULL;
+      }
     } else if (type_arg_count > 0) {
       checker_error(type_expr->loc,
                     "type '%s::%s' is not generic but has %zu type arguments",
@@ -3562,6 +3585,14 @@ static bool check_type_has_cycles(Type *type, Visited **visited) {
   if (type->kind == TYPE_STRUCT) {
     for (size_t i = 0; i < type->data.struct_data.field_count; i++) {
       if (check_type_has_cycles(type->data.struct_data.field_types[i],
+                                visited)) {
+        cycle_detected = true;
+        break;
+      }
+    }
+  } else if (type->kind == TYPE_UNION || type->kind == TYPE_TAGGED_UNION) {
+    for (size_t i = 0; i < type->data.union_data.variant_count; i++) {
+      if (check_type_has_cycles(type->data.union_data.variant_types[i],
                                 visited)) {
         cycle_detected = true;
         break;
@@ -5539,9 +5570,22 @@ Type *check_expression(AstNode *expr) {
       // type was defined
       Module *saved_current_module = checker_state.current_module;
       checker_state.current_module = target_module;
-      Type *specialized_type = monomorphize_struct_type(
-          generic_struct_decl, expr->data.member_expr.type_args,
-          expr->data.member_expr.type_arg_count, expr->loc);
+      // Check if this is a struct or union generic type
+      AstNode *type_body = generic_struct_decl->data.type_decl.type_expr;
+      Type *specialized_type;
+
+      if (type_body->kind == AST_TYPE_STRUCT) {
+        specialized_type = monomorphize_struct_type(
+            generic_struct_decl, expr->data.member_expr.type_args,
+            expr->data.member_expr.type_arg_count, expr->loc);
+      } else if (type_body->kind == AST_TYPE_UNION) {
+        specialized_type = monomorphize_union_type(
+            generic_struct_decl, expr->data.member_expr.type_args,
+            expr->data.member_expr.type_arg_count, expr->loc);
+      } else {
+        checker_error(expr->loc, "unsupported generic type");
+        specialized_type = NULL;
+      }
 
       // Restore original module context
       checker_state.current_module = saved_current_module;
@@ -6386,11 +6430,19 @@ Type *check_expression(AstNode *expr) {
         // Explicit generic instantiation 'GenericTypeName.[...]{ ... }'
         AstNode *generic_decl = type_of->data.generic_decl.decl;
 
-        // Monomorphize the struct type
-        type_of = monomorphize_struct_type(generic_decl, type_args,
-                                           type_arg_count, expr->loc);
-        if (!type_of)
-          return NULL;
+        // Check if this is a struct or union generic type
+        AstNode *type_body = generic_decl->data.type_decl.type_expr;
+
+        if (type_body->kind == AST_TYPE_STRUCT) {
+          type_of = monomorphize_struct_type(generic_decl, type_args,
+                                             type_arg_count, expr->loc);
+        } else if (type_body->kind == AST_TYPE_UNION) {
+          type_of = monomorphize_union_type(generic_decl, type_args,
+                                            type_arg_count, expr->loc);
+        } else {
+          checker_error(expr->loc, "unsupported generic type");
+          type_of = NULL;
+        }
       } else {
         // Error: GenericStruct.{ ... }
         checker_error(expr->loc,
