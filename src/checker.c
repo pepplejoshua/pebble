@@ -1166,21 +1166,21 @@ static bool check_function_signature(Symbol *sym) {
         receiver_type = NULL;
       } else {
         // Validate that self type matches the containing struct/union
-        if (!type_equals(receiver_type, sym->containing_struct_type)) {
+        if (!type_equals(receiver_type, sym->containing_type)) {
           checker_error(decl->loc,
                         "Method '%s' self parameter type '%s' doesn't match "
                         "containing struct '%s'",
                         decl->data.func_decl.name, type_name(receiver_type),
-                        type_name(sym->containing_struct_type));
+                        type_name(sym->containing_type));
           receiver_type = NULL;
         }
       }
     } else {
       // Associated function - first param is NOT "self" (or no params)
       // Store its type on the containing struct or union
-      if (sym->containing_struct_type) {
+      if (sym->containing_type) {
         char *qualified_name = decl->data.func_decl.qualified_name;
-        Type *containing_type = sym->containing_struct_type;
+        Type *containing_type = sym->containing_type;
 
         size_t method_count;
         char **method_qualified_names;
@@ -1498,7 +1498,7 @@ static void collect_methods(void) {
           symbol_create(qualified_name, SYMBOL_FUNCTION, method);
       method_sym->reg_name = method->data.func_decl.name;
       method_sym->is_method = true;
-      method_sym->containing_struct_type = sym->type;
+      method_sym->containing_type = sym->type;
 
       scope_add_symbol(checker_state.current_module->scope, method_sym);
 
@@ -2576,7 +2576,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "Switch is non-exhaustive and is missing %d values(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
-                    missing_items, switch_type->canonical_name);
+                    missing_items, type_name(switch_type));
     }
   }
 
@@ -2656,7 +2656,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "Switch is non-exhaustive and is missing %d variant(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
-                    missing_items, switch_type->canonical_name);
+                    missing_items, type_name(switch_type));
     }
 
     return;
@@ -2715,6 +2715,23 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
               break;
             }
           }
+        } else if (_case->kind == AST_EXPR_IDENTIFIER) {
+          // Handle identifier cases for tagged union variants
+          const char *variant_name = _case->data.ident.name;
+
+          // Find which variant this identifier matches
+          for (size_t j = 0; j < variant_count; j++) {
+            if (strcmp(variant_name, variant_names[j]) == 0) {
+              if (covered[j]) {
+                checker_error(_case->loc,
+                              "Switch case %zu has already covered the variant "
+                              "\"%s\" in a previous case.",
+                              i + 1, variant_name);
+              }
+              covered[j] = true;
+              break;
+            }
+          }
         }
       }
     }
@@ -2740,7 +2757,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
                     "Switch is non-exhaustive and is missing %d variant(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
-                    missing_items, switch_type->canonical_name);
+                    missing_items, type_name(switch_type));
     }
 
     return;
@@ -3818,7 +3835,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
             symbol_create(qualified_name, SYMBOL_FUNCTION, cloned_method);
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
-        method_sym->containing_struct_type = placeholder;
+        method_sym->containing_type = placeholder;
         Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
         gen_type->data.generic_decl.decl = cloned_method;
         method_sym->type = gen_type;
@@ -3868,7 +3885,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
         method_sym->is_mono = true;
-        method_sym->containing_struct_type = placeholder;
+        method_sym->containing_type = placeholder;
         scope_add_symbol(checker_state.current_module->scope, method_sym);
 
         // Store using the mangled name
@@ -4158,9 +4175,8 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
             symbol_create(qualified_name, SYMBOL_FUNCTION, cloned_method);
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
-        method_sym->containing_struct_type =
-            placeholder; // Note: still called containing_struct_type for
-                         // compatibility
+        method_sym->containing_type = placeholder;
+
         Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
         gen_type->data.generic_decl.decl = cloned_method;
         method_sym->type = gen_type;
@@ -4210,7 +4226,7 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
         method_sym->is_mono = true;
-        method_sym->containing_struct_type = placeholder;
+        method_sym->containing_type = placeholder;
         scope_add_symbol(checker_state.current_module->scope, method_sym);
 
         // Store using the mangled name
@@ -6928,13 +6944,24 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         }
       }
 
+      // Track if exhaustiveness check passes
+      bool exhaustiveness_passed = true;
       if (!had_error) {
+        bool errors_before = checker_has_errors();
         check_switch_is_exhaustive(stmt, cond->resolved_type);
+        exhaustiveness_passed = (checker_has_errors() == errors_before);
       }
+
+      // For tagged unions: exhaustive = no default case AND exhaustiveness
+      // check passed
+      bool is_tagged_union =
+          (cond_type->kind == TYPE_TAGGED_UNION ||
+           (cond_type->kind == TYPE_POINTER &&
+            cond_type->data.ptr.base->kind == TYPE_TAGGED_UNION));
 
       bool else_returns =
           default_case ? check_statement(default_case, expected_return_type)
-                       : false;
+                       : (is_tagged_union && exhaustiveness_passed);
 
       return cases_return && else_returns;
     }

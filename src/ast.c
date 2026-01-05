@@ -179,6 +179,7 @@ AstNode *clone_ast_node(AstNode *node) {
       for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
         clone->data.switch_stmt.cases[i] =
             clone_ast_node(node->data.switch_stmt.cases[i]);
+        clone->data.switch_stmt.cases[i]->data.case_stmt.switch_stmt = clone;
       }
     }
     break;
