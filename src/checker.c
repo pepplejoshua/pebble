@@ -853,7 +853,7 @@ static void check_type_declarations(Module *module) {
   for (size_t i = 0; i < worklist_size; i++) {
     sym = worklist[i];
     checker_error(sym->decl->data.type_decl.type_expr->loc,
-                  "cannot resolve type '%s' (circular dependency)", sym->name);
+                  "cannot resolve type '%s'", sym->reg_name);
   }
 
   checker_state.in_type_resolution = false;
@@ -1560,6 +1560,14 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
                                      AstNode **type_args, size_t type_arg_count,
                                      Location call_loc);
 
+static Type *resolve_type_expression_no_alias(AstNode *type_expr) {
+  bool saved_flag = checker_state.in_type_alias_resolution;
+  checker_state.in_type_alias_resolution = false;
+  Type *result = resolve_type_expression(type_expr);
+  checker_state.in_type_alias_resolution = saved_flag;
+  return result;
+}
+
 Type *resolve_type_expression(AstNode *type_expr) {
   if (!type_expr) {
     return NULL;
@@ -1699,7 +1707,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
   case AST_TYPE_POINTER: {
     // Resolve base type and create pointer type
-    Type *base = resolve_type_expression(type_expr->data.type_pointer.base);
+    Type *base =
+        resolve_type_expression_no_alias(type_expr->data.type_pointer.base);
     if (!base) {
       return NULL;
     }
@@ -1708,7 +1717,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
   case AST_TYPE_OPTIONAL: {
     // Resolve base type and create pointer type
-    Type *base = resolve_type_expression(type_expr->data.type_optional.base);
+    Type *base =
+        resolve_type_expression_no_alias(type_expr->data.type_optional.base);
     if (!base) {
       return NULL;
     }
@@ -1717,7 +1727,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
   case AST_TYPE_ARRAY: {
     // Resolve element type and create array type
-    Type *element = resolve_type_expression(type_expr->data.type_array.element);
+    Type *element =
+        resolve_type_expression_no_alias(type_expr->data.type_array.element);
     if (!element) {
       return NULL;
     }
@@ -1736,7 +1747,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_SLICE: {
     // Resolve element type and create slice (array with size 0)
     // We might need to change this later
-    Type *element = resolve_type_expression(type_expr->data.type_slice.element);
+    Type *element =
+        resolve_type_expression_no_alias(type_expr->data.type_slice.element);
     if (!element) {
       return NULL;
     }
@@ -1788,7 +1800,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       // Check types
-      field_types[i] = resolve_type_expression(field_type_exprs[i]);
+      field_types[i] = resolve_type_expression_no_alias(field_type_exprs[i]);
       if (!field_types[i]) {
         HASH_CLEAR(hh, seen);
         arena_free(&temp_arena);
@@ -1854,7 +1866,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       // Check types
-      variant_types[i] = resolve_type_expression(variant_type_exprs[i]);
+      variant_types[i] =
+          resolve_type_expression_no_alias(variant_type_exprs[i]);
       if (!variant_types[i]) {
         HASH_CLEAR(hh, seen);
         arena_free(&temp_arena);
@@ -1931,13 +1944,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
     Type **param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
 
     for (size_t i = 0; i < param_count; i++) {
-      param_types[i] = resolve_type_expression(param_type_exprs[i]);
+      param_types[i] = resolve_type_expression_no_alias(param_type_exprs[i]);
       if (!param_types[i]) {
         return NULL;
       }
     }
 
-    Type *return_type = resolve_type_expression(return_type_expr);
+    Type *return_type = resolve_type_expression_no_alias(return_type_expr);
     if (!return_type) {
       return NULL;
     }
@@ -1961,7 +1974,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
         arena_alloc(&long_lived, sizeof(Type *) * element_count);
 
     for (size_t i = 0; i < element_count; i++) {
-      element_types[i] = resolve_type_expression(element_type_exprs[i]);
+      element_types[i] = resolve_type_expression_no_alias(
+          element_type_exprs[i]); // CHANGE THIS LINE
       if (!element_types[i]) {
         return NULL;
       }
