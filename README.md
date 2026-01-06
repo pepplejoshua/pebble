@@ -316,7 +316,7 @@ type MyInt = int;
 type String = str;
 
 // Alias to imported types
-import "std::result";
+import "std:result";
 type Result = result::Result;  // Alias to generic type declaration
 type IntResult = Result[int, str];  // Alias to concrete instantiation
 
