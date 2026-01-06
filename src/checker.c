@@ -23,6 +23,7 @@ typedef struct {
   bool has_errors;
   int error_count;
   bool in_type_resolution;
+  bool in_type_alias_resolution;
   bool in_loop;
   bool in_defer;
   size_t anonymous_functions;
@@ -36,6 +37,7 @@ void checker_init(Module *main_mod) {
   checker_state.has_errors = false;
   checker_state.error_count = 0;
   checker_state.in_type_resolution = false;
+  checker_state.in_type_alias_resolution = false;
   checker_state.in_loop = false;
   checker_state.anonymous_functions = 0;
   checker_state.current_module = main_mod;
@@ -753,7 +755,8 @@ static void canonicalize_types(Module *module) {
       // Type hasn't been canonicalized yet
       // Don't attempt to canonicalize opaque types
       if (sym->type->kind != TYPE_OPAQUE &&
-          sym->type->kind != TYPE_GENERIC_TYPE_DECL)
+          sym->type->kind != TYPE_GENERIC_TYPE_DECL &&
+          sym->type->kind != TYPE_GENERIC_FUNCTION)
         canonicalize_type(&(sym->type));
 
       // Keep type_table in sync (important for deduplication)
@@ -807,7 +810,9 @@ static void check_type_declarations(Module *module) {
     for (size_t i = 0; i < worklist_size; i++) {
       sym = worklist[i];
       AstNode *type_expr = sym->decl->data.type_decl.type_expr;
+      checker_state.in_type_alias_resolution = true;
       Type *resolved = resolve_type_expression(type_expr);
+      checker_state.in_type_alias_resolution = false;
 
       if (resolved) {
         Type *placeholder = type_lookup(sym->name, sym->decl->loc.file);
@@ -848,7 +853,7 @@ static void check_type_declarations(Module *module) {
   for (size_t i = 0; i < worklist_size; i++) {
     sym = worklist[i];
     checker_error(sym->decl->data.type_decl.type_expr->loc,
-                  "cannot resolve type '%s' (circular dependency)", sym->name);
+                  "cannot resolve type '%s'", sym->reg_name);
   }
 
   checker_state.in_type_resolution = false;
@@ -1555,6 +1560,14 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
                                      AstNode **type_args, size_t type_arg_count,
                                      Location call_loc);
 
+static Type *resolve_type_expression_no_alias(AstNode *type_expr) {
+  bool saved_flag = checker_state.in_type_alias_resolution;
+  checker_state.in_type_alias_resolution = false;
+  Type *result = resolve_type_expression(type_expr);
+  checker_state.in_type_alias_resolution = saved_flag;
+  return result;
+}
+
 Type *resolve_type_expression(AstNode *type_expr) {
   if (!type_expr) {
     return NULL;
@@ -1572,7 +1585,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
-      if (checker_state.in_type_resolution) { // ADD THIS CHECK
+      if (checker_state.in_type_resolution) {
         Scope *mod_scope = checker_state.current_module->scope;
         Symbol *sym =
             scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
@@ -1590,9 +1603,15 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Handle generic types
     if (type->kind == TYPE_GENERIC_TYPE_DECL) {
       if (type_arg_count == 0) {
-        checker_error(type_expr->loc,
-                      "generic type '%s' requires type arguments", name);
-        return NULL;
+        if (checker_state.in_type_alias_resolution) {
+          // Allow: type Result = SomeGeneric
+          return type;
+        } else {
+          // Disallow: struct { field SomeGeneric; }
+          checker_error(type_expr->loc,
+                        "generic type '%s' requires type arguments", name);
+          return NULL;
+        }
       }
 
       // Check if this is a struct or union generic type
@@ -1650,10 +1669,16 @@ Type *resolve_type_expression(AstNode *type_expr) {
     // Handle generic types in qualified names
     if (type->kind == TYPE_GENERIC_TYPE_DECL) {
       if (type_arg_count == 0) {
-        checker_error(type_expr->loc,
-                      "generic type '%s::%s' requires type arguments", mod,
-                      mem);
-        return NULL;
+        if (checker_state.in_type_alias_resolution) {
+          // Allow: type Result = SomeGeneric
+          return type;
+        } else {
+          // Disallow: struct { field SomeGeneric; }
+          checker_error(type_expr->loc,
+                        "generic type '%s::%s' requires type arguments", mod,
+                        mem);
+          return NULL;
+        }
       }
 
       // Check if this is a struct or union generic type
@@ -1682,7 +1707,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
   case AST_TYPE_POINTER: {
     // Resolve base type and create pointer type
-    Type *base = resolve_type_expression(type_expr->data.type_pointer.base);
+    Type *base =
+        resolve_type_expression_no_alias(type_expr->data.type_pointer.base);
     if (!base) {
       return NULL;
     }
@@ -1691,7 +1717,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
   case AST_TYPE_OPTIONAL: {
     // Resolve base type and create pointer type
-    Type *base = resolve_type_expression(type_expr->data.type_optional.base);
+    Type *base =
+        resolve_type_expression_no_alias(type_expr->data.type_optional.base);
     if (!base) {
       return NULL;
     }
@@ -1700,7 +1727,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
   case AST_TYPE_ARRAY: {
     // Resolve element type and create array type
-    Type *element = resolve_type_expression(type_expr->data.type_array.element);
+    Type *element =
+        resolve_type_expression_no_alias(type_expr->data.type_array.element);
     if (!element) {
       return NULL;
     }
@@ -1719,7 +1747,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
   case AST_TYPE_SLICE: {
     // Resolve element type and create slice (array with size 0)
     // We might need to change this later
-    Type *element = resolve_type_expression(type_expr->data.type_slice.element);
+    Type *element =
+        resolve_type_expression_no_alias(type_expr->data.type_slice.element);
     if (!element) {
       return NULL;
     }
@@ -1771,7 +1800,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       // Check types
-      field_types[i] = resolve_type_expression(field_type_exprs[i]);
+      field_types[i] = resolve_type_expression_no_alias(field_type_exprs[i]);
       if (!field_types[i]) {
         HASH_CLEAR(hh, seen);
         arena_free(&temp_arena);
@@ -1837,7 +1866,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       // Check types
-      variant_types[i] = resolve_type_expression(variant_type_exprs[i]);
+      variant_types[i] =
+          resolve_type_expression_no_alias(variant_type_exprs[i]);
       if (!variant_types[i]) {
         HASH_CLEAR(hh, seen);
         arena_free(&temp_arena);
@@ -1914,13 +1944,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
     Type **param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
 
     for (size_t i = 0; i < param_count; i++) {
-      param_types[i] = resolve_type_expression(param_type_exprs[i]);
+      param_types[i] = resolve_type_expression_no_alias(param_type_exprs[i]);
       if (!param_types[i]) {
         return NULL;
       }
     }
 
-    Type *return_type = resolve_type_expression(return_type_expr);
+    Type *return_type = resolve_type_expression_no_alias(return_type_expr);
     if (!return_type) {
       return NULL;
     }
@@ -1944,7 +1974,8 @@ Type *resolve_type_expression(AstNode *type_expr) {
         arena_alloc(&long_lived, sizeof(Type *) * element_count);
 
     for (size_t i = 0; i < element_count; i++) {
-      element_types[i] = resolve_type_expression(element_type_exprs[i]);
+      element_types[i] = resolve_type_expression_no_alias(
+          element_type_exprs[i]); // CHANGE THIS LINE
       if (!element_types[i]) {
         return NULL;
       }
