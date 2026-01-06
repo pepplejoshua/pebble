@@ -306,6 +306,29 @@ fn apply(op BinaryOp, a int, b int) int {
 }
 ```
 
+#### Type Aliases
+
+Pebble supports type aliases for creating alternative names for existing types:
+
+```go
+// Simple type alias
+type MyInt = int;
+type String = str;
+
+// Alias to imported types
+import "std::result";
+type Result = result::Result;  // Alias to generic type declaration
+type IntResult = Result[int, str];  // Alias to concrete instantiation
+
+// Chain aliases
+type S = String;
+type MyString = S;
+
+// Use aliases like the original type
+var x MyInt = 42;
+var success IntResult = Result.[int, str].ok(100);
+```
+
 ### Pattern Matching
 
 **Switch Statements:**
