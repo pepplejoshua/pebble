@@ -13,13 +13,22 @@ type String = struct {
     capacity usize;
 
     fn grow(self *String, new_cap usize) void {
+        if new_cap == 0 {
+            new_cap = 16; // Minimum capacity
+        }
         self.data = mem::realloc(self.data, (sizeof char) * new_cap);
         self.capacity = new_cap;
     }
 
     fn push_char(self *String, c char) void {
         if self.len + 1 >= self.capacity {
-            self.grow(self.capacity * 2);
+            var new_cap = self.capacity;
+            if new_cap == 0 {
+                new_cap = 16;
+            } else {
+                new_cap = new_cap * 2;
+            }
+            self.grow(new_cap);
         }
 
         *(self.data + self.len) = c;

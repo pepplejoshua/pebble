@@ -135,12 +135,12 @@ fn read_line(file *FILE) string::String {
                     return s;
                 } else {
                     string::delete(&s);
-                    return s;
+                    return string::new();
                 }
             } else {
                 // Error (check ferror)
                 string::delete(&s);
-                return s;
+                return string::new();
             }
         }
 
