@@ -1,25 +1,66 @@
 import "std:vec";
 import "std:io";
 import "std:string";
+import "std:result";
 
-fn count_lines(file_path str) usize {
-    var file = io::open(file_path, io::MODE_READ);
+type Stats = struct {
+    lines usize;
+    words usize;
+    chars usize;
+};
+
+type StatsResult = result::Result[Stats, str];
+
+fn count_file(filename str) StatsResult {
+    if !io::exists(filename) {
+        return StatsResult.err("File not found");
+    }
+
+    var file = io::open(filename, io::MODE_READ);
     defer io::close(file);
 
     if file == nil {
-        print `unable to read {file_path}`;
-        return 0;
+        return StatsResult.err("Cannot open file");
     }
 
     var contents = io::read_all(file);
     defer string::delete(&contents);
 
+    var stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
+    stats.chars = contents.len;
+
+    // Count lines using vec::find_all for newlines
     var file_slice = contents.as_slice();
     var v = vec::from_slice(file_slice);
     defer vec::delete(&v);
     var all_newlines = v.find_all(fn (ch char) bool => ch == '\n');
-    print `{file_path} has {all_newlines.len} lines.`;
-    return all_newlines.len;
+    stats.lines = all_newlines.len;
+
+    // Add 1 to line count if file doesn't end with newline and has content
+    if contents.len > 0 {
+        var last_char = *(contents.data + contents.len - 1);
+        if last_char != '\n' {
+            stats.lines++;
+        }
+    }
+
+    // Count words
+    var in_word = false;
+    var i = 0;
+    while i < contents.len {
+        var c = *(contents.data + i);
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+            in_word = false;
+        } else {
+            if !in_word {
+                stats.words++;
+                in_word = true;
+            }
+        }
+        i++;
+    }
+
+    return StatsResult.ok(stats);
 }
 
 fn main() int {
@@ -36,12 +77,30 @@ fn main() int {
         "std/mem/arena.peb"
     ];
 
-    var sum usize = 0;
+    var total_stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
+    var successful_files = 0;
+
     loop 0..file_paths.len : i {
-        sum += count_lines(file_paths[i]);
+        var result = count_file(file_paths[i]);
+        switch result {
+            case Ok: {
+                var stats = result.Ok;
+                total_stats.lines += stats.lines;
+                total_stats.words += stats.words;
+                total_stats.chars += stats.chars;
+                successful_files++;
+                print `{file_paths[i]}: {stats.lines} lines, {stats.words} words, {stats.chars} chars`;
+            }
+            case Err: {
+                print `Error reading {file_paths[i]}: {result.Err}`;
+            }
+        }
     }
 
-    print `total lines in std: {sum}`;
+    print `\nSummary for {successful_files}/{file_paths.len} files:`;
+    print `Total lines: {total_stats.lines}`;
+    print `Total words: {total_stats.words}`;
+    print `Total chars: {total_stats.chars}`;
 
     return 0;
 }

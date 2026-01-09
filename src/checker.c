@@ -3728,6 +3728,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
   // Step 4: Create placeholder EARLY
   Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
   placeholder->declared_name = generic_struct_decl->data.type_decl.name;
+  placeholder->defining_module = checker_state.current_module;
   type_register(mangled_name, placeholder);
 
   // Step 5: Clone + substitute
@@ -3747,6 +3748,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
     placeholder->canonical_name = NULL;
     placeholder->qualified_name = mangled_name;
     placeholder->declared_name = saved_declared_name;
+    placeholder->defining_module = checker_state.current_module;
   }
 
   // Step 8: Track generic args
@@ -4069,6 +4071,7 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
   // Step 4: Create placeholder EARLY
   Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
   placeholder->declared_name = generic_union_decl->data.type_decl.name;
+  placeholder->defining_module = checker_state.current_module;
   type_register(mangled_name, placeholder);
 
   // Step 5: Clone + substitute
@@ -4088,6 +4091,7 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
     placeholder->canonical_name = NULL;
     placeholder->qualified_name = mangled_name;
     placeholder->declared_name = saved_declared_name;
+    placeholder->defining_module = checker_state.current_module;
   }
 
   // Step 8: Track generic args
@@ -5820,6 +5824,11 @@ Type *check_expression(AstNode *expr) {
             char *qualified_name = method_qualified_names[i];
             Symbol *method_sym = scope_lookup_local(
                 checker_state.current_module->scope, qualified_name);
+
+            if (!method_sym && type->defining_module) {
+              method_sym = scope_lookup_local(type->defining_module->scope,
+                                              qualified_name);
+            }
 
             if (method_sym && method_sym->decl &&
                 method_sym->decl->kind == AST_DECL_FUNCTION) {
