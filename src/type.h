@@ -11,6 +11,7 @@
 // Forward declarations
 typedef struct Type Type;
 typedef struct TypeEntry TypeEntry;
+typedef struct Module Module;
 
 // Type kinds
 typedef enum {
@@ -66,6 +67,8 @@ struct Type {
   // For monomorphized generics, store what it was specialized with
   Type **generic_type_args;      // [int, string] for GenericType[int, string]
   size_t generic_type_arg_count; // 2
+
+  Module *defining_module;
 
   union {
     struct {

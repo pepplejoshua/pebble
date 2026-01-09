@@ -264,13 +264,14 @@ static void collect_declaration(AstNode *decl) {
 
   symbol->reg_name = name;
 
-  // NEW: Handle generic types
+  // Handle generic types
   if (kind == SYMBOL_TYPE && decl->kind == AST_DECL_TYPE &&
       decl->data.type_decl.type_params_count > 0) {
     // Create a marker type that says "this is generic"
     Type *generic_marker = type_create(TYPE_GENERIC_TYPE_DECL, loc);
     generic_marker->data.generic_decl.decl = decl;
     generic_marker->declared_name = name;
+    generic_marker->defining_module = checker_state.current_module;
     symbol->type = generic_marker;
   }
 
@@ -1618,6 +1619,11 @@ Type *resolve_type_expression(AstNode *type_expr) {
       AstNode *generic_decl = type->data.generic_decl.decl;
       AstNode *type_body = generic_decl->data.type_decl.type_expr;
 
+      Module *saved_module = checker_state.current_module;
+      if (type->defining_module) {
+        checker_state.current_module = type->defining_module;
+      }
+
       if (type_body->kind == AST_TYPE_STRUCT) {
         type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
                                         type_expr->loc);
@@ -1625,9 +1631,12 @@ Type *resolve_type_expression(AstNode *type_expr) {
         type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
                                        type_expr->loc);
       } else {
+        checker_state.current_module = saved_module;
         checker_error(type_expr->loc, "unsupported generic type");
         return NULL;
       }
+
+      checker_state.current_module = saved_module;
     } else if (type_arg_count > 0) {
       // Non-generic type with type arguments
       checker_error(type_expr->loc,
@@ -1685,6 +1694,11 @@ Type *resolve_type_expression(AstNode *type_expr) {
       AstNode *generic_decl = type->data.generic_decl.decl;
       AstNode *type_body = generic_decl->data.type_decl.type_expr;
 
+      Module *saved_module = checker_state.current_module;
+      if (type->defining_module) {
+        checker_state.current_module = type->defining_module;
+      }
+
       if (type_body->kind == AST_TYPE_STRUCT) {
         type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
                                         type_expr->loc);
@@ -1692,9 +1706,12 @@ Type *resolve_type_expression(AstNode *type_expr) {
         type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
                                        type_expr->loc);
       } else {
+        checker_state.current_module = saved_module;
         checker_error(type_expr->loc, "unsupported generic type");
         return NULL;
       }
+
+      checker_state.current_module = saved_module;
     } else if (type_arg_count > 0) {
       checker_error(type_expr->loc,
                     "type '%s::%s' is not generic but has %zu type arguments",
@@ -5583,6 +5600,9 @@ Type *check_expression(AstNode *expr) {
           return NULL;
         }
         generic_struct_decl = sym->type->data.generic_decl.decl;
+        if (sym->type->defining_module) {
+          target_module = sym->type->defining_module;
+        }
       } else if (object_expr->kind == AST_EXPR_MODULE_MEMBER) {
         // Module-qualified type like x::Cell.[int].new
         AstNode *module_expr = object_expr->data.mod_member_expr.module;
@@ -6484,6 +6504,11 @@ Type *check_expression(AstNode *expr) {
         // Check if this is a struct or union generic type
         AstNode *type_body = generic_decl->data.type_decl.type_expr;
 
+        Module *saved_module = checker_state.current_module;
+        if (type_of->defining_module) {
+          checker_state.current_module = type_of->defining_module;
+        }
+
         if (type_body->kind == AST_TYPE_STRUCT) {
           type_of = monomorphize_struct_type(generic_decl, type_args,
                                              type_arg_count, expr->loc);
@@ -6493,6 +6518,11 @@ Type *check_expression(AstNode *expr) {
         } else {
           checker_error(expr->loc, "unsupported generic type");
           type_of = NULL;
+        }
+
+        checker_state.current_module = saved_module;
+        if (!type_of) {
+          return NULL;
         }
       } else {
         // Error: GenericStruct.{ ... }
