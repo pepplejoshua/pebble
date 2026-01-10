@@ -336,6 +336,34 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // Handle parse-only mode
+  if (compiler_opts.parse_only) {
+    Module *main_mod = new_module(compiler_opts.input_file);
+    if (!main_mod) {
+      printf("Failed to create module for %s\n", compiler_opts.input_file);
+      cleanup_args();
+      arena_free(&long_lived);
+      temp_free(&temp_allocator);
+      return 1;
+    }
+
+    bool had_parse_error = parse_module(main_mod);
+
+    if (had_parse_error) {
+      printf("Parsed failed for %s\n", compiler_opts.input_file);
+      cleanup_args();
+      arena_free(&long_lived);
+      temp_free(&temp_allocator);
+      return 1;
+    }
+
+    printf("Parse successful for %s\n", compiler_opts.input_file);
+    cleanup_args();
+    arena_free(&long_lived);
+    temp_free(&temp_allocator);
+    return 0;
+  }
+
   // Compile the source file
   if (!compile_file(compiler_opts.input_file)) {
     cleanup_args();

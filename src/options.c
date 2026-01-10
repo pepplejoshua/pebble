@@ -415,11 +415,7 @@ void print_usage(const char *program_name) {
   printf("  -I <path>            Specify include path to add to path\n");
   printf("  --header <name>      Specify header to include in source\n");
   printf("  --sys-header <name>  Specify system header to include in source\n");
-  printf("  --test               Run all tests\n");
-  printf("  --test-lexer         Run lexer tests\n");
-  printf("  --test-parser        Run parser tests\n");
-  printf("  --test-checker       Run checker tests\n");
-  printf("  --test-all           Run all tests\n");
+  printf("  --parse              Parse only (syntax checking)\n");
   printf("\nModule Paths:\n");
   printf("  --std-path           Location of std lib (default: alongside "
          "compiler)\n");
@@ -582,13 +578,8 @@ bool parse_args(int argc, char **argv) {
     } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       print_usage(argv[0]);
       exit(0);
-    } else if (strcmp(argv[i], "--test") == 0 ||
-               strcmp(argv[i], "--test-lexer") == 0 ||
-               strcmp(argv[i], "--test-parser") == 0 ||
-               strcmp(argv[i], "--test-checker") == 0 ||
-               strcmp(argv[i], "--test-all") == 0) {
-      fprintf(stderr, "Test mode not yet implemented\n");
-      return false;
+    } else if (strcmp(argv[i], "--parse") == 0) {
+      compiler_opts.parse_only = true;
     } else if (argv[i][0] == '-') {
       fprintf(stderr, "Error: Unknown option '%s'\n", argv[i]);
       print_usage(argv[0]);

@@ -17,12 +17,51 @@ extern Arena long_lived;
 // BASIC PARSER UTILITIES
 // ============================================================================
 
+static void split_source_into_lines(Parser *parser, const char *source) {
+  // Count lines first
+  int line_count = 1;
+  for (const char *p = source; *p; p++) {
+    if (*p == '\n')
+      line_count++;
+  }
+
+  parser->source_line_count = line_count;
+  parser->source_lines = arena_alloc(&long_lived, line_count * sizeof(char *));
+
+  // Copy source and split into lines
+  size_t source_len = strlen(source);
+  char *source_copy = arena_alloc(&long_lived, source_len + 1);
+  strcpy(source_copy, source);
+
+  int line_idx = 0;
+  char *line_start = source_copy;
+
+  for (size_t i = 0; i <= source_len; i++) {
+    if (source_copy[i] == '\n' || source_copy[i] == '\0') {
+      // Null terminate this line
+      if (source_copy[i] == '\n') {
+        source_copy[i] = '\0';
+      }
+
+      if (line_idx < line_count) {
+        parser->source_lines[line_idx] = line_start;
+        line_idx++;
+      }
+
+      // Start of next line
+      line_start = &source_copy[i + 1];
+    }
+  }
+}
+
 void parser_init(Parser *parser, const char *source, const char *filename,
                  const char *abs_file_path) {
   lexer_init(&parser->lexer, source, filename);
   parser->had_error = false;
   parser->panic_mode = false;
   parser->abs_file_path = abs_file_path;
+
+  split_source_into_lines(parser, source);
 
   // Prime the parser with the first token
   parser_advance(parser);
@@ -71,20 +110,33 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "%s:%d:%d:\nError", parser->abs_file_path,
-          token->location.line, token->location.column);
+  fprintf(stderr, "%s:%d:%d:\nError: %s\n", parser->abs_file_path,
+          token->location.line, token->location.column, message);
 
-  if (token->type == TOKEN_EOF) {
-    fprintf(stderr, " at end");
-  } else if (token->type == TOKEN_ERROR) {
-    // Error token - message already printed
+  // Show the problematic line
+  // Show the problematic line
+  int line_num = token->location.line;
+  if (line_num > 0 && line_num <= parser->source_line_count) {
+    const char *line = parser->source_lines[line_num - 1];
+    if (line != NULL) {
+      // Calculate spacing for line numbers (assuming max 4 digits)
+      fprintf(stderr, "%4d | %s\n", line_num, line);
+
+      // Add pointer to column (account for "nnnn | " prefix)
+      fprintf(stderr, "       ");
+      for (int i = 0; i < token->location.column - 1; i++) {
+        fprintf(stderr, " ");
+      }
+      fprintf(stderr, "^\n");
+    } else {
+      fprintf(stderr, "%4d | (line not available)\n", line_num);
+    }
   } else {
-    fprintf(stderr, " at '%s'", token->lexeme);
+    fprintf(stderr, "     | (line %d out of range: 1-%d)\n", line_num,
+            parser->source_line_count);
   }
 
-  fprintf(stderr, ": %s\n", message);
   parser->had_error = true;
-
   parser_synchronize(parser);
 }
 
