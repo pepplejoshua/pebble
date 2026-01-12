@@ -114,7 +114,6 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
           token->location.line, token->location.column, message);
 
   // Show the problematic line
-  // Show the problematic line
   int line_num = token->location.line;
   if (line_num > 0 && line_num <= parser->source_line_count) {
     const char *line = parser->source_lines[line_num - 1];

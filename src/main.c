@@ -350,7 +350,7 @@ int main(int argc, char **argv) {
     bool had_parse_error = parse_module(main_mod);
 
     if (had_parse_error) {
-      printf("Parsed failed for %s\n", compiler_opts.input_file);
+      printf("Parse failed for %s\n", compiler_opts.input_file);
       cleanup_args();
       arena_free(&long_lived);
       temp_free(&temp_allocator);
