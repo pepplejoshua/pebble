@@ -1,5 +1,5 @@
 #include "diagnostics.h"
-// #include "../pastel/pastel.h"
+#include "../pastel/pastel.h"
 #include "alloc.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -200,4 +200,88 @@ Diagnostic *diagnostic_warning_no_loc(DiagnosticContext *ctx, const char *fmt,
 
   ctx->warning_count++;
   return diag;
+}
+
+Diagnostic *diagnostic_add_tip(Diagnostic *parent, const char *fmt, ...) {
+  Diagnostic *tip = arena_alloc(&long_lived, sizeof(Diagnostic));
+
+  tip->level = DIAG_TIP;
+  tip->has_location = false;
+  tip->next = NULL;
+
+  // Format message
+  va_list args;
+  va_start(args, fmt);
+
+  va_list args_copy;
+  va_copy(args_copy, args);
+  int needed = vsnprintf(NULL, 0, fmt, args_copy);
+  va_end(args_copy);
+
+  tip->message = arena_alloc(&long_lived, needed + 1);
+  vsnprintf(tip->message, needed + 1, fmt, args);
+  va_end(args);
+
+  tip->source_line = NULL;
+  tip->error_start = 0;
+  tip->error_length = 0;
+
+  // Chain to end
+  Diagnostic *current = parent;
+  while (current->next != NULL) {
+    current = current->next;
+  }
+  current->next = tip;
+
+  return parent;
+}
+
+static void emit_single_diagnostic(Diagnostic *diag) {
+  // Choose color based on level
+  const char *level_format;
+  switch (diag->level) {
+  case DIAG_ERROR:
+    level_format = "*[*, red]error[/]";
+    break;
+  case DIAG_WARNING:
+    level_format = "*[*, yellow]warning[/]";
+    break;
+  case DIAG_TIP:
+    level_format = "*[*, blue]tip[/]";
+    break;
+  }
+
+  // Format the diagnostic message
+  char buffer[4096];
+
+  if (diag->has_location) {
+    // With location: show file, line, message, and source
+    snprintf(buffer, sizeof(buffer),
+             "%s: %s\n"
+             "   --> *[cyan]%s:%d:%d[/]\n"
+             "*[dim]%d[/] | %s\n"
+             "     | %*s*[*, red]^[/]\n",
+             level_format, diag->message, diag->location.file,
+             diag->location.line, diag->location.column, diag->location.line,
+             diag->source_line ? diag->source_line : "", (int)diag->error_start,
+             "");
+  } else {
+    // No location: just show the message
+    snprintf(buffer, sizeof(buffer), "%s: %s\n", level_format, diag->message);
+  }
+
+  // Format with Pastel and output
+  char formatted[8192];
+  pastel_format(buffer, formatted, sizeof(formatted));
+  fprintf(stderr, "%s", formatted);
+}
+
+void diagnostic_emit(Diagnostic *diag) {
+  // Walk the chain and emit each diagnostic
+  Diagnostic *current = diag;
+
+  while (current != NULL) {
+    emit_single_diagnostic(current);
+    current = current->next;
+  }
 }

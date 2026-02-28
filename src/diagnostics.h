@@ -8,9 +8,7 @@
 typedef enum {
     DIAG_ERROR,     // Red - must fix to compile
     DIAG_WARNING,   // Yellow - should fix but compiles
-    DIAG_NOTE,      // Blue - additional context
-    DIAG_TIP,       // Cyan - best practice suggestion
-    DIAG_HELP       // Green - how to fix suggestion
+    DIAG_TIP,       // Blue - helpful suggestion
 } DiagnosticLevel;
 
 typedef struct Diagnostic {
@@ -48,10 +46,7 @@ Diagnostic* diagnostic_error_no_loc(DiagnosticContext *ctx, const char *fmt, ...
 Diagnostic* diagnostic_warning_no_loc(DiagnosticContext *ctx, const char *fmt, ...);
 
 // Chaining methods
-Diagnostic* diagnostic_add_note(Diagnostic *parent, const char *fmt, ...);
-Diagnostic* diagnostic_add_note_at(Diagnostic *parent, Location loc, const char *fmt, ...);
 Diagnostic* diagnostic_add_tip(Diagnostic *parent, const char *fmt, ...);
-Diagnostic* diagnostic_add_help(Diagnostic *parent, const char *fmt, ...);
 
 // Output
 void diagnostic_emit(Diagnostic *diag);
