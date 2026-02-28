@@ -2,6 +2,7 @@
 #define AST_H
 
 #include "lexer.h"
+#include "location.h"
 #include "alloc.h"
 #include <stdbool.h> // For bool
 #include <stddef.h>  // For size_t
