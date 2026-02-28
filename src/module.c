@@ -272,7 +272,7 @@ bool parse_module(Module *mod) {
 }
 
 void module_error(Location loc, const char *msg) {
-  fprintf(stderr, "%s:%d:%d: %s\n", loc.file, loc.line, loc.column, msg);
+  fprintf(stderr, "%s:%zu:%zu: %s\n", loc.file, loc.line, loc.column, msg);
 }
 
 Module *get_module_from_table(const char *full_path) {

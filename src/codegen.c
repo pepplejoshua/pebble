@@ -3529,7 +3529,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, "\", ");
 
       char temp_buf[32] = {0};
-      snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+      snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
       emit_string(cg, temp_buf);
       emit_string(cg, ");\n");
     }
@@ -3862,7 +3862,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -3929,7 +3929,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -4161,7 +4161,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -4212,7 +4212,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 

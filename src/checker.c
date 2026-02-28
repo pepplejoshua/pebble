@@ -61,7 +61,7 @@ static char *next_anonymous_function_name() {
 bool checker_has_errors(void) { return checker_state.has_errors; }
 
 void checker_error(Location loc, const char *fmt, ...) {
-  fprintf(stderr, "%s:%d:%d: error: ", loc.file, loc.line, loc.column);
+  fprintf(stderr, "%s:%zu:%zu: error: ", loc.file, loc.line, loc.column);
 
   va_list args;
   va_start(args, fmt);
@@ -75,7 +75,7 @@ void checker_error(Location loc, const char *fmt, ...) {
 }
 
 void checker_warning(Location loc, const char *fmt, ...) {
-  fprintf(stderr, "%s:%d:%d: warning: ", loc.file, loc.line, loc.column);
+  fprintf(stderr, "%s:%zu:%zu: warning: ", loc.file, loc.line, loc.column);
 
   va_list args;
   va_start(args, fmt);

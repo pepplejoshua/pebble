@@ -255,16 +255,20 @@ static void emit_single_diagnostic(Diagnostic *diag) {
   char buffer[4096];
 
   if (diag->has_location) {
-    // With location: show file, line, message, and source
+    // Calculate width needed for line number display
+    int line_num_width = snprintf(NULL, 0, "%zu", diag->location.line);
+
     snprintf(buffer, sizeof(buffer),
              "%s: %s\n"
-             "   --> *[cyan]%s:%d:%d[/]\n"
-             "*[dim]%d[/] | %s\n"
-             "     | %*s*[*, red]^[/]\n",
+             "   --> *[cyan]%s:%zu:%zu[/]\n"
+             "*[d]%zu[/] | %s\n"
+             "%*s | %*s*[*, red]^[/]\n",
              level_format, diag->message, diag->location.file,
              diag->location.line, diag->location.column, diag->location.line,
-             diag->source_line ? diag->source_line : "", (int)diag->error_start,
-             "");
+             diag->source_line ? diag->source_line : "", line_num_width,
+             "", // Match the line number width
+             (int)diag->error_start, "");
+
   } else {
     // No location: just show the message
     snprintf(buffer, sizeof(buffer), "%s: %s\n", level_format, diag->message);

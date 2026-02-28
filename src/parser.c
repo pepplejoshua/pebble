@@ -110,7 +110,7 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "%s:%d:%d:\nError: %s\n", parser->abs_file_path,
+  fprintf(stderr, "%s:%zu:%zu:\nError: %s\n", parser->abs_file_path,
           token->location.line, token->location.column, message);
 
   // Show the problematic line
@@ -123,7 +123,7 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
 
       // Add pointer to column (account for "nnnn | " prefix)
       fprintf(stderr, "       ");
-      for (int i = 0; i < token->location.column - 1; i++) {
+      for (size_t i = 0; i < token->location.column - 1; i++) {
         fprintf(stderr, " ");
       }
       fprintf(stderr, "^\n");

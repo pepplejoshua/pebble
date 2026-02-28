@@ -2,10 +2,12 @@
 #define LOCATION_H
 
 // Source location for errors
+#include <stddef.h>
+
 typedef struct {
   const char *file;
-  int line;
-  int column;
+  size_t line;
+  size_t column;
 } Location;
 
 #endif
