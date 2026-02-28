@@ -104,3 +104,100 @@ Diagnostic *diagnostic_error(DiagnosticContext *ctx, Location loc,
   ctx->error_count++;
   return diag;
 }
+
+Diagnostic *diagnostic_error_no_loc(DiagnosticContext *ctx, const char *fmt,
+                                    ...) {
+  Diagnostic *diag = arena_alloc(&long_lived, sizeof(Diagnostic));
+
+  diag->level = DIAG_ERROR;
+  diag->has_location = false; // Key difference
+  diag->next = NULL;
+
+  // Format message (same pattern as diagnostic_error)
+  va_list args;
+  va_start(args, fmt);
+
+  va_list args_copy;
+  va_copy(args_copy, args);
+  int needed = vsnprintf(NULL, 0, fmt, args_copy);
+  va_end(args_copy);
+
+  diag->message = arena_alloc(&long_lived, needed + 1);
+  vsnprintf(diag->message, needed + 1, fmt, args);
+  va_end(args);
+
+  // No location info
+  diag->source_line = NULL;
+  diag->error_start = 0;
+  diag->error_length = 0;
+
+  ctx->error_count++;
+  return diag;
+}
+
+Diagnostic *diagnostic_warning(DiagnosticContext *ctx, Location loc,
+                               const char *fmt, ...) {
+  Diagnostic *diag = arena_alloc(&long_lived, sizeof(Diagnostic));
+
+  diag->level = DIAG_WARNING; // Key difference
+  diag->has_location = true;
+  diag->location = loc;
+  diag->next = NULL;
+
+  // Format message
+  va_list args;
+  va_start(args, fmt);
+
+  va_list args_copy;
+  va_copy(args_copy, args);
+  int needed = vsnprintf(NULL, 0, fmt, args_copy);
+  va_end(args_copy);
+
+  diag->message = arena_alloc(&long_lived, needed + 1);
+  vsnprintf(diag->message, needed + 1, fmt, args);
+  va_end(args);
+
+  // Extract source line
+  if (loc.line > 0 && loc.line <= ctx->line_count) {
+    diag->source_line = ctx->source_lines[loc.line - 1];
+    diag->error_start = loc.column;
+    diag->error_length = 1;
+  } else {
+    diag->source_line = NULL;
+    diag->error_start = 0;
+    diag->error_length = 0;
+  }
+
+  ctx->warning_count++; // Key difference
+  return diag;
+}
+
+Diagnostic *diagnostic_warning_no_loc(DiagnosticContext *ctx, const char *fmt,
+                                      ...) {
+  Diagnostic *diag = arena_alloc(&long_lived, sizeof(Diagnostic));
+
+  diag->level = DIAG_WARNING;
+  diag->has_location = false;
+  diag->next = NULL;
+
+  // Format message
+  va_list args;
+  va_start(args, fmt);
+
+  va_list args_copy;
+  va_copy(args_copy, args);
+  int needed = vsnprintf(NULL, 0, fmt, args_copy);
+  va_end(args_copy);
+
+  diag->message = arena_alloc(&long_lived, needed + 1);
+  vsnprintf(diag->message, needed + 1, fmt, args);
+  va_end(args);
+
+  // No location info
+  diag->source_line = NULL;
+  diag->error_start = 0;
+  diag->error_length = 0;
+
+  ctx->warning_count++;
+  return diag;
+}
