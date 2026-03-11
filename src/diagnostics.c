@@ -1,10 +1,12 @@
 #include "diagnostics.h"
 #include "../pastel/pastel.h"
 #include "alloc.h"
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static void split_source_into_lines(DiagnosticContext *ctx) {
   if (!ctx->source) {
@@ -236,6 +238,81 @@ Diagnostic *diagnostic_add_tip(Diagnostic *parent, const char *fmt, ...) {
   return parent;
 }
 
+static const char *get_last_segments(const char *path, int n) {
+  if (!path || n <= 0)
+    return path;
+
+  // Count segments from the end
+  const char *segments[10]; // Support up to 10 segments
+  int count = 0;
+
+  const char *current = path + strlen(path);
+  const char *segment_end = current;
+
+  // Walk backwards collecting segments
+  while (current > path && count < n && count < 10) {
+    current--;
+    if (*current == '/' || current == path) {
+      const char *segment_start = (*current == '/') ? current + 1 : current;
+
+      if (segment_end - segment_start > 0) { // Non-empty segment
+        segments[count++] = segment_start;
+      }
+      segment_end = current;
+    }
+  }
+
+  if (count == 0)
+    return path; // Fallback
+
+  // Build result in static buffer
+  static char result[PATH_MAX];
+  result[0] = '\0';
+
+  for (int i = count - 1; i >= 0; i--) {
+    if (strlen(result) > 0)
+      strcat(result, "/");
+
+    // Find end of this segment
+    const char *start = segments[i];
+    const char *end = strchr(start, '/');
+    if (!end)
+      end = start + strlen(start);
+
+    // Append segment
+    size_t seg_len = end - start;
+    strncat(result, start, seg_len);
+  }
+
+  return result;
+}
+
+static const char *get_display_path(const char *abs_path) {
+  if (!abs_path)
+    return "";
+
+  char cwd[PATH_MAX];
+  if (getcwd(cwd, sizeof(cwd)) != NULL) {
+    size_t cwd_len = strlen(cwd);
+
+    // If file is under current directory, show relative path
+    if (strncmp(abs_path, cwd, cwd_len) == 0) {
+      const char *relative = abs_path + cwd_len;
+      // Skip leading slash if present
+      if (*relative == '/')
+        relative++;
+
+      // If relative path is not empty and reasonable length, use it
+      if (*relative != '\0' && strlen(relative) < strlen(abs_path)) {
+        return relative;
+      }
+    }
+  }
+
+  // Fallback: show last 3 meaningful segments
+  return get_last_segments(abs_path, 3);
+}
+
 static void emit_single_diagnostic(Diagnostic *diag) {
   // Choose color based on level
   const char *level_format;
@@ -257,14 +334,15 @@ static void emit_single_diagnostic(Diagnostic *diag) {
   if (diag->has_location) {
     // Calculate width needed for line number display
     int line_num_width = snprintf(NULL, 0, "%zu", diag->location.line);
+    const char *display_path = get_display_path(diag->location.file);
 
     snprintf(buffer, sizeof(buffer),
              "%s: %s\n"
              "   --> *[cyan]%s:%zu:%zu[/]\n"
              "*[d]%zu[/] | %s\n"
              "%*s | %*s*[*, red]^[/]\n",
-             level_format, diag->message, diag->location.file,
-             diag->location.line, diag->location.column, diag->location.line,
+             level_format, diag->message, display_path, diag->location.line,
+             diag->location.column, diag->location.line,
              diag->source_line ? diag->source_line : "", line_num_width,
              "", // Match the line number width
              (int)diag->error_start, "");
