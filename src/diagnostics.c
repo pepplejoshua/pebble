@@ -1,12 +1,13 @@
 #include "diagnostics.h"
 #include "../pastel/pastel.h"
 #include "alloc.h"
-#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#define PATH_MAX 4096
 
 static void split_source_into_lines(DiagnosticContext *ctx) {
   if (!ctx->source) {
