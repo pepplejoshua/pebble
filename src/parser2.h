@@ -37,7 +37,6 @@ Token parser2_consume(Parser2 *parser, TokenType type, const char *message);
 
 // Error handling
 bool parser2_handle_error(Parser2 *parser, const char *expected);
-AstNode *parser2_create_error_node(Parser2 *parser, const char *message);
 void parser2_synchronize(Parser2 *parser);
 
 // Core parsing functions (internal)
