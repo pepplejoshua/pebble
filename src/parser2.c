@@ -8,10 +8,8 @@
 // External allocator
 extern Arena long_lived;
 
-// ---------- small helpers ----------
 static AstNode *alloc_node(AstKind kind, Location loc) {
   AstNode *n = arena_alloc(&long_lived, sizeof(AstNode));
-  // arena slabs are memset to 0, but don't rely on it for required fields.
   n->kind = kind;
   n->loc = loc;
   n->resolved_type = NULL;
@@ -36,7 +34,10 @@ static Location prev_loc(Parser2 *p) {
   return loc;
 }
 
-// Forward decls for minimal milestone
+static bool parser2_too_many_errors(Parser2 *p) {
+  return p->diagnostics && (p->diagnostics->error_count >= p->max_errors);
+}
+
 static AstNode *parse_function_decl2(Parser2 *p);
 static AstNode *parse_block_stmt2(Parser2 *p);
 static AstNode *parse_return_stmt2(Parser2 *p);
@@ -44,7 +45,6 @@ static AstNode *parse_expression2(Parser2 *p);
 static AstNode *parse_primary2(Parser2 *p);
 static AstNode *parse_type_expression2(Parser2 *p);
 
-// ---------- external interface ----------
 void parser_init(Parser2 *parser, const char *source, const char *filename,
                  const char *abs_file_path) {
   lexer_init(&parser->lexer, source, filename);
@@ -68,24 +68,43 @@ void parser_init(Parser2 *parser, const char *source, const char *filename,
 void parser2_advance(Parser2 *parser) {
   parser->previous = parser->current;
 
-  for (;;) {
+  size_t lexer_errors = 0;
+  const size_t max_lexer_errors = 8;
+
+  Location last_err_loc = (Location){0};
+
+  while (true) {
     parser->current = lexer_next_token(&parser->lexer);
 
     if (parser->current.type != TOKEN_ERROR) {
       return;
     }
 
-    // Report lexer error, then keep advancing.
+    Location err_loc = cur_loc(parser);
+
+    // Detect a "stuck" lexer (repeating the same error location).
+    if (lexer_errors > 0 && err_loc.line == last_err_loc.line &&
+        err_loc.column == last_err_loc.column) {
+      parser->had_error = true;
+      return;
+    }
+    last_err_loc = err_loc;
+
     if (parser->diagnostics) {
-      Location loc = cur_loc(parser);
       Diagnostic *error =
-          diagnostic_error(parser->diagnostics, loc, "Lexical error: %s",
+          diagnostic_error(parser->diagnostics, err_loc, "Lexical error: %s",
                            parser->current.lexeme);
       diagnostic_emit(error);
     }
 
     parser->had_error = true;
-    if (parser->diagnostics->error_count >= parser->max_errors) {
+
+    lexer_errors++;
+    if (lexer_errors >= max_lexer_errors) {
+      return;
+    }
+
+    if (parser2_too_many_errors(parser)) {
       return;
     }
   }
@@ -116,7 +135,7 @@ Token parser2_consume(Parser2 *parser, TokenType type, const char *message) {
 
 // ---------- error handling ----------
 bool parser2_handle_error(Parser2 *parser, const char *expected) {
-  if (parser->diagnostics->error_count >= parser->max_errors) {
+  if (parser2_too_many_errors(parser)) {
     return false;
   }
 
