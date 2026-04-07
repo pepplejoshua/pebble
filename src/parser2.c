@@ -372,34 +372,57 @@ static AstNode *parse_type_decl2(Parser2 *p) {
   if (name.type != TOKEN_IDENTIFIER)
     return NULL;
 
-  // Parse comma-separated type parameters (match parser.c behavior/limits)
+  // Parse comma-separated type parameters (no arbitrary cap). We build a linked
+  // list of Token nodes, count them, then build a contiguous Token array.
   Token *type_params = NULL;
   size_t type_param_count = 0;
   if (parser2_match(p, TOKEN_LBRACKET)) {
-    size_t type_param_cap = 0;
-    do {
-      if (type_param_count >= 5) {
-        parser2_handle_error(p, "Too many generic type parameters (max 5)");
-        break;
-      }
+    typedef struct TypeParamNode {
+      Token tok;
+      struct TypeParamNode *next;
+    } TypeParamNode;
 
-      if (type_param_count >= type_param_cap) {
-        type_param_cap = 5;
-        Token *new_params =
-            arena_alloc(&long_lived, type_param_cap * sizeof(Token));
-        if (type_param_count > 0) {
-          memcpy(new_params, type_params, type_param_count * sizeof(Token));
+    TypeParamNode *head = NULL;
+    TypeParamNode *tail = NULL;
+
+    if (!parser2_check(p, TOKEN_RBRACKET)) {
+      while (true) {
+        Token type_param_name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+
+        TypeParamNode *node = arena_alloc(&long_lived, sizeof(TypeParamNode));
+        node->tok = type_param_name;
+        node->next = NULL;
+
+        if (!head) {
+          head = node;
+          tail = node;
+        } else {
+          tail->next = node;
+          tail = node;
         }
-        type_params = new_params;
+
+        type_param_count++;
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+
+        if (parser2_check(p, TOKEN_RBRACKET)) {
+          break;
+        }
       }
-
-      Token type_param_name =
-          parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
-
-      type_params[type_param_count++] = type_param_name;
-    } while (parser2_match(p, TOKEN_COMMA));
+    }
 
     parser2_consume(p, TOKEN_RBRACKET, "Expected '[' after generic parameters");
+
+    if (type_param_count > 0) {
+      type_params = arena_alloc(&long_lived, type_param_count * sizeof(Token));
+      size_t i = 0;
+      for (TypeParamNode *n = head; n; n = n->next) {
+        type_params[i++] = n->tok;
+      }
+    }
   }
 
   parser2_consume(p, TOKEN_EQUAL, "Expected '=' after type name");
@@ -448,30 +471,59 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
 
         parser2_consume(p, TOKEN_LPAREN, "Expected '(' after function name");
 
-        FuncParam *params = NULL;
+        // Parse parameters into a linked list of FuncParam nodes, then
+        // materialize a contiguous FuncParam array at the end.
+        typedef struct FuncParamNode {
+          FuncParam param;
+          struct FuncParamNode *next;
+        } FuncParamNode;
+
+        FuncParamNode *param_head = NULL;
+        FuncParamNode *param_tail = NULL;
         size_t param_count = 0;
 
         if (!parser2_check(p, TOKEN_RPAREN)) {
-          params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
-
-          do {
-            if (param_count >= 16) {
-              parser2_handle_error(p, "Too many parameters (max 16)");
-              break;
-            }
-
+          while (true) {
             Token param_name =
                 parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
             AstNode *param_type = parse_type_expression2(p);
 
-            params[param_count].name = param_name.lexeme;
-            params[param_count].type = param_type;
-            params[param_count].is_variadic = false;
+            FuncParamNode *node =
+                arena_alloc(&long_lived, sizeof(FuncParamNode));
+            node->param.name = param_name.lexeme;
+            node->param.type = param_type;
+            node->param.is_variadic = false;
+            node->next = NULL;
+
+            if (!param_head) {
+              param_head = node;
+              param_tail = node;
+            } else {
+              param_tail->next = node;
+              param_tail = node;
+            }
             param_count++;
-          } while (parser2_match(p, TOKEN_COMMA));
+
+            if (!parser2_match(p, TOKEN_COMMA)) {
+              break;
+            }
+
+            if (parser2_check(p, TOKEN_RPAREN)) {
+              break;
+            }
+          }
         }
 
         parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
+
+        FuncParam *params = NULL;
+        if (param_count > 0) {
+          params = arena_alloc(&long_lived, param_count * sizeof(FuncParam));
+          size_t i = 0;
+          for (FuncParamNode *n = param_head; n; n = n->next) {
+            params[i++] = n->param;
+          }
+        }
 
         AstNode *return_type = parse_type_expression2(p);
         parser2_expect_semicolon(
@@ -546,30 +598,58 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
 
     parser2_consume(p, TOKEN_LPAREN, "Expected '(' after function name");
 
-    FuncParam *params = NULL;
+    // Parse parameters into a linked list of FuncParam nodes, then materialize
+    // a contiguous FuncParam array at the end.
+    typedef struct FuncParamNode {
+      FuncParam param;
+      struct FuncParamNode *next;
+    } FuncParamNode;
+
+    FuncParamNode *param_head = NULL;
+    FuncParamNode *param_tail = NULL;
     size_t param_count = 0;
 
     if (!parser2_check(p, TOKEN_RPAREN)) {
-      params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
-
-      do {
-        if (param_count >= 16) {
-          parser2_handle_error(p, "Too many parameters (max 16)");
-          break;
-        }
-
+      while (true) {
         Token param_name =
             parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
         AstNode *param_type = parse_type_expression2(p);
 
-        params[param_count].name = param_name.lexeme;
-        params[param_count].type = param_type;
-        params[param_count].is_variadic = false;
+        FuncParamNode *node = arena_alloc(&long_lived, sizeof(FuncParamNode));
+        node->param.name = param_name.lexeme;
+        node->param.type = param_type;
+        node->param.is_variadic = false;
+        node->next = NULL;
+
+        if (!param_head) {
+          param_head = node;
+          param_tail = node;
+        } else {
+          param_tail->next = node;
+          param_tail = node;
+        }
         param_count++;
-      } while (parser2_match(p, TOKEN_COMMA));
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+
+        if (parser2_check(p, TOKEN_RPAREN)) {
+          break;
+        }
+      }
     }
 
     parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
+
+    FuncParam *params = NULL;
+    if (param_count > 0) {
+      params = arena_alloc(&long_lived, param_count * sizeof(FuncParam));
+      size_t i = 0;
+      for (FuncParamNode *n = param_head; n; n = n->next) {
+        params[i++] = n->param;
+      }
+    }
 
     AstNode *return_type = parse_type_expression2(p);
     parser2_expect_semicolon(p,
