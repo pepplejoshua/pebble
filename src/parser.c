@@ -214,69 +214,9 @@ void parser_error(Parser *parser, const char *message) {
 // HELPER FUNCTIONS
 // ============================================================================
 
-BinaryOp token_to_binary_op(TokenType type) {
-  switch (type) {
-  case TOKEN_PLUS:
-    return BINOP_ADD;
-  case TOKEN_MINUS:
-    return BINOP_SUB;
-  case TOKEN_STAR:
-    return BINOP_MUL;
-  case TOKEN_SLASH:
-    return BINOP_DIV;
-  case TOKEN_PERCENT:
-    return BINOP_MOD;
-  case TOKEN_EQ:
-    return BINOP_EQ;
-  case TOKEN_NE:
-    return BINOP_NE;
-  case TOKEN_LT:
-    return BINOP_LT;
-  case TOKEN_LE:
-    return BINOP_LE;
-  case TOKEN_GT:
-    return BINOP_GT;
-  case TOKEN_GE:
-    return BINOP_GE;
-  case TOKEN_AND:
-    return BINOP_AND;
-  case TOKEN_OR:
-    return BINOP_OR;
-  case TOKEN_AMPERSAND:
-    return BINOP_BIT_AND;
-  case TOKEN_PIPE:
-    return BINOP_BIT_OR;
-  case TOKEN_CARET:
-    return BINOP_BIT_XOR;
-  case TOKEN_LSHIFT:
-    return BINOP_BIT_SHL;
-  case TOKEN_RSHIFT:
-    return BINOP_BIT_SHR;
-  default:
-    // This should never happen if called correctly
-    fprintf(stderr, "Invalid binary operator token: %d\n", type);
-    exit(1);
-  }
-}
-
-UnaryOp token_to_unary_op(TokenType type) {
-  switch (type) {
-  case TOKEN_MINUS:
-    return UNOP_NEG;
-  case TOKEN_NOT:
-    return UNOP_NOT;
-  case TOKEN_AMPERSAND:
-    return UNOP_ADDR;
-  case TOKEN_STAR:
-    return UNOP_DEREF;
-  case TOKEN_TILDE:
-    return UNOP_BIT_NOT;
-  default:
-    // This should never happen if called correctly
-    fprintf(stderr, "Invalid unary operator token: %d\n", type);
-    exit(1);
-  }
-}
+// token_to_binary_op / token_to_unary_op moved out of the parser.
+// Use the shared mapping helpers (e.g. ast_binop_from_token /
+// ast_unop_from_token).
 
 // ============================================================================
 // AST NODE CREATION HELPERS
@@ -1392,7 +1332,7 @@ AstNode *parse_equality(Parser *parser) {
     AstNode *right = parse_comparison(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1410,7 +1350,7 @@ AstNode *parse_comparison(Parser *parser) {
     AstNode *right = parse_shift(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1428,7 +1368,7 @@ AstNode *parse_shift(Parser *parser) {
     AstNode *right = parse_cast(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1463,7 +1403,7 @@ AstNode *parse_term(Parser *parser) {
     AstNode *right = parse_factor(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1482,7 +1422,7 @@ AstNode *parse_factor(Parser *parser) {
     AstNode *right = parse_unary(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1500,7 +1440,7 @@ AstNode *parse_unary(Parser *parser) {
         parse_unary(parser); // Right-associative (allow chaining)
 
     AstNode *unop = alloc_node(AST_EXPR_UNARY_OP, op.location);
-    unop->data.unop.op = token_to_unary_op(op.type);
+    unop->data.unop.op = ast_unop_from_token(op.type);
     unop->data.unop.operand = operand;
     return unop;
   }

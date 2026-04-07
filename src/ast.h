@@ -109,6 +109,70 @@ typedef enum {
 
 typedef enum { UNOP_NEG, UNOP_NOT, UNOP_ADDR, UNOP_DEREF, UNOP_BIT_NOT } UnaryOp;
 
+// TokenType -> operator mapping helpers.
+// Kept here (AST-level) because both parsers and later phases use BinaryOp/UnaryOp.
+static inline BinaryOp ast_binop_from_token(TokenType type) {
+  switch (type) {
+  case TOKEN_PLUS:
+    return BINOP_ADD;
+  case TOKEN_MINUS:
+    return BINOP_SUB;
+  case TOKEN_STAR:
+    return BINOP_MUL;
+  case TOKEN_SLASH:
+    return BINOP_DIV;
+  case TOKEN_PERCENT:
+    return BINOP_MOD;
+  case TOKEN_EQ:
+    return BINOP_EQ;
+  case TOKEN_NE:
+    return BINOP_NE;
+  case TOKEN_LT:
+    return BINOP_LT;
+  case TOKEN_LE:
+    return BINOP_LE;
+  case TOKEN_GT:
+    return BINOP_GT;
+  case TOKEN_GE:
+    return BINOP_GE;
+  case TOKEN_AND:
+    return BINOP_AND;
+  case TOKEN_OR:
+    return BINOP_OR;
+  case TOKEN_AMPERSAND:
+    return BINOP_BIT_AND;
+  case TOKEN_PIPE:
+    return BINOP_BIT_OR;
+  case TOKEN_CARET:
+    return BINOP_BIT_XOR;
+  case TOKEN_LSHIFT:
+    return BINOP_BIT_SHL;
+  case TOKEN_RSHIFT:
+    return BINOP_BIT_SHR;
+  default:
+    // Callers must only pass operator tokens.
+    return BINOP_ADD;
+  }
+}
+
+static inline UnaryOp ast_unop_from_token(TokenType type) {
+  switch (type) {
+  case TOKEN_MINUS:
+    return UNOP_NEG;
+  case TOKEN_NOT:
+    return UNOP_NOT;
+  case TOKEN_AMPERSAND:
+    return UNOP_ADDR;
+  case TOKEN_STAR:
+    return UNOP_DEREF;
+  case TOKEN_TILDE:
+    return UNOP_BIT_NOT;
+  default:
+    // Callers must only pass operator tokens.
+    return UNOP_NEG;
+  }
+}
+
 typedef struct {
   char *name;
   AstNode *type;
