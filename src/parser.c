@@ -484,7 +484,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
 
 AstNode *parse_function_decl(Parser *parser) {
   // fn name(params) return_type { body }
-  // fn name(params) return_type => expr
+  // fn name(params) return_type => expr;
 
   bool inlined = parser_match(parser, TOKEN_INLINE);
 

@@ -13,6 +13,11 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable);
 static AstNode *parse_type_decl2(Parser2 *p);
 static AstNode *parse_extern_decl2(Parser2 *p);
 
+typedef struct AstNodePtrNode {
+  AstNode *node;
+  struct AstNodePtrNode *next;
+} AstNodePtrNode;
+
 static AstNode *alloc_node(AstKind kind, Location loc) {
   AstNode *n = arena_alloc(&long_lived, sizeof(AstNode));
   n->kind = kind;
@@ -247,24 +252,39 @@ void parser2_synchronize(Parser2 *parser) {
 
 // ---------- top level ----------
 AstNode *parse_program(Parser2 *parser) {
-  AstNode **decls = arena_alloc(&long_lived, 64 * sizeof(AstNode *));
+  AstNodePtrNode *head = NULL;
+  AstNodePtrNode *tail = NULL;
   size_t decl_count = 0;
 
   while (!parser2_check(parser, TOKEN_EOF)) {
-    if (decl_count >= 64) {
-      parser2_handle_error(parser, "Too many top-level declarations (max 64)");
-      break;
-    }
-
     AstNode *decl = parser2_declaration(parser);
     if (decl) {
-      decls[decl_count++] = decl;
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = decl;
+      n->next = NULL;
+      if (!head) {
+        head = n;
+        tail = n;
+      } else {
+        tail->next = n;
+        tail = n;
+      }
+      decl_count++;
     } else {
       parser2_synchronize(parser);
     }
 
     if (parser->diagnostics->error_count >= parser->max_errors)
       break;
+  }
+
+  AstNode **decls = NULL;
+  if (decl_count > 0) {
+    decls = arena_alloc(&long_lived, decl_count * sizeof(AstNode *));
+    size_t i = 0;
+    for (AstNodePtrNode *n = head; n; n = n->next) {
+      decls[i++] = n->node;
+    }
   }
 
   Location loc = {.file = parser->abs_file_path, .line = 1, .column = 1};
@@ -713,7 +733,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
 
 static AstNode *parse_function_decl2(Parser2 *p) {
   // fn name(params) return_type { body }
-  // fn name(params) return_type => expr
+  // fn name(params) return_type => expr;
   //
   // NOTE: This is still a partial port: params, generics, inline, and
   // convention are not fully implemented yet, but return/statement behavior is
@@ -758,10 +778,13 @@ static AstNode *parse_function_decl2(Parser2 *p) {
 
   // Body: block or fat-arrow expression
   if (parser2_match(p, TOKEN_FAT_ARROW)) {
-    // Expression-bodied function: => expr
+    // Expression-bodied function: => expr ;
     AstNode *expr = parse_expression2(p);
     if (!expr)
       return NULL;
+
+    parser2_expect_semicolon(p,
+                             "Expected ';' after expression-bodied function");
 
     AstNode *ret = alloc_node(AST_STMT_RETURN, expr->loc);
     ret->data.return_stmt.expr = expr;
@@ -789,18 +812,24 @@ static AstNode *parse_block_stmt2(Parser2 *p) {
   Location loc = prev_loc(p);
   AstNode *block = alloc_node(AST_STMT_BLOCK, loc);
 
-  AstNode **stmts = arena_alloc(&long_lived, 256 * sizeof(AstNode *));
+  AstNodePtrNode *head = NULL;
+  AstNodePtrNode *tail = NULL;
   size_t stmt_count = 0;
 
   while (!parser2_check(p, TOKEN_RBRACE) && !parser2_check(p, TOKEN_EOF)) {
-    if (stmt_count >= 256) {
-      parser2_handle_error(p, "Too many statements in block (max 256)");
-      break;
-    }
-
     AstNode *s = parser2_statement(p);
     if (s) {
-      stmts[stmt_count++] = s;
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = s;
+      n->next = NULL;
+      if (!head) {
+        head = n;
+        tail = n;
+      } else {
+        tail->next = n;
+        tail = n;
+      }
+      stmt_count++;
     } else {
       parser2_synchronize(p);
     }
@@ -814,6 +843,15 @@ static AstNode *parse_block_stmt2(Parser2 *p) {
     parser2_handle_error(p, "Expected '}' after block");
   } else if (!parser2_expect(p, TOKEN_RBRACE, "Expected '}' after block")) {
     return NULL;
+  }
+
+  AstNode **stmts = NULL;
+  if (stmt_count > 0) {
+    stmts = arena_alloc(&long_lived, stmt_count * sizeof(AstNode *));
+    size_t i = 0;
+    for (AstNodePtrNode *n = head; n; n = n->next) {
+      stmts[i++] = n->node;
+    }
   }
 
   block->data.block_stmt.stmts = stmts;

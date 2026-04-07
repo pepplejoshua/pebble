@@ -42,7 +42,7 @@ fn add(a int, b int) int {
 }
 
 // Expression function (auto-returns)
-fn square(x int) int => x * x
+fn square(x int) int => x * x;
 
 // Variadic function
 fn sum(...values []int) int {
