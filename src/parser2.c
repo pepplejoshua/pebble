@@ -8,6 +8,11 @@
 // External allocator
 extern Arena long_lived;
 
+static AstNode *parse_import_stmt2(Parser2 *p);
+static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable);
+static AstNode *parse_type_decl2(Parser2 *p);
+static AstNode *parse_extern_decl2(Parser2 *p);
+
 static AstNode *alloc_node(AstKind kind, Location loc) {
   AstNode *n = arena_alloc(&long_lived, sizeof(AstNode));
   n->kind = kind;
@@ -274,13 +279,366 @@ AstNode *parser2_declaration(Parser2 *parser) {
     return parse_function_decl2(parser);
   }
 
+  if (parser2_match(parser, TOKEN_EXTERN)) {
+    return parse_extern_decl2(parser);
+  }
+
+  if (parser2_match(parser, TOKEN_LET)) {
+    return parse_variable_decl2(parser, false);
+  }
+
+  if (parser2_match(parser, TOKEN_VAR)) {
+    return parse_variable_decl2(parser, true);
+  }
+
+  if (parser2_match(parser, TOKEN_TYPE)) {
+    return parse_type_decl2(parser);
+  }
+
+  if (parser2_match(parser, TOKEN_IMPORT)) {
+    return parse_import_stmt2(parser);
+  }
+
   parser2_handle_error(parser, "Expected declaration");
   return NULL;
 }
 
-// ---------- minimal function parsing ----------
+static AstNode *parse_import_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p); // 'import'
+
+  Token path_tok =
+      parser2_consume(p, TOKEN_STRING, "Expected a string for import path.");
+
+  AstNode *import_path = NULL;
+  if (path_tok.type == TOKEN_STRING) {
+    import_path = alloc_node(AST_EXPR_LITERAL_STRING, path_tok.location);
+    // Match parser.c: use processed string value.
+    import_path->data.str_lit.value = str_dup(path_tok.value.str_val);
+  }
+
+  parser2_expect_semicolon(p, "Expected ';' after import declaration");
+
+  AstNode *import_stmt = alloc_node(AST_DECL_IMPORT, loc);
+  import_stmt->data.import_stmt.path_str = import_path;
+  return import_stmt;
+}
+
+static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
+  // let name = expr; or let name type = expr;
+  // var name = expr; or var name type = expr;
+
+  Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
+  if (name.type != TOKEN_IDENTIFIER)
+    return NULL;
+
+  // Optional type annotation (present when next token isn't '=' or ';')
+  AstNode *type_expr = NULL;
+  if (!parser2_check(p, TOKEN_EQUAL) && !parser2_check(p, TOKEN_SEMICOLON)) {
+    type_expr = parse_type_expression2(p);
+  }
+
+  // Initializer (optional)
+  AstNode *init = NULL;
+  if (parser2_match(p, TOKEN_EQUAL)) {
+    init = parse_expression2(p);
+  }
+
+  parser2_expect_semicolon(p, "Expected ';' after variable declaration");
+
+  if (is_mutable) {
+    AstNode *var = alloc_node(AST_DECL_VARIABLE, name.location);
+    var->data.var_decl.name = str_dup(name.lexeme);
+    var->data.var_decl.qualified_name = str_dup(name.lexeme);
+    var->data.var_decl.full_qualified_name = NULL;
+    var->data.var_decl.type_expr = type_expr;
+    var->data.var_decl.init = init;
+    return var;
+  } else {
+    AstNode *c = alloc_node(AST_DECL_CONSTANT, name.location);
+    c->data.const_decl.name = str_dup(name.lexeme);
+    c->data.const_decl.qualified_name = str_dup(name.lexeme);
+    c->data.const_decl.full_qualified_name = NULL;
+    c->data.const_decl.type_expr = type_expr;
+    c->data.const_decl.value = init;
+    return c;
+  }
+}
+
+static AstNode *parse_type_decl2(Parser2 *p) {
+  // type Name = TypeExpr;
+  // type Name[T, U, V] = TypeExpr;
+
+  Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected type name");
+  if (name.type != TOKEN_IDENTIFIER)
+    return NULL;
+
+  // Parse comma-separated type parameters (match parser.c behavior/limits)
+  Token *type_params = NULL;
+  size_t type_param_count = 0;
+  if (parser2_match(p, TOKEN_LBRACKET)) {
+    size_t type_param_cap = 0;
+    do {
+      if (type_param_count >= 5) {
+        parser2_handle_error(p, "Too many generic type parameters (max 5)");
+        break;
+      }
+
+      if (type_param_count >= type_param_cap) {
+        type_param_cap = 5;
+        Token *new_params =
+            arena_alloc(&long_lived, type_param_cap * sizeof(Token));
+        if (type_param_count > 0) {
+          memcpy(new_params, type_params, type_param_count * sizeof(Token));
+        }
+        type_params = new_params;
+      }
+
+      Token type_param_name =
+          parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+
+      type_params[type_param_count++] = type_param_name;
+    } while (parser2_match(p, TOKEN_COMMA));
+
+    parser2_consume(p, TOKEN_RBRACKET, "Expected '[' after generic parameters");
+  }
+
+  parser2_consume(p, TOKEN_EQUAL, "Expected '=' after type name");
+  AstNode *type_expr = parse_type_expression2(p);
+
+  parser2_expect_semicolon(p, "Expected ';' after type declaration");
+
+  AstNode *node = alloc_node(AST_DECL_TYPE, name.location);
+  node->data.type_decl.name = str_dup(name.lexeme);
+  node->data.type_decl.qualified_name = str_dup(name.lexeme);
+  node->data.type_decl.full_qualified_name = NULL;
+  node->data.type_decl.type_expr = type_expr;
+  node->data.type_decl.type_params = type_params;
+  node->data.type_decl.type_params_count = type_param_count;
+  return node;
+}
+
+static AstNode *parse_extern_decl2(Parser2 *p) {
+  Location extern_loc = prev_loc(p); // 'extern'
+
+  // extern "lib"
+  AstNode *lib_name = NULL;
+  if (parser2_match(p, TOKEN_STRING)) {
+    lib_name = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+    lib_name->data.str_lit.value = str_dup(p->previous.lexeme);
+  }
+
+  if (parser2_match(p, TOKEN_LBRACE)) {
+    // Extern block: { fn..., type..., let..., var... }
+    size_t count = 0, capacity = 2;
+    AstNode **externs = arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+
+    while (parser2_check(p, TOKEN_FN) || parser2_check(p, TOKEN_TYPE) ||
+           parser2_check(p, TOKEN_LET) || parser2_check(p, TOKEN_VAR)) {
+      if (count >= capacity) {
+        capacity *= 2;
+        AstNode **new_externs =
+            arena_alloc(&long_lived, capacity * sizeof(AstNode *));
+        memcpy(new_externs, externs, count * sizeof(AstNode *));
+        externs = new_externs;
+      }
+
+      if (parser2_match(p, TOKEN_FN)) {
+        Token name = parser2_consume(p, TOKEN_IDENTIFIER,
+                                     "Expected extern function name");
+
+        parser2_consume(p, TOKEN_LPAREN, "Expected '(' after function name");
+
+        FuncParam *params = NULL;
+        size_t param_count = 0;
+
+        if (!parser2_check(p, TOKEN_RPAREN)) {
+          params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+
+          do {
+            if (param_count >= 16) {
+              parser2_handle_error(p, "Too many parameters (max 16)");
+              break;
+            }
+
+            Token param_name =
+                parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+            AstNode *param_type = parse_type_expression2(p);
+
+            params[param_count].name = param_name.lexeme;
+            params[param_count].type = param_type;
+            params[param_count].is_variadic = false;
+            param_count++;
+          } while (parser2_match(p, TOKEN_COMMA));
+        }
+
+        parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
+
+        AstNode *return_type = parse_type_expression2(p);
+        parser2_expect_semicolon(
+            p, "Expected ';' after extern function declaration");
+
+        AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+        func->data.extern_func.name = str_dup(name.lexeme);
+        func->data.extern_func.qualified_name = str_dup(name.lexeme);
+        func->data.extern_func.full_qualified_name = NULL;
+        func->data.extern_func.params = params;
+        func->data.extern_func.param_count = param_count;
+        func->data.extern_func.return_type = return_type;
+        func->data.extern_func.lib_name = lib_name;
+
+        externs[count++] = func;
+      } else if (parser2_match(p, TOKEN_TYPE)) {
+        Token name = parser2_consume(p, TOKEN_IDENTIFIER,
+                                     "Expected extern function name");
+        parser2_expect_semicolon(p,
+                                 "Expected ';' after extern type declaration");
+
+        AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+        opaque_type->data.extern_type.name = str_dup(name.lexeme);
+        opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
+        opaque_type->data.extern_type.full_qualified_name = NULL;
+
+        externs[count++] = opaque_type;
+      } else if (parser2_match(p, TOKEN_LET)) {
+        Token name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected constant name");
+        AstNode *type_expr = parse_type_expression2(p);
+        parser2_expect_semicolon(p, "Expected ';' after constant declaration");
+
+        AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
+        let->data.extern_const_decl.name = str_dup(name.lexeme);
+        let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
+        let->data.extern_const_decl.full_qualified_name = NULL;
+        let->data.extern_const_decl.type_expr = type_expr;
+        let->data.extern_const_decl.lib_name = lib_name;
+
+        externs[count++] = let;
+      } else if (parser2_match(p, TOKEN_VAR)) {
+        Token name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
+        AstNode *type_expr = parse_type_expression2(p);
+        parser2_expect_semicolon(p, "Expected ';' after variable declaration");
+
+        AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
+        var->data.extern_var_decl.name = str_dup(name.lexeme);
+        var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
+        var->data.extern_var_decl.full_qualified_name = NULL;
+        var->data.extern_var_decl.type_expr = type_expr;
+        var->data.extern_var_decl.lib_name = lib_name;
+
+        externs[count++] = var;
+      }
+    }
+
+    parser2_consume(p, TOKEN_RBRACE, "Expect '}' after extern block");
+
+    AstNode *extern_block = alloc_node(AST_DECL_EXTERN_BLOCK, extern_loc);
+    extern_block->data.extern_block.lib_name = lib_name;
+    extern_block->data.extern_block.decls = externs;
+    extern_block->data.extern_block.decls_count = count;
+
+    return extern_block;
+  }
+
+  if (parser2_match(p, TOKEN_FN)) {
+    Token name =
+        parser2_consume(p, TOKEN_IDENTIFIER, "Expected extern function name");
+
+    parser2_consume(p, TOKEN_LPAREN, "Expected '(' after function name");
+
+    FuncParam *params = NULL;
+    size_t param_count = 0;
+
+    if (!parser2_check(p, TOKEN_RPAREN)) {
+      params = arena_alloc(&long_lived, 16 * sizeof(FuncParam));
+
+      do {
+        if (param_count >= 16) {
+          parser2_handle_error(p, "Too many parameters (max 16)");
+          break;
+        }
+
+        Token param_name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+        AstNode *param_type = parse_type_expression2(p);
+
+        params[param_count].name = param_name.lexeme;
+        params[param_count].type = param_type;
+        params[param_count].is_variadic = false;
+        param_count++;
+      } while (parser2_match(p, TOKEN_COMMA));
+    }
+
+    parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
+
+    AstNode *return_type = parse_type_expression2(p);
+    parser2_expect_semicolon(p,
+                             "Expected ';' after extern function declaration");
+
+    AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+    func->data.extern_func.name = str_dup(name.lexeme);
+    func->data.extern_func.qualified_name = str_dup(name.lexeme);
+    func->data.extern_func.full_qualified_name = NULL;
+    func->data.extern_func.params = params;
+    func->data.extern_func.param_count = param_count;
+    func->data.extern_func.return_type = return_type;
+    func->data.extern_func.lib_name = lib_name;
+    return func;
+  }
+
+  if (parser2_match(p, TOKEN_TYPE)) {
+    Token name =
+        parser2_consume(p, TOKEN_IDENTIFIER, "Expected extern function name");
+    parser2_expect_semicolon(p, "Expected ';' after extern type declaration");
+
+    AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+    opaque_type->data.extern_type.name = str_dup(name.lexeme);
+    opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
+    opaque_type->data.extern_type.full_qualified_name = NULL;
+    return opaque_type;
+  }
+
+  if (parser2_match(p, TOKEN_LET)) {
+    Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected constant name");
+    AstNode *type_expr = parse_type_expression2(p);
+    parser2_expect_semicolon(p, "Expected ';' after constant declaration");
+
+    AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
+    let->data.extern_const_decl.name = str_dup(name.lexeme);
+    let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
+    let->data.extern_const_decl.full_qualified_name = NULL;
+    let->data.extern_const_decl.type_expr = type_expr;
+    let->data.extern_const_decl.lib_name = lib_name;
+    return let;
+  }
+
+  if (parser2_match(p, TOKEN_VAR)) {
+    Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
+    AstNode *type_expr = parse_type_expression2(p);
+    parser2_expect_semicolon(p, "Expected ';' after variable declaration");
+
+    AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
+    var->data.extern_var_decl.name = str_dup(name.lexeme);
+    var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
+    var->data.extern_var_decl.full_qualified_name = NULL;
+    var->data.extern_var_decl.type_expr = type_expr;
+    var->data.extern_var_decl.lib_name = lib_name;
+    return var;
+  }
+
+  parser2_handle_error(p, "extern is only allowed on function prototypes, "
+                          "opaque types, variables or constants.");
+  return NULL;
+}
+
 static AstNode *parse_function_decl2(Parser2 *p) {
-  // fn <name> ( ... ) <return_type> { ... }
+  // fn name(params) return_type { body }
+  // fn name(params) return_type => expr
+  //
+  // NOTE: This is still a partial port: params, generics, inline, and
+  // convention are not fully implemented yet, but return/statement behavior is
+  // aligned.
+
   Token name_tok =
       parser2_consume(p, TOKEN_IDENTIFIER, "Expected function name");
   if (name_tok.type != TOKEN_IDENTIFIER)
@@ -288,6 +646,7 @@ static AstNode *parse_function_decl2(Parser2 *p) {
 
   Location loc = prev_loc(p);
   AstNode *fn = alloc_node(AST_DECL_FUNCTION, loc);
+
   fn->data.func_decl.inlined = false;
   fn->data.func_decl.convention = NULL;
   fn->data.func_decl.name = name_tok.lexeme;
@@ -312,12 +671,31 @@ static AstNode *parse_function_decl2(Parser2 *p) {
   }
   parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
 
-  // Return type
+  // Return type (required in parser.c path)
   fn->data.func_decl.return_type = parse_type_expression2(p);
   if (!fn->data.func_decl.return_type)
     return NULL;
 
-  // Body
+  // Body: block or fat-arrow expression
+  if (parser2_match(p, TOKEN_FAT_ARROW)) {
+    // Expression-bodied function: => expr
+    AstNode *expr = parse_expression2(p);
+    if (!expr)
+      return NULL;
+
+    AstNode *ret = alloc_node(AST_STMT_RETURN, expr->loc);
+    ret->data.return_stmt.expr = expr;
+
+    AstNode *block = alloc_node(AST_STMT_BLOCK, expr->loc);
+    AstNode **stmts = arena_alloc(&long_lived, 1 * sizeof(AstNode *));
+    stmts[0] = ret;
+    block->data.block_stmt.stmts = stmts;
+    block->data.block_stmt.stmt_count = 1;
+
+    fn->data.func_decl.body = block;
+    return fn;
+  }
+
   parser2_consume(p, TOKEN_LBRACE, "Expected '{' before function body");
   fn->data.func_decl.body = parse_block_stmt2(p);
   if (!fn->data.func_decl.body)
@@ -384,13 +762,16 @@ static AstNode *parse_return_stmt2(Parser2 *p) {
   Location loc = prev_loc(p);
   AstNode *ret = alloc_node(AST_STMT_RETURN, loc);
 
-  // Minimal: require expression + ';' (matches your existing common style)
-  AstNode *expr = parse_expression2(p);
-  if (!expr)
-    return NULL;
+  // Match parser.c: allow bare `return;`
+  AstNode *expr = NULL;
+  if (!parser2_check(p, TOKEN_SEMICOLON)) {
+    expr = parse_expression2(p);
+    if (!expr)
+      return NULL;
+  }
 
   // Missing ';' is recoverable when the next token clearly starts a statement.
-  parser2_expect_semicolon(p, "Expected ';' after return value");
+  parser2_expect_semicolon(p, "Expected ';' after return statement");
   ret->data.return_stmt.expr = expr;
   return ret;
 }
@@ -415,14 +796,35 @@ static AstNode *parse_primary2(Parser2 *p) {
 
 // ---------- minimal type expr ----------
 static AstNode *parse_type_expression2(Parser2 *p) {
-  // Minimal: named types only (int, usize, etc.)
-  if (parser2_match(p, TOKEN_IDENTIFIER)) {
+  // Minimal: named types only, including built-in types lexed as distinct
+  // tokens
+  switch (p->current.type) {
+  case TOKEN_IDENTIFIER:
+  case TOKEN_INT_TYPE:
+  case TOKEN_BOOL_TYPE:
+  case TOKEN_STR_TYPE:
+  case TOKEN_VOID_TYPE:
+  case TOKEN_U8_TYPE:
+  case TOKEN_U16_TYPE:
+  case TOKEN_U32_TYPE:
+  case TOKEN_U64_TYPE:
+  case TOKEN_USIZE_TYPE:
+  case TOKEN_I8_TYPE:
+  case TOKEN_I16_TYPE:
+  case TOKEN_I32_TYPE:
+  case TOKEN_I64_TYPE:
+  case TOKEN_ISIZE_TYPE:
+  case TOKEN_CHAR_TYPE: {
+    parser2_advance(p);
     Location loc = prev_loc(p);
     AstNode *t = alloc_node(AST_TYPE_NAMED, loc);
     t->data.type_named.name = p->previous.lexeme;
     t->data.type_named.type_args = NULL;
     t->data.type_named.type_arg_count = 0;
     return t;
+  }
+  default:
+    break;
   }
 
   parser2_handle_error(p, "Expected type");
