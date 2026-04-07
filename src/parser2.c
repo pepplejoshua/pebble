@@ -34,8 +34,58 @@ static Location prev_loc(Parser2 *p) {
   return loc;
 }
 
+static size_t parser2_error_count(Parser2 *p) {
+  if (!p || !p->diagnostics) {
+    return 0;
+  }
+  return p->diagnostics->error_count;
+}
+
 static bool parser2_too_many_errors(Parser2 *p) {
-  return p->diagnostics && (p->diagnostics->error_count >= p->max_errors);
+  return parser2_error_count(p) >= p->max_errors;
+}
+
+static bool parser2_is_stmt_starter(TokenType t) {
+  switch (t) {
+  case TOKEN_FN:
+  case TOKEN_VAR:
+  case TOKEN_LET:
+  case TOKEN_TYPE:
+  case TOKEN_IMPORT:
+  case TOKEN_EXTERN:
+  case TOKEN_IF:
+  case TOKEN_WHILE:
+  case TOKEN_FOR:
+  case TOKEN_LOOP:
+  case TOKEN_RETURN:
+  case TOKEN_PRINT:
+  case TOKEN_SWITCH:
+  case TOKEN_DEFER:
+  case TOKEN_BREAK:
+  case TOKEN_CONTINUE:
+  case TOKEN_LBRACE:
+  case TOKEN_RBRACE:
+  case TOKEN_EOF:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool parser2_expect_semicolon(Parser2 *p, const char *message) {
+  if (parser2_match(p, TOKEN_SEMICOLON)) {
+    return true;
+  }
+
+  parser2_handle_error(p, message);
+
+  // Treat as an inserted ';' when the next token clearly begins a new
+  // statement/declaration or closes the current scope.
+  if (parser2_is_stmt_starter(p->current.type)) {
+    return false;
+  }
+
+  return false;
 }
 
 static AstNode *parse_function_decl2(Parser2 *p);
@@ -53,7 +103,6 @@ void parser_init(Parser2 *parser, const char *source, const char *filename,
   parser->diagnostics = arena_alloc(&long_lived, sizeof(DiagnosticContext));
   diagnostics_init(parser->diagnostics, abs_file_path, source);
 
-  parser->had_error = false;
   parser->max_errors = 50;
   parser->nesting_depth = 0;
   parser->max_depth = 200;
@@ -85,7 +134,6 @@ void parser2_advance(Parser2 *parser) {
     // Detect a "stuck" lexer (repeating the same error location).
     if (lexer_errors > 0 && err_loc.line == last_err_loc.line &&
         err_loc.column == last_err_loc.column) {
-      parser->had_error = true;
       return;
     }
     last_err_loc = err_loc;
@@ -96,8 +144,6 @@ void parser2_advance(Parser2 *parser) {
                            parser->current.lexeme);
       diagnostic_emit(error);
     }
-
-    parser->had_error = true;
 
     lexer_errors++;
     if (lexer_errors >= max_lexer_errors) {
@@ -133,6 +179,16 @@ Token parser2_consume(Parser2 *parser, TokenType type, const char *message) {
   return parser->current;
 }
 
+bool parser2_expect(Parser2 *parser, TokenType type, const char *message) {
+  if (parser->current.type == type) {
+    parser2_advance(parser);
+    return true;
+  }
+
+  parser2_handle_error(parser, message);
+  return false;
+}
+
 // ---------- error handling ----------
 bool parser2_handle_error(Parser2 *parser, const char *expected) {
   if (parser2_too_many_errors(parser)) {
@@ -144,7 +200,6 @@ bool parser2_handle_error(Parser2 *parser, const char *expected) {
       diagnostic_error(parser->diagnostics, loc, "%s", expected);
   diagnostic_emit(error);
 
-  parser->had_error = true;
   return true;
 }
 
@@ -296,7 +351,12 @@ static AstNode *parse_block_stmt2(Parser2 *p) {
       break;
   }
 
-  parser2_consume(p, TOKEN_RBRACE, "Expected '}' after block");
+  // Missing '}' at EOF is recoverable: keep the block we parsed so far.
+  if (parser2_check(p, TOKEN_EOF)) {
+    parser2_handle_error(p, "Expected '}' after block");
+  } else if (!parser2_expect(p, TOKEN_RBRACE, "Expected '}' after block")) {
+    return NULL;
+  }
 
   block->data.block_stmt.stmts = stmts;
   block->data.block_stmt.stmt_count = stmt_count;
@@ -313,7 +373,8 @@ AstNode *parser2_statement(Parser2 *p) {
   if (!expr)
     return NULL;
 
-  parser2_consume(p, TOKEN_SEMICOLON, "Expected ';' after expression");
+  // Missing ';' is recoverable when the next token clearly starts a statement.
+  parser2_expect_semicolon(p, "Expected ';' after expression");
   AstNode *stmt = alloc_node(AST_STMT_EXPR, expr->loc);
   stmt->data.expr_stmt.expr = expr;
   return stmt;
@@ -328,7 +389,8 @@ static AstNode *parse_return_stmt2(Parser2 *p) {
   if (!expr)
     return NULL;
 
-  parser2_consume(p, TOKEN_SEMICOLON, "Expected ';' after return value");
+  // Missing ';' is recoverable when the next token clearly starts a statement.
+  parser2_expect_semicolon(p, "Expected ';' after return value");
   ret->data.return_stmt.expr = expr;
   return ret;
 }

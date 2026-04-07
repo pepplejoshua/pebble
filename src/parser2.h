@@ -12,7 +12,6 @@ typedef struct {
 
     // Error handling
     DiagnosticContext *diagnostics;
-    bool had_error;
     size_t max_errors;      // Prevent error spam (e.g., 50)
 
     // Stack overflow protection
