@@ -865,21 +865,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
       emit_string(cg, func->data.func_expr.params[i].name);
     }
 
-    emit_string(cg, ") ");
-    emit_string(cg, "{\n");
-    emit_indent(cg);
+    emit_string(cg, ")\n");
 
     // Enter function scope
     defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
 
-    // Emit body (minimal traversal)
+    // Emit body (block emits its own braces)
     emit_stmt(cg, func->data.func_expr.body);
 
     // Exit function scope (though returns should have handled this already)
     defer_scope_exit(cg);
 
-    emit_dedent(cg);
-    emit_string(cg, "}\n\n");
+    emit_string(cg, "\n");
   }
 
   // Emit func definitions
@@ -920,21 +917,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, func->data.func_decl.params[i].name);
       }
 
-      emit_string(cg, ") ");
-      emit_string(cg, "{\n");
-      emit_indent(cg);
+      emit_string(cg, ")\n");
 
       // Enter function scope
       defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
 
-      // Emit body (minimal traversal)
+      // Emit body (block emits its own braces)
       emit_stmt(cg, func->data.func_decl.body);
 
       // Exit function scope (though returns should have handled this already)
       defer_scope_exit(cg);
 
-      emit_dedent(cg);
-      emit_string(cg, "}\n\n");
+      emit_string(cg, "\n");
     }
   }
 
@@ -976,21 +970,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, func->data.func_decl.params[i].name);
         }
 
-        emit_string(cg, ") ");
-        emit_string(cg, "{\n");
-        emit_indent(cg);
+        emit_string(cg, ")\n");
 
         // Enter function scope
         defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
 
-        // Emit body (minimal traversal)
+        // Emit body (block emits its own braces)
         emit_stmt(cg, func->data.func_decl.body);
 
         // Exit function scope (though returns should have handled this already)
         defer_scope_exit(cg);
 
-        emit_dedent(cg);
-        emit_string(cg, "}\n\n");
+        emit_string(cg, "\n");
       }
     }
   }
@@ -2279,9 +2270,18 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       defer_scope_enter(cg, DEFER_SCOPE_BLOCK);
     }
 
+    // Nested blocks must emit their own braces to create a C scope.
+    emit_indent_spaces(cg);
+    emit_string(cg, "{\n");
+    emit_indent(cg);
+
     for (size_t i = 0; i < stmt->data.block_stmt.stmt_count; i++) {
       emit_stmt(cg, stmt->data.block_stmt.stmts[i]);
     }
+
+    emit_dedent(cg);
+    emit_indent_spaces(cg);
+    emit_string(cg, "}\n");
 
     if (!cg->in_defer) {
       defer_scope_exit(cg);
