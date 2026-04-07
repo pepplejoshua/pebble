@@ -25,8 +25,6 @@ typedef struct {
 // External interface (same names as parser.h)
 void parser_init(Parser2 *parser, const char *source, const char *filename, const char *abs_file_path);
 AstNode *parse_program(Parser2 *parser);
-BinaryOp token_to_binary_op(TokenType type);
-UnaryOp token_to_unary_op(TokenType type);
 
 // Internal interface (prefixed)
 void parser2_advance(Parser2 *parser);

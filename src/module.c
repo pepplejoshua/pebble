@@ -1,8 +1,9 @@
 #include "module.h"
 #include "alloc.h"
 #include "ast.h"
+#include "diagnostics.h"
 #include "options.h"
-#include "parser.h"
+#include "parser2.h"
 #include "symbol.h"
 #include "uthash.h"
 #include <limits.h>
@@ -260,13 +261,13 @@ bool parse_module(Module *mod) {
     return true;
   }
 
-  Parser parser;
+  Parser2 parser;
   parser_init(&parser, source, mod->filename, mod->abs_file_path);
   AstNode *program = parse_program(&parser);
   mod->ast = program;
   mod->global_node_count = program->data.block_stmt.stmt_count;
 
-  return parser.had_error;
+  return parser.diagnostics && parser.diagnostics->error_count > 0;
 }
 
 void module_error(Location loc, const char *msg) {
