@@ -8,10 +8,19 @@
 // External allocator
 extern Arena long_lived;
 
+typedef enum {
+  PARSE_CTX_TOP_LEVEL,
+  PARSE_CTX_BLOCK,
+} ParseContext;
+
 static AstNode *parse_import_stmt2(Parser2 *p);
 static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable);
 static AstNode *parse_type_decl2(Parser2 *p);
 static AstNode *parse_extern_decl2(Parser2 *p);
+
+static AstNode *parse_print_stmt2(Parser2 *p);
+static AstNode *parse_break_continue_stmt2(Parser2 *p);
+static AstNode *parse_defer_stmt2(Parser2 *p);
 
 typedef struct AstNodePtrNode {
   AstNode *node;
@@ -55,44 +64,62 @@ static bool parser2_too_many_errors(Parser2 *p) {
   return parser2_error_count(p) >= p->max_errors;
 }
 
-static bool parser2_is_stmt_starter(TokenType t) {
-  switch (t) {
-  case TOKEN_FN:
-  case TOKEN_VAR:
-  case TOKEN_LET:
-  case TOKEN_TYPE:
-  case TOKEN_IMPORT:
-  case TOKEN_EXTERN:
-  case TOKEN_IF:
-  case TOKEN_WHILE:
-  case TOKEN_FOR:
-  case TOKEN_LOOP:
-  case TOKEN_RETURN:
-  case TOKEN_PRINT:
-  case TOKEN_SWITCH:
-  case TOKEN_DEFER:
-  case TOKEN_BREAK:
-  case TOKEN_CONTINUE:
-  case TOKEN_LBRACE:
-  case TOKEN_RBRACE:
-  case TOKEN_EOF:
-    return true;
+static bool parser2_follow_stmt_boundary(TokenType t, ParseContext ctx) {
+  // FOLLOW-like sets for semicolon insertion.
+  // If we're missing a ';' and the next token is in this set, it's safe to
+  // "pretend" the semicolon was there and continue.
+  switch (ctx) {
+  case PARSE_CTX_TOP_LEVEL:
+    switch (t) {
+    case TOKEN_EOF:
+    case TOKEN_FN:
+    case TOKEN_VAR:
+    case TOKEN_LET:
+    case TOKEN_TYPE:
+    case TOKEN_IMPORT:
+    case TOKEN_EXTERN:
+      return true;
+    default:
+      return false;
+    }
+  case PARSE_CTX_BLOCK:
+    switch (t) {
+    case TOKEN_EOF:
+    case TOKEN_RBRACE:
+    case TOKEN_RETURN:
+    case TOKEN_IF:
+    case TOKEN_WHILE:
+    case TOKEN_FOR:
+    case TOKEN_LOOP:
+    case TOKEN_LET:
+    case TOKEN_VAR:
+    case TOKEN_PRINT:
+    case TOKEN_SWITCH:
+    case TOKEN_DEFER:
+    case TOKEN_BREAK:
+    case TOKEN_CONTINUE:
+    case TOKEN_LBRACE:
+      return true;
+    default:
+      return false;
+    }
   default:
     return false;
   }
 }
 
-static bool parser2_expect_semicolon(Parser2 *p, const char *message) {
+static bool parser2_expect_semicolon(Parser2 *p, ParseContext ctx,
+                                     const char *message) {
   if (parser2_match(p, TOKEN_SEMICOLON)) {
     return true;
   }
 
   parser2_handle_error(p, message);
 
-  // Treat as an inserted ';' when the next token clearly begins a new
-  // statement/declaration or closes the current scope.
-  if (parser2_is_stmt_starter(p->current.type)) {
-    return false;
+  // Insert ';' only when the next token is in the FOLLOW-like boundary set.
+  // Otherwise, force higher-level recovery (sync) instead of guessing.
+  if (parser2_follow_stmt_boundary(p->current.type, ctx)) {
+    return true;
   }
 
   return false;
@@ -101,9 +128,29 @@ static bool parser2_expect_semicolon(Parser2 *p, const char *message) {
 static AstNode *parse_function_decl2(Parser2 *p);
 static AstNode *parse_block_stmt2(Parser2 *p);
 static AstNode *parse_return_stmt2(Parser2 *p);
+
+// Expressions (precedence ladder)
 static AstNode *parse_expression2(Parser2 *p);
+static AstNode *parse_or_expr2(Parser2 *p);
+static AstNode *parse_and_expr2(Parser2 *p);
+static AstNode *parse_bit_or_expr2(Parser2 *p);
+static AstNode *parse_bit_xor_expr2(Parser2 *p);
+static AstNode *parse_bit_and_expr2(Parser2 *p);
+static AstNode *parse_equality2(Parser2 *p);
+static AstNode *parse_comparison2(Parser2 *p);
+static AstNode *parse_shift2(Parser2 *p);
+static AstNode *parse_cast2(Parser2 *p);
+static AstNode *parse_term2(Parser2 *p);
+static AstNode *parse_factor2(Parser2 *p);
+static AstNode *parse_unary2(Parser2 *p);
+static AstNode *parse_postfix2(Parser2 *p);
+static AstNode *parse_call2(Parser2 *p, AstNode *func);
 static AstNode *parse_primary2(Parser2 *p);
+
+// Type expressions
 static AstNode *parse_type_expression2(Parser2 *p);
+
+static void parser2_synchronize_ctx(Parser2 *parser, ParseContext ctx);
 
 void parser_init(Parser2 *parser, const char *source, const char *filename,
                  const char *abs_file_path) {
@@ -214,7 +261,12 @@ bool parser2_handle_error(Parser2 *parser, const char *expected) {
 }
 
 void parser2_synchronize(Parser2 *parser) {
-  // Minimal version: advance until likely statement/declaration boundary.
+  // Backwards-compatible entrypoint: default to block context.
+  parser2_synchronize_ctx(parser, PARSE_CTX_BLOCK);
+}
+
+void parser2_synchronize_ctx(Parser2 *parser, ParseContext ctx) {
+  // Advance until a likely boundary for the current parse context.
   // Important: ensure progress even if we're already at EOF.
   if (!parser2_check(parser, TOKEN_EOF)) {
     parser2_advance(parser);
@@ -227,23 +279,41 @@ void parser2_synchronize(Parser2 *parser) {
     if (parser->previous.type == TOKEN_SEMICOLON)
       return;
 
-    switch (parser->current.type) {
-    case TOKEN_FN:
-    case TOKEN_VAR:
-    case TOKEN_LET:
-    case TOKEN_TYPE:
-    case TOKEN_IMPORT:
-    case TOKEN_EXTERN:
-    case TOKEN_IF:
-    case TOKEN_WHILE:
-    case TOKEN_FOR:
-    case TOKEN_LOOP:
-    case TOKEN_RETURN:
-    case TOKEN_LBRACE:
-    case TOKEN_RBRACE:
-      return;
-    default:
-      break;
+    // Context-sensitive sync points.
+    if (ctx == PARSE_CTX_TOP_LEVEL) {
+      switch (parser->current.type) {
+      case TOKEN_FN:
+      case TOKEN_VAR:
+      case TOKEN_LET:
+      case TOKEN_TYPE:
+      case TOKEN_IMPORT:
+      case TOKEN_EXTERN:
+      case TOKEN_EOF:
+        return;
+      default:
+        break;
+      }
+    } else {
+      switch (parser->current.type) {
+      case TOKEN_RBRACE:
+      case TOKEN_RETURN:
+      case TOKEN_IF:
+      case TOKEN_WHILE:
+      case TOKEN_FOR:
+      case TOKEN_LOOP:
+      case TOKEN_LET:
+      case TOKEN_VAR:
+      case TOKEN_PRINT:
+      case TOKEN_SWITCH:
+      case TOKEN_DEFER:
+      case TOKEN_BREAK:
+      case TOKEN_CONTINUE:
+      case TOKEN_LBRACE:
+      case TOKEN_EOF:
+        return;
+      default:
+        break;
+      }
     }
 
     parser2_advance(parser);
@@ -271,7 +341,7 @@ AstNode *parse_program(Parser2 *parser) {
       }
       decl_count++;
     } else {
-      parser2_synchronize(parser);
+      parser2_synchronize_ctx(parser, PARSE_CTX_TOP_LEVEL);
     }
 
     if (parser->diagnostics->error_count >= parser->max_errors)
@@ -336,7 +406,8 @@ static AstNode *parse_import_stmt2(Parser2 *p) {
     import_path->data.str_lit.value = str_dup(path_tok.value.str_val);
   }
 
-  parser2_expect_semicolon(p, "Expected ';' after import declaration");
+  parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                           "Expected ';' after import declaration");
 
   AstNode *import_stmt = alloc_node(AST_DECL_IMPORT, loc);
   import_stmt->data.import_stmt.path_str = import_path;
@@ -363,7 +434,8 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
     init = parse_expression2(p);
   }
 
-  parser2_expect_semicolon(p, "Expected ';' after variable declaration");
+  parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                           "Expected ';' after variable declaration");
 
   if (is_mutable) {
     AstNode *var = alloc_node(AST_DECL_VARIABLE, name.location);
@@ -448,7 +520,8 @@ static AstNode *parse_type_decl2(Parser2 *p) {
   parser2_consume(p, TOKEN_EQUAL, "Expected '=' after type name");
   AstNode *type_expr = parse_type_expression2(p);
 
-  parser2_expect_semicolon(p, "Expected ';' after type declaration");
+  parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                           "Expected ';' after type declaration");
 
   AstNode *node = alloc_node(AST_DECL_TYPE, name.location);
   node->data.type_decl.name = str_dup(name.lexeme);
@@ -547,7 +620,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
 
         AstNode *return_type = parse_type_expression2(p);
         parser2_expect_semicolon(
-            p, "Expected ';' after extern function declaration");
+            p, PARSE_CTX_TOP_LEVEL,
+            "Expected ';' after extern function declaration");
 
         AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
         func->data.extern_func.name = str_dup(name.lexeme);
@@ -562,7 +636,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
       } else if (parser2_match(p, TOKEN_TYPE)) {
         Token name = parser2_consume(p, TOKEN_IDENTIFIER,
                                      "Expected extern function name");
-        parser2_expect_semicolon(p,
+        parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                                  "Expected ';' after extern type declaration");
 
         AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
@@ -575,7 +649,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         Token name =
             parser2_consume(p, TOKEN_IDENTIFIER, "Expected constant name");
         AstNode *type_expr = parse_type_expression2(p);
-        parser2_expect_semicolon(p, "Expected ';' after constant declaration");
+        parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                                 "Expected ';' after constant declaration");
 
         AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
         let->data.extern_const_decl.name = str_dup(name.lexeme);
@@ -589,7 +664,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         Token name =
             parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
         AstNode *type_expr = parse_type_expression2(p);
-        parser2_expect_semicolon(p, "Expected ';' after variable declaration");
+        parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                                 "Expected ';' after variable declaration");
 
         AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
         var->data.extern_var_decl.name = str_dup(name.lexeme);
@@ -672,7 +748,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
     }
 
     AstNode *return_type = parse_type_expression2(p);
-    parser2_expect_semicolon(p,
+    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                              "Expected ';' after extern function declaration");
 
     AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
@@ -689,7 +765,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   if (parser2_match(p, TOKEN_TYPE)) {
     Token name =
         parser2_consume(p, TOKEN_IDENTIFIER, "Expected extern function name");
-    parser2_expect_semicolon(p, "Expected ';' after extern type declaration");
+    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                             "Expected ';' after extern type declaration");
 
     AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
     opaque_type->data.extern_type.name = str_dup(name.lexeme);
@@ -701,7 +778,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   if (parser2_match(p, TOKEN_LET)) {
     Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected constant name");
     AstNode *type_expr = parse_type_expression2(p);
-    parser2_expect_semicolon(p, "Expected ';' after constant declaration");
+    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                             "Expected ';' after constant declaration");
 
     AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
     let->data.extern_const_decl.name = str_dup(name.lexeme);
@@ -715,7 +793,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   if (parser2_match(p, TOKEN_VAR)) {
     Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
     AstNode *type_expr = parse_type_expression2(p);
-    parser2_expect_semicolon(p, "Expected ';' after variable declaration");
+    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
+                             "Expected ';' after variable declaration");
 
     AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
     var->data.extern_var_decl.name = str_dup(name.lexeme);
@@ -783,7 +862,7 @@ static AstNode *parse_function_decl2(Parser2 *p) {
     if (!expr)
       return NULL;
 
-    parser2_expect_semicolon(p,
+    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                              "Expected ';' after expression-bodied function");
 
     AstNode *ret = alloc_node(AST_STMT_RETURN, expr->loc);
@@ -864,13 +943,36 @@ AstNode *parser2_statement(Parser2 *p) {
     return parse_return_stmt2(p);
   }
 
-  // Minimal: expression statement
+  if (parser2_match(p, TOKEN_LBRACE)) {
+    return parse_block_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_LET)) {
+    return parse_variable_decl2(p, false);
+  }
+
+  if (parser2_match(p, TOKEN_VAR)) {
+    return parse_variable_decl2(p, true);
+  }
+
+  if (parser2_match(p, TOKEN_PRINT)) {
+    return parse_print_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_BREAK) || parser2_match(p, TOKEN_CONTINUE)) {
+    return parse_break_continue_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_DEFER)) {
+    return parse_defer_stmt2(p);
+  }
+
+  // Fallback: expression statement (assignment not ported yet)
   AstNode *expr = parse_expression2(p);
   if (!expr)
     return NULL;
 
-  // Missing ';' is recoverable when the next token clearly starts a statement.
-  parser2_expect_semicolon(p, "Expected ';' after expression");
+  parser2_expect_semicolon(p, PARSE_CTX_BLOCK, "Expected ';' after expression");
   AstNode *stmt = alloc_node(AST_STMT_EXPR, expr->loc);
   stmt->data.expr_stmt.expr = expr;
   return stmt;
@@ -889,23 +991,583 @@ static AstNode *parse_return_stmt2(Parser2 *p) {
   }
 
   // Missing ';' is recoverable when the next token clearly starts a statement.
-  parser2_expect_semicolon(p, "Expected ';' after return statement");
+  parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
+                           "Expected ';' after return statement");
   ret->data.return_stmt.expr = expr;
   return ret;
 }
 
-// ---------- minimal expressions ----------
-static AstNode *parse_expression2(Parser2 *p) {
-  // Minimal: just primary for now
-  return parse_primary2(p);
+static AstNode *parse_print_stmt2(Parser2 *p) {
+  // print expr (, expr)* ;
+  Location loc = prev_loc(p); // 'print'
+  AstNodePtrNode *head = NULL;
+  AstNodePtrNode *tail = NULL;
+  size_t count = 0;
+
+  AstNode *first = parse_expression2(p);
+  if (!first)
+    return NULL;
+
+  AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+  n->node = first;
+  n->next = NULL;
+  head = n;
+  tail = n;
+  count = 1;
+
+  while (parser2_match(p, TOKEN_COMMA)) {
+    AstNode *e = parse_expression2(p);
+    if (!e) {
+      // Recover: stop consuming more expressions; caller/container will sync.
+      break;
+    }
+
+    AstNodePtrNode *nn = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+    nn->node = e;
+    nn->next = NULL;
+    tail->next = nn;
+    tail = nn;
+    count++;
+  }
+
+  parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
+                           "Expected ';' after print statement.");
+
+  AstNode **exprs = NULL;
+  if (count > 0) {
+    exprs = arena_alloc(&long_lived, count * sizeof(AstNode *));
+    size_t i = 0;
+    for (AstNodePtrNode *cur = head; cur; cur = cur->next) {
+      exprs[i++] = cur->node;
+    }
+  }
+
+  AstNode *node = alloc_node(AST_STMT_PRINT, loc);
+  node->data.print_stmt.exprs = exprs;
+  node->data.print_stmt.expr_count = count;
+  return node;
+}
+
+static AstNode *parse_break_continue_stmt2(Parser2 *p) {
+  // break;
+  // continue;
+  Location loc = prev_loc(p); // break/continue token
+  bool is_break = (p->previous.type == TOKEN_BREAK);
+
+  parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
+                           "Expected ';' after control flow jump statement.");
+
+  AstNode *node =
+      alloc_node(is_break ? AST_STMT_BREAK : AST_STMT_CONTINUE, loc);
+  return node;
+}
+
+static AstNode *parse_defer_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p); // 'defer'
+
+  AstNode *stmt = alloc_node(AST_STMT_DEFER, loc);
+  stmt->data.defer_stmt.stmt = parser2_statement(p);
+  if (!stmt->data.defer_stmt.stmt) {
+    return NULL;
+  }
+  return stmt;
+}
+
+// ---------- expressions (precedence ladder) ----------
+
+// TODO(parser2): Re-evaluate whether this helper is pulling its weight once
+// postfix parsing and expression-level recovery are fully ported (100% parser2
+// parity). Right now it's primarily a conservative stop-set to avoid consuming
+// tokens we don't yet handle in the postfix chain.
+static bool parser2_is_expr_terminator(TokenType t) {
+  switch (t) {
+  case TOKEN_SEMICOLON:
+  case TOKEN_COMMA:
+  case TOKEN_RPAREN:
+  case TOKEN_RBRACKET:
+  case TOKEN_RBRACE:
+  case TOKEN_COLON:
+  case TOKEN_EOF:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static AstNode *parse_expression2(Parser2 *p) { return parse_or_expr2(p); }
+
+static AstNode *parse_or_expr2(Parser2 *p) {
+  AstNode *left = parse_and_expr2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_OR)) {
+    Token op = p->previous;
+    AstNode *right = parse_and_expr2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '||'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_and_expr2(Parser2 *p) {
+  AstNode *left = parse_bit_or_expr2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_AND)) {
+    Token op = p->previous;
+    AstNode *right = parse_bit_or_expr2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '&&'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_bit_or_expr2(Parser2 *p) {
+  AstNode *left = parse_bit_xor_expr2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_PIPE)) {
+    Token op = p->previous;
+    AstNode *right = parse_bit_xor_expr2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '|'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_bit_xor_expr2(Parser2 *p) {
+  AstNode *left = parse_bit_and_expr2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_CARET)) {
+    Token op = p->previous;
+    AstNode *right = parse_bit_and_expr2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '^'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_bit_and_expr2(Parser2 *p) {
+  AstNode *left = parse_equality2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_AMPERSAND)) {
+    Token op = p->previous;
+    AstNode *right = parse_equality2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '&'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_equality2(Parser2 *p) {
+  AstNode *left = parse_comparison2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_EQ) || parser2_match(p, TOKEN_NE)) {
+    Token op = p->previous;
+    AstNode *right = parse_comparison2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after equality operator");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_comparison2(Parser2 *p) {
+  AstNode *left = parse_shift2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_LT) || parser2_match(p, TOKEN_LE) ||
+         parser2_match(p, TOKEN_GT) || parser2_match(p, TOKEN_GE)) {
+    Token op = p->previous;
+    AstNode *right = parse_shift2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after comparison operator");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_shift2(Parser2 *p) {
+  AstNode *left = parse_cast2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_LSHIFT) || parser2_match(p, TOKEN_RSHIFT)) {
+    Token op = p->previous;
+    AstNode *right = parse_cast2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after shift operator");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_cast2(Parser2 *p) {
+  AstNode *left = parse_term2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_AS)) {
+    Token as_tok = p->previous;
+    AstNode *target_type = parse_type_expression2(p);
+    if (!target_type) {
+      parser2_handle_error(p, "Expected type after 'as'");
+      return left;
+    }
+
+    AstNode *cast = alloc_node(AST_EXPR_EXPLICIT_CAST, as_tok.location);
+    cast->data.explicit_cast.expr = left;
+    cast->data.explicit_cast.target_type = target_type;
+    cast->data.explicit_cast.pointer_cast = false;
+    left = cast;
+  }
+
+  return left;
+}
+
+static AstNode *parse_term2(Parser2 *p) {
+  AstNode *left = parse_factor2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_PLUS) || parser2_match(p, TOKEN_MINUS)) {
+    Token op = p->previous;
+    AstNode *right = parse_factor2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '+' or '-'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_factor2(Parser2 *p) {
+  AstNode *left = parse_unary2(p);
+  if (!left)
+    return NULL;
+
+  while (parser2_match(p, TOKEN_STAR) || parser2_match(p, TOKEN_SLASH) ||
+         parser2_match(p, TOKEN_PERCENT)) {
+    Token op = p->previous;
+    AstNode *right = parse_unary2(p);
+    if (!right) {
+      parser2_handle_error(p, "Expected expression after '*', '/' or '%'");
+      return left;
+    }
+
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    binop->data.binop.op = ast_binop_from_token(op.type);
+    binop->data.binop.left = left;
+    binop->data.binop.right = right;
+    left = binop;
+  }
+
+  return left;
+}
+
+static AstNode *parse_unary2(Parser2 *p) {
+  if (parser2_match(p, TOKEN_MINUS) || parser2_match(p, TOKEN_NOT) ||
+      parser2_match(p, TOKEN_AMPERSAND) || parser2_match(p, TOKEN_STAR) ||
+      parser2_match(p, TOKEN_TILDE)) {
+    Token op = p->previous;
+    AstNode *operand = parse_unary2(p);
+    if (!operand) {
+      parser2_handle_error(p, "Expected expression after unary operator");
+      return NULL;
+    }
+
+    AstNode *unop = alloc_node(AST_EXPR_UNARY_OP, op.location);
+    unop->data.unop.op = ast_unop_from_token(op.type);
+    unop->data.unop.operand = operand;
+    return unop;
+  }
+
+  return parse_postfix2(p);
+}
+
+static AstNode *parse_postfix2(Parser2 *p) {
+  AstNode *expr = parse_primary2(p);
+  if (!expr)
+    return NULL;
+
+  while (true) {
+    // Force unwrap: expr!
+    if (parser2_match(p, TOKEN_NOT)) {
+      Token bang = p->previous;
+      AstNode *n = alloc_node(AST_EXPR_FORCE_UNWRAP, bang.location);
+      n->data.force_unwrap.operand = expr;
+      expr = n;
+      continue;
+    }
+
+    // Postfix inc/dec: expr++ / expr--
+    if (parser2_match(p, TOKEN_PLUS_PLUS)) {
+      Token tok = p->previous;
+      AstNode *n = alloc_node(AST_EXPR_POSTFIX_INC, tok.location);
+      n->data.postfix_inc.operand = expr;
+      expr = n;
+      continue;
+    }
+
+    if (parser2_match(p, TOKEN_MINUS_MINUS)) {
+      Token tok = p->previous;
+      AstNode *n = alloc_node(AST_EXPR_POSTFIX_DEC, tok.location);
+      n->data.postfix_dec.operand = expr;
+      expr = n;
+      continue;
+    }
+
+    // Call: expr(...)
+    if (parser2_match(p, TOKEN_LPAREN)) {
+      expr = parse_call2(p, expr);
+      if (!expr)
+        return NULL;
+      continue;
+    }
+
+    // Stop if next token clearly can't continue an expression.
+    if (parser2_is_expr_terminator(p->current.type)) {
+      break;
+    }
+
+    // Other postfix forms (index/member/module member/struct literal/etc)
+    // are not ported yet; stop here to avoid consuming tokens incorrectly.
+    break;
+  }
+
+  return expr;
+}
+
+static AstNode *parse_call2(Parser2 *p, AstNode *func) {
+  // We enter here after consuming '('.
+  Location loc = prev_loc(p);
+  AstNode *call = alloc_node(AST_EXPR_CALL, loc);
+  call->data.call.func = func;
+  call->data.call.args = NULL;
+  call->data.call.arg_count = 0;
+  call->data.call.type_args = NULL;
+  call->data.call.type_arg_count = 0;
+
+  // Parse arguments using linked list -> final contiguous array.
+  AstNodePtrNode *head = NULL;
+  AstNodePtrNode *tail = NULL;
+  size_t arg_count = 0;
+
+  if (!parser2_check(p, TOKEN_RPAREN)) {
+    while (true) {
+      AstNode *arg = parse_expression2(p);
+      if (!arg) {
+        // Local recovery: skip tokens until ',' or ')' or terminator.
+        while (!parser2_check(p, TOKEN_COMMA) &&
+               !parser2_check(p, TOKEN_RPAREN) &&
+               !parser2_check(p, TOKEN_EOF)) {
+          if (parser2_is_expr_terminator(p->current.type)) {
+            break;
+          }
+          parser2_advance(p);
+        }
+        break;
+      }
+
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = arg;
+      n->next = NULL;
+      if (!head) {
+        head = n;
+        tail = n;
+      } else {
+        tail->next = n;
+        tail = n;
+      }
+      arg_count++;
+
+      if (!parser2_match(p, TOKEN_COMMA)) {
+        break;
+      }
+
+      if (parser2_check(p, TOKEN_RPAREN)) {
+        break;
+      }
+    }
+  }
+
+  parser2_consume(p, TOKEN_RPAREN, "Expected ')' after arguments");
+
+  AstNode **args = NULL;
+  if (arg_count > 0) {
+    args = arena_alloc(&long_lived, arg_count * sizeof(AstNode *));
+    size_t i = 0;
+    for (AstNodePtrNode *n = head; n; n = n->next) {
+      args[i++] = n->node;
+    }
+  }
+
+  call->data.call.args = args;
+  call->data.call.arg_count = arg_count;
+  return call;
 }
 
 static AstNode *parse_primary2(Parser2 *p) {
+  // Literals
   if (parser2_match(p, TOKEN_INT)) {
     Location loc = prev_loc(p);
     AstNode *n = alloc_node(AST_EXPR_LITERAL_INT, loc);
     n->data.int_lit.value = atoll(p->previous.lexeme);
     return n;
+  }
+
+  if (parser2_match(p, TOKEN_FLOAT)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_FLOAT, loc);
+    n->data.float_lit.value = p->previous.value.float_val;
+    return n;
+  }
+
+  if (parser2_match(p, TOKEN_STRING)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_STRING, loc);
+    n->data.str_lit.value = str_dup(p->previous.value.str_val);
+    return n;
+  }
+
+  if (parser2_match(p, TOKEN_CHAR)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_CHAR, loc);
+    n->data.char_lit.value = p->previous.value.char_val;
+    return n;
+  }
+
+  if (parser2_match(p, TOKEN_TRUE) || parser2_match(p, TOKEN_FALSE)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_BOOL, loc);
+    n->data.bool_lit.value = (p->previous.type == TOKEN_TRUE);
+    return n;
+  }
+
+  if (parser2_match(p, TOKEN_NIL)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_NIL, loc);
+    return n;
+  }
+
+  if (parser2_match(p, TOKEN_NONE)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_NONE, loc);
+    return n;
+  }
+
+  // Identifiers
+  if (parser2_match(p, TOKEN_IDENTIFIER)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_IDENTIFIER, loc);
+    n->data.ident.name = str_dup(p->previous.lexeme);
+    n->data.ident.qualified_name = str_dup(p->previous.lexeme);
+    n->data.ident.full_qualified_name = NULL;
+    n->data.ident.is_extern = false;
+    return n;
+  }
+
+  // Grouping
+  if (parser2_match(p, TOKEN_LPAREN)) {
+    Location l = prev_loc(p);
+    AstNode *inner = parse_expression2(p);
+    if (!inner) {
+      // Recover: missing expression between parens
+      parser2_handle_error(p, "Expected expression");
+      // Consume ')' if present to avoid cascading.
+      parser2_match(p, TOKEN_RPAREN);
+      return NULL;
+    }
+    parser2_consume(p, TOKEN_RPAREN, "Expected ')'");
+    AstNode *g = alloc_node(AST_EXPR_GROUPED_EXPR, l);
+    g->data.grouped_expr.inner_expr = inner;
+    return g;
   }
 
   parser2_handle_error(p, "Expected expression");
