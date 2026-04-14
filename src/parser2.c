@@ -1,6 +1,7 @@
 #include "parser2.h"
 #include "alloc.h"
 #include "lexer.h"
+#include "module.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1430,6 +1431,216 @@ static AstNode *parse_postfix2(Parser2 *p) {
 
     // Member access: expr.member or expr.0
     if (parser2_match(p, TOKEN_DOT)) {
+      // Generic postfix: expr.[T, U](...), expr.[T]{...}, expr.[T].member
+      if (parser2_match(p, TOKEN_LBRACKET)) {
+        AstNode *base = expr;
+
+        typedef struct TypeArgNode {
+          AstNode *arg;
+          struct TypeArgNode *next;
+        } TypeArgNode;
+
+        TypeArgNode *arg_head = NULL;
+        TypeArgNode *arg_tail = NULL;
+        size_t type_arg_count = 0;
+
+        if (!parser2_check(p, TOKEN_RBRACKET)) {
+          while (true) {
+            AstNode *arg = parse_type_expression2(p);
+            if (!arg) {
+              parser2_handle_error(p, "Expected type argument");
+              while (!parser2_check(p, TOKEN_COMMA) &&
+                     !parser2_check(p, TOKEN_RBRACKET) &&
+                     !parser2_check(p, TOKEN_EOF)) {
+                parser2_advance(p);
+              }
+              if (parser2_match(p, TOKEN_COMMA)) {
+                if (parser2_check(p, TOKEN_RBRACKET)) {
+                  break;
+                }
+                continue;
+              }
+              break;
+            }
+
+            TypeArgNode *n = arena_alloc(&long_lived, sizeof(TypeArgNode));
+            n->arg = arg;
+            n->next = NULL;
+            if (!arg_head) {
+              arg_head = n;
+              arg_tail = n;
+            } else {
+              arg_tail->next = n;
+              arg_tail = n;
+            }
+            type_arg_count++;
+
+            if (!parser2_match(p, TOKEN_COMMA)) {
+              break;
+            }
+
+            if (parser2_check(p, TOKEN_RBRACKET)) {
+              break;
+            }
+          }
+        }
+
+        parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after type arguments");
+
+        AstNode **type_args = NULL;
+        if (type_arg_count > 0) {
+          type_args =
+              arena_alloc(&long_lived, type_arg_count * sizeof(AstNode *));
+          size_t i = 0;
+          for (TypeArgNode *n = arg_head; n; n = n->next) {
+            type_args[i++] = n->arg;
+          }
+        }
+
+        if (parser2_match(p, TOKEN_LPAREN)) {
+          expr = parse_call2(p, expr);
+          if (!expr)
+            return NULL;
+          expr->data.call.type_args = type_args;
+          expr->data.call.type_arg_count = type_arg_count;
+          continue;
+        }
+
+        if (parser2_match(p, TOKEN_LBRACE)) {
+          Location loc = expr->loc;
+          char *type_name = NULL;
+
+          if (expr->kind == AST_EXPR_IDENTIFIER) {
+            type_name = expr->data.ident.name;
+          } else {
+            char *prefix = prepend(
+                expr->data.mod_member_expr.module->data.ident.name, "__");
+            type_name = prepend(prefix, expr->data.mod_member_expr.member);
+          }
+
+          typedef struct FieldNode {
+            char *name;
+            AstNode *value;
+            struct FieldNode *next;
+          } FieldNode;
+
+          FieldNode *field_head = NULL;
+          FieldNode *field_tail = NULL;
+          size_t field_count = 0;
+
+          if (!parser2_check(p, TOKEN_RBRACE)) {
+            while (true) {
+              if (parser2_check(p, TOKEN_RBRACE)) {
+                break;
+              }
+
+              if (!parser2_check(p, TOKEN_IDENTIFIER)) {
+                parser2_handle_error(p,
+                                     "Expected field name in struct literal");
+                while (!parser2_check(p, TOKEN_COMMA) &&
+                       !parser2_check(p, TOKEN_RBRACE) &&
+                       !parser2_check(p, TOKEN_EOF)) {
+                  parser2_advance(p);
+                }
+                if (parser2_match(p, TOKEN_COMMA)) {
+                  continue;
+                }
+                break;
+              }
+
+              Token field_name = parser2_consume(
+                  p, TOKEN_IDENTIFIER, "Expected field name in struct literal");
+
+              parser2_consume(p, TOKEN_EQUAL, "Expected '=' after field name");
+
+              AstNode *value = parse_expression2(p);
+              if (!value) {
+                while (!parser2_check(p, TOKEN_COMMA) &&
+                       !parser2_check(p, TOKEN_RBRACE) &&
+                       !parser2_check(p, TOKEN_EOF)) {
+                  parser2_advance(p);
+                }
+                if (parser2_match(p, TOKEN_COMMA)) {
+                  continue;
+                }
+                break;
+              }
+
+              FieldNode *fn = arena_alloc(&long_lived, sizeof(FieldNode));
+              fn->name = field_name.lexeme;
+              fn->value = value;
+              fn->next = NULL;
+              if (!field_head) {
+                field_head = fn;
+                field_tail = fn;
+              } else {
+                field_tail->next = fn;
+                field_tail = fn;
+              }
+              field_count++;
+
+              if (!parser2_match(p, TOKEN_COMMA)) {
+                break;
+              }
+
+              if (parser2_check(p, TOKEN_RBRACE)) {
+                break;
+              }
+            }
+          }
+
+          parser2_consume(p, TOKEN_RBRACE,
+                          "Expected '}' after struct literal fields");
+
+          char **field_names = NULL;
+          AstNode **field_values = NULL;
+          if (field_count > 0) {
+            field_names =
+                arena_alloc(&long_lived, field_count * sizeof(char *));
+            field_values =
+                arena_alloc(&long_lived, field_count * sizeof(AstNode *));
+            size_t i = 0;
+            for (FieldNode *n = field_head; n; n = n->next) {
+              field_names[i] = n->name;
+              field_values[i] = n->value;
+              i++;
+            }
+          }
+
+          AstNode *lit = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+          lit->data.struct_literal.type_name = type_name;
+          lit->data.struct_literal.qualified_type_name = type_name;
+          lit->data.struct_literal.field_names = field_names;
+          lit->data.struct_literal.field_values = field_values;
+          lit->data.struct_literal.field_count = field_count;
+          lit->data.struct_literal.type_args = type_args;
+          lit->data.struct_literal.type_arg_count = type_arg_count;
+          expr = lit;
+          return expr;
+        }
+
+        if (parser2_match(p, TOKEN_DOT)) {
+          Token member = parser2_consume(
+              p, TOKEN_IDENTIFIER, "Expected member name after generic type");
+
+          AstNode *member_expr = alloc_node(AST_EXPR_MEMBER, expr->loc);
+          member_expr->data.member_expr.object = expr;
+          member_expr->data.member_expr.member = member.lexeme;
+          member_expr->data.member_expr.is_method_ref = false;
+          member_expr->data.member_expr.method_qualified_name = NULL;
+          member_expr->data.member_expr.is_associated_function = false;
+          member_expr->data.member_expr.type_args = type_args;
+          member_expr->data.member_expr.type_arg_count = type_arg_count;
+
+          expr = member_expr;
+          continue;
+        }
+
+        parser2_handle_error(p,
+                             "Expected '(' or '{' or '.' after type arguments");
+        return base;
+      }
+
       expr = parse_member2(p, expr);
       if (!expr)
         return NULL;
