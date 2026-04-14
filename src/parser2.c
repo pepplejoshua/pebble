@@ -29,9 +29,9 @@ typedef struct AstNodePtrNode {
 
 static AstNode *alloc_node(AstKind kind, Location loc) {
   AstNode *n = arena_alloc(&long_lived, sizeof(AstNode));
+  memset(n, 0, sizeof(AstNode));
   n->kind = kind;
   n->loc = loc;
-  n->resolved_type = NULL;
   return n;
 }
 
@@ -145,6 +145,9 @@ static AstNode *parse_factor2(Parser2 *p);
 static AstNode *parse_unary2(Parser2 *p);
 static AstNode *parse_postfix2(Parser2 *p);
 static AstNode *parse_call2(Parser2 *p, AstNode *func);
+static AstNode *parse_index2(Parser2 *p, AstNode *array);
+static AstNode *parse_member2(Parser2 *p, AstNode *object);
+static AstNode *parse_module_member2(Parser2 *p, AstNode *object);
 static AstNode *parse_primary2(Parser2 *p);
 
 // Type expressions
@@ -155,7 +158,7 @@ static void parser2_synchronize_ctx(Parser2 *parser, ParseContext ctx);
 void parser_init(Parser2 *parser, const char *source, const char *filename,
                  const char *abs_file_path) {
   lexer_init(&parser->lexer, source, filename);
-  parser->abs_file_path = str_dup(abs_file_path);
+  parser->abs_file_path = abs_file_path;
 
   parser->diagnostics = arena_alloc(&long_lived, sizeof(DiagnosticContext));
   diagnostics_init(parser->diagnostics, abs_file_path, source);
@@ -402,8 +405,8 @@ static AstNode *parse_import_stmt2(Parser2 *p) {
   AstNode *import_path = NULL;
   if (path_tok.type == TOKEN_STRING) {
     import_path = alloc_node(AST_EXPR_LITERAL_STRING, path_tok.location);
-    // Match parser.c: use processed string value.
-    import_path->data.str_lit.value = str_dup(path_tok.value.str_val);
+    // Lexer owns processed string storage in long_lived arena.
+    import_path->data.str_lit.value = path_tok.value.str_val;
   }
 
   parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
@@ -439,16 +442,16 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
 
   if (is_mutable) {
     AstNode *var = alloc_node(AST_DECL_VARIABLE, name.location);
-    var->data.var_decl.name = str_dup(name.lexeme);
-    var->data.var_decl.qualified_name = str_dup(name.lexeme);
+    var->data.var_decl.name = name.lexeme;
+    var->data.var_decl.qualified_name = name.lexeme;
     var->data.var_decl.full_qualified_name = NULL;
     var->data.var_decl.type_expr = type_expr;
     var->data.var_decl.init = init;
     return var;
   } else {
     AstNode *c = alloc_node(AST_DECL_CONSTANT, name.location);
-    c->data.const_decl.name = str_dup(name.lexeme);
-    c->data.const_decl.qualified_name = str_dup(name.lexeme);
+    c->data.const_decl.name = name.lexeme;
+    c->data.const_decl.qualified_name = name.lexeme;
     c->data.const_decl.full_qualified_name = NULL;
     c->data.const_decl.type_expr = type_expr;
     c->data.const_decl.value = init;
@@ -524,8 +527,8 @@ static AstNode *parse_type_decl2(Parser2 *p) {
                            "Expected ';' after type declaration");
 
   AstNode *node = alloc_node(AST_DECL_TYPE, name.location);
-  node->data.type_decl.name = str_dup(name.lexeme);
-  node->data.type_decl.qualified_name = str_dup(name.lexeme);
+  node->data.type_decl.name = name.lexeme;
+  node->data.type_decl.qualified_name = name.lexeme;
   node->data.type_decl.full_qualified_name = NULL;
   node->data.type_decl.type_expr = type_expr;
   node->data.type_decl.type_params = type_params;
@@ -540,7 +543,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   AstNode *lib_name = NULL;
   if (parser2_match(p, TOKEN_STRING)) {
     lib_name = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
-    lib_name->data.str_lit.value = str_dup(p->previous.lexeme);
+    // TOKEN_STRING lexeme/value storage is lexer-owned (long_lived arena).
+    lib_name->data.str_lit.value = p->previous.value.str_val;
   }
 
   if (parser2_match(p, TOKEN_LBRACE)) {
@@ -624,8 +628,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
             "Expected ';' after extern function declaration");
 
         AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
-        func->data.extern_func.name = str_dup(name.lexeme);
-        func->data.extern_func.qualified_name = str_dup(name.lexeme);
+        func->data.extern_func.name = name.lexeme;
+        func->data.extern_func.qualified_name = name.lexeme;
         func->data.extern_func.full_qualified_name = NULL;
         func->data.extern_func.params = params;
         func->data.extern_func.param_count = param_count;
@@ -640,8 +644,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                                  "Expected ';' after extern type declaration");
 
         AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
-        opaque_type->data.extern_type.name = str_dup(name.lexeme);
-        opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
+        opaque_type->data.extern_type.name = name.lexeme;
+        opaque_type->data.extern_type.qualified_name = name.lexeme;
         opaque_type->data.extern_type.full_qualified_name = NULL;
 
         externs[count++] = opaque_type;
@@ -653,8 +657,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                                  "Expected ';' after constant declaration");
 
         AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
-        let->data.extern_const_decl.name = str_dup(name.lexeme);
-        let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
+        let->data.extern_const_decl.name = name.lexeme;
+        let->data.extern_const_decl.qualified_name = name.lexeme;
         let->data.extern_const_decl.full_qualified_name = NULL;
         let->data.extern_const_decl.type_expr = type_expr;
         let->data.extern_const_decl.lib_name = lib_name;
@@ -668,8 +672,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                                  "Expected ';' after variable declaration");
 
         AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
-        var->data.extern_var_decl.name = str_dup(name.lexeme);
-        var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
+        var->data.extern_var_decl.name = name.lexeme;
+        var->data.extern_var_decl.qualified_name = name.lexeme;
         var->data.extern_var_decl.full_qualified_name = NULL;
         var->data.extern_var_decl.type_expr = type_expr;
         var->data.extern_var_decl.lib_name = lib_name;
@@ -752,8 +756,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                              "Expected ';' after extern function declaration");
 
     AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
-    func->data.extern_func.name = str_dup(name.lexeme);
-    func->data.extern_func.qualified_name = str_dup(name.lexeme);
+    func->data.extern_func.name = name.lexeme;
+    func->data.extern_func.qualified_name = name.lexeme;
     func->data.extern_func.full_qualified_name = NULL;
     func->data.extern_func.params = params;
     func->data.extern_func.param_count = param_count;
@@ -769,8 +773,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                              "Expected ';' after extern type declaration");
 
     AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
-    opaque_type->data.extern_type.name = str_dup(name.lexeme);
-    opaque_type->data.extern_type.qualified_name = str_dup(name.lexeme);
+    opaque_type->data.extern_type.name = name.lexeme;
+    opaque_type->data.extern_type.qualified_name = name.lexeme;
     opaque_type->data.extern_type.full_qualified_name = NULL;
     return opaque_type;
   }
@@ -782,8 +786,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                              "Expected ';' after constant declaration");
 
     AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
-    let->data.extern_const_decl.name = str_dup(name.lexeme);
-    let->data.extern_const_decl.qualified_name = str_dup(name.lexeme);
+    let->data.extern_const_decl.name = name.lexeme;
+    let->data.extern_const_decl.qualified_name = name.lexeme;
     let->data.extern_const_decl.full_qualified_name = NULL;
     let->data.extern_const_decl.type_expr = type_expr;
     let->data.extern_const_decl.lib_name = lib_name;
@@ -797,8 +801,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
                              "Expected ';' after variable declaration");
 
     AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
-    var->data.extern_var_decl.name = str_dup(name.lexeme);
-    var->data.extern_var_decl.qualified_name = str_dup(name.lexeme);
+    var->data.extern_var_decl.name = name.lexeme;
+    var->data.extern_var_decl.qualified_name = name.lexeme;
     var->data.extern_var_decl.full_qualified_name = NULL;
     var->data.extern_var_decl.type_expr = type_expr;
     var->data.extern_var_decl.lib_name = lib_name;
@@ -1411,12 +1415,36 @@ static AstNode *parse_postfix2(Parser2 *p) {
       continue;
     }
 
+    // Index or slice: expr[...]
+    if (parser2_match(p, TOKEN_LBRACKET)) {
+      expr = parse_index2(p, expr);
+      if (!expr)
+        return NULL;
+      continue;
+    }
+
     // Stop if next token clearly can't continue an expression.
     if (parser2_is_expr_terminator(p->current.type)) {
       break;
     }
 
-    // Other postfix forms (index/member/module member/struct literal/etc)
+    // Member access: expr.member or expr.0
+    if (parser2_match(p, TOKEN_DOT)) {
+      expr = parse_member2(p, expr);
+      if (!expr)
+        return NULL;
+      continue;
+    }
+
+    // Module member access: module::member
+    if (parser2_match(p, TOKEN_MOD_SCOPE)) {
+      expr = parse_module_member2(p, expr);
+      if (!expr)
+        return NULL;
+      continue;
+    }
+
+    // Other postfix forms (struct literal/etc)
     // are not ported yet; stop here to avoid consuming tokens incorrectly.
     break;
   }
@@ -1493,6 +1521,92 @@ static AstNode *parse_call2(Parser2 *p, AstNode *func) {
   return call;
 }
 
+static AstNode *parse_index2(Parser2 *p, AstNode *array) {
+  // We enter here after consuming '['.
+  Location loc = prev_loc(p);
+
+  // Slice syntax: arr[start:end]
+  AstNode *start = NULL;
+  AstNode *end = NULL;
+
+  if (!parser2_check(p, TOKEN_COLON)) {
+    start = parse_expression2(p);
+  }
+
+  if (parser2_match(p, TOKEN_COLON)) {
+    // Slice: arr[start:end]
+    if (!parser2_check(p, TOKEN_RBRACKET)) {
+      end = parse_expression2(p);
+    }
+
+    parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after slice");
+
+    AstNode *slice = alloc_node(AST_EXPR_SLICE, loc);
+    slice->data.slice_expr.array = array;
+    slice->data.slice_expr.start = start;
+    slice->data.slice_expr.end = end;
+    return slice;
+  }
+
+  // Index: arr[expr]
+  parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after index");
+
+  AstNode *index = alloc_node(AST_EXPR_INDEX, loc);
+  index->data.index_expr.array = array;
+  index->data.index_expr.index = start;
+  return index;
+}
+
+static AstNode *parse_member2(Parser2 *p, AstNode *object) {
+  // We enter here after consuming '.'.
+  Location loc = prev_loc(p);
+
+  AstNode *mem = alloc_node(AST_EXPR_MEMBER, loc);
+  mem->data.member_expr.object = object;
+
+  // Accept either identifier (named member) or int (tuple index)
+  if (parser2_check(p, TOKEN_INT)) {
+    Token idx = parser2_consume(p, TOKEN_INT,
+                                "Expected member name or index after '.'");
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", (int)idx.value.int_val);
+    mem->data.member_expr.member = str_dup(buf);
+  } else {
+    Token member = parser2_consume(p, TOKEN_IDENTIFIER,
+                                   "Expected member name or index after '.'");
+    // Lexer owns identifier lexeme storage in long_lived arena.
+    mem->data.member_expr.member = member.lexeme;
+  }
+
+  mem->data.member_expr.is_method_ref = false;
+  mem->data.member_expr.method_qualified_name = NULL;
+  mem->data.member_expr.is_associated_function = false;
+  mem->data.member_expr.type_args = NULL;
+  mem->data.member_expr.type_arg_count = 0;
+
+  return mem;
+}
+
+static AstNode *parse_module_member2(Parser2 *p, AstNode *object) {
+  // We enter here after consuming '::'.
+  if (object->kind != AST_EXPR_IDENTIFIER) {
+    parser2_handle_error(p, "Module name must be an identifier.");
+  }
+
+  Location loc = prev_loc(p);
+  AstNode *mod_mem = alloc_node(AST_EXPR_MODULE_MEMBER, loc);
+  mod_mem->data.mod_member_expr.module = object;
+
+  Token member = parser2_consume(p, TOKEN_IDENTIFIER,
+                                 "Expected module member name after '::'");
+  // Lexer owns identifier lexeme storage in long_lived arena.
+  mod_mem->data.mod_member_expr.member = member.lexeme;
+
+  mod_mem->data.mod_member_expr.is_extern = false;
+  mod_mem->data.mod_member_expr.qualified_path = NULL;
+  return mod_mem;
+}
+
 static AstNode *parse_primary2(Parser2 *p) {
   // Literals
   if (parser2_match(p, TOKEN_INT)) {
@@ -1512,7 +1626,8 @@ static AstNode *parse_primary2(Parser2 *p) {
   if (parser2_match(p, TOKEN_STRING)) {
     Location loc = prev_loc(p);
     AstNode *n = alloc_node(AST_EXPR_LITERAL_STRING, loc);
-    n->data.str_lit.value = str_dup(p->previous.value.str_val);
+    // Lexer owns processed string storage in long_lived arena.
+    n->data.str_lit.value = p->previous.value.str_val;
     return n;
   }
 
@@ -1546,8 +1661,9 @@ static AstNode *parse_primary2(Parser2 *p) {
   if (parser2_match(p, TOKEN_IDENTIFIER)) {
     Location loc = prev_loc(p);
     AstNode *n = alloc_node(AST_EXPR_IDENTIFIER, loc);
-    n->data.ident.name = str_dup(p->previous.lexeme);
-    n->data.ident.qualified_name = str_dup(p->previous.lexeme);
+    // Lexer owns identifier lexeme storage in long_lived arena.
+    n->data.ident.name = p->previous.lexeme;
+    n->data.ident.qualified_name = p->previous.lexeme;
     n->data.ident.full_qualified_name = NULL;
     n->data.ident.is_extern = false;
     return n;
