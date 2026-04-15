@@ -149,6 +149,7 @@ static AstNode *parse_call2(Parser2 *p, AstNode *func);
 static AstNode *parse_index2(Parser2 *p, AstNode *array);
 static AstNode *parse_member2(Parser2 *p, AstNode *object);
 static AstNode *parse_module_member2(Parser2 *p, AstNode *object);
+static AstNode *parse_interpolated_string2(Parser2 *p);
 static AstNode *parse_primary2(Parser2 *p);
 
 // Type expressions
@@ -1931,6 +1932,72 @@ static AstNode *parse_module_member2(Parser2 *p, AstNode *object) {
   return mod_mem;
 }
 
+static AstNode *parse_interpolated_string2(Parser2 *p) {
+  // parser2_previous is the opening TOKEN_BACKTICK
+  Location loc = prev_loc(p);
+
+  AstNodePtrNode *head = NULL;
+  AstNodePtrNode *tail = NULL;
+  size_t count = 0;
+
+  while (!parser2_check(p, TOKEN_BACKTICK) && !parser2_check(p, TOKEN_EOF)) {
+    if (parser2_match(p, TOKEN_STRING)) {
+      Token str = p->previous;
+      AstNode *lit = alloc_node(AST_EXPR_LITERAL_STRING, str.location);
+      // Lexer owns processed string storage in long_lived arena.
+      lit->data.str_lit.value = str.value.str_val;
+
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = lit;
+      n->next = NULL;
+      if (!head) {
+        head = n;
+        tail = n;
+      } else {
+        tail->next = n;
+        tail = n;
+      }
+      count++;
+    } else if (parser2_match(p, TOKEN_LBRACE)) {
+      AstNode *expr = parse_expression2(p);
+      parser2_consume(p, TOKEN_RBRACE,
+                      "Expected '}' after interpolated expression");
+
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = expr;
+      n->next = NULL;
+      if (!head) {
+        head = n;
+        tail = n;
+      } else {
+        tail->next = n;
+        tail = n;
+      }
+      count++;
+    } else {
+      parser2_handle_error(p, "Unexpected token in interpolated string");
+      parser2_advance(p);
+    }
+  }
+
+  parser2_consume(p, TOKEN_BACKTICK,
+                  "Expected closing '`' for interpolated string");
+
+  AstNode **parts = NULL;
+  if (count > 0) {
+    parts = arena_alloc(&long_lived, count * sizeof(AstNode *));
+    size_t i = 0;
+    for (AstNodePtrNode *n = head; n; n = n->next) {
+      parts[i++] = n->node;
+    }
+  }
+
+  AstNode *interp = alloc_node(AST_EXPR_INTERPOLATED_STRING, loc);
+  interp->data.interpolated_string.parts = parts;
+  interp->data.interpolated_string.num_parts = count;
+  return interp;
+}
+
 static AstNode *parse_primary2(Parser2 *p) {
   // Literals
   if (parser2_match(p, TOKEN_INT)) {
@@ -1953,6 +2020,10 @@ static AstNode *parse_primary2(Parser2 *p) {
     // Lexer owns processed string storage in long_lived arena.
     n->data.str_lit.value = p->previous.value.str_val;
     return n;
+  }
+
+  if (parser2_match(p, TOKEN_BACKTICK)) {
+    return parse_interpolated_string2(p);
   }
 
   if (parser2_match(p, TOKEN_CHAR)) {
