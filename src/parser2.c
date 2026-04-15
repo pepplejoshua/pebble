@@ -127,6 +127,9 @@ static bool parser2_expect_semicolon(Parser2 *p, ParseContext ctx,
 }
 
 static AstNode *parse_function_decl2(Parser2 *p);
+static AstNode *parse_function2(Parser2 *p, Location location, char *name,
+                                bool inlined, AstNode *convention,
+                                bool require_semicolon_after_arrow);
 static AstNode *parse_block_stmt2(Parser2 *p);
 static AstNode *parse_return_stmt2(Parser2 *p);
 
@@ -151,6 +154,7 @@ static AstNode *parse_member2(Parser2 *p, AstNode *object);
 static AstNode *parse_module_member2(Parser2 *p, AstNode *object);
 static AstNode *parse_interpolated_string2(Parser2 *p);
 static AstNode *parse_primary2(Parser2 *p);
+static bool parser2_is_expr_terminator(TokenType t);
 
 // Type expressions
 static AstNode *parse_type_expression2(Parser2 *p);
@@ -818,78 +822,279 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
 
 static AstNode *parse_function_decl2(Parser2 *p) {
   // fn name(params) return_type { body }
-  // fn name(params) return_type => expr;
-  //
-  // NOTE: This is still a partial port: params, generics, inline, and
-  // convention are not fully implemented yet, but return/statement behavior is
-  // aligned.
+  // fn name(params) return_type => expr
+
+  bool inlined = parser2_match(p, TOKEN_INLINE);
+
+  AstNode *convention = NULL;
+  if (parser2_match(p, TOKEN_STRING)) {
+    convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+    // Use raw lexeme to match parser.c behavior.
+    convention->data.str_lit.value = p->previous.lexeme;
+  }
 
   Token name_tok =
       parser2_consume(p, TOKEN_IDENTIFIER, "Expected function name");
   if (name_tok.type != TOKEN_IDENTIFIER)
     return NULL;
 
-  Location loc = prev_loc(p);
-  AstNode *fn = alloc_node(AST_DECL_FUNCTION, loc);
+  return parse_function2(p, name_tok.location, name_tok.lexeme, inlined,
+                         convention, true);
+}
 
-  fn->data.func_decl.inlined = false;
-  fn->data.func_decl.convention = NULL;
-  fn->data.func_decl.name = name_tok.lexeme;
-  fn->data.func_decl.qualified_name = NULL;
-  fn->data.func_decl.full_qualified_name = NULL;
+static AstNode *parse_function2(Parser2 *p, Location location, char *name,
+                                bool inlined, AstNode *convention,
+                                bool require_semicolon_after_arrow) {
+  // Handle generic parameters: [T, U]
+  Token *type_params = NULL;
+  size_t type_param_count = 0;
 
-  // Generics (parsed but minimal: keep empty for now)
-  fn->data.func_decl.type_params = NULL;
-  fn->data.func_decl.type_param_count = 0;
+  if (parser2_match(p, TOKEN_LBRACKET)) {
+    typedef struct TypeParamNode {
+      Token tok;
+      struct TypeParamNode *next;
+    } TypeParamNode;
 
-  parser2_consume(p, TOKEN_LPAREN, "Expected '(' after function name");
+    TypeParamNode *head = NULL;
+    TypeParamNode *tail = NULL;
 
-  // Minimal: no params (support empty list)
-  fn->data.func_decl.params = NULL;
-  fn->data.func_decl.param_count = 0;
-  if (!parser2_check(p, TOKEN_RPAREN)) {
-    // Not implementing params yet; recover by syncing to ')'
-    parser2_handle_error(p, "Parameters not implemented in parser2 yet");
-    while (!parser2_check(p, TOKEN_RPAREN) && !parser2_check(p, TOKEN_EOF)) {
-      parser2_advance(p);
+    if (!parser2_check(p, TOKEN_RBRACKET)) {
+      while (true) {
+        Token type_param_name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+
+        TypeParamNode *node = arena_alloc(&long_lived, sizeof(TypeParamNode));
+        node->tok = type_param_name;
+        node->next = NULL;
+
+        if (!head) {
+          head = node;
+          tail = node;
+        } else {
+          tail->next = node;
+          tail = node;
+        }
+        type_param_count++;
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+
+        if (parser2_check(p, TOKEN_RBRACKET)) {
+          break;
+        }
+      }
+    }
+
+    parser2_consume(p, TOKEN_RBRACKET, "Expected '[' after generic parameters");
+
+    if (type_param_count > 0) {
+      type_params = arena_alloc(&long_lived, type_param_count * sizeof(Token));
+      size_t i = 0;
+      for (TypeParamNode *n = head; n; n = n->next) {
+        type_params[i++] = n->tok;
+      }
     }
   }
-  parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
 
-  // Return type (required in parser.c path)
-  fn->data.func_decl.return_type = parse_type_expression2(p);
-  if (!fn->data.func_decl.return_type)
-    return NULL;
+  // (params) return_type { body } or => expr
+  parser2_consume(p, TOKEN_LPAREN, "Expected '(' after function name");
 
-  // Body: block or fat-arrow expression
-  if (parser2_match(p, TOKEN_FAT_ARROW)) {
-    // Expression-bodied function: => expr ;
-    AstNode *expr = parse_expression2(p);
-    if (!expr)
-      return NULL;
+  typedef struct FuncParamNode {
+    FuncParam param;
+    struct FuncParamNode *next;
+  } FuncParamNode;
 
-    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                             "Expected ';' after expression-bodied function");
+  FuncParamNode *param_head = NULL;
+  FuncParamNode *param_tail = NULL;
+  size_t param_count = 0;
 
-    AstNode *ret = alloc_node(AST_STMT_RETURN, expr->loc);
-    ret->data.return_stmt.expr = expr;
+  if (!parser2_check(p, TOKEN_RPAREN)) {
+    while (true) {
+      bool is_variadic = parser2_match(p, TOKEN_ELLIPSIS);
 
-    AstNode *block = alloc_node(AST_STMT_BLOCK, expr->loc);
-    AstNode **stmts = arena_alloc(&long_lived, 1 * sizeof(AstNode *));
-    stmts[0] = ret;
-    block->data.block_stmt.stmts = stmts;
-    block->data.block_stmt.stmt_count = 1;
+      Token param_name =
+          parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+      if (param_name.type != TOKEN_IDENTIFIER)
+        return NULL;
 
-    fn->data.func_decl.body = block;
-    return fn;
+      if (parser2_check(p, TOKEN_COMMA)) {
+        FuncParamNode *group_start = NULL;
+        FuncParamNode *group_end = NULL;
+
+        FuncParamNode *node = arena_alloc(&long_lived, sizeof(FuncParamNode));
+        node->param.name = param_name.lexeme;
+        node->param.type = NULL;
+        node->param.is_variadic = false;
+        node->next = NULL;
+
+        if (!param_head) {
+          param_head = node;
+          param_tail = node;
+        } else {
+          param_tail->next = node;
+          param_tail = node;
+        }
+        group_start = node;
+        group_end = node;
+        param_count++;
+
+        while (parser2_match(p, TOKEN_COMMA)) {
+          if (!parser2_check(p, TOKEN_IDENTIFIER)) {
+            parser2_handle_error(p, "Expected parameter name");
+            break;
+          }
+
+          Token next_name =
+              parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
+
+          FuncParamNode *n = arena_alloc(&long_lived, sizeof(FuncParamNode));
+          n->param.name = next_name.lexeme;
+          n->param.type = NULL;
+          n->param.is_variadic = false;
+          n->next = NULL;
+
+          param_tail->next = n;
+          param_tail = n;
+          group_end = n;
+          param_count++;
+        }
+
+        AstNode *param_type = parse_type_expression2(p);
+        if (!param_type)
+          return NULL;
+
+        for (FuncParamNode *n = group_start;; n = n->next) {
+          n->param.type = param_type;
+          n->param.is_variadic = false;
+          if (n == group_end)
+            break;
+        }
+      } else {
+        AstNode *param_type = parse_type_expression2(p);
+        if (!param_type)
+          return NULL;
+
+        FuncParamNode *node = arena_alloc(&long_lived, sizeof(FuncParamNode));
+        node->param.name = param_name.lexeme;
+        node->param.type = param_type;
+        node->param.is_variadic = is_variadic;
+        node->next = NULL;
+
+        if (!param_head) {
+          param_head = node;
+          param_tail = node;
+        } else {
+          param_tail->next = node;
+          param_tail = node;
+        }
+        param_count++;
+      }
+
+      if (!parser2_match(p, TOKEN_COMMA)) {
+        break;
+      }
+
+      if (parser2_check(p, TOKEN_RPAREN)) {
+        break;
+      }
+    }
   }
 
-  parser2_consume(p, TOKEN_LBRACE, "Expected '{' before function body");
-  fn->data.func_decl.body = parse_block_stmt2(p);
-  if (!fn->data.func_decl.body)
+  parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
+
+  AstNode *return_type = parse_type_expression2(p);
+  if (!return_type)
     return NULL;
 
-  return fn;
+  AstNode *body = NULL;
+  if (parser2_match(p, TOKEN_FAT_ARROW)) {
+    AstNode *expr = parse_expression2(p);
+    if (!expr) {
+      // Local recovery: avoid dropping the whole function on a bad arrow body.
+      if (require_semicolon_after_arrow) {
+        while (!parser2_check(p, TOKEN_SEMICOLON) &&
+               !parser2_check(p, TOKEN_EOF) &&
+               !parser2_follow_stmt_boundary(p->current.type,
+                                             PARSE_CTX_TOP_LEVEL)) {
+          parser2_advance(p);
+        }
+        if (!parser2_match(p, TOKEN_SEMICOLON)) {
+          parser2_handle_error(p,
+                               "Expected ';' after expression-bodied function");
+        }
+      } else {
+        while (!parser2_is_expr_terminator(p->current.type) &&
+               !parser2_check(p, TOKEN_EOF)) {
+          parser2_advance(p);
+        }
+      }
+
+      body = alloc_node(AST_STMT_BLOCK, location);
+      body->data.block_stmt.stmts = NULL;
+      body->data.block_stmt.stmt_count = 0;
+    } else {
+      if (require_semicolon_after_arrow) {
+        if (!parser2_match(p, TOKEN_SEMICOLON)) {
+          parser2_handle_error(p,
+                               "Expected ';' after expression-bodied function");
+        }
+      }
+
+      AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
+      ret_stmt->data.return_stmt.expr = expr;
+
+      AstNode **stmts = arena_alloc(&long_lived, sizeof(AstNode *));
+      stmts[0] = ret_stmt;
+      body = alloc_node(AST_STMT_BLOCK, expr->loc);
+      body->data.block_stmt.stmts = stmts;
+      body->data.block_stmt.stmt_count = 1;
+    }
+  } else {
+    parser2_consume(p, TOKEN_LBRACE, "Expected '{' before function body");
+    body = parse_block_stmt2(p);
+    if (!body)
+      return NULL;
+  }
+
+  FuncParam *params = NULL;
+  if (param_count > 0) {
+    params = arena_alloc(&long_lived, param_count * sizeof(FuncParam));
+    size_t i = 0;
+    for (FuncParamNode *n = param_head; n; n = n->next) {
+      params[i++] = n->param;
+    }
+  }
+
+  AstNode *func = NULL;
+
+  if (name) {
+    func = alloc_node(AST_DECL_FUNCTION, location);
+    func->data.func_decl.name = name;
+    func->data.func_decl.qualified_name = name;
+    func->data.func_decl.full_qualified_name = NULL;
+    func->data.func_decl.params = params;
+    func->data.func_decl.param_count = param_count;
+    func->data.func_decl.return_type = return_type;
+    func->data.func_decl.body = body;
+    func->data.func_decl.inlined = inlined;
+    func->data.func_decl.convention = convention;
+    func->data.func_decl.type_params = type_params;
+    func->data.func_decl.type_param_count = type_param_count;
+  } else {
+    func = alloc_node(AST_EXPR_FUNCTION, location);
+    func->data.func_expr.params = params;
+    func->data.func_expr.param_count = param_count;
+    func->data.func_expr.return_type = return_type;
+    func->data.func_expr.body = body;
+    func->data.func_expr.inlined = inlined;
+    func->data.func_expr.convention = convention;
+    func->data.func_expr.type_params = type_params;
+    func->data.func_expr.type_param_count = type_param_count;
+    func->data.func_expr.symbol = NULL;
+  }
+
+  return func;
 }
 
 static AstNode *parse_block_stmt2(Parser2 *p) {
@@ -2262,6 +2467,21 @@ static AstNode *parse_primary2(Parser2 *p) {
     AstNode *some_expr = alloc_node(AST_EXPR_SOME, loc);
     some_expr->data.some_expr.value = inner_expr;
     return some_expr;
+  }
+
+  // Function literal
+  if (parser2_match(p, TOKEN_FN)) {
+    Location loc = prev_loc(p);
+    bool inlined = parser2_match(p, TOKEN_INLINE);
+
+    AstNode *convention = NULL;
+    if (parser2_match(p, TOKEN_STRING)) {
+      convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+      // Use raw lexeme to match parser.c behavior.
+      convention->data.str_lit.value = p->previous.lexeme;
+    }
+
+    return parse_function2(p, loc, NULL, inlined, convention, true);
   }
 
   // Anonymous struct literal / partial member

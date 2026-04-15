@@ -437,6 +437,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
       parser_synchronize(parser);
       return NULL;
     }
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after expression-bodied function");
     // Wrap the expression in a return statement, then in a block
     AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
     ret_stmt->data.return_stmt.expr = expr;
