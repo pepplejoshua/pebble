@@ -2052,6 +2052,13 @@ static AstNode *parse_primary2(Parser2 *p) {
     return n;
   }
 
+  // Context
+  if (parser2_match(p, TOKEN_CONTEXT)) {
+    Location loc = prev_loc(p);
+    AstNode *n = alloc_node(AST_EXPR_CONTEXT, loc);
+    return n;
+  }
+
   // Identifiers
   if (parser2_match(p, TOKEN_IDENTIFIER)) {
     Location loc = prev_loc(p);
@@ -2064,21 +2071,299 @@ static AstNode *parse_primary2(Parser2 *p) {
     return n;
   }
 
-  // Grouping
+  // Grouping / Tuple literal
   if (parser2_match(p, TOKEN_LPAREN)) {
-    Location l = prev_loc(p);
-    AstNode *inner = parse_expression2(p);
-    if (!inner) {
-      // Recover: missing expression between parens
-      parser2_handle_error(p, "Expected expression");
-      // Consume ')' if present to avoid cascading.
-      parser2_match(p, TOKEN_RPAREN);
+    Location loc = prev_loc(p);
+
+    if (parser2_match(p, TOKEN_RPAREN)) {
+      parser2_handle_error(p, "empty parentheses not allowed");
       return NULL;
     }
-    parser2_consume(p, TOKEN_RPAREN, "Expected ')'");
-    AstNode *g = alloc_node(AST_EXPR_GROUPED_EXPR, l);
-    g->data.grouped_expr.inner_expr = inner;
-    return g;
+
+    AstNode *first = parse_expression2(p);
+    if (!first) {
+      parser2_handle_error(p, "Expected expression");
+      return NULL;
+    }
+
+    if (parser2_match(p, TOKEN_COMMA)) {
+      AstNodePtrNode *head = NULL;
+      AstNodePtrNode *tail = NULL;
+      size_t count = 0;
+
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = first;
+      n->next = NULL;
+      head = n;
+      tail = n;
+      count = 1;
+
+      while (true) {
+        if (parser2_check(p, TOKEN_RPAREN)) {
+          break;
+        }
+
+        AstNode *elem = parse_expression2(p);
+        if (!elem) {
+          while (!parser2_check(p, TOKEN_COMMA) &&
+                 !parser2_check(p, TOKEN_RPAREN) &&
+                 !parser2_check(p, TOKEN_EOF)) {
+            parser2_advance(p);
+          }
+          if (parser2_match(p, TOKEN_COMMA)) {
+            continue;
+          }
+          break;
+        }
+
+        AstNodePtrNode *nn = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+        nn->node = elem;
+        nn->next = NULL;
+        tail->next = nn;
+        tail = nn;
+        count++;
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+      }
+
+      parser2_consume(p, TOKEN_RPAREN, "Expected ')' after tuple literal");
+
+      AstNode **elements = NULL;
+      if (count > 0) {
+        elements = arena_alloc(&long_lived, count * sizeof(AstNode *));
+        size_t i = 0;
+        for (AstNodePtrNode *cur = head; cur; cur = cur->next) {
+          elements[i++] = cur->node;
+        }
+      }
+
+      AstNode *tuple = alloc_node(AST_EXPR_TUPLE, loc);
+      tuple->data.tuple_expr.elements = elements;
+      tuple->data.tuple_expr.element_count = count;
+      return tuple;
+    }
+
+    parser2_consume(p, TOKEN_RPAREN, "Expected ')' after expression");
+    AstNode *grouped = alloc_node(AST_EXPR_GROUPED_EXPR, loc);
+    grouped->data.grouped_expr.inner_expr = first;
+    return grouped;
+  }
+
+  // Array literal [1,2,3] or array repeat [value; count]
+  if (parser2_match(p, TOKEN_LBRACKET)) {
+    Location loc = prev_loc(p);
+
+    if (parser2_check(p, TOKEN_RBRACKET)) {
+      parser2_advance(p);
+      AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, loc);
+      array_lit->data.array_literal.elements = NULL;
+      array_lit->data.array_literal.element_count = 0;
+      return array_lit;
+    }
+
+    AstNode *first = parse_expression2(p);
+    if (!first) {
+      return NULL;
+    }
+
+    if (parser2_match(p, TOKEN_SEMICOLON)) {
+      if (!parser2_check(p, TOKEN_INT)) {
+        parser2_handle_error(p,
+                             "Expected integer literal for array repeat count");
+        return NULL;
+      }
+
+      long long repeat_count = p->current.value.int_val;
+      if (repeat_count <= 0) {
+        parser2_handle_error(p, "Array repeat count must be positive");
+        return NULL;
+      }
+
+      parser2_advance(p);
+      parser2_consume(p, TOKEN_RBRACKET,
+                      "Expected ']' after array repeat count");
+
+      AstNode *array_repeat = alloc_node(AST_EXPR_ARRAY_REPEAT, loc);
+      array_repeat->data.array_repeat.value = first;
+      array_repeat->data.array_repeat.count = (size_t)repeat_count;
+      return array_repeat;
+    }
+
+    AstNodePtrNode *head = NULL;
+    AstNodePtrNode *tail = NULL;
+    size_t count = 0;
+
+    AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+    n->node = first;
+    n->next = NULL;
+    head = n;
+    tail = n;
+    count = 1;
+
+    while (parser2_match(p, TOKEN_COMMA)) {
+      AstNode *elem = parse_expression2(p);
+      if (!elem) {
+        while (!parser2_check(p, TOKEN_COMMA) &&
+               !parser2_check(p, TOKEN_RBRACKET) &&
+               !parser2_check(p, TOKEN_EOF)) {
+          parser2_advance(p);
+        }
+        if (parser2_check(p, TOKEN_RBRACKET)) {
+          break;
+        }
+        continue;
+      }
+
+      AstNodePtrNode *nn = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      nn->node = elem;
+      nn->next = NULL;
+      tail->next = nn;
+      tail = nn;
+      count++;
+    }
+
+    parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after array elements");
+
+    AstNode **elements = NULL;
+    if (count > 0) {
+      elements = arena_alloc(&long_lived, count * sizeof(AstNode *));
+      size_t i = 0;
+      for (AstNodePtrNode *cur = head; cur; cur = cur->next) {
+        elements[i++] = cur->node;
+      }
+    }
+
+    AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, loc);
+    array_lit->data.array_literal.elements = elements;
+    array_lit->data.array_literal.element_count = count;
+    return array_lit;
+  }
+
+  // Sizeof expression
+  if (parser2_match(p, TOKEN_SIZEOF)) {
+    Location loc = prev_loc(p);
+    AstNode *type_ast = parse_type_expression2(p);
+
+    AstNode *sizeof_expr = alloc_node(AST_EXPR_SIZEOF, loc);
+    sizeof_expr->data.sizeof_expr.type_expr = type_ast;
+    return sizeof_expr;
+  }
+
+  // Optional expression (some expression)
+  if (parser2_match(p, TOKEN_SOME)) {
+    Location loc = prev_loc(p);
+    AstNode *inner_expr = parse_expression2(p);
+    if (!inner_expr) {
+      return NULL;
+    }
+
+    AstNode *some_expr = alloc_node(AST_EXPR_SOME, loc);
+    some_expr->data.some_expr.value = inner_expr;
+    return some_expr;
+  }
+
+  // Anonymous struct literal / partial member
+  if (parser2_match(p, TOKEN_DOT)) {
+    if (parser2_match(p, TOKEN_IDENTIFIER)) {
+      AstNode *expr = alloc_node(AST_EXPR_PARTIAL_MEMBER, prev_loc(p));
+      expr->data.partial_member_expr.member = p->previous.lexeme;
+      return expr;
+    } else if (parser2_match(p, TOKEN_LBRACE)) {
+      Location loc = prev_loc(p);
+
+      typedef struct FieldNode {
+        char *name;
+        AstNode *value;
+        struct FieldNode *next;
+      } FieldNode;
+
+      FieldNode *field_head = NULL;
+      FieldNode *field_tail = NULL;
+      size_t field_count = 0;
+
+      if (!parser2_check(p, TOKEN_RBRACE)) {
+        while (true) {
+          if (parser2_check(p, TOKEN_RBRACE)) {
+            break;
+          }
+
+          if (!parser2_check(p, TOKEN_IDENTIFIER)) {
+            parser2_handle_error(p, "Expected field name in struct literal");
+            while (!parser2_check(p, TOKEN_COMMA) &&
+                   !parser2_check(p, TOKEN_RBRACE) &&
+                   !parser2_check(p, TOKEN_EOF)) {
+              parser2_advance(p);
+            }
+            if (parser2_match(p, TOKEN_COMMA)) {
+              continue;
+            }
+            break;
+          }
+
+          Token field_name = parser2_consume(
+              p, TOKEN_IDENTIFIER, "Expected field name in struct literal");
+
+          parser2_consume(p, TOKEN_EQUAL, "Expected '=' after field name");
+
+          AstNode *value = parse_expression2(p);
+          if (!value) {
+            while (!parser2_check(p, TOKEN_COMMA) &&
+                   !parser2_check(p, TOKEN_RBRACE) &&
+                   !parser2_check(p, TOKEN_EOF)) {
+              parser2_advance(p);
+            }
+            if (parser2_match(p, TOKEN_COMMA)) {
+              continue;
+            }
+            break;
+          }
+
+          FieldNode *fn = arena_alloc(&long_lived, sizeof(FieldNode));
+          fn->name = field_name.lexeme;
+          fn->value = value;
+          fn->next = NULL;
+          if (!field_head) {
+            field_head = fn;
+            field_tail = fn;
+          } else {
+            field_tail->next = fn;
+            field_tail = fn;
+          }
+          field_count++;
+
+          if (!parser2_match(p, TOKEN_COMMA)) {
+            break;
+          }
+        }
+      }
+
+      parser2_consume(p, TOKEN_RBRACE,
+                      "Expected '}' after struct literal fields");
+
+      char **field_names = NULL;
+      AstNode **field_values = NULL;
+      if (field_count > 0) {
+        field_names = arena_alloc(&long_lived, field_count * sizeof(char *));
+        field_values =
+            arena_alloc(&long_lived, field_count * sizeof(AstNode *));
+        size_t i = 0;
+        for (FieldNode *n = field_head; n; n = n->next) {
+          field_names[i] = n->name;
+          field_values[i] = n->value;
+          i++;
+        }
+      }
+
+      AstNode *expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+      expr->data.struct_literal.type_name = NULL;
+      expr->data.struct_literal.qualified_type_name = NULL;
+      expr->data.struct_literal.field_names = field_names;
+      expr->data.struct_literal.field_values = field_values;
+      expr->data.struct_literal.field_count = field_count;
+      return expr;
+    }
   }
 
   parser2_handle_error(p, "Expected expression");
