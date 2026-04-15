@@ -132,6 +132,7 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
                                 bool require_semicolon_after_arrow);
 static AstNode *parse_block_stmt2(Parser2 *p);
 static AstNode *parse_return_stmt2(Parser2 *p);
+static AstNode *parse_assignment_stmt2(Parser2 *p);
 
 // Expressions (precedence ladder)
 static AstNode *parse_expression2(Parser2 *p);
@@ -1178,15 +1179,8 @@ AstNode *parser2_statement(Parser2 *p) {
     return parse_defer_stmt2(p);
   }
 
-  // Fallback: expression statement (assignment not ported yet)
-  AstNode *expr = parse_expression2(p);
-  if (!expr)
-    return NULL;
-
-  parser2_expect_semicolon(p, PARSE_CTX_BLOCK, "Expected ';' after expression");
-  AstNode *stmt = alloc_node(AST_STMT_EXPR, expr->loc);
-  stmt->data.expr_stmt.expr = expr;
-  return stmt;
+  // Fallback: assignment or expression statement
+  return parse_assignment_stmt2(p);
 }
 
 static AstNode *parse_return_stmt2(Parser2 *p) {
@@ -1208,6 +1202,70 @@ static AstNode *parse_return_stmt2(Parser2 *p) {
   return ret;
 }
 
+static AstNode *parse_assignment_stmt2(Parser2 *p) {
+  AstNode *lhs = parse_expression2(p);
+  if (!lhs)
+    return NULL;
+
+  TokenType compound_op = TOKEN_EOF;
+  BinaryOp binop = BINOP_ADD;
+
+  if (parser2_match(p, TOKEN_PLUS_EQUAL)) {
+    compound_op = TOKEN_PLUS_EQUAL;
+    binop = BINOP_ADD;
+  } else if (parser2_match(p, TOKEN_MINUS_EQUAL)) {
+    compound_op = TOKEN_MINUS_EQUAL;
+    binop = BINOP_SUB;
+  } else if (parser2_match(p, TOKEN_STAR_EQUAL)) {
+    compound_op = TOKEN_STAR_EQUAL;
+    binop = BINOP_MUL;
+  } else if (parser2_match(p, TOKEN_SLASH_EQUAL)) {
+    compound_op = TOKEN_SLASH_EQUAL;
+    binop = BINOP_DIV;
+  } else if (parser2_match(p, TOKEN_PERCENT_EQUAL)) {
+    compound_op = TOKEN_PERCENT_EQUAL;
+    binop = BINOP_MOD;
+  }
+
+  if (compound_op != TOKEN_EOF) {
+    Location loc = prev_loc(p);
+    AstNode *rhs = parse_expression2(p);
+    if (!rhs)
+      return NULL;
+
+    parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
+                             "Expected ';' after compound assignment");
+
+    AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    assign->data.assign_stmt.op = binop;
+    assign->data.assign_stmt.lhs = lhs;
+    assign->data.assign_stmt.rhs = rhs;
+    return assign;
+  }
+
+  if (parser2_match(p, TOKEN_EQUAL)) {
+    Location loc = prev_loc(p);
+    AstNode *rhs = parse_expression2(p);
+    if (!rhs)
+      return NULL;
+
+    parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
+                             "Expected ';' after assignment");
+
+    AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    assign->data.assign_stmt.op = -1;
+    assign->data.assign_stmt.lhs = lhs;
+    assign->data.assign_stmt.rhs = rhs;
+    return assign;
+  }
+
+  parser2_expect_semicolon(p, PARSE_CTX_BLOCK, "Expected ';' after expression");
+  AstNode *expr_stmt = alloc_node(AST_STMT_EXPR, lhs->loc);
+  expr_stmt->data.expr_stmt.expr = lhs;
+  return expr_stmt;
+}
+
+// ---------- expressions (precedence ladder) ----------
 static AstNode *parse_print_stmt2(Parser2 *p) {
   // print expr (, expr)* ;
   Location loc = prev_loc(p); // 'print'
