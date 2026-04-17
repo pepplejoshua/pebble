@@ -1154,6 +1154,7 @@ static AstNode *parse_if_stmt2(Parser2 *p);
 static AstNode *parse_while_stmt2(Parser2 *p);
 static AstNode *parse_loop_stmt2(Parser2 *p);
 static AstNode *parse_for_stmt2(Parser2 *p);
+static AstNode *parse_switch_stmt2(Parser2 *p);
 
 AstNode *parser2_statement(Parser2 *p) {
   if (parser2_match(p, TOKEN_RETURN)) {
@@ -1194,6 +1195,10 @@ AstNode *parser2_statement(Parser2 *p) {
 
   if (parser2_match(p, TOKEN_BREAK) || parser2_match(p, TOKEN_CONTINUE)) {
     return parse_break_continue_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_SWITCH)) {
+    return parse_switch_stmt2(p);
   }
 
   if (parser2_match(p, TOKEN_DEFER)) {
@@ -1339,6 +1344,106 @@ static AstNode *parse_for_stmt2(Parser2 *p) {
   stmt->data.for_stmt.cond = cond;
   stmt->data.for_stmt.update = update;
   stmt->data.for_stmt.body = body;
+  return stmt;
+}
+
+static AstNode *parse_switch_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p);
+
+  AstNode *stmt = alloc_node(AST_STMT_SWITCH, loc);
+  stmt->data.switch_stmt.condition = parse_expression2(p);
+
+  parser2_consume(p, TOKEN_LBRACE, "Expect '{' after switch condition");
+
+  AstNodePtrNode *case_head = NULL;
+  AstNodePtrNode *case_tail = NULL;
+  size_t case_count = 0;
+
+  while (parser2_match(p, TOKEN_CASE)) {
+    AstNode *_case = alloc_node(AST_STMT_CASE, prev_loc(p));
+    _case->data.case_stmt.switch_stmt = stmt;
+    _case->data.case_stmt.condition = parse_expression2(p);
+
+    AstNodePtrNode *alt_head = NULL;
+    AstNodePtrNode *alt_tail = NULL;
+    size_t alt_count = 0;
+
+    if (parser2_match(p, TOKEN_COMMA)) {
+      while (true) {
+        AstNode *alt_case = alloc_node(AST_STMT_CASE, prev_loc(p));
+        alt_case->data.case_stmt.switch_stmt = stmt;
+        alt_case->data.case_stmt.condition = parse_expression2(p);
+        alt_case->data.case_stmt.body = NULL;
+        alt_case->data.case_stmt.alt_conditions = NULL;
+        alt_case->data.case_stmt.alt_condition_count = 0;
+
+        AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+        n->node = alt_case;
+        n->next = NULL;
+        if (!alt_head) {
+          alt_head = n;
+          alt_tail = n;
+        } else {
+          alt_tail->next = n;
+          alt_tail = n;
+        }
+        alt_count++;
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+      }
+    }
+
+    if (alt_count > 0) {
+      AstNode **alt_cases =
+          arena_alloc(&long_lived, alt_count * sizeof(AstNode *));
+      size_t i = 0;
+      for (AstNodePtrNode *n = alt_head; n; n = n->next) {
+        alt_cases[i++] = n->node;
+      }
+      _case->data.case_stmt.alt_conditions = alt_cases;
+      _case->data.case_stmt.alt_condition_count = alt_count;
+    } else {
+      _case->data.case_stmt.alt_conditions = NULL;
+      _case->data.case_stmt.alt_condition_count = 0;
+    }
+
+    parser2_consume(p, TOKEN_COLON, "Expect ':' after switch case condition");
+    _case->data.case_stmt.body = parser2_statement(p);
+
+    AstNodePtrNode *cn = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+    cn->node = _case;
+    cn->next = NULL;
+    if (!case_head) {
+      case_head = cn;
+      case_tail = cn;
+    } else {
+      case_tail->next = cn;
+      case_tail = cn;
+    }
+    case_count++;
+  }
+
+  AstNode **cases = NULL;
+  if (case_count > 0) {
+    cases = arena_alloc(&long_lived, case_count * sizeof(AstNode *));
+    size_t i = 0;
+    for (AstNodePtrNode *n = case_head; n; n = n->next) {
+      cases[i++] = n->node;
+    }
+  }
+
+  stmt->data.switch_stmt.cases = cases;
+  stmt->data.switch_stmt.case_count = case_count;
+
+  if (parser2_match(p, TOKEN_ELSE)) {
+    parser2_consume(p, TOKEN_COLON, "Expect ':' after switch case else");
+    stmt->data.switch_stmt.default_case = parser2_statement(p);
+  }
+
+  parser2_consume(p, TOKEN_RBRACE, "Expect '}' after switch cases");
+
   return stmt;
 }
 
