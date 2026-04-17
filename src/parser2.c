@@ -1150,9 +1150,30 @@ static AstNode *parse_block_stmt2(Parser2 *p) {
   return block;
 }
 
+static AstNode *parse_if_stmt2(Parser2 *p);
+static AstNode *parse_while_stmt2(Parser2 *p);
+static AstNode *parse_loop_stmt2(Parser2 *p);
+static AstNode *parse_for_stmt2(Parser2 *p);
+
 AstNode *parser2_statement(Parser2 *p) {
   if (parser2_match(p, TOKEN_RETURN)) {
     return parse_return_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_IF)) {
+    return parse_if_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_WHILE)) {
+    return parse_while_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_LOOP)) {
+    return parse_loop_stmt2(p);
+  }
+
+  if (parser2_match(p, TOKEN_FOR)) {
+    return parse_for_stmt2(p);
   }
 
   if (parser2_match(p, TOKEN_LBRACE)) {
@@ -1200,6 +1221,125 @@ static AstNode *parse_return_stmt2(Parser2 *p) {
                            "Expected ';' after return statement");
   ret->data.return_stmt.expr = expr;
   return ret;
+}
+
+static AstNode *parse_if_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p);
+
+  AstNode *cond = parse_expression2(p);
+  AstNode *then_branch = parser2_statement(p);
+
+  AstNode *else_branch = NULL;
+  if (parser2_match(p, TOKEN_ELSE)) {
+    else_branch = parser2_statement(p);
+  }
+
+  AstNode *stmt = alloc_node(AST_STMT_IF, loc);
+  stmt->data.if_stmt.cond = cond;
+  stmt->data.if_stmt.then_branch = then_branch;
+  stmt->data.if_stmt.else_branch = else_branch;
+  return stmt;
+}
+
+static AstNode *parse_while_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p);
+
+  AstNode *cond = parse_expression2(p);
+  AstNode *body = parser2_statement(p);
+
+  AstNode *stmt = alloc_node(AST_STMT_WHILE, loc);
+  stmt->data.while_stmt.cond = cond;
+  stmt->data.while_stmt.body = body;
+  return stmt;
+}
+
+static AstNode *parse_loop_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p);
+
+  AstNode *start = parse_expression2(p);
+
+  bool inclusive = false;
+  if (parser2_match(p, TOKEN_DOTDOTEQ)) {
+    inclusive = true;
+  } else if (parser2_match(p, TOKEN_DOTDOT)) {
+    inclusive = false;
+  } else {
+    parser2_handle_error(p, "Expected '..' or '..=' in loop range");
+    return NULL;
+  }
+
+  AstNode *end = parse_expression2(p);
+
+  AstNode *iterator_name = NULL;
+  if (parser2_match(p, TOKEN_COLON)) {
+    iterator_name = parse_primary2(p);
+    if (iterator_name && iterator_name->kind != AST_EXPR_IDENTIFIER) {
+      parser2_handle_error(
+          p, "Expected an identifier to name the iterator of the loop.");
+    }
+  }
+
+  AstNode *body = parser2_statement(p);
+
+  AstNode *stmt = alloc_node(AST_STMT_LOOP, loc);
+  stmt->data.loop_stmt.start = start;
+  stmt->data.loop_stmt.end = end;
+  stmt->data.loop_stmt.inclusive = inclusive;
+  stmt->data.loop_stmt.iterator_name = iterator_name;
+  stmt->data.loop_stmt.body = body;
+  return stmt;
+}
+
+static AstNode *parse_for_stmt2(Parser2 *p) {
+  Location loc = prev_loc(p);
+
+  AstNode *init = NULL;
+  if (parser2_match(p, TOKEN_VAR)) {
+    init = parse_variable_decl2(p, true);
+  } else {
+    AstNode *init_lhs = parse_expression2(p);
+    parser2_consume(p, TOKEN_EQUAL, "Expected '=' in for loop init");
+    AstNode *init_rhs = parse_expression2(p);
+    parser2_consume(p, TOKEN_SEMICOLON, "Expected ';' after for loop init");
+    if (!init_lhs || !init_rhs) {
+      return NULL;
+    }
+
+    init = alloc_node(AST_STMT_ASSIGN, init_lhs->loc);
+    init->data.assign_stmt.op = -1;
+    init->data.assign_stmt.lhs = init_lhs;
+    init->data.assign_stmt.rhs = init_rhs;
+  }
+
+  AstNode *cond = parse_expression2(p);
+  parser2_consume(p, TOKEN_SEMICOLON, "Expected ';' after for loop condition");
+
+  AstNode *lhs = parse_expression2(p);
+  AstNode *update = lhs;
+
+  if (lhs && lhs->kind != AST_EXPR_POSTFIX_INC &&
+      lhs->kind != AST_EXPR_POSTFIX_DEC) {
+    parser2_consume(p, TOKEN_EQUAL, "Expected '=' in for loop update");
+    AstNode *rhs = parse_expression2(p);
+
+    if (!lhs || !rhs) {
+      return NULL;
+    }
+
+    update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
+    update->data.assign_stmt.op = -1;
+    update->data.assign_stmt.lhs = lhs;
+    update->data.assign_stmt.rhs = rhs;
+  }
+
+  AstNode *body = parser2_statement(p);
+
+  AstNode *stmt = alloc_node(AST_STMT_FOR, loc);
+  stmt->data.for_stmt.init = init;
+  stmt->data.for_stmt.cond = cond;
+  stmt->data.for_stmt.update = update;
+  stmt->data.for_stmt.body = body;
+  return stmt;
 }
 
 static AstNode *parse_assignment_stmt2(Parser2 *p) {
