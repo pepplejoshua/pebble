@@ -2893,12 +2893,514 @@ static AstNode *parse_primary2(Parser2 *p) {
   return NULL;
 }
 
-// ---------- minimal type expr ----------
+// ---------- type expr ----------
 static AstNode *parse_type_expression2(Parser2 *p) {
-  // Minimal: named types only, including built-in types lexed as distinct
-  // tokens
+  AstNode *type = NULL;
+
+  // Function type: fn(T1, T2, ...) ReturnType
+  if (parser2_match(p, TOKEN_FN)) {
+    Location loc = prev_loc(p);
+
+    AstNode *convention = NULL;
+    if (parser2_match(p, TOKEN_STRING)) {
+      convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+      convention->data.str_lit.value = p->previous.lexeme;
+    }
+
+    parser2_consume(p, TOKEN_LPAREN, "Expected '(' after 'fn'");
+
+    AstNodePtrNode *head = NULL;
+    AstNodePtrNode *tail = NULL;
+    size_t count = 0;
+
+    if (!parser2_check(p, TOKEN_RPAREN)) {
+      while (true) {
+        AstNode *param_type = parse_type_expression2(p);
+        if (!param_type)
+          return NULL;
+
+        AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+        n->node = param_type;
+        n->next = NULL;
+        if (!head) {
+          head = n;
+          tail = n;
+        } else {
+          tail->next = n;
+          tail = n;
+        }
+        count++;
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+      }
+    }
+
+    parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameter types");
+
+    AstNode *return_type = parse_type_expression2(p);
+    if (!return_type) {
+      parser2_handle_error(p, "Expected return type after function parameters");
+      return NULL;
+    }
+
+    AstNode **param_types = NULL;
+    if (count > 0) {
+      param_types = arena_alloc(&long_lived, count * sizeof(AstNode *));
+      size_t i = 0;
+      for (AstNodePtrNode *n = head; n; n = n->next) {
+        param_types[i++] = n->node;
+      }
+    }
+
+    type = alloc_node(AST_TYPE_FUNCTION, loc);
+    type->data.type_function.convention = convention;
+    type->data.type_function.param_types = param_types;
+    type->data.type_function.param_count = count;
+    type->data.type_function.return_type = return_type;
+    return type;
+  }
+
+  // Tuple type: (T1, T2, ...)
+  if (parser2_match(p, TOKEN_LPAREN)) {
+    Location loc = prev_loc(p);
+
+    if (parser2_match(p, TOKEN_RPAREN)) {
+      parser2_handle_error(p, "empty tuple type not allowed");
+      return NULL;
+    }
+
+    AstNode *first = parse_type_expression2(p);
+    if (!first)
+      return NULL;
+
+    if (parser2_match(p, TOKEN_COMMA)) {
+      AstNodePtrNode *head = NULL;
+      AstNodePtrNode *tail = NULL;
+      size_t count = 0;
+
+      AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+      n->node = first;
+      n->next = NULL;
+      head = n;
+      tail = n;
+      count = 1;
+
+      while (true) {
+        AstNode *elem = parse_type_expression2(p);
+        if (!elem)
+          return NULL;
+
+        AstNodePtrNode *nn = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+        nn->node = elem;
+        nn->next = NULL;
+        tail->next = nn;
+        tail = nn;
+        count++;
+
+        if (!parser2_match(p, TOKEN_COMMA)) {
+          break;
+        }
+      }
+
+      parser2_consume(p, TOKEN_RPAREN, "Expected ')' after tuple type");
+
+      AstNode **elements = arena_alloc(&long_lived, count * sizeof(AstNode *));
+      size_t i = 0;
+      for (AstNodePtrNode *cur = head; cur; cur = cur->next) {
+        elements[i++] = cur->node;
+      }
+
+      type = alloc_node(AST_TYPE_TUPLE, loc);
+      type->data.type_tuple.element_types = elements;
+      type->data.type_tuple.element_count = count;
+      return type;
+    }
+
+    parser2_consume(p, TOKEN_RPAREN, "Expected ')'");
+    return first;
+  }
+
+  // Pointer type: *T
+  if (parser2_match(p, TOKEN_STAR)) {
+    Location loc = prev_loc(p);
+    AstNode *base = parse_type_expression2(p);
+
+    type = alloc_node(AST_TYPE_POINTER, loc);
+    type->data.type_pointer.base = base;
+    return type;
+  }
+
+  // Optional type: ?T
+  if (parser2_match(p, TOKEN_QUESTION)) {
+    Location loc = prev_loc(p);
+    AstNode *base = parse_type_expression2(p);
+
+    type = alloc_node(AST_TYPE_OPTIONAL, loc);
+    type->data.type_optional.base = base;
+    return type;
+  }
+
+  // Array or slice: [N]T or []T
+  if (parser2_match(p, TOKEN_LBRACKET)) {
+    Location loc = prev_loc(p);
+
+    if (parser2_match(p, TOKEN_RBRACKET)) {
+      AstNode *element = parse_type_expression2(p);
+      type = alloc_node(AST_TYPE_SLICE, loc);
+      type->data.type_slice.element = element;
+      return type;
+    }
+
+    if (!parser2_check(p, TOKEN_INT)) {
+      parser2_handle_error(p, "Expected array size");
+      return NULL;
+    }
+    parser2_advance(p);
+    Token size_tok = p->previous;
+    size_t size = (size_t)size_tok.value.int_val;
+
+    parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after array size");
+    AstNode *element = parse_type_expression2(p);
+
+    type = alloc_node(AST_TYPE_ARRAY, loc);
+    type->data.type_array.element = element;
+    type->data.type_array.size = size;
+    return type;
+  }
+
+  // Struct type: struct { ... }
+  if (parser2_match(p, TOKEN_STRUCT)) {
+    Location loc = prev_loc(p);
+
+    parser2_consume(p, TOKEN_LBRACE, "Expected '{' after 'struct'");
+
+    typedef struct FieldNode {
+      char *name;
+      AstNode *type_expr;
+      struct FieldNode *next;
+    } FieldNode;
+
+    typedef struct MethodNode {
+      AstNode *method;
+      struct MethodNode *next;
+    } MethodNode;
+
+    FieldNode *field_head = NULL;
+    FieldNode *field_tail = NULL;
+    size_t field_count = 0;
+
+    MethodNode *method_head = NULL;
+    MethodNode *method_tail = NULL;
+    size_t method_count = 0;
+
+    while (!parser2_check(p, TOKEN_RBRACE)) {
+      if (parser2_check(p, TOKEN_FN)) {
+        parser2_advance(p);
+        AstNode *method = parse_function_decl2(p);
+        if (!method) {
+          return NULL;
+        }
+
+        MethodNode *mn = arena_alloc(&long_lived, sizeof(MethodNode));
+        mn->method = method;
+        mn->next = NULL;
+        if (!method_head) {
+          method_head = mn;
+          method_tail = mn;
+        } else {
+          method_tail->next = mn;
+          method_tail = mn;
+        }
+        method_count++;
+        continue;
+      }
+
+      if (!parser2_check(p, TOKEN_IDENTIFIER)) {
+        parser2_handle_error(p, "Expected field name");
+        return NULL;
+      }
+
+      // Parse field name(s)
+      typedef struct NameNode {
+        char *name;
+        struct NameNode *next;
+      } NameNode;
+
+      NameNode *name_head = NULL;
+      NameNode *name_tail = NULL;
+
+      Token field_name =
+          parser2_consume(p, TOKEN_IDENTIFIER, "Expected field name");
+      NameNode *nn = arena_alloc(&long_lived, sizeof(NameNode));
+      nn->name = field_name.lexeme;
+      nn->next = NULL;
+      name_head = nn;
+      name_tail = nn;
+
+      while (parser2_match(p, TOKEN_COMMA)) {
+        Token next_name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected field name");
+        NameNode *n2 = arena_alloc(&long_lived, sizeof(NameNode));
+        n2->name = next_name.lexeme;
+        n2->next = NULL;
+        name_tail->next = n2;
+        name_tail = n2;
+      }
+
+      AstNode *field_type = parse_type_expression2(p);
+      if (!field_type)
+        return NULL;
+
+      for (NameNode *n = name_head; n; n = n->next) {
+        FieldNode *fn = arena_alloc(&long_lived, sizeof(FieldNode));
+        fn->name = n->name;
+        fn->type_expr = field_type;
+        fn->next = NULL;
+        if (!field_head) {
+          field_head = fn;
+          field_tail = fn;
+        } else {
+          field_tail->next = fn;
+          field_tail = fn;
+        }
+        field_count++;
+      }
+
+      parser2_consume(p, TOKEN_SEMICOLON, "Expected ';' after field");
+    }
+
+    parser2_consume(p, TOKEN_RBRACE, "Expected '}' after struct fields");
+
+    char **field_names = NULL;
+    AstNode **field_types = NULL;
+    if (field_count > 0) {
+      field_names = arena_alloc(&long_lived, field_count * sizeof(char *));
+      field_types = arena_alloc(&long_lived, field_count * sizeof(AstNode *));
+      size_t i = 0;
+      for (FieldNode *n = field_head; n; n = n->next) {
+        field_names[i] = n->name;
+        field_types[i] = n->type_expr;
+        i++;
+      }
+    }
+
+    AstNode **methods = NULL;
+    if (method_count > 0) {
+      methods = arena_alloc(&long_lived, method_count * sizeof(AstNode *));
+      size_t i = 0;
+      for (MethodNode *m = method_head; m; m = m->next) {
+        methods[i++] = m->method;
+      }
+    }
+
+    type = alloc_node(AST_TYPE_STRUCT, loc);
+    type->data.type_struct.field_names = field_names;
+    type->data.type_struct.field_types = field_types;
+    type->data.type_struct.field_count = field_count;
+    type->data.type_struct.methods = methods;
+    type->data.type_struct.method_count = method_count;
+    return type;
+  }
+
+  // Union type: union (enum) { ... }
+  if (parser2_match(p, TOKEN_UNION)) {
+    Location loc = prev_loc(p);
+
+    bool is_tagged = parser2_match(p, TOKEN_ENUM);
+
+    parser2_consume(p, TOKEN_LBRACE, "Expected '{' after 'union'");
+
+    typedef struct FieldNode {
+      char *name;
+      AstNode *type_expr;
+      struct FieldNode *next;
+    } FieldNode;
+
+    typedef struct MethodNode {
+      AstNode *method;
+      struct MethodNode *next;
+    } MethodNode;
+
+    FieldNode *field_head = NULL;
+    FieldNode *field_tail = NULL;
+    size_t field_count = 0;
+
+    MethodNode *method_head = NULL;
+    MethodNode *method_tail = NULL;
+    size_t method_count = 0;
+
+    while (!parser2_check(p, TOKEN_RBRACE)) {
+      if (parser2_check(p, TOKEN_FN)) {
+        parser2_advance(p);
+        AstNode *method = parse_function_decl2(p);
+        if (!method) {
+          return NULL;
+        }
+
+        MethodNode *mn = arena_alloc(&long_lived, sizeof(MethodNode));
+        mn->method = method;
+        mn->next = NULL;
+        if (!method_head) {
+          method_head = mn;
+          method_tail = mn;
+        } else {
+          method_tail->next = mn;
+          method_tail = mn;
+        }
+        method_count++;
+        continue;
+      }
+
+      if (!parser2_check(p, TOKEN_IDENTIFIER)) {
+        parser2_handle_error(p, "Expected field name");
+        return NULL;
+      }
+
+      typedef struct NameNode {
+        char *name;
+        struct NameNode *next;
+      } NameNode;
+
+      NameNode *name_head = NULL;
+      NameNode *name_tail = NULL;
+
+      Token field_name =
+          parser2_consume(p, TOKEN_IDENTIFIER, "Expected field name");
+      NameNode *nn = arena_alloc(&long_lived, sizeof(NameNode));
+      nn->name = field_name.lexeme;
+      nn->next = NULL;
+      name_head = nn;
+      name_tail = nn;
+
+      while (parser2_match(p, TOKEN_COMMA)) {
+        Token next_name =
+            parser2_consume(p, TOKEN_IDENTIFIER, "Expected field name");
+        NameNode *n2 = arena_alloc(&long_lived, sizeof(NameNode));
+        n2->name = next_name.lexeme;
+        n2->next = NULL;
+        name_tail->next = n2;
+        name_tail = n2;
+      }
+
+      AstNode *field_type = parse_type_expression2(p);
+      if (!field_type)
+        return NULL;
+
+      for (NameNode *n = name_head; n; n = n->next) {
+        FieldNode *fn = arena_alloc(&long_lived, sizeof(FieldNode));
+        fn->name = n->name;
+        fn->type_expr = field_type;
+        fn->next = NULL;
+        if (!field_head) {
+          field_head = fn;
+          field_tail = fn;
+        } else {
+          field_tail->next = fn;
+          field_tail = fn;
+        }
+        field_count++;
+      }
+
+      parser2_consume(p, TOKEN_SEMICOLON, "Expected ';' after variant");
+    }
+
+    parser2_consume(p, TOKEN_RBRACE, "Expected '}' after union fields");
+
+    char **variant_names = NULL;
+    AstNode **variant_types = NULL;
+    if (field_count > 0) {
+      variant_names = arena_alloc(&long_lived, field_count * sizeof(char *));
+      variant_types = arena_alloc(&long_lived, field_count * sizeof(AstNode *));
+      size_t i = 0;
+      for (FieldNode *n = field_head; n; n = n->next) {
+        variant_names[i] = n->name;
+        variant_types[i] = n->type_expr;
+        i++;
+      }
+    }
+
+    AstNode **methods = NULL;
+    if (method_count > 0) {
+      methods = arena_alloc(&long_lived, method_count * sizeof(AstNode *));
+      size_t i = 0;
+      for (MethodNode *m = method_head; m; m = m->next) {
+        methods[i++] = m->method;
+      }
+    }
+
+    type = alloc_node(AST_TYPE_UNION, loc);
+    type->data.type_union.is_tagged = is_tagged;
+    type->data.type_union.variant_names = variant_names;
+    type->data.type_union.variant_types = variant_types;
+    type->data.type_union.variant_count = field_count;
+    type->data.type_union.methods = methods;
+    type->data.type_union.method_count = method_count;
+    return type;
+  }
+
+  // Enum type: enum { variant, ... }
+  if (parser2_match(p, TOKEN_ENUM)) {
+    Location loc = prev_loc(p);
+
+    parser2_consume(p, TOKEN_LBRACE, "Expected '{' after 'enum'");
+
+    typedef struct NameNode {
+      char *name;
+      struct NameNode *next;
+    } NameNode;
+
+    NameNode *head = NULL;
+    NameNode *tail = NULL;
+    size_t count = 0;
+
+    if (!parser2_check(p, TOKEN_RBRACE)) {
+      do {
+        if (parser2_check(p, TOKEN_RBRACE)) {
+          break;
+        }
+
+        if (!parser2_check(p, TOKEN_IDENTIFIER)) {
+          parser2_handle_error(p, "Expected enum variant name");
+          return NULL;
+        }
+        parser2_advance(p);
+        Token variant_name = p->previous;
+
+        NameNode *n = arena_alloc(&long_lived, sizeof(NameNode));
+        n->name = variant_name.lexeme;
+        n->next = NULL;
+        if (!head) {
+          head = n;
+          tail = n;
+        } else {
+          tail->next = n;
+          tail = n;
+        }
+        count++;
+      } while (parser2_match(p, TOKEN_COMMA));
+    }
+
+    parser2_consume(p, TOKEN_RBRACE, "Expected '}' after enum variants");
+
+    char **variant_names = NULL;
+    if (count > 0) {
+      variant_names = arena_alloc(&long_lived, count * sizeof(char *));
+      size_t i = 0;
+      for (NameNode *n = head; n; n = n->next) {
+        variant_names[i++] = n->name;
+      }
+    }
+
+    type = alloc_node(AST_TYPE_ENUM, loc);
+    type->data.type_enum.variant_names = variant_names;
+    type->data.type_enum.variant_count = count;
+    return type;
+  }
+
+  // Built-in types
   switch (p->current.type) {
-  case TOKEN_IDENTIFIER:
   case TOKEN_INT_TYPE:
   case TOKEN_BOOL_TYPE:
   case TOKEN_STR_TYPE:
@@ -2924,6 +3426,75 @@ static AstNode *parse_type_expression2(Parser2 *p) {
   }
   default:
     break;
+  }
+
+  // Custom/named types (with optional qualified name and type args)
+  if (parser2_match(p, TOKEN_IDENTIFIER)) {
+    Token name = p->previous;
+
+    bool is_qualified = false;
+    if (parser2_match(p, TOKEN_MOD_SCOPE)) {
+      Token mem = parser2_consume(p, TOKEN_IDENTIFIER,
+                                  "Expected an identifier after '::'");
+      type = alloc_node(AST_TYPE_QUALIFIED_NAMED, mem.location);
+      type->data.type_qualified_named.mod_name = name.lexeme;
+      type->data.type_qualified_named.mem_name = mem.lexeme;
+      is_qualified = true;
+    } else {
+      type = alloc_node(AST_TYPE_NAMED, name.location);
+      type->data.type_named.name = name.lexeme;
+    }
+
+    AstNodePtrNode *head = NULL;
+    AstNodePtrNode *tail = NULL;
+    size_t count = 0;
+
+    if (parser2_match(p, TOKEN_LBRACKET)) {
+      if (!parser2_check(p, TOKEN_RBRACKET)) {
+        while (true) {
+          AstNode *arg = parse_type_expression2(p);
+          if (!arg)
+            return NULL;
+
+          AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
+          n->node = arg;
+          n->next = NULL;
+          if (!head) {
+            head = n;
+            tail = n;
+          } else {
+            tail->next = n;
+            tail = n;
+          }
+          count++;
+
+          if (!parser2_match(p, TOKEN_COMMA)) {
+            break;
+          }
+        }
+      }
+
+      parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after type arguments");
+    }
+
+    AstNode **type_args = NULL;
+    if (count > 0) {
+      type_args = arena_alloc(&long_lived, count * sizeof(AstNode *));
+      size_t i = 0;
+      for (AstNodePtrNode *n = head; n; n = n->next) {
+        type_args[i++] = n->node;
+      }
+    }
+
+    if (is_qualified) {
+      type->data.type_qualified_named.type_args = type_args;
+      type->data.type_qualified_named.type_arg_count = count;
+    } else {
+      type->data.type_named.type_args = type_args;
+      type->data.type_named.type_arg_count = count;
+    }
+
+    return type;
   }
 
   parser2_handle_error(p, "Expected type");
