@@ -2916,8 +2916,21 @@ static AstNode *parse_type_expression2(Parser2 *p) {
     if (!parser2_check(p, TOKEN_RPAREN)) {
       while (true) {
         AstNode *param_type = parse_type_expression2(p);
-        if (!param_type)
-          return NULL;
+        if (!param_type) {
+          // Local recovery: skip to ',' or ')' and continue.
+          while (!parser2_check(p, TOKEN_COMMA) &&
+                 !parser2_check(p, TOKEN_RPAREN) &&
+                 !parser2_check(p, TOKEN_EOF)) {
+            parser2_advance(p);
+          }
+          if (parser2_match(p, TOKEN_COMMA)) {
+            if (parser2_check(p, TOKEN_RPAREN)) {
+              break;
+            }
+            continue;
+          }
+          break;
+        }
 
         AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
         n->node = param_type;
@@ -2989,8 +3002,21 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
       while (true) {
         AstNode *elem = parse_type_expression2(p);
-        if (!elem)
-          return NULL;
+        if (!elem) {
+          // Local recovery: skip to ',' or ')' and continue.
+          while (!parser2_check(p, TOKEN_COMMA) &&
+                 !parser2_check(p, TOKEN_RPAREN) &&
+                 !parser2_check(p, TOKEN_EOF)) {
+            parser2_advance(p);
+          }
+          if (parser2_match(p, TOKEN_COMMA)) {
+            if (parser2_check(p, TOKEN_RPAREN)) {
+              break;
+            }
+            continue;
+          }
+          break;
+        }
 
         AstNodePtrNode *nn = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
         nn->node = elem;
@@ -3150,8 +3176,21 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       }
 
       AstNode *field_type = parse_type_expression2(p);
-      if (!field_type)
+      if (!field_type) {
+        // Local recovery: skip to ';' or '}' and continue.
+        while (!parser2_check(p, TOKEN_SEMICOLON) &&
+               !parser2_check(p, TOKEN_RBRACE) &&
+               !parser2_check(p, TOKEN_EOF)) {
+          parser2_advance(p);
+        }
+        if (parser2_match(p, TOKEN_SEMICOLON)) {
+          continue;
+        }
+        if (parser2_check(p, TOKEN_RBRACE)) {
+          continue;
+        }
         return NULL;
+      }
 
       for (NameNode *n = name_head; n; n = n->next) {
         FieldNode *fn = arena_alloc(&long_lived, sizeof(FieldNode));
@@ -3285,8 +3324,21 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       }
 
       AstNode *field_type = parse_type_expression2(p);
-      if (!field_type)
+      if (!field_type) {
+        // Local recovery: skip to ';' or '}' and continue.
+        while (!parser2_check(p, TOKEN_SEMICOLON) &&
+               !parser2_check(p, TOKEN_RBRACE) &&
+               !parser2_check(p, TOKEN_EOF)) {
+          parser2_advance(p);
+        }
+        if (parser2_match(p, TOKEN_SEMICOLON)) {
+          continue;
+        }
+        if (parser2_check(p, TOKEN_RBRACE)) {
+          continue;
+        }
         return NULL;
+      }
 
       for (NameNode *n = name_head; n; n = n->next) {
         FieldNode *fn = arena_alloc(&long_lived, sizeof(FieldNode));
@@ -3453,8 +3505,21 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       if (!parser2_check(p, TOKEN_RBRACKET)) {
         while (true) {
           AstNode *arg = parse_type_expression2(p);
-          if (!arg)
-            return NULL;
+          if (!arg) {
+            // Local recovery: skip to ',' or ']' and continue.
+            while (!parser2_check(p, TOKEN_COMMA) &&
+                   !parser2_check(p, TOKEN_RBRACKET) &&
+                   !parser2_check(p, TOKEN_EOF)) {
+              parser2_advance(p);
+            }
+            if (parser2_match(p, TOKEN_COMMA)) {
+              if (parser2_check(p, TOKEN_RBRACKET)) {
+                break;
+              }
+              continue;
+            }
+            break;
+          }
 
           AstNodePtrNode *n = arena_alloc(&long_lived, sizeof(AstNodePtrNode));
           n->node = arg;
