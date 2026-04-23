@@ -3415,6 +3415,18 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
         if (!parser2_check(p, TOKEN_IDENTIFIER)) {
           parser2_handle_error(p, "Expected enum variant name");
+          // Local recovery: skip to ',' or '}' and continue.
+          while (!parser2_check(p, TOKEN_COMMA) &&
+                 !parser2_check(p, TOKEN_RBRACE) &&
+                 !parser2_check(p, TOKEN_EOF)) {
+            parser2_advance(p);
+          }
+          if (parser2_match(p, TOKEN_COMMA)) {
+            continue;
+          }
+          if (parser2_check(p, TOKEN_RBRACE)) {
+            break;
+          }
           return NULL;
         }
         parser2_advance(p);
