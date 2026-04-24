@@ -2784,7 +2784,7 @@ static AstNode *parse_primary2(Parser2 *p) {
       convention->data.str_lit.value = p->previous.lexeme;
     }
 
-    return parse_function2(p, loc, NULL, inlined, convention, true);
+    return parse_function2(p, loc, NULL, inlined, convention, false);
   }
 
   // Anonymous struct literal / partial member

@@ -96,7 +96,7 @@ Diagnostic *diagnostic_error(DiagnosticContext *ctx, Location loc,
   // Extract source line if location is valid
   if (loc.line > 0 && loc.line <= ctx->line_count) {
     diag->source_line = ctx->source_lines[loc.line - 1]; // 1-based to 0-based
-    diag->error_start = loc.column;
+    diag->error_start = (loc.column > 0) ? loc.column - 1 : 0;
     diag->error_length = 1; // Default highlight length
   } else {
     diag->source_line = NULL;
@@ -163,7 +163,7 @@ Diagnostic *diagnostic_warning(DiagnosticContext *ctx, Location loc,
   // Extract source line
   if (loc.line > 0 && loc.line <= ctx->line_count) {
     diag->source_line = ctx->source_lines[loc.line - 1];
-    diag->error_start = loc.column;
+    diag->error_start = (loc.column > 0) ? loc.column - 1 : 0;
     diag->error_length = 1;
   } else {
     diag->source_line = NULL;
