@@ -2280,12 +2280,14 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
     }
 
     emit_dedent(cg);
-    emit_indent_spaces(cg);
-    emit_string(cg, "}\n");
 
     if (!cg->in_defer) {
+      // Emit defers while still inside the lexical block scope.
       defer_scope_exit(cg);
     }
+
+    emit_indent_spaces(cg);
+    emit_string(cg, "}\n");
     break;
   case AST_STMT_IF: {
     emit_expr(cg, stmt->data.if_stmt.cond);
