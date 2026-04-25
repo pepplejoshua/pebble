@@ -338,12 +338,12 @@ static void emit_single_diagnostic(Diagnostic *diag) {
     const char *display_path = get_display_path(diag->location.file);
 
     snprintf(buffer, sizeof(buffer),
+             "*[cyan]%s:%zu:%zu[/]\n"
              "%s: %s\n"
-             "   --> *[cyan]%s:%zu:%zu[/]\n"
              "*[d]%zu[/] | %s\n"
-             "%*s | %*s*[*, red]^[/]\n",
-             level_format, diag->message, display_path, diag->location.line,
-             diag->location.column, diag->location.line,
+             "%*s | %*s*[*, red]^[/]\n\n",
+             display_path, diag->location.line, diag->location.column,
+             level_format, diag->message, diag->location.line,
              diag->source_line ? diag->source_line : "", line_num_width,
              "", // Match the line number width
              (int)diag->error_start, "");
