@@ -2,7 +2,7 @@
 #define AST_H
 
 #include "lexer.h"
-#include "location.h"
+#include "source_span.h"
 #include "alloc.h"
 #include <stdbool.h> // For bool
 #include <stddef.h>  // For size_t
@@ -182,7 +182,7 @@ typedef struct {
 // The AST node struct
 struct AstNode {
   AstKind kind;
-  Location loc;
+  SourceSpan span;
   Type *resolved_type;
 
   union {
