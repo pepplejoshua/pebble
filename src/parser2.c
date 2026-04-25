@@ -270,6 +270,24 @@ bool parser2_handle_error(Parser2 *parser, const char *expected) {
   return true;
 }
 
+static bool parser2_handle_error_at(Parser2 *parser, Location loc,
+                                    const char *expected) {
+  if (parser2_too_many_errors(parser)) {
+    return false;
+  }
+
+  Diagnostic *error =
+      diagnostic_error(parser->diagnostics, loc, "%s", expected);
+  diagnostic_emit(error);
+
+  return true;
+}
+
+static bool parser2_handle_error_at_previous(Parser2 *parser,
+                                             const char *expected) {
+  return parser2_handle_error_at(parser, prev_loc(parser), expected);
+}
+
 void parser2_synchronize(Parser2 *parser) {
   // Backwards-compatible entrypoint: default to block context.
   parser2_synchronize_ctx(parser, PARSE_CTX_BLOCK);
@@ -440,12 +458,56 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
 
   // Initializer (optional)
   AstNode *init = NULL;
+  bool semicolon_handled = false;
+
   if (parser2_match(p, TOKEN_EQUAL)) {
     init = parse_expression2(p);
+
+    if (!init) {
+      // Local recovery for bad initializer:
+      // skip to ';' or a safe statement/declaration boundary.
+      ParseContext ctx = PARSE_CTX_TOP_LEVEL;
+      if (p->current.type == TOKEN_RBRACE ||
+          parser2_follow_stmt_boundary(p->current.type, PARSE_CTX_BLOCK)) {
+        ctx = PARSE_CTX_BLOCK;
+      }
+
+      while (!parser2_check(p, TOKEN_SEMICOLON) &&
+             !parser2_check(p, TOKEN_EOF) &&
+             !parser2_follow_stmt_boundary(p->current.type, ctx)) {
+        parser2_advance(p);
+      }
+
+      if (parser2_match(p, TOKEN_SEMICOLON)) {
+        // Explicit terminator found; continue with partial declaration.
+        semicolon_handled = true;
+      } else {
+        // No explicit ';' found; report/insert according to context.
+        if (!parser2_expect_semicolon(
+                p, ctx, "Expected ';' after variable declaration")) {
+          parser2_handle_error_at_previous(
+              p, "Expected ';' after variable declaration");
+        }
+        semicolon_handled = true;
+      }
+
+      init = NULL;
+    }
   }
 
-  parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                           "Expected ';' after variable declaration");
+  if (!semicolon_handled) {
+    ParseContext semi_ctx = PARSE_CTX_TOP_LEVEL;
+    if (p->current.type == TOKEN_RBRACE ||
+        parser2_follow_stmt_boundary(p->current.type, PARSE_CTX_BLOCK)) {
+      semi_ctx = PARSE_CTX_BLOCK;
+    }
+
+    if (!parser2_expect_semicolon(p, semi_ctx,
+                                  "Expected ';' after variable declaration")) {
+      parser2_handle_error_at_previous(
+          p, "Expected ';' after variable declaration");
+    }
+  }
 
   if (is_mutable) {
     AstNode *var = alloc_node(AST_DECL_VARIABLE, name.location);
@@ -916,8 +978,28 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
 
       Token param_name =
           parser2_consume(p, TOKEN_IDENTIFIER, "Expected parameter name");
-      if (param_name.type != TOKEN_IDENTIFIER)
+      if (param_name.type != TOKEN_IDENTIFIER) {
+        // Local recovery: bridge malformed parameter to next useful anchor.
+        while (!parser2_check(p, TOKEN_COMMA) &&
+               !parser2_check(p, TOKEN_RPAREN) &&
+               !parser2_check(p, TOKEN_LBRACE) &&
+               !parser2_check(p, TOKEN_FAT_ARROW) &&
+               !parser2_check(p, TOKEN_EOF)) {
+          parser2_advance(p);
+        }
+
+        if (parser2_match(p, TOKEN_COMMA)) {
+          if (parser2_check(p, TOKEN_RPAREN)) {
+            break;
+          }
+          continue;
+        }
+        if (parser2_check(p, TOKEN_RPAREN) || parser2_check(p, TOKEN_LBRACE) ||
+            parser2_check(p, TOKEN_FAT_ARROW)) {
+          break;
+        }
         return NULL;
+      }
 
       if (parser2_check(p, TOKEN_COMMA)) {
         FuncParamNode *group_start = NULL;
@@ -962,8 +1044,28 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
         }
 
         AstNode *param_type = parse_type_expression2(p);
-        if (!param_type)
+        if (!param_type) {
+          // Local recovery: skip to comma / ')' / body anchors.
+          while (!parser2_check(p, TOKEN_COMMA) &&
+                 !parser2_check(p, TOKEN_RPAREN) &&
+                 !parser2_check(p, TOKEN_LBRACE) &&
+                 !parser2_check(p, TOKEN_FAT_ARROW) &&
+                 !parser2_check(p, TOKEN_EOF)) {
+            parser2_advance(p);
+          }
+          if (parser2_match(p, TOKEN_COMMA)) {
+            if (parser2_check(p, TOKEN_RPAREN)) {
+              break;
+            }
+            continue;
+          }
+          if (parser2_check(p, TOKEN_RPAREN) ||
+              parser2_check(p, TOKEN_LBRACE) ||
+              parser2_check(p, TOKEN_FAT_ARROW)) {
+            break;
+          }
           return NULL;
+        }
 
         for (FuncParamNode *n = group_start;; n = n->next) {
           n->param.type = param_type;
@@ -973,8 +1075,28 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
         }
       } else {
         AstNode *param_type = parse_type_expression2(p);
-        if (!param_type)
+        if (!param_type) {
+          // Local recovery: skip to comma / ')' / body anchors.
+          while (!parser2_check(p, TOKEN_COMMA) &&
+                 !parser2_check(p, TOKEN_RPAREN) &&
+                 !parser2_check(p, TOKEN_LBRACE) &&
+                 !parser2_check(p, TOKEN_FAT_ARROW) &&
+                 !parser2_check(p, TOKEN_EOF)) {
+            parser2_advance(p);
+          }
+          if (parser2_match(p, TOKEN_COMMA)) {
+            if (parser2_check(p, TOKEN_RPAREN)) {
+              break;
+            }
+            continue;
+          }
+          if (parser2_check(p, TOKEN_RPAREN) ||
+              parser2_check(p, TOKEN_LBRACE) ||
+              parser2_check(p, TOKEN_FAT_ARROW)) {
+            break;
+          }
           return NULL;
+        }
 
         FuncParamNode *node = arena_alloc(&long_lived, sizeof(FuncParamNode));
         node->param.name = param_name.lexeme;
@@ -1002,11 +1124,38 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
     }
   }
 
-  parser2_consume(p, TOKEN_RPAREN, "Expected ')' after parameters");
+  if (!parser2_match(p, TOKEN_RPAREN)) {
+    parser2_handle_error_at_previous(p, "Expected ')' after parameters");
+
+    // Bridge recovery: if we can see body anchors, continue function parse.
+    while (
+        !parser2_check(p, TOKEN_LBRACE) && !parser2_check(p, TOKEN_FAT_ARROW) &&
+        !parser2_check(p, TOKEN_EOF) &&
+        !parser2_follow_stmt_boundary(p->current.type, PARSE_CTX_TOP_LEVEL)) {
+      parser2_advance(p);
+    }
+  }
 
   AstNode *return_type = parse_type_expression2(p);
-  if (!return_type)
-    return NULL;
+  if (!return_type) {
+    // If return type is malformed, bridge to body anchors to keep function
+    // local.
+    while (
+        !parser2_check(p, TOKEN_LBRACE) && !parser2_check(p, TOKEN_FAT_ARROW) &&
+        !parser2_check(p, TOKEN_EOF) &&
+        !parser2_follow_stmt_boundary(p->current.type, PARSE_CTX_TOP_LEVEL)) {
+      parser2_advance(p);
+    }
+
+    if (parser2_check(p, TOKEN_LBRACE) || parser2_check(p, TOKEN_FAT_ARROW)) {
+      return_type = alloc_node(AST_TYPE_NAMED, location);
+      return_type->data.type_named.name = "void";
+      return_type->data.type_named.type_args = NULL;
+      return_type->data.type_named.type_arg_count = 0;
+    } else {
+      return NULL;
+    }
+  }
 
   AstNode *body = NULL;
   if (parser2_match(p, TOKEN_FAT_ARROW)) {
@@ -1021,8 +1170,8 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
           parser2_advance(p);
         }
         if (!parser2_match(p, TOKEN_SEMICOLON)) {
-          parser2_handle_error(p,
-                               "Expected ';' after expression-bodied function");
+          parser2_handle_error_at_previous(
+              p, "Expected ';' after expression-bodied function");
         }
       } else {
         while (!parser2_is_expr_terminator(p->current.type) &&
@@ -1037,8 +1186,8 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
     } else {
       if (require_semicolon_after_arrow) {
         if (!parser2_match(p, TOKEN_SEMICOLON)) {
-          parser2_handle_error(p,
-                               "Expected ';' after expression-bodied function");
+          parser2_handle_error_at_previous(
+              p, "Expected ';' after expression-bodied function");
         }
       }
 
@@ -1052,10 +1201,50 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
       body->data.block_stmt.stmt_count = 1;
     }
   } else {
-    parser2_consume(p, TOKEN_LBRACE, "Expected '{' before function body");
-    body = parse_block_stmt2(p);
-    if (!body)
-      return NULL;
+    if (!parser2_match(p, TOKEN_LBRACE)) {
+      parser2_handle_error_at_previous(p, "Expected '{' before function body");
+
+      // Bridge malformed header into body if possible.
+      while (
+          !parser2_check(p, TOKEN_LBRACE) &&
+          !parser2_check(p, TOKEN_FAT_ARROW) && !parser2_check(p, TOKEN_EOF) &&
+          !parser2_follow_stmt_boundary(p->current.type, PARSE_CTX_TOP_LEVEL)) {
+        parser2_advance(p);
+      }
+
+      if (parser2_match(p, TOKEN_FAT_ARROW)) {
+        AstNode *expr = parse_expression2(p);
+        if (!expr) {
+          body = alloc_node(AST_STMT_BLOCK, location);
+          body->data.block_stmt.stmts = NULL;
+          body->data.block_stmt.stmt_count = 0;
+        } else {
+          if (require_semicolon_after_arrow &&
+              !parser2_match(p, TOKEN_SEMICOLON)) {
+            parser2_handle_error_at_previous(
+                p, "Expected ';' after expression-bodied function");
+          }
+
+          AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
+          ret_stmt->data.return_stmt.expr = expr;
+          AstNode **stmts = arena_alloc(&long_lived, sizeof(AstNode *));
+          stmts[0] = ret_stmt;
+          body = alloc_node(AST_STMT_BLOCK, expr->loc);
+          body->data.block_stmt.stmts = stmts;
+          body->data.block_stmt.stmt_count = 1;
+        }
+      } else if (parser2_match(p, TOKEN_LBRACE)) {
+        body = parse_block_stmt2(p);
+      } else {
+        body = alloc_node(AST_STMT_BLOCK, location);
+        body->data.block_stmt.stmts = NULL;
+        body->data.block_stmt.stmt_count = 0;
+      }
+    } else {
+      body = parse_block_stmt2(p);
+      if (!body)
+        return NULL;
+    }
   }
 
   FuncParam *params = NULL;
