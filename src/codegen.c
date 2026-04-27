@@ -3527,11 +3527,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, ".has_value, \"unwrap\", ");
 
       emit_string(cg, "\"");
-      emit_string(cg, expr->loc.file);
+      emit_string(cg, expr->span.file);
       emit_string(cg, "\", ");
 
       char temp_buf[32] = {0};
-      snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
+      snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
       emit_string(cg, temp_buf);
       emit_string(cg, ");\n");
     }
@@ -3860,11 +3860,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "), \"bounds check\", ");
 
         emit_string(cg, "\"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -3927,11 +3927,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ", \"bounds check\", ");
 
         emit_string(cg, "\"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -3943,7 +3943,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, ", \"slice pointer use-after-free\", ");
 
           emit_string(cg, "\"");
-          emit_string(cg, expr->loc.file);
+          emit_string(cg, expr->span.file);
           emit_string(cg, "\", ");
 
           emit_string(cg, temp_buf);
@@ -4159,11 +4159,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, base_type->data.union_data.variant_names[index]);
 
         emit_string(cg, ", \"tagged union access\", \"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -4210,11 +4210,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, object_type->data.union_data.variant_names[index]);
 
         emit_string(cg, ", \"tagged union access\", \"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 

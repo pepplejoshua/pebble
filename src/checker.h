@@ -39,8 +39,8 @@ bool checker_has_errors(void);
 void checker_set_current_module(Module *mod);
 
 // Error reporting
-void checker_error(Location loc, const char *fmt, ...);
+void checker_error(SourceSpan span, const char *fmt, ...);
 
-void checker_warning(Location loc, const char *fmt, ...);
+void checker_warning(SourceSpan span, const char *fmt, ...);
 
 #endif

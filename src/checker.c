@@ -1,6 +1,7 @@
 #include "checker.h"
 #include "alloc.h"
 #include "ast.h"
+#include "diagnostics.h"
 #include "module.h"
 #include "options.h"
 #include "symbol.h"
@@ -20,8 +21,7 @@ extern Arena long_lived;
 
 // Checker state (private to this file)
 typedef struct {
-  bool has_errors;
-  int error_count;
+  DiagnosticContext *diagnostics;
   bool in_type_resolution;
   bool in_type_alias_resolution;
   bool in_loop;
@@ -34,8 +34,7 @@ typedef struct {
 static CheckerState checker_state;
 
 void checker_init(Module *main_mod) {
-  checker_state.has_errors = false;
-  checker_state.error_count = 0;
+  checker_state.diagnostics = main_mod ? main_mod->diagnostics : NULL;
   checker_state.in_type_resolution = false;
   checker_state.in_type_alias_resolution = false;
   checker_state.in_loop = false;
@@ -58,31 +57,57 @@ static char *next_anonymous_function_name() {
   return str_dup(buffer);
 }
 
-bool checker_has_errors(void) { return checker_state.has_errors; }
-
-void checker_error(Location loc, const char *fmt, ...) {
-  fprintf(stderr, "%s:%zu:%zu: error: ", loc.file, loc.line, loc.column);
-
-  va_list args;
-  va_start(args, fmt);
-  vfprintf(stderr, fmt, args);
-  va_end(args);
-
-  fprintf(stderr, "\n");
-
-  checker_state.has_errors = true;
-  checker_state.error_count++;
+bool checker_has_errors(void) {
+  return checker_state.diagnostics &&
+         checker_state.diagnostics->error_count > 0;
 }
 
-void checker_warning(Location loc, const char *fmt, ...) {
-  fprintf(stderr, "%s:%zu:%zu: warning: ", loc.file, loc.line, loc.column);
-
+void checker_error(SourceSpan span, const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
-  vfprintf(stderr, fmt, args);
-  va_end(args);
 
-  fprintf(stderr, "\n");
+  if (checker_state.diagnostics) {
+    va_list args_copy;
+    va_copy(args_copy, args);
+    char buffer[2048];
+    vsnprintf(buffer, sizeof(buffer), fmt, args_copy);
+    va_end(args_copy);
+
+    Diagnostic *diag =
+        diagnostic_error(checker_state.diagnostics, span, "%s", buffer);
+    diagnostic_emit(diag);
+  } else {
+    fprintf(stderr, "%s:%zu:%zu: error: ", span.file, span.start_line,
+            span.start_col);
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+  }
+
+  va_end(args);
+}
+
+void checker_warning(SourceSpan span, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+
+  if (checker_state.diagnostics) {
+    va_list args_copy;
+    va_copy(args_copy, args);
+    char buffer[2048];
+    vsnprintf(buffer, sizeof(buffer), fmt, args_copy);
+    va_end(args_copy);
+
+    Diagnostic *diag =
+        diagnostic_warning(checker_state.diagnostics, span, "%s", buffer);
+    diagnostic_emit(diag);
+  } else {
+    fprintf(stderr, "%s:%zu:%zu: warning: ", span.file, span.start_line,
+            span.start_col);
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+  }
+
+  va_end(args);
 }
 
 static AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type,
@@ -110,7 +135,7 @@ static bool check_convention(AstNode *conv) {
   }
 
   checker_error(
-      conv->loc,
+      conv->span,
       "unknown calling convention %s, expect \"c\" or \"pebble\" (default)",
       conv->data.str_lit.value);
   return false;
@@ -144,7 +169,7 @@ static void collect_declaration(AstNode *decl) {
   char *name = NULL;
   char *qualified_name = NULL;
   SymbolKind kind;
-  Location loc;
+  SourceSpan span;
   bool is_opaque_type = false;
 
   Module *module = checker_state.current_module;
@@ -156,32 +181,32 @@ static void collect_declaration(AstNode *decl) {
     name = decl->data.func_decl.name;
     qualified_name = decl->data.func_decl.qualified_name;
     kind = SYMBOL_FUNCTION;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_EXTERN_FUNC:
     name = decl->data.extern_func.name;
     qualified_name = decl->data.extern_func.qualified_name;
     kind = SYMBOL_EXTERN_FUNCTION;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_EXTERN_TYPE:
     name = decl->data.extern_type.name;
     qualified_name = decl->data.extern_type.qualified_name;
     kind = SYMBOL_TYPE;
     is_opaque_type = true;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_EXTERN_VARIABLE:
     name = decl->data.extern_var_decl.name;
     qualified_name = decl->data.extern_var_decl.qualified_name;
     kind = SYMBOL_EXTERN_VARIABLE;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_EXTERN_CONSTANT:
     name = decl->data.extern_const_decl.name;
     qualified_name = decl->data.extern_const_decl.qualified_name;
     kind = SYMBOL_EXTERN_CONSTANT;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_EXTERN_BLOCK: {
     size_t count = decl->data.extern_block.decls_count;
@@ -199,19 +224,19 @@ static void collect_declaration(AstNode *decl) {
     name = decl->data.var_decl.name;
     qualified_name = decl->data.var_decl.qualified_name;
     kind = SYMBOL_VARIABLE;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_CONSTANT:
     name = decl->data.const_decl.name;
     qualified_name = decl->data.const_decl.qualified_name;
     kind = SYMBOL_CONSTANT;
-    loc = decl->loc;
+    span = decl->span;
     break;
   case AST_DECL_TYPE:
     name = decl->data.type_decl.name;
     qualified_name = decl->data.type_decl.qualified_name;
     kind = SYMBOL_TYPE;
-    loc = decl->loc;
+    span = decl->span;
     break;
   default:
     return; // Not a declaration
@@ -220,8 +245,8 @@ static void collect_declaration(AstNode *decl) {
   // Check for duplicates
   Symbol *existing = scope_lookup_local(target_scope, qualified_name);
   if (existing) {
-    checker_error(decl->loc, "duplicate declaration of '%s'", name);
-    checker_error(existing->decl->loc, "previous declaration was here");
+    checker_error(decl->span, "duplicate declaration of '%s'", name);
+    checker_error(existing->decl->span, "previous declaration was here");
     return;
   }
 
@@ -257,7 +282,7 @@ static void collect_declaration(AstNode *decl) {
   }
 
   if (is_opaque_type) {
-    symbol->type = type_create(TYPE_OPAQUE, loc);
+    symbol->type = type_create(TYPE_OPAQUE, span);
     symbol->type->declared_name = name;
     symbol->type->canonical_name = symbol->name;
   }
@@ -268,7 +293,7 @@ static void collect_declaration(AstNode *decl) {
   if (kind == SYMBOL_TYPE && decl->kind == AST_DECL_TYPE &&
       decl->data.type_decl.type_params_count > 0) {
     // Create a marker type that says "this is generic"
-    Type *generic_marker = type_create(TYPE_GENERIC_TYPE_DECL, loc);
+    Type *generic_marker = type_create(TYPE_GENERIC_TYPE_DECL, span);
     generic_marker->data.generic_decl.decl = decl;
     generic_marker->declared_name = name;
     generic_marker->defining_module = checker_state.current_module;
@@ -282,7 +307,7 @@ bool collect_globals(AstNode **decls, size_t decl_count) {
   for (size_t i = 0; i < decl_count; i++) {
     collect_declaration(decls[i]);
   }
-  return !checker_state.has_errors;
+  return checker_state.diagnostics->error_count == 0;
 }
 
 //=============================================================================
@@ -544,7 +569,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     // If cyclic, must use nominal name
     if (cycle_detected) {
       checker_error(
-          type->loc,
+          type->span,
           "recursive type '%s' has infinite size (use pointer for indirection)",
           type->declared_name);
       canonical_name = str_dup(type->declared_name);
@@ -582,7 +607,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     // Structs are always nominal (use declared name)
     if (cycle_detected) {
       checker_error(
-          type->loc,
+          type->span,
           "recursive type '%s' has infinite size (use pointer for indirection)",
           type->declared_name);
       canonical_name = str_dup(type->declared_name);
@@ -622,7 +647,7 @@ static bool canonicalize_type_internal(Type **type_ref, Visited **visited) {
     // Unions are always nominal (use declared name)
     if (cycle_detected) {
       checker_error(
-          type->loc,
+          type->span,
           "recursive type '%s' has infinite size (use pointer for indirection)",
           type->declared_name);
       canonical_name = str_dup(type->declared_name);
@@ -798,7 +823,7 @@ static void check_type_declarations(Module *module) {
   // PHASE 1: Pre-register all type names as placeholders
   for (size_t i = 0; i < worklist_size; i++) {
     sym = worklist[i];
-    Type *placeholder = type_create(TYPE_UNRESOLVED, sym->decl->loc);
+    Type *placeholder = type_create(TYPE_UNRESOLVED, sym->decl->span);
     type_register(sym->name, placeholder);
   }
 
@@ -816,7 +841,7 @@ static void check_type_declarations(Module *module) {
       checker_state.in_type_alias_resolution = false;
 
       if (resolved) {
-        Type *placeholder = type_lookup(sym->name, sym->decl->loc.file);
+        Type *placeholder = type_lookup(sym->name, sym->decl->span.file);
 
         // Always mutate placeholder in place
         if (placeholder && placeholder->kind == TYPE_UNRESOLVED) {
@@ -853,7 +878,7 @@ static void check_type_declarations(Module *module) {
   // PHASE 3: Report circular dependencies
   for (size_t i = 0; i < worklist_size; i++) {
     sym = worklist[i];
-    checker_error(sym->decl->data.type_decl.type_expr->loc,
+    checker_error(sym->decl->data.type_decl.type_expr->span,
                   "cannot resolve type '%s'", sym->reg_name);
   }
 
@@ -902,7 +927,7 @@ static void check_global_constants(void) {
 
       // Rule: Constants must have an initializer
       if (!value) {
-        checker_error(decl->loc, "global constant '%s' must be initialized",
+        checker_error(decl->span, "global constant '%s' must be initialized",
                       sym->name);
         continue;
       }
@@ -912,7 +937,7 @@ static void check_global_constants(void) {
           value->kind != AST_EXPR_LITERAL_FLOAT &&
           value->kind != AST_EXPR_LITERAL_STRING &&
           value->kind != AST_EXPR_LITERAL_BOOL) {
-        checker_error(value->loc,
+        checker_error(value->span,
                       "global constant initializer must be a literal "
                       "(complex expressions not yet supported)");
         continue;
@@ -945,7 +970,7 @@ static void check_global_constants(void) {
         AstNode *converted =
             maybe_insert_cast(value, inferred_type, explicit_type);
         if (!converted) {
-          checker_error(value->loc,
+          checker_error(value->span,
                         "constant initializer type mismatch '%s' != '%s'",
                         type_name(inferred_type), type_name(explicit_type));
           continue;
@@ -993,7 +1018,7 @@ static void check_global_variables(void) {
 
       // Rule: Must have type or initializer (or both)
       if (!type_expr && !init) {
-        checker_error(decl->loc,
+        checker_error(decl->span,
                       "variable '%s' must have either a type annotation or an "
                       "initializer",
                       sym->name);
@@ -1019,7 +1044,7 @@ static void check_global_variables(void) {
             init->kind != AST_EXPR_LITERAL_STRING &&
             init->kind != AST_EXPR_LITERAL_BOOL) {
           checker_error(
-              init->loc,
+              init->span,
               "global variable initializer must be a literal (complex "
               "expressions not yet supported)");
           continue;
@@ -1045,7 +1070,7 @@ static void check_global_variables(void) {
         }
 
         if (!type_equals(explicit_type, inferred_type)) {
-          checker_error(init->loc, "variable initializer type mismatch");
+          checker_error(init->span, "variable initializer type mismatch");
           continue;
         }
         sym->type = explicit_type;
@@ -1082,7 +1107,7 @@ static bool check_function_signature(Symbol *sym) {
   // Handle generic functions - give them a special type
   if (decl->kind == AST_DECL_FUNCTION &&
       decl->data.func_decl.type_param_count > 0) {
-    Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->loc);
+    Type *generic_type = type_create(TYPE_GENERIC_FUNCTION, decl->span);
     generic_type->data.generic_decl.decl = decl;
     sym->type = generic_type;
     return true;
@@ -1118,7 +1143,7 @@ static bool check_function_signature(Symbol *sym) {
     param_types = arena_alloc(&long_lived, sizeof(Type *) * param_count);
     for (size_t i = 0; i < param_count; i++) {
       if (is_variadic != -1) {
-        checker_error(decl->loc,
+        checker_error(decl->span,
                       "Parameter '%s' is marked as variadic but parameter "
                       "'%s' is already variadic",
                       params[i].name, params[is_variadic].name);
@@ -1145,7 +1170,7 @@ static bool check_function_signature(Symbol *sym) {
   // Create function type
   sym->type = type_create_function(param_types, param_count, return_type,
                                    is_variadic != -1, false, convention,
-                                   sym->decl->loc);
+                                   sym->decl->span);
 
   Type *receiver_type = NULL;
   if (sym->is_method && decl->kind == AST_DECL_FUNCTION) {
@@ -1165,7 +1190,7 @@ static bool check_function_signature(Symbol *sym) {
           receiver_type->kind != TYPE_UNION &&
           receiver_type->kind != TYPE_TAGGED_UNION) {
         checker_error(
-            decl->loc,
+            decl->span,
             "Method '%s' self parameter must be a struct or union type or "
             "pointer to struct/union type",
             decl->data.func_decl.name);
@@ -1173,7 +1198,7 @@ static bool check_function_signature(Symbol *sym) {
       } else {
         // Validate that self type matches the containing struct/union
         if (!type_equals(receiver_type, sym->containing_type)) {
-          checker_error(decl->loc,
+          checker_error(decl->span,
                         "Method '%s' self parameter type '%s' doesn't match "
                         "containing struct '%s'",
                         decl->data.func_decl.name, type_name(receiver_type),
@@ -1260,7 +1285,7 @@ static bool check_function_signature(Symbol *sym) {
       // Check for duplicate parameter names
       Symbol *existing = scope_lookup_local(func_scope, params[i].name);
       if (existing) {
-        checker_error(decl->loc, "duplicate parameter name '%s'",
+        checker_error(decl->span, "duplicate parameter name '%s'",
                       params[i].name);
         no_error = false;
         continue;
@@ -1336,7 +1361,7 @@ bool check_anonymous_functions(void) {
       // Check for duplicate parameter names
       Symbol *existing = scope_lookup_local(func_scope, params[i].name);
       if (existing) {
-        checker_error(decl->loc, "duplicate parameter name '%s'",
+        checker_error(decl->span, "duplicate parameter name '%s'",
                       params[i].name);
         continue;
       }
@@ -1365,7 +1390,7 @@ bool check_anonymous_functions(void) {
 
     // If non-void, ensure all paths return
     if (return_type->kind != TYPE_VOID && !definitely_returns) {
-      checker_error(decl->loc,
+      checker_error(decl->span,
                     "anonymous function may not return a value on all paths");
     }
 
@@ -1486,7 +1511,7 @@ static void collect_methods(void) {
       char *qualified_name = method->data.func_decl.full_qualified_name;
       char *reg_name = method->data.func_decl.name;
       if (!qualified_name) {
-        checker_error(method->loc, "Method missing qualified name");
+        checker_error(method->span, "Method missing qualified name");
         continue;
       }
 
@@ -1494,7 +1519,7 @@ static void collect_methods(void) {
       Symbol *existing = scope_lookup_local(checker_state.current_module->scope,
                                             qualified_name);
       if (existing) {
-        checker_error(method->loc, "Duplicate declaration '%s'",
+        checker_error(method->span, "Duplicate declaration '%s'",
                       method->data.func_decl.name);
         continue;
       }
@@ -1555,11 +1580,12 @@ bool check_globals(Module *module) {
 //=============================================================================
 static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
                                       AstNode **type_args,
-                                      size_t type_arg_count, Location call_loc);
+                                      size_t type_arg_count,
+                                      SourceSpan call_span);
 
 static Type *monomorphize_union_type(AstNode *generic_union_decl,
                                      AstNode **type_args, size_t type_arg_count,
-                                     Location call_loc);
+                                     SourceSpan call_span);
 
 static Type *resolve_type_expression_no_alias(AstNode *type_expr) {
   bool saved_flag = checker_state.in_type_alias_resolution;
@@ -1574,13 +1600,13 @@ Type *resolve_type_expression(AstNode *type_expr) {
     return NULL;
   }
 
-  Location loc = type_expr->loc;
+  SourceSpan span = type_expr->span;
 
   switch (type_expr->kind) {
   case AST_TYPE_NAMED: {
     // Look up named type in type table
     char *name = type_expr->data.type_named.name;
-    Type *type = type_lookup(name, loc.file);
+    Type *type = type_lookup(name, span.file);
     AstNode **type_args = type_expr->data.type_named.type_args;
     size_t type_arg_count = type_expr->data.type_named.type_arg_count;
 
@@ -1589,7 +1615,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       if (checker_state.in_type_resolution) {
         Scope *mod_scope = checker_state.current_module->scope;
         Symbol *sym =
-            scope_lookup(mod_scope, mod_scope, name, type_expr->loc.file);
+            scope_lookup(mod_scope, mod_scope, name, type_expr->span.file);
         if (sym && sym->kind == SYMBOL_TYPE && sym->type == NULL) {
           // It's a forward reference - return NULL to retry later
           return NULL;
@@ -1597,7 +1623,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       // Otherwise, it's truly undefined
-      checker_error(type_expr->loc, "undefined type '%s'", name);
+      checker_error(type_expr->span, "undefined type '%s'", name);
       return NULL;
     }
 
@@ -1609,7 +1635,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
           return type;
         } else {
           // Disallow: struct { field SomeGeneric; }
-          checker_error(type_expr->loc,
+          checker_error(type_expr->span,
                         "generic type '%s' requires type arguments", name);
           return NULL;
         }
@@ -1626,20 +1652,20 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
       if (type_body->kind == AST_TYPE_STRUCT) {
         type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
-                                        type_expr->loc);
+                                        type_expr->span);
       } else if (type_body->kind == AST_TYPE_UNION) {
         type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
-                                       type_expr->loc);
+                                       type_expr->span);
       } else {
         checker_state.current_module = saved_module;
-        checker_error(type_expr->loc, "unsupported generic type");
+        checker_error(type_expr->span, "unsupported generic type");
         return NULL;
       }
 
       checker_state.current_module = saved_module;
     } else if (type_arg_count > 0) {
       // Non-generic type with type arguments
-      checker_error(type_expr->loc,
+      checker_error(type_expr->span,
                     "type '%s' is not generic but has %zu type arguments", name,
                     type_arg_count);
       return NULL;
@@ -1657,7 +1683,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     char *prefix = prepend(mod, "__");
     char *qualified_name = prepend(prefix, mem);
 
-    Type *type = type_lookup(qualified_name, loc.file);
+    Type *type = type_lookup(qualified_name, span.file);
 
     if (!type) {
       // During type resolution, check if it's an unresolved type decl
@@ -1671,7 +1697,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       // Otherwise, it's truly undefined
-      checker_error(type_expr->loc, "undefined type '%s::%s'", mod, mem);
+      checker_error(type_expr->span, "undefined type '%s::%s'", mod, mem);
       return NULL;
     }
 
@@ -1683,7 +1709,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
           return type;
         } else {
           // Disallow: struct { field SomeGeneric; }
-          checker_error(type_expr->loc,
+          checker_error(type_expr->span,
                         "generic type '%s::%s' requires type arguments", mod,
                         mem);
           return NULL;
@@ -1701,19 +1727,19 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
       if (type_body->kind == AST_TYPE_STRUCT) {
         type = monomorphize_struct_type(generic_decl, type_args, type_arg_count,
-                                        type_expr->loc);
+                                        type_expr->span);
       } else if (type_body->kind == AST_TYPE_UNION) {
         type = monomorphize_union_type(generic_decl, type_args, type_arg_count,
-                                       type_expr->loc);
+                                       type_expr->span);
       } else {
         checker_state.current_module = saved_module;
-        checker_error(type_expr->loc, "unsupported generic type");
+        checker_error(type_expr->span, "unsupported generic type");
         return NULL;
       }
 
       checker_state.current_module = saved_module;
     } else if (type_arg_count > 0) {
-      checker_error(type_expr->loc,
+      checker_error(type_expr->span,
                     "type '%s::%s' is not generic but has %zu type arguments",
                     mod, mem, type_arg_count);
       return NULL;
@@ -1729,7 +1755,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!base) {
       return NULL;
     }
-    return type_create_pointer(base, !checker_state.in_type_resolution, loc);
+    return type_create_pointer(base, !checker_state.in_type_resolution, span);
   }
 
   case AST_TYPE_OPTIONAL: {
@@ -1739,7 +1765,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     if (!base) {
       return NULL;
     }
-    return type_create_optional(base, !checker_state.in_type_resolution, loc);
+    return type_create_optional(base, !checker_state.in_type_resolution, span);
   }
 
   case AST_TYPE_ARRAY: {
@@ -1750,7 +1776,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
     if (element->kind == TYPE_OPAQUE) {
-      checker_error(type_expr->loc,
+      checker_error(type_expr->span,
                     "Cannot have array of opaque type '%s'"
                     "(use pointer instead)",
                     element->canonical_name);
@@ -1758,7 +1784,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
     size_t size = type_expr->data.type_array.size;
     return type_create_array(element, size, !checker_state.in_type_resolution,
-                             loc);
+                             span);
   }
 
   case AST_TYPE_SLICE: {
@@ -1770,21 +1796,21 @@ Type *resolve_type_expression(AstNode *type_expr) {
       return NULL;
     }
     if (element->kind == TYPE_OPAQUE) {
-      checker_error(type_expr->loc,
+      checker_error(type_expr->span,
                     "Cannot have slice of opaque type '%s'"
                     "(use pointer instead)",
                     element->canonical_name);
       return NULL;
     }
-    return type_create_slice(element, !checker_state.in_type_resolution, loc);
+    return type_create_slice(element, !checker_state.in_type_resolution, span);
   }
 
   case AST_TYPE_STRUCT: {
     size_t field_count = type_expr->data.type_struct.field_count;
     if (field_count == 0) {
-      checker_error(type_expr->loc, "Struct was declared without any members");
+      checker_error(type_expr->span, "Struct was declared without any members");
       return type_create_struct(NULL, NULL, field_count, false,
-                                !checker_state.in_type_resolution, loc);
+                                !checker_state.in_type_resolution, span);
     }
 
     // Resolve all field types and create struct type
@@ -1808,7 +1834,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, field_names[i], entry);
       if (entry) {
-        checker_error(type_expr->loc, "Duplicate struct member '%s'",
+        checker_error(type_expr->span, "Duplicate struct member '%s'",
                       field_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
@@ -1825,7 +1851,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       if (field_types[i]->kind == TYPE_OPAQUE) {
-        checker_error(type_expr->loc,
+        checker_error(type_expr->span,
                       "Cannot have field of opaque type '%s' in struct (use "
                       "pointer instead)",
                       field_types[i]->canonical_name);
@@ -1840,16 +1866,16 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_struct(field_names, field_types, field_count, false,
-                              !checker_state.in_type_resolution, loc);
+                              !checker_state.in_type_resolution, span);
   }
 
   case AST_TYPE_UNION: {
     bool tagged = type_expr->data.type_union.is_tagged;
     size_t variant_count = type_expr->data.type_union.variant_count;
     if (variant_count == 0) {
-      checker_error(type_expr->loc, "Union was declared without any members");
+      checker_error(type_expr->span, "Union was declared without any members");
       return type_create_union(tagged, NULL, NULL, variant_count,
-                               !checker_state.in_type_resolution, loc);
+                               !checker_state.in_type_resolution, span);
     }
 
     // Resolve all field types and create struct type
@@ -1874,7 +1900,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, variant_names[i], entry);
       if (entry) {
-        checker_error(type_expr->loc, "Duplicate union member '%s'",
+        checker_error(type_expr->span, "Duplicate union member '%s'",
                       variant_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
@@ -1892,7 +1918,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       }
 
       if (variant_types[i]->kind == TYPE_OPAQUE) {
-        checker_error(type_expr->loc,
+        checker_error(type_expr->span,
                       "Cannot have field of opaque type '%s' in union (use "
                       "pointer instead)",
                       variant_types[i]->canonical_name);
@@ -1908,15 +1934,15 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     return type_create_union(tagged, variant_names, variant_types,
                              variant_count, !checker_state.in_type_resolution,
-                             loc);
+                             span);
   }
 
   case AST_TYPE_ENUM: {
     size_t variant_count = type_expr->data.type_enum.variant_count;
     if (variant_count == 0) {
-      checker_error(type_expr->loc, "Enum was declared without any members");
+      checker_error(type_expr->span, "Enum was declared without any members");
       return type_create_enum(NULL, variant_count,
-                              !checker_state.in_type_resolution, loc);
+                              !checker_state.in_type_resolution, span);
     }
 
     // Resolve all field types and create struct type
@@ -1936,7 +1962,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, variant_names[i], entry);
       if (entry) {
-        checker_error(type_expr->loc, "Duplicate enum variant '%s'",
+        checker_error(type_expr->span, "Duplicate enum variant '%s'",
                       variant_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
@@ -1949,7 +1975,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
     arena_free(&temp_arena);
 
     return type_create_enum(variant_names, variant_count,
-                            !checker_state.in_type_resolution, loc);
+                            !checker_state.in_type_resolution, span);
   }
 
   case AST_TYPE_FUNCTION: {
@@ -1979,7 +2005,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
 
     return type_create_function(param_types, param_count, return_type, false,
                                 !checker_state.in_type_resolution, convention,
-                                loc);
+                                span);
   }
 
   case AST_TYPE_TUPLE: {
@@ -1997,7 +2023,7 @@ Type *resolve_type_expression(AstNode *type_expr) {
         return NULL;
       }
       if (element_types[i]->kind == TYPE_OPAQUE) {
-        checker_error(type_expr->loc,
+        checker_error(type_expr->span,
                       "Cannot have tuple field of opaque type '%s'"
                       "(use pointer instead)",
                       element_types[i]->canonical_name);
@@ -2006,11 +2032,11 @@ Type *resolve_type_expression(AstNode *type_expr) {
     }
 
     return type_create_tuple(element_types, element_count,
-                             !checker_state.in_type_resolution, loc);
+                             !checker_state.in_type_resolution, span);
   }
 
   default:
-    checker_error(type_expr->loc, "invalid type expression");
+    checker_error(type_expr->span, "invalid type expression");
     return NULL;
   }
 }
@@ -2062,7 +2088,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
   if (expr->kind == AST_EXPR_LITERAL_INT && type_is_integral(target_type)) {
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
-    cast->loc = expr->loc;
+    cast->span = expr->span;
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     cast->resolved_type = target_type;
@@ -2076,7 +2102,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
         target_type->data.ptr.base == type_void) {
       AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
       cast->kind = AST_EXPR_IMPLICIT_CAST;
-      cast->loc = expr->loc;
+      cast->span = expr->span;
       cast->data.implicit_cast.expr = expr;
       cast->data.implicit_cast.target_type = target_type;
       return cast;
@@ -2090,7 +2116,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
         target_type->data.ptr.base == type_void) {
       AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
       cast->kind = AST_EXPR_IMPLICIT_CAST;
-      cast->loc = expr->loc;
+      cast->span = expr->span;
       cast->data.implicit_cast.expr = expr;
       cast->data.implicit_cast.target_type = target_type;
       return cast;
@@ -2102,7 +2128,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
       // Create implicit cast node
       AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
       cast->kind = AST_EXPR_IMPLICIT_CAST;
-      cast->loc = expr->loc;
+      cast->span = expr->span;
       cast->data.implicit_cast.expr = expr;
       cast->data.implicit_cast.target_type = target_type;
       return cast;
@@ -2112,7 +2138,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // Promote int to float
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
-    cast->loc = expr->loc;
+    cast->span = expr->span;
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     return cast;
@@ -2120,7 +2146,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // Allow int literals to convert to sized integer types
     AstNode *cast = arena_alloc(&long_lived, sizeof(AstNode));
     cast->kind = AST_EXPR_IMPLICIT_CAST;
-    cast->loc = expr->loc;
+    cast->span = expr->span;
     cast->data.implicit_cast.expr = expr;
     cast->data.implicit_cast.target_type = target_type;
     return cast;
@@ -2156,7 +2182,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // Create a new tuple expression with recursively casted elements
     AstNode *new_tuple = arena_alloc(&long_lived, sizeof(AstNode));
     new_tuple->kind = AST_EXPR_TUPLE;
-    new_tuple->loc = expr->loc;
+    new_tuple->span = expr->span;
     new_tuple->data.tuple_expr.element_count =
         target_type->data.tuple.element_count;
     new_tuple->data.tuple_expr.elements = arena_alloc(
@@ -2205,7 +2231,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // Create a new array expression with recursively casted elements
     AstNode *new_array = arena_alloc(&long_lived, sizeof(AstNode));
     new_array->kind = AST_EXPR_ARRAY_LITERAL;
-    new_array->loc = expr->loc;
+    new_array->span = expr->span;
     new_array->data.array_literal.element_count = target_type->data.array.size;
     new_array->data.array_literal.elements = arena_alloc(
         &long_lived, sizeof(AstNode *) * target_type->data.array.size);
@@ -2248,7 +2274,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
 
     AstNode *new_some = arena_alloc(&long_lived, sizeof(AstNode));
     new_some->kind = AST_EXPR_SOME;
-    new_some->loc = expr->loc;
+    new_some->span = expr->span;
 
     // Attempt to cast the inner expression
     AstNode *casted_value = maybe_insert_cast(expr->data.some_expr.value,
@@ -2312,7 +2338,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // Create a new struct expression with recursively casted elements
     AstNode *new_struct = arena_alloc(&long_lived, sizeof(AstNode));
     new_struct->kind = AST_EXPR_STRUCT_LITERAL;
-    new_struct->loc = expr->loc;
+    new_struct->span = expr->span;
     new_struct->data.struct_literal.field_count =
         target_type->data.struct_data.field_count;
     new_struct->data.struct_literal.field_names =
@@ -2378,7 +2404,7 @@ AstNode *maybe_insert_cast(AstNode *expr, Type *expr_type, Type *target_type) {
     // Create a new struct expression with recursively casted elements
     AstNode *new_union = arena_alloc(&long_lived, sizeof(AstNode));
     new_union->kind = AST_EXPR_STRUCT_LITERAL;
-    new_union->loc = expr->loc;
+    new_union->span = expr->span;
     new_union->data.struct_literal.field_count = 1;
     new_union->data.struct_literal.field_names =
         arena_alloc(&long_lived, sizeof(char *));
@@ -2574,7 +2600,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
             unsigned char b = value;
             if (covered[b]) {
               checker_error(
-                  _case->loc,
+                  _case->span,
                   "Switch case %d has already covered its condition in a "
                   "previous case.",
                   i + 1);
@@ -2590,7 +2616,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
             char b = value;
             if (covered[b + 128]) {
               checker_error(
-                  _case->loc,
+                  _case->span,
                   "Switch case %d has already covered its condition in a "
                   "previous case.",
                   i + 1);
@@ -2620,10 +2646,9 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc,
+      checker_error(node->span,
                     "Switch is non-exhaustive and is missing %d values(s) of "
-                    "type %s. Use \"else\" "
-                    "if you need a default branch.",
+                    "type %s. Use \"else\" if you need a default branch.",
                     missing_items, type_name(switch_type));
     }
   }
@@ -2665,7 +2690,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
               if (covered[j]) {
                 if (covered[j]) {
                   checker_error(
-                      _case->loc,
+                      _case->span,
                       "Switch case %d has already covered the variant "
                       "\"%s\" in a "
                       "previous case.",
@@ -2692,7 +2717,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     for (size_t i = 0; i < variant_count; i++) {
       if (!covered[i]) {
         missing_items++;
-        checker_error(node->loc,
+        checker_error(node->span,
                       "Switch not exhaustive: missing case for '%s.%s'",
                       switch_type->canonical_name,
                       switch_type->data.enum_data.variant_names[i]);
@@ -2700,7 +2725,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc,
+      checker_error(node->span,
                     "Switch is non-exhaustive and is missing %d variant(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
@@ -2751,7 +2776,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
               if (covered[j]) {
                 if (covered[j]) {
                   checker_error(
-                      _case->loc,
+                      _case->span,
                       "Switch case %d has already covered the variant "
                       "\"%s\" in a "
                       "previous case.",
@@ -2771,7 +2796,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
           for (size_t j = 0; j < variant_count; j++) {
             if (strcmp(variant_name, variant_names[j]) == 0) {
               if (covered[j]) {
-                checker_error(_case->loc,
+                checker_error(_case->span,
                               "Switch case %zu has already covered the variant "
                               "\"%s\" in a previous case.",
                               i + 1, variant_name);
@@ -2795,13 +2820,14 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
     for (size_t i = 0; i < variant_count; i++) {
       if (!covered[i]) {
         missing_items++;
-        checker_error(node->loc, "Switch not exhaustive: missing case for '%s'",
+        checker_error(node->span,
+                      "Switch not exhaustive: missing case for '%s'",
                       variant_names[i]);
       }
     }
 
     if (missing_items > 0) {
-      checker_error(node->loc,
+      checker_error(node->span,
                     "Switch is non-exhaustive and is missing %d variant(s) of "
                     "type %s. Use \"else\" "
                     "if you need a default branch.",
@@ -2817,7 +2843,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
   }
 
   checker_error(
-      node->loc,
+      node->span,
       "Switch is non-exhaustive. Use \"else\" if you need a default branch.");
 }
 
@@ -2863,7 +2889,7 @@ static bool extract_generic_specialization(Type *concrete_type,
 // Match a type pattern (AST node) against a concrete type and extract bindings
 // Returns true if match succeeds, false otherwise
 static bool match_and_bind_type(AstNode *pattern, Type *concrete,
-                                TypeBindings *bindings, Location loc) {
+                                TypeBindings *bindings, SourceSpan span) {
   if (!pattern || !concrete) {
     return false;
   }
@@ -2886,7 +2912,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
             if (type_equals(bindings->bindings[i].concrete_type, concrete)) {
               return true;
             } else {
-              checker_error(loc,
+              checker_error(span,
                             "type variable '%s' was previously inferred as "
                             "'%s', but got '%s'",
                             name,
@@ -2902,14 +2928,14 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
     // Handle generic struct references with type arguments
     if (pattern->data.type_named.type_arg_count > 0) {
       if (concrete->kind != TYPE_STRUCT) {
-        checker_error(loc, "type mismatch: expected struct type, got '%s'",
+        checker_error(span, "type mismatch: expected struct type, got '%s'",
                       type_name(concrete));
         return false;
       }
 
       if (!concrete->declared_name ||
           strcmp(concrete->declared_name, name) != 0) {
-        checker_error(loc, "type mismatch: expected '%s', got '%s'", name,
+        checker_error(span, "type mismatch: expected '%s', got '%s'", name,
                       type_name(concrete));
         return false;
       }
@@ -2923,7 +2949,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
         // Either not monomorphized or not a generic struct
         // This shouldn't happen if type checking is working
         checker_error(
-            loc,
+            span,
             "internal error: struct '%s' is not a valid generic specialization",
             name);
         return false;
@@ -2931,7 +2957,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
 
       size_t pattern_arg_count = pattern->data.type_named.type_arg_count;
       if (concrete_type_arg_count != pattern_arg_count) {
-        checker_error(loc,
+        checker_error(span,
                       "generic type '%s' expects %zu type arguments, got %zu",
                       name, pattern_arg_count, concrete_type_arg_count);
         return false;
@@ -2940,7 +2966,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
       // Recursively match pattern args against concrete args
       for (size_t i = 0; i < pattern_arg_count; i++) {
         if (!match_and_bind_type(pattern->data.type_named.type_args[i],
-                                 concrete_type_args[i], bindings, loc)) {
+                                 concrete_type_args[i], bindings, span)) {
           return false;
         }
       }
@@ -2960,14 +2986,14 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
     if (concrete->kind == TYPE_SLICE) {
       // Direct match: []T with []int
       return match_and_bind_type(pattern->data.type_slice.element,
-                                 concrete->data.slice.element, bindings, loc);
+                                 concrete->data.slice.element, bindings, span);
     } else if (concrete->kind == TYPE_ARRAY) {
       // Array to slice: []T with [N]int
       // Extract element type from array
       return match_and_bind_type(pattern->data.type_slice.element,
-                                 concrete->data.array.element, bindings, loc);
+                                 concrete->data.array.element, bindings, span);
     } else {
-      checker_error(loc, "type mismatch: expected slice type, got '%s'",
+      checker_error(span, "type mismatch: expected slice type, got '%s'",
                     type_name(concrete));
       return false;
     }
@@ -2976,59 +3002,59 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
   case AST_TYPE_POINTER: {
     // Pattern: *T, Concrete must be: *SomeType
     if (concrete->kind != TYPE_POINTER) {
-      checker_error(loc, "type mismatch: expected pointer type, got '%s'",
+      checker_error(span, "type mismatch: expected pointer type, got '%s'",
                     type_name(concrete));
       return false;
     }
 
     // Recursively match base types
     return match_and_bind_type(pattern->data.type_pointer.base,
-                               concrete->data.ptr.base, bindings, loc);
+                               concrete->data.ptr.base, bindings, span);
   }
 
   case AST_TYPE_OPTIONAL: {
     // Pattern: ?T, Concrete must be: ?SomeType
     if (concrete->kind != TYPE_OPTIONAL) {
-      checker_error(loc, "type mismatch: expected optional type, got '%s'",
+      checker_error(span, "type mismatch: expected optional type, got '%s'",
                     type_name(concrete));
       return false;
     }
 
     // Recursively match base types
     return match_and_bind_type(pattern->data.type_optional.base,
-                               concrete->data.optional.base, bindings, loc);
+                               concrete->data.optional.base, bindings, span);
   }
 
   case AST_TYPE_ARRAY: {
     // Pattern: [N]T, Concrete must be: [N]SomeType with same size
     if (concrete->kind != TYPE_ARRAY) {
-      checker_error(loc, "type mismatch: expected array type, got '%s'",
+      checker_error(span, "type mismatch: expected array type, got '%s'",
                     type_name(concrete));
       return false;
     }
 
     if (pattern->data.type_array.size != concrete->data.array.size) {
-      checker_error(loc, "array size mismatch: expected [%zu], got [%zu]",
+      checker_error(span, "array size mismatch: expected [%zu], got [%zu]",
                     pattern->data.type_array.size, concrete->data.array.size);
       return false;
     }
 
     // Recursively match element types
     return match_and_bind_type(pattern->data.type_array.element,
-                               concrete->data.array.element, bindings, loc);
+                               concrete->data.array.element, bindings, span);
   }
 
   case AST_TYPE_FUNCTION: {
     // Pattern: fn(T1, T2) R, Concrete must be: fn(Type1, Type2) RetType
     if (concrete->kind != TYPE_FUNCTION) {
-      checker_error(loc, "type mismatch: expected function type, got '%s'",
+      checker_error(span, "type mismatch: expected function type, got '%s'",
                     type_name(concrete));
       return false;
     }
 
     if (pattern->data.type_function.param_count !=
         concrete->data.func.param_count) {
-      checker_error(loc,
+      checker_error(span,
                     "function parameter count mismatch: expected %zu, got %zu",
                     pattern->data.type_function.param_count,
                     concrete->data.func.param_count);
@@ -3039,27 +3065,28 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
     for (size_t i = 0; i < pattern->data.type_function.param_count; i++) {
       if (!match_and_bind_type(pattern->data.type_function.param_types[i],
                                concrete->data.func.param_types[i], bindings,
-                               loc)) {
+                               span)) {
         return false;
       }
     }
 
     // Match return type
     return match_and_bind_type(pattern->data.type_function.return_type,
-                               concrete->data.func.return_type, bindings, loc);
+                               concrete->data.func.return_type, bindings, span);
   }
 
   case AST_TYPE_STRUCT: {
     // Pattern: struct { T1, T2 }, Concrete must be: struct { Type1, Type2 }
     if (concrete->kind != TYPE_STRUCT) {
-      checker_error(loc, "type mismatch: expected struct type, got '%s'",
+      checker_error(span, "type mismatch: expected struct type, got '%s'",
                     type_name(concrete));
       return false;
     }
 
     if (pattern->data.type_struct.field_count !=
         concrete->data.struct_data.field_count) {
-      checker_error(loc, "struct element count mismatch: expected %zu, got %zu",
+      checker_error(span,
+                    "struct element count mismatch: expected %zu, got %zu",
                     pattern->data.type_struct.field_count,
                     concrete->data.struct_data.field_count);
       return false;
@@ -3071,7 +3098,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
 
       if (strcmp(pattern_field_name, concrete_field_name) != 0) {
         checker_error(
-            loc,
+            span,
             "struct field mismatch: expected field %zu to be %s, got field %s",
             i + 1, pattern_field_name, concrete_field_name);
         return false;
@@ -3079,7 +3106,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
 
       if (!match_and_bind_type(pattern->data.type_struct.field_types[i],
                                concrete->data.struct_data.field_types[i],
-                               bindings, loc)) {
+                               bindings, span)) {
         return false;
       }
     }
@@ -3090,14 +3117,14 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
   case AST_TYPE_TUPLE: {
     // Pattern: (T1, T2, T3), Concrete must be: (Type1, Type2, Type3)
     if (concrete->kind != TYPE_TUPLE) {
-      checker_error(loc, "type mismatch: expected tuple type, got '%s'",
+      checker_error(span, "type mismatch: expected tuple type, got '%s'",
                     type_name(concrete));
       return false;
     }
 
     if (pattern->data.type_tuple.element_count !=
         concrete->data.tuple.element_count) {
-      checker_error(loc, "tuple element count mismatch: expected %zu, got %zu",
+      checker_error(span, "tuple element count mismatch: expected %zu, got %zu",
                     pattern->data.type_tuple.element_count,
                     concrete->data.tuple.element_count);
       return false;
@@ -3107,7 +3134,7 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
     for (size_t i = 0; i < pattern->data.type_tuple.element_count; i++) {
       if (!match_and_bind_type(pattern->data.type_tuple.element_types[i],
                                concrete->data.tuple.element_types[i], bindings,
-                               loc)) {
+                               span)) {
         return false;
       }
     }
@@ -3121,7 +3148,8 @@ static bool match_and_bind_type(AstNode *pattern, Type *concrete,
 }
 
 static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
-                                         size_t arg_count, Location call_loc) {
+                                         size_t arg_count,
+                                         SourceSpan call_span) {
   TypeBindings result = {0};
 
   size_t type_param_count = generic_func->data.func_decl.type_param_count;
@@ -3146,14 +3174,14 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
   // Check argument count
   if (is_variadic) {
     if (arg_count < required_param_count) {
-      checker_error(call_loc,
+      checker_error(call_span,
                     "variadic function expects at least %zu arguments, got %zu",
                     required_param_count, arg_count);
       return result;
     }
   } else {
     if (arg_count != param_count) {
-      checker_error(call_loc, "function expects %zu arguments, got %zu",
+      checker_error(call_span, "function expects %zu arguments, got %zu",
                     param_count, arg_count);
       return result;
     }
@@ -3169,7 +3197,7 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
       continue;
 
     // Match the parameter type pattern with the argument's concrete type
-    match_and_bind_type(param_type, arg_type, &result, call_loc);
+    match_and_bind_type(param_type, arg_type, &result, call_span);
   }
 
   // Match variadic parameters if present
@@ -3181,7 +3209,7 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
     if (variadic_type->kind == AST_TYPE_SLICE) {
       element_type = variadic_type->data.type_slice.element;
     } else {
-      checker_error(call_loc, "variadic parameter must have slice type");
+      checker_error(call_span, "variadic parameter must have slice type");
       return result;
     }
 
@@ -3192,10 +3220,10 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
         if (arg_type->kind == TYPE_SLICE) {
           // Passing a slice directly - infer from its element type
           match_and_bind_type(element_type, arg_type->data.slice.element,
-                              &result, call_loc);
+                              &result, call_span);
         } else {
           // Single element - infer from the element itself
-          match_and_bind_type(element_type, arg_type, &result, call_loc);
+          match_and_bind_type(element_type, arg_type, &result, call_span);
         }
       }
     } else {
@@ -3205,7 +3233,7 @@ static TypeBindings infer_type_arguments(AstNode *generic_func, AstNode **args,
         if (!arg_type)
           continue;
 
-        match_and_bind_type(element_type, arg_type, &result, call_loc);
+        match_and_bind_type(element_type, arg_type, &result, call_span);
       }
     }
   }
@@ -3265,7 +3293,7 @@ static void substitute_type_params_in_type(AstNode *type_node,
         type_node->kind = replacement->kind;
         type_node->data = replacement->data;
         type_node->resolved_type = concrete;
-        type_node->loc = replacement->loc;
+        type_node->span = replacement->span;
         return;
       }
     }
@@ -3685,12 +3713,12 @@ static bool check_function_body(Symbol *sym);
 static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
                                       AstNode **type_args,
                                       size_t type_arg_count,
-                                      Location call_loc) {
+                                      SourceSpan call_span) {
   size_t type_param_count =
       generic_struct_decl->data.type_decl.type_params_count;
 
   if (type_arg_count != type_param_count) {
-    checker_error(call_loc, "type '%s' expects %zu type arguments, got %zu",
+    checker_error(call_span, "type '%s' expects %zu type arguments, got %zu",
                   generic_struct_decl->data.type_decl.name, type_param_count,
                   type_arg_count);
     return NULL;
@@ -3720,13 +3748,13 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
       type_param_count);
 
   // Step 3: Check cache
-  Type *existing = type_lookup(mangled_name, generic_struct_decl->loc.file);
+  Type *existing = type_lookup(mangled_name, generic_struct_decl->span.file);
   if (existing) {
     return existing;
   }
 
   // Step 4: Create placeholder EARLY
-  Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
+  Type *placeholder = type_create(TYPE_UNRESOLVED, call_span);
   placeholder->declared_name = generic_struct_decl->data.type_decl.name;
   placeholder->defining_module = checker_state.current_module;
   type_register(mangled_name, placeholder);
@@ -3766,7 +3794,7 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
 
   if (has_cycle) {
     checker_error(
-        call_loc,
+        call_span,
         "recursive type '%s' has infinite size (use pointer for indirection)",
         placeholder->declared_name);
     return NULL;
@@ -3890,7 +3918,8 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
         method_sym->reg_name = reg_name;
         method_sym->is_method = true;
         method_sym->containing_type = placeholder;
-        Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
+        Type *gen_type =
+            type_create(TYPE_GENERIC_FUNCTION, cloned_method->span);
         gen_type->data.generic_decl.decl = cloned_method;
         method_sym->type = gen_type;
         scope_add_symbol(checker_state.current_module->scope, method_sym);
@@ -4028,12 +4057,12 @@ static Type *monomorphize_struct_type(AstNode *generic_struct_decl,
 // Union monomorphization function
 static Type *monomorphize_union_type(AstNode *generic_union_decl,
                                      AstNode **type_args, size_t type_arg_count,
-                                     Location call_loc) {
+                                     SourceSpan call_span) {
   size_t type_param_count =
       generic_union_decl->data.type_decl.type_params_count;
 
   if (type_arg_count != type_param_count) {
-    checker_error(call_loc, "type '%s' expects %zu type arguments, got %zu",
+    checker_error(call_span, "type '%s' expects %zu type arguments, got %zu",
                   generic_union_decl->data.type_decl.name, type_param_count,
                   type_arg_count);
     return NULL;
@@ -4063,13 +4092,13 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
       type_param_count);
 
   // Step 3: Check cache
-  Type *existing = type_lookup(mangled_name, generic_union_decl->loc.file);
+  Type *existing = type_lookup(mangled_name, generic_union_decl->span.file);
   if (existing) {
     return existing;
   }
 
   // Step 4: Create placeholder EARLY
-  Type *placeholder = type_create(TYPE_UNRESOLVED, call_loc);
+  Type *placeholder = type_create(TYPE_UNRESOLVED, call_span);
   placeholder->declared_name = generic_union_decl->data.type_decl.name;
   placeholder->defining_module = checker_state.current_module;
   type_register(mangled_name, placeholder);
@@ -4108,7 +4137,7 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
 
   if (has_cycle) {
     checker_error(
-        call_loc,
+        call_span,
         "recursive type '%s' has infinite size (use pointer for indirection)",
         placeholder->declared_name);
     return NULL;
@@ -4233,7 +4262,8 @@ static Type *monomorphize_union_type(AstNode *generic_union_decl,
         method_sym->is_method = true;
         method_sym->containing_type = placeholder;
 
-        Type *gen_type = type_create(TYPE_GENERIC_FUNCTION, cloned_method->loc);
+        Type *gen_type =
+            type_create(TYPE_GENERIC_FUNCTION, cloned_method->span);
         gen_type->data.generic_decl.decl = cloned_method;
         method_sym->type = gen_type;
         scope_add_symbol(checker_state.current_module->scope, method_sym);
@@ -4377,7 +4407,7 @@ typedef struct {
 // Monomorphize a generic function with concrete types
 static MonoResult monomorphize_function(AstNode *generic_func,
                                         TypeBindings *bindings,
-                                        Location call_loc,
+                                        SourceSpan call_span,
                                         Module *context_module) {
   // Step 1: Generate mangled name
   Type **concrete_types =
@@ -4467,7 +4497,7 @@ static MonoResult monomorphize_function(AstNode *generic_func,
     checker_state.current_module = saved_module;
     // Remove from cache if signature check fails
     HASH_DEL(mono_instances, instance);
-    checker_error(call_loc, "failed to monomorphize function '%s' called here",
+    checker_error(call_span, "failed to monomorphize function '%s' called here",
                   generic_func->data.func_decl.name);
     return (MonoResult){.func = NULL, .symbol = NULL};
   }
@@ -4483,7 +4513,7 @@ static MonoResult monomorphize_function(AstNode *generic_func,
     // Remove from cache if body check fails
     HASH_DEL(mono_instances, instance);
     checker_error(
-        call_loc,
+        call_span,
         "failed to type-check monomorphized function '%s' called here",
         generic_func->data.func_decl.name);
     return (MonoResult){.func = NULL, .symbol = NULL};
@@ -4498,11 +4528,11 @@ Type *check_expression(AstNode *expr) {
     return NULL;
   }
 
-  Location loc = expr->loc;
+  SourceSpan span = expr->span;
 
   switch (expr->kind) {
   case AST_EXPR_LITERAL_NIL: {
-    Type *void_ptr = type_create_pointer(type_void, true, loc);
+    Type *void_ptr = type_create_pointer(type_void, true, span);
     expr->resolved_type = void_ptr;
     return void_ptr;
   }
@@ -4560,12 +4590,12 @@ Type *check_expression(AstNode *expr) {
     // Resolve the type expression to get the actual Type*
     Type *type = resolve_type_expression(type_expr);
     if (!type) {
-      checker_error(expr->loc, "Invalid type in sizeof");
+      checker_error(expr->span, "Invalid type in sizeof");
       return NULL;
     }
 
     if (type->kind == TYPE_OPAQUE) {
-      checker_error(expr->loc, "Cannot take sizeof opaque type '%s'",
+      checker_error(expr->span, "Cannot take sizeof opaque type '%s'",
                     type->canonical_name);
       return NULL;
     }
@@ -4593,7 +4623,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     Type *optional =
-        type_create_optional(val_ty, !checker_state.in_type_resolution, loc);
+        type_create_optional(val_ty, !checker_state.in_type_resolution, span);
     expr->resolved_type = optional;
     return optional;
   }
@@ -4610,7 +4640,7 @@ Type *check_expression(AstNode *expr) {
 
     if (val_ty->kind != TYPE_OPTIONAL) {
       checker_error(
-          expr->loc,
+          expr->span,
           "'%s' is not an optional type and cannot be force unwrapped.",
           type_name(val_ty));
       return NULL;
@@ -4630,13 +4660,13 @@ Type *check_expression(AstNode *expr) {
 
     // Check if operand is an lvalue
     if (!is_lvalue(operand)) {
-      checker_error(expr->loc, "operand of '++' must be an lvalue");
+      checker_error(expr->span, "operand of '++' must be an lvalue");
       return NULL;
     }
 
     // Only works on integer types
     if (!type_is_integral(operand_ty)) {
-      checker_error(expr->loc, "'++' requires integral type, got '%s'",
+      checker_error(expr->span, "'++' requires integral type, got '%s'",
                     type_name(operand_ty));
       return NULL;
     }
@@ -4655,13 +4685,13 @@ Type *check_expression(AstNode *expr) {
 
     // Check if operand is an lvalue
     if (!is_lvalue(operand)) {
-      checker_error(expr->loc, "operand of '--' must be an lvalue");
+      checker_error(expr->span, "operand of '--' must be an lvalue");
       return NULL;
     }
 
     // Only works on integer types
     if (!type_is_integral(operand_ty)) {
-      checker_error(expr->loc, "'--' requires integral type, got '%s'",
+      checker_error(expr->span, "'--' requires integral type, got '%s'",
                     type_name(operand_ty));
       return NULL;
     }
@@ -4676,7 +4706,7 @@ Type *check_expression(AstNode *expr) {
     Symbol *sym = scope_lookup(mod_scope, current_scope, name,
                                checker_state.current_module->name);
     if (!sym) {
-      checker_error(expr->loc, "undefined name '%s'", name);
+      checker_error(expr->span, "undefined name '%s'", name);
       return NULL;
     }
 
@@ -4706,7 +4736,7 @@ Type *check_expression(AstNode *expr) {
     // Types are not values
     if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
         sym->type->kind != TYPE_TAGGED_UNION) {
-      checker_error(expr->loc, "'%s' is a type, not a value", name);
+      checker_error(expr->span, "'%s' is a type, not a value", name);
       return NULL;
     }
 
@@ -4715,12 +4745,12 @@ Type *check_expression(AstNode *expr) {
         sym->kind != SYMBOL_FUNCTION &&
         (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
          sym->type->kind != TYPE_TAGGED_UNION)) {
-      checker_error(expr->loc, "'%s' cannot be used as a value", name);
+      checker_error(expr->span, "'%s' cannot be used as a value", name);
       return NULL;
     }
 
     if (!sym->type) {
-      checker_error(expr->loc, "name '%s' used before type is resolved", name);
+      checker_error(expr->span, "name '%s' used before type is resolved", name);
       return NULL;
     }
 
@@ -4761,7 +4791,7 @@ Type *check_expression(AstNode *expr) {
       if (op == BINOP_MOD) {
         if (type_is_floating(left) || type_is_floating(right)) {
           checker_error(
-              expr->loc,
+              expr->span,
               "Modulo operator cannot be used with floating-point types");
           return NULL;
         }
@@ -4769,7 +4799,7 @@ Type *check_expression(AstNode *expr) {
 
       // Otherwise, perform normal checks
       if (!type_is_numeric(left) || !type_is_numeric(right)) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "arithmetic operation requires numeric operands");
         return NULL;
       }
@@ -4805,7 +4835,7 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
         } else {
-          checker_error(expr->loc,
+          checker_error(expr->span,
                         "incompatible types in binary operation: %s and %s",
                         type_name(left), type_name(right));
           return NULL;
@@ -4818,7 +4848,7 @@ Type *check_expression(AstNode *expr) {
     // Comparison: <, >, <=, >=
     if (op == BINOP_LT || op == BINOP_GT || op == BINOP_LE || op == BINOP_GE) {
       if (!type_is_ord(left) || !type_is_ord(right)) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "comparison requires numeric or enum operands");
         return NULL;
       }
@@ -4853,7 +4883,7 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
         } else {
-          checker_error(expr->loc, "incompatible types in comparison");
+          checker_error(expr->span, "incompatible types in comparison");
           return NULL;
         }
       }
@@ -4864,7 +4894,7 @@ Type *check_expression(AstNode *expr) {
     // Equality: ==, !=
     if (op == BINOP_EQ || op == BINOP_NE) {
       if (!type_is_comparable(left) || !type_is_comparable(right)) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "equality comparison not supported for this type");
         return NULL;
       }
@@ -4900,7 +4930,8 @@ Type *check_expression(AstNode *expr) {
       AstNode *right_converted =
           maybe_insert_cast(expr->data.binop.right, right, left);
       if (!right_converted) {
-        checker_error(expr->loc, "type mismatch in equality check '%s' != '%s'",
+        checker_error(expr->span,
+                      "type mismatch in equality check '%s' != '%s'",
                       type_name(left), type_name(right));
         return NULL;
       }
@@ -4912,7 +4943,7 @@ Type *check_expression(AstNode *expr) {
     if (op == BINOP_BIT_AND || op == BINOP_BIT_OR || op == BINOP_BIT_XOR ||
         op == BINOP_BIT_SHL || op == BINOP_BIT_SHR) {
       if (!type_is_integral(left) || !type_is_integral(right)) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "bitwise operation requires integer operands, got %s",
                       type_name(expr->resolved_type));
         return NULL;
@@ -4928,7 +4959,7 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(expr->data.binop.right, right, left);
           right = left;
         } else {
-          checker_error(expr->loc, "incompatible types in bitwise operation");
+          checker_error(expr->span, "incompatible types in bitwise operation");
           return NULL;
         }
       }
@@ -4939,14 +4970,15 @@ Type *check_expression(AstNode *expr) {
     // Logical: &&, ||
     if (op == BINOP_AND || op == BINOP_OR) {
       if (left->kind != TYPE_BOOL || right->kind != TYPE_BOOL) {
-        checker_error(expr->loc, "logical operation requires boolean operands");
+        checker_error(expr->span,
+                      "logical operation requires boolean operands");
         return NULL;
       }
       expr->resolved_type = type_bool;
       return type_bool;
     }
 
-    checker_error(expr->loc, "unknown binary operator");
+    checker_error(expr->span, "unknown binary operator");
     return NULL;
   }
 
@@ -4960,7 +4992,7 @@ Type *check_expression(AstNode *expr) {
 
     if (op == UNOP_NEG) {
       if (!type_is_numeric(operand)) {
-        checker_error(expr->loc, "negation requires numeric operand");
+        checker_error(expr->span, "negation requires numeric operand");
         return NULL;
       }
       expr->resolved_type = operand;
@@ -4969,7 +5001,7 @@ Type *check_expression(AstNode *expr) {
 
     if (op == UNOP_NOT) {
       if (operand->kind != TYPE_BOOL) {
-        checker_error(expr->loc, "logical not requires boolean operand");
+        checker_error(expr->span, "logical not requires boolean operand");
         return NULL;
       }
       expr->resolved_type = type_bool;
@@ -4978,7 +5010,7 @@ Type *check_expression(AstNode *expr) {
 
     if (op == UNOP_BIT_NOT) {
       if (!type_is_integral(operand)) {
-        checker_error(expr->loc, "bitwise not requires integer operand");
+        checker_error(expr->span, "bitwise not requires integer operand");
         return NULL;
       }
       expr->resolved_type = operand;
@@ -4988,12 +5020,12 @@ Type *check_expression(AstNode *expr) {
     if (op == UNOP_ADDR) {
       if (!is_lvalue(expr->data.unop.operand)) {
         checker_error(
-            expr->loc,
+            expr->span,
             "cannot take address of expression without memory location");
         return NULL;
       }
       Type *ptr =
-          type_create_pointer(operand, !checker_state.in_type_resolution, loc);
+          type_create_pointer(operand, !checker_state.in_type_resolution, span);
       expr->resolved_type = ptr;
       return ptr;
     }
@@ -5001,12 +5033,12 @@ Type *check_expression(AstNode *expr) {
     if (op == UNOP_DEREF) {
       // Dereference: *ptr returns T where ptr has type *T
       if (operand->kind != TYPE_POINTER) {
-        checker_error(expr->loc, "dereference requires a pointer operand");
+        checker_error(expr->span, "dereference requires a pointer operand");
         return NULL;
       }
 
       if (operand->data.ptr.base->kind == TYPE_OPAQUE) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "Cannot dereference pointer to opaque type '%s'",
                       operand->data.ptr.base->canonical_name);
         return NULL;
@@ -5015,7 +5047,7 @@ Type *check_expression(AstNode *expr) {
       return operand->data.ptr.base;
     }
 
-    checker_error(expr->loc, "unknown unary operator");
+    checker_error(expr->span, "unknown unary operator");
     return NULL;
   }
 
@@ -5040,7 +5072,7 @@ Type *check_expression(AstNode *expr) {
         AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
         memset(qualified_func, 0, sizeof(AstNode));
         qualified_func->kind = AST_EXPR_IDENTIFIER;
-        qualified_func->loc = func_expr->loc;
+        qualified_func->span = func_expr->span;
         qualified_func->data.ident.name = qualified_method_name;
         qualified_func->data.ident.qualified_name = qualified_method_name;
         qualified_func->data.ident.full_qualified_name = qualified_method_name;
@@ -5061,26 +5093,26 @@ Type *check_expression(AstNode *expr) {
 
         if (method_func_type->kind == TYPE_FUNCTION) {
           if (method_func_type->data.func.param_count == 0) {
-            checker_error(func_expr->loc, "Invalid method type");
+            checker_error(func_expr->span, "Invalid method type");
             return NULL;
           }
           expected_self_type = method_func_type->data.func.param_types[0];
         } else if (method_func_type->kind == TYPE_GENERIC_FUNCTION) {
           AstNode *generic_decl = method_func_type->data.generic_decl.decl;
           if (generic_decl->data.func_decl.param_count == 0) {
-            checker_error(func_expr->loc, "Invalid method type");
+            checker_error(func_expr->span, "Invalid method type");
             return NULL;
           }
           // Get the first parameter's type from the AST and resolve it
           FuncParam *first_param = &generic_decl->data.func_decl.params[0];
           expected_self_type = resolve_type_expression(first_param->type);
           if (!expected_self_type) {
-            checker_error(func_expr->loc,
+            checker_error(func_expr->span,
                           "Could not resolve self parameter type");
             return NULL;
           }
         } else {
-          checker_error(func_expr->loc, "Invalid method type");
+          checker_error(func_expr->span, "Invalid method type");
           return NULL;
         }
         Type *actual_object_type = object->resolved_type;
@@ -5096,7 +5128,7 @@ Type *check_expression(AstNode *expr) {
             AstNode *addr_expr = arena_alloc(&long_lived, sizeof(AstNode));
             memset(addr_expr, 0, sizeof(AstNode));
             addr_expr->kind = AST_EXPR_UNARY_OP;
-            addr_expr->loc = object->loc;
+            addr_expr->span = object->span;
             addr_expr->data.unop.op = UNOP_ADDR;
             addr_expr->data.unop.operand = object;
             addr_expr->resolved_type = expected_self_type;
@@ -5108,14 +5140,14 @@ Type *check_expression(AstNode *expr) {
             AstNode *deref_expr = arena_alloc(&long_lived, sizeof(AstNode));
             memset(deref_expr, 0, sizeof(AstNode));
             deref_expr->kind = AST_EXPR_UNARY_OP;
-            deref_expr->loc = object->loc;
+            deref_expr->span = object->span;
             deref_expr->data.unop.op = UNOP_DEREF;
             deref_expr->data.unop.operand = object;
             deref_expr->resolved_type = expected_self_type;
             converted_object = deref_expr;
           } else {
             checker_error(
-                object->loc,
+                object->span,
                 "Method call type mismatch: method expects %s, got %s",
                 type_name(expected_self_type), type_name(actual_object_type));
             return NULL;
@@ -5126,7 +5158,7 @@ Type *check_expression(AstNode *expr) {
         AstNode *qualified_func = arena_alloc(&long_lived, sizeof(AstNode));
         memset(qualified_func, 0, sizeof(AstNode));
         qualified_func->kind = AST_EXPR_IDENTIFIER;
-        qualified_func->loc = func_expr->loc;
+        qualified_func->span = func_expr->span;
         qualified_func->data.ident.name = qualified_method_name;
         qualified_func->data.ident.qualified_name = qualified_method_name;
         qualified_func->data.ident.full_qualified_name = qualified_method_name;
@@ -5167,7 +5199,7 @@ Type *check_expression(AstNode *expr) {
 
         // Validate count
         if (type_arg_count != type_param_count) {
-          checker_error(expr->loc,
+          checker_error(expr->span,
                         "function '%s' expects %zu type arguments, got %zu",
                         generic_decl->data.func_decl.name, type_param_count,
                         type_arg_count);
@@ -5188,7 +5220,7 @@ Type *check_expression(AstNode *expr) {
               resolve_type_expression(expr->data.call.type_args[i]);
 
           if (!concrete_type) {
-            checker_error(expr->data.call.type_args[i]->loc,
+            checker_error(expr->data.call.type_args[i]->span,
                           "invalid type argument %zu", i + 1);
             return NULL;
           }
@@ -5198,11 +5230,11 @@ Type *check_expression(AstNode *expr) {
       } else {
         // Infer type arguments from call arguments
         bindings =
-            infer_type_arguments(generic_decl, args, arg_count, expr->loc);
+            infer_type_arguments(generic_decl, args, arg_count, expr->span);
         // Check if inference succeeded
         for (size_t i = 0; i < bindings.count; i++) {
           if (!bindings.bindings[i].concrete_type) {
-            checker_error(expr->loc, "could not infer type parameter '%s'",
+            checker_error(expr->span, "could not infer type parameter '%s'",
                           bindings.bindings[i].param_name);
             return NULL;
           }
@@ -5223,7 +5255,7 @@ Type *check_expression(AstNode *expr) {
             lookup_imported_module(checker_state.current_module, mod_name);
         if (!context_module) {
           // Shouldn't happen (prior resolution would error), but safe
-          checker_error(expr->loc,
+          checker_error(expr->span,
                         "internal error: could not find defining module '%s'",
                         mod_name);
           return NULL;
@@ -5234,8 +5266,8 @@ Type *check_expression(AstNode *expr) {
       }
 
       // Monomorphize!
-      MonoResult mono_result = monomorphize_function(generic_decl, &bindings,
-                                                     expr->loc, context_module);
+      MonoResult mono_result = monomorphize_function(
+          generic_decl, &bindings, expr->span, context_module);
       if (!mono_result.func) {
         return NULL; // Error already reported
       }
@@ -5244,7 +5276,7 @@ Type *check_expression(AstNode *expr) {
       Symbol *mono_sym = mono_result.symbol;
 
       if (!mono_sym) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "internal error: monomorphized function has no type");
         return NULL;
       }
@@ -5285,8 +5317,8 @@ Type *check_expression(AstNode *expr) {
         // C convention cannot call Pebble convention directly
         if (callee_conv == CALL_CONV_PEBBLE &&
             checker_state.current_convention == CALL_CONV_C) {
-          checker_error(expr->loc, "cannot call Pebble convention function "
-                                   "from C convention function");
+          checker_error(expr->span, "cannot call Pebble convention function "
+                                    "from C convention function");
         }
 
         if (is_variadic) {
@@ -5295,7 +5327,7 @@ Type *check_expression(AstNode *expr) {
           // Must have at least required_params arguments
           if (arg_count < required_params) {
             checker_error(
-                expr->loc,
+                expr->span,
                 "variadic function expects at least %zu arguments, got %zu",
                 required_params, arg_count);
             return NULL;
@@ -5303,7 +5335,7 @@ Type *check_expression(AstNode *expr) {
         } else {
           // Check argument count
           if (arg_count != param_count) {
-            checker_error(expr->loc,
+            checker_error(expr->span,
                           "function '%s' expects %zu arguments, got %zu",
                           type_name(func_type), param_count, arg_count);
             return NULL;
@@ -5317,7 +5349,7 @@ Type *check_expression(AstNode *expr) {
 
     // Only reached for non-generic functions
     if (call_type->kind != TYPE_FUNCTION) {
-      checker_error(func_expr->loc, "'%s' is not a function",
+      checker_error(func_expr->span, "'%s' is not a function",
                     type_name(call_type));
       return NULL;
     }
@@ -5334,7 +5366,7 @@ Type *check_expression(AstNode *expr) {
     if (callee_conv == CALL_CONV_PEBBLE &&
         checker_state.current_convention == CALL_CONV_C) {
       checker_error(
-          expr->loc,
+          expr->span,
           "cannot call Pebble convention function from C convention function");
     }
 
@@ -5345,7 +5377,7 @@ Type *check_expression(AstNode *expr) {
       // Must have at least required_params arguments
       if (arg_count < required_params) {
         checker_error(
-            expr->loc,
+            expr->span,
             "variadic function '%s' expects at least %zu arguments, got %zu",
             type_name(func_type), required_params, arg_count);
         return NULL;
@@ -5360,7 +5392,7 @@ Type *check_expression(AstNode *expr) {
         AstNode *converted =
             maybe_insert_cast(args[i], arg_type, param_types[i]);
         if (!converted) {
-          checker_error(args[i]->loc,
+          checker_error(args[i]->span,
                         "argument %zu type mismatch: expected %s, got %s",
                         i + 1, type_name(param_types[i]), type_name(arg_type));
         } else {
@@ -5381,7 +5413,7 @@ Type *check_expression(AstNode *expr) {
         if (arg_type->kind == TYPE_SLICE) {
           // Passing slice directly
           if (!type_equals(arg_type->data.slice.element, elem_type)) {
-            checker_error(args[required_params]->loc,
+            checker_error(args[required_params]->span,
                           "slice element type mismatch: expected %s, got %s",
                           type_name(elem_type),
                           type_name(arg_type->data.slice.element));
@@ -5393,7 +5425,7 @@ Type *check_expression(AstNode *expr) {
               maybe_insert_cast(args[required_params], arg_type, elem_type);
           if (!converted) {
             checker_error(
-                args[required_params]->loc,
+                args[required_params]->span,
                 "variadic argument type mismatch: expected %s, got %s",
                 type_name(elem_type), type_name(arg_type));
           } else {
@@ -5410,7 +5442,7 @@ Type *check_expression(AstNode *expr) {
           AstNode *converted = maybe_insert_cast(args[i], arg_type, elem_type);
           if (!converted) {
             checker_error(
-                args[i]->loc,
+                args[i]->span,
                 "variadic argument %zu type mismatch: expected %s, got %s",
                 i - required_params + 1, type_name(elem_type),
                 type_name(arg_type));
@@ -5422,7 +5454,8 @@ Type *check_expression(AstNode *expr) {
     } else {
       // Check argument count
       if (arg_count != param_count) {
-        checker_error(expr->loc, "function '%s' expects %zu arguments, got %zu",
+        checker_error(expr->span,
+                      "function '%s' expects %zu arguments, got %zu",
                       type_name(func_type), param_count, arg_count);
         return NULL;
       }
@@ -5437,7 +5470,7 @@ Type *check_expression(AstNode *expr) {
         AstNode *converted =
             maybe_insert_cast(args[i], arg_type, param_types[i]);
         if (!converted) {
-          checker_error(args[i]->loc,
+          checker_error(args[i]->span,
                         "argument %zu type mismatch: expected %s, got %s",
                         i + 1, type_name(param_types[i]), type_name(arg_type));
         } else {
@@ -5463,7 +5496,7 @@ Type *check_expression(AstNode *expr) {
     // Verify it's actually an array, slice, or string
     if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE &&
         array_type->kind != TYPE_STRING) {
-      checker_error(array_expr->loc,
+      checker_error(array_expr->span,
                     "cannot index into non-array/slice/string type");
       return NULL;
     }
@@ -5476,7 +5509,8 @@ Type *check_expression(AstNode *expr) {
 
     // Verify index is an integer
     if (!type_is_int(index_type) && index_type->kind != TYPE_USIZE) {
-      checker_error(index_expr->loc, "array index must be an integer or usize");
+      checker_error(index_expr->span,
+                    "array index must be an integer or usize");
       return NULL;
     }
 
@@ -5507,7 +5541,7 @@ Type *check_expression(AstNode *expr) {
     // Can slice arrays, slices, or pointers
     if (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_SLICE &&
         array_type->kind != TYPE_POINTER) {
-      checker_error(array_expr->loc,
+      checker_error(array_expr->span,
                     "cannot slice non-array/slice/pointer type");
       return NULL;
     }
@@ -5525,7 +5559,7 @@ Type *check_expression(AstNode *expr) {
     // Pointer slicing requires an end index
     if (array_type->kind == TYPE_POINTER && !end_expr) {
       checker_error(
-          expr->loc,
+          expr->span,
           "pointer slicing requires an end index to determine slice lengthq");
       return NULL;
     }
@@ -5533,7 +5567,7 @@ Type *check_expression(AstNode *expr) {
     // Cannot slice to create opaque slice
     if (element_type->kind == TYPE_OPAQUE) {
       checker_error(
-          expr->loc,
+          expr->span,
           "Cannot have slice of opaque type '%s' (use pointer instead)",
           element_type->canonical_name);
       return NULL;
@@ -5547,7 +5581,7 @@ Type *check_expression(AstNode *expr) {
       }
       AstNode *cast = maybe_insert_cast(start_expr, start_type, type_usize);
       if (!cast) {
-        checker_error(start_expr->loc,
+        checker_error(start_expr->span,
                       "slice start index must be numerically typed");
         return NULL;
       }
@@ -5562,7 +5596,7 @@ Type *check_expression(AstNode *expr) {
       }
       AstNode *cast = maybe_insert_cast(end_expr, end_type, type_usize);
       if (!cast) {
-        checker_error(end_expr->loc,
+        checker_error(end_expr->span,
                       "slice end index must be numerically typed");
         return NULL;
       }
@@ -5570,8 +5604,8 @@ Type *check_expression(AstNode *expr) {
     }
 
     // Return slice type
-    Type *slice =
-        type_create_slice(element_type, !checker_state.in_type_resolution, loc);
+    Type *slice = type_create_slice(element_type,
+                                    !checker_state.in_type_resolution, span);
     expr->resolved_type = slice;
     return slice;
   }
@@ -5594,12 +5628,12 @@ Type *check_expression(AstNode *expr) {
                                    current_scope, object_expr->data.ident.name,
                                    checker_state.current_module->name);
         if (!sym || sym->kind != SYMBOL_TYPE) {
-          checker_error(expr->loc, "'%s' is not a type",
+          checker_error(expr->span, "'%s' is not a type",
                         object_expr->data.ident.name);
           return NULL;
         }
         if (sym->type->kind != TYPE_GENERIC_TYPE_DECL) {
-          checker_error(expr->loc, "'%s' is not a generic type",
+          checker_error(expr->span, "'%s' is not a generic type",
                         object_expr->data.ident.name);
           return NULL;
         }
@@ -5615,7 +5649,7 @@ Type *check_expression(AstNode *expr) {
         target_module = lookup_imported_module(checker_state.current_module,
                                                module_expr->data.ident.name);
         if (!target_module) {
-          checker_error(expr->loc, "cannot find module '%s'",
+          checker_error(expr->span, "cannot find module '%s'",
                         module_expr->data.ident.name);
           return NULL;
         }
@@ -5625,18 +5659,18 @@ Type *check_expression(AstNode *expr) {
         Symbol *sym = scope_lookup_local(target_module->scope, qualified_name);
 
         if (!sym || sym->kind != SYMBOL_TYPE) {
-          checker_error(expr->loc, "'%s::%s' is not a type",
+          checker_error(expr->span, "'%s::%s' is not a type",
                         module_expr->data.ident.name, member_name);
           return NULL;
         }
         if (sym->type->kind != TYPE_GENERIC_TYPE_DECL) {
-          checker_error(expr->loc, "'%s::%s' is not a generic type",
+          checker_error(expr->span, "'%s::%s' is not a generic type",
                         module_expr->data.ident.name, member_name);
           return NULL;
         }
         generic_struct_decl = sym->type->data.generic_decl.decl;
       } else {
-        checker_error(expr->loc, "Invalid generic type access");
+        checker_error(expr->span, "Invalid generic type access");
         return NULL;
       }
 
@@ -5652,13 +5686,13 @@ Type *check_expression(AstNode *expr) {
       if (type_body->kind == AST_TYPE_STRUCT) {
         specialized_type = monomorphize_struct_type(
             generic_struct_decl, expr->data.member_expr.type_args,
-            expr->data.member_expr.type_arg_count, expr->loc);
+            expr->data.member_expr.type_arg_count, expr->span);
       } else if (type_body->kind == AST_TYPE_UNION) {
         specialized_type = monomorphize_union_type(
             generic_struct_decl, expr->data.member_expr.type_args,
-            expr->data.member_expr.type_arg_count, expr->loc);
+            expr->data.member_expr.type_arg_count, expr->span);
       } else {
-        checker_error(expr->loc, "unsupported generic type");
+        checker_error(expr->span, "unsupported generic type");
         specialized_type = NULL;
       }
 
@@ -5718,7 +5752,7 @@ Type *check_expression(AstNode *expr) {
               expr->resolved_type = method_types[i];
               return method_types[i];
             } else {
-              checker_error(expr->loc,
+              checker_error(expr->span,
                             "Cannot call instance method '%s' on type",
                             reg_name);
               return NULL;
@@ -5762,15 +5796,15 @@ Type *check_expression(AstNode *expr) {
             expr->resolved_type = generic_method_symbols[i]->type;
             return generic_method_symbols[i]->type;
           } else {
-            checker_error(expr->loc, "Cannot call instance method '%s' on type",
-                          reg_name);
+            checker_error(expr->span,
+                          "Cannot call instance method '%s' on type", reg_name);
             return NULL;
           }
         }
       }
 
       // Step 5: If not found, report error
-      checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+      checker_error(expr->span, "Type '%s' has no associated function '%s'",
                     type_name(specialized_type), field_name);
       return NULL;
     }
@@ -5787,7 +5821,7 @@ Type *check_expression(AstNode *expr) {
         if (type->kind != TYPE_STRUCT && type->kind != TYPE_UNION &&
             type->kind != TYPE_TAGGED_UNION) {
           checker_error(
-              expr->loc,
+              expr->span,
               "Only struct and union types can have associated functions");
           return NULL;
         }
@@ -5850,7 +5884,7 @@ Type *check_expression(AstNode *expr) {
                 expr->resolved_type = method_types[i];
                 return method_types[i];
               } else {
-                checker_error(expr->loc,
+                checker_error(expr->span,
                               "Cannot call instance method '%s' on type",
                               reg_name);
                 return NULL;
@@ -5904,7 +5938,7 @@ Type *check_expression(AstNode *expr) {
               expr->resolved_type = generic_method_symbols[i]->type;
               return generic_method_symbols[i]->type;
             } else {
-              checker_error(expr->loc,
+              checker_error(expr->span,
                             "Cannot call instance method '%s' on type",
                             reg_name);
               return NULL;
@@ -5912,7 +5946,7 @@ Type *check_expression(AstNode *expr) {
           }
         }
 
-        checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+        checker_error(expr->span, "Type '%s' has no associated function '%s'",
                       type_name(type), field_name);
         return NULL;
       }
@@ -5923,7 +5957,7 @@ Type *check_expression(AstNode *expr) {
       Module *module = lookup_imported_module(checker_state.current_module,
                                               module_expr->data.ident.name);
       if (!module) {
-        checker_error(expr->loc, "cannot find module '%s'",
+        checker_error(expr->span, "cannot find module '%s'",
                       module_expr->data.ident.name);
         return NULL;
       }
@@ -5987,7 +6021,7 @@ Type *check_expression(AstNode *expr) {
                 expr->resolved_type = method_types[i];
                 return method_types[i];
               } else {
-                checker_error(expr->loc,
+                checker_error(expr->span,
                               "Cannot call instance method '%s' on type",
                               reg_name);
                 return NULL;
@@ -6031,7 +6065,7 @@ Type *check_expression(AstNode *expr) {
               expr->resolved_type = generic_method_symbols[i]->type;
               return generic_method_symbols[i]->type;
             } else {
-              checker_error(expr->loc,
+              checker_error(expr->span,
                             "Cannot call instance method '%s' on type",
                             reg_name);
               return NULL;
@@ -6039,15 +6073,15 @@ Type *check_expression(AstNode *expr) {
           }
         }
 
-        checker_error(expr->loc, "Type '%s' has no associated function '%s'",
+        checker_error(expr->span, "Type '%s' has no associated function '%s'",
                       type_name(type), field_name);
         return NULL;
       } else if (sym) {
-        checker_error(expr->loc, "'%s::%s' is not a struct type",
+        checker_error(expr->span, "'%s::%s' is not a struct type",
                       module_expr->data.ident.name, member_name);
         return NULL;
       } else {
-        checker_error(expr->loc, "undefined name '%s::%s'",
+        checker_error(expr->span, "undefined name '%s::%s'",
                       module_expr->data.ident.name, member_name);
         return NULL;
       }
@@ -6066,7 +6100,7 @@ Type *check_expression(AstNode *expr) {
     if (object_type->kind == TYPE_POINTER) {
       base_type = object_type->data.ptr.base;
       if (!base_type) {
-        checker_error(expr->loc, "invalid pointer type with no base type");
+        checker_error(expr->span, "invalid pointer type with no base type");
         return NULL;
       }
     }
@@ -6078,13 +6112,13 @@ Type *check_expression(AstNode *expr) {
 
       // Verify it's a valid number
       if (*endptr != '\0' || index < 0) {
-        checker_error(expr->loc, "tuple field must be a non-negative integer");
+        checker_error(expr->span, "tuple field must be a non-negative integer");
         return NULL;
       }
 
       if ((size_t)index >= base_type->data.tuple.element_count) {
         checker_error(
-            expr->loc,
+            expr->span,
             "tuple index %ld is out of bounds (tuple has %zu elements)", index,
             base_type->data.tuple.element_count);
         return NULL;
@@ -6097,11 +6131,11 @@ Type *check_expression(AstNode *expr) {
         expr->resolved_type = type_usize;
         return type_usize;
       } else if (strcmp(field_name, "data") == 0) {
-        expr->resolved_type =
-            type_create_pointer(base_type->data.slice.element, true, expr->loc);
+        expr->resolved_type = type_create_pointer(base_type->data.slice.element,
+                                                  true, expr->span);
         return expr->resolved_type;
       } else {
-        checker_error(expr->loc, "slice has only 'data' and 'len' fields");
+        checker_error(expr->span, "slice has only 'data' and 'len' fields");
         return NULL;
       }
     } else if (base_type->kind == TYPE_ARRAY) {
@@ -6109,7 +6143,7 @@ Type *check_expression(AstNode *expr) {
         expr->resolved_type = type_usize;
         return type_usize;
       } else {
-        checker_error(expr->loc, "array has only 'len' field");
+        checker_error(expr->span, "array has only 'len' field");
         return NULL;
       }
     } else if (base_type->kind == TYPE_OPTIONAL) {
@@ -6117,7 +6151,7 @@ Type *check_expression(AstNode *expr) {
         expr->resolved_type = type_bool;
         return type_bool;
       }
-      checker_error(expr->loc, "%s has only 'is_some' field",
+      checker_error(expr->span, "%s has only 'is_some' field",
                     type_name(base_type));
       return NULL;
     }
@@ -6170,7 +6204,7 @@ Type *check_expression(AstNode *expr) {
             }
 
             if (is_associated) {
-              checker_error(expr->loc,
+              checker_error(expr->span,
                             "Cannot call associated function '%s' on instance, "
                             "use '%s.%s' instead",
                             reg_name, type_name(base_type), reg_name);
@@ -6219,7 +6253,7 @@ Type *check_expression(AstNode *expr) {
             expr->resolved_type = generic_method_symbols[i]->type;
             return generic_method_symbols[i]->type;
           } else {
-            checker_error(expr->loc,
+            checker_error(expr->span,
                           "Cannot call associated function '%s' on instance, "
                           "use '%s.%s' instead",
                           reg_name, type_name(base_type), reg_name);
@@ -6228,7 +6262,7 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
-      checker_error(expr->loc, "struct %s has no field or method named '%s'",
+      checker_error(expr->span, "struct %s has no field or method named '%s'",
                     type_name(base_type), field_name);
       return NULL;
     } else if (base_type->kind == TYPE_UNION ||
@@ -6279,7 +6313,7 @@ Type *check_expression(AstNode *expr) {
             }
 
             if (is_associated) {
-              checker_error(expr->loc,
+              checker_error(expr->span,
                             "Cannot call associated function '%s' on instance, "
                             "use '%s.%s' instead",
                             reg_name, type_name(base_type), reg_name);
@@ -6328,7 +6362,7 @@ Type *check_expression(AstNode *expr) {
             expr->resolved_type = generic_method_symbols[i]->type;
             return generic_method_symbols[i]->type;
           } else {
-            checker_error(expr->loc,
+            checker_error(expr->span,
                           "Cannot call associated function '%s' on instance, "
                           "use '%s.%s' instead",
                           reg_name, type_name(base_type), reg_name);
@@ -6337,7 +6371,7 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
-      checker_error(expr->loc, "union %s has no variant or method named '%s'",
+      checker_error(expr->span, "union %s has no variant or method named '%s'",
                     type_name(base_type), field_name);
       return NULL;
     } else if (base_type->kind == TYPE_ENUM) {
@@ -6351,10 +6385,10 @@ Type *check_expression(AstNode *expr) {
         }
       }
 
-      checker_error(expr->loc, "enum has no variant named '%s'", field_name);
+      checker_error(expr->span, "enum has no variant named '%s'", field_name);
       return NULL;
     } else {
-      checker_error(object_expr->loc,
+      checker_error(object_expr->span,
                     "member access requires struct, enum, array, "
                     "slice, or pointer to one of these");
       return NULL;
@@ -6365,8 +6399,8 @@ Type *check_expression(AstNode *expr) {
     char **variant_names = arena_alloc(&long_lived, 1);
     variant_names[0] = expr->data.partial_member_expr.member;
 
-    Type *type = type_create_enum(variant_names, 1,
-                                  !checker_state.in_type_resolution, expr->loc);
+    Type *type = type_create_enum(
+        variant_names, 1, !checker_state.in_type_resolution, expr->span);
     expr->resolved_type = type;
 
     return type;
@@ -6380,7 +6414,7 @@ Type *check_expression(AstNode *expr) {
     Module *module = lookup_imported_module(checker_state.current_module,
                                             module_expr->data.ident.name);
     if (!module) {
-      checker_error(expr->loc, "cannot find module '%s'",
+      checker_error(expr->span, "cannot find module '%s'",
                     module_expr->data.ident.name);
     } else {
       expr->data.mod_member_expr.qualified_path = module->qualified_name;
@@ -6394,7 +6428,7 @@ Type *check_expression(AstNode *expr) {
     }
 
     if (!sym) {
-      checker_error(expr->loc, "undefined name '%s::%s'",
+      checker_error(expr->span, "undefined name '%s::%s'",
                     module_expr->data.ident.name, member_name);
       return NULL;
     } else if (sym->kind == SYMBOL_EXTERN_FUNCTION ||
@@ -6406,7 +6440,7 @@ Type *check_expression(AstNode *expr) {
     // Types are not values
     if (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
         sym->type->kind != TYPE_ENUM) {
-      checker_error(expr->loc, "'%s::%s' is a type, not a value",
+      checker_error(expr->span, "'%s::%s' is a type, not a value",
                     module_expr->data.ident.name, member_name);
       return NULL;
     }
@@ -6416,7 +6450,7 @@ Type *check_expression(AstNode *expr) {
         sym->kind != SYMBOL_FUNCTION &&
         (sym->kind == SYMBOL_TYPE && sym->type->kind != TYPE_ENUM &&
          sym->type->kind != TYPE_TAGGED_UNION)) {
-      checker_error(expr->loc, "'%s::%s' cannot be used as a value",
+      checker_error(expr->span, "'%s::%s' cannot be used as a value",
                     module_expr->data.ident.name, member_name);
       return NULL;
     }
@@ -6442,7 +6476,7 @@ Type *check_expression(AstNode *expr) {
 
     // Create and return tuple type
     Type *tuple = type_create_tuple(element_types, element_count,
-                                    !checker_state.in_type_resolution, loc);
+                                    !checker_state.in_type_resolution, span);
     expr->resolved_type = tuple;
     return tuple;
   }
@@ -6467,7 +6501,8 @@ Type *check_expression(AstNode *expr) {
       variant_entry *entry;
       HASH_FIND_STR(seen, field_names[i], entry);
       if (entry) {
-        checker_error(expr->loc, "Duplicate struct field '%s'", field_names[i]);
+        checker_error(expr->span, "Duplicate struct field '%s'",
+                      field_names[i]);
       } else {
         entry = arena_alloc(&temp_arena, sizeof(variant_entry));
         entry->name = field_names[i];
@@ -6490,7 +6525,7 @@ Type *check_expression(AstNode *expr) {
 
       Type *struct_type =
           type_create_struct(field_names, field_types, field_count, false,
-                             !checker_state.in_type_resolution, expr->loc);
+                             !checker_state.in_type_resolution, expr->span);
       expr->resolved_type = struct_type;
 
       return struct_type;
@@ -6499,7 +6534,7 @@ Type *check_expression(AstNode *expr) {
     // Look up the type
     Type *type_of = type_lookup(struct_type_name, type_mod_name);
     if (!type_of) {
-      checker_error(expr->loc, "undefined type '%s'", struct_type_name);
+      checker_error(expr->span, "undefined type '%s'", struct_type_name);
       return NULL;
     }
 
@@ -6520,12 +6555,12 @@ Type *check_expression(AstNode *expr) {
 
         if (type_body->kind == AST_TYPE_STRUCT) {
           type_of = monomorphize_struct_type(generic_decl, type_args,
-                                             type_arg_count, expr->loc);
+                                             type_arg_count, expr->span);
         } else if (type_body->kind == AST_TYPE_UNION) {
           type_of = monomorphize_union_type(generic_decl, type_args,
-                                            type_arg_count, expr->loc);
+                                            type_arg_count, expr->span);
         } else {
-          checker_error(expr->loc, "unsupported generic type");
+          checker_error(expr->span, "unsupported generic type");
           type_of = NULL;
         }
 
@@ -6535,7 +6570,7 @@ Type *check_expression(AstNode *expr) {
         }
       } else {
         // Error: GenericStruct.{ ... }
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "generic type '%s' cannot be instantiated without "
                       "explicit type arguments. use an anonymous struct "
                       "'.{...}' if the type is known",
@@ -6546,7 +6581,7 @@ Type *check_expression(AstNode *expr) {
 
     if (type_of->kind != TYPE_STRUCT && type_of->kind != TYPE_UNION &&
         type_of->kind != TYPE_TAGGED_UNION) {
-      checker_error(expr->loc, "'%s' is not a struct or union type",
+      checker_error(expr->span, "'%s' is not a struct or union type",
                     struct_type_name);
       return NULL;
     }
@@ -6564,7 +6599,7 @@ Type *check_expression(AstNode *expr) {
       size_t expected_count = struct_type->data.struct_data.field_count;
       if (field_count != expected_count) {
         checker_error(
-            expr->loc,
+            expr->span,
             "struct literal has %zu field(s), but type '%s' has %zu field(s)",
             field_count, type_name(type_of), expected_count);
         return NULL;
@@ -6592,7 +6627,7 @@ Type *check_expression(AstNode *expr) {
 
             if (!converted_init) {
               checker_error(
-                  expr->loc,
+                  expr->span,
                   "field '%s' has initializer type mismatch '%s' != '%s'",
                   field_names[i], type_name(expected_types[j]),
                   type_name(value_type));
@@ -6604,7 +6639,7 @@ Type *check_expression(AstNode *expr) {
         }
 
         if (!found) {
-          checker_error(expr->loc, "struct '%s' has no field named '%s'",
+          checker_error(expr->span, "struct '%s' has no field named '%s'",
                         type_name(struct_type), field_names[i]);
           return NULL;
         }
@@ -6619,7 +6654,7 @@ Type *check_expression(AstNode *expr) {
 
       // Union can only have 1 active field (need to check empty union too)
       if (field_count > 1) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "union literal has %zu field(s), but type '%s' can only "
                       "have 0 or 1 active variant",
                       field_count, type_name(type_of));
@@ -6629,7 +6664,7 @@ Type *check_expression(AstNode *expr) {
       size_t expected_count = union_type->data.union_data.variant_count;
       // Variants and no field, or no variants and 1 field
       if (expected_count == 0 && field_count == 1) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "union literal has %zu field(s), but type '%s' can only "
                       "have 0 or 1 active variant",
                       field_count, type_name(type_of));
@@ -6665,7 +6700,7 @@ Type *check_expression(AstNode *expr) {
 
             if (!converted_init) {
               checker_error(
-                  expr->loc,
+                  expr->span,
                   "field '%s' has initializer type mismatch '%s' != '%s'",
                   field_names[i], type_name(variant_types[j]),
                   type_name(value_type));
@@ -6679,7 +6714,7 @@ Type *check_expression(AstNode *expr) {
 
       if (index_of_active_member == -1 && field_count > 0) {
         // No member found or is invalid
-        checker_error(expr->loc, "struct '%s' has no field named '%s'",
+        checker_error(expr->span, "struct '%s' has no field named '%s'",
                       type_name, variant_names[0]);
         return NULL;
       }
@@ -6701,7 +6736,7 @@ Type *check_expression(AstNode *expr) {
 
     // Empty array literal - we can't infer the type
     if (element_count == 0) {
-      checker_error(expr->loc, "cannot infer type of empty array literal");
+      checker_error(expr->span, "cannot infer type of empty array literal");
       return NULL;
     }
 
@@ -6723,7 +6758,7 @@ Type *check_expression(AstNode *expr) {
 
       if (!element) {
         checker_error(
-            elements[i]->loc,
+            elements[i]->span,
             "array literal elements must all have the same type '%s' != '%s'",
             type_name(elem_type), type_name(element_type));
         return NULL;
@@ -6734,7 +6769,7 @@ Type *check_expression(AstNode *expr) {
 
     // Create and return array type with inferred element type and size
     Type *array = type_create_array(element_type, element_count,
-                                    !checker_state.in_type_resolution, loc);
+                                    !checker_state.in_type_resolution, span);
     expr->resolved_type = array;
     return array;
   }
@@ -6751,7 +6786,7 @@ Type *check_expression(AstNode *expr) {
 
     // Create array type with the element type and count
     Type *array_type = type_create_array(
-        value_type, count, !checker_state.in_type_resolution, loc);
+        value_type, count, !checker_state.in_type_resolution, span);
     expr->resolved_type = array_type;
     return array_type;
   }
@@ -6775,7 +6810,7 @@ Type *check_expression(AstNode *expr) {
 
     // No generic anonymous functions yet
     if (expr->data.func_expr.type_param_count > 0) {
-      checker_error(expr->loc,
+      checker_error(expr->span,
                     "generic anonymous functions are not yet supported");
       return NULL;
     }
@@ -6790,7 +6825,7 @@ Type *check_expression(AstNode *expr) {
 
     for (size_t i = 0; i < param_count; i++) {
       if (is_variadic != -1) {
-        checker_error(expr->loc,
+        checker_error(expr->span,
                       "Parameter '%s' is marked as variadic but parameter '%s' "
                       "is already variadic",
                       params[i].name, params[is_variadic].name);
@@ -6816,7 +6851,7 @@ Type *check_expression(AstNode *expr) {
     // Add function as symbol
     Type *fn_type = type_create_function(
         param_types, param_count, return_type, is_variadic != -1,
-        !checker_state.in_type_resolution, convention, loc);
+        !checker_state.in_type_resolution, convention, span);
 
     char *fn_symbol_name = next_anonymous_function_name();
     Symbol *symbol = symbol_create(fn_symbol_name, SYMBOL_ANON_FUNCTION, expr);
@@ -6846,13 +6881,13 @@ Type *check_expression(AstNode *expr) {
     Type *target_type =
         resolve_type_expression(expr->data.explicit_cast.target_type);
     if (!target_type) {
-      checker_error(expr->loc, "Invalid cast target type");
+      checker_error(expr->span, "Invalid cast target type");
       return NULL;
     }
 
     // Validate the cast is legal
     if (!is_valid_cast(value_type, target_type)) {
-      checker_error(expr->loc, "Invalid cast from %s to %s",
+      checker_error(expr->span, "Invalid cast from %s to %s",
                     type_name(value_type), type_name(target_type));
       return NULL;
     }
@@ -6869,7 +6904,7 @@ Type *check_expression(AstNode *expr) {
   case AST_EXPR_CONTEXT: {
     if (checker_state.current_convention == CALL_CONV_C) {
       checker_error(
-          expr->loc,
+          expr->span,
           "cannot use \"context\" in functions with C calling convention");
     }
 
@@ -6878,7 +6913,7 @@ Type *check_expression(AstNode *expr) {
   }
 
   default:
-    checker_error(expr->loc,
+    checker_error(expr->span,
                   "unsupported expression type in expression type checking %d",
                   expr->kind);
     return NULL;
@@ -6901,7 +6936,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
   case AST_STMT_CONTINUE: {
     if (!checker_state.in_loop) {
       checker_error(
-          stmt->loc,
+          stmt->span,
           "control flow jump statement can be used only inside a loop");
     }
     return false;
@@ -6911,7 +6946,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // FIXME: we can maybe setup a user function that can takeover in
     // freestanding cases
     if (compiler_opts.freestanding) {
-      checker_error(stmt->loc, "cannot use print in freestanding mode");
+      checker_error(stmt->span, "cannot use print in freestanding mode");
     }
 
     for (size_t i = 0; i < stmt->data.print_stmt.expr_count; i++) {
@@ -6933,7 +6968,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (!expr_type) {
       // Return value is expected
       if (expected_return_type->kind != TYPE_VOID) {
-        checker_error(stmt->loc, "return value is expected with type '%s'",
+        checker_error(stmt->span, "return value is expected with type '%s'",
                       type_name(expected_return_type));
       }
 
@@ -6944,7 +6979,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     AstNode *converted =
         maybe_insert_cast(expr, expr_type, expected_return_type);
     if (!converted) {
-      checker_error(stmt->loc, "return type mismatch '%s' != '%s'",
+      checker_error(stmt->span, "return type mismatch '%s' != '%s'",
                     type_name(expr_type), type_name(expected_return_type));
     } else {
       stmt->data.return_stmt.expr =
@@ -6953,7 +6988,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Cannot return with defer statements
     if (checker_state.in_defer) {
-      checker_error(stmt->loc, "cannot return within defer statements");
+      checker_error(stmt->span, "cannot return within defer statements");
     }
 
     return true;
@@ -6967,7 +7002,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check condition is boolean
     Type *cond_type = check_expression(cond);
     if (cond_type && cond_type->kind != TYPE_BOOL) {
-      checker_error(cond->loc, "if condition must be boolean");
+      checker_error(cond->span, "if condition must be boolean");
     }
 
     // Check both branches
@@ -6991,8 +7026,8 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     Type *cond_type = check_expression(cond);
     if (cond_type) {
       if (cond_type->kind == TYPE_BOOL) {
-        checker_error(cond->loc, "switch cases cannot be used with boolean "
-                                 "types. please use if statements instead.");
+        checker_error(cond->span, "switch cases cannot be used with boolean "
+                                  "types. please use if statements instead.");
         had_error = true;
       }
 
@@ -7002,7 +7037,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
           // Allow pointers to tagged unions
           !(cond_type->kind == TYPE_POINTER &&
             cond_type->data.ptr.base->kind != TYPE_TAGGED_UNION)) {
-        checker_error(cond->loc,
+        checker_error(cond->span,
                       "switch condition must be integral, "
                       "char, enum, string or tagged union. Got '%s'.",
                       type_name(cond_type));
@@ -7065,7 +7100,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
                            : cond_type;
 
       if (!type_equals(switch_cond->resolved_type, resolved)) {
-        checker_error(cond->loc,
+        checker_error(cond->span,
                       "switch case condition '%s' doesn't match switch "
                       "condition type '%s'",
                       type_name(switch_cond->resolved_type),
@@ -7080,7 +7115,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Check that condition is constant
     if (!is_constant_known(cond)) {
-      checker_error(cond->loc, "switch case condition must be a constant");
+      checker_error(cond->span, "switch case condition must be a constant");
     }
 
     if (stmt->data.case_stmt.alt_condition_count > 0) {
@@ -7110,7 +7145,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check condition is boolean
     Type *cond_type = check_expression(cond);
     if (cond_type && cond_type->kind != TYPE_BOOL) {
-      checker_error(cond->loc, "while condition must be boolean");
+      checker_error(cond->span, "while condition must be boolean");
     }
 
     bool old_in_loop = checker_state.in_loop;
@@ -7132,7 +7167,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check start is an integer (can be variable or expression)
     Type *start_type = check_expression(start);
     if (start_type && !type_is_integral(start_type)) {
-      checker_error(start->loc, "loop range start must be an integer");
+      checker_error(start->span, "loop range start must be an integer");
     }
 
     // Check end is an integer (can be variable or expression)
@@ -7142,13 +7177,13 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     }
 
     if (!type_is_integral(end_type)) {
-      checker_error(end->loc, "loop range end must be an integer");
+      checker_error(end->span, "loop range end must be an integer");
       return NULL;
     }
 
     AstNode *new_end = maybe_insert_cast(end, end_type, start_type);
     if (!new_end) {
-      checker_error(end->loc,
+      checker_error(end->span,
                     "loop range end doesn't match start type '%s' != '%s'",
                     type_name(end_type), type_name(start_type));
     }
@@ -7194,7 +7229,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check condition is boolean
     Type *cond_type = check_expression(cond);
     if (cond_type && cond_type->kind != TYPE_BOOL) {
-      checker_error(cond->loc, "for loop condition must be boolean");
+      checker_error(cond->span, "for loop condition must be boolean");
     }
 
     // Check update (assignment statement)
@@ -7228,7 +7263,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
         // Warn about unreachable code (only once)
         if (i < count - 1) {
-          checker_error(stmts[i + 1]->loc, "unreachable code after return");
+          checker_error(stmts[i + 1]->span, "unreachable code after return");
           break; // Stop checking, don't spam errors
         }
       }
@@ -7247,7 +7282,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (lhs->kind != AST_EXPR_IDENTIFIER && lhs->kind != AST_EXPR_MEMBER &&
         lhs->kind != AST_EXPR_INDEX &&
         !(lhs->kind == AST_EXPR_UNARY_OP && lhs->data.unop.op == UNOP_DEREF)) {
-      checker_error(lhs->loc, "invalid assignment target");
+      checker_error(lhs->span, "invalid assignment target");
       return false;
     }
 
@@ -7255,15 +7290,15 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     if (lhs->kind == AST_EXPR_IDENTIFIER) {
       Scope *mod_scope = checker_state.current_module->scope;
       Symbol *sym = scope_lookup(mod_scope, current_scope, lhs->data.ident.name,
-                                 lhs->loc.file);
+                                 lhs->span.file);
 
       if (!sym) {
-        checker_error(lhs->loc, "'%s' is not defined", lhs->data.ident.name);
+        checker_error(lhs->span, "'%s' is not defined", lhs->data.ident.name);
         return false;
       }
 
       if (sym && sym->kind == SYMBOL_CONSTANT) {
-        checker_error(lhs->loc, "cannot assign to constant");
+        checker_error(lhs->span, "cannot assign to constant");
         return false;
       }
 
@@ -7282,7 +7317,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       AstNode *array_expr = lhs->data.index_expr.array;
       Type *array_type = array_expr->resolved_type;
       if (array_type && array_type == type_string) {
-        checker_error(lhs->loc, "cannot assign to index of immutable string");
+        checker_error(lhs->span, "cannot assign to index of immutable string");
         return false;
       }
     }
@@ -7292,7 +7327,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       // rhs_type->canonical_name);
       AstNode *converted = maybe_insert_cast(rhs, rhs_type, lhs_type);
       if (!converted) {
-        checker_error(stmt->loc, "assignment type mismatch, '%s' != '%s'",
+        checker_error(stmt->span, "assignment type mismatch, '%s' != '%s'",
                       type_name(lhs_type), type_name(rhs_type));
       } else {
         stmt->data.assign_stmt.rhs =
@@ -7334,7 +7369,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Must have type or initializer
     if (!type_expr && !init) {
-      checker_error(stmt->loc, "variable '%s' must have type or initializer",
+      checker_error(stmt->span, "variable '%s' must have type or initializer",
                     name);
       return false;
     }
@@ -7358,7 +7393,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         // Type is specified, check compatibility and insert cast if needed
         AstNode *converted = maybe_insert_cast(init, init_type, var_type);
         if (!converted) {
-          checker_error(init->loc, "initializer type mismatch '%s' != '%s'",
+          checker_error(init->span, "initializer type mismatch '%s' != '%s'",
                         type_name(var_type), type_name(init_type));
           return false;
         }
@@ -7368,7 +7403,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
         // Prevent using `none` without a specified type
         if (init_type->kind == TYPE_NONE) {
           checker_error(
-              init->loc,
+              init->span,
               "cannot infer type from none. use explicit type annotation");
           return false;
         }
@@ -7380,7 +7415,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     if (var_type->kind == TYPE_OPAQUE) {
       checker_error(
-          stmt->loc,
+          stmt->span,
           "Cannot declare variable of opaque type '%s' (use pointer instead)",
           var_type->canonical_name);
       return false;
@@ -7389,7 +7424,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check for duplicate in current scope
     Symbol *existing = scope_lookup_local(current_scope, name);
     if (existing) {
-      checker_error(stmt->loc, "variable '%s' already declared in this scope",
+      checker_error(stmt->span, "variable '%s' already declared in this scope",
                     name);
       return false;
     }
@@ -7411,7 +7446,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     // Constants must have initializer
     if (!value) {
-      checker_error(stmt->loc, "constant '%s' must be initialized", name);
+      checker_error(stmt->span, "constant '%s' must be initialized", name);
       return false;
     }
 
@@ -7433,7 +7468,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       // Type specified, check compatibility and insert cast if needed
       AstNode *converted = maybe_insert_cast(value, value_type, const_type);
       if (!converted) {
-        checker_error(value->loc,
+        checker_error(value->span,
                       "constant initializer type mismatch '%s' != '%s'",
                       type_name(const_type), type_name(value_type));
         return false;
@@ -7444,7 +7479,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
       // Prevent using `none` without a specified type
       if (value_type->kind == TYPE_NONE) {
         checker_error(
-            value_type->loc,
+            value_type->span,
             "cannot infer type from none. use explicit type annotation");
         return false;
       }
@@ -7455,7 +7490,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
 
     if (const_type->kind == TYPE_OPAQUE) {
       checker_error(
-          stmt->loc,
+          stmt->span,
           "Cannot declare constant of opaque type '%s' (use pointer instead)",
           const_type->canonical_name);
       return false;
@@ -7464,7 +7499,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
     // Check for duplicate
     Symbol *existing = scope_lookup_local(current_scope, name);
     if (existing) {
-      checker_error(stmt->loc, "constant '%s' already declared in this scope",
+      checker_error(stmt->span, "constant '%s' already declared in this scope",
                     name);
       return false;
     }
@@ -7478,7 +7513,7 @@ bool check_statement(AstNode *stmt, Type *expected_return_type) {
   }
 
   default:
-    checker_error(stmt->loc, "unsupported statement type");
+    checker_error(stmt->span, "unsupported statement type");
     return false;
   }
 }
@@ -7506,18 +7541,18 @@ static bool check_function_body(Symbol *sym) {
   checker_state.current_convention = func_type->data.func.convention;
 
   // Check the function body
-  bool had_error = checker_state.has_errors;
-  checker_state.has_errors = false;
+  bool had_error = checker_state.diagnostics->error_count > 0;
+  checker_state.diagnostics->error_count = 0;
   bool definitely_returns = check_statement(body, return_type);
-  bool has_error = checker_state.has_errors;
-  checker_state.has_errors = had_error;
+  bool has_error = checker_state.diagnostics->error_count > 0;
+  checker_state.diagnostics->error_count = had_error;
 
   // Pop back to global scope
   scope_pop();
 
   // If non-void, ensure all paths return
   if (return_type->kind != TYPE_VOID && !definitely_returns) {
-    checker_error(decl->loc,
+    checker_error(decl->span,
                   "function '%s' may not return a value on all paths",
                   sym->decl->data.func_decl.name);
     return false;
