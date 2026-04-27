@@ -3,6 +3,7 @@
 
 #include "ast.h"
 #include "alloc.h"
+#include "source_span.h"
 #include "wrapped_uthash.h"
 #include "uthash.h"
 #include "symbol.h"
@@ -43,7 +44,7 @@ char *prepend(const char *prefix, const char *base);
 // Module functions
 Module* new_module(const char *partial_path);
 bool parse_module(Module *mod);
-void module_error(Location loc, const char *msg);
+void module_error(SourceSpan span, const char *msg);
 
 // Module table functions
 Module* get_module_from_table(const char *full_path);

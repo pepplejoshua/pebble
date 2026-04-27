@@ -1,9 +1,9 @@
 #ifndef DIAGNOSTICS_H
 #define DIAGNOSTICS_H
 
-#include "location.h"
-#include <stddef.h>
+#include "source_span.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef enum {
     DIAG_ERROR,     // Red - must fix to compile
@@ -15,15 +15,15 @@ typedef struct Diagnostic {
     DiagnosticLevel level;
     char *message;
 
-    // Location info (optional)
-    bool has_location;
-    Location location;
-    const char *source_line;      // The problematic line
-    size_t error_start;     // Column where error starts
-    size_t error_length;    // Length to highlight
+    // Span info (optional)
+    bool has_span;
+    SourceSpan span;
+    const char *source_line; // The problematic line
+    size_t error_start;      // 0-based column where highlight starts
+    size_t error_length;     // Length to highlight
 
     // Chained diagnostics
-    struct Diagnostic *next;  // For additional context
+    struct Diagnostic *next; // For additional context
 } Diagnostic;
 
 typedef struct {
@@ -36,20 +36,24 @@ typedef struct {
 } DiagnosticContext;
 
 // Core API
-void diagnostics_init(DiagnosticContext *ctx, const char *filename, const char *source);
+void diagnostics_init(DiagnosticContext *ctx, const char *filename,
+                      const char *source);
 void diagnostics_free(DiagnosticContext *ctx);
 
 // Diagnostic builders
-Diagnostic* diagnostic_error(DiagnosticContext *ctx, Location loc, const char *fmt, ...);
-Diagnostic* diagnostic_warning(DiagnosticContext *ctx, Location loc, const char *fmt, ...);
-Diagnostic* diagnostic_error_no_loc(DiagnosticContext *ctx, const char *fmt, ...);
-Diagnostic* diagnostic_warning_no_loc(DiagnosticContext *ctx, const char *fmt, ...);
+Diagnostic *diagnostic_error(DiagnosticContext *ctx, SourceSpan span,
+                             const char *fmt, ...);
+Diagnostic *diagnostic_warning(DiagnosticContext *ctx, SourceSpan span,
+                               const char *fmt, ...);
+Diagnostic *diagnostic_error_no_loc(DiagnosticContext *ctx, const char *fmt,
+                                    ...);
+Diagnostic *diagnostic_warning_no_loc(DiagnosticContext *ctx, const char *fmt,
+                                      ...);
 
 // Chaining methods
-Diagnostic* diagnostic_add_tip(Diagnostic *parent, const char *fmt, ...);
+Diagnostic *diagnostic_add_tip(Diagnostic *parent, const char *fmt, ...);
 
 // Output
 void diagnostic_emit(Diagnostic *diag);
-void diagnostic_emit_all(DiagnosticContext *ctx);  // Batch output
 
 #endif

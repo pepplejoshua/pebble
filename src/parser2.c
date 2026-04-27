@@ -28,31 +28,17 @@ typedef struct AstNodePtrNode {
   struct AstNodePtrNode *next;
 } AstNodePtrNode;
 
-static AstNode *alloc_node(AstKind kind, Location loc) {
+static AstNode *alloc_node(AstKind kind, SourceSpan span) {
   AstNode *n = arena_alloc(&long_lived, sizeof(AstNode));
   memset(n, 0, sizeof(AstNode));
   n->kind = kind;
-  n->loc = loc;
+  n->span = span;
   return n;
 }
 
-static Location cur_loc(Parser2 *p) {
-  Location loc = {
-      .file = p->abs_file_path,
-      .line = p->current.location.line,
-      .column = p->current.location.column,
-  };
-  return loc;
-}
+static SourceSpan cur_span(Parser2 *p) { return p->current.span; }
 
-static Location prev_loc(Parser2 *p) {
-  Location loc = {
-      .file = p->abs_file_path,
-      .line = p->previous.location.line,
-      .column = p->previous.location.column,
-  };
-  return loc;
-}
+static SourceSpan prev_span(Parser2 *p) { return p->previous.span; }
 
 static size_t parser2_error_count(Parser2 *p) {
   if (!p || !p->diagnostics) {
@@ -127,7 +113,7 @@ static bool parser2_expect_semicolon(Parser2 *p, ParseContext ctx,
 }
 
 static AstNode *parse_function_decl2(Parser2 *p);
-static AstNode *parse_function2(Parser2 *p, Location location, char *name,
+static AstNode *parse_function2(Parser2 *p, SourceSpan location, char *name,
                                 bool inlined, AstNode *convention,
                                 bool require_semicolon_after_arrow);
 static AstNode *parse_block_stmt2(Parser2 *p);
@@ -187,7 +173,7 @@ void parser2_advance(Parser2 *parser) {
   size_t lexer_errors = 0;
   const size_t max_lexer_errors = 8;
 
-  Location last_err_loc = (Location){0};
+  SourceSpan last_err_span = (SourceSpan){0};
 
   while (true) {
     parser->current = lexer_next_token(&parser->lexer);
@@ -196,18 +182,18 @@ void parser2_advance(Parser2 *parser) {
       return;
     }
 
-    Location err_loc = cur_loc(parser);
+    SourceSpan err_span = cur_span(parser);
 
     // Detect a "stuck" lexer (repeating the same error location).
-    if (lexer_errors > 0 && err_loc.line == last_err_loc.line &&
-        err_loc.column == last_err_loc.column) {
+    if (lexer_errors > 0 && err_span.start_line == last_err_span.start_line &&
+        err_span.start_col == last_err_span.start_col) {
       return;
     }
-    last_err_loc = err_loc;
+    last_err_span = err_span;
 
     if (parser->diagnostics) {
       Diagnostic *error =
-          diagnostic_error(parser->diagnostics, err_loc, "Lexical error: %s",
+          diagnostic_error(parser->diagnostics, err_span, "Lexical error: %s",
                            parser->current.lexeme);
       diagnostic_emit(error);
     }
@@ -262,22 +248,22 @@ bool parser2_handle_error(Parser2 *parser, const char *expected) {
     return false;
   }
 
-  Location loc = cur_loc(parser);
+  SourceSpan span = cur_span(parser);
   Diagnostic *error =
-      diagnostic_error(parser->diagnostics, loc, "%s", expected);
+      diagnostic_error(parser->diagnostics, span, "%s", expected);
   diagnostic_emit(error);
 
   return true;
 }
 
-static bool parser2_handle_error_at(Parser2 *parser, Location loc,
+static bool parser2_handle_error_at(Parser2 *parser, SourceSpan span,
                                     const char *expected) {
   if (parser2_too_many_errors(parser)) {
     return false;
   }
 
   Diagnostic *error =
-      diagnostic_error(parser->diagnostics, loc, "%s", expected);
+      diagnostic_error(parser->diagnostics, span, "%s", expected);
   diagnostic_emit(error);
 
   return true;
@@ -285,7 +271,7 @@ static bool parser2_handle_error_at(Parser2 *parser, Location loc,
 
 static bool parser2_handle_error_at_previous(Parser2 *parser,
                                              const char *expected) {
-  return parser2_handle_error_at(parser, prev_loc(parser), expected);
+  return parser2_handle_error_at(parser, prev_span(parser), expected);
 }
 
 void parser2_synchronize(Parser2 *parser) {
@@ -385,8 +371,8 @@ AstNode *parse_program(Parser2 *parser) {
     }
   }
 
-  Location loc = {.file = parser->abs_file_path, .line = 1, .column = 1};
-  AstNode *program = alloc_node(AST_STMT_BLOCK, loc);
+  SourceSpan span = span_new(parser->abs_file_path, 1, 1, 1, 1);
+  AstNode *program = alloc_node(AST_STMT_BLOCK, span);
   program->data.block_stmt.stmts = decls;
   program->data.block_stmt.stmt_count = decl_count;
   return program;
@@ -422,14 +408,14 @@ AstNode *parser2_declaration(Parser2 *parser) {
 }
 
 static AstNode *parse_import_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p); // 'import'
+  SourceSpan span = prev_span(p); // 'import'
 
   Token path_tok =
       parser2_consume(p, TOKEN_STRING, "Expected a string for import path.");
 
   AstNode *import_path = NULL;
   if (path_tok.type == TOKEN_STRING) {
-    import_path = alloc_node(AST_EXPR_LITERAL_STRING, path_tok.location);
+    import_path = alloc_node(AST_EXPR_LITERAL_STRING, path_tok.span);
     // Lexer owns processed string storage in long_lived arena.
     import_path->data.str_lit.value = path_tok.value.str_val;
   }
@@ -437,7 +423,7 @@ static AstNode *parse_import_stmt2(Parser2 *p) {
   parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                            "Expected ';' after import declaration");
 
-  AstNode *import_stmt = alloc_node(AST_DECL_IMPORT, loc);
+  AstNode *import_stmt = alloc_node(AST_DECL_IMPORT, span);
   import_stmt->data.import_stmt.path_str = import_path;
   return import_stmt;
 }
@@ -510,7 +496,7 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
   }
 
   if (is_mutable) {
-    AstNode *var = alloc_node(AST_DECL_VARIABLE, name.location);
+    AstNode *var = alloc_node(AST_DECL_VARIABLE, name.span);
     var->data.var_decl.name = name.lexeme;
     var->data.var_decl.qualified_name = name.lexeme;
     var->data.var_decl.full_qualified_name = NULL;
@@ -518,7 +504,7 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
     var->data.var_decl.init = init;
     return var;
   } else {
-    AstNode *c = alloc_node(AST_DECL_CONSTANT, name.location);
+    AstNode *c = alloc_node(AST_DECL_CONSTANT, name.span);
     c->data.const_decl.name = name.lexeme;
     c->data.const_decl.qualified_name = name.lexeme;
     c->data.const_decl.full_qualified_name = NULL;
@@ -595,7 +581,7 @@ static AstNode *parse_type_decl2(Parser2 *p) {
   parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                            "Expected ';' after type declaration");
 
-  AstNode *node = alloc_node(AST_DECL_TYPE, name.location);
+  AstNode *node = alloc_node(AST_DECL_TYPE, name.span);
   node->data.type_decl.name = name.lexeme;
   node->data.type_decl.qualified_name = name.lexeme;
   node->data.type_decl.full_qualified_name = NULL;
@@ -606,12 +592,12 @@ static AstNode *parse_type_decl2(Parser2 *p) {
 }
 
 static AstNode *parse_extern_decl2(Parser2 *p) {
-  Location extern_loc = prev_loc(p); // 'extern'
+  SourceSpan extern_loc = prev_span(p); // 'extern'
 
   // extern "lib"
   AstNode *lib_name = NULL;
   if (parser2_match(p, TOKEN_STRING)) {
-    lib_name = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+    lib_name = alloc_node(AST_EXPR_LITERAL_STRING, prev_span(p));
     // TOKEN_STRING lexeme/value storage is lexer-owned (long_lived arena).
     lib_name->data.str_lit.value = p->previous.value.str_val;
   }
@@ -696,7 +682,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
             p, PARSE_CTX_TOP_LEVEL,
             "Expected ';' after extern function declaration");
 
-        AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+        AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.span);
         func->data.extern_func.name = name.lexeme;
         func->data.extern_func.qualified_name = name.lexeme;
         func->data.extern_func.full_qualified_name = NULL;
@@ -712,7 +698,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                                  "Expected ';' after extern type declaration");
 
-        AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+        AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.span);
         opaque_type->data.extern_type.name = name.lexeme;
         opaque_type->data.extern_type.qualified_name = name.lexeme;
         opaque_type->data.extern_type.full_qualified_name = NULL;
@@ -725,7 +711,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                                  "Expected ';' after constant declaration");
 
-        AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
+        AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.span);
         let->data.extern_const_decl.name = name.lexeme;
         let->data.extern_const_decl.qualified_name = name.lexeme;
         let->data.extern_const_decl.full_qualified_name = NULL;
@@ -740,7 +726,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                                  "Expected ';' after variable declaration");
 
-        AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
+        AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.span);
         var->data.extern_var_decl.name = name.lexeme;
         var->data.extern_var_decl.qualified_name = name.lexeme;
         var->data.extern_var_decl.full_qualified_name = NULL;
@@ -824,7 +810,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
     parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                              "Expected ';' after extern function declaration");
 
-    AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.location);
+    AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.span);
     func->data.extern_func.name = name.lexeme;
     func->data.extern_func.qualified_name = name.lexeme;
     func->data.extern_func.full_qualified_name = NULL;
@@ -841,7 +827,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
     parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                              "Expected ';' after extern type declaration");
 
-    AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.location);
+    AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.span);
     opaque_type->data.extern_type.name = name.lexeme;
     opaque_type->data.extern_type.qualified_name = name.lexeme;
     opaque_type->data.extern_type.full_qualified_name = NULL;
@@ -854,7 +840,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
     parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                              "Expected ';' after constant declaration");
 
-    AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.location);
+    AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.span);
     let->data.extern_const_decl.name = name.lexeme;
     let->data.extern_const_decl.qualified_name = name.lexeme;
     let->data.extern_const_decl.full_qualified_name = NULL;
@@ -869,7 +855,7 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
     parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
                              "Expected ';' after variable declaration");
 
-    AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.location);
+    AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.span);
     var->data.extern_var_decl.name = name.lexeme;
     var->data.extern_var_decl.qualified_name = name.lexeme;
     var->data.extern_var_decl.full_qualified_name = NULL;
@@ -891,7 +877,7 @@ static AstNode *parse_function_decl2(Parser2 *p) {
 
   AstNode *convention = NULL;
   if (parser2_match(p, TOKEN_STRING)) {
-    convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+    convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_span(p));
     // Use raw lexeme to match parser.c behavior.
     convention->data.str_lit.value = p->previous.lexeme;
   }
@@ -901,11 +887,11 @@ static AstNode *parse_function_decl2(Parser2 *p) {
   if (name_tok.type != TOKEN_IDENTIFIER)
     return NULL;
 
-  return parse_function2(p, name_tok.location, name_tok.lexeme, inlined,
-                         convention, true);
+  return parse_function2(p, name_tok.span, name_tok.lexeme, inlined, convention,
+                         true);
 }
 
-static AstNode *parse_function2(Parser2 *p, Location location, char *name,
+static AstNode *parse_function2(Parser2 *p, SourceSpan location, char *name,
                                 bool inlined, AstNode *convention,
                                 bool require_semicolon_after_arrow) {
   // Handle generic parameters: [T, U]
@@ -1191,12 +1177,12 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
         }
       }
 
-      AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
+      AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->span);
       ret_stmt->data.return_stmt.expr = expr;
 
       AstNode **stmts = arena_alloc(&long_lived, sizeof(AstNode *));
       stmts[0] = ret_stmt;
-      body = alloc_node(AST_STMT_BLOCK, expr->loc);
+      body = alloc_node(AST_STMT_BLOCK, expr->span);
       body->data.block_stmt.stmts = stmts;
       body->data.block_stmt.stmt_count = 1;
     }
@@ -1225,11 +1211,11 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
                 p, "Expected ';' after expression-bodied function");
           }
 
-          AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
+          AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->span);
           ret_stmt->data.return_stmt.expr = expr;
           AstNode **stmts = arena_alloc(&long_lived, sizeof(AstNode *));
           stmts[0] = ret_stmt;
-          body = alloc_node(AST_STMT_BLOCK, expr->loc);
+          body = alloc_node(AST_STMT_BLOCK, expr->span);
           body->data.block_stmt.stmts = stmts;
           body->data.block_stmt.stmt_count = 1;
         }
@@ -1289,8 +1275,8 @@ static AstNode *parse_function2(Parser2 *p, Location location, char *name,
 
 static AstNode *parse_block_stmt2(Parser2 *p) {
   // Assumes '{' already consumed.
-  Location loc = prev_loc(p);
-  AstNode *block = alloc_node(AST_STMT_BLOCK, loc);
+  SourceSpan span = prev_span(p);
+  AstNode *block = alloc_node(AST_STMT_BLOCK, span);
 
   AstNodePtrNode *head = NULL;
   AstNodePtrNode *tail = NULL;
@@ -1399,8 +1385,8 @@ AstNode *parser2_statement(Parser2 *p) {
 }
 
 static AstNode *parse_return_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p);
-  AstNode *ret = alloc_node(AST_STMT_RETURN, loc);
+  SourceSpan span = prev_span(p);
+  AstNode *ret = alloc_node(AST_STMT_RETURN, span);
 
   // Match parser.c: allow bare `return;`
   AstNode *expr = NULL;
@@ -1418,7 +1404,7 @@ static AstNode *parse_return_stmt2(Parser2 *p) {
 }
 
 static AstNode *parse_if_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
   AstNode *cond = parse_expression2(p);
   AstNode *then_branch = parser2_statement(p);
@@ -1428,7 +1414,7 @@ static AstNode *parse_if_stmt2(Parser2 *p) {
     else_branch = parser2_statement(p);
   }
 
-  AstNode *stmt = alloc_node(AST_STMT_IF, loc);
+  AstNode *stmt = alloc_node(AST_STMT_IF, span);
   stmt->data.if_stmt.cond = cond;
   stmt->data.if_stmt.then_branch = then_branch;
   stmt->data.if_stmt.else_branch = else_branch;
@@ -1436,19 +1422,19 @@ static AstNode *parse_if_stmt2(Parser2 *p) {
 }
 
 static AstNode *parse_while_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
   AstNode *cond = parse_expression2(p);
   AstNode *body = parser2_statement(p);
 
-  AstNode *stmt = alloc_node(AST_STMT_WHILE, loc);
+  AstNode *stmt = alloc_node(AST_STMT_WHILE, span);
   stmt->data.while_stmt.cond = cond;
   stmt->data.while_stmt.body = body;
   return stmt;
 }
 
 static AstNode *parse_loop_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
   AstNode *start = parse_expression2(p);
 
@@ -1475,7 +1461,7 @@ static AstNode *parse_loop_stmt2(Parser2 *p) {
 
   AstNode *body = parser2_statement(p);
 
-  AstNode *stmt = alloc_node(AST_STMT_LOOP, loc);
+  AstNode *stmt = alloc_node(AST_STMT_LOOP, span);
   stmt->data.loop_stmt.start = start;
   stmt->data.loop_stmt.end = end;
   stmt->data.loop_stmt.inclusive = inclusive;
@@ -1485,7 +1471,7 @@ static AstNode *parse_loop_stmt2(Parser2 *p) {
 }
 
 static AstNode *parse_for_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
   AstNode *init = NULL;
   if (parser2_match(p, TOKEN_VAR)) {
@@ -1499,7 +1485,7 @@ static AstNode *parse_for_stmt2(Parser2 *p) {
       return NULL;
     }
 
-    init = alloc_node(AST_STMT_ASSIGN, init_lhs->loc);
+    init = alloc_node(AST_STMT_ASSIGN, init_lhs->span);
     init->data.assign_stmt.op = -1;
     init->data.assign_stmt.lhs = init_lhs;
     init->data.assign_stmt.rhs = init_rhs;
@@ -1520,7 +1506,7 @@ static AstNode *parse_for_stmt2(Parser2 *p) {
       return NULL;
     }
 
-    update = alloc_node(AST_STMT_ASSIGN, lhs->loc);
+    update = alloc_node(AST_STMT_ASSIGN, lhs->span);
     update->data.assign_stmt.op = -1;
     update->data.assign_stmt.lhs = lhs;
     update->data.assign_stmt.rhs = rhs;
@@ -1528,7 +1514,7 @@ static AstNode *parse_for_stmt2(Parser2 *p) {
 
   AstNode *body = parser2_statement(p);
 
-  AstNode *stmt = alloc_node(AST_STMT_FOR, loc);
+  AstNode *stmt = alloc_node(AST_STMT_FOR, span);
   stmt->data.for_stmt.init = init;
   stmt->data.for_stmt.cond = cond;
   stmt->data.for_stmt.update = update;
@@ -1537,9 +1523,9 @@ static AstNode *parse_for_stmt2(Parser2 *p) {
 }
 
 static AstNode *parse_switch_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
-  AstNode *stmt = alloc_node(AST_STMT_SWITCH, loc);
+  AstNode *stmt = alloc_node(AST_STMT_SWITCH, span);
   stmt->data.switch_stmt.condition = parse_expression2(p);
 
   parser2_consume(p, TOKEN_LBRACE, "Expect '{' after switch condition");
@@ -1549,7 +1535,7 @@ static AstNode *parse_switch_stmt2(Parser2 *p) {
   size_t case_count = 0;
 
   while (parser2_match(p, TOKEN_CASE)) {
-    AstNode *_case = alloc_node(AST_STMT_CASE, prev_loc(p));
+    AstNode *_case = alloc_node(AST_STMT_CASE, prev_span(p));
     _case->data.case_stmt.switch_stmt = stmt;
     _case->data.case_stmt.condition = parse_expression2(p);
 
@@ -1559,7 +1545,7 @@ static AstNode *parse_switch_stmt2(Parser2 *p) {
 
     if (parser2_match(p, TOKEN_COMMA)) {
       while (true) {
-        AstNode *alt_case = alloc_node(AST_STMT_CASE, prev_loc(p));
+        AstNode *alt_case = alloc_node(AST_STMT_CASE, prev_span(p));
         alt_case->data.case_stmt.switch_stmt = stmt;
         alt_case->data.case_stmt.condition = parse_expression2(p);
         alt_case->data.case_stmt.body = NULL;
@@ -1662,7 +1648,7 @@ static AstNode *parse_assignment_stmt2(Parser2 *p) {
   }
 
   if (compound_op != TOKEN_EOF) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     AstNode *rhs = parse_expression2(p);
     if (!rhs)
       return NULL;
@@ -1670,7 +1656,7 @@ static AstNode *parse_assignment_stmt2(Parser2 *p) {
     parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
                              "Expected ';' after compound assignment");
 
-    AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    AstNode *assign = alloc_node(AST_STMT_ASSIGN, span);
     assign->data.assign_stmt.op = binop;
     assign->data.assign_stmt.lhs = lhs;
     assign->data.assign_stmt.rhs = rhs;
@@ -1678,7 +1664,7 @@ static AstNode *parse_assignment_stmt2(Parser2 *p) {
   }
 
   if (parser2_match(p, TOKEN_EQUAL)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     AstNode *rhs = parse_expression2(p);
     if (!rhs)
       return NULL;
@@ -1686,7 +1672,7 @@ static AstNode *parse_assignment_stmt2(Parser2 *p) {
     parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
                              "Expected ';' after assignment");
 
-    AstNode *assign = alloc_node(AST_STMT_ASSIGN, loc);
+    AstNode *assign = alloc_node(AST_STMT_ASSIGN, span);
     assign->data.assign_stmt.op = -1;
     assign->data.assign_stmt.lhs = lhs;
     assign->data.assign_stmt.rhs = rhs;
@@ -1694,7 +1680,7 @@ static AstNode *parse_assignment_stmt2(Parser2 *p) {
   }
 
   parser2_expect_semicolon(p, PARSE_CTX_BLOCK, "Expected ';' after expression");
-  AstNode *expr_stmt = alloc_node(AST_STMT_EXPR, lhs->loc);
+  AstNode *expr_stmt = alloc_node(AST_STMT_EXPR, lhs->span);
   expr_stmt->data.expr_stmt.expr = lhs;
   return expr_stmt;
 }
@@ -1702,7 +1688,7 @@ static AstNode *parse_assignment_stmt2(Parser2 *p) {
 // ---------- expressions (precedence ladder) ----------
 static AstNode *parse_print_stmt2(Parser2 *p) {
   // print expr (, expr)* ;
-  Location loc = prev_loc(p); // 'print'
+  SourceSpan span = prev_span(p); // 'print'
   AstNodePtrNode *head = NULL;
   AstNodePtrNode *tail = NULL;
   size_t count = 0;
@@ -1745,7 +1731,7 @@ static AstNode *parse_print_stmt2(Parser2 *p) {
     }
   }
 
-  AstNode *node = alloc_node(AST_STMT_PRINT, loc);
+  AstNode *node = alloc_node(AST_STMT_PRINT, span);
   node->data.print_stmt.exprs = exprs;
   node->data.print_stmt.expr_count = count;
   return node;
@@ -1754,21 +1740,21 @@ static AstNode *parse_print_stmt2(Parser2 *p) {
 static AstNode *parse_break_continue_stmt2(Parser2 *p) {
   // break;
   // continue;
-  Location loc = prev_loc(p); // break/continue token
+  SourceSpan span = prev_span(p); // break/continue token
   bool is_break = (p->previous.type == TOKEN_BREAK);
 
   parser2_expect_semicolon(p, PARSE_CTX_BLOCK,
                            "Expected ';' after control flow jump statement.");
 
   AstNode *node =
-      alloc_node(is_break ? AST_STMT_BREAK : AST_STMT_CONTINUE, loc);
+      alloc_node(is_break ? AST_STMT_BREAK : AST_STMT_CONTINUE, span);
   return node;
 }
 
 static AstNode *parse_defer_stmt2(Parser2 *p) {
-  Location loc = prev_loc(p); // 'defer'
+  SourceSpan span = prev_span(p); // 'defer'
 
-  AstNode *stmt = alloc_node(AST_STMT_DEFER, loc);
+  AstNode *stmt = alloc_node(AST_STMT_DEFER, span);
   stmt->data.defer_stmt.stmt = parser2_statement(p);
   if (!stmt->data.defer_stmt.stmt) {
     return NULL;
@@ -1812,7 +1798,7 @@ static AstNode *parse_or_expr2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1835,7 +1821,7 @@ static AstNode *parse_and_expr2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1858,7 +1844,7 @@ static AstNode *parse_bit_or_expr2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1881,7 +1867,7 @@ static AstNode *parse_bit_xor_expr2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1904,7 +1890,7 @@ static AstNode *parse_bit_and_expr2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1927,7 +1913,7 @@ static AstNode *parse_equality2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1951,7 +1937,7 @@ static AstNode *parse_comparison2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1974,7 +1960,7 @@ static AstNode *parse_shift2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -1997,7 +1983,7 @@ static AstNode *parse_cast2(Parser2 *p) {
       return left;
     }
 
-    AstNode *cast = alloc_node(AST_EXPR_EXPLICIT_CAST, as_tok.location);
+    AstNode *cast = alloc_node(AST_EXPR_EXPLICIT_CAST, as_tok.span);
     cast->data.explicit_cast.expr = left;
     cast->data.explicit_cast.target_type = target_type;
     cast->data.explicit_cast.pointer_cast = false;
@@ -2020,7 +2006,7 @@ static AstNode *parse_term2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -2044,7 +2030,7 @@ static AstNode *parse_factor2(Parser2 *p) {
       return left;
     }
 
-    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
+    AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.span);
     binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
@@ -2065,7 +2051,7 @@ static AstNode *parse_unary2(Parser2 *p) {
       return NULL;
     }
 
-    AstNode *unop = alloc_node(AST_EXPR_UNARY_OP, op.location);
+    AstNode *unop = alloc_node(AST_EXPR_UNARY_OP, op.span);
     unop->data.unop.op = ast_unop_from_token(op.type);
     unop->data.unop.operand = operand;
     return unop;
@@ -2083,7 +2069,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
     // Force unwrap: expr!
     if (parser2_match(p, TOKEN_NOT)) {
       Token bang = p->previous;
-      AstNode *n = alloc_node(AST_EXPR_FORCE_UNWRAP, bang.location);
+      AstNode *n = alloc_node(AST_EXPR_FORCE_UNWRAP, bang.span);
       n->data.force_unwrap.operand = expr;
       expr = n;
       continue;
@@ -2092,7 +2078,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
     // Postfix inc/dec: expr++ / expr--
     if (parser2_match(p, TOKEN_PLUS_PLUS)) {
       Token tok = p->previous;
-      AstNode *n = alloc_node(AST_EXPR_POSTFIX_INC, tok.location);
+      AstNode *n = alloc_node(AST_EXPR_POSTFIX_INC, tok.span);
       n->data.postfix_inc.operand = expr;
       expr = n;
       continue;
@@ -2100,7 +2086,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
 
     if (parser2_match(p, TOKEN_MINUS_MINUS)) {
       Token tok = p->previous;
-      AstNode *n = alloc_node(AST_EXPR_POSTFIX_DEC, tok.location);
+      AstNode *n = alloc_node(AST_EXPR_POSTFIX_DEC, tok.span);
       n->data.postfix_dec.operand = expr;
       expr = n;
       continue;
@@ -2205,7 +2191,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
         }
 
         if (parser2_match(p, TOKEN_LBRACE)) {
-          Location loc = expr->loc;
+          SourceSpan span = expr->span;
           char *type_name = NULL;
 
           if (expr->kind == AST_EXPR_IDENTIFIER) {
@@ -2305,7 +2291,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
             }
           }
 
-          AstNode *lit = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+          AstNode *lit = alloc_node(AST_EXPR_STRUCT_LITERAL, span);
           lit->data.struct_literal.type_name = type_name;
           lit->data.struct_literal.qualified_type_name = type_name;
           lit->data.struct_literal.field_names = field_names;
@@ -2321,7 +2307,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
           Token member = parser2_consume(
               p, TOKEN_IDENTIFIER, "Expected member name after generic type");
 
-          AstNode *member_expr = alloc_node(AST_EXPR_MEMBER, expr->loc);
+          AstNode *member_expr = alloc_node(AST_EXPR_MEMBER, expr->span);
           member_expr->data.member_expr.object = expr;
           member_expr->data.member_expr.member = member.lexeme;
           member_expr->data.member_expr.is_method_ref = false;
@@ -2344,7 +2330,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
           (expr->kind == AST_EXPR_IDENTIFIER ||
            expr->kind == AST_EXPR_MODULE_MEMBER)) {
         parser2_advance(p); // consume '{'
-        Location loc = expr->loc;
+        SourceSpan span = expr->span;
         char *type_name = NULL;
 
         if (expr->kind == AST_EXPR_IDENTIFIER) {
@@ -2442,7 +2428,7 @@ static AstNode *parse_postfix2(Parser2 *p) {
           }
         }
 
-        AstNode *lit = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+        AstNode *lit = alloc_node(AST_EXPR_STRUCT_LITERAL, span);
         lit->data.struct_literal.type_name = type_name;
         lit->data.struct_literal.qualified_type_name = type_name;
         lit->data.struct_literal.field_names = field_names;
@@ -2476,8 +2462,8 @@ static AstNode *parse_postfix2(Parser2 *p) {
 
 static AstNode *parse_call2(Parser2 *p, AstNode *func) {
   // We enter here after consuming '('.
-  Location loc = prev_loc(p);
-  AstNode *call = alloc_node(AST_EXPR_CALL, loc);
+  SourceSpan span = prev_span(p);
+  AstNode *call = alloc_node(AST_EXPR_CALL, span);
   call->data.call.func = func;
   call->data.call.args = NULL;
   call->data.call.arg_count = 0;
@@ -2545,7 +2531,7 @@ static AstNode *parse_call2(Parser2 *p, AstNode *func) {
 
 static AstNode *parse_index2(Parser2 *p, AstNode *array) {
   // We enter here after consuming '['.
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
   // Slice syntax: arr[start:end]
   AstNode *start = NULL;
@@ -2563,7 +2549,7 @@ static AstNode *parse_index2(Parser2 *p, AstNode *array) {
 
     parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after slice");
 
-    AstNode *slice = alloc_node(AST_EXPR_SLICE, loc);
+    AstNode *slice = alloc_node(AST_EXPR_SLICE, span);
     slice->data.slice_expr.array = array;
     slice->data.slice_expr.start = start;
     slice->data.slice_expr.end = end;
@@ -2573,7 +2559,7 @@ static AstNode *parse_index2(Parser2 *p, AstNode *array) {
   // Index: arr[expr]
   parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after index");
 
-  AstNode *index = alloc_node(AST_EXPR_INDEX, loc);
+  AstNode *index = alloc_node(AST_EXPR_INDEX, span);
   index->data.index_expr.array = array;
   index->data.index_expr.index = start;
   return index;
@@ -2581,9 +2567,9 @@ static AstNode *parse_index2(Parser2 *p, AstNode *array) {
 
 static AstNode *parse_member2(Parser2 *p, AstNode *object) {
   // We enter here after consuming '.'.
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
-  AstNode *mem = alloc_node(AST_EXPR_MEMBER, loc);
+  AstNode *mem = alloc_node(AST_EXPR_MEMBER, span);
   mem->data.member_expr.object = object;
 
   // Accept either identifier (named member) or int (tuple index)
@@ -2615,8 +2601,8 @@ static AstNode *parse_module_member2(Parser2 *p, AstNode *object) {
     parser2_handle_error(p, "Module name must be an identifier.");
   }
 
-  Location loc = prev_loc(p);
-  AstNode *mod_mem = alloc_node(AST_EXPR_MODULE_MEMBER, loc);
+  SourceSpan span = prev_span(p);
+  AstNode *mod_mem = alloc_node(AST_EXPR_MODULE_MEMBER, span);
   mod_mem->data.mod_member_expr.module = object;
 
   Token member = parser2_consume(p, TOKEN_IDENTIFIER,
@@ -2631,7 +2617,7 @@ static AstNode *parse_module_member2(Parser2 *p, AstNode *object) {
 
 static AstNode *parse_interpolated_string2(Parser2 *p) {
   // parser2_previous is the opening TOKEN_BACKTICK
-  Location loc = prev_loc(p);
+  SourceSpan span = prev_span(p);
 
   AstNodePtrNode *head = NULL;
   AstNodePtrNode *tail = NULL;
@@ -2640,7 +2626,7 @@ static AstNode *parse_interpolated_string2(Parser2 *p) {
   while (!parser2_check(p, TOKEN_BACKTICK) && !parser2_check(p, TOKEN_EOF)) {
     if (parser2_match(p, TOKEN_STRING)) {
       Token str = p->previous;
-      AstNode *lit = alloc_node(AST_EXPR_LITERAL_STRING, str.location);
+      AstNode *lit = alloc_node(AST_EXPR_LITERAL_STRING, str.span);
       // Lexer owns processed string storage in long_lived arena.
       lit->data.str_lit.value = str.value.str_val;
 
@@ -2689,7 +2675,7 @@ static AstNode *parse_interpolated_string2(Parser2 *p) {
     }
   }
 
-  AstNode *interp = alloc_node(AST_EXPR_INTERPOLATED_STRING, loc);
+  AstNode *interp = alloc_node(AST_EXPR_INTERPOLATED_STRING, span);
   interp->data.interpolated_string.parts = parts;
   interp->data.interpolated_string.num_parts = count;
   return interp;
@@ -2698,22 +2684,22 @@ static AstNode *parse_interpolated_string2(Parser2 *p) {
 static AstNode *parse_primary2(Parser2 *p) {
   // Literals
   if (parser2_match(p, TOKEN_INT)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_INT, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_INT, span);
     n->data.int_lit.value = atoll(p->previous.lexeme);
     return n;
   }
 
   if (parser2_match(p, TOKEN_FLOAT)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_FLOAT, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_FLOAT, span);
     n->data.float_lit.value = p->previous.value.float_val;
     return n;
   }
 
   if (parser2_match(p, TOKEN_STRING)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_STRING, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_STRING, span);
     // Lexer owns processed string storage in long_lived arena.
     n->data.str_lit.value = p->previous.value.str_val;
     return n;
@@ -2724,42 +2710,42 @@ static AstNode *parse_primary2(Parser2 *p) {
   }
 
   if (parser2_match(p, TOKEN_CHAR)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_CHAR, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_CHAR, span);
     n->data.char_lit.value = p->previous.value.char_val;
     return n;
   }
 
   if (parser2_match(p, TOKEN_TRUE) || parser2_match(p, TOKEN_FALSE)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_BOOL, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_BOOL, span);
     n->data.bool_lit.value = (p->previous.type == TOKEN_TRUE);
     return n;
   }
 
   if (parser2_match(p, TOKEN_NIL)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_NIL, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_NIL, span);
     return n;
   }
 
   if (parser2_match(p, TOKEN_NONE)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_LITERAL_NONE, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_LITERAL_NONE, span);
     return n;
   }
 
   // Context
   if (parser2_match(p, TOKEN_CONTEXT)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_CONTEXT, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_CONTEXT, span);
     return n;
   }
 
   // Identifiers
   if (parser2_match(p, TOKEN_IDENTIFIER)) {
-    Location loc = prev_loc(p);
-    AstNode *n = alloc_node(AST_EXPR_IDENTIFIER, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *n = alloc_node(AST_EXPR_IDENTIFIER, span);
     // Lexer owns identifier lexeme storage in long_lived arena.
     n->data.ident.name = p->previous.lexeme;
     n->data.ident.qualified_name = p->previous.lexeme;
@@ -2770,7 +2756,7 @@ static AstNode *parse_primary2(Parser2 *p) {
 
   // Grouping / Tuple literal
   if (parser2_match(p, TOKEN_LPAREN)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     if (parser2_match(p, TOKEN_RPAREN)) {
       parser2_handle_error(p, "empty parentheses not allowed");
@@ -2836,25 +2822,25 @@ static AstNode *parse_primary2(Parser2 *p) {
         }
       }
 
-      AstNode *tuple = alloc_node(AST_EXPR_TUPLE, loc);
+      AstNode *tuple = alloc_node(AST_EXPR_TUPLE, span);
       tuple->data.tuple_expr.elements = elements;
       tuple->data.tuple_expr.element_count = count;
       return tuple;
     }
 
     parser2_consume(p, TOKEN_RPAREN, "Expected ')' after expression");
-    AstNode *grouped = alloc_node(AST_EXPR_GROUPED_EXPR, loc);
+    AstNode *grouped = alloc_node(AST_EXPR_GROUPED_EXPR, span);
     grouped->data.grouped_expr.inner_expr = first;
     return grouped;
   }
 
   // Array literal [1,2,3] or array repeat [value; count]
   if (parser2_match(p, TOKEN_LBRACKET)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     if (parser2_check(p, TOKEN_RBRACKET)) {
       parser2_advance(p);
-      AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, loc);
+      AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, span);
       array_lit->data.array_literal.elements = NULL;
       array_lit->data.array_literal.element_count = 0;
       return array_lit;
@@ -2882,7 +2868,7 @@ static AstNode *parse_primary2(Parser2 *p) {
       parser2_consume(p, TOKEN_RBRACKET,
                       "Expected ']' after array repeat count");
 
-      AstNode *array_repeat = alloc_node(AST_EXPR_ARRAY_REPEAT, loc);
+      AstNode *array_repeat = alloc_node(AST_EXPR_ARRAY_REPEAT, span);
       array_repeat->data.array_repeat.value = first;
       array_repeat->data.array_repeat.count = (size_t)repeat_count;
       return array_repeat;
@@ -2932,7 +2918,7 @@ static AstNode *parse_primary2(Parser2 *p) {
       }
     }
 
-    AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, loc);
+    AstNode *array_lit = alloc_node(AST_EXPR_ARRAY_LITERAL, span);
     array_lit->data.array_literal.elements = elements;
     array_lit->data.array_literal.element_count = count;
     return array_lit;
@@ -2940,50 +2926,50 @@ static AstNode *parse_primary2(Parser2 *p) {
 
   // Sizeof expression
   if (parser2_match(p, TOKEN_SIZEOF)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     AstNode *type_ast = parse_type_expression2(p);
 
-    AstNode *sizeof_expr = alloc_node(AST_EXPR_SIZEOF, loc);
+    AstNode *sizeof_expr = alloc_node(AST_EXPR_SIZEOF, span);
     sizeof_expr->data.sizeof_expr.type_expr = type_ast;
     return sizeof_expr;
   }
 
   // Optional expression (some expression)
   if (parser2_match(p, TOKEN_SOME)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     AstNode *inner_expr = parse_expression2(p);
     if (!inner_expr) {
       return NULL;
     }
 
-    AstNode *some_expr = alloc_node(AST_EXPR_SOME, loc);
+    AstNode *some_expr = alloc_node(AST_EXPR_SOME, span);
     some_expr->data.some_expr.value = inner_expr;
     return some_expr;
   }
 
   // Function literal
   if (parser2_match(p, TOKEN_FN)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     bool inlined = parser2_match(p, TOKEN_INLINE);
 
     AstNode *convention = NULL;
     if (parser2_match(p, TOKEN_STRING)) {
-      convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+      convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_span(p));
       // Use raw lexeme to match parser.c behavior.
       convention->data.str_lit.value = p->previous.lexeme;
     }
 
-    return parse_function2(p, loc, NULL, inlined, convention, false);
+    return parse_function2(p, span, NULL, inlined, convention, false);
   }
 
   // Anonymous struct literal / partial member
   if (parser2_match(p, TOKEN_DOT)) {
     if (parser2_match(p, TOKEN_IDENTIFIER)) {
-      AstNode *expr = alloc_node(AST_EXPR_PARTIAL_MEMBER, prev_loc(p));
+      AstNode *expr = alloc_node(AST_EXPR_PARTIAL_MEMBER, prev_span(p));
       expr->data.partial_member_expr.member = p->previous.lexeme;
       return expr;
     } else if (parser2_match(p, TOKEN_LBRACE)) {
-      Location loc = prev_loc(p);
+      SourceSpan span = prev_span(p);
 
       typedef struct FieldNode {
         char *name;
@@ -3068,7 +3054,7 @@ static AstNode *parse_primary2(Parser2 *p) {
         }
       }
 
-      AstNode *expr = alloc_node(AST_EXPR_STRUCT_LITERAL, loc);
+      AstNode *expr = alloc_node(AST_EXPR_STRUCT_LITERAL, span);
       expr->data.struct_literal.type_name = NULL;
       expr->data.struct_literal.qualified_type_name = NULL;
       expr->data.struct_literal.field_names = field_names;
@@ -3088,11 +3074,11 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
   // Function type: fn(T1, T2, ...) ReturnType
   if (parser2_match(p, TOKEN_FN)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     AstNode *convention = NULL;
     if (parser2_match(p, TOKEN_STRING)) {
-      convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_loc(p));
+      convention = alloc_node(AST_EXPR_LITERAL_STRING, prev_span(p));
       convention->data.str_lit.value = p->previous.lexeme;
     }
 
@@ -3156,7 +3142,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       }
     }
 
-    type = alloc_node(AST_TYPE_FUNCTION, loc);
+    type = alloc_node(AST_TYPE_FUNCTION, span);
     type->data.type_function.convention = convention;
     type->data.type_function.param_types = param_types;
     type->data.type_function.param_count = count;
@@ -3166,7 +3152,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
   // Tuple type: (T1, T2, ...)
   if (parser2_match(p, TOKEN_LPAREN)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     if (parser2_match(p, TOKEN_RPAREN)) {
       parser2_handle_error(p, "empty tuple type not allowed");
@@ -3227,7 +3213,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
         elements[i++] = cur->node;
       }
 
-      type = alloc_node(AST_TYPE_TUPLE, loc);
+      type = alloc_node(AST_TYPE_TUPLE, span);
       type->data.type_tuple.element_types = elements;
       type->data.type_tuple.element_count = count;
       return type;
@@ -3239,31 +3225,31 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
   // Pointer type: *T
   if (parser2_match(p, TOKEN_STAR)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     AstNode *base = parse_type_expression2(p);
 
-    type = alloc_node(AST_TYPE_POINTER, loc);
+    type = alloc_node(AST_TYPE_POINTER, span);
     type->data.type_pointer.base = base;
     return type;
   }
 
   // Optional type: ?T
   if (parser2_match(p, TOKEN_QUESTION)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
     AstNode *base = parse_type_expression2(p);
 
-    type = alloc_node(AST_TYPE_OPTIONAL, loc);
+    type = alloc_node(AST_TYPE_OPTIONAL, span);
     type->data.type_optional.base = base;
     return type;
   }
 
   // Array or slice: [N]T or []T
   if (parser2_match(p, TOKEN_LBRACKET)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     if (parser2_match(p, TOKEN_RBRACKET)) {
       AstNode *element = parse_type_expression2(p);
-      type = alloc_node(AST_TYPE_SLICE, loc);
+      type = alloc_node(AST_TYPE_SLICE, span);
       type->data.type_slice.element = element;
       return type;
     }
@@ -3279,7 +3265,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
     parser2_consume(p, TOKEN_RBRACKET, "Expected ']' after array size");
     AstNode *element = parse_type_expression2(p);
 
-    type = alloc_node(AST_TYPE_ARRAY, loc);
+    type = alloc_node(AST_TYPE_ARRAY, span);
     type->data.type_array.element = element;
     type->data.type_array.size = size;
     return type;
@@ -3287,7 +3273,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
   // Struct type: struct { ... }
   if (parser2_match(p, TOKEN_STRUCT)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     parser2_consume(p, TOKEN_LBRACE, "Expected '{' after 'struct'");
 
@@ -3423,7 +3409,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       }
     }
 
-    type = alloc_node(AST_TYPE_STRUCT, loc);
+    type = alloc_node(AST_TYPE_STRUCT, span);
     type->data.type_struct.field_names = field_names;
     type->data.type_struct.field_types = field_types;
     type->data.type_struct.field_count = field_count;
@@ -3434,7 +3420,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
   // Union type: union (enum) { ... }
   if (parser2_match(p, TOKEN_UNION)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     bool is_tagged = parser2_match(p, TOKEN_ENUM);
 
@@ -3571,7 +3557,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       }
     }
 
-    type = alloc_node(AST_TYPE_UNION, loc);
+    type = alloc_node(AST_TYPE_UNION, span);
     type->data.type_union.is_tagged = is_tagged;
     type->data.type_union.variant_names = variant_names;
     type->data.type_union.variant_types = variant_types;
@@ -3583,7 +3569,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
 
   // Enum type: enum { variant, ... }
   if (parser2_match(p, TOKEN_ENUM)) {
-    Location loc = prev_loc(p);
+    SourceSpan span = prev_span(p);
 
     parser2_consume(p, TOKEN_LBRACE, "Expected '{' after 'enum'");
 
@@ -3646,7 +3632,7 @@ static AstNode *parse_type_expression2(Parser2 *p) {
       }
     }
 
-    type = alloc_node(AST_TYPE_ENUM, loc);
+    type = alloc_node(AST_TYPE_ENUM, span);
     type->data.type_enum.variant_names = variant_names;
     type->data.type_enum.variant_count = count;
     return type;
@@ -3670,8 +3656,8 @@ static AstNode *parse_type_expression2(Parser2 *p) {
   case TOKEN_ISIZE_TYPE:
   case TOKEN_CHAR_TYPE: {
     parser2_advance(p);
-    Location loc = prev_loc(p);
-    AstNode *t = alloc_node(AST_TYPE_NAMED, loc);
+    SourceSpan span = prev_span(p);
+    AstNode *t = alloc_node(AST_TYPE_NAMED, span);
     t->data.type_named.name = p->previous.lexeme;
     t->data.type_named.type_args = NULL;
     t->data.type_named.type_arg_count = 0;
@@ -3689,12 +3675,12 @@ static AstNode *parse_type_expression2(Parser2 *p) {
     if (parser2_match(p, TOKEN_MOD_SCOPE)) {
       Token mem = parser2_consume(p, TOKEN_IDENTIFIER,
                                   "Expected an identifier after '::'");
-      type = alloc_node(AST_TYPE_QUALIFIED_NAMED, mem.location);
+      type = alloc_node(AST_TYPE_QUALIFIED_NAMED, mem.span);
       type->data.type_qualified_named.mod_name = name.lexeme;
       type->data.type_qualified_named.mem_name = mem.lexeme;
       is_qualified = true;
     } else {
-      type = alloc_node(AST_TYPE_NAMED, name.location);
+      type = alloc_node(AST_TYPE_NAMED, name.span);
       type->data.type_named.name = name.lexeme;
     }
 

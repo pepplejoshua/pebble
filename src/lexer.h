@@ -2,7 +2,7 @@
 #define LEXER_H
 
 #include "alloc.h"
-#include "location.h"
+#include "source_span.h"
 #include <stddef.h>
 #include <stdbool.h> // For bool
 
@@ -122,8 +122,8 @@ typedef enum {
 // Token structure
 typedef struct {
   TokenType type;
-  char *lexeme;      // String representation (allocated)
-  Location location; // Source location
+  char *lexeme;   // String representation (allocated)
+  SourceSpan span; // Source span
 
   // Parsed values for literals
   union {

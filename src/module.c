@@ -270,8 +270,9 @@ bool parse_module(Module *mod) {
   return parser.diagnostics && parser.diagnostics->error_count > 0;
 }
 
-void module_error(Location loc, const char *msg) {
-  fprintf(stderr, "%s:%zu:%zu: %s\n", loc.file, loc.line, loc.column, msg);
+void module_error(SourceSpan span, const char *msg) {
+  fprintf(stderr, "%s:%zu:%zu: %s\n", span.file, span.start_line,
+          span.start_col, msg);
 }
 
 Module *get_module_from_table(const char *full_path) {
@@ -315,7 +316,7 @@ bool collect_all_modules(Module *cur) {
       return false;
     }
     if (strcmp(mod_path, cur->abs_file_path) == 0) {
-      module_error(node->loc, "A module cannot import itself.");
+      module_error(node->span, "A module cannot import itself.");
       return false;
     }
 
@@ -324,7 +325,7 @@ bool collect_all_modules(Module *cur) {
     Module *exists = get_module_from_table(mod_path);
     if (exists) {
       if (exists->is_main) {
-        module_error(node->loc,
+        module_error(node->span,
                      "A module cannot import the entry / main module.");
         return false;
       }
