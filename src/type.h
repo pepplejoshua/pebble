@@ -2,6 +2,7 @@
 #define TYPE_H
 
 #include "ast.h"
+#include "source_span.h"
 #include "symbol.h"
 #include "wrapped_uthash.h"
 #include "uthash.h"
@@ -61,7 +62,7 @@ struct Type {
   char *canonical_name;
   char *declared_name;
   char *qualified_name; // Used for named types
-  Location loc;
+  SourceSpan span;
   bool used;
 
   // For monomorphized generics, store what it was specialized with
@@ -196,23 +197,26 @@ extern MonoFuncInstance *mono_instances;
 
 // Type system functions
 void type_system_init(void);
-Type *type_create(TypeKind kind, Location loc);
-Type *type_create_pointer(Type *base, bool canonicalize, Location loc);
-Type *type_create_optional(Type *base, bool canonicalize, Location loc);
-Type *type_create_slice(Type *element, bool canonicalize, Location loc);
-Type *type_create_array(Type *element, size_t size, bool canonicalize, Location loc);
+Type *type_create(TypeKind kind, SourceSpan span);
+Type *type_create_pointer(Type *base, bool canonicalize, SourceSpan span);
+Type *type_create_optional(Type *base, bool canonicalize, SourceSpan span);
+Type *type_create_slice(Type *element, bool canonicalize, SourceSpan span);
+Type *type_create_array(Type *element, size_t size, bool canonicalize,
+                        SourceSpan span);
 Type *type_create_struct(char **field_names, Type **field_types,
                          size_t field_count, bool builtin, bool canonicalize,
-                         Location loc);
-Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
-                         size_t variant_count, bool canonicalize, Location loc);
-Type *type_create_enum(char **variant_names, size_t variant_count, bool canonicalize, Location loc);
+                         SourceSpan span);
+Type *type_create_union(bool tagged, char **variant_names,
+                        Type **variant_types, size_t variant_count,
+                        bool canonicalize, SourceSpan span);
+Type *type_create_enum(char **variant_names, size_t variant_count,
+                       bool canonicalize, SourceSpan span);
 Type *type_create_tuple(Type **element_types, size_t element_count,
-                        bool canonicalize, Location loc);
+                        bool canonicalize, SourceSpan span);
 Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
-                           Location loc);
+                           SourceSpan span);
 
 // Type lookup and registration
 Type *type_lookup(const char *name, const char *mod_name);
