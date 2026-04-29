@@ -22,6 +22,10 @@ static AstNode *parse_extern_decl2(Parser2 *p);
 static AstNode *parse_print_stmt2(Parser2 *p);
 static AstNode *parse_break_continue_stmt2(Parser2 *p);
 static AstNode *parse_defer_stmt2(Parser2 *p);
+static bool parser2_handle_error_at(Parser2 *parser, SourceSpan span,
+                                    const char *expected);
+static bool parser2_handle_error_at_previous(Parser2 *parser,
+                                             const char *expected);
 
 typedef struct AstNodePtrNode {
   AstNode *node;
@@ -101,7 +105,24 @@ static bool parser2_expect_semicolon(Parser2 *p, ParseContext ctx,
     return true;
   }
 
-  parser2_handle_error(p, message);
+  parser2_handle_error_at_previous(p, message);
+
+  // Insert ';' only when the next token is in the FOLLOW-like boundary set.
+  // Otherwise, force higher-level recovery (sync) instead of guessing.
+  if (parser2_follow_stmt_boundary(p->current.type, ctx)) {
+    return true;
+  }
+
+  return false;
+}
+
+static bool parser2_expect_semicolon_at(Parser2 *p, SourceSpan span,
+                                        ParseContext ctx, const char *message) {
+  if (parser2_match(p, TOKEN_SEMICOLON)) {
+    return true;
+  }
+
+  parser2_handle_error_at(p, span, message);
 
   // Insert ';' only when the next token is in the FOLLOW-like boundary set.
   // Otherwise, force higher-level recovery (sync) instead of guessing.
@@ -148,9 +169,9 @@ static AstNode *parse_type_expression2(Parser2 *p);
 
 static void parser2_synchronize_ctx(Parser2 *parser, ParseContext ctx);
 
-void parser_init(Parser2 *parser, const char *source, const char *filename,
+void parser_init(Parser2 *parser, const char *source,
                  const char *abs_file_path) {
-  lexer_init(&parser->lexer, source, filename);
+  lexer_init(&parser->lexer, source, abs_file_path);
   parser->abs_file_path = abs_file_path;
 
   parser->diagnostics = arena_alloc(&long_lived, sizeof(DiagnosticContext));
@@ -469,11 +490,8 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
         semicolon_handled = true;
       } else {
         // No explicit ';' found; report/insert according to context.
-        if (!parser2_expect_semicolon(
-                p, ctx, "Expected ';' after variable declaration")) {
-          parser2_handle_error_at_previous(
-              p, "Expected ';' after variable declaration");
-        }
+        parser2_expect_semicolon_at(p, name.span, ctx,
+                                    "Expected ';' after variable declaration");
         semicolon_handled = true;
       }
 
@@ -488,11 +506,8 @@ static AstNode *parse_variable_decl2(Parser2 *p, bool is_mutable) {
       semi_ctx = PARSE_CTX_BLOCK;
     }
 
-    if (!parser2_expect_semicolon(p, semi_ctx,
-                                  "Expected ';' after variable declaration")) {
-      parser2_handle_error_at_previous(
-          p, "Expected ';' after variable declaration");
-    }
+    parser2_expect_semicolon_at(p, name.span, semi_ctx,
+                                "Expected ';' after variable declaration");
   }
 
   if (is_mutable) {
@@ -578,8 +593,8 @@ static AstNode *parse_type_decl2(Parser2 *p) {
   parser2_consume(p, TOKEN_EQUAL, "Expected '=' after type name");
   AstNode *type_expr = parse_type_expression2(p);
 
-  parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                           "Expected ';' after type declaration");
+  parser2_expect_semicolon_at(p, name.span, PARSE_CTX_TOP_LEVEL,
+                              "Expected ';' after type declaration");
 
   AstNode *node = alloc_node(AST_DECL_TYPE, name.span);
   node->data.type_decl.name = name.lexeme;
@@ -695,8 +710,9 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
       } else if (parser2_match(p, TOKEN_TYPE)) {
         Token name = parser2_consume(p, TOKEN_IDENTIFIER,
                                      "Expected extern function name");
-        parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                                 "Expected ';' after extern type declaration");
+        parser2_expect_semicolon_at(
+            p, name.span, PARSE_CTX_TOP_LEVEL,
+            "Expected ';' after extern type declaration");
 
         AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.span);
         opaque_type->data.extern_type.name = name.lexeme;
@@ -708,8 +724,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         Token name =
             parser2_consume(p, TOKEN_IDENTIFIER, "Expected constant name");
         AstNode *type_expr = parse_type_expression2(p);
-        parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                                 "Expected ';' after constant declaration");
+        parser2_expect_semicolon_at(p, name.span, PARSE_CTX_TOP_LEVEL,
+                                    "Expected ';' after constant declaration");
 
         AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.span);
         let->data.extern_const_decl.name = name.lexeme;
@@ -723,8 +739,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         Token name =
             parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
         AstNode *type_expr = parse_type_expression2(p);
-        parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                                 "Expected ';' after variable declaration");
+        parser2_expect_semicolon_at(p, name.span, PARSE_CTX_TOP_LEVEL,
+                                    "Expected ';' after variable declaration");
 
         AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.span);
         var->data.extern_var_decl.name = name.lexeme;
@@ -824,8 +840,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   if (parser2_match(p, TOKEN_TYPE)) {
     Token name =
         parser2_consume(p, TOKEN_IDENTIFIER, "Expected extern function name");
-    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                             "Expected ';' after extern type declaration");
+    parser2_expect_semicolon_at(p, name.span, PARSE_CTX_TOP_LEVEL,
+                                "Expected ';' after extern type declaration");
 
     AstNode *opaque_type = alloc_node(AST_DECL_EXTERN_TYPE, name.span);
     opaque_type->data.extern_type.name = name.lexeme;
@@ -837,8 +853,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   if (parser2_match(p, TOKEN_LET)) {
     Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected constant name");
     AstNode *type_expr = parse_type_expression2(p);
-    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                             "Expected ';' after constant declaration");
+    parser2_expect_semicolon_at(p, name.span, PARSE_CTX_TOP_LEVEL,
+                                "Expected ';' after constant declaration");
 
     AstNode *let = alloc_node(AST_DECL_EXTERN_CONSTANT, name.span);
     let->data.extern_const_decl.name = name.lexeme;
@@ -852,8 +868,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
   if (parser2_match(p, TOKEN_VAR)) {
     Token name = parser2_consume(p, TOKEN_IDENTIFIER, "Expected variable name");
     AstNode *type_expr = parse_type_expression2(p);
-    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                             "Expected ';' after variable declaration");
+    parser2_expect_semicolon_at(p, name.span, PARSE_CTX_TOP_LEVEL,
+                                "Expected ';' after variable declaration");
 
     AstNode *var = alloc_node(AST_DECL_EXTERN_VARIABLE, name.span);
     var->data.extern_var_decl.name = name.lexeme;

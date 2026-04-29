@@ -282,14 +282,24 @@ static void emit_single_diagnostic(Diagnostic *diag) {
     int line_num_width = snprintf(NULL, 0, "%zu", line);
     const char *display_path = get_display_path(file);
 
+    char caret_buf[256];
+    size_t caret_len = diag->error_length > 0 ? diag->error_length : 1;
+    if (caret_len >= sizeof(caret_buf)) {
+      caret_len = sizeof(caret_buf) - 1;
+    }
+    for (size_t i = 0; i < caret_len; i++) {
+      caret_buf[i] = '^';
+    }
+    caret_buf[caret_len] = '\0';
+
     snprintf(buffer, sizeof(buffer),
              "*[cyan]%s:%zu:%zu[/]\n"
              "%s: %s\n"
              "*[d]%zu[/] | %s\n"
-             "%*s | %*s*[*, red]^[/]\n\n",
+             "%*s | %*s*[*, red]%s[/]\n\n",
              display_path, line, col, level_format, diag->message, line,
              diag->source_line ? diag->source_line : "", line_num_width, "",
-             (int)diag->error_start, "");
+             (int)diag->error_start, "", caret_buf);
   } else {
     snprintf(buffer, sizeof(buffer), "%s: %s\n", level_format, diag->message);
   }

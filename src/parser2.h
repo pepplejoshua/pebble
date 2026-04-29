@@ -23,7 +23,7 @@ typedef struct {
 } Parser2;
 
 // External interface (same names as parser.h)
-void parser_init(Parser2 *parser, const char *source, const char *filename, const char *abs_file_path);
+void parser_init(Parser2 *parser, const char *source, const char *abs_file_path);
 AstNode *parse_program(Parser2 *parser);
 
 // Internal interface (prefixed)

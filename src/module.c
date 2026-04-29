@@ -262,7 +262,7 @@ bool parse_module(Module *mod) {
   }
 
   Parser2 parser;
-  parser_init(&parser, source, mod->filename, mod->abs_file_path);
+  parser_init(&parser, source, mod->abs_file_path);
   mod->diagnostics = parser.diagnostics;
   AstNode *program = parse_program(&parser);
   mod->ast = program;
