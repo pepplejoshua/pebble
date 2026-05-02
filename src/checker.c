@@ -2571,7 +2571,7 @@ static void check_switch_is_exhaustive(AstNode *node, Type *switch_type) {
 
   if (switch_type->kind == TYPE_U8 || switch_type->kind == TYPE_I8) {
     const int size = 256;
-    bool covered[size];
+    bool covered[256];
     memset(covered, 0, size);
 
     for (size_t i = 0; i < node->data.switch_stmt.case_count; i++) {
