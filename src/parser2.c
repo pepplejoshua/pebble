@@ -693,8 +693,8 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
         }
 
         AstNode *return_type = parse_type_expression2(p);
-        parser2_expect_semicolon(
-            p, PARSE_CTX_TOP_LEVEL,
+        parser2_expect_semicolon_at(
+            p, name.span, PARSE_CTX_TOP_LEVEL,
             "Expected ';' after extern function declaration");
 
         AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.span);
@@ -823,8 +823,9 @@ static AstNode *parse_extern_decl2(Parser2 *p) {
     }
 
     AstNode *return_type = parse_type_expression2(p);
-    parser2_expect_semicolon(p, PARSE_CTX_TOP_LEVEL,
-                             "Expected ';' after extern function declaration");
+    parser2_expect_semicolon_at(
+        p, name.span, PARSE_CTX_TOP_LEVEL,
+        "Expected ';' after extern function declaration");
 
     AstNode *func = alloc_node(AST_DECL_EXTERN_FUNC, name.span);
     func->data.extern_func.name = name.lexeme;
@@ -1172,8 +1173,8 @@ static AstNode *parse_function2(Parser2 *p, SourceSpan location, char *name,
           parser2_advance(p);
         }
         if (!parser2_match(p, TOKEN_SEMICOLON)) {
-          parser2_handle_error_at_previous(
-              p, "Expected ';' after expression-bodied function");
+          parser2_handle_error_at(
+              p, location, "Expected ';' after expression-bodied function");
         }
       } else {
         while (!parser2_is_expr_terminator(p->current.type) &&
@@ -1188,8 +1189,8 @@ static AstNode *parse_function2(Parser2 *p, SourceSpan location, char *name,
     } else {
       if (require_semicolon_after_arrow) {
         if (!parser2_match(p, TOKEN_SEMICOLON)) {
-          parser2_handle_error_at_previous(
-              p, "Expected ';' after expression-bodied function");
+          parser2_handle_error_at(
+              p, location, "Expected ';' after expression-bodied function");
         }
       }
 
