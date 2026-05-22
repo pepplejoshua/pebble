@@ -43,17 +43,17 @@ TypeEntry *canonical_type_table = NULL;
 MonoFuncInstance *mono_instances = NULL;
 
 // Create a basic type
-Type *type_create(TypeKind kind, Location loc) {
+Type *type_create(TypeKind kind, SourceSpan span) {
   Type *type = arena_alloc(&long_lived, sizeof(Type));
   memset(type, 0, sizeof(Type));
   type->kind = kind;
-  type->loc = loc;
+  type->span = span;
   type->used = false;
   return type;
 }
 
 // Create pointer type (conditional canonicalization)
-Type *type_create_pointer(Type *base, bool canonicalize, Location loc) {
+Type *type_create_pointer(Type *base, bool canonicalize, SourceSpan span) {
   assert(base);
 
   if (canonicalize) {
@@ -73,14 +73,14 @@ Type *type_create_pointer(Type *base, bool canonicalize, Location loc) {
     return type;
   } else {
     // Just create type without canonicalization
-    Type *type = type_create(TYPE_POINTER, loc);
+    Type *type = type_create(TYPE_POINTER, span);
     type->data.ptr.base = base;
     return type;
   }
 }
 
 // Create pointer type (conditional canonicalization)
-Type *type_create_optional(Type *base, bool canonicalize, Location loc) {
+Type *type_create_optional(Type *base, bool canonicalize, SourceSpan span) {
   assert(base);
 
   if (canonicalize) {
@@ -101,14 +101,14 @@ Type *type_create_optional(Type *base, bool canonicalize, Location loc) {
     return type;
   } else {
     // Just create type without canonicalization
-    Type *type = type_create(TYPE_OPTIONAL, loc);
+    Type *type = type_create(TYPE_OPTIONAL, span);
     type->data.optional.base = base;
     return type;
   }
 }
 
 // Create slice type (with deduplication)
-Type *type_create_slice(Type *element, bool canonicalize, Location loc) {
+Type *type_create_slice(Type *element, bool canonicalize, SourceSpan span) {
   assert(element);
 
   if (canonicalize) {
@@ -128,7 +128,7 @@ Type *type_create_slice(Type *element, bool canonicalize, Location loc) {
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_SLICE, loc);
+    Type *type = type_create(TYPE_SLICE, span);
     type->data.slice.element = element;
     return type;
   }
@@ -136,7 +136,7 @@ Type *type_create_slice(Type *element, bool canonicalize, Location loc) {
 
 // Create array type (with deduplication)
 Type *type_create_array(Type *element, size_t size, bool canonicalize,
-                        Location loc) {
+                        SourceSpan span) {
   assert(element);
 
   if (canonicalize) {
@@ -157,7 +157,7 @@ Type *type_create_array(Type *element, size_t size, bool canonicalize,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_ARRAY, loc);
+    Type *type = type_create(TYPE_ARRAY, span);
     type->data.array.element = element;
     type->data.array.size = size;
     return type;
@@ -167,7 +167,7 @@ Type *type_create_array(Type *element, size_t size, bool canonicalize,
 // Create struct type
 Type *type_create_struct(char **field_names, Type **field_types,
                          size_t field_count, bool builtin, bool canonicalize,
-                         Location loc) {
+                         SourceSpan span) {
   if (canonicalize) {
     // First create a temporary type to compute canonical name
     Type *temp_type = arena_alloc(&long_lived, sizeof(Type));
@@ -210,7 +210,7 @@ Type *type_create_struct(char **field_names, Type **field_types,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_STRUCT, loc);
+    Type *type = type_create(TYPE_STRUCT, span);
     type->data.struct_data.builtin = builtin;
 
     if (field_count == 0) {
@@ -237,7 +237,8 @@ Type *type_create_struct(char **field_names, Type **field_types,
 
 // Create union type
 Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
-                        size_t variant_count, bool canonicalize, Location loc) {
+                        size_t variant_count, bool canonicalize,
+                        SourceSpan span) {
   if (canonicalize) {
     // First create a temporary type to compute canonical name
     Type *temp_type = arena_alloc(&long_lived, sizeof(Type));
@@ -279,7 +280,7 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, loc);
+    Type *type = type_create(tagged ? TYPE_TAGGED_UNION : TYPE_UNION, span);
     if (variant_count == 0) {
       type->data.union_data.variant_count = variant_count;
       return type;
@@ -304,9 +305,9 @@ Type *type_create_union(bool tagged, char **variant_names, Type **variant_types,
 
 // Create enum type
 Type *type_create_enum(char **variant_names, size_t variant_count,
-                       bool canonicalize, Location loc) {
+                       bool canonicalize, SourceSpan span) {
   if (canonicalize) {
-    Type *temp_type = type_create(TYPE_ENUM, loc);
+    Type *temp_type = type_create(TYPE_ENUM, span);
 
     // Duplicate field names into arena
     char **names = arena_alloc(&long_lived, variant_count * sizeof(char *));
@@ -334,7 +335,7 @@ Type *type_create_enum(char **variant_names, size_t variant_count,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_ENUM, loc);
+    Type *type = type_create(TYPE_ENUM, span);
 
     if (variant_count == 0) {
       type->data.enum_data.variant_count = variant_count;
@@ -356,7 +357,7 @@ Type *type_create_enum(char **variant_names, size_t variant_count,
 // Create tuple type (no caching)
 // Create tuple type (with deduplication)
 Type *type_create_tuple(Type **element_types, size_t element_count,
-                        bool canonicalize, Location loc) {
+                        bool canonicalize, SourceSpan span) {
   assert(element_types && element_count > 0);
 
   if (canonicalize) {
@@ -383,7 +384,7 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_TUPLE, loc);
+    Type *type = type_create(TYPE_TUPLE, span);
     Type **types = arena_alloc(&long_lived, element_count * sizeof(Type *));
     memcpy(types, element_types, element_count * sizeof(Type *));
     type->data.tuple.element_types = types;
@@ -397,7 +398,7 @@ Type *type_create_tuple(Type **element_types, size_t element_count,
 Type *type_create_function(Type **param_types, size_t param_count,
                            Type *return_type, bool is_variadic,
                            bool canonicalize, CallingConvention convention,
-                           Location loc) {
+                           SourceSpan span) {
   assert(return_type);
 
   if (canonicalize) {
@@ -421,7 +422,7 @@ Type *type_create_function(Type **param_types, size_t param_count,
     canonical_register(canonical_name, type);
     return type;
   } else {
-    Type *type = type_create(TYPE_FUNCTION, loc);
+    Type *type = type_create(TYPE_FUNCTION, span);
     if (param_count > 0) {
       assert(param_types);
       Type **types = arena_alloc(&long_lived, param_count * sizeof(Type *));
@@ -540,30 +541,26 @@ bool type_is_ord(Type *type) {
 
 // Initialize the type system
 void type_system_init(void) {
-  Location loc = {
-      "builtin",
-      0,
-      0,
-  };
+  SourceSpan span = span_new("builtin", 0, 0, 0, 0);
   // Create built-in types
-  type_int = type_create(TYPE_INT, loc);
-  type_bool = type_create(TYPE_BOOL, loc);
-  type_string = type_create(TYPE_STRING, loc);
-  type_void = type_create(TYPE_VOID, loc);
-  type_f32 = type_create(TYPE_F32, loc);
-  type_f64 = type_create(TYPE_F64, loc);
-  type_u8 = type_create(TYPE_U8, loc);
-  type_u16 = type_create(TYPE_U16, loc);
-  type_u32 = type_create(TYPE_U32, loc);
-  type_u64 = type_create(TYPE_U64, loc);
-  type_usize = type_create(TYPE_USIZE, loc);
-  type_i8 = type_create(TYPE_I8, loc);
-  type_i16 = type_create(TYPE_I16, loc);
-  type_i32 = type_create(TYPE_I32, loc);
-  type_i64 = type_create(TYPE_I64, loc);
-  type_isize = type_create(TYPE_ISIZE, loc);
-  type_char = type_create(TYPE_CHAR, loc);
-  type_none = type_create(TYPE_NONE, loc);
+  type_int = type_create(TYPE_INT, span);
+  type_bool = type_create(TYPE_BOOL, span);
+  type_string = type_create(TYPE_STRING, span);
+  type_void = type_create(TYPE_VOID, span);
+  type_f32 = type_create(TYPE_F32, span);
+  type_f64 = type_create(TYPE_F64, span);
+  type_u8 = type_create(TYPE_U8, span);
+  type_u16 = type_create(TYPE_U16, span);
+  type_u32 = type_create(TYPE_U32, span);
+  type_u64 = type_create(TYPE_U64, span);
+  type_usize = type_create(TYPE_USIZE, span);
+  type_i8 = type_create(TYPE_I8, span);
+  type_i16 = type_create(TYPE_I16, span);
+  type_i32 = type_create(TYPE_I32, span);
+  type_i64 = type_create(TYPE_I64, span);
+  type_isize = type_create(TYPE_ISIZE, span);
+  type_char = type_create(TYPE_CHAR, span);
+  type_none = type_create(TYPE_NONE, span);
 
   // Set canonical names for built-in types
   type_int->canonical_name = "int";
@@ -605,31 +602,31 @@ void type_system_init(void) {
   type_register("char", type_char);
 
   // Create types for context and allocator
-  Type *void_ptr = type_create_pointer(type_void, true, loc);
+  Type *void_ptr = type_create_pointer(type_void, true, span);
 
   // NOTE: Context needs to be a dummy type, then patched
   //       after allocator as it requires it.
-  type_context = type_create_struct(NULL, NULL, 0, true, false, loc);
+  type_context = type_create_struct(NULL, NULL, 0, true, false, span);
   type_context->canonical_name = "__pebble_context";
 
   Type **alloc_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   alloc_param_types[0] = void_ptr;
   alloc_param_types[1] = type_usize;
   Type *alloc_fn_t = type_create_function(alloc_param_types, 2, void_ptr, false,
-                                          false, CALL_CONV_PEBBLE, loc);
+                                          false, CALL_CONV_PEBBLE, span);
 
   Type **realloc_param_types = arena_alloc(&long_lived, 3 * sizeof(Type *));
   realloc_param_types[0] = void_ptr;
   realloc_param_types[1] = void_ptr;
   realloc_param_types[2] = type_usize;
   Type *realloc_fn_t = type_create_function(
-      realloc_param_types, 3, void_ptr, false, false, CALL_CONV_PEBBLE, loc);
+      realloc_param_types, 3, void_ptr, false, false, CALL_CONV_PEBBLE, span);
 
   Type **free_param_types = arena_alloc(&long_lived, 2 * sizeof(Type *));
   free_param_types[0] = void_ptr;
   free_param_types[1] = void_ptr;
   Type *free_fn_t = type_create_function(free_param_types, 2, type_void, false,
-                                         false, CALL_CONV_PEBBLE, loc);
+                                         false, CALL_CONV_PEBBLE, span);
 
   char **allocator_field_names = arena_alloc(&long_lived, 4 * sizeof(char *));
   allocator_field_names[0] = "ptr";
@@ -643,7 +640,7 @@ void type_system_init(void) {
   allocator_types[2] = realloc_fn_t;
   allocator_types[3] = free_fn_t;
   Type *allocator_t = type_create_struct(allocator_field_names, allocator_types,
-                                         4, true, false, loc);
+                                         4, true, false, span);
   allocator_t->canonical_name = "Allocator";
 
   // Patch context
@@ -1156,7 +1153,7 @@ AstNode *type_to_ast_node(Type *type) {
 
   AstNode *node = arena_alloc(&long_lived, sizeof(AstNode));
   memset(node, 0, sizeof(AstNode));
-  node->loc = type->loc;
+  node->span = type->span;
 
   switch (type->kind) {
   case TYPE_INT:

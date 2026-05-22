@@ -17,12 +17,51 @@ extern Arena long_lived;
 // BASIC PARSER UTILITIES
 // ============================================================================
 
+static void split_source_into_lines(Parser *parser, const char *source) {
+  // Count lines first
+  int line_count = 1;
+  for (const char *p = source; *p; p++) {
+    if (*p == '\n')
+      line_count++;
+  }
+
+  parser->source_line_count = line_count;
+  parser->source_lines = arena_alloc(&long_lived, line_count * sizeof(char *));
+
+  // Copy source and split into lines
+  size_t source_len = strlen(source);
+  char *source_copy = arena_alloc(&long_lived, source_len + 1);
+  strcpy(source_copy, source);
+
+  int line_idx = 0;
+  char *line_start = source_copy;
+
+  for (size_t i = 0; i <= source_len; i++) {
+    if (source_copy[i] == '\n' || source_copy[i] == '\0') {
+      // Null terminate this line
+      if (source_copy[i] == '\n') {
+        source_copy[i] = '\0';
+      }
+
+      if (line_idx < line_count) {
+        parser->source_lines[line_idx] = line_start;
+        line_idx++;
+      }
+
+      // Start of next line
+      line_start = &source_copy[i + 1];
+    }
+  }
+}
+
 void parser_init(Parser *parser, const char *source, const char *filename,
                  const char *abs_file_path) {
   lexer_init(&parser->lexer, source, filename);
   parser->had_error = false;
   parser->panic_mode = false;
   parser->abs_file_path = abs_file_path;
+
+  split_source_into_lines(parser, source);
 
   // Prime the parser with the first token
   parser_advance(parser);
@@ -71,20 +110,32 @@ static void parser_error_at(Parser *parser, Token *token, const char *message) {
     return;
   parser->panic_mode = true;
 
-  fprintf(stderr, "%s:%d:%d:\nError", parser->abs_file_path,
-          token->location.line, token->location.column);
+  fprintf(stderr, "%s:%zu:%zu:\nError: %s\n", parser->abs_file_path,
+          token->location.line, token->location.column, message);
 
-  if (token->type == TOKEN_EOF) {
-    fprintf(stderr, " at end");
-  } else if (token->type == TOKEN_ERROR) {
-    // Error token - message already printed
+  // Show the problematic line
+  int line_num = token->location.line;
+  if (line_num > 0 && line_num <= parser->source_line_count) {
+    const char *line = parser->source_lines[line_num - 1];
+    if (line != NULL) {
+      // Calculate spacing for line numbers (assuming max 4 digits)
+      fprintf(stderr, "%4d | %s\n", line_num, line);
+
+      // Add pointer to column (account for "nnnn | " prefix)
+      fprintf(stderr, "       ");
+      for (size_t i = 0; i < token->location.column - 1; i++) {
+        fprintf(stderr, " ");
+      }
+      fprintf(stderr, "^\n");
+    } else {
+      fprintf(stderr, "%4d | (line not available)\n", line_num);
+    }
   } else {
-    fprintf(stderr, " at '%s'", token->lexeme);
+    fprintf(stderr, "     | (line %d out of range: 1-%d)\n", line_num,
+            parser->source_line_count);
   }
 
-  fprintf(stderr, ": %s\n", message);
   parser->had_error = true;
-
   parser_synchronize(parser);
 }
 
@@ -163,69 +214,9 @@ void parser_error(Parser *parser, const char *message) {
 // HELPER FUNCTIONS
 // ============================================================================
 
-BinaryOp token_to_binary_op(TokenType type) {
-  switch (type) {
-  case TOKEN_PLUS:
-    return BINOP_ADD;
-  case TOKEN_MINUS:
-    return BINOP_SUB;
-  case TOKEN_STAR:
-    return BINOP_MUL;
-  case TOKEN_SLASH:
-    return BINOP_DIV;
-  case TOKEN_PERCENT:
-    return BINOP_MOD;
-  case TOKEN_EQ:
-    return BINOP_EQ;
-  case TOKEN_NE:
-    return BINOP_NE;
-  case TOKEN_LT:
-    return BINOP_LT;
-  case TOKEN_LE:
-    return BINOP_LE;
-  case TOKEN_GT:
-    return BINOP_GT;
-  case TOKEN_GE:
-    return BINOP_GE;
-  case TOKEN_AND:
-    return BINOP_AND;
-  case TOKEN_OR:
-    return BINOP_OR;
-  case TOKEN_AMPERSAND:
-    return BINOP_BIT_AND;
-  case TOKEN_PIPE:
-    return BINOP_BIT_OR;
-  case TOKEN_CARET:
-    return BINOP_BIT_XOR;
-  case TOKEN_LSHIFT:
-    return BINOP_BIT_SHL;
-  case TOKEN_RSHIFT:
-    return BINOP_BIT_SHR;
-  default:
-    // This should never happen if called correctly
-    fprintf(stderr, "Invalid binary operator token: %d\n", type);
-    exit(1);
-  }
-}
-
-UnaryOp token_to_unary_op(TokenType type) {
-  switch (type) {
-  case TOKEN_MINUS:
-    return UNOP_NEG;
-  case TOKEN_NOT:
-    return UNOP_NOT;
-  case TOKEN_AMPERSAND:
-    return UNOP_ADDR;
-  case TOKEN_STAR:
-    return UNOP_DEREF;
-  case TOKEN_TILDE:
-    return UNOP_BIT_NOT;
-  default:
-    // This should never happen if called correctly
-    fprintf(stderr, "Invalid unary operator token: %d\n", type);
-    exit(1);
-  }
-}
+// token_to_binary_op / token_to_unary_op moved out of the parser.
+// Use the shared mapping helpers (e.g. ast_binop_from_token /
+// ast_unop_from_token).
 
 // ============================================================================
 // AST NODE CREATION HELPERS
@@ -446,6 +437,8 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
       parser_synchronize(parser);
       return NULL;
     }
+    parser_consume(parser, TOKEN_SEMICOLON,
+                   "Expected ';' after expression-bodied function");
     // Wrap the expression in a return statement, then in a block
     AstNode *ret_stmt = alloc_node(AST_STMT_RETURN, expr->loc);
     ret_stmt->data.return_stmt.expr = expr;
@@ -493,7 +486,7 @@ static AstNode *parse_function(Parser *parser, Location location, char *name,
 
 AstNode *parse_function_decl(Parser *parser) {
   // fn name(params) return_type { body }
-  // fn name(params) return_type => expr
+  // fn name(params) return_type => expr;
 
   bool inlined = parser_match(parser, TOKEN_INLINE);
 
@@ -1341,7 +1334,7 @@ AstNode *parse_equality(Parser *parser) {
     AstNode *right = parse_comparison(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1359,7 +1352,7 @@ AstNode *parse_comparison(Parser *parser) {
     AstNode *right = parse_shift(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1377,7 +1370,7 @@ AstNode *parse_shift(Parser *parser) {
     AstNode *right = parse_cast(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1412,7 +1405,7 @@ AstNode *parse_term(Parser *parser) {
     AstNode *right = parse_factor(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1431,7 +1424,7 @@ AstNode *parse_factor(Parser *parser) {
     AstNode *right = parse_unary(parser);
 
     AstNode *binop = alloc_node(AST_EXPR_BINARY_OP, op.location);
-    binop->data.binop.op = token_to_binary_op(op.type);
+    binop->data.binop.op = ast_binop_from_token(op.type);
     binop->data.binop.left = left;
     binop->data.binop.right = right;
     left = binop;
@@ -1449,7 +1442,7 @@ AstNode *parse_unary(Parser *parser) {
         parse_unary(parser); // Right-associative (allow chaining)
 
     AstNode *unop = alloc_node(AST_EXPR_UNARY_OP, op.location);
-    unop->data.unop.op = token_to_unary_op(op.type);
+    unop->data.unop.op = ast_unop_from_token(op.type);
     unop->data.unop.operand = operand;
     return unop;
   }

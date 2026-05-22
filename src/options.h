@@ -28,6 +28,7 @@ typedef struct CompilerOptions
   bool check_only;
   bool keep_c_file;
   bool generate_only;
+  bool parse_only;
   ReleaseMode release_mode;
   const char *compiler;
   const char *output_exe_name;

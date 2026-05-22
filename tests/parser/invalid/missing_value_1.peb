@@ -1,0 +1,4 @@
+fn main() int {
+    var x = ;  // Missing value
+    return x;
+}

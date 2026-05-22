@@ -95,11 +95,14 @@ static void lexer_skip_whitespace(Lexer *lexer) {
 static Token lexer_make_token(Lexer *lexer, TokenType type) {
   Token token;
   token.type = type;
-  token.location.file = lexer->filename;
-  token.location.line = lexer->line;
-  token.location.column = lexer->column - (lexer->current - lexer->start);
-
   size_t length = lexer->current - lexer->start;
+  size_t start_line = (size_t)lexer->line;
+  size_t start_col = (size_t)(lexer->column - (lexer->current - lexer->start));
+  size_t end_line = (size_t)lexer->line;
+  size_t end_col = (size_t)lexer->column;
+
+  token.span =
+      span_new(lexer->filename, start_line, start_col, end_line, end_col);
   token.lexeme = str_dup_lex(&lexer->source[lexer->start], length);
 
   return token;
@@ -108,9 +111,9 @@ static Token lexer_make_token(Lexer *lexer, TokenType type) {
 static Token lexer_error_token(Lexer *lexer, const char *message) {
   Token token;
   token.type = TOKEN_ERROR;
-  token.location.file = lexer->filename;
-  token.location.line = lexer->line;
-  token.location.column = lexer->column;
+  size_t line = (size_t)lexer->line;
+  size_t col = (size_t)lexer->column;
+  token.span = span_new(lexer->filename, line, col, line, col + 1);
   token.lexeme = str_dup_lex(message, strlen(message));
   return token;
 }
@@ -363,11 +366,14 @@ static Token lexer_make_token_at(Lexer *lexer, TokenType type, size_t start,
                                  size_t end, int line, int column) {
   Token token;
   token.type = type;
-  token.location.file = lexer->filename;
-  token.location.line = line;
-  token.location.column = column;
-
   size_t length = end - start;
+  size_t start_line = (size_t)line;
+  size_t start_col = (size_t)column;
+  size_t end_line = (size_t)line;
+  size_t end_col = start_col + length;
+
+  token.span =
+      span_new(lexer->filename, start_line, start_col, end_line, end_col);
   token.lexeme = str_dup_lex(&lexer->source[start], length);
 
   return token;
@@ -378,9 +384,14 @@ static Token lexer_make_interpolated_fragment(Lexer *lexer, size_t start,
                                               int column) {
   Token token;
   token.type = TOKEN_STRING;
-  token.location.file = lexer->filename;
-  token.location.line = line;
-  token.location.column = column;
+  size_t length = end - start;
+  size_t start_line = (size_t)line;
+  size_t start_col = (size_t)column;
+  size_t end_line = (size_t)line;
+  size_t end_col = start_col + length;
+
+  token.span =
+      span_new(lexer->filename, start_line, start_col, end_line, end_col);
 
   // Process both {{ -> { and escape sequences like \n, \t, \`, etc.
   char *processed = process_string_escapes(lexer, start, end, true);

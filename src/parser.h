@@ -12,6 +12,8 @@ typedef struct {
   bool had_error;
   bool panic_mode;           // For error recovery
   const char *abs_file_path; // For error reporting
+  const char **source_lines; // Array of source lines
+  int source_line_count;     // Number of lines
 } Parser;
 
 // Main parser functions

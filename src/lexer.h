@@ -2,15 +2,9 @@
 #define LEXER_H
 
 #include "alloc.h"
+#include "source_span.h"
 #include <stddef.h>
 #include <stdbool.h> // For bool
-
-// Source location for errors
-typedef struct {
-  const char *file;
-  int line;
-  int column;
-} Location;
 
 // Token types
 typedef enum {
@@ -128,8 +122,8 @@ typedef enum {
 // Token structure
 typedef struct {
   TokenType type;
-  char *lexeme;      // String representation (allocated)
-  Location location; // Source location
+  char *lexeme;   // String representation (allocated)
+  SourceSpan span; // Source span
 
   // Parsed values for literals
   union {

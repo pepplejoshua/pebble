@@ -865,21 +865,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
       emit_string(cg, func->data.func_expr.params[i].name);
     }
 
-    emit_string(cg, ") ");
-    emit_string(cg, "{\n");
-    emit_indent(cg);
+    emit_string(cg, ")\n");
 
     // Enter function scope
     defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
 
-    // Emit body (minimal traversal)
+    // Emit body (block emits its own braces)
     emit_stmt(cg, func->data.func_expr.body);
 
     // Exit function scope (though returns should have handled this already)
     defer_scope_exit(cg);
 
-    emit_dedent(cg);
-    emit_string(cg, "}\n\n");
+    emit_string(cg, "\n");
   }
 
   // Emit func definitions
@@ -920,21 +917,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
         emit_string(cg, func->data.func_decl.params[i].name);
       }
 
-      emit_string(cg, ") ");
-      emit_string(cg, "{\n");
-      emit_indent(cg);
+      emit_string(cg, ")\n");
 
       // Enter function scope
       defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
 
-      // Emit body (minimal traversal)
+      // Emit body (block emits its own braces)
       emit_stmt(cg, func->data.func_decl.body);
 
       // Exit function scope (though returns should have handled this already)
       defer_scope_exit(cg);
 
-      emit_dedent(cg);
-      emit_string(cg, "}\n\n");
+      emit_string(cg, "\n");
     }
   }
 
@@ -976,21 +970,18 @@ void emit_program(Codegen *cg, Module *main_mod) {
           emit_string(cg, func->data.func_decl.params[i].name);
         }
 
-        emit_string(cg, ") ");
-        emit_string(cg, "{\n");
-        emit_indent(cg);
+        emit_string(cg, ")\n");
 
         // Enter function scope
         defer_scope_enter(cg, DEFER_SCOPE_FUNCTION);
 
-        // Emit body (minimal traversal)
+        // Emit body (block emits its own braces)
         emit_stmt(cg, func->data.func_decl.body);
 
         // Exit function scope (though returns should have handled this already)
         defer_scope_exit(cg);
 
-        emit_dedent(cg);
-        emit_string(cg, "}\n\n");
+        emit_string(cg, "\n");
       }
     }
   }
@@ -2279,13 +2270,24 @@ void emit_stmt(Codegen *cg, AstNode *stmt) {
       defer_scope_enter(cg, DEFER_SCOPE_BLOCK);
     }
 
+    // Nested blocks must emit their own braces to create a C scope.
+    emit_indent_spaces(cg);
+    emit_string(cg, "{\n");
+    emit_indent(cg);
+
     for (size_t i = 0; i < stmt->data.block_stmt.stmt_count; i++) {
       emit_stmt(cg, stmt->data.block_stmt.stmts[i]);
     }
 
+    emit_dedent(cg);
+
     if (!cg->in_defer) {
+      // Emit defers while still inside the lexical block scope.
       defer_scope_exit(cg);
     }
+
+    emit_indent_spaces(cg);
+    emit_string(cg, "}\n");
     break;
   case AST_STMT_IF: {
     emit_expr(cg, stmt->data.if_stmt.cond);
@@ -3525,11 +3527,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
       emit_string(cg, ".has_value, \"unwrap\", ");
 
       emit_string(cg, "\"");
-      emit_string(cg, expr->loc.file);
+      emit_string(cg, expr->span.file);
       emit_string(cg, "\", ");
 
       char temp_buf[32] = {0};
-      snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+      snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
       emit_string(cg, temp_buf);
       emit_string(cg, ");\n");
     }
@@ -3858,11 +3860,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, "), \"bounds check\", ");
 
         emit_string(cg, "\"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -3925,11 +3927,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, ", \"bounds check\", ");
 
         emit_string(cg, "\"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -3941,7 +3943,7 @@ void emit_expr(Codegen *cg, AstNode *expr) {
           emit_string(cg, ", \"slice pointer use-after-free\", ");
 
           emit_string(cg, "\"");
-          emit_string(cg, expr->loc.file);
+          emit_string(cg, expr->span.file);
           emit_string(cg, "\", ");
 
           emit_string(cg, temp_buf);
@@ -4157,11 +4159,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, base_type->data.union_data.variant_names[index]);
 
         emit_string(cg, ", \"tagged union access\", \"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 
@@ -4208,11 +4210,11 @@ void emit_expr(Codegen *cg, AstNode *expr) {
         emit_string(cg, object_type->data.union_data.variant_names[index]);
 
         emit_string(cg, ", \"tagged union access\", \"");
-        emit_string(cg, expr->loc.file);
+        emit_string(cg, expr->span.file);
         emit_string(cg, "\", ");
 
         char temp_buf[32] = {0};
-        snprintf(temp_buf, sizeof(temp_buf), "%d", expr->loc.line);
+        snprintf(temp_buf, sizeof(temp_buf), "%zu", expr->span.start_line);
         emit_string(cg, temp_buf);
         emit_string(cg, ");\n");
 

@@ -1,17 +1,16 @@
 #include "module.h"
 #include "alloc.h"
 #include "ast.h"
+#include "diagnostics.h"
 #include "options.h"
-#include "parser.h"
+#include "parser2.h"
 #include "symbol.h"
-// #include "wrapped_uthash.h"
 #include "uthash.h"
 #include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -262,17 +261,19 @@ bool parse_module(Module *mod) {
     return true;
   }
 
-  Parser parser;
-  parser_init(&parser, source, mod->filename, mod->abs_file_path);
+  Parser2 parser;
+  parser_init(&parser, source, mod->abs_file_path);
+  mod->diagnostics = parser.diagnostics;
   AstNode *program = parse_program(&parser);
   mod->ast = program;
   mod->global_node_count = program->data.block_stmt.stmt_count;
 
-  return parser.had_error;
+  return parser.diagnostics && parser.diagnostics->error_count > 0;
 }
 
-void module_error(Location loc, const char *msg) {
-  fprintf(stderr, "%s:%d:%d: %s\n", loc.file, loc.line, loc.column, msg);
+void module_error(SourceSpan span, const char *msg) {
+  fprintf(stderr, "%s:%zu:%zu: %s\n", span.file, span.start_line,
+          span.start_col, msg);
 }
 
 Module *get_module_from_table(const char *full_path) {
@@ -316,7 +317,7 @@ bool collect_all_modules(Module *cur) {
       return false;
     }
     if (strcmp(mod_path, cur->abs_file_path) == 0) {
-      module_error(node->loc, "A module cannot import itself.");
+      module_error(node->span, "A module cannot import itself.");
       return false;
     }
 
@@ -325,7 +326,7 @@ bool collect_all_modules(Module *cur) {
     Module *exists = get_module_from_table(mod_path);
     if (exists) {
       if (exists->is_main) {
-        module_error(node->loc,
+        module_error(node->span,
                      "A module cannot import the entry / main module.");
         return false;
       }

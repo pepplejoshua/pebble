@@ -7,7 +7,7 @@ AstNode *clone_ast_node(AstNode *node) {
 
   AstNode *clone = arena_alloc(&long_lived, sizeof(AstNode));
   clone->kind = node->kind;
-  clone->loc = node->loc;
+  clone->span = node->span;
   clone->resolved_type = node->resolved_type;
 
   switch (node->kind) {

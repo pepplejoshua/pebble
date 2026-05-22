@@ -3,6 +3,8 @@
 
 #include "ast.h"
 #include "alloc.h"
+#include "diagnostics.h"
+#include "source_span.h"
 #include "wrapped_uthash.h"
 #include "uthash.h"
 #include "symbol.h"
@@ -16,6 +18,7 @@ typedef struct Module {
   char *abs_file_path;          // "~/Desktop/Code/pebble/main.peb"
   char *abs_dir_path;           // "~/Desktop/Code/pebble"
   AstNode *ast;                 // Parsed program
+  DiagnosticContext *diagnostics; // Shared diagnostics context
   size_t global_node_count;
   bool is_main;                 // Entry point of compilation
 
@@ -43,7 +46,7 @@ char *prepend(const char *prefix, const char *base);
 // Module functions
 Module* new_module(const char *partial_path);
 bool parse_module(Module *mod);
-void module_error(Location loc, const char *msg);
+void module_error(SourceSpan span, const char *msg);
 
 // Module table functions
 Module* get_module_from_table(const char *full_path);

@@ -1,0 +1,5 @@
+fn main( int {      // Missing closing paren
+    var x = ;       // Missing value
+    var y int       // Missing assignment and semicolon
+    return x        // Missing semicolon
+}
