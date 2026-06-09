@@ -12,29 +12,29 @@ typedef enum {
 } ProleType;
 
 typedef enum {
-  PROLE_OP_NOP,
-  PROLE_OP_CONST_I64,
-  PROLE_OP_CONST_BOOL,
-  PROLE_OP_LOAD_LOCAL,
-  PROLE_OP_STORE_LOCAL,
-  PROLE_OP_ADD_I64,
-  PROLE_OP_SUB_I64,
-  PROLE_OP_MUL_I64,
-  PROLE_OP_DIV_I64,
-  PROLE_OP_MOD_I64,
-  PROLE_OP_EQ_I64,
-  PROLE_OP_NE_I64,
-  PROLE_OP_LT_I64,
-  PROLE_OP_LE_I64,
-  PROLE_OP_GT_I64,
-  PROLE_OP_GE_I64,
-  PROLE_OP_JUMP,
-  PROLE_OP_JUMP_IF_FALSE,
-  PROLE_OP_CALL,
-  PROLE_OP_CALL_NATIVE,
-  PROLE_OP_PRINT,
-  PROLE_OP_RET,
-  PROLE_OP_RET_VOID,
+  PROLE_OP_NOP,           // no operands
+  PROLE_OP_CONST_I64,     // a = dst reg, imm = i64 value
+  PROLE_OP_CONST_BOOL,    // a = dst reg, imm = 0/1 bool value
+  PROLE_OP_LOAD_LOCAL,    // a = dst reg, b = local index
+  PROLE_OP_STORE_LOCAL,   // a = src reg, b = local index
+  PROLE_OP_ADD_I64,       // a = dst reg, b = lhs reg, c = rhs reg
+  PROLE_OP_SUB_I64,       // a = dst reg, b = lhs reg, c = rhs reg
+  PROLE_OP_MUL_I64,       // a = dst reg, b = lhs reg, c = rhs reg
+  PROLE_OP_DIV_I64,       // a = dst reg, b = lhs reg, c = rhs reg
+  PROLE_OP_MOD_I64,       // a = dst reg, b = lhs reg, c = rhs reg
+  PROLE_OP_EQ_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
+  PROLE_OP_NE_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
+  PROLE_OP_LT_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
+  PROLE_OP_LE_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
+  PROLE_OP_GT_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
+  PROLE_OP_GE_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
+  PROLE_OP_JUMP,          // a = target instruction offset
+  PROLE_OP_JUMP_IF_FALSE, // a = condition reg, b = target instruction offset
+  PROLE_OP_CALL,          // a = dst reg, b = function index, c = arg count
+  PROLE_OP_CALL_NATIVE,   // a = dst reg, b = native index, c = arg count
+  PROLE_OP_PRINT,         // a = value reg
+  PROLE_OP_RET,           // a = return value reg
+  PROLE_OP_RET_VOID,      // no operands
 } ProleOp;
 
 typedef struct {
