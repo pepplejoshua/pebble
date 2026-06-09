@@ -114,6 +114,15 @@ static ProleDiagnostic *build_diag(ProleDiagnosticContext *ctx,
     ctx->warning_count++;
   }
 
+  if (ctx) {
+    if (ctx->last) {
+      ctx->last->next = diag;
+    } else {
+      ctx->first = diag;
+    }
+    ctx->last = diag;
+  }
+
   return diag;
 }
 
@@ -209,4 +218,12 @@ void prole_diag_emit(ProleDiagnostic *diag) {
       fputc('\n', stderr);
     }
   }
+}
+
+void prole_diagnostics_emit_all(ProleDiagnosticContext *ctx) {
+  if (!ctx || !ctx->first) {
+    return;
+  }
+
+  prole_diag_emit(ctx->first);
 }
