@@ -17,7 +17,34 @@ static void write_colored_line(FILE *out, const char *line) {
 
 static void print_reg(FILE *out, uint32_t reg) { fprintf(out, "r%u", reg); }
 
-static void disassemble_inst(const ProleInst *inst, FILE *out) {
+static const char *function_name(const ProleModule *module, uint32_t index) {
+  if (index < module->function_count && module->functions[index].name) {
+    return module->functions[index].name;
+  }
+
+  return NULL;
+}
+
+static const char *native_name(const ProleModule *module, uint32_t index) {
+  if (index < module->native_count && module->natives[index].name) {
+    return module->natives[index].name;
+  }
+
+  return NULL;
+}
+
+static void print_call_target(FILE *out, const char *name,
+                              const char *fallback_prefix, uint32_t index) {
+  if (name) {
+    fputs(name, out);
+    return;
+  }
+
+  fprintf(out, "%s%u", fallback_prefix, index);
+}
+
+static void disassemble_inst(const ProleModule *module, const ProleInst *inst,
+                             FILE *out) {
   fputs("  ", out);
   fputs(prole_op_name(inst->op), out);
 
@@ -68,10 +95,20 @@ static void disassemble_inst(const ProleInst *inst, FILE *out) {
     fprintf(out, ", .L%u", inst->b);
     break;
   case PROLE_OP_CALL:
+    fputc(' ', out);
+    print_reg(out, inst->a);
+    fputs(", ", out);
+    print_call_target(out, function_name(module, inst->b), "fn", inst->b);
+    fputs(", ", out);
+    print_reg(out, inst->c);
+    fprintf(out, ", %lld", (long long)inst->imm);
+    break;
   case PROLE_OP_CALL_NATIVE:
     fputc(' ', out);
     print_reg(out, inst->a);
-    fprintf(out, ", fn%u, ", inst->b);
+    fputs(", ", out);
+    print_call_target(out, native_name(module, inst->b), "native", inst->b);
+    fputs(", ", out);
     print_reg(out, inst->c);
     fprintf(out, ", %lld", (long long)inst->imm);
     break;
@@ -85,8 +122,10 @@ static void disassemble_inst(const ProleInst *inst, FILE *out) {
   fputc('\n', out);
 }
 
-static void disassemble_function(const ProleFunction *function, size_t index,
-                                 FILE *out, const ProleDisasmOptions *options) {
+static void disassemble_function(const ProleModule *module,
+                                 const ProleFunction *function, size_t index,
+                                 FILE *out,
+                                 const ProleDisasmOptions *options) {
   fprintf(out, "\nfn %s/%zu -> %s\n", function->name ? function->name : "<anon>",
           function->param_count, prole_type_name(function->return_type));
 
@@ -94,7 +133,7 @@ static void disassemble_function(const ProleFunction *function, size_t index,
     if (options->show_offsets) {
       fprintf(out, "  ; %04zu\n", i);
     }
-    disassemble_inst(&function->code[i], out);
+    disassemble_inst(module, &function->code[i], out);
   }
 
   (void)index;
@@ -135,6 +174,6 @@ void prole_disassemble(const ProleModule *module, FILE *out,
   }
 
   for (size_t i = 0; i < module->function_count; i++) {
-    disassemble_function(&module->functions[i], i, out, options);
+    disassemble_function(module, &module->functions[i], i, out, options);
   }
 }

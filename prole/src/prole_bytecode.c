@@ -152,6 +152,7 @@ uint32_t prole_module_add_function(ProleModule *module, const char *name,
   function->name = prole_strdup(&function->allocator, name);
   function->return_type = return_type;
   function->param_count = param_count;
+  function->register_count = (uint32_t)param_count;
 
   if (param_count > 0) {
     function->param_types =
@@ -200,10 +201,76 @@ uint32_t prole_function_add_local(ProleFunction *function, ProleType type) {
     return UINT32_MAX;
   }
 
-  uint32_t index = (uint32_t)(function->param_count + function->local_count);
+  uint32_t index = (uint32_t)function->local_count;
   function->local_types = locals;
   function->local_types[function->local_count++] = type;
   return index;
+}
+
+void prole_function_require_registers(ProleFunction *function, uint32_t count) {
+  if (count > function->register_count) {
+    function->register_count = count;
+  }
+}
+
+static void note_register(ProleFunction *function, uint32_t reg) {
+  prole_function_require_registers(function, reg + 1);
+}
+
+static void note_call_arg_registers(ProleFunction *function, ProleInst inst) {
+  if (inst.imm <= 0) {
+    return;
+  }
+
+  uint64_t last_arg = (uint64_t)inst.c + (uint64_t)inst.imm - 1;
+  if (last_arg > UINT32_MAX) {
+    prole_function_require_registers(function, UINT32_MAX);
+    return;
+  }
+
+  note_register(function, (uint32_t)last_arg);
+}
+
+static void update_register_count(ProleFunction *function, ProleInst inst) {
+  switch (inst.op) {
+  case PROLE_OP_NOP:
+  case PROLE_OP_JUMP:
+  case PROLE_OP_RET_VOID:
+    break;
+  case PROLE_OP_CONST_I64:
+  case PROLE_OP_CONST_BOOL:
+  case PROLE_OP_LOAD_LOCAL:
+  case PROLE_OP_PRINT:
+  case PROLE_OP_RET:
+    note_register(function, inst.a);
+    break;
+  case PROLE_OP_STORE_LOCAL:
+    note_register(function, inst.a);
+    break;
+  case PROLE_OP_ADD_I64:
+  case PROLE_OP_SUB_I64:
+  case PROLE_OP_MUL_I64:
+  case PROLE_OP_DIV_I64:
+  case PROLE_OP_MOD_I64:
+  case PROLE_OP_EQ_I64:
+  case PROLE_OP_NE_I64:
+  case PROLE_OP_LT_I64:
+  case PROLE_OP_LE_I64:
+  case PROLE_OP_GT_I64:
+  case PROLE_OP_GE_I64:
+    note_register(function, inst.a);
+    note_register(function, inst.b);
+    note_register(function, inst.c);
+    break;
+  case PROLE_OP_JUMP_IF_FALSE:
+    note_register(function, inst.a);
+    break;
+  case PROLE_OP_CALL:
+  case PROLE_OP_CALL_NATIVE:
+    note_register(function, inst.a);
+    note_call_arg_registers(function, inst);
+    break;
+  }
 }
 
 void prole_function_emit(ProleFunction *function, ProleInst inst) {
@@ -223,6 +290,7 @@ void prole_function_emit(ProleFunction *function, ProleInst inst) {
   }
 
   function->code[function->code_count++] = inst;
+  update_register_count(function, inst);
 }
 
 ProleInst prole_inst(ProleOp op, uint32_t a, uint32_t b, uint32_t c,

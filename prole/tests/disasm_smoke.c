@@ -16,10 +16,34 @@ int main(void) {
       prole_module_add_function(module, "main", PROLE_TYPE_VOID, NULL, 0);
   prole_module_set_entry(module, main_fn);
 
+  ProleType add_params[] = {PROLE_TYPE_I64, PROLE_TYPE_I64};
+  uint32_t add_fn =
+      prole_module_add_function(module, "add", PROLE_TYPE_I64, add_params, 2);
+
   ProleFunction *function = &module->functions[main_fn];
-  prole_function_emit(function, prole_inst(PROLE_OP_CONST_I64, 0, 0, 0, 42));
-  prole_function_emit(function, prole_inst(PROLE_OP_PRINT, 0, 0, 0, 0));
+  prole_function_emit(function, prole_inst(PROLE_OP_CONST_I64, 8, 0, 0, 20));
+  prole_function_emit(function, prole_inst(PROLE_OP_CONST_I64, 9, 0, 0, 22));
+  prole_function_emit(function, prole_inst(PROLE_OP_CALL, 10, add_fn, 8, 2));
+  prole_function_emit(function, prole_inst(PROLE_OP_PRINT, 10, 0, 0, 0));
   prole_function_emit(function, prole_inst(PROLE_OP_RET_VOID, 0, 0, 0, 0));
+  if (function->register_count != 11) {
+    fprintf(stderr, "expected main to require 11 registers, got %u\n",
+            function->register_count);
+    prole_module_free(module);
+    prole_tracking_allocator_discard_records(&tracker);
+    return 1;
+  }
+
+  ProleFunction *add = &module->functions[add_fn];
+  prole_function_emit(add, prole_inst(PROLE_OP_ADD_I64, 2, 0, 1, 0));
+  prole_function_emit(add, prole_inst(PROLE_OP_RET, 2, 0, 0, 0));
+  if (add->register_count != 3) {
+    fprintf(stderr, "expected add to require 3 registers, got %u\n",
+            add->register_count);
+    prole_module_free(module);
+    prole_tracking_allocator_discard_records(&tracker);
+    return 1;
+  }
 
   ProleDisasmOptions options;
   prole_disasm_options_default(&options);

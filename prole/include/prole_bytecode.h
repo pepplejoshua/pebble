@@ -58,6 +58,7 @@ typedef struct {
   size_t param_count;
   ProleType *local_types;
   size_t local_count;
+  uint32_t register_count;
   ProleInst *code;
   size_t code_count;
   size_t code_capacity;
@@ -90,6 +91,7 @@ uint32_t prole_module_add_native(ProleModule *module, const char *name);
 void prole_module_set_entry(ProleModule *module, uint32_t function_index);
 
 uint32_t prole_function_add_local(ProleFunction *function, ProleType type);
+void prole_function_require_registers(ProleFunction *function, uint32_t count);
 void prole_function_emit(ProleFunction *function, ProleInst inst);
 
 ProleInst prole_inst(ProleOp op, uint32_t a, uint32_t b, uint32_t c,

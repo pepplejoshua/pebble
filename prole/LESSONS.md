@@ -34,6 +34,21 @@ up immediately. The tracking allocator uses normal heap allocation for its own
 bookkeeping and is intended for tests/debug builds, not normal production VM
 execution.
 
+### Infer register count
+
+Function arity stays explicit in assembly headers, but register count should be
+inferred from operands. Params occupy callee registers `r0..rN`, calls copy
+contiguous caller arg registers into those param registers, and call return
+values are written to the caller destination register from the call instruction.
+
+### Defer register reuse
+
+Start with monotonic temporary register allocation. It is less optimal but much
+easier to validate while the bytecode format and VM semantics are still moving.
+Later, add expression-local temp release or a cheap liveness/compaction pass and
+measure register-count drops per function. This could make a useful write-up
+because the before/after numbers should be concrete.
+
 ### Add disassembler before assembler
 
 Bytecode needs to be inspectable before the VM and assembler are complete. The
