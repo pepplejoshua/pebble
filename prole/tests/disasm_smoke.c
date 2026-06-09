@@ -45,6 +45,32 @@ int main(void) {
     return 1;
   }
 
+  ProleDiagnosticContext diagnostics;
+  prole_diagnostics_init(&diagnostics, "<smoke>", NULL);
+  if (!prole_validate_module(module, &diagnostics)) {
+    prole_diagnostics_emit_all(&diagnostics);
+    prole_diagnostics_free(&diagnostics);
+    prole_module_free(module);
+    prole_tracking_allocator_discard_records(&tracker);
+    return 1;
+  }
+  prole_diagnostics_free(&diagnostics);
+
+  ProleDiagnosticContext invalid_diagnostics;
+  ProleInst saved_call = function->code[2];
+  function->code[2].imm = 1;
+  prole_diagnostics_init(&invalid_diagnostics, "<invalid-smoke>", NULL);
+  if (prole_validate_module(module, &invalid_diagnostics)) {
+    fprintf(stderr, "expected validation to reject wrong call arity\n");
+    prole_diagnostics_free(&invalid_diagnostics);
+    function->code[2] = saved_call;
+    prole_module_free(module);
+    prole_tracking_allocator_discard_records(&tracker);
+    return 1;
+  }
+  prole_diagnostics_free(&invalid_diagnostics);
+  function->code[2] = saved_call;
+
   ProleDisasmOptions options;
   prole_disasm_options_default(&options);
   prole_disassemble(module, stdout, &options);
