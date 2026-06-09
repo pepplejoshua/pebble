@@ -105,7 +105,7 @@ le.i64
 gt.i64
 ge.i64
 jump
-jif.false
+jif
 call
 call.native
 print

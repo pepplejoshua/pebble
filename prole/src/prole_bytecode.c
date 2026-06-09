@@ -68,7 +68,7 @@ const char *prole_op_name(ProleOp op) {
   case PROLE_OP_JUMP:
     return "jump";
   case PROLE_OP_JUMP_IF_FALSE:
-    return "jif.false";
+    return "jif";
   case PROLE_OP_CALL:
     return "call";
   case PROLE_OP_CALL_NATIVE:
