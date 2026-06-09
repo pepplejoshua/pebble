@@ -44,7 +44,7 @@ prole/
     prole_vm.h          # later
     prole_asm.h         # later
     prole_debug.h       # later
-    prole_allocator.h   # later
+    prole_allocator.h
   src/
     prole_bytecode.c
     prole_diag.c
@@ -53,7 +53,7 @@ prole/
     prole_asm_lexer.c   # later
     prole_asm_parser.c  # later
     prole_debug.c       # later
-    prole_allocator.c   # later
+    prole_allocator.c
   tests/
 ```
 
@@ -224,8 +224,8 @@ ProleModule *prole_module_new(const char *name, ProleAllocator *allocator);
 ProleVm *prole_vm_new(ProleAllocator *allocator);
 ```
 
-The current scaffold does not yet have allocator hooks. Add them before the VM
-starts owning significant runtime state.
+Allocator hooks now exist for bytecode/module ownership. Keep extending this
+before the VM starts owning significant runtime state.
 
 ## Debugging
 
@@ -289,6 +289,7 @@ Initial scaffold exists:
 - Public umbrella header.
 - Prole span type.
 - Prole diagnostics using malloc/free and Pastel formatting.
+- Prole allocator hooks with malloc-backed and arena-backed allocators.
 - Bytecode module/function/native/instruction containers.
 - Plain disassembler.
 - `make prole-smoke` target.

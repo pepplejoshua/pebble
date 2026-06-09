@@ -1,22 +1,6 @@
 #include "../include/prole_bytecode.h"
 
-#include <stdlib.h>
 #include <string.h>
-
-static char *prole_strdup(const char *value) {
-  if (!value) {
-    return NULL;
-  }
-
-  size_t len = strlen(value);
-  char *copy = malloc(len + 1);
-  if (!copy) {
-    return NULL;
-  }
-
-  memcpy(copy, value, len + 1);
-  return copy;
-}
 
 const char *prole_type_name(ProleType type) {
   switch (type) {
@@ -84,13 +68,17 @@ const char *prole_op_name(ProleOp op) {
   return "unknown";
 }
 
-ProleModule *prole_module_new(const char *name) {
-  ProleModule *module = calloc(1, sizeof(ProleModule));
+ProleModule *prole_module_new(const char *name, ProleAllocator *allocator) {
+  ProleAllocator module_allocator =
+      allocator ? *allocator : prole_malloc_allocator();
+  ProleModule *module = prole_alloc(&module_allocator, sizeof(ProleModule));
   if (!module) {
     return NULL;
   }
+  memset(module, 0, sizeof(ProleModule));
 
-  module->name = prole_strdup(name ? name : "main");
+  module->allocator = module_allocator;
+  module->name = prole_strdup(&module->allocator, name ? name : "main");
   return module;
 }
 
@@ -99,23 +87,33 @@ void prole_module_free(ProleModule *module) {
     return;
   }
 
-  free(module->name);
+  ProleAllocator allocator = module->allocator;
+  prole_free(&allocator, module->name,
+             module->name ? strlen(module->name) + 1 : 0);
 
   for (size_t i = 0; i < module->function_count; i++) {
     ProleFunction *function = &module->functions[i];
-    free(function->name);
-    free(function->param_types);
-    free(function->local_types);
-    free(function->code);
+    prole_free(&allocator, function->name,
+               function->name ? strlen(function->name) + 1 : 0);
+    prole_free(&allocator, function->param_types,
+               function->param_count * sizeof(ProleType));
+    prole_free(&allocator, function->local_types,
+               function->local_count * sizeof(ProleType));
+    prole_free(&allocator, function->code,
+               function->code_capacity * sizeof(ProleInst));
   }
 
   for (size_t i = 0; i < module->native_count; i++) {
-    free(module->natives[i].name);
+    prole_free(&allocator, module->natives[i].name,
+               module->natives[i].name ? strlen(module->natives[i].name) + 1
+                                       : 0);
   }
 
-  free(module->functions);
-  free(module->natives);
-  free(module);
+  prole_free(&allocator, module->functions,
+             module->function_capacity * sizeof(ProleFunction));
+  prole_free(&allocator, module->natives,
+             module->native_capacity * sizeof(ProleNative));
+  prole_free(&allocator, module, sizeof(ProleModule));
 }
 
 static bool grow_functions(ProleModule *module) {
@@ -127,7 +125,9 @@ static bool grow_functions(ProleModule *module) {
                             ? 8
                             : module->function_capacity * 2;
   ProleFunction *functions =
-      realloc(module->functions, new_capacity * sizeof(ProleFunction));
+      prole_realloc(&module->allocator, module->functions,
+                    module->function_capacity * sizeof(ProleFunction),
+                    new_capacity * sizeof(ProleFunction));
   if (!functions) {
     return false;
   }
@@ -148,12 +148,14 @@ uint32_t prole_module_add_function(ProleModule *module, const char *name,
   uint32_t index = (uint32_t)module->function_count++;
   ProleFunction *function = &module->functions[index];
   memset(function, 0, sizeof(ProleFunction));
-  function->name = prole_strdup(name);
+  function->allocator = module->allocator;
+  function->name = prole_strdup(&function->allocator, name);
   function->return_type = return_type;
   function->param_count = param_count;
 
   if (param_count > 0) {
-    function->param_types = malloc(param_count * sizeof(ProleType));
+    function->param_types =
+        prole_alloc(&function->allocator, param_count * sizeof(ProleType));
     if (!function->param_types) {
       return UINT32_MAX;
     }
@@ -168,7 +170,9 @@ uint32_t prole_module_add_native(ProleModule *module, const char *name) {
     size_t new_capacity =
         module->native_capacity == 0 ? 8 : module->native_capacity * 2;
     ProleNative *natives =
-        realloc(module->natives, new_capacity * sizeof(ProleNative));
+        prole_realloc(&module->allocator, module->natives,
+                      module->native_capacity * sizeof(ProleNative),
+                      new_capacity * sizeof(ProleNative));
     if (!natives) {
       return UINT32_MAX;
     }
@@ -178,7 +182,7 @@ uint32_t prole_module_add_native(ProleModule *module, const char *name) {
   }
 
   uint32_t index = (uint32_t)module->native_count++;
-  module->natives[index].name = prole_strdup(name);
+  module->natives[index].name = prole_strdup(&module->allocator, name);
   return index;
 }
 
@@ -189,7 +193,9 @@ void prole_module_set_entry(ProleModule *module, uint32_t function_index) {
 
 uint32_t prole_function_add_local(ProleFunction *function, ProleType type) {
   ProleType *locals =
-      realloc(function->local_types, (function->local_count + 1) * sizeof(ProleType));
+      prole_realloc(&function->allocator, function->local_types,
+                    function->local_count * sizeof(ProleType),
+                    (function->local_count + 1) * sizeof(ProleType));
   if (!locals) {
     return UINT32_MAX;
   }
@@ -204,7 +210,10 @@ void prole_function_emit(ProleFunction *function, ProleInst inst) {
   if (function->code_count >= function->code_capacity) {
     size_t new_capacity =
         function->code_capacity == 0 ? 16 : function->code_capacity * 2;
-    ProleInst *code = realloc(function->code, new_capacity * sizeof(ProleInst));
+    ProleInst *code =
+        prole_realloc(&function->allocator, function->code,
+                      function->code_capacity * sizeof(ProleInst),
+                      new_capacity * sizeof(ProleInst));
     if (!code) {
       return;
     }

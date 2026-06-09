@@ -1,6 +1,7 @@
 #ifndef PROLE_BYTECODE_H
 #define PROLE_BYTECODE_H
 
+#include "prole_allocator.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -50,6 +51,7 @@ typedef struct {
 } ProleNative;
 
 typedef struct {
+  ProleAllocator allocator;
   char *name;
   ProleType return_type;
   ProleType *param_types;
@@ -62,6 +64,7 @@ typedef struct {
 } ProleFunction;
 
 typedef struct {
+  ProleAllocator allocator;
   char *name;
   ProleFunction *functions;
   size_t function_count;
@@ -76,7 +79,7 @@ typedef struct {
 const char *prole_type_name(ProleType type);
 const char *prole_op_name(ProleOp op);
 
-ProleModule *prole_module_new(const char *name);
+ProleModule *prole_module_new(const char *name, ProleAllocator *allocator);
 void prole_module_free(ProleModule *module);
 
 uint32_t prole_module_add_function(ProleModule *module, const char *name,

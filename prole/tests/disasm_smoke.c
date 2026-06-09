@@ -3,7 +3,7 @@
 #include <stdio.h>
 
 int main(void) {
-  ProleModule *module = prole_module_new("smoke");
+  ProleModule *module = prole_module_new("smoke", NULL);
   if (!module) {
     return 1;
   }

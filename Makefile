@@ -13,7 +13,7 @@ OBJS = src/alloc.o src/ast.o src/lexer.o src/parser2.o src/options.o \
        src/symbol.o src/type.o src/checker.o src/codegen.o src/module.o \
        src/diagnostics.o src/temp_alloc.o src/main.o
 
-PROLE_OBJS = prole/src/prole_bytecode.o prole/src/prole_disasm.o \
+PROLE_OBJS = prole/src/prole_allocator.o prole/src/prole_bytecode.o prole/src/prole_disasm.o \
              prole/src/prole_diag.o
 PROLE_SMOKE_BIN = /tmp/prole_disasm_smoke
 

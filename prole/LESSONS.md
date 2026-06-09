@@ -19,6 +19,13 @@ library independent while the API settles.
 This may change later if diagnostics need allocator injection, but it should not
 block the VM/runtime allocator design.
 
+### Add allocator hooks before VM state
+
+Prole now has a generic allocator interface plus malloc-backed and arena-backed
+implementations. Bytecode/module ownership should use allocator hooks. VM state,
+debug state, and runtime heap ownership should follow the same pattern when they
+are added.
+
 ### Add disassembler before assembler
 
 Bytecode needs to be inspectable before the VM and assembler are complete. The
