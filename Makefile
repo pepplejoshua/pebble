@@ -15,13 +15,14 @@ OBJS = src/alloc.o src/ast.o src/lexer.o src/parser2.o src/options.o \
 
 PROLE_OBJS = prole/src/prole_bytecode.o prole/src/prole_disasm.o \
              prole/src/prole_diag.o
+PROLE_SMOKE_BIN = /tmp/prole_disasm_smoke
 
 # Auto-generate dependencies
 DEPS = $(OBJS:.o=.d)
 PROLE_DEPS = $(PROLE_OBJS:.o=.d)
 
 # Tells make these dont product files
-.PHONY: clean install uninstall prole-smoke
+.PHONY: clean install uninstall smoke
 
 pebc: $(OBJS)
 	$(CC) $(CFLAGS) -o pebc $(OBJS) -fsanitize=address -g
@@ -32,15 +33,15 @@ prole/src/%.o: prole/src/%.c
 %.o: %.c
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-prole-smoke: $(PROLE_OBJS)
-	$(CC) $(PROLE_CFLAGS) -o /tmp/prole_disasm_smoke \
+smoke: $(PROLE_OBJS)
+	$(CC) $(PROLE_CFLAGS) -o $(PROLE_SMOKE_BIN) \
 		prole/tests/disasm_smoke.c $(PROLE_OBJS)
-	/tmp/prole_disasm_smoke
+	$(PROLE_SMOKE_BIN)
 
 -include $(DEPS) $(PROLE_DEPS)
 
 clean:
-	rm -f pebc $(OBJS) $(DEPS) $(PROLE_OBJS) $(PROLE_DEPS)
+	rm -f pebc $(OBJS) $(DEPS) $(PROLE_OBJS) $(PROLE_DEPS) $(PROLE_SMOKE_BIN)
 
 install: pebc
 	install -d $(BINDIR)
