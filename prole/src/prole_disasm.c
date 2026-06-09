@@ -63,10 +63,13 @@ static void disassemble_inst(const ProleModule *module, const ProleInst *inst,
     fprintf(out, ", %s", inst->imm ? "true" : "false");
     break;
   case PROLE_OP_LOAD_LOCAL:
-  case PROLE_OP_STORE_LOCAL:
     fputc(' ', out);
     print_reg(out, inst->a);
     fprintf(out, ", local%u", inst->b);
+    break;
+  case PROLE_OP_STORE_LOCAL:
+    fprintf(out, " local%u, ", inst->a);
+    print_reg(out, inst->b);
     break;
   case PROLE_OP_ADD_I64:
   case PROLE_OP_SUB_I64:
