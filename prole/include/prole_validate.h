@@ -7,5 +7,7 @@
 
 bool prole_validate_module(const ProleModule *module,
                            ProleDiagnosticContext *diagnostics);
+bool prole_validate_runnable_module(const ProleModule *module,
+                                    ProleDiagnosticContext *diagnostics);
 
 #endif

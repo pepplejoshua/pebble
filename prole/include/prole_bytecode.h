@@ -17,7 +17,7 @@ typedef enum {
   PROLE_OP_CONST_I64,     // a = dst reg, imm = i64 value
   PROLE_OP_CONST_BOOL,    // a = dst reg, imm = 0/1 bool value
   PROLE_OP_LOAD_LOCAL,    // a = dst reg, b = local index
-  PROLE_OP_STORE_LOCAL,   // a = src reg, b = local index
+  PROLE_OP_STORE_LOCAL,   // a = dst local index, b = src reg
   PROLE_OP_ADD_I64,       // a = dst reg, b = lhs reg, c = rhs reg
   PROLE_OP_SUB_I64,       // a = dst reg, b = lhs reg, c = rhs reg
   PROLE_OP_MUL_I64,       // a = dst reg, b = lhs reg, c = rhs reg

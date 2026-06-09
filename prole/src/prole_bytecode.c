@@ -245,7 +245,7 @@ static void update_register_count(ProleFunction *function, ProleInst inst) {
     note_register(function, inst.a);
     break;
   case PROLE_OP_STORE_LOCAL:
-    note_register(function, inst.a);
+    note_register(function, inst.b);
     break;
   case PROLE_OP_ADD_I64:
   case PROLE_OP_SUB_I64:

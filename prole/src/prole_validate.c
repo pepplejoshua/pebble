@@ -86,13 +86,13 @@ static bool validate_function_inst(const ProleModule *module,
     }
     break;
   case PROLE_OP_STORE_LOCAL:
-    CHECK_REG(inst->a, "source");
-    if (!local_in_range(function, inst->b)) {
+    CHECK_REG(inst->b, "source");
+    if (!local_in_range(function, inst->a)) {
       validate_error(diagnostics,
                      "function '%s' instruction %zu: local%u is outside "
                      "local_count %zu",
                      function->name ? function->name : "<anon>", inst_index,
-                     inst->b, function->local_count);
+                     inst->a, function->local_count);
       ok = false;
     }
     break;
@@ -238,6 +238,24 @@ bool prole_validate_module(const ProleModule *module,
         ok = false;
       }
     }
+  }
+
+  return ok;
+}
+
+bool prole_validate_runnable_module(const ProleModule *module,
+                                    ProleDiagnosticContext *diagnostics) {
+  bool ok = prole_validate_module(module, diagnostics);
+
+  if (!module) {
+    return false;
+  }
+
+  if (!module->has_entry) {
+    validate_error(diagnostics, "runnable module must define an entry function");
+    ok = false;
+  } else if (module->entry_function >= module->function_count) {
+    ok = false;
   }
 
   return ok;
