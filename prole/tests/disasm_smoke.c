@@ -3,7 +3,11 @@
 #include <stdio.h>
 
 int main(void) {
-  ProleModule *module = prole_module_new("smoke", NULL);
+  ProleTrackingAllocator tracker;
+  prole_tracking_allocator_init(&tracker, NULL);
+  ProleAllocator allocator = prole_tracking_allocator(&tracker);
+
+  ProleModule *module = prole_module_new("smoke", &allocator);
   if (!module) {
     return 1;
   }
@@ -22,5 +26,11 @@ int main(void) {
   prole_disassemble(module, stdout, &options);
 
   prole_module_free(module);
+  if (prole_tracking_allocator_has_leaks(&tracker)) {
+    prole_tracking_allocator_dump_leaks(&tracker, stderr);
+    prole_tracking_allocator_discard_records(&tracker);
+    return 1;
+  }
+
   return 0;
 }

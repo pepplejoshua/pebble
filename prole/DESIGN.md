@@ -227,6 +227,11 @@ ProleVm *prole_vm_new(ProleAllocator *allocator);
 Allocator hooks now exist for bytecode/module ownership. Keep extending this
 before the VM starts owning significant runtime state.
 
+Prole also has a tracking allocator. It wraps another allocator, records every
+returned pointer, and reports outstanding allocations or invalid frees. Use it
+for tests, debug builds, and ownership checks. It is not meant to be the normal
+production runtime allocator.
+
 ## Debugging
 
 Prole should support debugging from the first VM implementation. The VM should
@@ -289,7 +294,8 @@ Initial scaffold exists:
 - Public umbrella header.
 - Prole span type.
 - Prole diagnostics using malloc/free and Pastel formatting.
-- Prole allocator hooks with malloc-backed and arena-backed allocators.
+- Prole allocator hooks with malloc-backed, arena-backed, and tracking
+  allocators.
 - Bytecode module/function/native/instruction containers.
 - Plain disassembler.
 - `make prole-smoke` target.

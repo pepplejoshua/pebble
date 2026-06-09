@@ -125,6 +125,163 @@ ProleAllocator prole_arena_allocator(ProleArena *arena) {
   return allocator;
 }
 
+static ProleTrackingAllocation *
+tracking_find(ProleTrackingAllocator *tracker, void *ptr,
+              ProleTrackingAllocation ***prev_next_out) {
+  ProleTrackingAllocation **prev_next = &tracker->allocations;
+  ProleTrackingAllocation *current = tracker->allocations;
+
+  while (current) {
+    if (current->ptr == ptr) {
+      if (prev_next_out) {
+        *prev_next_out = prev_next;
+      }
+      return current;
+    }
+
+    prev_next = &current->next;
+    current = current->next;
+  }
+
+  return NULL;
+}
+
+static void tracking_record_alloc(ProleTrackingAllocator *tracker, void *ptr,
+                                  size_t size) {
+  ProleTrackingAllocation *record = malloc(sizeof(ProleTrackingAllocation));
+  if (!record) {
+    return;
+  }
+
+  record->ptr = ptr;
+  record->size = size;
+  record->next = tracker->allocations;
+  tracker->allocations = record;
+
+  tracker->allocation_count++;
+  tracker->bytes_allocated += size;
+  if (tracker->bytes_allocated > tracker->peak_bytes_allocated) {
+    tracker->peak_bytes_allocated = tracker->bytes_allocated;
+  }
+}
+
+static void *tracking_alloc(void *ctx, size_t size) {
+  ProleTrackingAllocator *tracker = ctx;
+  void *ptr = prole_alloc(&tracker->backing, size);
+  if (!ptr) {
+    return NULL;
+  }
+
+  tracker->allocation_events++;
+  tracking_record_alloc(tracker, ptr, size == 0 ? 1 : size);
+  return ptr;
+}
+
+static void *tracking_realloc(void *ctx, void *ptr, size_t old_size,
+                              size_t new_size) {
+  ProleTrackingAllocator *tracker = ctx;
+
+  if (!ptr) {
+    return tracking_alloc(ctx, new_size);
+  }
+
+  if (new_size == 0) {
+    ProleAllocator allocator = prole_tracking_allocator(tracker);
+    prole_free(&allocator, ptr, old_size);
+    return NULL;
+  }
+
+  ProleTrackingAllocation *record = tracking_find(tracker, ptr, NULL);
+  if (!record) {
+    tracker->invalid_realloc_count++;
+    return NULL;
+  }
+
+  void *new_ptr =
+      prole_realloc(&tracker->backing, ptr, record->size, new_size);
+  if (!new_ptr) {
+    return NULL;
+  }
+
+  tracker->allocation_events++;
+  tracker->bytes_allocated -= record->size;
+  tracker->bytes_allocated += new_size;
+  if (tracker->bytes_allocated > tracker->peak_bytes_allocated) {
+    tracker->peak_bytes_allocated = tracker->bytes_allocated;
+  }
+
+  record->ptr = new_ptr;
+  record->size = new_size;
+  return new_ptr;
+}
+
+static void tracking_free(void *ctx, void *ptr, size_t size) {
+  (void)size;
+
+  ProleTrackingAllocator *tracker = ctx;
+  ProleTrackingAllocation **prev_next = NULL;
+  ProleTrackingAllocation *record = tracking_find(tracker, ptr, &prev_next);
+  if (!record) {
+    tracker->invalid_free_count++;
+    return;
+  }
+
+  *prev_next = record->next;
+  tracker->allocation_count--;
+  tracker->bytes_allocated -= record->size;
+  tracker->free_events++;
+
+  prole_free(&tracker->backing, ptr, record->size);
+  free(record);
+}
+
+void prole_tracking_allocator_init(ProleTrackingAllocator *tracker,
+                                   ProleAllocator *backing) {
+  memset(tracker, 0, sizeof(ProleTrackingAllocator));
+  tracker->backing = backing ? *backing : prole_malloc_allocator();
+}
+
+void prole_tracking_allocator_discard_records(ProleTrackingAllocator *tracker) {
+  ProleTrackingAllocation *current = tracker->allocations;
+  while (current) {
+    ProleTrackingAllocation *next = current->next;
+    free(current);
+    current = next;
+  }
+
+  tracker->allocations = NULL;
+  tracker->allocation_count = 0;
+  tracker->bytes_allocated = 0;
+}
+
+ProleAllocator prole_tracking_allocator(ProleTrackingAllocator *tracker) {
+  ProleAllocator allocator;
+  allocator.ctx = tracker;
+  allocator.alloc = tracking_alloc;
+  allocator.realloc = tracking_realloc;
+  allocator.free = tracking_free;
+  return allocator;
+}
+
+bool prole_tracking_allocator_has_leaks(const ProleTrackingAllocator *tracker) {
+  return tracker->allocation_count > 0 || tracker->bytes_allocated > 0 ||
+         tracker->invalid_free_count > 0 || tracker->invalid_realloc_count > 0;
+}
+
+void prole_tracking_allocator_dump_leaks(const ProleTrackingAllocator *tracker,
+                                         FILE *out) {
+  fprintf(out,
+          "Prole tracking allocator: %zu outstanding allocation(s), %zu "
+          "byte(s), %zu invalid free(s), %zu invalid realloc(s)\n",
+          tracker->allocation_count, tracker->bytes_allocated,
+          tracker->invalid_free_count, tracker->invalid_realloc_count);
+
+  for (ProleTrackingAllocation *record = tracker->allocations; record;
+       record = record->next) {
+    fprintf(out, "  leak: %p (%zu byte(s))\n", record->ptr, record->size);
+  }
+}
+
 void *prole_alloc(ProleAllocator *allocator, size_t size) {
   ProleAllocator fallback = prole_malloc_allocator();
   if (!allocator) {

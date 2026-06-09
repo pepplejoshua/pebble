@@ -26,6 +26,14 @@ implementations. Bytecode/module ownership should use allocator hooks. VM state,
 debug state, and runtime heap ownership should follow the same pattern when they
 are added.
 
+### Use tracking allocator for ownership tests
+
+Prole has a tracking allocator that wraps another allocator and records
+outstanding blocks. Smoke tests should use it so module/VM ownership bugs show
+up immediately. The tracking allocator uses normal heap allocation for its own
+bookkeeping and is intended for tests/debug builds, not normal production VM
+execution.
+
 ### Add disassembler before assembler
 
 Bytecode needs to be inspectable before the VM and assembler are complete. The
