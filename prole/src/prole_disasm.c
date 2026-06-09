@@ -71,7 +71,9 @@ static void disassemble_inst(const ProleInst *inst, FILE *out) {
   case PROLE_OP_CALL_NATIVE:
     fputc(' ', out);
     print_reg(out, inst->a);
-    fprintf(out, ", fn%u, argc%u", inst->b, inst->c);
+    fprintf(out, ", fn%u, ", inst->b);
+    print_reg(out, inst->c);
+    fprintf(out, ", %lld", (long long)inst->imm);
     break;
   case PROLE_OP_PRINT:
   case PROLE_OP_RET:

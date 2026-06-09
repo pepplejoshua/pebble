@@ -30,8 +30,8 @@ typedef enum {
   PROLE_OP_GE_I64,        // a = dst bool reg, b = lhs reg, c = rhs reg
   PROLE_OP_JUMP,          // a = target instruction offset
   PROLE_OP_JUMP_IF_FALSE, // a = condition reg, b = target instruction offset
-  PROLE_OP_CALL,          // a = dst reg, b = function index, c = arg count
-  PROLE_OP_CALL_NATIVE,   // a = dst reg, b = native index, c = arg count
+  PROLE_OP_CALL,          // a = dst reg, b = function index, c = first arg reg, imm = arg count
+  PROLE_OP_CALL_NATIVE,   // a = dst reg, b = native index, c = first arg reg, imm = arg count
   PROLE_OP_PRINT,         // a = value reg
   PROLE_OP_RET,           // a = return value reg
   PROLE_OP_RET_VOID,      // no operands
