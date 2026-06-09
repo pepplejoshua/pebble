@@ -41,7 +41,7 @@ prole/
     prole_diag.h
     prole_disasm.h
     prole_span.h
-    prole_vm.h          # later
+    prole_vm.h
     prole_asm.h         # later
     prole_debug.h       # later
     prole_allocator.h
@@ -50,7 +50,7 @@ prole/
     prole_bytecode.c
     prole_diag.c
     prole_disasm.c
-    prole_vm.c          # later
+    prole_vm.c
     prole_asm_lexer.c   # later
     prole_asm_parser.c  # later
     prole_debug.c       # later
@@ -117,6 +117,14 @@ ret.void
 
 Use dotted opcode names in assembler/disassembler output. They are readable,
 easy to type, and scale naturally to future types.
+
+Operand order should be destination-first in both bytecode encoding and
+assembly syntax. For locals, that means:
+
+```text
+load.local r1, local0   ; r1 = local0
+store.local local0, r1  ; local0 = r1
+```
 
 Call instructions use contiguous argument registers:
 
@@ -272,6 +280,8 @@ ret/ret.void matches function return type
 ```
 
 `make smoke` validates the hand-built smoke module before disassembling it.
+Runnable validation additionally requires an entry function and should be used
+before loading a module into the VM.
 
 ## Allocators
 
@@ -353,6 +363,12 @@ local/register index -> optional display name
 The debugger API should not assume a UI. A future UI should be one client of the
 same VM/debug API used by tests and command-line tools.
 
+The first VM slices support direct function calls through a frame stack. The VM
+starts at `module->entry_function`, allocates that function's registers, and
+steps until the entry frame returns. Constants, printing, returns, i64
+arithmetic/comparisons, and direct calls are implemented. Locals, jumps, native
+calls, and richer call conventions are intentionally added later.
+
 ## Milestones
 
 1. Keep Prole separate from `pebc`.
@@ -380,5 +396,7 @@ Initial scaffold exists:
   allocators.
 - Bytecode module/function/native/instruction containers.
 - Public bytecode validation.
+- Step-able VM skeleton for constants, i64 arithmetic/comparisons, direct calls,
+  print, `ret`, and `ret.void`.
 - Plain disassembler.
 - `make smoke` target.

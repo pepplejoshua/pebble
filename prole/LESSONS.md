@@ -41,6 +41,14 @@ inferred from operands. Params occupy callee registers `r0..rN`, calls copy
 contiguous caller arg registers into those param registers, and call return
 values are written to the caller destination register from the call instruction.
 
+### Keep operand order destination-first
+
+Opcode encoding and assembly syntax should use destination-first order where an
+instruction writes somewhere. `store.local` originally used `a = src reg, b =
+local index`, which was inconsistent with the rest of the design. It now uses
+`a = dst local index, b = src reg`, matching assembly syntax:
+`store.local local0, r1`.
+
 ### Defer register reuse
 
 Start with monotonic temporary register allocation. It is less optimal but much
@@ -60,6 +68,20 @@ real output.
 Validation belongs in Prole, not only in `pebc`, because every bytecode producer
 should follow the same contract. The compiler backend, assembler, tests, and VM
 runner should all validate modules before relying on their structure.
+
+### Start VM execution small, then add frames
+
+The first VM execution slice used the module/function bytecode model but only
+ran the entry function. Direct calls were added after the basic `step()` loop by
+moving VM state to a frame stack. Calls copy contiguous caller arg registers into
+callee `r0..rN`; `ret` pops the callee and writes the value to the caller's call
+destination register.
+
+### Add execution in narrow opcode groups
+
+The VM should grow by small opcode groups that can be verified in `make smoke`.
+Constants/print/returns came first, then i64 arithmetic/comparisons, then direct
+calls. Locals and jumps should follow as separate focused slices.
 
 ### Do not add actor runtime first
 

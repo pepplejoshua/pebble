@@ -15,7 +15,7 @@ OBJS = src/alloc.o src/ast.o src/lexer.o src/parser2.o src/options.o \
 
 PROLE_OBJS = prole/src/prole_allocator.o prole/src/prole_bytecode.o \
              prole/src/prole_disasm.o prole/src/prole_diag.o \
-             prole/src/prole_validate.o
+             prole/src/prole_validate.o prole/src/prole_vm.o
 PROLE_SMOKE_BIN = /tmp/prole_disasm_smoke
 
 # Auto-generate dependencies
