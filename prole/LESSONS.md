@@ -55,6 +55,12 @@ Bytecode needs to be inspectable before the VM and assembler are complete. The
 disassembler also lets us design a hand-writable assembly syntax by looking at
 real output.
 
+### Validate before run or dump
+
+Validation belongs in Prole, not only in `pebc`, because every bytecode producer
+should follow the same contract. The compiler backend, assembler, tests, and VM
+runner should all validate modules before relying on their structure.
+
 ### Do not add actor runtime first
 
 The actor/Erlang-like runtime is a later goal. First Prole needs boring

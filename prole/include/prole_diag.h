@@ -29,6 +29,8 @@ typedef struct {
   size_t line_count;
   size_t error_count;
   size_t warning_count;
+  ProleDiagnostic *first;
+  ProleDiagnostic *last;
 } ProleDiagnosticContext;
 
 void prole_diagnostics_init(ProleDiagnosticContext *ctx, const char *filename,
@@ -44,5 +46,6 @@ ProleDiagnostic *prole_diag_error_no_span(ProleDiagnosticContext *ctx,
 ProleDiagnostic *prole_diag_add_note(ProleDiagnostic *parent,
                                      const char *fmt, ...);
 void prole_diag_emit(ProleDiagnostic *diag);
+void prole_diagnostics_emit_all(ProleDiagnosticContext *ctx);
 
 #endif

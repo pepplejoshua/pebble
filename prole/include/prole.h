@@ -6,5 +6,6 @@
 #include "prole_diag.h"
 #include "prole_disasm.h"
 #include "prole_span.h"
+#include "prole_validate.h"
 
 #endif

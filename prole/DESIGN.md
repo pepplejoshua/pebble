@@ -45,6 +45,7 @@ prole/
     prole_asm.h         # later
     prole_debug.h       # later
     prole_allocator.h
+    prole_validate.h
   src/
     prole_bytecode.c
     prole_diag.c
@@ -54,6 +55,7 @@ prole/
     prole_asm_parser.c  # later
     prole_debug.c       # later
     prole_allocator.c
+    prole_validate.c
   tests/
 ```
 
@@ -246,6 +248,31 @@ allocator.
 This is acceptable for early diagnostics. Later, diagnostics can accept a
 `ProleAllocator` if allocation control becomes important.
 
+## Validation
+
+Prole has public bytecode validation. It is the shared contract between
+bytecode producers and bytecode consumers:
+
+```text
+pebc generator -> validate -> dump/run
+assembler      -> validate -> dump/run
+tests          -> validate -> dump/run
+```
+
+Validation should catch structural bytecode problems before the VM executes:
+
+```text
+entry function exists
+jump targets are in range
+call function/native indexes exist
+call arg count matches callee arity
+register operands are below function register_count
+local indexes are below function local_count
+ret/ret.void matches function return type
+```
+
+`make smoke` validates the hand-built smoke module before disassembling it.
+
 ## Allocators
 
 The VM should support allocator hooks from day one of runtime implementation.
@@ -352,5 +379,6 @@ Initial scaffold exists:
 - Prole allocator hooks with malloc-backed, arena-backed, and tracking
   allocators.
 - Bytecode module/function/native/instruction containers.
+- Public bytecode validation.
 - Plain disassembler.
-- `make prole-smoke` target.
+- `make smoke` target.
