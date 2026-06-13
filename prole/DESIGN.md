@@ -365,9 +365,9 @@ same VM/debug API used by tests and command-line tools.
 
 The first VM slices support direct function calls through a frame stack. The VM
 starts at `module->entry_function`, allocates that function's registers, and
-steps until the entry frame returns. Constants, printing, returns, i64
-arithmetic/comparisons, and direct calls are implemented. Locals, jumps, native
-calls, and richer call conventions are intentionally added later.
+steps until the entry frame returns. Constants, printing, returns, locals, i64
+arithmetic/comparisons, direct calls, and numeric-offset jumps are implemented.
+Native calls and richer call conventions are intentionally added later.
 
 ## Milestones
 
@@ -396,7 +396,7 @@ Initial scaffold exists:
   allocators.
 - Bytecode module/function/native/instruction containers.
 - Public bytecode validation.
-- Step-able VM skeleton for constants, i64 arithmetic/comparisons, direct calls,
-  print, `ret`, and `ret.void`.
+- Step-able VM skeleton for constants, locals, i64 arithmetic/comparisons,
+  direct calls, numeric-offset jumps, print, `ret`, and `ret.void`.
 - Plain disassembler.
 - `make smoke` target.

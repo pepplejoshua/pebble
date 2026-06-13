@@ -81,7 +81,15 @@ destination register.
 
 The VM should grow by small opcode groups that can be verified in `make smoke`.
 Constants/print/returns came first, then i64 arithmetic/comparisons, then direct
-calls. Locals and jumps should follow as separate focused slices.
+calls, then locals and jumps. Native calls should follow as a separate focused
+slice.
+
+### Labels are assembly syntax, not VM state
+
+The VM executes numeric instruction offsets for `jump` and `jif`. Dot-prefixed
+labels like `.done` and `.loop` belong to future assembler input and prettier
+disassembly. Handwritten labels should be function-local and do not need to use
+the generated `.L0` naming style.
 
 ### Do not add actor runtime first
 
