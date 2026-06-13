@@ -129,6 +129,12 @@ int main(void) {
   prole_function_emit(vm_function, prole_inst(PROLE_OP_GT_I64, 4, 2, 3, 0));
   prole_function_emit(vm_function, prole_inst(PROLE_OP_PRINT, 2, 0, 0, 0));
   prole_function_emit(vm_function, prole_inst(PROLE_OP_PRINT, 4, 0, 0, 0));
+  prole_function_emit(vm_function, prole_inst(PROLE_OP_CONST_BOOL, 5, 0, 0, 0));
+  prole_function_emit(vm_function, prole_inst(PROLE_OP_JUMP_IF_FALSE, 5, 12, 0, 0));
+  prole_function_emit(vm_function, prole_inst(PROLE_OP_CONST_I64, 6, 0, 0, 10));
+  prole_function_emit(vm_function, prole_inst(PROLE_OP_JUMP, 13, 0, 0, 0));
+  prole_function_emit(vm_function, prole_inst(PROLE_OP_CONST_I64, 6, 0, 0, 20));
+  prole_function_emit(vm_function, prole_inst(PROLE_OP_PRINT, 6, 0, 0, 0));
   prole_function_emit(vm_function, prole_inst(PROLE_OP_RET_VOID, 0, 0, 0, 0));
 
   prole_diagnostics_init(&diagnostics, "<vm-smoke>", NULL);

@@ -338,7 +338,16 @@ ProleStepResult prole_vm_step(ProleVm *vm) {
   case PROLE_OP_GE_I64:
     return exec_i64_compare(vm, inst, ge_i64);
   case PROLE_OP_JUMP:
+    frame->ip = inst->a;
+    return PROLE_STEP_OK;
   case PROLE_OP_JUMP_IF_FALSE:
+    if (frame->registers[inst->a].type != PROLE_TYPE_BOOL) {
+      return trap(vm, "jif expected bool condition");
+    }
+    if (!frame->registers[inst->a].as.boolean) {
+      frame->ip = inst->b;
+    }
+    return PROLE_STEP_OK;
   case PROLE_OP_CALL_NATIVE:
     return trap(vm, "opcode is not implemented in VM yet");
   case PROLE_OP_CALL: {
