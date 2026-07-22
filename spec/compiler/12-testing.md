@@ -13,8 +13,13 @@ construct syntax trees by hand merely to exercise ordinary language rules.
 tests/
   lexer/valid/*.peb
   lexer/invalid/<CODE>/*.peb
-  parser/valid/*.peb
-  parser/invalid/*.peb
+  parser/expression/valid/*.peb
+  parser/expression/invalid/<CODE>/*.peb
+  parser/type/valid/*.peb
+  parser/type/invalid/<CODE>/*.peb
+  parser/file/valid/*.peb
+  parser/file/invalid/<CODE>/*.peb
+  parser/recovery/*.peb
   checker/valid/*.peb
   checker/invalid/*.peb
   runtime/valid/*.peb

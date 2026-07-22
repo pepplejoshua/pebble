@@ -17,7 +17,11 @@ it. Every statement uses one of these labels:
 2. [Source and lexing](02-source-and-lexing.md)
    - [Token inventory](02a-token-inventory.md)
    - [Literals and interpolation](02b-literals-and-interpolation.md)
-3. [Syntax and surface AST](03-syntax-and-ast.md)
+3. [Syntax and surface tree](03-syntax-and-ast.md)
+   - [Parser grammar](03a-grammar.md)
+   - [Surface-tree inventory](03b-surface-tree.md)
+   - [Parser recovery](03c-parser-recovery.md)
+   - [Parser implementation slices](03d-parser-slices.md)
 4. [Modules, names, and scopes](04-modules-and-names.md)
 5. [Types and inference](05-types-and-inference.md)
 6. [Checking and conversions](06-checking-and-conversions.md)
@@ -42,7 +46,7 @@ guess.
 - A `Compilation` owns all mutable state for one invocation.
 - No semantic phase depends on package-global current-module or current-scope
   state.
-- Source text and the surface AST remain immutable after parsing.
+- Source text and the surface tree remain immutable after parsing.
 - Diagnostics are collected as data and rendered by the driver.
 - Failed programs may contain error types, but later phases must not panic.
 - Code generation only accepts a successfully checked and lowered program.

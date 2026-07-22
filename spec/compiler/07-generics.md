@@ -50,7 +50,7 @@ and explicit call specialization. The prototype's separating dot is removed:
 
 ```pebble
 Vec[int]
-Vec[int]{ data = nil }
+Vec[int].{ data = nil }
 vec::new[int]()
 value.map[str](convert)
 ```
@@ -118,7 +118,7 @@ A specialization key is:
 
 The cache is populated with an in-progress entry before recursively checking a
 body so recursive generic functions terminate. A specialization produces typed
-IR; it never clones and rewrites the surface AST.
+IR; it never clones and rewrites the surface tree.
 
 ## Open generic decisions
 

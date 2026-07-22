@@ -11,7 +11,7 @@ The semantic checker:
 - records generic obligations;
 - produces typed IR containing explicit coercions.
 
-It does not mutate the surface AST and does not generate C names.
+It does not mutate the surface tree and does not generate C names.
 
 ## Expression rule format
 

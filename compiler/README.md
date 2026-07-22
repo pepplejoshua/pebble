@@ -15,7 +15,7 @@ cmd/pebc/            command-line entry point
 internal/driver/     compilation orchestration
 internal/source/     immutable source files and spans
 internal/diagnostic/ structured diagnostics and renderers
-internal/syntax/     lexer, parser, and immutable surface AST
+internal/syntax/     lexer, parser, and immutable surface tree
 internal/module/     import loading and module graph
 internal/symbol/     declarations, scopes, and name resolution
 internal/types/      concrete TypeID store and interning
@@ -53,7 +53,7 @@ go test ./...
 
 - One compilation owns its mutable state; packages do not expose ambient
   current-module or current-scope globals.
-- Source text and the surface AST are immutable after construction.
+- Source text and the surface tree are immutable after construction.
 - Inference variables never enter the concrete type interner.
 - Diagnostics are values and are rendered only at the driver boundary.
 - Language behavior is exercised primarily through `.peb` files in `../tests`.

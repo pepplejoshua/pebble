@@ -1,114 +1,107 @@
-# Syntax and Surface AST
+# Syntax and Surface Tree
 
-## Surface syntax currently represented
+This document defines the parser boundary. Detailed contracts are split by
+concern:
 
-Declarations:
+- [grammar](03a-grammar.md);
+- [surface-tree inventory and ownership](03b-surface-tree.md);
+- [recovery and parser diagnostics](03c-parser-recovery.md);
+- [implementation slices and conformance tests](03d-parser-slices.md).
 
-- functions and anonymous functions
-- external functions, types, variables, constants, and extern blocks
-- mutable `var` and immutable `let` declarations
-- type declarations and aliases
-- imports
-- methods nested in struct and union declarations
-- generic functions and generic types
+## Parser responsibility
 
-Statements:
+The parser consumes one immutable source file through the lexer and produces
+one immutable surface tree plus structured diagnostics. It records syntax, not
+meaning.
 
-- return, if/else, while, range loop, C-style for, and block
-- expression and assignment statements
-- print, break, continue, switch/case, and defer
+The parser does:
 
-Expressions:
+- recognize declarations, statements, expressions, types, and delimiters;
+- preserve names and literal spellings through source spans;
+- record source order and explicit grouping;
+- construct missing and error nodes during documented recovery;
+- preserve expression-position bracket application without classifying it as
+  generic instantiation or indexing.
 
-- integer, float, string, interpolated string, character, Boolean, nil, and
-  none literals
-- identifiers and context
-- binary and unary operations
-- calls, indexing, slicing, member access, and module-qualified access
-- tuples, struct/union literals, arrays, and repeated arrays
-- anonymous functions
-- `sizeof`, explicit casts, optional construction, force unwrap, and postfix
-  increment/decrement
+The parser does not:
 
-Types:
+- resolve names or modules;
+- attach semantic types or symbols;
+- infer generic arguments;
+- validate places, conversions, control flow, or entry points;
+- insert implicit casts, address operations, or dereferences;
+- clone generic bodies or generate backend names.
 
-- named and module-qualified named types
-- pointer, optional, array, slice, struct, union, tagged union, enum, function,
-  and tuple types
+## Source of truth
 
-## AST contract
+The EBNF grammar and parser contracts in this directory are normative. The C
+`parser2.c`, standard library, examples, and old parser tests are inventory and
+migration inputs. A disagreement does not silently change the grammar.
 
-The parser produces an immutable syntax tree containing only syntactic facts:
+The first Go parser retains the currently supported statement and type forms so
+the corpus can migrate phase by phase. Retention in the parser does not prevent
+later language proposals from replacing `print`, either loop form, optional
+construction, or record-literal spelling through an explicit spec change.
 
-- node kind
-- source span
-- names as written
-- child nodes
-- literal spelling or decoded value
-- explicit syntax choices
+## Generic brackets
 
-The surface AST must not contain semantic types, resolved symbols, mangled
-names, synthesized address/dereference nodes, implicit casts, or generated
-generic instances.
-
-## Grammar source
-
-The final syntax specification must include an EBNF grammar. Until that is
-written, `parser2.c`, the standard library, examples, and parser tests form the
-inventory. They are not automatically authoritative when they disagree.
-
-## Parser recovery
-
-Recovery is specified separately from the grammar. A missing delimiter may be
-synthesized only at a documented recovery boundary. An error node preserves
-the damaged span so later tooling can continue without interpreting the node as
-valid syntax.
-
-## Generic syntax decision
-
-Generic type arguments use square brackets consistently, without the
-prototype's separating dot:
+Generic declarations and type-required uses are syntactically known:
 
 ```pebble
-Vec[int]
-Vec[int]{ data = nil }
-vec::new[int]()
-value.map[str](convert)
+fn identity[T](value T) T => value;
+type Vec[T] = struct { data *T; };
+var values Vec[int];
 ```
 
-Type arguments should normally be inferred. Explicit brackets are the escape
-hatch when arguments, receiver type, and expected result type do not determine
-a unique specialization.
-
-## Bracket application
-
-**Required:** the parser does not classify expression-position square brackets
-as either generic instantiation or indexing. It produces a neutral bracket
-application containing the base, argument syntax, and complete source span.
-The surface tree preserves syntax; it does not use symbol lookup or token-shape
-heuristics to choose a meaning.
-
-Name and type resolution classify the node from the resolved base:
+Square brackets after an expression remain neutral in the surface tree:
 
 ```pebble
-identity[int](52)       // generic function instantiation and call
-functions[i](52)       // index operation followed by a call
-let f = identity[int];  // explicitly specialized function value
+identity[int](52)       // resolved later as generic instantiation
+functions[i](52)       // resolved later as indexing, then a call
+let f = identity[int];  // resolved later as a specialized function value
 ```
 
-If the base denotes a generic declaration, bracket arguments are resolved as
-type arguments. If the base denotes an indexable value, the bracket contains
-an index expression. A base that remains ambiguous after normal lookup is an
-error; the compiler never guesses from whether an argument happens to look
-like a type name.
+The parser produces the same bracket-application shape in all three cases. Name
+and type resolution classify the base and interpret its arguments. The parser
+never guesses from capitalization, argument spelling, a following `(`, or the
+number of bracket arguments.
 
-Type-required contexts such as `Vec[int]` already require a type and therefore
-do not have the value-indexing ambiguity.
+A bracket containing `:` is syntactically a slice and is not ambiguous:
 
-## Open syntax decisions
+```pebble
+values[start:end]
+values[:end]
+values[start:]
+```
 
-- Whether type annotations keep the current `name Type` form
-- Whether `print` remains a statement or becomes a library function/macro
-- Whether both range loops and C-style `for` loops remain
-- Whether struct literals retain `Type.{ ... }`
-- Whether `some value` / `none` remain the optional construction syntax
+## Surface decisions for the first parser
+
+The first Go parser accepts these existing forms:
+
+- type annotations remain `name Type`;
+- semicolons terminate bindings, returns, assignments, expression statements,
+  jumps, imports, extern items, fields, and type declarations;
+- `print`, range `loop`, C-style `for`, `some`, and `none` remain supported;
+- named record literals retain the unambiguous dot marker:
+  `Point.{ x = 1, y = 2 }`;
+- a generic record literal moves the dot after the new generic brackets:
+  `Pair[int, str].{ first = 1, second = "one" }`;
+- anonymous inferred record literals remain `.{ field = value }`;
+- function result types remain explicit, including `void`.
+
+The dot before a record body is not the removed generic `.[...]` separator. It
+is retained because it distinguishes a record literal from the block following
+an `if`, loop, or function header without semantic lookup or parser heuristics.
+
+## Global invariants
+
+- Parsing the same file and token stream produces the same tree and diagnostic
+  order.
+- Every loop in the parser consumes a token, inserts one documented missing
+  construct, or returns.
+- Every real node has one source file and a half-open byte span.
+- Lists preserve source order and never rely on Go map iteration.
+- A tree containing errors remains traversable without pretending its error
+  nodes are valid syntax.
+- Parser-local node IDs are not persistent cache IDs. Persistent identity is a
+  later fingerprinting concern.

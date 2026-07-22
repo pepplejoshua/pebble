@@ -14,7 +14,8 @@ depending on them in the rewrite.
 
 ## Syntax and parser
 
-- Retention of `print`, C-style `for`, `Type.{...}`, `some`, and `none`
+- Long-term retention of `print`, C-style `for`, range `loop`, `some`, and
+  `none` after the compatibility parser is complete
 
 ## Semantics
 
