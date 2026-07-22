@@ -40,8 +40,13 @@ The first vertical slice is complete:
   color-free text;
 - `internal/syntax` defines tokens and implements the lexer, including strict
   literals and nested interpolation modes;
+- `internal/syntax` also owns the immutable surface tree and parser Slice 2A:
+  expression precedence, shared bracket terms, type syntax, and local recovery;
 - the syntax tests discover the valid and invalid `.peb` files under
-  `../tests/lexer`.
+  `../tests/lexer` and the expression/type fragments under `../tests/parser`.
+
+Complete-file parsing, declarations, statements, and function or record bodies
+remain parser Slice 2B.
 
 Run the compiler tests from this directory:
 

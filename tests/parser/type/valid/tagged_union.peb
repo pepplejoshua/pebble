@@ -1,0 +1,1 @@
+union enum { present int; absent void; }

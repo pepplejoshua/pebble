@@ -12,4 +12,12 @@ const (
 	codeInvalidCharacterLiteral        diagnostic.Code = "L0005"
 	codeUnterminatedInterpolatedString diagnostic.Code = "L0006"
 	codeUnterminatedInterpolationExpr  diagnostic.Code = "L0007"
+
+	codeExpectedDeclaration diagnostic.Code = "P0001"
+	codeExpectedName        diagnostic.Code = "P0002"
+	codeExpectedExpression  diagnostic.Code = "P0003"
+	codeExpectedType        diagnostic.Code = "P0004"
+	codeExpectedToken       diagnostic.Code = "P0005"
+	codeInvalidSyntax       diagnostic.Code = "P0006"
+	codeNestingLimit        diagnostic.Code = "P0007"
 )

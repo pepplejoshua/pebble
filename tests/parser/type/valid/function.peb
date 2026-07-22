@@ -1,0 +1,1 @@
+fn "C"(int, *u8, (bool, str),) ?Error

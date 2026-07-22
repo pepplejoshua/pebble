@@ -18,9 +18,11 @@ Keeping the expectation in the directory makes each test an ordinary Pebble
 source file without a Go filename map or sidecar metadata.
 
 The files under `tests/lexer` describe the new lexer contract in
-`spec/compiler/02*.md`. Some deliberately differ from the C prototype and are
-not expected to pass it. The Go lexer test runner discovers and executes them
-automatically.
+`spec/compiler/02*.md`. The fragment files under `tests/parser/expression` and
+`tests/parser/type` describe parser Slice 2A. Parser fragment files contain
+exactly one expression or type and are required to reach EOF after it. Some
+cases deliberately differ from the C prototype and are not expected to pass
+it. The Go syntax test runner discovers and executes them automatically.
 
 An ordinary test needs only its `.peb` source file. Optional
 `.stderr.golden`, `.stdout.golden`, or `.tokens.golden` sidecars are reserved

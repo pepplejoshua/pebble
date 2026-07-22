@@ -1,0 +1,1 @@
+struct { x, y int; label str; }
