@@ -27,7 +27,8 @@ it. Every statement uses one of these labels:
 10. [C backend and runtime ABI](10-c-backend-and-runtime.md)
 11. [Driver and CLI](11-driver-and-cli.md)
 12. [Testing](12-testing.md)
-13. [Open decisions](OPEN-DECISIONS.md)
+13. [Pastel formatting](13-pastel.md)
+14. [Open decisions](OPEN-DECISIONS.md)
 
 ## Rewrite rule
 
