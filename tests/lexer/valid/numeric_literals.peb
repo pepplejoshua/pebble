@@ -1,0 +1,12 @@
+// Decimal integers.
+0 1 42 1_000_000
+
+// Radix integers.
+0b0 0B1 0b1010_0110
+0x0 0XFF 0xdead_beef
+
+// Decimal floating-point values and exponents.
+0.0 3.141_592 1e9 1E+9 6.022_140_76e23 1.5e-8
+
+// Signs are separate operator tokens.
+-1 +2 -3.5

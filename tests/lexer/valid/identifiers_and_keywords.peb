@@ -1,0 +1,7 @@
+// Lexer-only source case: every keyword and representative identifier shape.
+as break case context continue defer else enum extern false fn for if import
+inline let loop nil none print return sizeof some struct switch true type union
+var while
+
+name _private snake_case Name value2 _2 Fn TRUE int uint i8 u64 f32 f64 bool
+char str void

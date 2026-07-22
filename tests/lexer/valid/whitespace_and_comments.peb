@@ -1,0 +1,7 @@
+// The file deliberately mixes whitespace and comments.
+fn	main() int {
+	let value = 1; // comment after tokens
+
+	// comment-only line
+	return value;
+} // EOF may immediately follow a comment

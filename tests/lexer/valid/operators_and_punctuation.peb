@@ -1,0 +1,8 @@
+( ) { } [ ] ; , : ::
+. .. ..= ... =>
++ - * / % ++ -- += -= *= /= %=
+= == != < <= > >= && || ! ? & | ^ ~ << >>
+
+// Maximal-munch boundaries without whitespace.
+a...b a..=b a..b a.b a::b
+a++ + b a-- - b a==b a=>b a<<b a<=b a>>b a>=b

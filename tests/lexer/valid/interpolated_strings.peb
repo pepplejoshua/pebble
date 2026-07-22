@@ -1,0 +1,10 @@
+``
+`ordinary text`
+`hello {name}`
+`sum: {a + b * 2}`
+`escaped opening brace: \{ and escaped delimiter: \``
+`aggregate expression: {{ x = 1, y = 2 }.x}`
+`nested interpolation: {format(`value: {x}`)}`
+`multiline
+text with {value}
+continues here`

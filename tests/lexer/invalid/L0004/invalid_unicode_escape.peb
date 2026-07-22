@@ -1,0 +1,3 @@
+"surrogate: \u{d800}"
+"too large: \u{110000}"
+"too long: \u{1234567}"

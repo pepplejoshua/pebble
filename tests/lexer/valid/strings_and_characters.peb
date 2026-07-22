@@ -1,0 +1,9 @@
+""
+"ordinary text"
+"quote: \" slash: \\ apostrophe: \'"
+"controls: \n\r\t\0"
+"bytes: \x00 \x7f \xff"
+"unicode: \u{0} \u{2603} \u{10ffff}"
+"UTF-8 text is allowed: café 雪"
+
+'a' '\n' '\r' '\t' '\0' '\\' '\'' '"' '\x7f' '\u{2603}'
