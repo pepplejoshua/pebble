@@ -26,6 +26,25 @@ Every expression kind will receive a rule with:
 
 The same format applies to statement and declaration rules.
 
+## Bracket application
+
+The surface parser leaves expression-position brackets neutral. After the base
+symbol is resolved, semantic checking elaborates the node as exactly one of:
+
+- generic instantiation, whose arguments must resolve as types and satisfy the
+  declaration's arity and constraints; or
+- indexing, whose single argument must be a value accepted by the base's index
+  rule.
+
+Calling the result is an independent postfix operation. Consequently both
+`identity[int](value)` and `functions[i](value)` use their natural spelling.
+Explicit instantiation may also produce a function value without an immediate
+call, as in `let f = identity[int];`.
+
+If future language features make a resolved base support both operations, the
+program is ambiguous and requires an explicit language-level disambiguator;
+the checker must not select an interpretation by heuristic.
+
 ## Place expressions
 
 **Proposed:** identifier variables, dereferences, valid field accesses, and

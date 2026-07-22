@@ -63,6 +63,21 @@ against the selected imported module.
   if closure capture is not yet supported.
 - Methods retain both their defining module and containing type.
 
+## Bracket base resolution
+
+**Required:** bracket application is classified only after its base has gone
+through ordinary lexical, module, and member lookup. The selected declaration
+determines the bracket namespace:
+
+- a generic type or callable resolves bracket arguments as types;
+- an indexable runtime value resolves the single bracket argument as a value;
+- an unresolved or multiply-resolved base produces a name-resolution
+  diagnostic before bracket semantics are considered.
+
+Shadowing follows the normal lookup rules. The compiler does not prefer a
+generic interpretation merely because a bracket argument is also a valid type
+name.
+
 ## Prototype findings
 
 **Current:** names are eagerly rewritten with module prefixes, module ordering

@@ -80,9 +80,30 @@ Type arguments should normally be inferred. Explicit brackets are the escape
 hatch when arguments, receiver type, and expected result type do not determine
 a unique specialization.
 
-When a bracketed type-argument list follows a named callable and is immediately
-followed by `(`, it is parsed as explicit generic instantiation. Calling a
-function value obtained by indexing uses parentheses: `(functions[i])(value)`.
+## Bracket application
+
+**Required:** the parser does not classify expression-position square brackets
+as either generic instantiation or indexing. It produces a neutral bracket
+application containing the base, argument syntax, and complete source span.
+The surface tree preserves syntax; it does not use symbol lookup or token-shape
+heuristics to choose a meaning.
+
+Name and type resolution classify the node from the resolved base:
+
+```pebble
+identity[int](52)       // generic function instantiation and call
+functions[i](52)       // index operation followed by a call
+let f = identity[int];  // explicitly specialized function value
+```
+
+If the base denotes a generic declaration, bracket arguments are resolved as
+type arguments. If the base denotes an indexable value, the bracket contains
+an index expression. A base that remains ambiguous after normal lookup is an
+error; the compiler never guesses from whether an argument happens to look
+like a type name.
+
+Type-required contexts such as `Vec[int]` already require a type and therefore
+do not have the value-indexing ambiguity.
 
 ## Open syntax decisions
 

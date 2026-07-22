@@ -121,7 +121,8 @@ emits the longest valid token. Examples:
 ```
 
 Generic square brackets require no lexer mode or token distinction. The parser
-and later name resolution distinguish type arguments from indexing.
+preserves bracket application without guessing whether it is generic
+instantiation or indexing; name and type resolution decide from the base.
 
 ## Lexer modes
 

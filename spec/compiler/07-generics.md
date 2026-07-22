@@ -55,10 +55,25 @@ vec::new[int]()
 value.map[str](convert)
 ```
 
-Explicit arguments are not required when inference can solve the call. When a
-valid type-argument list follows a named callable and is immediately followed
-by `(`, it denotes generic instantiation. An indexed function value is called
-with `(functions[i])(value)` when needed to avoid ambiguity.
+Explicit arguments are not required when inference can solve the call. Square
+brackets in expression position remain neutral in the surface tree until the
+base is resolved. A generic base makes them type arguments; an indexable value
+makes them an index operation:
+
+```pebble
+identity[int](52)
+functions[i](52)
+```
+
+There is no special parenthesized spelling for calling an indexed function
+value. The compiler absorbs the ambiguity through ordinary name and type
+resolution rather than exposing a parser rule to the user.
+
+Explicit instantiation is also a value and need not be called immediately:
+
+```pebble
+let parse_int = parse[int];
+```
 
 `_` may later stand for an inferred type argument:
 
