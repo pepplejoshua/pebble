@@ -1,0 +1,24 @@
+type Unit = struct {};
+let before = later;
+let later = 1;
+fn first() Unit => second();
+fn second() Unit => first();
+fn scopes(parameter Unit) Unit {
+    let sequential = before;
+    {
+        let before = sequential;
+    }
+    {
+        let reused = sequential;
+    }
+    {
+        let reused = sequential;
+    }
+    loop 0..2: index {
+        let value = index;
+    }
+    for let item = 0; item < 2; item += 1 {
+        let value = item;
+    }
+    return parameter;
+}

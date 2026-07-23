@@ -1,0 +1,2 @@
+type Unit = struct {};
+fn make() Unit => make();

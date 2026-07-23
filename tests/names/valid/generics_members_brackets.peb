@@ -1,0 +1,12 @@
+type Unit = struct {};
+type Box[T] = struct {
+    value T;
+    fn get(self *Box[T]) T => self.value;
+};
+fn identity[T](value T) T => value;
+fn use(value Unit, runtime Unit) Unit {
+    let generic_call = identity[Unit](value);
+    let runtime_apply = runtime[value];
+    let aggregate = Box[Unit].{ value = generic_call };
+    return aggregate.value;
+}

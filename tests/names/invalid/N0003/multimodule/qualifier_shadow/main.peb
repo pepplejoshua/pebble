@@ -1,0 +1,6 @@
+import "./dependency";
+type Unit = struct {};
+fn use() Unit {
+    let dependency = 1;
+    return dependency::make();
+}

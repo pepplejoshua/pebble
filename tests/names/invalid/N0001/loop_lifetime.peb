@@ -1,0 +1,5 @@
+type Unit = struct {};
+fn use() Unit {
+    loop 0..1: index { let inside = index; }
+    return index;
+}

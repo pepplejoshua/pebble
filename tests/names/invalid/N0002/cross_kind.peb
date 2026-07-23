@@ -1,0 +1,2 @@
+type Same = struct {};
+fn Same() Same => Same();

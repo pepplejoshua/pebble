@@ -1,0 +1,5 @@
+type Unit = struct {};
+fn use() Unit {
+    { let expired = 1; }
+    return expired;
+}

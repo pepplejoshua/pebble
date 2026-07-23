@@ -1,0 +1,2 @@
+type Unit = struct {};
+fn use(value Unit, value Unit) Unit => value;

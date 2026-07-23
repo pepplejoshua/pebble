@@ -1,0 +1,5 @@
+type Unit = struct {};
+type Item = struct {
+    same Unit;
+    fn same() Unit => same;
+};

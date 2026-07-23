@@ -1,0 +1,2 @@
+type Thing = struct {};
+fn make(value Thing) Thing => value;

@@ -1,0 +1,2 @@
+type Unit = struct {};
+fn use() Unit => missing;

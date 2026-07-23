@@ -1,0 +1,8 @@
+type Unit = struct {};
+let global = 1;
+fn outer(parameter Unit) Unit {
+    let local = parameter;
+    let closure = fn(value Unit) Unit => local;
+    let no_capture = fn(value Unit) Unit => global;
+    return local;
+}

@@ -1,0 +1,3 @@
+type Unit = struct {};
+let local = 1;
+fn use() Unit => local::missing;

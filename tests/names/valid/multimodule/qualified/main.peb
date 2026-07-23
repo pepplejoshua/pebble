@@ -1,0 +1,2 @@
+import "./dependency";
+fn use(value dependency::Thing) dependency::Thing => dependency::make(value);
