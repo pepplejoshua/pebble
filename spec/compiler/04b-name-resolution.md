@@ -100,6 +100,40 @@ and spelling; it does not ask `04a` to add semantic nodes or mutate the tree.
 `SymbolID`, not a pointer, qualified string, or hash-table address, is semantic
 declaration identity.
 
+## Identity layers and checker handoff
+
+The compiler keeps three different questions separate:
+
+| Identity | Answers | Example use |
+| --- | --- | --- |
+| `SyntaxRef` | Which authored occurrence in which module? | the second use of `count` |
+| `SymbolID` | Which declaration does that occurrence denote? | the local binding declared earlier |
+| `TypeID` | What semantic type does it have? | `int` |
+
+A `syntax.NodeID` is unique only inside one syntax tree. `SyntaxRef` combines
+`module.ModuleID` with `syntax.NodeID`, making one unambiguous coordinate for
+side tables across the complete compilation. Different `SyntaxRef` values may
+therefore map to the same `SymbolID` when several authored uses denote one
+declaration.
+
+`04b` produces the first semantic link:
+
+```text
+SyntaxRef(name occurrence) -> SymbolID
+```
+
+The checking and inference phases consume the immutable syntax trees together
+with this `Result`. They attach further facts in their own stores, for example:
+
+```text
+SymbolID(binding)       -> TypeID
+SyntaxRef(expression)   -> TypeID
+```
+
+Those later stores do not decorate syntax nodes, replace authored names, or
+use a node pointer as cross-phase identity. `04b` does not assign `TypeID`s;
+it gives the checker the stable declaration identity needed to do so.
+
 ## Namespaces
 
 The first contract uses one lexical namespace for:

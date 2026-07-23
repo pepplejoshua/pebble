@@ -4,14 +4,16 @@
 
 The semantic checker:
 
-- resolves names;
-- validates declarations and scopes;
+- consumes the immutable syntax trees and the `04b` resolution result;
+- uses `SyntaxRef -> SymbolID` mappings instead of resolving names again;
 - generates and solves type constraints;
 - validates operators, calls, indexing, fields, control flow, and entry points;
 - records generic obligations;
 - produces typed IR containing explicit coercions.
 
-It does not mutate the surface tree and does not generate C names.
+It records symbol and expression types in side tables keyed by `SymbolID` and
+`SyntaxRef`. It does not mutate the surface tree, rebuild lexical scopes, or
+generate C names.
 
 ## Expression rule format
 
