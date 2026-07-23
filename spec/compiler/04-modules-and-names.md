@@ -1,85 +1,73 @@
 # Modules, Names, and Scopes
 
-## Module identity
+This phase turns independently parsed source files into one explicit module
+graph, then assigns stable semantic identities to authored declarations and
+references. It never rewrites source names or mutates the surface tree.
 
-A module is identified by a canonical source path plus its compilation package
-identity. A short basename is display information and must not be the unique
-identity.
+The phase is specified by two independently named tasks:
 
-Loading produces an explicit directed graph:
+1. [04a Module Graph](04a-module-graph.md) resolves imports, loads source
+   files, assigns `ModuleID`s, and validates the dependency graph.
+2. [04b Name Resolution](04b-name-resolution.md) collects declarations,
+   builds scopes, assigns `ScopeID` and `SymbolID`, and resolves authored name
+   references.
 
-```text
-ModuleID -> imported ModuleIDs
-```
+`04b` consumes the immutable graph produced by `04a`. Its contract may be
+reviewed and tested in parallel with `04a`, but its implementation integrates
+only against the committed `04a` API.
 
-Graph construction records the import span for every edge. Duplicate imports
-are diagnosed or deduplicated according to one documented rule.
+## Shared invariants
 
-## Import resolution
+- A `Compilation` owns module, scope, and symbol stores for one invocation.
+- Source text and surface trees remain immutable.
+- Compiler identity uses stable IDs, never generated display strings.
+- Absolute host paths are not semantic identities or user-facing names.
+- Imports do not inject their members into the importing module.
+- Diagnostics are values with stable codes and authored source spans.
+- Observable module, scope, symbol, and diagnostic order is deterministic.
+- Failed resolution may produce error IDs for continued diagnostics, but later
+  phases must not infer meaning from them.
 
-The resolver must specify, in order:
+## Identity versus spelling
 
-1. Relative imports
-2. Standard-library imports such as `std:io`
-3. Configured module search paths
-4. Canonicalization and extension handling
-
-The driver provides search roots. Semantic code does not inspect executable
-paths or global strings.
-
-## Cycles
-
-**Required:** graph traversal detects cycles without recursion loops or score
-propagation through cycles. The diagnostic presents the import-edge chain.
-
-**Open:** either reject every module cycle initially, or permit cycles only
-when their declarations can be collected and initialized without an ordering
-dependency. Rejecting cycles is the simpler first contract.
-
-## Namespaces and lookup
-
-The specification must define whether types and values share a namespace.
-Regardless of that choice, lookup is explicit:
+These are separate values:
 
 ```text
-local lexical scopes
--> function parameters
--> module declarations
--> explicitly qualified imports
+authored spelling     "new"
+semantic identity     SymbolID(42)
+backend C spelling    "peb_std_mem_new"
 ```
 
-Imports do not silently inject every imported name. `module::member` resolves
-against the selected imported module.
+The resolver records `SymbolID(42)` for the syntax reference. It does not
+replace `new` with `mem__new`. Backend symbol spelling is assigned only after
+successful checking and lowering.
 
-## Scope rules
+## First-contract language decisions
 
-- Parameters share the function body's outer lexical scope unless specified
-  otherwise.
-- A block introduces a lexical scope.
-- Loop bindings exist only inside the loop body.
-- Duplicate names in one namespace and scope are errors.
-- Shadowing policy must be documented separately from duplicate declarations.
-- Anonymous functions retain the defining module and lexical environment even
-  if closure capture is not yet supported.
-- Methods retain both their defining module and containing type.
-
-## Bracket base resolution
-
-**Required:** bracket application is classified only after its base has gone
-through ordinary lexical, module, and member lookup. The selected declaration
-determines the bracket namespace:
-
-- a generic type or callable resolves bracket arguments as types;
-- an indexable runtime value resolves the single bracket argument as a value;
-- an unresolved or multiply-resolved base produces a name-resolution
-  diagnostic before bracket semantics are considered.
-
-Shadowing follows the normal lookup rules. The compiler does not prefer a
-generic interpretation merely because a bracket argument is also a valid type
-name.
+- Every module cycle is rejected.
+- Types, values, functions, and module qualifiers share one lexical namespace.
+- A declaration may not duplicate another declaration in the same scope.
+- A declaration in an inner lexical scope may shadow an outer declaration.
+- Parameters share the function body's outer scope, so that body cannot
+  redeclare a parameter.
+- Module declarations are collected before body resolution and may be
+  referenced before their textual declaration.
+- Local bindings enter scope only after their declaration syntax; local
+  references cannot look forward.
+- With no visibility syntax in the language, every module-level declaration is
+  available through an explicit imported-module qualifier.
 
 ## Prototype findings
 
-**Current:** names are eagerly rewritten with module prefixes, module ordering
-uses an import score, and lookup depends on global `current_scope` plus a
-current module. These mechanisms are not part of the intended contract.
+The C prototype tracks modules by absolute path, looks imported modules up by
+basename, recursively propagates an `import_score`, mutates AST declarations
+into names such as `mem__new`, and relies on global `current_scope` plus a
+mutable current module. These mechanisms are behavioral evidence only. They
+are not part of the rewrite contract.
+
+## Phase boundary
+
+After `04a` and `04b`, every resolvable source name has a `SymbolID`, every
+scope has a `ScopeID`, and every module qualifier has a `ModuleID`. Types,
+member access through runtime values, conversions, overload-like semantic
+choices, and C names remain unresolved.

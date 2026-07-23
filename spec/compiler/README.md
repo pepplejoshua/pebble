@@ -23,6 +23,8 @@ it. Every statement uses one of these labels:
    - [Parser recovery](03c-parser-recovery.md)
    - [Parser implementation slices](03d-parser-slices.md)
 4. [Modules, names, and scopes](04-modules-and-names.md)
+   - [04a Module graph](04a-module-graph.md)
+   - [04b Name resolution](04b-name-resolution.md)
 5. [Types and inference](05-types-and-inference.md)
 6. [Checking and conversions](06-checking-and-conversions.md)
 7. [Generics](07-generics.md)

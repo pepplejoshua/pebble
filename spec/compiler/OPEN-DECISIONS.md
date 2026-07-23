@@ -6,11 +6,9 @@ depending on them in the rewrite.
 ## Highest priority
 
 1. Which implicit conversions exist between concrete numeric types?
-2. Are all module cycles rejected initially?
-3. Do types and values occupy one namespace or separate namespaces?
-4. Are generic requirements inferred only, explicitly expressible, or both?
-5. What source-level behavior is guaranteed for overflow in each release mode?
-6. What are the ownership and lifetime rules for slices and strings?
+2. Are generic requirements inferred only, explicitly expressible, or both?
+3. What source-level behavior is guaranteed for overflow in each release mode?
+4. What are the ownership and lifetime rules for slices and strings?
 
 ## Syntax and parser
 
@@ -19,7 +17,6 @@ depending on them in the rewrite.
 
 ## Semantics
 
-- Shadowing rules
 - Pointer arithmetic and pointer comparison
 - Enum conversion rules
 - Semantic representation and C ABI of `char`
