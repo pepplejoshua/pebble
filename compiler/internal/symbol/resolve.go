@@ -24,6 +24,7 @@ type resolver struct {
 	typeScopes          map[SyntaxRef]ScopeID
 	functionSymbols     map[SyntaxRef]SymbolID
 	typeSymbols         map[SyntaxRef]SymbolID
+	moduleBindings      map[SyntaxRef]SymbolID
 	symbolFunctions     map[SymbolID]SyntaxRef
 	nameDiagnostics     []diagnostic.Diagnostic
 	diagnosticOverflow  bool
@@ -43,7 +44,6 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 		result: &Result{
 			Scopes: &ScopeStore{}, Symbols: &SymbolStore{},
 			references: make(map[SyntaxRef]Resolution), qualifiers: make(map[SyntaxRef]ModuleID),
-			declarations: make(map[SyntaxRef]Resolution), nodeScopes: make(map[SyntaxRef]ScopeID),
 			brackets: make(map[SyntaxRef]BracketMode), captures: make(map[SyntaxRef][]SymbolID),
 			members: make(map[SymbolID][]SymbolID),
 		},
@@ -51,6 +51,7 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 		bindings: make(map[ScopeID]map[string]SymbolID), memberBindings: make(map[SymbolID]map[string]SymbolID),
 		functionScopes: make(map[SyntaxRef]ScopeID), typeScopes: make(map[SyntaxRef]ScopeID),
 		functionSymbols: make(map[SyntaxRef]SymbolID), typeSymbols: make(map[SyntaxRef]SymbolID),
+		moduleBindings:  make(map[SyntaxRef]SymbolID),
 		symbolFunctions: make(map[SymbolID]SyntaxRef),
 	}
 	if graph == nil {
@@ -134,7 +135,7 @@ func (r *resolver) collectModule(item module.Module) {
 				r.collectImport(item, file, scope, ref, node, candidates[0])
 			}
 		case syntax.BindingDecl:
-			r.collectNamed(item, file, scope, ref, node, SymbolBinding, 0, 0, false)
+			r.moduleBindings[ref] = r.collectNamed(item, file, scope, ref, node, SymbolBinding, 0, 0, false)
 		case syntax.TypeDecl:
 			r.collectType(item, file, scope, ref, node)
 		case syntax.FunctionDecl:
@@ -339,7 +340,6 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 			r.symbolLimitReported = true
 			r.report(CodeResourceLimit, fmt.Sprintf("symbol limit of %d exceeded", r.config.MaxSymbols), symbol.Span)
 		}
-		r.result.declarations[symbol.Declaration] = Resolution{Syntax: symbol.Declaration, State: ResolutionError}
 		return 0
 	}
 	symbol.ID = SymbolID(len(r.result.Symbols.values) + 1)
@@ -353,13 +353,6 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 	}
 	r.result.Symbols.values = append(r.result.Symbols.values, symbol)
 	r.appendScopeSymbol(symbol.Scope, symbol.ID)
-	state := ResolutionResolved
-	if symbol.Error {
-		state = ResolutionError
-	}
-	if _, exists := r.result.declarations[symbol.Declaration]; !exists {
-		r.result.declarations[symbol.Declaration] = Resolution{Syntax: symbol.Declaration, Symbol: symbol.ID, State: state}
-	}
 	if functionOwner != 0 {
 		if owner, ok := r.result.Symbols.Symbol(functionOwner); ok {
 			r.symbolFunctions[symbol.ID] = owner.Declaration
@@ -379,10 +372,6 @@ func (r *resolver) bindExistingMember(id, owner SymbolID) SymbolID {
 	if original, duplicate := r.memberBindings[owner][symbol.Name]; duplicate {
 		symbol.Error = true
 		r.duplicate(*symbol, original)
-		if declaration, ok := r.result.declarations[symbol.Declaration]; ok && declaration.Symbol == id {
-			declaration.State = ResolutionError
-			r.result.declarations[symbol.Declaration] = declaration
-		}
 	} else {
 		r.memberBindings[owner][symbol.Name] = id
 		r.result.members[owner] = append(r.result.members[owner], id)

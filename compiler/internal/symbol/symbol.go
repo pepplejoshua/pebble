@@ -250,8 +250,6 @@ type Result struct {
 	Symbols      *SymbolStore
 	references   map[SyntaxRef]Resolution
 	qualifiers   map[SyntaxRef]ModuleID
-	declarations map[SyntaxRef]Resolution
-	nodeScopes   map[SyntaxRef]ScopeID
 	brackets     map[SyntaxRef]BracketMode
 	captures     map[SyntaxRef][]SymbolID
 	captureOrder []SyntaxRef
@@ -262,14 +260,8 @@ func (r *Result) Reference(ref SyntaxRef) (Resolution, bool) {
 	v, ok := r.references[ref]
 	return v, ok
 }
-func (r *Result) References() []Resolution { return orderedResolutions(r.references) }
-func (r *Result) Declaration(ref SyntaxRef) (Resolution, bool) {
-	v, ok := r.declarations[ref]
-	return v, ok
-}
-func (r *Result) Declarations() []Resolution                { return orderedResolutions(r.declarations) }
+func (r *Result) References() []Resolution                  { return orderedResolutions(r.references) }
 func (r *Result) Qualifier(ref SyntaxRef) (ModuleID, bool)  { v, ok := r.qualifiers[ref]; return v, ok }
-func (r *Result) ScopeAt(ref SyntaxRef) (ScopeID, bool)     { v, ok := r.nodeScopes[ref]; return v, ok }
 func (r *Result) Bracket(ref SyntaxRef) (BracketMode, bool) { v, ok := r.brackets[ref]; return v, ok }
 func (r *Result) Captures(function SyntaxRef) []SymbolID {
 	return append([]SymbolID(nil), r.captures[function]...)

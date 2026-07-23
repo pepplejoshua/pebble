@@ -86,7 +86,7 @@ func TestNameFixtureCorpus(t *testing.T) {
 			filename := filename
 			t.Run("invalid/"+code+"/"+filepath.Base(filename), func(t *testing.T) {
 				_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": readText(t, filename)}, Config{})
-				requireCode(t, diagnostics, diagnostic.Code(code))
+				requireOnlyNameCode(t, diagnostics, diagnostic.Code(code))
 			})
 		}
 		multiRoot := filepath.Join(codeRoot, "multimodule")
@@ -96,7 +96,7 @@ func TestNameFixtureCorpus(t *testing.T) {
 				entry := entry
 				t.Run("invalid/"+code+"/multimodule/"+entry.Name(), func(t *testing.T) {
 					_, diagnostics, _, _ := resolveFiles(t, fixtureFiles(t, filepath.Join(multiRoot, entry.Name())), Config{})
-					requireCode(t, diagnostics, diagnostic.Code(code))
+					requireOnlyNameCode(t, diagnostics, diagnostic.Code(code))
 				})
 			}
 		}
@@ -233,6 +233,82 @@ func TestNeutralBracketModesFollowResolvedBase(t *testing.T) {
 	}
 }
 
+func TestDeferredBracketStillResolvesLexicalAndQualifiedNames(t *testing.T) {
+	files := map[string]string{
+		"main.peb": "import \"./dep\"; type Unit=struct{}; fn use(container Unit, argument Unit) Unit { let first=container.member[argument]; let second=container.member[dep::Thing]; return argument; }",
+		"dep.peb":  "type Thing=struct{};",
+	}
+	result, diagnostics, graph, sources := resolveFiles(t, files, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	main, _ := graph.Module(graph.Root)
+	file, _ := sources.File(main.Source)
+	var brackets []syntax.NodeID
+	walkTree(main.Tree, main.Tree.Root(), func(id syntax.NodeID, node syntax.Node) {
+		if node.Kind() == syntax.BracketApply {
+			brackets = append(brackets, id)
+		}
+	})
+	if len(brackets) != 2 {
+		t.Fatalf("brackets = %v", brackets)
+	}
+	for _, id := range brackets {
+		if mode, ok := result.Bracket(SyntaxRef{Module: main.ID, Node: id}); !ok || mode != BracketDeferred {
+			t.Fatalf("bracket %d mode = %d, %t", id, mode, ok)
+		}
+	}
+	first, _ := main.Tree.Node(brackets[0])
+	argumentID := first.Children()[1]
+	argument, ok := result.Reference(SyntaxRef{Module: main.ID, Node: argumentID})
+	if !ok || argument.State != ResolutionResolved || argument.Symbol == 0 {
+		t.Fatalf("deferred bracket argument identity = %+v, %t", argument, ok)
+	}
+	second, _ := main.Tree.Node(brackets[1])
+	pathNode, _ := main.Tree.Node(second.Children()[1])
+	pathChildren := pathNode.Children()
+	if len(pathChildren) != 2 {
+		t.Fatalf("qualified bracket argument = %q", file.Slice(pathNode.Span()))
+	}
+	if target, ok := result.Qualifier(SyntaxRef{Module: main.ID, Node: pathChildren[0]}); !ok || target == 0 {
+		t.Fatalf("deferred bracket qualifier = %d, %t", target, ok)
+	}
+	member, ok := result.Reference(SyntaxRef{Module: main.ID, Node: pathChildren[1]})
+	if !ok || member.State != ResolutionResolved || member.Symbol == 0 {
+		t.Fatalf("deferred bracket qualified member = %+v, %t", member, ok)
+	}
+}
+
+func TestAnonymousFunctionDoesNotCaptureOuterTypeParameter(t *testing.T) {
+	text := "fn outer[T](parameter T) T { let local=parameter; let closure=fn(value T) T => local + parameter; return local; }"
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	m, _ := graph.Module(graph.Root)
+	file, _ := sources.File(m.Source)
+	for _, ref := range namedReferences(t, result, m, file, "T") {
+		if ref.State != ResolutionResolved || ref.Symbol == 0 {
+			t.Fatalf("type parameter identity = %+v", ref)
+		}
+	}
+	captures := result.CaptureList()
+	if len(captures) != 2 {
+		t.Fatalf("captures = %+v, want local and parameter", captures)
+	}
+	got := make([]string, 0, len(captures))
+	for _, capture := range captures {
+		symbol, _ := result.Symbols.Symbol(capture.Symbol)
+		if symbol.Kind == SymbolTypeParameter {
+			t.Fatalf("type parameter captured: %+v", symbol)
+		}
+		got = append(got, symbol.Name)
+	}
+	if !reflect.DeepEqual(got, []string{"local", "parameter"}) {
+		t.Fatalf("capture order = %v", got)
+	}
+}
+
 func TestStaticRecordMemberUsesMemberIdentity(t *testing.T) {
 	text := "type Unit=struct{}; type Box=struct{ value Unit; }; fn make(input Unit) Box => Box.{ value=input };"
 	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
@@ -365,6 +441,18 @@ func requireCode(t *testing.T, diagnostics *diagnostic.DiagnosticSet, code diagn
 		}
 	}
 	t.Fatalf("missing diagnostic %s in %+v", code, diagnostics.Items())
+}
+func requireOnlyNameCode(t *testing.T, diagnostics *diagnostic.DiagnosticSet, code diagnostic.Code) {
+	t.Helper()
+	items := nameErrors(diagnostics.Items())
+	if len(items) == 0 {
+		t.Fatalf("missing diagnostic %s in %+v", code, diagnostics.Items())
+	}
+	for _, item := range items {
+		if item.Code != code {
+			t.Fatalf("unexpected name diagnostic %s, want only %s: %+v", item.Code, code, items)
+		}
+	}
 }
 func nameErrors(items []diagnostic.Diagnostic) []diagnostic.Diagnostic {
 	var out []diagnostic.Diagnostic

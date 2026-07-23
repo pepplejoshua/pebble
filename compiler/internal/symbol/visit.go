@@ -45,7 +45,6 @@ func (r *resolver) resolveModule(item module.Module) {
 		if !ok {
 			continue
 		}
-		r.markScope(ctx, childID)
 		switch node.Kind() {
 		case syntax.BindingDecl:
 			r.resolveBinding(ctx, childID, node, true)
@@ -84,7 +83,6 @@ func (r *resolver) resolveTypeDeclaration(ctx walkContext, nodeID syntax.NodeID,
 }
 
 func (r *resolver) resolveAggregate(ctx walkContext, nodeID syntax.NodeID, node syntax.Node, owner SymbolID) {
-	r.markScope(ctx, nodeID)
 	for _, childID := range node.Children() {
 		child, ok := ctx.module.Tree.Node(childID)
 		if !ok {
@@ -188,10 +186,7 @@ func (r *resolver) resolveBinding(ctx walkContext, nodeID syntax.NodeID, node sy
 	}
 	ref := SyntaxRef{Module: ctx.module.ID, Node: nodeID}
 	if hoisted {
-		if declaration, ok := r.result.Declaration(ref); ok {
-			return declaration.Symbol
-		}
-		return 0
+		return r.moduleBindings[ref]
 	}
 	nameNode, ok := firstDirectChild(ctx.module.Tree, node, syntax.Name)
 	if !ok {
@@ -214,7 +209,6 @@ func (r *resolver) resolveBlock(ctx walkContext, nodeID syntax.NodeID, node synt
 		}
 		blockCtx.scope = child
 	}
-	r.markScope(blockCtx, nodeID)
 	for _, childID := range node.Children() {
 		r.resolveStatement(blockCtx, childID)
 	}
@@ -225,7 +219,6 @@ func (r *resolver) resolveStatement(ctx walkContext, nodeID syntax.NodeID) {
 	if !ok {
 		return
 	}
-	r.markScope(ctx, nodeID)
 	switch node.Kind() {
 	case syntax.BlockStmt:
 		r.resolveBlock(ctx, nodeID, node, false)
@@ -360,7 +353,6 @@ func (r *resolver) resolveType(ctx walkContext, nodeID syntax.NodeID) {
 	if !ok {
 		return
 	}
-	r.markScope(ctx, nodeID)
 	switch node.Kind() {
 	case syntax.Name:
 		r.resolveName(ctx, nodeID, contextType, true)
@@ -401,7 +393,6 @@ func (r *resolver) resolveExpression(ctx walkContext, nodeID syntax.NodeID) Reso
 	if !ok {
 		return Resolution{State: ResolutionError}
 	}
-	r.markScope(ctx, nodeID)
 	switch node.Kind() {
 	case syntax.Name:
 		return r.resolveName(ctx, nodeID, contextValue, true)
@@ -434,7 +425,10 @@ func (r *resolver) resolveExpression(ctx walkContext, nodeID syntax.NodeID) Reso
 		r.resolveAnonymousFunction(ctx, nodeID, node)
 	case syntax.Missing, syntax.Error, syntax.Literal, syntax.ContextExpr, syntax.PartialMemberExpr:
 		if node.Kind() == syntax.PartialMemberExpr {
-			r.deferNames(ctx, nodeID)
+			children := node.Children()
+			if len(children) != 0 {
+				r.deferName(ctx, children[0])
+			}
 		}
 	default:
 		for _, id := range node.Children() {
@@ -585,7 +579,7 @@ func (r *resolver) resolveBracket(ctx walkContext, nodeID syntax.NodeID, node sy
 		} else if mode == BracketValueNames {
 			r.resolveExpression(ctx, id)
 		} else {
-			r.deferNames(ctx, id)
+			r.resolveNeutral(ctx, id)
 		}
 	}
 	return base
@@ -616,7 +610,10 @@ func (r *resolver) resolvePath(ctx walkContext, nodeID syntax.NodeID, node synta
 	}
 	baseNode, ok := ctx.module.Tree.Node(children[0])
 	if !ok || baseNode.Kind() != syntax.Name {
-		r.deferNames(ctx, nodeID)
+		r.resolveNeutral(ctx, children[0])
+		if memberNode, ok := ctx.module.Tree.Node(children[1]); ok && memberNode.Kind() == syntax.Name {
+			r.deferName(ctx, children[1])
+		}
 		return Resolution{Syntax: pathRef, State: ResolutionDeferred}
 	}
 	baseRef := SyntaxRef{Module: ctx.module.ID, Node: children[0]}
@@ -749,6 +746,9 @@ func (r *resolver) capture(ctx walkContext, id SymbolID) {
 		return
 	}
 	symbol, _ := r.result.Symbols.Symbol(id)
+	if symbol.Kind != SymbolParameter && symbol.Kind != SymbolBinding && symbol.Kind != SymbolLoopBinding {
+		return
+	}
 	scope, _ := r.result.Scopes.Scope(symbol.Scope)
 	if scope.Kind == ScopeModule {
 		return
@@ -765,25 +765,70 @@ func (r *resolver) capture(ctx walkContext, id SymbolID) {
 	r.result.captures[ctx.function.ref] = append(list, id)
 }
 
-func (r *resolver) deferNames(ctx walkContext, nodeID syntax.NodeID) {
+func (r *resolver) resolveNeutral(ctx walkContext, nodeID syntax.NodeID) Resolution {
 	node, ok := ctx.module.Tree.Node(nodeID)
 	if !ok {
-		return
+		return Resolution{State: ResolutionError}
 	}
-	if node.Kind() == syntax.Name {
-		ref := SyntaxRef{Module: ctx.module.ID, Node: nodeID}
-		if _, exists := r.result.references[ref]; !exists {
-			r.result.references[ref] = Resolution{Syntax: ref, State: ResolutionDeferred}
+	switch node.Kind() {
+	case syntax.Name:
+		return r.resolveName(ctx, nodeID, contextAny, true)
+	case syntax.Path:
+		return r.resolvePath(ctx, nodeID, node, contextAny)
+	case syntax.BracketApply:
+		return r.resolveBracket(ctx, nodeID, node, contextAny)
+	case syntax.MemberExpr:
+		return r.resolveMember(ctx, nodeID, node)
+	case syntax.RecordExpr:
+		return r.resolveRecord(ctx, nodeID, node)
+	case syntax.RecordField:
+		children := semanticChildren(ctx.module.Tree, node)
+		if len(children) > 1 {
+			return r.resolveNeutral(ctx, children[len(children)-1])
 		}
-		return
+	case syntax.CastExpr:
+		children := semanticChildren(ctx.module.Tree, node)
+		if len(children) > 0 {
+			r.resolveNeutral(ctx, children[0])
+		}
+		if len(children) > 1 {
+			r.resolveType(ctx, children[1])
+		}
+	case syntax.SizeofExpr:
+		for _, id := range node.Children() {
+			r.resolveType(ctx, id)
+		}
+	case syntax.FunctionTerm:
+		if node.Data()&syntax.FunctionBodyPresent != 0 {
+			r.resolveAnonymousFunction(ctx, nodeID, node)
+		} else {
+			r.resolveType(ctx, nodeID)
+		}
+	case syntax.StructType, syntax.UnionType, syntax.EnumType:
+		r.resolveAggregate(ctx, nodeID, node, 0)
+	case syntax.FieldDecl, syntax.VariantDecl:
+		children := semanticChildren(ctx.module.Tree, node)
+		if len(children) != 0 {
+			r.resolveType(ctx, children[len(children)-1])
+		}
+	case syntax.PartialMemberExpr:
+		children := node.Children()
+		if len(children) != 0 {
+			r.deferName(ctx, children[0])
+		}
+	case syntax.Missing, syntax.Error, syntax.Literal, syntax.ContextExpr:
+	default:
+		for _, id := range node.Children() {
+			r.resolveNeutral(ctx, id)
+		}
 	}
-	for _, id := range node.Children() {
-		r.deferNames(ctx, id)
-	}
+	return Resolution{Syntax: SyntaxRef{Module: ctx.module.ID, Node: nodeID}, State: ResolutionDeferred}
 }
-func (r *resolver) markScope(ctx walkContext, nodeID syntax.NodeID) {
-	if ctx.scope != 0 {
-		r.result.nodeScopes[SyntaxRef{Module: ctx.module.ID, Node: nodeID}] = ctx.scope
+
+func (r *resolver) deferName(ctx walkContext, nodeID syntax.NodeID) {
+	ref := SyntaxRef{Module: ctx.module.ID, Node: nodeID}
+	if _, exists := r.result.references[ref]; !exists {
+		r.result.references[ref] = Resolution{Syntax: ref, State: ResolutionDeferred}
 	}
 }
 func semanticChildren(tree *syntax.Tree, node syntax.Node) []syntax.NodeID {
