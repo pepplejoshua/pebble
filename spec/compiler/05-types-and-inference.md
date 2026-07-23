@@ -6,8 +6,8 @@ Phase 5 is split into two implementation-ready task contracts:
   compilation-owned `TypeID` store, complete semantic keys, and decomposition
   API.
 - [05b Algebraic Inference](05b-algebraic-inference.md) defines expression
-  inference variables, type-syntax and alias resolution, equation and
-  capability generation, deterministic unification, worklist solving,
+  inference variables, type-syntax and alias resolution, the equation-builder
+  API consumed by phase 6, deterministic unification, worklist solving,
   literal fitting/defaulting, generic-call evidence, and error recovery.
 
 `05a` is the required foundation for `05b`. The overview below states the
@@ -95,19 +95,23 @@ feature would create a new nominal identity and must use separate syntax.
 Pebble can implement its own solver without a dependency. The minimum design
 is a union-find unifier plus a deterministic worklist of constraints.
 
-For each expression, checking creates a type variable or known type. It then
-emits constraints such as:
+For each expression, phase 6 creates a type variable or known type through a
+`05b` session. It then emits constraints such as:
 
 ```text
 Equal(a, b)
 Numeric(t)
 Integral(t)
 Ordered(t)
-Callable(fnType, argTypes, resultType)
 HasField(receiverType, name, fieldType)
-Assignable(sourceType, destinationType)
 LiteralFits(literal, type)
 ```
+
+Assignment, calls, casts, operators, and indexing remain phase-6 semantic
+relationships. Phase 6 decomposes their inference effects into the algebraic
+constraints above before solving, then validates the solved concrete types
+against its policy matrices. They are not opaque constraints that `05b`
+defers back to phase 6.
 
 Example:
 

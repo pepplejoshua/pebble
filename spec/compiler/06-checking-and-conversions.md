@@ -5,8 +5,11 @@
 The semantic checker:
 
 - consumes the immutable syntax trees and the `04b` resolution result;
+- consumes the immutable declaration `Program` prepared by `05b`;
 - uses `SyntaxRef -> SymbolID` mappings instead of resolving names again;
-- generates and solves type constraints;
+- performs the single semantic AST traversal;
+- generates equations through one mutable `05b` `Session` and invokes its
+  deterministic solver;
 - validates operators, calls, indexing, fields, control flow, and entry points;
 - records generic obligations;
 - produces typed IR containing explicit coercions.
@@ -14,6 +17,27 @@ The semantic checker:
 It records symbol and expression types in side tables keyed by `SymbolID` and
 `SyntaxRef`. It does not mutate the surface tree, rebuild lexical scopes, or
 generate C names.
+
+## Inference orchestration
+
+Phase 6 drives, but does not modify, the `05b` subsystem:
+
+```text
+05b Prepare: resolve type declarations and signatures
+    -> 06 Generate: walk syntax once and add all algebraic facts
+    -> 05b Solve: produce immutable TypeID solutions
+    -> 06 Validate: apply policy matrices and produce typed IR
+```
+
+Generation retains checker-owned records for assignments, calls, casts,
+operators, indexing, places, and control flow. It decomposes the inference
+portion of each rule into `Equal`, `LiteralFits`, `Shape`, `Instantiate`, and
+capability constraints before `Solve`. Validation queries the solved types in
+those records and applies language policy. It cannot add another equation or
+rewrite a solution; needing to do so means generation omitted a required fact.
+
+Phase 6 also owns the accepted constant-expression language and supplies
+`05b`'s `ArrayLengthEvaluator` while declaration type syntax is prepared.
 
 ## Expression rule format
 
@@ -27,6 +51,12 @@ Every expression kind will receive a rule with:
 6. diagnostics on failure.
 
 The same format applies to statement and declaration rules.
+
+An expected type is translated deliberately: exact-identity contexts add
+`Equal`, literals add `LiteralFits`, and context-shaped forms such as `none` or
+an empty array add structural evidence. Ordinary expressions are not equated
+with their destination merely because a later conversion may be legal; the
+checker validates that retained relationship after solving.
 
 ## Bracket application
 
@@ -46,6 +76,12 @@ call, as in `let f = identity[int];`.
 If future language features make a resolved base support both operations, the
 program is ambiguous and requires an explicit language-level disambiguator;
 the checker must not select an interpretation by heuristic.
+
+For `04b` `BracketDeferred`, generation constructs both interpretations as one
+bounded `05b` `OneOf` constraint and tags its checker-owned records by
+alternative. The solver must prove exactly one viable interpretation. Phase 6
+uses the reported selection after solving; it never tries generic application
+and then silently falls back to indexing.
 
 ## Place expressions
 
