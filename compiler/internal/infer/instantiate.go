@@ -1,0 +1,327 @@
+package infer
+
+import (
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
+)
+
+func (s *Session) instantiate(value Constraint) (bool, bool) {
+	template, ok := s.program.Template(value.template)
+	if !ok {
+		return false, s.conflict(CodeInvalidType, "generic instantiation uses an invalid template", value.origin)
+	}
+	mapping := make(map[symbol.SymbolID]Term, len(value.substitutions))
+	for _, substitution := range value.substitutions {
+		if _, exists := mapping[substitution.Parameter]; exists {
+			return false, s.conflict(CodeInvalidType, "generic instantiation repeats a substitution", value.origin)
+		}
+		mapping[substitution.Parameter] = substitution.Argument
+	}
+	shape, ok := s.templateShape(template, mapping, value.origin, 0)
+	if !ok {
+		return false, false
+	}
+	return s.constrainShape(value.a, shape, value.origin)
+}
+
+func (s *Session) templateShape(value TypeTemplate, mapping map[symbol.SymbolID]Term, origin Origin, depth uint32) (Shape, bool) {
+	if depth >= s.config.MaxTypeSyntaxDepth {
+		s.limit("template expansion depth", uint64(s.config.MaxTypeSyntaxDepth), origin)
+		return Shape{}, false
+	}
+	switch value.Kind {
+	case TemplateKnown:
+		return Leaf(s.Known(value.Known)), true
+	case TemplateParameter:
+		if term, ok := mapping[value.Parameter]; ok {
+			return Leaf(term), true
+		}
+		id, ok := s.program.typeParams[value.Parameter]
+		if !ok {
+			s.conflict(CodeInvalidType, "generic instantiation is missing a substitution", origin)
+			return Shape{}, false
+		}
+		return Leaf(s.Known(id)), true
+	}
+	children := make([]Shape, len(value.Children))
+	for index, childID := range value.Children {
+		child, ok := s.program.Template(childID)
+		if !ok {
+			s.conflict(CodeInvalidType, "generic template contains an invalid child", childOrigin(origin, index))
+			return Shape{}, false
+		}
+		children[index], ok = s.templateShape(child, mapping, childOrigin(origin, index), depth+1)
+		if !ok {
+			return Shape{}, false
+		}
+	}
+	switch value.Kind {
+	case TemplatePointer:
+		return PointerShape(children[0]), true
+	case TemplateArray:
+		return ArrayShape(value.Length, children[0]), true
+	case TemplateSlice:
+		return SliceShape(children[0]), true
+	case TemplateTuple:
+		return TupleShape(children), true
+	case TemplateOptional:
+		return OptionalShape(children[0]), true
+	case TemplateFunction:
+		return FunctionShape(value.Convention, children[:len(children)-1], children[len(children)-1], value.Variadic), true
+	case TemplateNominal:
+		return NominalShape(value.Declaration, children), true
+	default:
+		s.conflict(CodeInvalidType, "generic template has an invalid algebraic kind", origin)
+		return Shape{}, false
+	}
+}
+
+func (s *Session) hasField(receiver Term, name string, field Term, origin Origin) (bool, bool, bool) {
+	if receiver.kind == termError || field.kind == termError {
+		return false, true, false
+	}
+	var declaration symbol.SymbolID
+	var arguments []Term
+	if id, known := s.resolvedType(receiver); known {
+		key, _ := s.program.inputs.Types.Key(id)
+		decl, ids, nominal := key.Nominal()
+		if !nominal {
+			return false, s.conflict(CodeCapability, "field receiver is not a nominal type", origin), false
+		}
+		declaration = decl
+		for _, arg := range ids {
+			arguments = append(arguments, s.Known(arg))
+		}
+	} else if receiver.kind != termKnown {
+		root := s.find(receiver.id)
+		if root == 0 || s.cells[root-1].error {
+			return false, true, false
+		}
+		shape := s.cells[root-1].shape
+		if shape == nil || shape.kind != shapeNominal {
+			return false, true, true
+		}
+		declaration = shape.declaration
+		for _, child := range shape.children {
+			if child.kind != shapeLeaf {
+				return false, true, true
+			}
+			arguments = append(arguments, child.term)
+		}
+	}
+	decl, ok := s.program.TypeDeclaration(declaration)
+	if !ok || decl.State != DeclarationReady {
+		return false, s.conflict(CodeCapability, "field receiver declaration is unavailable", origin), false
+	}
+	var member TemplateID
+	for _, candidate := range decl.Members {
+		sym, exists := s.program.inputs.Resolution.Symbols.Symbol(candidate.Symbol)
+		if exists && sym.Name == name {
+			member = candidate.Type
+			break
+		}
+	}
+	if member == 0 {
+		return false, s.conflict(CodeCapability, "nominal type has no field named "+name, origin), false
+	}
+	mapping := make(map[symbol.SymbolID]Term, len(decl.Parameters))
+	if len(arguments) != len(decl.Parameters) {
+		return false, s.conflict(CodeInvalidType, "nominal field substitution arity mismatch", origin), false
+	}
+	for index, parameter := range decl.Parameters {
+		mapping[parameter] = arguments[index]
+	}
+	template, _ := s.program.Template(member)
+	shape, ok := s.templateShape(template, mapping, origin, 0)
+	if !ok {
+		return false, false, false
+	}
+	changed, success := s.unifyShapeWithTerm(shape, field, origin)
+	return changed, success, false
+}
+
+func (s *Session) selectMethod(value Constraint) (bool, bool, bool) {
+	if value.a.kind == termError || value.b.kind == termError {
+		return false, true, false
+	}
+	declaration, receiverArguments, delayed, ok := s.receiverNominal(value.a, value.origin)
+	if delayed || !ok {
+		return false, ok, delayed
+	}
+	decl, ok := s.program.TypeDeclaration(declaration)
+	if !ok || decl.State != DeclarationReady || decl.Form != DeclarationNominal {
+		return false, s.conflict(CodeCapability, "method receiver declaration is unavailable", value.origin), false
+	}
+
+	var selected symbol.Symbol
+	for _, candidateID := range s.program.inputs.Resolution.Members(declaration) {
+		candidate, exists := s.program.inputs.Resolution.Symbols.Symbol(candidateID)
+		if !exists || candidate.Error || candidate.Name != value.name {
+			continue
+		}
+		if candidate.Kind != symbol.SymbolMethod {
+			return false, s.conflict(CodeCapability, "selected member is not an instance method", value.origin), false
+		}
+		if selected.ID != 0 {
+			return false, s.conflict(CodeDamagedInput, "receiver declaration has duplicate method identities", value.origin), false
+		}
+		selected = candidate
+	}
+	if selected.ID == 0 {
+		return false, s.conflict(CodeCapability, "nominal type has no method named "+value.name, value.origin), false
+	}
+	signature, ok := s.program.Signature(selected.ID)
+	if !ok || signature.State != DeclarationReady || len(signature.TypeParams) < len(decl.Parameters) {
+		return false, s.conflict(CodeDamagedInput, "selected method signature is unavailable", value.origin), false
+	}
+	for i, parameter := range decl.Parameters {
+		if signature.TypeParams[i] != parameter {
+			return false, s.conflict(CodeDamagedInput, "method signature has a damaged containing-type environment", value.origin), false
+		}
+	}
+	if len(receiverArguments) != len(decl.Parameters) {
+		return false, s.conflict(CodeDamagedInput, "method receiver substitution arity mismatch", value.origin), false
+	}
+
+	state, exists := s.methodStates[value.site]
+	if !exists {
+		localParameters := signature.TypeParams[len(decl.Parameters):]
+		if len(value.explicit) > len(localParameters) {
+			return false, s.conflict(CodeInvalidType, "method has too many explicit type arguments", value.origin), false
+		}
+		arguments := append([]Term(nil), value.explicit...)
+		missing := len(localParameters) - len(arguments)
+		if uint64(len(s.cells))+uint64(missing) > uint64(s.config.MaxInferVariables) {
+			s.limit("inference variable", uint64(s.config.MaxInferVariables), value.origin)
+			return false, false, false
+		}
+		for len(arguments) < len(localParameters) {
+			term := s.newCell(childOrigin(value.origin, len(arguments)), termVariable, nil)
+			if term.kind == termError {
+				return false, false, false
+			}
+			arguments = append(arguments, term)
+		}
+		state = methodState{method: selected.ID, arguments: arguments, ownedFrom: len(value.explicit)}
+		s.methodStates[value.site] = state
+	} else if state.method != selected.ID {
+		return false, s.conflict(CodeDamagedInput, "method selection changed after receiver resolution", value.origin), false
+	}
+
+	mapping := make(map[symbol.SymbolID]Term, len(signature.TypeParams))
+	for i, parameter := range decl.Parameters {
+		mapping[parameter] = receiverArguments[i]
+	}
+	localParameters := signature.TypeParams[len(decl.Parameters):]
+	for i, parameter := range localParameters {
+		mapping[parameter] = state.arguments[i]
+	}
+	parameters := make([]Shape, len(signature.Inputs))
+	for i, templateID := range signature.Inputs {
+		template, exists := s.program.Template(templateID)
+		if !exists {
+			return false, s.failMethodState(value.site, "method parameter template is unavailable", value.origin), false
+		}
+		shape, success := s.templateShape(template, mapping, childOrigin(value.origin, i), 0)
+		if !success {
+			s.failMethodArguments(value.site)
+			return false, false, false
+		}
+		parameters[i] = shape
+	}
+	resultTemplate, exists := s.program.Template(signature.Result)
+	if !exists {
+		return false, s.failMethodState(value.site, "method result template is unavailable", value.origin), false
+	}
+	result, success := s.templateShape(resultTemplate, mapping, childOrigin(value.origin, len(parameters)), 0)
+	if !success {
+		s.failMethodArguments(value.site)
+		return false, false, false
+	}
+	changed, success := s.constrainShape(value.b, FunctionShape(signature.Convention, parameters, result, signature.Variadic), value.origin)
+	if !success {
+		s.failMethodArguments(value.site)
+		return changed, false, false
+	}
+	state.ready = true
+	s.methodStates[value.site] = state
+	return changed, true, false
+}
+
+func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID, []Term, bool, bool) {
+	if receiver.kind == termError {
+		return 0, nil, false, true
+	}
+	if id, known := s.resolvedType(receiver); known {
+		key, ok := s.program.inputs.Types.Key(id)
+		if !ok {
+			return 0, nil, false, s.conflict(CodeDamagedInput, "method receiver type is foreign", origin)
+		}
+		if key.Kind() == types.Pointer {
+			id, _ = key.Child()
+			key, ok = s.program.inputs.Types.Key(id)
+			if !ok {
+				return 0, nil, false, s.conflict(CodeDamagedInput, "method receiver pointee type is foreign", origin)
+			}
+		}
+		declaration, ids, nominal := key.Nominal()
+		if !nominal {
+			return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)
+		}
+		arguments := make([]Term, len(ids))
+		for i, argument := range ids {
+			arguments[i] = s.Known(argument)
+		}
+		return declaration, arguments, false, true
+	}
+	if receiver.kind == termKnown {
+		return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)
+	}
+	root := s.find(receiver.id)
+	if root == 0 || s.cells[root-1].error {
+		return 0, nil, false, true
+	}
+	shape := s.cells[root-1].shape
+	if shape == nil {
+		return 0, nil, true, true
+	}
+	if shape.kind == shapePointer && len(shape.children) == 1 {
+		shape = &shape.children[0]
+	}
+	if shape.kind != shapeNominal {
+		return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)
+	}
+	arguments := make([]Term, len(shape.children))
+	for i, child := range shape.children {
+		if child.kind != shapeLeaf {
+			return 0, nil, true, true
+		}
+		arguments[i] = child.term
+	}
+	return shape.declaration, arguments, false, true
+}
+
+func (s *Session) failMethodState(site symbol.SyntaxRef, message string, origin Origin) bool {
+	// Kept separate from argument cleanup so all malformed prepared-program
+	// paths recover without leaving hidden inference roots unresolved.
+	s.failMethodArguments(site)
+	return s.conflict(CodeDamagedInput, message, origin)
+}
+
+func (s *Session) failMethodArguments(site symbol.SyntaxRef) {
+	state := s.methodStates[site]
+	for _, term := range state.arguments[state.ownedFrom:] {
+		if term.kind == termVariable || term.kind == termIntLiteral || term.kind == termFloatLiteral {
+			if root := s.find(term.id); root != 0 {
+				s.cells[root-1].error = true
+			}
+		}
+	}
+}
+
+func (s *Session) unifyShapeWithTerm(shape Shape, term Term, origin Origin) (bool, bool) {
+	if shape.kind == shapeLeaf {
+		return s.unify(shape.term, term, origin)
+	}
+	return s.constrainShape(term, shape, origin)
+}

@@ -1,0 +1,6 @@
+type Base = struct {};
+type First = Base;
+type Second = First;
+type Box[T] = struct { value T; };
+type Wrapped[T] = Box[T];
+fn use(value Second, box Wrapped[Second]) Second => value;

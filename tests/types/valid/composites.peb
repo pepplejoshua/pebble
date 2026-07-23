@@ -1,0 +1,9 @@
+type Node = struct { next ?*Node; };
+type Pair = (int, str);
+type Callback = fn (int, ?str) void;
+type Buffer = [4]u8;
+type View = []u8;
+
+fn use(node *Node, pair Pair, callback Callback, buffer Buffer, view View) ?*Node {
+    return node;
+}

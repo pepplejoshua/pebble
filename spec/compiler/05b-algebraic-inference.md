@@ -170,6 +170,10 @@ Zero-valued limits select these defaults:
 | inference diagnostics | 50 |
 
 Tests may lower every limit.
+`MaxAliasDepth` and `MaxTypeSyntaxDepth` saturate at the implementation hard
+ceiling of 1,024 even when a larger value is requested. This bounds the few
+depth-recursive reducers independently of the host stack; broad shapes and
+unbounded searches still use explicit stacks and separate counters.
 
 ### Immutable declaration program
 
@@ -289,6 +293,7 @@ Phase 6 generates facts through this conceptual API:
 ```go
 func (s *Session) Variable(origin Origin) Term
 func (s *Session) Known(types.TypeID) Term
+func (s *Session) Error(origin Origin) Term
 func (s *Session) IntegerLiteral(text []byte, origin Origin) Term
 func (s *Session) FloatLiteral(text []byte, origin Origin) Term
 func (s *Session) NegateLiteral(Term, Origin) Term
@@ -340,18 +345,35 @@ const (
     RequirementNumeric RequirementKind = iota + 1
     RequirementIntegral
     RequirementOrdered
+    RequirementLiteralFits
+)
+
+type ExactLiteralKind uint8
+const (
+    ExactInteger ExactLiteralKind = iota + 1
+    ExactFloat
 )
 
 type Requirement struct {
     Owner   symbol.SymbolID
+    Parameter symbol.SymbolID
     Kind    RequirementKind
     Subject types.TypeID
     Origin  Origin
+    LiteralKind ExactLiteralKind
+    Numerator   string
+    Denominator string
 }
 
 type Instantiation struct {
     Site      symbol.SyntaxRef
     Generic   symbol.SymbolID
+    Arguments []TypeResult
+}
+
+type MethodSelection struct {
+    Site      symbol.SyntaxRef
+    Method    symbol.SymbolID
     Arguments []TypeResult
 }
 
@@ -364,15 +386,19 @@ func (r *Solution) SyntaxType(symbol.SyntaxRef) (TypeResult, bool)
 func (r *Solution) SyntaxTypes() []SyntaxType
 func (r *Solution) Requirements(symbol.SymbolID) []Requirement
 func (r *Solution) Instantiation(symbol.SyntaxRef) (Instantiation, bool)
+func (r *Solution) Method(symbol.SyntaxRef) (MethodSelection, bool)
 func (r *Solution) Selection(ConstraintID) (uint32, bool)
 ```
 
 The slice accessors return copies ordered by ascending `SymbolID` and then by
 `(ModuleID, NodeID)`. Requirements and instantiations return copies in stable
-owner, source, and parameter order. A `Requirement` is retained only when a
-phase-6-generated capability constraint targets a rigid type parameter while
-checking the generic declaration identified by `Owner`; concrete policy
-obligations remain owned by phase 6 and are not smuggled into this result.
+owner, source, and parameter order. A `Requirement` is retained when a
+phase-6-generated capability or exact literal-fitting constraint targets a
+rigid type parameter while checking the generic declaration identified by
+`Owner`. Integer requirements use a signed canonical decimal numerator and an
+empty denominator; floating requirements use canonical decimal numerator and
+positive denominator. Concrete policy obligations remain owned by phase 6 and
+are not smuggled into this result.
 
 Every root explicitly published by phase 6 has an entry. `05b` does not decide
 which syntax is value-producing and does not invent entries by traversing the
@@ -420,6 +446,11 @@ solver-local cell that may be unioned or solved. Literal terms retain exact
 values until fitting or defaulting. One solver-owned `Error` sentinel absorbs
 dependent constraints. `Error` is never passed to `types.Intern`, published
 as a `TypeID`, or confused with an invalid zero ID.
+
+`SelectMethod` may allocate hidden cells for omitted method-local type
+arguments only after its receiver declaration is known. Those cells are
+charged to `MaxInferVariables`, allocated once in source `ConstraintID` and
+parameter order, and otherwise obey the same union-find and publication rules.
 
 Unresolved composite structure is not a sixth term variant. A constraint may
 carry this closed algebraic shape whose leaves are terms:
@@ -534,8 +565,10 @@ The exact syntax rules are:
 - `*T`, `[N]T`, `[]T`, nonempty tuples, `?T`, and function types resolve their
   children bottom-up and intern the exact `05a` key.
 - Grouping returns its child's identity. A grouped singleton is not a tuple.
-  An authored tuple must contain at least one element; damaged or empty tuple
-  syntax emits `T0504` and never calls `TupleKey([])`.
+  An authored tuple must contain at least one element. The parser rejects `()`
+  with `P0004`; a damaged or directly constructed zero-child `TupleTerm` that
+  nevertheless crosses the phase boundary emits defensive `T0504`. Neither
+  path calls `TupleKey([])`.
 - Function identity includes the parsed calling convention, ordered parameter
   types, result, and variadic flag. Known spellings map to `Pebble` or `C`;
   an unknown convention emits `T0501`. Whether conventions are compatible is
@@ -579,8 +612,9 @@ The exact syntax rules are:
   unless an earlier diagnostic already explains that occurrence.
 
 `05b` owns source-driven fixtures for concrete aliases, generic aliases, alias
-chains and cycles, bare and nested anonymous aggregate use, and empty tuple
-recovery. Type resolution never mutates the tree or symbol records.
+chains and cycles, and bare and nested anonymous aggregate use. Parser fixtures
+own authored empty-tuple rejection. Type resolution never mutates the tree or
+symbol records.
 
 ## Constraints and provenance
 
@@ -593,6 +627,7 @@ Numeric(t)
 Integral(t)
 Ordered(t)
 HasField(receiverType, name, fieldType)
+SelectMethod(receiverType, name, callableType, explicitTypeArguments, site)
 LiteralFits(literal, candidateType)
 Shape(subject, algebraicShape)
 Instantiate(templateType, substitutions, subject)
@@ -629,6 +664,7 @@ func Numeric(term Term, origin Origin) Constraint
 func Integral(term Term, origin Origin) Constraint
 func Ordered(term Term, origin Origin) Constraint
 func HasField(receiver Term, name string, field Term, origin Origin) Constraint
+func SelectMethod(receiver Term, name string, callable Term, explicit []Term, site symbol.SyntaxRef, origin Origin) Constraint
 func LiteralFits(literal, candidate Term, origin Origin) Constraint
 func ConstrainShape(subject Term, shape Shape, origin Origin) Constraint
 func Instantiate(template TemplateID, substitutions []Substitution, subject Term, origin Origin) Constraint
@@ -673,6 +709,7 @@ role; they never replace provenance with an internal solver location.
 | `Integral(t)` | integral-only literal/operator/index rules | Same attachment/delay behavior as `Numeric`. Known target-word or fixed-width integer succeeds; floats and nonnumeric types fail `T0507`; rigid parameters retain an obligation. | `05b` builtin category |
 | `Ordered(t)` | ordering syntax and symbolic generic bodies | Variables attach; literals delay until selected; rigid parameters retain `Ordered(parameter)`. A known type makes inference progress by fixing the obligation's subject but does not prove that a particular operator is supported. It is handed to phase 6. `Error` is suppressed-complete; this constraint does not otherwise fail in `05b`, and phase 6 owns any unsatisfied concrete ordering diagnostic. | phase 6 operator policy |
 | `HasField(recv,name,field)` | type-directed member access and record construction | Strip no conversions. Delay until the receiver is a known nominal, optional/pointer behavior has been made explicit by another rule, or a nominal shape identifies its declaration and arguments. Query ordered declaration metadata by `SymbolID`, instantiate its field descriptor, equate it with `field`, and succeed. A known nonnominal or missing field fails `T0507`. `Error` suppresses it. | `05b` member shape; phase 6 owns accessibility, place, method, and category policy |
+| `SelectMethod(recv,name,callable,explicit,site)` | an immediate instance-method call, including a generic method selected through a deferred member/bracket | Delay until `recv` is a known nominal, pointer-to-nominal, or corresponding shape. Query only that declaration's ordered `04b Members`; require exactly one same-spelled `SymbolMethod`; substitute containing-type arguments from the receiver, relate leading explicit method-type arguments, allocate the remaining method-local inference variables once in source constraint order, instantiate the prepared method signature, and equate its complete explicit-self function shape with `callable`. Record the selected method `SymbolID` and all method-local type arguments at `site`. A nonnominal receiver, missing/wrong-category member, excess explicit argument, or damaged signature fails deterministically. `Error` suppresses it. | `05b` delayed identity and substitution; phase 6 owns call legality and bound-method rejection |
 | `LiteralFits(lit,candidate)` | literal expected types, literal equality, and final selection | Delay until candidate is a known builtin. A rigid type parameter retains an exact `LiteralFits` generic obligation. Exact integer bounds use signedness, exact width, or `LiteralTarget.WordBits`. An exact rational fits `f32` or `f64` when IEEE-754 round-to-nearest, ties-to-even produces a finite value; ordinary rounding and underflow to signed zero are allowed, overflow to infinity is not. The check uses integer/rational comparisons rather than host floating arithmetic. Success binds the literal occurrence to the candidate. A known wrong category or out-of-range value fails `T0508`. `Error` suppresses it. | `05b` literal selection; this is not conversion between concrete types |
 | `Shape(subject,shape)` | tuple/array/function/optional construction, nil/none recovery, and instantiation expansion | Bind or merge a root shape, recursively match a known key, or materialize a fully known shape. Delay on unresolved leaves. Constructor, arity, convention, variadic, nominal declaration, or array-length mismatch fails `T0505`. Occurs failure is `T0506`. | `05b` structural identity |
 | `Instantiate(template,subst,subject)` | generic calls, generic member receivers/results, and generic aliases | Recursively expand the known symbolic template in stable child order, replace listed rigid parameters, and emit `Shape`. Delay only if the template descriptor is damaged; missing/duplicate substitutions or invalid template structure fail `T0501`. | `05b` substitution; phase 7 owns specialization |
@@ -749,11 +786,11 @@ applies its conversion and legality matrices. They are not passed to
 ### Expressions
 
 - Integer and float tokens produce exact literal terms. String, character,
-  and Boolean literals produce their known builtins. `context` equates with an
-  explicitly declared enclosing contextual parameter when one exists; until
-  phase 6 specifies any implicit context value/type beyond the calling-
-  convention bit, it remains a policy obligation and cannot cause `05b` to
-  invent a builtin or nominal type. Interpolated expressions are all generated;
+  and Boolean literals produce their known builtins. `context` requires the
+  canonical implicit-runtime-context type selected by phase 6. Until that
+  upstream identity exists, phase 6 produces `Error` rather than inventing a
+  generated type or pretending an authored parameter is the implicit context.
+  Interpolated expressions are all generated;
   the overall expression is
   `str`, while printable conversion policy remains phase 6.
 - A resolved name/path reads `Resolution.Reference(SyntaxRef)` and equates the
@@ -792,11 +829,13 @@ applies its conversion and legality matrices. They are not passed to
   result shape and permitted receiver come from the selected phase-6 indexing
   rule. An index or value-mode bracket records `(base,index,result)` and
   requires exactly one value argument.
-- A type-directed member emits `HasField(receiver,name,result)`. Tuple numeric
+- A type-directed field emits `HasField(receiver,name,result)`. Tuple numeric
   members use deterministic fixed-index decomposition. A statically resolved
   module or type member consumes the `04b` `SymbolID` and equates with that
-  symbol's term; it performs no receiver lookup. Methods retain receiver and
-  call relationships without synthesizing cloned declarations.
+  symbol's term; it performs no receiver lookup. An immediate instance-method
+  call emits `SelectMethod(receiver,name,callable,explicit,site)` and separately
+  constrains `callable` with the explicit receiver, authored arguments, and
+  result function shape. Bound method values remain phase-6 policy.
 - A record with explicit base resolves or infers its nominal type, emits a
   result equality, then one `HasField` constraint and one phase-6 assignment
   record per authored field. A base-less record uses its expected result as
@@ -837,13 +876,13 @@ applies its conversion and legality matrices. They are not passed to
 One solver owns one union-find table indexed by `InferID`. Each cell stores a
 parent, rank/size used only for complexity, the smallest member `InferID`, an
 optional known or shape binding, an ordered list of exact literal evidence,
-attached capability sets, watcher IDs, and the earliest binding origin.
+attached capability evidence, and the earliest binding origin.
 
-Representative selection cannot alter semantics. On variable-variable merge,
-the root with smaller minimum-member `InferID` is the externally reported
-representative; rank may choose physical parent only if `Find` reports the
-minimum member and all ordered output uses it. Capability/origin/watch lists
-are merged by stable IDs, never map order.
+Representative selection cannot alter semantics. Rank and stable tie-breaking
+choose the private physical parent; every merged root separately retains its
+smallest member `InferID` as the canonical debugging/diagnostic representative.
+No representative escapes the solution API. Capability/origin evidence is
+merged by stable IDs, never map order.
 
 Unification is defined as follows:
 
@@ -887,15 +926,21 @@ minimum representative through shape leaves or root bindings. It uses an
 explicit stack and visited set keyed by `InferID`, charges every edge to
 `MaxDecompositionSteps`, and emits `T0506` on a cycle. TypeID graphs need not
 be traversed for occurs checking because canonical store entries cannot
-contain `InferID`s. All structural matching and materialization use explicit
-bounded stacks; host recursion depth is not a correctness mechanism.
+contain `InferID`s. Structural validation and occurs checking use explicit
+bounded stacks. Shape matching/materialization and template reduction are
+depth-recursive only after validation against the hard 1,024 ceiling; host
+stack growth is therefore not an input-controlled correctness mechanism.
 
-## Ordered worklist and termination
+## Ordered fixed point and termination
 
-The solver uses queues of `ConstraintID`, bitsets for queued state, and watcher
-lists keyed by minimum `InferID`. Queue order is always ascending constraint
-creation order within a stage. Hash maps may locate data but never supply work
-order.
+The solver processes pending constraints in ascending `ConstraintID` rounds.
+Completed constraints leave the pending set permanently. Every examination of
+a still-delayed constraint is charged to its per-constraint requeue limit and
+the session-wide total-requeue limit, including an examination that discovers
+no progress. This bounds deliberately simple full-round scheduling; a future
+watcher optimization may skip clean constraints but may not change semantics,
+ordering, diagnostics, or the configured work bounds. Hash maps may locate
+data but never supply work order.
 
 Solving has these stages:
 
@@ -904,7 +949,7 @@ Solving has these stages:
 2. **Capability and shape:** process `Numeric`, `Integral`, `Ordered`,
    `Shape`, and known `HasField` facts.
 3. **Delayed fixed point:** process remaining member, instantiation, shape,
-   and literal-fit constraints whose watched roots changed.
+   and literal-fit constraints in charged source-ordered rounds.
 4. **Choice resolution:** eliminate contradictory `OneOf` alternatives using
    rollback snapshots. If propagation cannot select one, explore every viable
    alternative and nested choice in stable index order, charging each snapshot
@@ -925,15 +970,16 @@ Solving has these stages:
    connected component, mark affected published entries `TypeError`, and
    freeze ordered result tables, requirements, and instantiations.
 
-A constraint is requeued only when a watched root changes representative,
-binding kind, known ID, shape completeness, or attached capability set. Merely
-examining it is not progress. Each successful union, binding, shape edge,
+A constraint remains pending only while its required root lacks a binding,
+known ID, complete shape, or member declaration. Merely examining it is not
+progress, but the examination is still charged. Each successful union,
+binding, shape edge,
 materialized type, discharged constraint, or newly attached capability is
-monotonic. Fixed point is an empty queue with no changed watcher generation.
+monotonic. Fixed point is a round with no state change.
 
 Each constraint tracks its requeue count. Exceeding a per-constraint or total
 limit emits one `T0512`, converts its connected component to `Error`, and
-removes its watchers. The finite variable, constraint, shape-edge, step,
+removes it from the pending set. The finite variable, constraint, shape-edge, step,
 requeue, and diagnostic limits guarantee termination.
 
 Choice exploration uses rollbackable union-find changes or bounded state
@@ -1051,9 +1097,9 @@ generation before `Solve`, never discovered during post-solve validation. A
 post-solve rule that would need another equation is a phase-boundary bug and
 requires the phase-6 generation contract to be corrected.
 
-The current documents do not yet settle string operators, the accepted array
-constant-expression language, or the conversion/calling-convention matrices.
-Phase 6 owns those decisions; they are not hidden 05b defaults.
+Phase 6 now settles string operators, the accepted array constant-expression
+language, and the conversion/calling-convention matrices. They remain checker
+policy and are not hidden 05b defaults.
 
 ## Diagnostics and recovery
 
@@ -1064,7 +1110,7 @@ Initial stable inference codes are:
 | `T0501` | unknown type syntax, invalid type category, arity, or generic application |
 | `T0502` | transparent alias cycle |
 | `T0503` | anonymous or nested anonymous aggregate type |
-| `T0504` | empty tuple type |
+| `T0504` | defensive zero-child tuple type crossing the parser boundary |
 | `T0505` | unification or structural-shape conflict |
 | `T0506` | occurs-check failure |
 | `T0507` | unsatisfied inference-owned capability or missing member |
@@ -1095,10 +1141,10 @@ budget.
 
 All configurable counts are checked before allocation or append. Every shape
 node and leaf is charged to `MaxShapeComponents`. Type syntax, aliases, shapes,
-known type decomposition, instantiation, and occurs checking
-use explicit stacks charged to their corresponding limits. Literal parsing
+known type decomposition, instantiation, and occurs checking use explicit
+stacks or hard-depth-bounded reducers charged to their corresponding limits. Literal parsing
 checks digits, exponent, and prospective bit growth before shifts or powers.
-Constraints use bounded watcher lists and monotonic generations. On any limit,
+Constraints use bounded charged reexaminations and monotonic state. On any limit,
 the smallest affected component becomes `Error`, one bounded diagnostic is
 stored, and independent components may continue.
 
@@ -1131,6 +1177,9 @@ IDs, equations, or solver structure are clearer than source text:
   report both origins;
 - field and instantiation constraints delay, wake exactly on relevant root
   change, and reach a fixed point;
+- delayed method selection uses only the solved receiver declaration, infers
+  method-local arguments from receiver/argument/result evidence, publishes one
+  stable method identity, and never searches unrelated declarations;
 - `OneOf` commits a unique viable alternative, reports zero or multiple viable
   alternatives deterministically, rolls back failed facts, and never consumes
   speculative `TypeID`s;
@@ -1149,7 +1198,6 @@ tests/types/
   invalid/T0501/*.peb
   invalid/T0502/*.peb
   invalid/T0503/*.peb
-  invalid/T0504/*.peb
   invalid/T0505/*.peb
   invalid/T0506/*.peb
   invalid/T0507/*.peb
@@ -1163,7 +1211,7 @@ tests/types/
 
 Required `05b` fixtures cover tuples, arrays, optionals, functions, concrete
 and generic aliases, alias chains/cycles, direct nominal recursion, anonymous
-and nested anonymous aggregate rejection, empty tuple recovery, builtin symbol
+and nested anonymous aggregate rejection, builtin symbol
 mapping, and independent recovery after errors. Phase 6 owns source fixtures
 for expression traversal, expected contexts, calls, operators, indexing,
 assignments, and conversion behavior. Direct `05b` tests still cover literal
@@ -1192,9 +1240,9 @@ Own `type_resolver.go`, `declaration.go`, alias diagnostics, and `tests/types`
 alias/aggregate fixtures. Consume only `module.Graph`, `source.FileSet`,
 `symbol.Result`, `ArrayLengthEvaluator`, and `types.Store`. Implement nominal
 predeclaration, rigid parameters, all accepted composite syntax, generic
-descriptors, alias memoization/cycles, anonymous aggregate and empty tuple
-rejection. Complete when every type form has a stable result and no lookup or
-AST mutation exists. Handoff any exact `05a` operation discrepancy before
+descriptors, alias memoization/cycles, anonymous aggregate rejection, and
+defensive zero-child tuple recovery. Complete when every type form has a stable
+result and no lookup or AST mutation exists. Handoff any exact `05a` operation discrepancy before
 continuing.
 
 ### Slice 05b.3: terms, exact literals, shapes, and provenance
@@ -1215,8 +1263,8 @@ produce identical normalized results and no recovery term is interned.
 
 ### Slice 05b.5: ordered worklists and capabilities
 
-Own `solve.go`, `worklist.go`, capability tables, and direct fixed-point/limit
-tests. Implement staged queues, watchers, progress generations, delayed
+Own `solve.go`, `capability.go`, capability tables, and direct fixed-point/limit
+tests. Implement source-ordered rounds, monotonic progress, delayed
 constraints, bounded choice rollback, literal fitting/defaulting, ambiguity,
 requeue bounds, and error suppression. Complete when all stages terminate,
 only genuinely unconstrained literals default, and first-success choice is
@@ -1233,8 +1281,9 @@ values need only be deterministic for the same ordered compilation input.
 
 ### Slice 05b.7: generic templates and symbolic requirements
 
-Own `generic.go` and direct generic tests. Implement fresh call-site variables,
-template expansion, receiver/argument/explicit/result evidence, rigid
+Own `instantiate.go`, generic portions of `declaration.go`, and direct generic
+tests. Implement fresh call-site variables, template expansion,
+receiver/argument/explicit/result evidence, delayed method selection, rigid
 parameter requirements, and immutable phase-7 instantiations. Complete when a
 client can express zero-argument expected-result inference, ambiguous evidence
 diagnoses, and no AST clone or monomorphized name exists.
