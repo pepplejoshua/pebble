@@ -92,6 +92,11 @@ A symbol records at least:
 - containing type or function identity when applicable;
 - an error state when collection recovered from damaged syntax.
 
+Predeclared builtin types are the only symbols without authored declarations.
+They record `SymbolBuiltinType`, an exact `BuiltinType` discriminator, the
+prelude scope, and a zero `SyntaxRef`. Consumers distinguish this explicit
+origin from damaged authored syntax; they never infer a builtin from its name.
+
 Ordinary declarations use their declaration node as `SyntaxRef`. An imported
 module qualifier uses the corresponding `ImportDecl` as its declaration
 origin. `04b` pairs an `ImportEdge` with that node by the edge's retained span
@@ -158,7 +163,10 @@ field and method with the same name in one type are duplicates.
 
 Scopes are explicit stored values, not a mutable global current scope.
 
+- One synthetic prelude scope is created first. It has no parent, module,
+  owner, or authored origin.
 - Every module has one module scope.
+- Every module scope has the prelude as its parent.
 - Every function has a signature/body scope whose parent is its module scope
   or containing type environment.
 - Parameters share the function body's outer scope.
@@ -174,6 +182,35 @@ Scopes are explicit stored values, not a mutable global current scope.
   lexical environment.
 
 Scope creation order follows module and source order and is deterministic.
+
+## Reserved builtin types
+
+The prelude contains exactly these `SymbolBuiltinType` symbols in this fixed
+order:
+
+```text
+bool char str void int uint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
+```
+
+They receive the first `SymbolID`s in a compilation snapshot. `Result.Prelude`
+returns the prelude `ScopeID`; `Result.Builtin(BuiltinType)` returns the exact
+symbol identity. Every authored type-position occurrence resolves through
+ordinary scope lookup to one of these symbols. The parser's dedicated `void`
+result syntax denotes `BuiltinVoid` without requiring an authored name
+reference.
+
+The prelude and its symbols count toward `MaxScopes` and `MaxSymbols`. A limit
+too small to construct the complete prelude produces bounded `N0006` recovery;
+the resolver never silently omits a builtin in an otherwise successful result.
+
+Builtin names are reserved throughout the language. No import qualifier,
+module declaration, local binding, parameter, loop binding, type parameter,
+field, variant, or method may declare one of these names. This prohibition also
+applies in member namespaces: a builtin name cannot be hidden, shadowed, or
+repurposed anywhere. A rejected declaration receives an error symbol and
+`N0007`; it is not installed into its lexical or member namespace. Subsequent
+lookup therefore continues to select the builtin where that category is
+legal.
 
 ## Declaration collection
 
@@ -198,7 +235,7 @@ symbols never satisfy a successful semantic query.
 - Parameters share one scope and cannot duplicate one another.
 - A function body's outer block cannot redeclare a parameter.
 - An inner lexical scope may shadow a declaration from an ancestor lexical or
-  module scope.
+  module scope, except that builtin names are reserved and cannot be shadowed.
 - Sibling scopes may reuse names independently.
 - Shadowing is ordinary lookup behavior and does not emit a warning in the
   first contract.
@@ -217,6 +254,7 @@ Unqualified lookup:
 innermost lexical scope
 -> ancestor lexical/function scopes
 -> module scope
+-> prelude scope
 ```
 
 Imported declarations are never searched by unqualified lookup.
@@ -278,6 +316,7 @@ Initial stable codes:
 | `N0004` | imported module has no requested member |
 | `N0005` | name resolves to an invalid category for the syntax position |
 | `N0006` | symbol-count, scope-count, scope-depth, or diagnostic limit |
+| `N0007` | declaration attempts to use a reserved builtin type name |
 
 Duplicate diagnostics label both the new and original declaration. Undefined
 and qualified-member diagnostics point at authored reference spans. Resolution
@@ -304,6 +343,9 @@ parameter/body collision, sibling reuse, block lifetime, loop lifetime,
 function type parameters, aggregate members and methods, qualified module
 lookup, qualifier shadowing, missing module member, anonymous-function capture,
 and neutral brackets whose category follows the resolved base.
+The corpus also covers every builtin identity, deterministic prelude ordering,
+module-to-prelude parentage, and rejected builtin redeclarations in lexical and
+member namespaces.
 
 Most behavior uses plain `.peb` files and expected diagnostic-code
 directories. Optional `.symbols.golden`, `.scopes.golden`, or
@@ -333,6 +375,8 @@ directories. Optional `.symbols.golden`, `.scopes.golden`, or
 - Module declarations support forward references; locals remain sequential.
 - Duplicate, shadowing, parameter, loop, member, and qualifier rules match the
   contract.
+- Builtin references resolve to fixed prelude symbols, and no authored
+  declaration can reuse a builtin name.
 - Anonymous-function captures are recorded without global mutable context.
 - Neutral brackets use resolved identity where possible and remain explicit
   where type information is required.

@@ -138,6 +138,56 @@ func TestSequentialLocalBindingAndForwardModuleResolution(t *testing.T) {
 	}
 }
 
+func TestBuiltinTypesLiveInReservedPrelude(t *testing.T) {
+	text := "fn use(a bool, b char, c str, d int, e uint, f i8, g i16, h i32, i i64, j u8, k u16, l u32, m u64, n f32, o f64) void {}"
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	prelude, ok := result.Scopes.Scope(result.Prelude())
+	if !ok || prelude.Kind != ScopePrelude || prelude.Parent != 0 || prelude.Module != 0 {
+		t.Fatalf("prelude = %+v, %t", prelude, ok)
+	}
+	moduleScope := result.Scopes.All()[1]
+	if moduleScope.Kind != ScopeModule || moduleScope.Parent != prelude.ID {
+		t.Fatalf("module scope = %+v", moduleScope)
+	}
+	moduleValue, _ := graph.Module(graph.Root)
+	file, _ := sources.File(moduleValue.Source)
+	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
+		id, ok := result.Builtin(kind)
+		if !ok {
+			t.Fatalf("missing builtin %s", kind)
+		}
+		sym, _ := result.Symbols.Symbol(id)
+		if sym.Kind != SymbolBuiltinType || sym.Builtin != kind || sym.Name != kind.String() || sym.Scope != prelude.ID || sym.Declaration != (SyntaxRef{}) {
+			t.Fatalf("builtin %s = %+v", kind, sym)
+		}
+		if kind == BuiltinVoid {
+			// The parser represents an explicit void result without a Name node.
+			continue
+		}
+		refs := namedReferences(t, result, moduleValue, file, kind.String())
+		if len(refs) != 1 || refs[0].State != ResolutionResolved || refs[0].Symbol != id {
+			t.Fatalf("references for %s = %+v, want symbol %d", kind, refs, id)
+		}
+	}
+}
+
+func TestBuiltinNamesCannotBeRedeclaredAnywhere(t *testing.T) {
+	text := "type int=struct{ bool char; fn str(f32 uint) void {} }; fn f[i8](i16 i32) i64 { let u8=1; { let u16=2; } return 1; }"
+	_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	items := nameErrors(diagnostics.Items())
+	if len(items) != 8 {
+		t.Fatalf("reserved builtin diagnostics = %+v", items)
+	}
+	for _, item := range items {
+		if item.Code != CodeReservedBuiltin {
+			t.Fatalf("unexpected name diagnostic %s: %+v", item.Code, items)
+		}
+	}
+}
+
 func TestQualifiedLookupRecordsMemberAndQualifier(t *testing.T) {
 	files := map[string]string{"main.peb": "import \"./dep\"; fn use(value dep::Thing) dep::Thing => dep::make(value);", "dep.peb": "type Thing = struct {}; fn make(value Thing) Thing => value;"}
 	result, diagnostics, graph, sources := resolveFiles(t, files, Config{})
@@ -382,7 +432,7 @@ func TestConfiguredLimitsAndInvalidInputsAreBounded(t *testing.T) {
 }
 
 func TestRequiredFixtureShapes(t *testing.T) {
-	required := []string{"valid/forward_and_scopes.peb", "valid/generics_members_brackets.peb", "valid/capture.peb", "valid/multimodule/qualified/main.peb", "invalid/N0001/block_lifetime.peb", "invalid/N0001/loop_lifetime.peb", "invalid/N0001/local_forward.peb", "invalid/N0002/cross_kind.peb", "invalid/N0002/parameter_body.peb", "invalid/N0002/parameters.peb", "invalid/N0002/members.peb", "invalid/N0002/multimodule/qualifier_collision/main.peb", "invalid/N0003/not_a_qualifier.peb", "invalid/N0003/multimodule/qualifier_shadow/main.peb", "invalid/N0004/multimodule/missing_member/main.peb", "invalid/N0005/category.peb", "invalid/N0005/value_as_type.peb", "recovery/damaged.peb"}
+	required := []string{"valid/forward_and_scopes.peb", "valid/generics_members_brackets.peb", "valid/capture.peb", "valid/multimodule/qualified/main.peb", "invalid/N0001/block_lifetime.peb", "invalid/N0001/loop_lifetime.peb", "invalid/N0001/local_forward.peb", "invalid/N0002/cross_kind.peb", "invalid/N0002/parameter_body.peb", "invalid/N0002/parameters.peb", "invalid/N0002/members.peb", "invalid/N0002/multimodule/qualifier_collision/main.peb", "invalid/N0003/not_a_qualifier.peb", "invalid/N0003/multimodule/qualifier_shadow/main.peb", "invalid/N0004/multimodule/missing_member/main.peb", "invalid/N0005/category.peb", "invalid/N0005/value_as_type.peb", "invalid/N0007/reserved_builtin.peb", "recovery/damaged.peb"}
 	root := filepath.Join(repoRoot(t), "tests", "names")
 	for _, relative := range required {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {

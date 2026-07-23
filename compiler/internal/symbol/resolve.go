@@ -67,6 +67,7 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	for _, item := range graph.Modules() {
 		r.modules[item.ID] = item
 	}
+	r.installPrelude()
 	// Module scopes are allocated in graph ID order so qualified lookup can target
 	// any reachable module before reference resolution begins.
 	for _, item := range graph.Modules() {
@@ -74,7 +75,7 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 		if item.Tree != nil {
 			origin.Node = item.Tree.Root()
 		}
-		scope := r.newScope(ScopeModule, 0, item.ID, 0, origin)
+		scope := r.newScope(ScopeModule, r.result.prelude, item.ID, 0, origin)
 		r.moduleScopes[item.ID] = scope
 	}
 	for _, item := range graph.Modules() {
@@ -85,6 +86,18 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	}
 	r.flushDiagnostics()
 	return r.result
+}
+
+func (r *resolver) installPrelude() {
+	scope := r.newScope(ScopePrelude, 0, 0, 0, SyntaxRef{})
+	r.result.prelude = scope
+	if scope == 0 {
+		return
+	}
+	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
+		id := r.addSymbol(Symbol{Name: kind.String(), Kind: SymbolBuiltinType, Scope: scope, Builtin: kind}, true, 0)
+		r.result.builtins[kind] = id
+	}
 }
 
 func normalizedConfig(c Config) Config {
@@ -343,6 +356,10 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 		return 0
 	}
 	symbol.ID = SymbolID(len(r.result.Symbols.values) + 1)
+	if symbol.Builtin == 0 && symbol.Name != "" && !symbol.Error && reservedBuiltin(symbol.Name) {
+		symbol.Error = true
+		r.report(CodeReservedBuiltin, fmt.Sprintf("%q is a reserved builtin type name", symbol.Name), symbol.Span)
+	}
 	if bind && symbol.Name != "" && !symbol.Error {
 		if original, duplicate := r.bindings[symbol.Scope][symbol.Name]; duplicate {
 			symbol.Error = true
@@ -359,6 +376,15 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 		}
 	}
 	return symbol.ID
+}
+
+func reservedBuiltin(name string) bool {
+	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
+		if name == kind.String() {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *resolver) bindExistingMember(id, owner SymbolID) SymbolID {

@@ -20,6 +20,7 @@ const (
 	CodeMissingMember    diagnostic.Code = "N0004"
 	CodeInvalidCategory  diagnostic.Code = "N0005"
 	CodeResourceLimit    diagnostic.Code = "N0006"
+	CodeReservedBuiltin  diagnostic.Code = "N0007"
 )
 
 const (
@@ -68,6 +69,7 @@ const (
 	SymbolExternType
 	SymbolExternFunction
 	SymbolExternBinding
+	SymbolBuiltinType
 )
 
 func (k SymbolKind) String() string {
@@ -100,16 +102,57 @@ func (k SymbolKind) String() string {
 		return "extern function"
 	case SymbolExternBinding:
 		return "extern binding"
+	case SymbolBuiltinType:
+		return "builtin type"
 	default:
 		return "unknown"
 	}
+}
+
+// BuiltinType identifies a predeclared type independently of its spelling.
+// Values deliberately follow the semantic type store's fixed builtin order,
+// but the symbol package does not depend on the types package.
+type BuiltinType uint8
+
+const (
+	BuiltinBool BuiltinType = iota + 1
+	BuiltinChar
+	BuiltinStr
+	BuiltinVoid
+	BuiltinInt
+	BuiltinUint
+	BuiltinI8
+	BuiltinI16
+	BuiltinI32
+	BuiltinI64
+	BuiltinU8
+	BuiltinU16
+	BuiltinU32
+	BuiltinU64
+	BuiltinF32
+	BuiltinF64
+)
+
+var builtinNames = [...]string{
+	BuiltinBool: "bool", BuiltinChar: "char", BuiltinStr: "str", BuiltinVoid: "void",
+	BuiltinInt: "int", BuiltinUint: "uint", BuiltinI8: "i8", BuiltinI16: "i16",
+	BuiltinI32: "i32", BuiltinI64: "i64", BuiltinU8: "u8", BuiltinU16: "u16",
+	BuiltinU32: "u32", BuiltinU64: "u64", BuiltinF32: "f32", BuiltinF64: "f64",
+}
+
+func (b BuiltinType) String() string {
+	if int(b) < len(builtinNames) {
+		return builtinNames[b]
+	}
+	return "unknown"
 }
 
 // ScopeKind describes an authored or declaration environment.
 type ScopeKind uint8
 
 const (
-	ScopeModule ScopeKind = iota + 1
+	ScopePrelude ScopeKind = iota + 1
+	ScopeModule
 	ScopeType
 	ScopeFunction
 	ScopeBlock
@@ -119,6 +162,8 @@ const (
 
 func (k ScopeKind) String() string {
 	switch k {
+	case ScopePrelude:
+		return "prelude"
 	case ScopeModule:
 		return "module"
 	case ScopeType:
@@ -148,6 +193,7 @@ type Symbol struct {
 	Containing   SymbolID
 	ImportTarget ModuleID
 	Generic      bool
+	Builtin      BuiltinType
 	Error        bool
 }
 
@@ -248,12 +294,29 @@ type Capture struct {
 type Result struct {
 	Scopes       *ScopeStore
 	Symbols      *SymbolStore
+	prelude      ScopeID
+	builtins     [BuiltinF64 + 1]SymbolID
 	references   map[SyntaxRef]Resolution
 	qualifiers   map[SyntaxRef]ModuleID
 	brackets     map[SyntaxRef]BracketMode
 	captures     map[SyntaxRef][]SymbolID
 	captureOrder []SyntaxRef
 	members      map[SymbolID][]SymbolID
+}
+
+func (r *Result) Prelude() ScopeID {
+	if r == nil {
+		return 0
+	}
+	return r.prelude
+}
+
+func (r *Result) Builtin(kind BuiltinType) (SymbolID, bool) {
+	if r == nil || kind == 0 || int(kind) >= len(r.builtins) {
+		return 0, false
+	}
+	id := r.builtins[kind]
+	return id, id != 0
 }
 
 func (r *Result) Reference(ref SyntaxRef) (Resolution, bool) {
@@ -304,7 +367,7 @@ func (r *Result) Dump(w io.Writer) error {
 		}
 	}
 	for _, symbol := range r.Symbols.All() {
-		if _, err := fmt.Fprintf(w, "symbol %d %s %q module=%d scope=%d node=%d containing=%d target=%d generic=%t error=%t\n", symbol.ID, symbol.Kind, symbol.Name, symbol.Module, symbol.Scope, symbol.Declaration.Node, symbol.Containing, symbol.ImportTarget, symbol.Generic, symbol.Error); err != nil {
+		if _, err := fmt.Fprintf(w, "symbol %d %s %q module=%d scope=%d node=%d containing=%d target=%d generic=%t builtin=%s error=%t\n", symbol.ID, symbol.Kind, symbol.Name, symbol.Module, symbol.Scope, symbol.Declaration.Node, symbol.Containing, symbol.ImportTarget, symbol.Generic, symbol.Builtin, symbol.Error); err != nil {
 			return err
 		}
 	}

@@ -721,7 +721,7 @@ func validCategory(kind SymbolKind, expected nameContext) bool {
 	return isRuntimeSymbol(kind) || isCallableSymbol(kind)
 }
 func isTypeSymbol(kind SymbolKind) bool {
-	return kind == SymbolType || kind == SymbolExternType || kind == SymbolTypeParameter
+	return kind == SymbolType || kind == SymbolExternType || kind == SymbolTypeParameter || kind == SymbolBuiltinType
 }
 func isCallableSymbol(kind SymbolKind) bool {
 	return kind == SymbolFunction || kind == SymbolExternFunction || kind == SymbolMethod
