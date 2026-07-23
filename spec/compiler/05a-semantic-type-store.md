@@ -164,8 +164,9 @@ public decomposition API.
 The store validates representation, issued child IDs, nonzero declaration
 IDs, configured counts, and total key components. It does not validate source
 legality such as whether an optional payload is permitted, a variadic
-parameter is a slice, or a nominal argument satisfies a requirement. Those
-are resolver, `05b`, phase 6, or phase 7 responsibilities.
+parameter is a slice, or a nominal argument satisfies a requirement. The
+nonempty tuple rule is a key representation invariant and is validated here.
+Other rules are resolver, `05b`, phase 6, or phase 7 responsibilities.
 
 ## Interning
 
@@ -244,9 +245,13 @@ heuristic numeric winner selection.
 - `Slice(T)` is identified by element `T`. Ownership, lifetime, and runtime
   representation are intentionally not identity components because those
   language rules remain open.
-- `Tuple([T0, ...])` is identified by arity, order, and every element. The
-  language currently admits nonempty tuple types; source legality is checked
-  before interning.
+- `Tuple([T0, ...])` is identified by arity, order, and every element. Pebble
+  has no empty tuple type; `void` represents no value. `TupleKey([])` is an
+  invalid key, and `Intern` returns an error matching `ErrInvalidKey` without
+  changing the store. One-element and larger tuples are valid subject to the
+  configured limits. Empty function parameter lists and empty nominal generic
+  argument lists remain independently valid where those constructors permit
+  them.
 - `Optional(T)` is identified by payload `T`.
 - `Function(C, [P0, ...], R, V)` is identified by calling convention, ordered
   parameter types, result, and variadic flag. Supported conventions are
@@ -256,11 +261,28 @@ heuristic numeric winner selection.
   phase-6 open decision; they are nevertheless distinct semantic types under
   the already accepted key in `09`.
 
-The type store has no separate structural struct, union, tagged-union, enum,
-or opaque key. Accepted declared aggregate and external forms are nominal as
-specified below. The parser's ability to represent an aggregate term does not
-grant an anonymous structural semantic type; phase-5 type-syntax resolution
-must diagnose aggregate type syntax that is not the body of a declaration.
+The type store has no structural aggregate `TypeKey` variants. Pebble has no
+anonymous aggregate types. An aggregate body creates semantic identity only
+when it is the direct defining body of a named `TypeDecl`:
+
+```pebble
+type Point = struct { x int; };
+```
+
+This creates `Nominal(PointSymbol, [])`. A bare aggregate is semantically
+invalid as a parameter, result, local annotation, tuple element, generic
+argument, field type, or nested aggregate field. For example, both of these
+must be rejected:
+
+```pebble
+fn use(value struct { x int; }) void { }
+type Outer = struct { inner struct { value int; }; };
+```
+
+The parser may continue producing aggregate syntax nodes in general type
+positions. Syntax acceptance does not imply semantic validity. `05b`
+type-syntax resolution diagnoses invalid anonymous aggregate use with
+source-driven fixtures; `05a` never interns such syntax.
 
 ## Nominal and declared types
 
@@ -327,6 +349,11 @@ to the same ID. Generic declaration aliases preserve the target declaration
 identity, and a concrete alias such as `type Bytes = Vec[u8]` returns the
 existing application ID. Alias cycles are diagnosed by type-syntax resolution
 without interning an unresolved placeholder.
+
+This describes the identity delivered to the store, not work performed by
+`05a`. `05b` owns type-syntax and alias resolution, including alias-chain,
+alias-cycle, generic-alias, and concrete-alias source fixtures. The type store
+must not contain a partial resolver or compatibility helper.
 
 Pebble has no distinct/newtype feature. Adding one would require new syntax and
 a nominal `SymbolID` identity; the C prototype's duplicate objects or declared
@@ -416,6 +443,8 @@ Direct Go structural tests in `compiler/internal/types` are authoritative for:
 - every preinterned primitive being valid, canonical, distinct, and returned
   by `Builtins`;
 - repeated interning of every structural key returning one ID;
+- `TupleKey([])` being rejected with `ErrInvalidKey` without changing `Len`,
+  while one-element and larger tuple keys remain valid within limits;
 - keys differing by tag, child, length, order, arity, convention, variadic
   flag, declaration, or generic argument remaining unequal;
 - forced hash collisions still using complete equality;
@@ -426,7 +455,6 @@ Direct Go structural tests in `compiler/internal/types` are authoritative for:
 - predeclared recursive nominal IDs remaining unchanged after declaration
   metadata is checked elsewhere;
 - generic nominal applications and type parameters using ordered stable IDs;
-- alias targets reusing an ID through a small resolver integration test;
 - the error-type boundary: direct `05a` tests prove there is no error
   builtin/key constructor; eventual `05b` tests prove solver recovery never
   calls `Intern` for its singleton `Error` term;
@@ -440,13 +468,13 @@ Direct Go structural tests in `compiler/internal/types` are authoritative for:
   `go test -race` by the ordinary serialized API tests, not by unsupported
   concurrent mutation tests.
 
-Eventually add source-driven `.peb` fixtures for alias chains, same-spelled
-nominals in different modules, recursive declarations, generic applications,
-all accepted composite spellings, and distinct calling conventions. These
-exercise resolver/checker integration rather than hash-table identity. Do not
-create golden files where direct `TypeID` equality or key assertions are
-clearer. Diagnostic fixtures belong with the phase that rejects the syntax or
-semantic rule, not with `05a`.
+`05b` owns source-driven `.peb` fixtures for bare and nested anonymous
+aggregates, alias chains, alias cycles, generic aliases, and concrete aliases.
+Later resolver/checker suites own source fixtures for same-spelled nominals in
+different modules, recursive declarations, generic applications, accepted
+composite spellings, and calling conventions. None of these fixtures belongs
+to the type-store package. Do not create golden files where direct `TypeID`
+equality or key assertions are clearer.
 
 ## Implementation task and handoff
 
@@ -460,8 +488,8 @@ compiler/internal/types/builtin.go
 compiler/internal/types/*_test.go
 ```
 
-It may add a resolver integration test in the owning semantic package, but it
-must not add compatibility wrappers around prototype `Type *`, a second type
+It must not add a type or alias resolver, resolver integration fixtures,
+compatibility wrappers around prototype `Type *`, a second type
 representation, or production solver/checker code.
 
 Completion requires the exact public contract above; immutable full-key
@@ -479,8 +507,8 @@ Also run `git diff --check` from the repository root. The handoff reports the
 public API, default limits, test-only collision mechanism, files, commands and
 results, commit, and any contract discrepancy found in `05b` or later specs.
 
-No language-contract approval is required before implementing this store:
-transparent aliases, `SymbolID` nominal identity, symbolic parameter identity,
-literal/error exclusion, and function-convention participation are already
-specified by `04b`, `05`, `07`, and `09`. The open compatibility rule between
-calling conventions belongs to phase 6 and must not be inferred by `05a`.
+The nominal-only aggregate rule in this document is accepted language
+behavior, not an implementation choice or open decision. Transparent aliases
+still reuse their resolved target identity, but resolving them belongs to
+`05b`. The open compatibility rule between calling conventions belongs to
+phase 6 and must not be inferred by `05a`.

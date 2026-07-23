@@ -30,16 +30,18 @@ Builtin(kind)
 Pointer(TypeID)
 Slice(TypeID)
 Array(length, TypeID)
-Tuple([TypeID...])
+Tuple([TypeID...], length >= 1)
+Optional(TypeID)
 Function(convention, [TypeID...], return TypeID, variadic)
 Nominal(SymbolID, [TypeID...])
 TypeParameter(SymbolID)
 ```
 
 Equal keys return the same `TypeID`. Hash collisions are resolved with complete
-structural equality. Aliases resolve before interning. Named structs, unions,
-enums, and generic instances use declaration identity plus concrete arguments;
-their field spelling or generated C name is not their identity.
+structural equality. Empty tuple keys are invalid. Aliases resolve before
+interning. All structs, unions, tagged unions, enums, opaque external types,
+and generic nominal instances use declaration identity plus concrete
+arguments; their field spelling or generated C name is not their identity.
 
 Inference variables, literal types, error types used for recovery, and
 unresolved declarations remain outside this store. Interned values are

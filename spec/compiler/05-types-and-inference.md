@@ -6,8 +6,9 @@ Phase 5 is split into two implementation-ready task contracts:
   compilation-owned `TypeID` store, complete semantic keys, and decomposition
   API.
 - `05b Algebraic Inference` will define expression inference variables,
-  equation and capability generation, deterministic unification, worklist
-  solving, literal fitting/defaulting, and error recovery.
+  type-syntax and alias resolution, equation and capability generation,
+  deterministic unification, worklist solving, literal fitting/defaulting,
+  and error recovery.
 
 `05a` is the required foundation for `05b`. The overview below states the
 language-level contract; the task documents own implementation detail.
@@ -21,9 +22,40 @@ Pebble represents:
 - exact-width unsigned integers: `u8`, `u16`, `u32`, `u64`
 - exact-width floating point: `f32` and `f64`
 - `bool`, `char`, `str`, and `void`
-- pointers, arrays, slices, tuples, optionals, functions
-- structs, untagged unions, tagged unions, enums, and opaque external types
+- pointers, arrays, slices, nonempty tuples, optionals, functions
+- nominal structs, untagged unions, tagged unions, enums, and opaque external
+  types
 - generic functions and generic type declarations
+
+## Nominal aggregates
+
+**Required:** Pebble has no anonymous aggregate types. An aggregate body
+creates semantic identity only as the direct defining body of a named
+`TypeDecl`:
+
+```pebble
+type Point = struct { x int; };
+```
+
+This declaration creates `Nominal(PointSymbol, [])`. Structs, unions, tagged
+unions, enums, and opaque external types are nominal. Their fields, variants,
+methods, and layouts are declaration metadata, not structural type identity.
+
+A bare aggregate in any other type position is invalid, including a parameter,
+result, local annotation, tuple element, generic argument, field type, or
+nested aggregate field:
+
+```pebble
+fn use(value struct { x int; }) void { }
+type Outer = struct { inner struct { value int; }; };
+```
+
+The parser may preserve aggregate syntax nodes in these positions. Syntax
+acceptance does not imply semantic validity; `05b` type-syntax resolution
+diagnoses these uses. `05a` has no structural aggregate key.
+
+Pebble also has no empty tuple type. `void` represents no value; tuple types
+contain at least one element.
 
 ## Numeric type meanings
 
@@ -49,10 +81,11 @@ Pebble's convenient numeric names.
 
 ## Type identity
 
-Every semantic type is interned and addressed by `TypeID`. Structural types
-are equal when their canonical components are equal. Named nominal types are
-equal according to an explicit alias/newtype rule; their printed names are not
-their identity.
+Every semantic type is interned and addressed by `TypeID`. Structural
+composites such as pointers, arrays, slices, nonempty tuples, optionals, and
+functions are equal when their canonical components are equal. Nominal types
+are equal according to declaration identity and the explicit alias/newtype
+rule; their printed names are not their identity.
 
 Aliases resolve to an existing type identity. A future distinct/newtype
 feature would create a new nominal identity and must use separate syntax.
