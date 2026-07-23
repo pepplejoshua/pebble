@@ -1,14 +1,5 @@
 fn main() int {
-    return 0;
-}
-
-fn main() int {
     var x = 42;
-    return x;
-}
-
-fn main() int {
-    var x = 10;
     if x > 5 {
         return 1;
     } else {
@@ -16,16 +7,12 @@ fn main() int {
     }
 }
 
-fn main() int {
+type MyInt = int;
+
+fn value() MyInt {
     var i = 0;
     while i < 5 {
         i = i + 1;
     }
     return i;
-}
-
-type MyInt = int;
-
-fn main() MyInt {
-    return 42;
 }

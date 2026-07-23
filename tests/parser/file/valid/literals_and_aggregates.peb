@@ -1,0 +1,19 @@
+type Point = struct {
+    x, y int;
+    fn sum(self *Point) int => self.x + self.y;
+};
+
+type Value = union enum {
+    integer int;
+    empty void;
+    fn is_empty(self *Value) bool => false;
+};
+
+type Color = enum { red, green, blue, };
+
+fn make_point() Point {
+    let identity = fn[T](value T) T => value;
+    let anonymous = .{ x = 1, y = 2 };
+    let explicit = Point.{ x = identity[int](1), y = 2 };
+    return explicit;
+}

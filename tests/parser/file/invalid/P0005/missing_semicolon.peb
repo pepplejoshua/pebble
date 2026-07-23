@@ -1,0 +1,4 @@
+fn main() int {
+    var value = 42
+    return value;
+}

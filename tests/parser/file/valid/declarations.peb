@@ -1,0 +1,19 @@
+import "core/io";
+
+let version str = "1";
+var counter = 0;
+type Pair[T] = struct { left, right T; };
+
+fn inline "C" add[T](left, right T) T => left + right;
+
+fn main() int {
+    return 0;
+}
+
+extern fn clock() int;
+extern "c" {
+    fn puts(value str) int;
+    type FILE;
+    let stdin *FILE;
+    var errno int;
+}

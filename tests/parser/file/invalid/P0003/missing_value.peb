@@ -1,0 +1,4 @@
+fn main() int {
+    var value = ;
+    return value;
+}
