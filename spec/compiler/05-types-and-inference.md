@@ -5,10 +5,10 @@ Phase 5 is split into two implementation-ready task contracts:
 - [05a Semantic Type Store](05a-semantic-type-store.md) defines the immutable,
   compilation-owned `TypeID` store, complete semantic keys, and decomposition
   API.
-- `05b Algebraic Inference` will define expression inference variables,
-  type-syntax and alias resolution, equation and capability generation,
-  deterministic unification, worklist solving, literal fitting/defaulting,
-  and error recovery.
+- [05b Algebraic Inference](05b-algebraic-inference.md) defines expression
+  inference variables, type-syntax and alias resolution, equation and
+  capability generation, deterministic unification, worklist solving,
+  literal fitting/defaulting, generic-call evidence, and error recovery.
 
 `05a` is the required foundation for `05b`. The overview below states the
 language-level contract; the task documents own implementation detail.

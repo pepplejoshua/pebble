@@ -27,6 +27,7 @@ it. Every statement uses one of these labels:
    - [04b Name resolution](04b-name-resolution.md)
 5. [Types and inference](05-types-and-inference.md)
    - [Semantic type store](05a-semantic-type-store.md)
+   - [Algebraic inference](05b-algebraic-inference.md)
 6. [Checking and conversions](06-checking-and-conversions.md)
 7. [Generics](07-generics.md)
 8. [Diagnostics](08-diagnostics.md)
