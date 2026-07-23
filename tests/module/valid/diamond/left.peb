@@ -1,0 +1,2 @@
+import "./shared";
+fn left() int => 1;

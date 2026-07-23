@@ -1,0 +1,3 @@
+import "./broken";
+import "./healthy";
+fn main() int => 0;

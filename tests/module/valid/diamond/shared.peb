@@ -1,0 +1,1 @@
+fn shared() int => 3;

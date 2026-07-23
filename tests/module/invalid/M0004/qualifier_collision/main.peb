@@ -1,0 +1,3 @@
+import "./one/item";
+import "./two/item";
+fn main() int => 0;

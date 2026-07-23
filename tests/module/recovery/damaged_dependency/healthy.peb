@@ -1,0 +1,1 @@
+fn healthy() int => 1;

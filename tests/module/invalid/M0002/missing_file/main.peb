@@ -1,0 +1,2 @@
+import "./missing";
+fn main() int => 0;

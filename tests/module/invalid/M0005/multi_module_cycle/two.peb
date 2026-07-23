@@ -1,0 +1,2 @@
+import "./main";
+fn two() int => 2;

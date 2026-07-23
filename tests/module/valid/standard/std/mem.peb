@@ -1,0 +1,1 @@
+fn allocate(size uint) *void => nil;

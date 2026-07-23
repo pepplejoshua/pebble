@@ -1,0 +1,1 @@
+fn first() int => 1;

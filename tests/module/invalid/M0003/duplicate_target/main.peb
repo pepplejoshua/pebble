@@ -1,0 +1,3 @@
+import "./math";
+import "./dir/../math";
+fn main() int => 0;

@@ -1,0 +1,2 @@
+import "collections/map";
+fn main() int => 0;

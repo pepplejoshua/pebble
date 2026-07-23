@@ -1,0 +1,3 @@
+fn broken( int {
+    return 0;
+}

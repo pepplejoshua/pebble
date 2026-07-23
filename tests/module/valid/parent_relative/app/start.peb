@@ -1,0 +1,2 @@
+import "../shared/math";
+fn start() int => 0;

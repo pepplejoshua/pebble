@@ -1,0 +1,2 @@
+import "./one";
+fn main() int => 0;

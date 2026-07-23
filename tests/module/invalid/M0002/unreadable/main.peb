@@ -1,0 +1,2 @@
+import "./blocked";
+fn main() int => 0;

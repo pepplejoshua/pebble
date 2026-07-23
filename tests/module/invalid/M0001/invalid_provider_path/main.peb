@@ -1,0 +1,2 @@
+import "./bad";
+fn main() int => 0;

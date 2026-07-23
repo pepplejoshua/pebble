@@ -1,0 +1,6 @@
+import "/absolute";
+import "bad\\path";
+import "trailing/";
+import "empty//part";
+import "module.peb";
+fn main() int => 0;
