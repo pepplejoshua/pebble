@@ -72,7 +72,8 @@ func (p *parser) parseTypeArguments(base NodeID) NodeID {
 	}
 	for {
 		children = append(children, p.parseType())
-		if recovered := p.recoverTo("type argument", "expected ',' or ']' after type argument", Comma, RightBracket); recovered != 0 {
+		if recovered := p.recoverTo("type argument", "expected ',' or ']' after type argument",
+			Comma, RightBracket, Semicolon, RightParen, RightBrace, LeftBrace, Assign, FatArrow); recovered != 0 {
 			children = append(children, recovered)
 		}
 		if _, comma := p.take(Comma); !comma {
@@ -119,7 +120,8 @@ func (p *parser) parseFunctionType() NodeID {
 	}
 	for !p.at(RightParen) && !p.at(EOF) {
 		children = append(children, p.parseType())
-		if recovered := p.recoverTo("function parameter type", "expected ',' or ')' after function parameter type", Comma, RightParen); recovered != 0 {
+		if recovered := p.recoverTo("function parameter type", "expected ',' or ')' after function parameter type",
+			Comma, RightParen, Semicolon, RightBrace, LeftBrace, Assign, FatArrow); recovered != 0 {
 			children = append(children, recovered)
 		}
 		if _, comma := p.take(Comma); !comma {
@@ -143,7 +145,8 @@ func (p *parser) parseGroupedType() NodeID {
 		return p.tree.add(Error, source.NewSpan(p.file.ID(), opening.Span.Start, closing.Span.End), EOF, "type")
 	}
 	first := p.parseType()
-	recovered := p.recoverTo("grouped type", "expected ',' or ')' after type", Comma, RightParen)
+	recovered := p.recoverTo("grouped type", "expected ',' or ')' after type",
+		Comma, RightParen, Semicolon, RightBracket, RightBrace, LeftBrace, Assign, FatArrow)
 	if _, comma := p.take(Comma); !comma {
 		closing, missing := p.expect(RightParen, "after grouped type")
 		children := []NodeID{first}
@@ -161,7 +164,8 @@ func (p *parser) parseGroupedType() NodeID {
 	}
 	for !p.at(RightParen) && !p.at(EOF) {
 		children = append(children, p.parseType())
-		if recovered := p.recoverTo("tuple type element", "expected ',' or ')' after tuple type element", Comma, RightParen); recovered != 0 {
+		if recovered := p.recoverTo("tuple type element", "expected ',' or ')' after tuple type element",
+			Comma, RightParen, Semicolon, RightBracket, RightBrace, LeftBrace, Assign, FatArrow); recovered != 0 {
 			children = append(children, recovered)
 		}
 		if _, comma := p.take(Comma); !comma {
@@ -189,7 +193,7 @@ func (p *parser) parseAggregateType(kind NodeKind, memberKind NodeKind, tagged b
 	for !p.at(RightBrace) && !p.at(EOF) {
 		before := p.cursor.index
 		if p.at(KwFn) {
-			children = append(children, p.recoverAggregateMethod())
+			children = append(children, p.parseFunctionDeclaration())
 		} else {
 			children = append(children, p.parseAggregateMember(memberKind))
 		}
@@ -213,7 +217,7 @@ func (p *parser) parseAggregateMember(kind NodeKind) NodeID {
 	}
 	typeNode := p.parseType()
 	children = append(children, typeNode)
-	if recovered := p.recoverTo("aggregate member", "expected ';' after aggregate member", Semicolon, RightBrace); recovered != 0 {
+	if recovered := p.recoverTo("aggregate member", "expected ';' after aggregate member", Semicolon, KwFn, RightBrace); recovered != 0 {
 		children = append(children, recovered)
 	}
 	terminator, missing := p.expect(Semicolon, "after aggregate member")
@@ -221,18 +225,6 @@ func (p *parser) parseAggregateMember(kind NodeKind) NodeID {
 		children = append(children, missing)
 	}
 	return p.tree.add(kind, source.NewSpan(p.file.ID(), start, terminator.Span.End), EOF, "", children...)
-}
-
-func (p *parser) recoverAggregateMethod() NodeID {
-	start := p.current().Span.Start
-	p.report(codeInvalidSyntax, "aggregate methods are implemented in parser Slice 2B", p.current().Span)
-	for !p.at(Semicolon) && !p.at(RightBrace) && !p.at(EOF) {
-		p.cursor.advance()
-	}
-	if p.at(Semicolon) {
-		p.cursor.advance()
-	}
-	return p.tree.add(Error, source.NewSpan(p.file.ID(), start, p.current().Span.Start), EOF, "aggregate field")
 }
 
 func (p *parser) parseUnionType() NodeID {

@@ -6,11 +6,6 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 )
 
-const (
-	sliceHasStart uint32 = 1 << iota
-	sliceHasEnd
-)
-
 func (p *parser) parseExpression() NodeID {
 	if !p.enter() {
 		return p.errorNode("expression", codeNestingLimit, "parser nesting limit exceeded")
@@ -110,7 +105,11 @@ func (p *parser) parsePostfix() NodeID {
 		case LeftBracket:
 			base = p.parseBracketOrSliceSuffix(base)
 		case Dot:
-			base = p.parseMemberSuffix(base)
+			if p.peek(1).Kind == LeftBrace {
+				base = p.parseRecordExpression(base)
+			} else {
+				base = p.parseMemberSuffix(base)
+			}
 		case PathSeparator:
 			base = p.parsePathSuffix(base)
 		case Bang, PlusPlus, MinusMinus:
@@ -150,7 +149,12 @@ func (p *parser) parsePrimary() NodeID {
 		return p.parseArrayExpression()
 	case InterpolationStart:
 		return p.parseInterpolatedString()
+	case KwFn:
+		return p.parseFunctionLiteral()
 	case Dot:
+		if p.peek(1).Kind == LeftBrace {
+			return p.parseRecordExpression(0)
+		}
 		return p.parsePartialMember()
 	default:
 		return p.errorNode("expression", codeExpectedExpression, "expected expression")
@@ -165,7 +169,8 @@ func (p *parser) parseGroupedExpression() NodeID {
 		return p.tree.add(Error, source.NewSpan(p.file.ID(), opening.Span.Start, closing.Span.End), EOF, "expression")
 	}
 	first := p.parseExpression()
-	recovered := p.recoverTo("grouped expression", "expected ',' or ')' after expression", Comma, RightParen)
+	recovered := p.recoverTo("grouped expression", "expected ',' or ')' after expression",
+		Comma, RightParen, Semicolon, RightBracket, RightBrace, Colon, InterpolationExprEnd)
 	if _, comma := p.take(Comma); !comma {
 		closing, missing := p.expect(RightParen, "after grouped expression")
 		children := []NodeID{first}
@@ -185,7 +190,8 @@ func (p *parser) parseGroupedExpression() NodeID {
 	for !p.at(RightParen) && !p.at(EOF) {
 		before := p.cursor.index
 		children = append(children, p.parseExpression())
-		if recovered := p.recoverTo("tuple element", "expected ',' or ')' after tuple element", Comma, RightParen); recovered != 0 {
+		if recovered := p.recoverTo("tuple element", "expected ',' or ')' after tuple element",
+			Comma, RightParen, Semicolon, RightBracket, RightBrace, Colon, InterpolationExprEnd); recovered != 0 {
 			children = append(children, recovered)
 		}
 		if _, comma := p.take(Comma); !comma {
@@ -230,7 +236,8 @@ func (p *parser) parseArrayExpression() NodeID {
 			break
 		}
 		children = append(children, p.parseExpression())
-		if recovered := p.recoverTo("array element", "expected ',' or ']' after array element", Comma, RightBracket); recovered != 0 {
+		if recovered := p.recoverTo("array element", "expected ',' or ']' after array element",
+			Comma, RightBracket, Semicolon, RightParen, RightBrace, Colon, InterpolationExprEnd); recovered != 0 {
 			children = append(children, recovered)
 		}
 	}
@@ -271,9 +278,6 @@ func (p *parser) parseInterpolatedString() NodeID {
 
 func (p *parser) parsePartialMember() NodeID {
 	opening := p.cursor.advance()
-	if p.at(LeftBrace) {
-		return p.errorNode("member name", codeInvalidSyntax, "record literals are implemented in parser Slice 2B")
-	}
 	member := p.parseName("after '.'")
 	return p.tree.add(PartialMemberExpr, source.NewSpan(p.file.ID(), opening.Span.Start, p.nodeSpan(member).End), EOF, "", member)
 }
@@ -283,7 +287,8 @@ func (p *parser) parseCallSuffix(base NodeID) NodeID {
 	children := []NodeID{base}
 	for !p.at(RightParen) && !p.at(EOF) {
 		children = append(children, p.parseExpression())
-		if recovered := p.recoverTo("call argument", "expected ',' or ')' after call argument", Comma, RightParen); recovered != 0 {
+		if recovered := p.recoverTo("call argument", "expected ',' or ')' after call argument",
+			Comma, RightParen, Semicolon, RightBracket, RightBrace, Colon, InterpolationExprEnd); recovered != 0 {
 			children = append(children, recovered)
 		}
 		if _, comma := p.take(Comma); !comma {
@@ -304,7 +309,7 @@ func (p *parser) parseBracketOrSliceSuffix(base NodeID) NodeID {
 		var flags uint32
 		if !p.at(RightBracket) {
 			children = append(children, p.parseExpression())
-			flags |= sliceHasEnd
+			flags |= SliceEndPresent
 		}
 		closing, missing := p.expect(RightBracket, "after slice")
 		if missing != 0 {
@@ -324,14 +329,15 @@ func (p *parser) parseBracketOrSliceSuffix(base NodeID) NodeID {
 
 	first := p.parseSyntaxTerm()
 	children = append(children, first)
-	if recovered := p.recoverTo("bracket argument", "expected ':', ',' or ']' after bracket argument", Colon, Comma, RightBracket); recovered != 0 {
+	if recovered := p.recoverTo("bracket argument", "expected ':', ',' or ']' after bracket argument",
+		Colon, Comma, RightBracket, Semicolon, RightParen, RightBrace, InterpolationExprEnd); recovered != 0 {
 		children = append(children, recovered)
 	}
 	if _, colon := p.take(Colon); colon {
-		flags := sliceHasStart
+		flags := SliceStartPresent
 		if !p.at(RightBracket) {
 			children = append(children, p.parseExpression())
-			flags |= sliceHasEnd
+			flags |= SliceEndPresent
 		}
 		closing, missing := p.expect(RightBracket, "after slice")
 		if missing != 0 {
@@ -347,7 +353,8 @@ func (p *parser) parseBracketOrSliceSuffix(base NodeID) NodeID {
 			break
 		}
 		children = append(children, p.parseSyntaxTerm())
-		if recovered := p.recoverTo("bracket argument", "expected ',' or ']' after bracket argument", Comma, RightBracket); recovered != 0 {
+		if recovered := p.recoverTo("bracket argument", "expected ',' or ']' after bracket argument",
+			Comma, RightBracket, Semicolon, RightParen, RightBrace, Colon, InterpolationExprEnd); recovered != 0 {
 			children = append(children, recovered)
 		}
 	}
@@ -392,10 +399,6 @@ func (p *parser) looksLikeArrayType() bool {
 
 func (p *parser) parseMemberSuffix(base NodeID) NodeID {
 	p.cursor.advance()
-	if p.at(LeftBrace) {
-		bad := p.errorNode("member name", codeInvalidSyntax, "record literals are implemented in parser Slice 2B")
-		return p.tree.add(Error, source.NewSpan(p.file.ID(), p.nodeSpan(base).Start, p.nodeSpan(bad).End), EOF, "record expression", base, bad)
-	}
 	var member NodeID
 	if p.at(IntegerLiteral) {
 		token := p.cursor.advance()
@@ -404,6 +407,71 @@ func (p *parser) parseMemberSuffix(base NodeID) NodeID {
 		member = p.parseName("after '.'")
 	}
 	return p.tree.add(MemberExpr, source.NewSpan(p.file.ID(), p.nodeSpan(base).Start, p.nodeSpan(member).End), EOF, "", base, member)
+}
+
+func (p *parser) parseFunctionLiteral() NodeID {
+	opening := p.cursor.advance()
+	children := p.parseFunctionModifiers()
+	children = append(children, p.parseTypeParameters()...)
+	children = append(children, p.parseFunctionSignature()...)
+	end := p.nodeSpan(children[len(children)-1]).End
+	var flags uint32
+	switch p.current().Kind {
+	case LeftBrace:
+		body := p.parseBlock()
+		children = append(children, body)
+		end = p.nodeSpan(body).End
+		flags = FunctionBodyPresent
+	case FatArrow:
+		p.cursor.advance()
+		body := p.parseExpression()
+		children = append(children, body)
+		end = p.nodeSpan(body).End
+		flags = FunctionBodyPresent | FunctionExpressionBody
+	default:
+		missing := p.missing(Missing, "function literal body", codeExpectedToken, "expected function literal body or '=>' expression")
+		children = append(children, missing)
+		end = p.nodeSpan(missing).End
+	}
+	return p.tree.addData(FunctionTerm, source.NewSpan(p.file.ID(), opening.Span.Start, end), opening.Kind, flags, "", children...)
+}
+
+func (p *parser) parseRecordExpression(base NodeID) NodeID {
+	dot := p.cursor.advance()
+	opening, missingOpening := p.expect(LeftBrace, "before record fields")
+	children := make([]NodeID, 0)
+	start := dot.Span.Start
+	if base != 0 {
+		children = append(children, base)
+		start = p.nodeSpan(base).Start
+	}
+	if missingOpening != 0 {
+		children = append(children, missingOpening)
+	}
+	for !p.at(RightBrace) && !p.at(EOF) {
+		fieldStart := p.current().Span.Start
+		name := p.parseName("in record field")
+		_, missingAssign := p.expect(Assign, "after record field name")
+		value := p.parseExpression()
+		fieldChildren := []NodeID{name}
+		if missingAssign != 0 {
+			fieldChildren = append(fieldChildren, missingAssign)
+		}
+		fieldChildren = append(fieldChildren, value)
+		field := p.tree.add(RecordField, source.NewSpan(p.file.ID(), fieldStart, p.nodeSpan(value).End), EOF, "", fieldChildren...)
+		children = append(children, field)
+		if recovered := p.recoverTo("record field", "expected ',' or '}' after record field", Comma, RightBrace); recovered != 0 {
+			children = append(children, recovered)
+		}
+		if _, comma := p.take(Comma); !comma {
+			break
+		}
+	}
+	closing, missingClosing := p.expect(RightBrace, "after record fields")
+	if missingClosing != 0 {
+		children = append(children, missingClosing)
+	}
+	return p.tree.add(RecordExpr, source.NewSpan(p.file.ID(), start, closing.Span.End), opening.Kind, "", children...)
 }
 
 func (p *parser) parsePathSuffix(base NodeID) NodeID {

@@ -62,6 +62,14 @@ func newParser(file *source.File, diagnostics *diagnostic.DiagnosticSet) *parser
 	}
 }
 
+// Parse parses one complete Pebble source file. It always returns a non-nil
+// tree rooted at File, including for empty or damaged input.
+func Parse(file *source.File, diagnostics *diagnostic.DiagnosticSet) *Tree {
+	p := newParser(file, diagnostics)
+	p.tree.root = p.parseFile()
+	return p.tree
+}
+
 func parseExpressionFragment(file *source.File, diagnostics *diagnostic.DiagnosticSet) *Tree {
 	p := newParser(file, diagnostics)
 	p.tree.root = p.parseExpression()
@@ -187,7 +195,10 @@ func tokenIn(kind TokenKind, choices ...TokenKind) bool {
 
 func isExpressionFollower(kind TokenKind) bool {
 	switch kind {
-	case EOF, Comma, Semicolon, RightParen, RightBracket, RightBrace, InterpolationExprEnd, Colon:
+	case EOF, Comma, Semicolon, RightParen, RightBracket, RightBrace, LeftBrace,
+		InterpolationExprEnd, Colon, FatArrow, Assign, Range, RangeInclusive,
+		KwImport, KwLet, KwVar, KwType, KwExtern, KwReturn, KwIf, KwWhile,
+		KwLoop, KwFor, KwSwitch, KwDefer, KwPrint, KwBreak, KwContinue:
 		return true
 	default:
 		return false

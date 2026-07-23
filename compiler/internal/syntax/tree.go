@@ -17,6 +17,33 @@ type NodeKind uint8
 const (
 	Missing NodeKind = iota + 1
 	Error
+	File
+	EndOfFile
+	ImportDecl
+	BindingDecl
+	TypeDecl
+	FunctionDecl
+	ExternDecl
+	ExternBlock
+	ExternFunction
+	ExternType
+	ExternBinding
+	Parameter
+	TypeParameter
+	BlockStmt
+	ReturnStmt
+	IfStmt
+	WhileStmt
+	RangeLoopStmt
+	ForStmt
+	SwitchStmt
+	SwitchCase
+	DeferStmt
+	PrintStmt
+	BreakStmt
+	ContinueStmt
+	AssignmentStmt
+	ExpressionStmt
 	Name
 	Path
 	Literal
@@ -36,6 +63,8 @@ const (
 	TupleTerm
 	ArrayExpr
 	ArrayRepeatExpr
+	RecordExpr
+	RecordField
 	PartialMemberExpr
 	OptionalType
 	SliceType
@@ -51,6 +80,33 @@ const (
 var nodeKindNames = [...]string{
 	Missing:            "Missing",
 	Error:              "Error",
+	File:               "File",
+	EndOfFile:          "EndOfFile",
+	ImportDecl:         "ImportDecl",
+	BindingDecl:        "BindingDecl",
+	TypeDecl:           "TypeDecl",
+	FunctionDecl:       "FunctionDecl",
+	ExternDecl:         "ExternDecl",
+	ExternBlock:        "ExternBlock",
+	ExternFunction:     "ExternFunction",
+	ExternType:         "ExternType",
+	ExternBinding:      "ExternBinding",
+	Parameter:          "Parameter",
+	TypeParameter:      "TypeParameter",
+	BlockStmt:          "BlockStmt",
+	ReturnStmt:         "ReturnStmt",
+	IfStmt:             "IfStmt",
+	WhileStmt:          "WhileStmt",
+	RangeLoopStmt:      "RangeLoopStmt",
+	ForStmt:            "ForStmt",
+	SwitchStmt:         "SwitchStmt",
+	SwitchCase:         "SwitchCase",
+	DeferStmt:          "DeferStmt",
+	PrintStmt:          "PrintStmt",
+	BreakStmt:          "BreakStmt",
+	ContinueStmt:       "ContinueStmt",
+	AssignmentStmt:     "AssignmentStmt",
+	ExpressionStmt:     "ExpressionStmt",
 	Name:               "Name",
 	Path:               "Path",
 	Literal:            "Literal",
@@ -70,6 +126,8 @@ var nodeKindNames = [...]string{
 	TupleTerm:          "TupleTerm",
 	ArrayExpr:          "ArrayExpr",
 	ArrayRepeatExpr:    "ArrayRepeatExpr",
+	RecordExpr:         "RecordExpr",
+	RecordField:        "RecordField",
 	PartialMemberExpr:  "PartialMemberExpr",
 	OptionalType:       "OptionalType",
 	SliceType:          "SliceType",
@@ -101,17 +159,40 @@ type node struct {
 // Node is an immutable copy of one surface-tree node.
 type Node struct{ value node }
 
+// Kind-specific Data flags used by nodes with optional authored parts.
+const (
+	SliceStartPresent uint32 = 1 << iota
+	SliceEndPresent
+)
+
+const (
+	BindingTypePresent uint32 = 1 << iota
+	BindingInitializerPresent
+)
+
+const (
+	ForInitializerPresent uint32 = 1 << iota
+	ForConditionPresent
+	ForUpdatePresent
+)
+
+const ParameterVariadic uint32 = 1
+
+const (
+	FunctionBodyPresent uint32 = 1 << iota
+	FunctionExpressionBody
+)
+
 func (n Node) Kind() NodeKind    { return n.value.kind }
 func (n Node) Span() source.Span { return n.value.span }
 func (n Node) Token() TokenKind  { return n.value.token }
 
-// Data returns compact kind-specific flags. SliceExpr uses the low two bits
-// for the presence of its start and end expressions.
+// Data returns compact kind-specific flags declared above.
 func (n Node) Data() uint32       { return n.value.data }
 func (n Node) Expected() string   { return n.value.expected }
 func (n Node) Children() []NodeID { return append([]NodeID(nil), n.value.children...) }
 
-// Tree owns all nodes for one parsed source fragment.
+// Tree owns all nodes for one parsed source file or test fragment.
 type Tree struct {
 	source source.ID
 	root   NodeID
@@ -143,6 +224,13 @@ func (t *Tree) addData(kind NodeKind, span source.Span, token TokenKind, data ui
 		children: append([]NodeID(nil), children...),
 	})
 	return NodeID(len(t.nodes))
+}
+
+func (t *Tree) extendTo(id NodeID, end uint32) {
+	if id == 0 || uint64(id) > uint64(len(t.nodes)) || end < t.nodes[id-1].span.End {
+		return
+	}
+	t.nodes[id-1].span.End = end
 }
 
 // Dump writes a stable, source-text-independent representation of the tree.
