@@ -204,7 +204,7 @@ fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
 fn with_capacity[K, V](cap usize, hash_fn fn (K) u64,
                         eq_fn fn (K, K) bool) HashMap[K, V] {
     if cap == 0 {
-        return new.[K, V](hash_fn, eq_fn);
+        return new[K, V](hash_fn, eq_fn);
     }
 
     let allocator = context.default_allocator;

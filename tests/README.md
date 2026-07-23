@@ -24,6 +24,11 @@ exactly one expression or type and are required to reach EOF after it. Some
 cases deliberately differ from the C prototype and are not expected to pass
 it. The Go syntax test runner discovers and executes them automatically.
 
+Complete-file cases live under `tests/parser/file`. The same runner parses the
+standard library and examples as a migration corpus. Files under
+`tests/parser/recovery` assert deterministic damaged-file behavior and that
+later syntax remains reachable.
+
 An ordinary test needs only its `.peb` source file. Optional
 `.stderr.golden`, `.stdout.golden`, or `.tokens.golden` sidecars are reserved
 for cases where exact output matters. A normal test run never rewrites a

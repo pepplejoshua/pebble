@@ -190,7 +190,7 @@ type Vec[T] = struct {
 
     // Return vector of indices where predicate matches.
     fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[usize] {
-        var result = new.[usize]();
+        var result = new[usize]();
         loop 0..self.len : i {
             if predicate(*(self.data + i)) {
                 result.push(i as usize);
@@ -254,7 +254,7 @@ fn new[T]() Vec[T] {
 // Creates a new vector with a specified capacity.
 fn with_capacity[T](cap usize) Vec[T] {
     if cap == 0 {
-        return new.[T]();
+        return new[T]();
     }
 
     let allocator = context.default_allocator;
@@ -286,7 +286,7 @@ type Ordering = enum {
 };
 
 // This cannot be made a method, because of this line:
-// var stack = with_capacity.[(usize, usize)](self.len);  // Estimate stack size
+// var stack = with_capacity[(usize, usize)](self.len);  // Estimate stack size
 // Vec.contains() performs a == comparison, which is not supported for (usize, usize)
 // type and will prevent the creation of that Vec object.
 // I am considering what the right way to handle this is. I am probably going to go the
@@ -298,7 +298,7 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
         return;
     }
     // Use a stack for iterative partitioning
-    var stack = with_capacity.[(usize, usize)](self.len);  // Estimate stack size
+    var stack = with_capacity[(usize, usize)](self.len);  // Estimate stack size
     defer delete(&stack);
     push(&stack, (0 as usize, self.len - 1));
 
@@ -307,7 +307,7 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
         let low = stack_val!.0;
         let high = stack_val!.1;
         if low < high {
-            let pivot_idx = partition.[T](self, low, high, cmp);
+            let pivot_idx = partition[T](self, low, high, cmp);
             // Push right subarray first (for better cache locality)
             if pivot_idx + 1 < high {
                 stack.push((pivot_idx + 1, high));
@@ -365,7 +365,7 @@ fn partition[T](self *Vec[T], low usize, high usize, cmp fn(T, T) Ordering) usiz
 
 // Create vector from slice by copying.
 fn from_slice[T](slice []T) Vec[T] {
-    var v = with_capacity.[T](slice.len);
+    var v = with_capacity[T](slice.len);
     v.push_slice(slice);
     return v;
 }

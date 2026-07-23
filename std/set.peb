@@ -186,7 +186,7 @@ fn new[K](hash_fn fn (K) u64, eq_fn fn (K, K) bool) Set[K] {
 fn with_capacity[K](cap usize, hash_fn fn (K) u64,
                         eq_fn fn (K, K) bool) Set[K] {
     if cap == 0 {
-        return new.[K](hash_fn, eq_fn);
+        return new[K](hash_fn, eq_fn);
     }
 
     let allocator = context.default_allocator;
