@@ -66,13 +66,20 @@ func (r *resolver) resolveTypeDeclaration(ctx walkContext, nodeID syntax.NodeID,
 	}
 	typeCtx := ctx
 	typeCtx.scope = typeScope
+	seenDeclarationName := false
 	for _, childID := range node.Children() {
 		child, ok := ctx.module.Tree.Node(childID)
 		if !ok {
 			continue
 		}
 		switch child.Kind() {
-		case syntax.Name, syntax.TypeParameter, syntax.Missing, syntax.Error:
+		case syntax.Name:
+			if !seenDeclarationName {
+				seenDeclarationName = true
+				continue
+			}
+			r.resolveType(typeCtx, childID)
+		case syntax.TypeParameter, syntax.Missing, syntax.Error:
 			continue
 		case syntax.StructType, syntax.UnionType, syntax.EnumType:
 			r.resolveAggregate(typeCtx, childID, child, r.typeSymbols[ref])
@@ -117,22 +124,31 @@ func (r *resolver) resolveFunctionDeclaration(ctx walkContext, nodeID syntax.Nod
 
 func (r *resolver) resolveFunctionParts(ctx walkContext, node syntax.Node, hasBody bool) {
 	children := node.Children()
-	lastSemantic := syntax.NodeID(0)
-	semantic := semanticNodeIDs(ctx.module.Tree, children)
-	if len(semantic) != 0 {
-		lastSemantic = semantic[len(semantic)-1]
+	body := syntax.NodeID(0)
+	if hasBody && node.Data()&syntax.FunctionBodyPresent != 0 {
+		semantic := semanticNodeIDs(ctx.module.Tree, children)
+		if len(semantic) != 0 {
+			body = semantic[len(semantic)-1]
+		}
 	}
+	seenDeclarationName := node.Kind() == syntax.FunctionTerm
 	for _, childID := range children {
 		child, ok := ctx.module.Tree.Node(childID)
 		if !ok {
 			continue
 		}
-		if hasBody && childID == lastSemantic && child.Kind() != syntax.BlockStmt {
+		if childID == body && node.Data()&syntax.FunctionExpressionBody != 0 {
 			r.resolveExpression(ctx, childID)
 			continue
 		}
 		switch child.Kind() {
-		case syntax.Name, syntax.TypeParameter, syntax.Literal, syntax.Missing, syntax.Error:
+		case syntax.Name:
+			if !seenDeclarationName {
+				seenDeclarationName = true
+				continue
+			}
+			r.resolveType(ctx, childID)
+		case syntax.TypeParameter, syntax.Literal, syntax.Missing, syntax.Error:
 		case syntax.Parameter:
 			parts := semanticNodeIDs(ctx.module.Tree, child.Children())
 			if len(parts) != 0 {

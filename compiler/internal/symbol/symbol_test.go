@@ -174,6 +174,26 @@ func TestBuiltinTypesLiveInReservedPrelude(t *testing.T) {
 	}
 }
 
+func TestDirectAliasBodiesAndFunctionResultsResolveAsTypes(t *testing.T) {
+	text := "type Base = struct {}; type Alias = Base; fn use() Base {}"
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	moduleValue, _ := graph.Module(graph.Root)
+	file, _ := sources.File(moduleValue.Source)
+	refs := namedReferences(t, result, moduleValue, file, "Base")
+	if len(refs) != 2 {
+		t.Fatalf("Base references = %+v, want alias body and function result", refs)
+	}
+	for _, ref := range refs {
+		selected, ok := result.Symbols.Symbol(ref.Symbol)
+		if !ok || ref.State != ResolutionResolved || selected.Kind != SymbolType || selected.Name != "Base" {
+			t.Fatalf("Base reference = %+v, selected = %+v", ref, selected)
+		}
+	}
+}
+
 func TestBuiltinNamesCannotBeRedeclaredAnywhere(t *testing.T) {
 	text := "type int=struct{ bool char; fn str(f32 uint) void {} }; fn f[i8](i16 i32) i64 { let u8=1; { let u16=2; } return 1; }"
 	_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})

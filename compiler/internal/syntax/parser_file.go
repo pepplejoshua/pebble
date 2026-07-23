@@ -159,15 +159,18 @@ func (p *parser) parseFunctionDeclaration() NodeID {
 	children = append(children, p.parseFunctionSignature()...)
 
 	end := p.nodeSpan(children[len(children)-1]).End
+	var flags uint32
 	switch p.current().Kind {
 	case LeftBrace:
 		body := p.parseBlock()
 		children = append(children, body)
 		end = p.nodeSpan(body).End
+		flags = FunctionBodyPresent
 	case FatArrow:
 		p.cursor.advance()
 		body := p.parseExpression()
 		children = append(children, body)
+		flags = FunctionBodyPresent | FunctionExpressionBody
 		terminator, missing := p.expect(Semicolon, "after expression-bodied function")
 		end = terminator.Span.End
 		if missing != 0 {
@@ -178,7 +181,7 @@ func (p *parser) parseFunctionDeclaration() NodeID {
 		children = append(children, missing)
 		end = p.nodeSpan(missing).End
 	}
-	return p.tree.add(FunctionDecl, source.NewSpan(p.file.ID(), opening.Span.Start, end), opening.Kind, "", children...)
+	return p.tree.addData(FunctionDecl, source.NewSpan(p.file.ID(), opening.Span.Start, end), opening.Kind, flags, "", children...)
 }
 
 func (p *parser) parseFunctionModifiers() []NodeID {
