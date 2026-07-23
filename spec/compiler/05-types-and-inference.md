@@ -1,5 +1,17 @@
 # Types and Inference
 
+Phase 5 is split into two implementation-ready task contracts:
+
+- [05a Semantic Type Store](05a-semantic-type-store.md) defines the immutable,
+  compilation-owned `TypeID` store, complete semantic keys, and decomposition
+  API.
+- `05b Algebraic Inference` will define expression inference variables,
+  equation and capability generation, deterministic unification, worklist
+  solving, literal fitting/defaulting, and error recovery.
+
+`05a` is the required foundation for `05b`. The overview below states the
+language-level contract; the task documents own implementation detail.
+
 ## Semantic type universe
 
 Pebble represents:
@@ -127,7 +139,7 @@ type position is one of:
 
 ```text
 Known(TypeID)
-Variable(InferVarID)
+Variable(InferID)
 IntLiteral(value)
 FloatLiteral(value)
 Error
@@ -135,4 +147,7 @@ Error
 
 Only after a position is fully resolved does its structural type enter the
 `TypeStore`. Unresolved placeholders are never interned and an interned type is
-never mutated into a different kind.
+never mutated into a different kind. The `Error` term is solver-owned recovery
+state, not a canonical `TypeID`. See
+[05a Semantic Type Store](05a-semantic-type-store.md) for the exact identity
+and interning boundary.

@@ -14,6 +14,9 @@ queries.
 
 ## Concrete type interning
 
+[05a Semantic Type Store](05a-semantic-type-store.md) is the authoritative
+contract. The shape below is a compact summary, not a second public API.
+
 The concrete `TypeStore` has one predictable operation:
 
 ```text
@@ -30,6 +33,7 @@ Array(length, TypeID)
 Tuple([TypeID...])
 Function(convention, [TypeID...], return TypeID, variadic)
 Nominal(SymbolID, [TypeID...])
+TypeParameter(SymbolID)
 ```
 
 Equal keys return the same `TypeID`. Hash collisions are resolved with complete
