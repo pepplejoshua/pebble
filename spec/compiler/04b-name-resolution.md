@@ -14,7 +14,30 @@ symbol identity inside `04b`.
 
 ## Inputs and outputs
 
-Input:
+The concrete phase entry point is:
+
+```go
+type Config struct {
+    MaxSymbols     uint32
+    MaxScopes      uint32
+    MaxScopeDepth  uint32
+    MaxDiagnostics uint32
+}
+
+func Resolve(
+    graph *module.Graph,
+    sources *source.FileSet,
+    diagnostics *diagnostic.DiagnosticSet,
+    config Config,
+) *Result
+```
+
+`sources` is the same compilation-owned file set passed to `module.Build`.
+The graph's `source.ID` values index that file set; a resolver must not reopen
+files through the host filesystem. Nil or inconsistent inputs produce bounded
+diagnostics rather than a panic.
+
+The logical input relationship is:
 
 ```text
 module.Graph
@@ -43,7 +66,12 @@ type Result struct {
 
 Maps above are conceptual. Public accessors return stable IDs and values in
 deterministic order. The result does not store generated C names or semantic
-`TypeID`s.
+`TypeID`s. The stores and result are owned by one `Result`; no package-global
+current scope or current module participates in resolution.
+
+Zero-valued limits select documented package defaults. Tests may lower every
+limit. At minimum the implementation bounds symbols, scopes, scope depth, and
+name-resolution diagnostics.
 
 ## Stable identities
 
@@ -63,6 +91,11 @@ A symbol records at least:
 - declaration `SyntaxRef`;
 - containing type or function identity when applicable;
 - an error state when collection recovered from damaged syntax.
+
+Ordinary declarations use their declaration node as `SyntaxRef`. An imported
+module qualifier uses the corresponding `ImportDecl` as its declaration
+origin. `04b` pairs an `ImportEdge` with that node by the edge's retained span
+and spelling; it does not ask `04a` to add semantic nodes or mutate the tree.
 
 `SymbolID`, not a pointer, qualified string, or hash-table address, is semantic
 declaration identity.
@@ -161,6 +194,11 @@ Qualified lookup for `module::member`:
 3. Use its `ModuleID` to inspect the target module scope.
 4. Resolve `member` in that module scope.
 
+For a successful qualified reference, `References` maps the authored member
+name to its `SymbolID`, while `Qualifiers` maps the authored qualifier/base
+name to the selected `ModuleID`. The import declaration itself is represented
+by its module-qualifier `SymbolID`; it is not a name reference.
+
 There is no fallback from a failed qualified lookup to the current module.
 With no visibility syntax yet, every successfully collected module-level
 declaration is available through an imported qualifier.
@@ -205,11 +243,15 @@ Initial stable codes:
 | `N0003` | qualifier does not identify an imported module |
 | `N0004` | imported module has no requested member |
 | `N0005` | name resolves to an invalid category for the syntax position |
-| `N0006` | declaration or scope nesting limit |
+| `N0006` | symbol-count, scope-count, scope-depth, or diagnostic limit |
 
 Duplicate diagnostics label both the new and original declaration. Undefined
 and qualified-member diagnostics point at authored reference spans. Resolution
 continues with error identities where doing so prevents cascades.
+
+Parser diagnostics do not forbid resolution of independent valid subtrees or
+modules. Missing and error nodes are skipped or represented with error
+identities as appropriate; malformed trees must not panic the resolver.
 
 ## Source-driven tests
 
@@ -250,6 +292,8 @@ directories. Optional `.symbols.golden`, `.scopes.golden`, or
 
 - Every collected declaration has one deterministic `SymbolID` or explicit
   error identity.
+- The resolver reads authored names from the compilation `source.FileSet` and
+  performs no filesystem I/O.
 - Every created scope has a deterministic `ScopeID` and documented parent.
 - Every resolvable lexical and qualified reference maps to the intended ID.
 - Module declarations support forward references; locals remain sequential.
@@ -261,6 +305,8 @@ directories. Optional `.symbols.golden`, `.scopes.golden`, or
 - Syntax trees and authored names remain unchanged.
 - Source cases cover every rule above.
 - Resolution dumps and diagnostics are deterministic.
+- Configured symbol, scope, depth, and diagnostic limits terminate with
+  bounded output.
 - `go test ./...`, `go test -race ./...`, and `go vet ./...` pass from
   `compiler/`.
 
