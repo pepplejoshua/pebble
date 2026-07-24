@@ -19,7 +19,7 @@ func (s *Session) Solve() *Solution {
 	if s.solved {
 		s.reporter.error(CodeResourceLimit, "inference session is already solved", Origin{})
 		s.reporter.flush()
-		return s.solution
+		return repeatedSolveRecovery(s.token)
 	}
 	if !s.invalid {
 		s.solveOrdinary()
@@ -418,7 +418,12 @@ func (s *Session) finalizeUnresolved(inactive map[InferID]bool) {
 }
 
 func (s *Session) freezeSolution() *Solution {
+	var programIdentity *programToken
+	if s.program != nil {
+		programIdentity = s.program.ensureIdentity()
+	}
 	result := &Solution{
+		programIdentity: programIdentity, solveIdentity: s.token, finalized: true,
 		successful: !s.invalid && !s.failed,
 		symbols:    make(map[symbol.SymbolID]TypeResult), syntax: make(map[symbol.SyntaxRef]TypeResult),
 		requirements: make(map[symbol.SymbolID][]Requirement), instantiations: make(map[symbol.SyntaxRef]Instantiation),
@@ -426,6 +431,7 @@ func (s *Session) freezeSolution() *Solution {
 		slots: make(map[SlotID]TypeResult),
 	}
 	for _, id := range sortedSymbolIDs(s.symbolRoots) {
+		result.manifest.symbols = append(result.manifest.symbols, id)
 		result.symbols[id] = s.termResult(s.symbolRoots[id])
 		if result.symbols[id].State == TypeError {
 			result.successful = false
@@ -437,6 +443,7 @@ func (s *Session) freezeSolution() *Solution {
 	}
 	sort.Slice(refs, func(i, j int) bool { return refLess(refs[i], refs[j]) })
 	for _, ref := range refs {
+		result.manifest.syntax = append(result.manifest.syntax, ref)
 		result.syntax[ref] = s.termResult(s.syntaxRoots[ref])
 		if result.syntax[ref].State == TypeError {
 			result.successful = false
@@ -450,12 +457,22 @@ func (s *Session) freezeSolution() *Solution {
 			return requirementLess(result.requirements[owner][i], result.requirements[owner][j])
 		})
 	}
+	requirementOwners := make([]int, 0, len(result.requirements))
+	for owner := range result.requirements {
+		requirementOwners = append(requirementOwners, int(owner))
+	}
+	sort.Ints(requirementOwners)
+	for _, owner := range requirementOwners {
+		id := symbol.SymbolID(owner)
+		result.manifest.requirements = append(result.manifest.requirements, requirementTableManifest{owner: id, count: uint32(len(result.requirements[id]))})
+	}
 	instRefs := make([]symbol.SyntaxRef, 0, len(s.instantiations))
 	for ref := range s.instantiations {
 		instRefs = append(instRefs, ref)
 	}
 	sort.Slice(instRefs, func(i, j int) bool { return refLess(instRefs[i], instRefs[j]) })
 	for _, ref := range instRefs {
+		result.manifest.instantiations = append(result.manifest.instantiations, ref)
 		published := s.instantiations[ref]
 		arguments := make([]TypeResult, len(published.arguments))
 		for i, term := range published.arguments {
@@ -474,6 +491,7 @@ func (s *Session) freezeSolution() *Solution {
 	}
 	sort.Slice(methodRefs, func(i, j int) bool { return refLess(methodRefs[i], methodRefs[j]) })
 	for _, ref := range methodRefs {
+		result.manifest.methods = append(result.manifest.methods, ref)
 		state := s.methodStates[ref]
 		arguments := make([]TypeResult, len(state.arguments))
 		for i, term := range state.arguments {
@@ -484,8 +502,20 @@ func (s *Session) freezeSolution() *Solution {
 		}
 		result.methods[ref] = MethodSelection{Site: ref, Method: state.method, Arguments: arguments}
 	}
-	for id, selected := range s.selections {
+	selectionIDs := make([]int, 0, len(s.selections))
+	for id := range s.selections {
+		selectionIDs = append(selectionIDs, int(id))
+	}
+	sort.Ints(selectionIDs)
+	for _, rawID := range selectionIDs {
+		id := ConstraintID(rawID)
+		selected := s.selections[id]
 		result.selections[id] = selected
+		alternatives := uint32(0)
+		if id.IsValid() && uint64(id) <= uint64(len(s.constraints)) {
+			alternatives = uint32(len(s.constraints[id-1].value.alternatives))
+		}
+		result.manifest.selections = append(result.manifest.selections, selectionTableManifest{id: id, alternative: selected, alternatives: alternatives})
 	}
 	for _, published := range s.slots {
 		if published.guarded {
@@ -497,9 +527,13 @@ func (s *Session) freezeSolution() *Solution {
 		value := s.termResult(published.term)
 		result.slots[published.id] = value
 		result.orderedSlots = append(result.orderedSlots, SlotType{Slot: published.id, Result: value})
+		result.manifest.slots = append(result.manifest.slots, published.id)
 		if value.State == TypeError {
 			result.successful = false
 		}
+	}
+	if s.program != nil {
+		result.storeLength = s.program.storeLength()
 	}
 	return result
 }

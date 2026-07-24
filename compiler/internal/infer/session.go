@@ -131,6 +131,9 @@ func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config 
 	if program == nil || !program.valid || program.inputs.Types == nil {
 		s.invalid = true
 		s.reporter.error(CodeResourceLimit, "inference session requires a valid prepared program", Origin{})
+	} else if program.ensureIdentity() == nil {
+		s.invalid = true
+		s.reporter.error(CodeResourceLimit, "inference session requires a program identity", Origin{})
 	}
 	return s
 }

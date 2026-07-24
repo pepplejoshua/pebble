@@ -577,8 +577,8 @@ func TestLimitsAndRepeatSolveAreBounded(t *testing.T) {
 	session.Variable(Origin{})
 	first := session.Solve()
 	second := session.Solve()
-	if first != second {
-		t.Fatal("repeated Solve must preserve the frozen solution")
+	if first == second || !first.finalized || second.finalized {
+		t.Fatal("repeated Solve must return a distinct rejected recovery without changing the first solution")
 	}
 	if diagnostics.Len() > 2 || !hasDiagnostic(diagnostics, CodeResourceLimit) {
 		t.Fatalf("bounded diagnostics=%+v", diagnostics.Items())

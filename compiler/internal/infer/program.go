@@ -125,6 +125,7 @@ type RuntimeTypes struct {
 
 type Program struct {
 	storeMu      *sync.Mutex
+	identity     *programToken
 	inputs       ProgramInputs
 	config       Config
 	valid        bool
@@ -168,6 +169,36 @@ func (p *Program) builtins() types.Builtins {
 	p.storeMu.Lock()
 	defer p.storeMu.Unlock()
 	return p.inputs.Types.Builtins()
+}
+
+func (p *Program) storeLength() uint32 {
+	if p == nil || p.inputs.Types == nil {
+		return 0
+	}
+	if p.storeMu == nil {
+		return p.inputs.Types.Len()
+	}
+	p.storeMu.Lock()
+	defer p.storeMu.Unlock()
+	return p.inputs.Types.Len()
+}
+
+func (p *Program) ensureIdentity() *programToken {
+	if p == nil {
+		return nil
+	}
+	if p.storeMu == nil {
+		if p.identity == nil {
+			p.identity = &programToken{}
+		}
+		return p.identity
+	}
+	p.storeMu.Lock()
+	defer p.storeMu.Unlock()
+	if p.identity == nil {
+		p.identity = &programToken{}
+	}
+	return p.identity
 }
 
 func (p *Program) TypeDeclaration(id symbol.SymbolID) (TypeDeclaration, bool) {
@@ -256,7 +287,7 @@ func (p *Program) addTemplate(v TypeTemplate) TemplateID {
 func Prepare(inputs ProgramInputs, diagnostics *diagnostic.DiagnosticSet, config Config) *Program {
 	config = normalizeConfig(config)
 	p := &Program{
-		storeMu: &sync.Mutex{}, inputs: inputs, config: config, valid: true,
+		storeMu: &sync.Mutex{}, identity: &programToken{}, inputs: inputs, config: config, valid: true,
 		declarations: make(map[symbol.SymbolID]TypeDeclaration),
 		signatures:   make(map[symbol.SymbolID]Signature),
 		typeParams:   make(map[symbol.SymbolID]types.TypeID),

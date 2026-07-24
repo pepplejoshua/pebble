@@ -68,16 +68,49 @@ type MethodSelection struct {
 	Arguments []TypeResult
 }
 
+type requirementTableManifest struct {
+	owner symbol.SymbolID
+	count uint32
+}
+
+type selectionTableManifest struct {
+	id           ConstraintID
+	alternative  uint32
+	alternatives uint32
+}
+
+type solutionManifest struct {
+	symbols        []symbol.SymbolID
+	syntax         []symbol.SyntaxRef
+	requirements   []requirementTableManifest
+	instantiations []symbol.SyntaxRef
+	methods        []symbol.SyntaxRef
+	selections     []selectionTableManifest
+	slots          []SlotID
+}
+
 type Solution struct {
-	successful     bool
-	symbols        map[symbol.SymbolID]TypeResult
-	syntax         map[symbol.SyntaxRef]TypeResult
-	requirements   map[symbol.SymbolID][]Requirement
-	instantiations map[symbol.SyntaxRef]Instantiation
-	methods        map[symbol.SyntaxRef]MethodSelection
-	selections     map[ConstraintID]uint32
-	slots          map[SlotID]TypeResult
-	orderedSlots   []SlotType
+	programIdentity *programToken
+	solveIdentity   *sessionToken
+	finalized       bool
+	storeLength     uint32
+	manifest        solutionManifest
+	successful      bool
+	symbols         map[symbol.SymbolID]TypeResult
+	syntax          map[symbol.SyntaxRef]TypeResult
+	requirements    map[symbol.SymbolID][]Requirement
+	instantiations  map[symbol.SyntaxRef]Instantiation
+	methods         map[symbol.SyntaxRef]MethodSelection
+	selections      map[ConstraintID]uint32
+	slots           map[SlotID]TypeResult
+	orderedSlots    []SlotType
+}
+
+// repeatedSolveRecovery is deliberately not finalized. It carries only the
+// solve identity needed for harmless query behavior and cannot be mistaken for
+// the immutable result captured by the first Solve call.
+func repeatedSolveRecovery(identity *sessionToken) *Solution {
+	return &Solution{solveIdentity: identity}
 }
 
 func (r *Solution) Successful() bool { return r != nil && r.successful }
