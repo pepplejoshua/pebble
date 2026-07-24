@@ -18,15 +18,123 @@ type recordHeader struct {
 // slices attach their closed record payloads while retaining this header and
 // component accounting contract.
 type retainedRecord struct {
-	Header   recordHeader
-	Values   []valueID
-	Controls []controlID
+	Header              recordHeader
+	Values              []valueID
+	Controls            []controlID
+	Binding             *bindingRecord
+	Callable            *callableRecord
+	TypeUse             *typeUseRecord
+	ContextFlow         *contextFlowRecord
+	UnsupportedCallable *unsupportedCallableRecord
 }
 
 func cloneRetainedRecord(value retainedRecord) retainedRecord {
 	value.Values = append([]valueID(nil), value.Values...)
 	value.Controls = append([]controlID(nil), value.Controls...)
+	if value.Binding != nil {
+		copy := *value.Binding
+		value.Binding = &copy
+	}
+	if value.Callable != nil {
+		copy := *value.Callable
+		copy.Parameters = append([]valueID(nil), value.Callable.Parameters...)
+		copy.Captures = append([]symbol.SymbolID(nil), value.Callable.Captures...)
+		value.Callable = &copy
+	}
+	if value.TypeUse != nil {
+		copy := *value.TypeUse
+		value.TypeUse = &copy
+	}
+	if value.ContextFlow != nil {
+		copy := *value.ContextFlow
+		value.ContextFlow = &copy
+	}
+	if value.UnsupportedCallable != nil {
+		copy := *value.UnsupportedCallable
+		copy.TypeParameters = append([]symbol.SyntaxRef(nil), value.UnsupportedCallable.TypeParameters...)
+		value.UnsupportedCallable = &copy
+	}
 	return value
+}
+
+func (value *retainedRecord) assignHeader(header recordHeader) {
+	value.Header = header
+	if value.Binding != nil {
+		value.Binding.Header = header
+	}
+	if value.Callable != nil {
+		value.Callable.Header = header
+	}
+	if value.TypeUse != nil {
+		value.TypeUse.Header = header
+	}
+	if value.ContextFlow != nil {
+		value.ContextFlow.Header = header
+	}
+	if value.UnsupportedCallable != nil {
+		value.UnsupportedCallable.Header = header
+	}
+}
+
+func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
+	payloads := 0
+	values := append([]valueID(nil), value.Values...)
+	components := uint64(len(value.Values)) + uint64(len(value.Controls))
+	add := func(ids ...valueID) {
+		for _, id := range ids {
+			if id != 0 {
+				values = append(values, id)
+				components++
+			}
+		}
+	}
+	if value.Binding != nil {
+		payloads++
+		if value.Binding.Header != value.Header || value.Binding.Symbol == 0 || value.Binding.Kind < bindingLocalLet || value.Binding.Kind > bindingRangeIterator || value.Binding.AnnotationPresent != (value.Binding.Annotation != 0) || value.Binding.InitializerPresent != (value.Binding.Initializer != 0) {
+			return nil, 0, false
+		}
+		add(value.Binding.Annotation, value.Binding.Initializer)
+	}
+	if value.Callable != nil {
+		payloads++
+		if value.Callable.Header != value.Header || value.Callable.Kind < callableNamed || value.Callable.Kind > callableLiteral || value.Callable.Result == 0 || (value.Callable.Kind == callableLiteral) != (value.Callable.Expression != 0) || (value.Callable.Kind == callableLiteral) != (value.Callable.Symbol == 0) {
+			return nil, 0, false
+		}
+		add(value.Callable.Expression, value.Callable.Result)
+		for _, id := range value.Callable.Parameters {
+			if id == 0 {
+				return nil, 0, false
+			}
+			add(id)
+		}
+		components += uint64(len(value.Callable.Captures))
+	}
+	if value.TypeUse != nil {
+		payloads++
+		if value.TypeUse.Header != value.Header || value.TypeUse.Kind < typeUseAnnotation || value.TypeUse.Kind > typeUseExplicitArgument || value.TypeUse.Type == 0 {
+			return nil, 0, false
+		}
+		add(value.TypeUse.Type)
+	}
+	if value.ContextFlow != nil {
+		payloads++
+		zeroSuppressedExpression := value.ContextFlow.Kind == contextExpression && value.ContextFlow.Header.Suppressed && value.ContextFlow.Context == 0 && value.ContextFlow.Callee == 0
+		if value.ContextFlow.Header != value.Header || value.ContextFlow.Kind < contextExpression || value.ContextFlow.Kind > contextIndirect || (value.ContextFlow.Context == 0 && !zeroSuppressedExpression) {
+			return nil, 0, false
+		}
+		add(value.ContextFlow.Callee)
+	}
+	if value.UnsupportedCallable != nil {
+		payloads++
+		if value.UnsupportedCallable.Header != value.Header || len(value.UnsupportedCallable.TypeParameters) == 0 {
+			return nil, 0, false
+		}
+		components += uint64(len(value.UnsupportedCallable.TypeParameters))
+	}
+	if payloads > 1 {
+		return nil, 0, false
+	}
+	return values, components, true
 }
 
 type recordArena struct {
@@ -38,11 +146,14 @@ func (a *recordArena) append(value retainedRecord, validValue func(valueID) bool
 	if a == nil || value.Header.ID != 0 || !value.Header.Alternative.valid() || uint64(len(a.values)) >= uint64(maxRecords) {
 		return 0, false
 	}
-	components := uint64(len(value.Values)) + uint64(len(value.Controls))
+	values, components, validPayload := value.payloadResources()
+	if !validPayload {
+		return 0, false
+	}
 	if components > uint64(maxComponents) || a.components > uint64(maxComponents)-components {
 		return 0, false
 	}
-	for _, id := range value.Values {
+	for _, id := range values {
 		if !validValue(id) {
 			return 0, false
 		}
@@ -54,7 +165,9 @@ func (a *recordArena) append(value retainedRecord, validValue func(valueID) bool
 	}
 
 	id := recordID(len(a.values) + 1)
-	value.Header.ID = id
+	header := value.Header
+	header.ID = id
+	value.assignHeader(header)
 	value = cloneRetainedRecord(value)
 	a.values = append(a.values, value)
 	a.components += components

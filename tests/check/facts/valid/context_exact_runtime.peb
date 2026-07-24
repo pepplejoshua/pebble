@@ -1,0 +1,3 @@
+fn current_context() void {
+    context;
+}

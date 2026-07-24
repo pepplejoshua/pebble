@@ -1,0 +1,2 @@
+let global i32 = 1;
+let reads_global = fn() i32 => global;

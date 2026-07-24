@@ -1,0 +1,4 @@
+fn recover() void {
+    let damaged;
+    let valid i32 = 1;
+}

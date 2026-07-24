@@ -156,6 +156,51 @@ func (g *generation) addRecord(value retainedRecord) (recordID, bool) {
 		g.report("semantic record contains an invalid or foreign header", value.Header.Span)
 		return 0, false
 	}
+	if value.Binding != nil && !g.validSymbol(value.Binding.Symbol) {
+		g.report("binding record contains an invalid or foreign symbol", value.Header.Span)
+		return 0, false
+	}
+	if value.Callable != nil {
+		if value.Callable.Symbol != 0 && !g.validSymbol(value.Callable.Symbol) {
+			g.report("callable record contains an invalid or foreign symbol", value.Header.Span)
+			return 0, false
+		}
+		for _, capture := range value.Callable.Captures {
+			if !g.validSymbol(capture) {
+				g.report("callable record contains an invalid or foreign capture", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
+	if value.UnsupportedCallable != nil {
+		for _, parameter := range value.UnsupportedCallable.TypeParameters {
+			if !g.validSyntax(parameter) {
+				g.report("unsupported callable record contains invalid type-parameter syntax", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
+	if value.ContextFlow != nil {
+		zeroSuppressedExpression := value.ContextFlow.Kind == contextExpression && value.ContextFlow.Header.Suppressed && value.ContextFlow.Context == 0 && value.ContextFlow.Callee == 0
+		if value.ContextFlow.Context == 0 && !zeroSuppressedExpression {
+			g.report("context-flow record contains an invalid zero runtime type", value.Header.Span)
+			return 0, false
+		}
+		if value.ContextFlow.Context != 0 {
+			if _, ok := g.inputs.Types.Key(value.ContextFlow.Context); !ok {
+				g.report("context-flow record contains a foreign runtime type", value.Header.Span)
+				return 0, false
+			}
+		}
+		if value.ContextFlow.Caller.Symbol != 0 && !g.validSymbol(value.ContextFlow.Caller.Symbol) {
+			g.report("context-flow record contains an invalid caller", value.Header.Span)
+			return 0, false
+		}
+		if value.ContextFlow.Caller.Syntax != (symbol.SyntaxRef{}) && !g.validSyntax(value.ContextFlow.Caller.Syntax) {
+			g.report("context-flow record contains invalid caller syntax", value.Header.Span)
+			return 0, false
+		}
+	}
 	id, ok := g.records.append(value, g.hasValue, g.hasControl, g.config.MaxSemanticRecords, g.config.MaxRecordComponents)
 	if !ok {
 		g.report("invalid, foreign, or over-limit semantic record", value.Header.Span)
@@ -388,44 +433,57 @@ func (g *generation) validRecordSpan(ref symbol.SyntaxRef, span source.Span) boo
 }
 
 type generationReporter struct {
-	set      *diagnostic.DiagnosticSet
-	max      uint32
-	items    []diagnostic.Diagnostic
-	emitted  uint32
-	overflow bool
+	budget *generationDiagnosticBudget
 }
 
 func newGenerationReporter(set *diagnostic.DiagnosticSet, max uint32) *generationReporter {
-	return &generationReporter{set: set, max: max}
+	return &generationReporter{budget: newGenerationDiagnosticBudget(set, max)}
 }
 
 func (r *generationReporter) add(value diagnostic.Diagnostic) {
-	if r == nil || r.emitted >= r.max {
-		return
+	if r != nil {
+		r.budget.add(value)
 	}
-	if r.emitted+uint32(len(r.items)) < r.max {
-		r.items = append(r.items, value)
-		return
-	}
-	r.overflow = true
 }
 
-func (r *generationReporter) flush() {
-	if r == nil || r.set == nil {
-		return
+func (r *generationReporter) flush() {}
+
+type generationDiagnosticBudget struct {
+	set           *diagnostic.DiagnosticSet
+	max           uint32
+	count         uint32
+	lastIndex     int
+	lastPrimary   diagnostic.Label
+	hasDiagnostic bool
+	overflow      bool
+}
+
+func newGenerationDiagnosticBudget(set *diagnostic.DiagnosticSet, max uint32) *generationDiagnosticBudget {
+	if set == nil {
+		set = diagnostic.NewDiagnosticSet()
 	}
-	if r.overflow && len(r.items) != 0 {
-		last := len(r.items) - 1
-		r.items[last] = diagnostic.Diagnostic{
-			Severity: diagnostic.Error, Code: CodeGeneration,
-			Message: fmt.Sprintf("generation diagnostic limit of %d reached", r.max),
-			Primary: r.items[last].Primary,
+	return &generationDiagnosticBudget{set: set, max: max, lastIndex: -1}
+}
+
+func (b *generationDiagnosticBudget) add(value diagnostic.Diagnostic) bool {
+	if b == nil || b.overflow {
+		return false
+	}
+	if b.count >= b.max {
+		if b.hasDiagnostic {
+			b.set.Replace(b.lastIndex, diagnostic.Diagnostic{
+				Severity: diagnostic.Error, Code: CodeGeneration,
+				Message: fmt.Sprintf("generation diagnostic limit of %d reached", b.max),
+				Primary: b.lastPrimary,
+			})
 		}
+		b.overflow = true
+		return false
 	}
-	for _, value := range r.items {
-		r.set.Add(value)
-	}
-	r.emitted += uint32(len(r.items))
-	r.items = nil
-	r.overflow = false
+	b.lastIndex = b.set.Len()
+	b.lastPrimary = value.Primary
+	b.set.Add(value)
+	b.hasDiagnostic = true
+	b.count++
+	return true
 }

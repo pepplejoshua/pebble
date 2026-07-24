@@ -85,12 +85,8 @@ type constantEvaluator struct {
 	active      []symbol.SymbolID
 	activeIndex map[symbol.SymbolID]int
 
-	operations      uint64
-	diagnosticCount uint32
-	lastDiagnostic  int
-	lastDiagSpan    source.Span
-	hasDiagnostic   bool
-	diagnosticsFull bool
+	operations uint64
+	budget     *generationDiagnosticBudget
 }
 
 type constantDepth struct {
@@ -112,6 +108,10 @@ type constantFrame struct {
 }
 
 func newConstantEvaluator(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config) *constantEvaluator {
+	return newConstantEvaluatorWithBudget(inputs, diagnostics, config, nil)
+}
+
+func newConstantEvaluatorWithBudget(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config, budget *generationDiagnosticBudget) *constantEvaluator {
 	if diagnostics == nil {
 		diagnostics = diagnostic.NewDiagnosticSet()
 	}
@@ -123,6 +123,10 @@ func newConstantEvaluator(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, 
 		arrayMemo: make(map[symbol.SyntaxRef]infer.ArrayLengthResult), symbolColor: make(map[symbol.SymbolID]memoColor),
 		symbolMemo: make(map[symbol.SymbolID]constantResult), activeIndex: make(map[symbol.SymbolID]int),
 	}
+	if budget == nil {
+		budget = newGenerationDiagnosticBudget(diagnostics, config.MaxDiagnostics)
+	}
+	e.budget = budget
 	if inputs.Graph == nil || inputs.Sources == nil || inputs.Resolution == nil || inputs.Resolution.Symbols == nil || inputs.Resolution.Scopes == nil {
 		return e
 	}
@@ -950,7 +954,7 @@ func (e *constantEvaluator) failure(ref symbol.SyntaxRef, message string) consta
 }
 
 func (e *constantEvaluator) report(ref symbol.SyntaxRef, message string) bool {
-	if e == nil || e.diagnosticsFull {
+	if e == nil {
 		return false
 	}
 	node, ok := e.node(ref)
@@ -958,24 +962,12 @@ func (e *constantEvaluator) report(ref symbol.SyntaxRef, message string) bool {
 		return false
 	}
 	span := node.Span()
-	if e.diagnosticCount >= e.config.MaxDiagnostics {
-		if e.hasDiagnostic {
-			e.diagnostics.Replace(e.lastDiagnostic, diagnostic.Diagnostic{
-				Severity: diagnostic.Error,
-				Code:     CodeGeneration,
-				Message:  fmt.Sprintf("generation diagnostic limit of %d reached", e.config.MaxDiagnostics),
-				Primary:  diagnostic.Label{Span: e.lastDiagSpan},
-			})
-		}
-		e.diagnosticsFull = true
-		return false
-	}
-	e.lastDiagnostic = e.diagnostics.Len()
-	e.lastDiagSpan = span
-	e.diagnostics.Error(CodeInvalidConstant, message, span)
-	e.hasDiagnostic = true
-	e.diagnosticCount++
-	return true
+	return e.budget.add(diagnostic.Diagnostic{
+		Severity: diagnostic.Error,
+		Code:     CodeInvalidConstant,
+		Message:  message,
+		Primary:  diagnostic.Label{Span: span},
+	})
 }
 
 func (e *constantEvaluator) node(ref symbol.SyntaxRef) (syntax.Node, bool) {
