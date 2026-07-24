@@ -72,7 +72,7 @@ func (p *parser) parseImportDeclaration() NodeID {
 	children := make([]NodeID, 0, 2)
 	if p.at(StringLiteral) {
 		token := p.cursor.advance()
-		children = append(children, p.tree.add(Literal, token.Span, token.Kind, ""))
+		children = append(children, p.literal(token))
 	} else if isDeclarationStart(p.current().Kind) || p.at(EOF) {
 		children = append(children, p.missing(Missing, "import path", codeInvalidSyntax, "expected string literal after 'import'"))
 	} else {
@@ -188,11 +188,11 @@ func (p *parser) parseFunctionModifiers() []NodeID {
 	children := make([]NodeID, 0, 2)
 	if p.at(KwInline) {
 		token := p.cursor.advance()
-		children = append(children, p.tree.add(Literal, token.Span, token.Kind, ""))
+		children = append(children, p.literal(token))
 	}
 	if p.at(StringLiteral) {
 		token := p.cursor.advance()
-		children = append(children, p.tree.add(Literal, token.Span, token.Kind, ""))
+		children = append(children, p.literal(token))
 	}
 	return children
 }
@@ -249,7 +249,7 @@ func (p *parser) parseExternDeclaration() NodeID {
 	children := make([]NodeID, 0)
 	if p.at(StringLiteral) {
 		token := p.cursor.advance()
-		children = append(children, p.tree.add(Literal, token.Span, token.Kind, ""))
+		children = append(children, p.literal(token))
 	}
 	if p.at(LeftBrace) {
 		children = append(children, p.parseExternBlock())

@@ -11,6 +11,25 @@ import (
 // NodeID identifies a node owned by one Tree. Zero is always invalid.
 type NodeID uint32
 
+// DecodedLiteralKind identifies the validated lexer value retained by a
+// literal surface-tree node.
+type DecodedLiteralKind uint8
+
+const (
+	DecodedCharacter DecodedLiteralKind = iota + 1
+	DecodedString
+	DecodedInterpolationText
+)
+
+// DecodedLiteral is the immutable decoded value of a character, ordinary
+// string, or interpolated-string text node. The original spelling remains
+// available through the node's source span.
+type DecodedLiteral struct {
+	Kind DecodedLiteralKind
+	Rune rune
+	Text string
+}
+
 // NodeKind identifies a surface-tree node without assigning semantic meaning.
 type NodeKind uint8
 
@@ -152,6 +171,7 @@ type node struct {
 	span     source.Span
 	token    TokenKind
 	data     uint32
+	decoded  DecodedLiteral
 	expected string
 	children []NodeID
 }
@@ -186,6 +206,23 @@ const (
 func (n Node) Kind() NodeKind    { return n.value.kind }
 func (n Node) Span() source.Span { return n.value.span }
 func (n Node) Token() TokenKind  { return n.value.token }
+
+// DecodedLiteral returns the validated decoded value retained for character,
+// ordinary-string, and interpolation-text literal nodes. Other nodes and
+// recovery nodes have no decoded literal.
+func (n Node) DecodedLiteral() (DecodedLiteral, bool) {
+	decoded := n.value.decoded
+	switch {
+	case n.value.kind == Literal && n.value.token == CharacterLiteral && decoded.Kind == DecodedCharacter:
+		return decoded, true
+	case n.value.kind == Literal && n.value.token == StringLiteral && decoded.Kind == DecodedString:
+		return decoded, true
+	case n.value.kind == Literal && n.value.token == InterpolationText && decoded.Kind == DecodedInterpolationText:
+		return decoded, true
+	default:
+		return DecodedLiteral{}, false
+	}
+}
 
 // Data returns compact kind-specific flags declared above.
 func (n Node) Data() uint32       { return n.value.data }
@@ -222,6 +259,14 @@ func (t *Tree) addData(kind NodeKind, span source.Span, token TokenKind, data ui
 	t.nodes = append(t.nodes, node{
 		kind: kind, span: span, token: token, data: data, expected: expected,
 		children: append([]NodeID(nil), children...),
+	})
+	return NodeID(len(t.nodes))
+}
+
+func (t *Tree) addDecodedLiteral(span source.Span, token TokenKind, decoded tokenDecodedLiteral) NodeID {
+	t.nodes = append(t.nodes, node{
+		kind: Literal, span: span, token: token,
+		decoded: DecodedLiteral{Kind: decoded.kind, Rune: decoded.rune, Text: decoded.text},
 	})
 	return NodeID(len(t.nodes))
 }

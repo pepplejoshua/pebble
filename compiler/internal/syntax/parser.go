@@ -147,6 +147,13 @@ func (p *parser) missing(kind NodeKind, expected string, code diagnostic.Code, m
 	return p.tree.add(kind, span, EOF, expected)
 }
 
+func (p *parser) literal(token Token) NodeID {
+	if token.decoded.kind != 0 {
+		return p.tree.addDecodedLiteral(token.Span, token.Kind, token.decoded)
+	}
+	return p.tree.add(Literal, token.Span, token.Kind, "")
+}
+
 func (p *parser) expect(kind TokenKind, context string) (Token, NodeID) {
 	if token, ok := p.take(kind); ok {
 		return token, 0

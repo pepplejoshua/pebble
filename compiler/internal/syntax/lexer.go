@@ -3,6 +3,7 @@ package syntax
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
@@ -300,21 +301,33 @@ func (l *Lexer) scanDecimalSequence() {
 }
 
 func (l *Lexer) lexString(start uint32) Token {
+	var decoded strings.Builder
 	for !l.atEnd() {
 		switch l.peek(0) {
 		case '"':
 			l.offset++
-			return l.token(StringLiteral, start, l.offset)
+			return l.decodedToken(StringLiteral, start, l.offset, tokenDecodedLiteral{
+				kind: DecodedString,
+				text: decoded.String(),
+			})
 		case '\n', '\r':
 			return l.invalid(start, l.offset, codeMalformedStringLiteral, "ordinary strings cannot contain a physical line ending")
 		case '\\':
-			if ok, message := l.consumeEscape(false); !ok {
+			escape, ok, message := l.consumeEscape(false)
+			if !ok {
 				l.recoverQuoted('"')
 				return l.invalid(start, l.offset, codeInvalidEscapeSequence, message)
 			}
+			if escape.byteValue {
+				decoded.WriteByte(byte(escape.value))
+			} else {
+				decoded.WriteRune(escape.value)
+			}
 		default:
+			previous := l.offset
 			_, size := utf8.DecodeRune(l.text[l.offset:])
 			l.offset += uint32(size)
+			decoded.Write(l.text[previous:l.offset])
 		}
 	}
 	return l.invalid(start, l.offset, codeMalformedStringLiteral, "unterminated string literal")
@@ -329,14 +342,18 @@ func (l *Lexer) lexCharacter(start uint32) Token {
 		return l.invalid(start, l.offset, codeInvalidCharacterLiteral, "character literal cannot be empty")
 	}
 
+	var decoded rune
 	if l.peek(0) == '\\' {
-		if ok, message := l.consumeEscape(false); !ok {
+		escape, ok, message := l.consumeEscape(false)
+		if !ok {
 			l.recoverQuoted('\'')
 			return l.invalid(start, l.offset, codeInvalidEscapeSequence, message)
 		}
+		decoded = escape.value
 	} else {
-		_, size := utf8.DecodeRune(l.text[l.offset:])
+		value, size := utf8.DecodeRune(l.text[l.offset:])
 		l.offset += uint32(size)
+		decoded = value
 	}
 
 	if l.peek(0) != '\'' {
@@ -344,11 +361,15 @@ func (l *Lexer) lexCharacter(start uint32) Token {
 		return l.invalid(start, l.offset, codeInvalidCharacterLiteral, "character literal must contain exactly one Unicode scalar")
 	}
 	l.offset++
-	return l.token(CharacterLiteral, start, l.offset)
+	return l.decodedToken(CharacterLiteral, start, l.offset, tokenDecodedLiteral{
+		kind: DecodedCharacter,
+		rune: decoded,
+	})
 }
 
 func (l *Lexer) lexInterpolatedText() Token {
 	start := l.offset
+	var decoded strings.Builder
 	if l.atEnd() {
 		opening := l.topMode().opening
 		l.resetModes()
@@ -372,14 +393,25 @@ func (l *Lexer) lexInterpolatedText() Token {
 	for !l.atEnd() {
 		switch l.peek(0) {
 		case '`', '{':
-			return l.token(InterpolationText, start, l.offset)
+			return l.decodedToken(InterpolationText, start, l.offset, tokenDecodedLiteral{
+				kind: DecodedInterpolationText,
+				text: decoded.String(),
+			})
 		case '\\':
-			if ok, message := l.consumeEscape(true); !ok {
+			escape, ok, message := l.consumeEscape(true)
+			if !ok {
 				return l.invalid(start, l.offset, codeInvalidEscapeSequence, message)
 			}
+			if escape.byteValue {
+				decoded.WriteByte(byte(escape.value))
+			} else {
+				decoded.WriteRune(escape.value)
+			}
 		default:
+			previous := l.offset
 			_, size := utf8.DecodeRune(l.text[l.offset:])
 			l.offset += uint32(size)
+			decoded.Write(l.text[previous:l.offset])
 		}
 	}
 
@@ -388,40 +420,55 @@ func (l *Lexer) lexInterpolatedText() Token {
 	return l.invalid(opening, l.offset, codeUnterminatedInterpolatedString, "unterminated interpolated string")
 }
 
-func (l *Lexer) consumeEscape(interpolation bool) (bool, string) {
+type decodedEscape struct {
+	value     rune
+	byteValue bool
+}
+
+func (l *Lexer) consumeEscape(interpolation bool) (decodedEscape, bool, string) {
 	l.offset++ // backslash
 	if l.atEnd() || isLineEnding(l.peek(0)) {
-		return false, "unterminated escape sequence"
+		return decodedEscape{}, false, "unterminated escape sequence"
 	}
 
 	escape := l.peek(0)
 	l.offset++
 	switch escape {
-	case '\\', '"', '\'', 'n', 'r', 't', '0':
-		return true, ""
+	case '\\', '"', '\'':
+		return decodedEscape{value: rune(escape)}, true, ""
+	case 'n':
+		return decodedEscape{value: '\n'}, true, ""
+	case 'r':
+		return decodedEscape{value: '\r'}, true, ""
+	case 't':
+		return decodedEscape{value: '\t'}, true, ""
+	case '0':
+		return decodedEscape{value: 0}, true, ""
 	case '{', '`':
 		if interpolation {
-			return true, ""
+			return decodedEscape{value: rune(escape)}, true, ""
 		}
-		return false, fmt.Sprintf("unknown escape sequence \\%c", escape)
+		return decodedEscape{}, false, fmt.Sprintf("unknown escape sequence \\%c", escape)
 	case 'x':
+		value := rune(0)
 		for range 2 {
 			if !isHexDigit(l.peek(0)) {
-				return false, "byte escape requires exactly two hexadecimal digits"
+				return decodedEscape{}, false, "byte escape requires exactly two hexadecimal digits"
 			}
+			value = value*16 + hexValue(l.peek(0))
 			l.offset++
 		}
-		return true, ""
+		return decodedEscape{value: value, byteValue: true}, true, ""
 	case 'u':
 		return l.consumeUnicodeEscape()
 	default:
-		return false, fmt.Sprintf("unknown escape sequence \\%c", escape)
+		return decodedEscape{}, false, fmt.Sprintf("unknown escape sequence \\%c", escape)
 	}
 }
 
-func (l *Lexer) consumeUnicodeEscape() (bool, string) {
+func (l *Lexer) consumeUnicodeEscape() (decodedEscape, bool, string) {
 	if !l.take('{') {
-		return false, "Unicode escape requires '{' after \\u"
+		return decodedEscape{}, false, "Unicode escape requires '{' after \\u"
 	}
 	digitsStart := l.offset
 	for isHexDigit(l.peek(0)) {
@@ -433,16 +480,16 @@ func (l *Lexer) consumeUnicodeEscape() (bool, string) {
 			l.offset++
 		}
 		l.take('}')
-		return false, "Unicode escape must end with '}'"
+		return decodedEscape{}, false, "Unicode escape must end with '}'"
 	}
 	if digitCount == 0 || digitCount > 6 {
-		return false, "Unicode escape requires one through six hexadecimal digits"
+		return decodedEscape{}, false, "Unicode escape requires one through six hexadecimal digits"
 	}
 	value, _ := strconv.ParseUint(string(l.text[digitsStart:digitsStart+digitCount]), 16, 32)
 	if value > utf8.MaxRune || value >= 0xd800 && value <= 0xdfff {
-		return false, "Unicode escape is not a valid scalar value"
+		return decodedEscape{}, false, "Unicode escape is not a valid scalar value"
 	}
-	return true, ""
+	return decodedEscape{value: rune(value)}, true, ""
 }
 
 func (l *Lexer) recoverQuoted(delimiter byte) {
@@ -476,6 +523,10 @@ func (l *Lexer) skipWhitespaceAndComments() {
 
 func (l *Lexer) token(kind TokenKind, start, end uint32) Token {
 	return Token{Kind: kind, Span: source.NewSpan(l.file.ID(), start, end)}
+}
+
+func (l *Lexer) decodedToken(kind TokenKind, start, end uint32, decoded tokenDecodedLiteral) Token {
+	return Token{Kind: kind, Span: source.NewSpan(l.file.ID(), start, end), decoded: decoded}
 }
 
 func (l *Lexer) invalid(start, end uint32, code diagnostic.Code, message string) Token {
@@ -528,6 +579,17 @@ func validSeparatedDigits(text []byte, validDigit func(byte) bool) bool {
 }
 
 func isIdentifierStart(b byte) bool { return isASCIILetter(b) || b == '_' }
+
+func hexValue(b byte) rune {
+	switch {
+	case b >= '0' && b <= '9':
+		return rune(b - '0')
+	case b >= 'a' && b <= 'f':
+		return rune(b-'a') + 10
+	default:
+		return rune(b-'A') + 10
+	}
+}
 
 func isIdentifierContinue(b byte) bool { return isIdentifierStart(b) || isDecimalDigit(b) }
 

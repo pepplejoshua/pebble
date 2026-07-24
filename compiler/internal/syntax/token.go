@@ -195,6 +195,15 @@ func (k TokenKind) String() string {
 
 // Token references its spelling through an immutable source span.
 type Token struct {
-	Kind TokenKind
-	Span source.Span
+	Kind    TokenKind
+	Span    source.Span
+	decoded tokenDecodedLiteral
+}
+
+// tokenDecodedLiteral is the package-private lexer-to-parser transfer payload.
+// Its strings are immutable values and never expose lexer storage.
+type tokenDecodedLiteral struct {
+	kind DecodedLiteralKind
+	rune rune
+	text string
 }

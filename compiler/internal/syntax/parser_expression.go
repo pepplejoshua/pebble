@@ -131,7 +131,7 @@ func (p *parser) parsePrimary() NodeID {
 		return p.tree.add(Name, token.Span, token.Kind, "")
 	case IntegerLiteral, FloatLiteral, StringLiteral, CharacterLiteral, KwTrue, KwFalse, KwNil, KwNone:
 		p.cursor.advance()
-		return p.tree.add(Literal, token.Span, token.Kind, "")
+		return p.literal(token)
 	case KwContext:
 		p.cursor.advance()
 		return p.tree.add(ContextExpr, token.Span, token.Kind, "")
@@ -255,7 +255,7 @@ func (p *parser) parseInterpolatedString() NodeID {
 		switch p.current().Kind {
 		case InterpolationText:
 			token := p.cursor.advance()
-			children = append(children, p.tree.add(Literal, token.Span, token.Kind, ""))
+			children = append(children, p.literal(token))
 		case InterpolationExprStart:
 			p.cursor.advance()
 			children = append(children, p.parseExpression())
@@ -402,7 +402,7 @@ func (p *parser) parseMemberSuffix(base NodeID) NodeID {
 	var member NodeID
 	if p.at(IntegerLiteral) {
 		token := p.cursor.advance()
-		member = p.tree.add(Literal, token.Span, token.Kind, "")
+		member = p.literal(token)
 	} else {
 		member = p.parseName("after '.'")
 	}

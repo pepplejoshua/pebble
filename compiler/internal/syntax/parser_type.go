@@ -112,7 +112,7 @@ func (p *parser) parseFunctionType() NodeID {
 	var children []NodeID
 	if p.at(StringLiteral) {
 		token := p.cursor.advance()
-		children = append(children, p.tree.add(Literal, token.Span, token.Kind, ""))
+		children = append(children, p.literal(token))
 	}
 	_, missingOpening := p.expect(LeftParen, "before function type parameters")
 	if missingOpening != 0 {
@@ -184,7 +184,7 @@ func (p *parser) parseAggregateType(kind NodeKind, memberKind NodeKind, tagged b
 	children := make([]NodeID, 0)
 	if tagged {
 		marker := p.cursor.advance()
-		children = append(children, p.tree.add(Literal, marker.Span, marker.Kind, ""))
+		children = append(children, p.literal(marker))
 	}
 	_, missingOpening := p.expect(LeftBrace, "before aggregate members")
 	if missingOpening != 0 {

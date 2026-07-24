@@ -33,9 +33,47 @@ Every node has:
 
 Names and literals are referenced by token/source span. The parser does not
 allocate rewritten names. Integer and floating spellings remain available for
-arbitrary-precision and target-aware semantic conversion. It may also retain a
-validated decoded string/character value from the lexer, but decoded data never
-replaces the original span.
+arbitrary-precision and target-aware semantic conversion. The lexer must
+validate and decode ordinary strings, characters, and interpolation text once,
+and the parser must retain that completed value in the tree. Decoded data never
+replaces or changes the original span, which remains the sole record of authored
+escape spellings.
+
+The closed decoded-literal API is:
+
+```go
+type DecodedLiteralKind uint8
+
+const (
+    DecodedCharacter DecodedLiteralKind = iota + 1
+    DecodedString
+    DecodedInterpolationText
+)
+
+type DecodedLiteral struct {
+    Kind DecodedLiteralKind
+    Rune rune
+    Text string
+}
+
+func (n Node) DecodedLiteral() (DecodedLiteral, bool)
+```
+
+`DecodedCharacter` uses `Rune`; the two text kinds use `Text`. A `\xNN`
+escape contributes the raw byte `NN` to ordinary/interpolation `Text`, so a Go
+`string` returned by the accessor is not required to be valid UTF-8. In a
+character literal the same escape denotes the Unicode scalar with numeric value
+`NN` and is returned in `Rune`. Direct source scalars and `\u{H…}` are encoded
+normally in text and returned as their scalar value for a character.
+
+The accessor returns false for numeric, Boolean, `nil`, and `none` literals;
+for non-literal nodes; for invalid or recovery tokens/nodes; and for any
+kind/token/payload mismatch. An empty ordinary string still returns
+`DecodedString` with empty `Text` and true. The lexer-to-parser transfer payload
+is package-private, contains only immutable values, and exposes neither mutable
+bytes nor lexer/parser state. Semantic fact generation in `06a` must consume
+only this completed tree payload: it must not invoke lexer logic or decode the
+source spelling again.
 
 ## Root and declarations
 
