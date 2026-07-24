@@ -68,6 +68,22 @@ func (s *DiagnosticSet) Add(d Diagnostic) {
 	}
 }
 
+// Replace replaces the diagnostic at index without changing emission order.
+func (s *DiagnosticSet) Replace(index int, d Diagnostic) bool {
+	if s == nil || index < 0 || index >= len(s.items) {
+		return false
+	}
+
+	previous := s.items[index]
+	if previous.Severity == Error && d.Severity != Error {
+		s.errorCount--
+	} else if previous.Severity != Error && d.Severity == Error {
+		s.errorCount++
+	}
+	s.items[index] = d
+	return true
+}
+
 // Error records a primary error diagnostic.
 func (s *DiagnosticSet) Error(code Code, message string, span source.Span) {
 	s.Add(Diagnostic{
