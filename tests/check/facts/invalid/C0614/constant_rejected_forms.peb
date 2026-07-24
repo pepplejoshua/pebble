@@ -1,0 +1,23 @@
+let float_value = 1.5;
+let aggregate = [1, 2];
+let optional = some 1;
+let cast = 1 as i32;
+let size = sizeof i32;
+let interpolation = `value: {1}`;
+let divide = 1 / 0;
+let negative_shift = 1 << -1;
+let category = true + 1;
+fn identity(value i32) i32 => value;
+let call = identity(1);
+let pointer = &1;
+let dereference = *pointer;
+let indexing = [1, 2][0];
+let tuple = (1, 2);
+let repeat = [1; 2];
+let function = fn() i32 => 1;
+
+var mutable = 1;
+let mutable_reference = mutable;
+
+type BooleanLength = [true]u8;
+type NegativeLength = [-1]u8;

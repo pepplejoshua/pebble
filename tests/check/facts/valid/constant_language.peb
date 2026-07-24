@@ -1,0 +1,14 @@
+type Color = enum { red, green, blue };
+
+let later = 40;
+let forward = later + 2;
+let arithmetic = ((forward - 2) * 3 + 1) / 2;
+let remainder = -7 % 3;
+let bits = (~0 & 15) << 2;
+let more_bits = ((20 >> 2) | 2) ^ 1;
+let booleans = !false && (true || (1 / 0 == 0));
+let characters = '\u{41}' == 'A';
+let strings = "alpha" < "beta";
+let variants = Color.red != Color.green && Color.red < Color.blue;
+
+type Sized = [forward]u8;

@@ -1,0 +1,5 @@
+let broken = 1 / 0;
+let recovered = 6 * 7;
+
+type BrokenLength = [false]u8;
+type RecoveredLength = [recovered]u8;
