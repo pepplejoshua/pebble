@@ -56,11 +56,10 @@ type SyntaxRef struct {
 }
 
 type Result struct {
-    Scopes     *ScopeStore
-    Symbols    *SymbolStore
-    References // SyntaxRef -> SymbolID or error identity
-    Qualifiers // SyntaxRef -> ModuleID
-    Captures   // anonymous function -> referenced outer bindings
+    Scopes  *ScopeStore
+    Symbols *SymbolStore
+    // private immutable reference, qualifier, bracket, capture, member,
+    // builtin, runtime, and prelude tables
 }
 ```
 
@@ -72,6 +71,71 @@ current scope or current module participates in resolution.
 Zero-valued limits select documented package defaults. Tests may lower every
 limit. At minimum the implementation bounds symbols, scopes, scope depth, and
 name-resolution diagnostics.
+
+### Immutable result queries
+
+The checker-facing API is the concrete `compiler/internal/symbol` contract:
+
+```go
+type ResolutionState uint8
+const (
+    ResolutionResolved ResolutionState = iota + 1
+    ResolutionError
+    ResolutionDeferred
+)
+
+type Resolution struct {
+    Syntax SyntaxRef
+    Symbol SymbolID
+    State  ResolutionState
+}
+
+type BracketMode uint8
+const (
+    BracketDeferred BracketMode = iota + 1
+    BracketTypeNames
+    BracketValueNames
+)
+
+type Capture struct {
+    Function SyntaxRef
+    Symbol   SymbolID
+}
+
+func (r *Result) Prelude() ScopeID
+func (r *Result) Builtin(BuiltinType) (SymbolID, bool)
+func (r *Result) Runtime(RuntimeType) (SymbolID, bool)
+func (r *Result) Reference(SyntaxRef) (Resolution, bool)
+func (r *Result) References() []Resolution
+func (r *Result) Qualifier(SyntaxRef) (ModuleID, bool)
+func (r *Result) Bracket(SyntaxRef) (BracketMode, bool)
+func (r *Result) Captures(function SyntaxRef) []SymbolID
+func (r *Result) CaptureList() []Capture
+func (r *Result) Members(owner SymbolID) []SymbolID
+```
+
+`BracketDeferred` means resolution could not decide type-name versus
+value-name interpretation without expression typing. `BracketTypeNames` and
+`BracketValueNames` record the exact traversal already performed for the
+arguments; later phases must not reinterpret the other category except through
+phase 6's bounded alternative rule.
+
+All returned identities are local to the owning resolution snapshot.
+`Prelude`, `Builtin`, and `Runtime` are nil-safe as implemented; the remaining
+queries require the non-nil `Result` returned by `Resolve`. An invalid
+discriminator or absent point-query key returns the zero value and `false`;
+an absent capture/member key returns an empty/nil copied slice. Absence never
+requests textual lookup. `Reference` returns its stored immutable value.
+`References` returns a fresh slice sorted by
+`(Syntax.Module, Syntax.Node)`. `Captures` returns a fresh slice in first-
+reference order for that anonymous function. `CaptureList` returns a fresh
+slice ordered by anonymous-function discovery and then first-reference order.
+`Members` returns a fresh slice in the owner's declaration/member order.
+Store accessors and every slice-bearing result copy their slice storage;
+callers own no resolver backing array. `Qualifier`, `Bracket`, `Builtin`, and
+`Runtime` are immutable point queries. No query performs lookup, allocates a
+new semantic identity, or accepts an ID from another snapshot as equivalent
+merely because its integer value matches.
 
 ## Stable identities
 
@@ -92,10 +156,12 @@ A symbol records at least:
 - containing type or function identity when applicable;
 - an error state when collection recovered from damaged syntax.
 
-Predeclared builtin types are the only symbols without authored declarations.
-They record `SymbolBuiltinType`, an exact `BuiltinType` discriminator, the
-prelude scope, and a zero `SyntaxRef`. Consumers distinguish this explicit
-origin from damaged authored syntax; they never infer a builtin from its name.
+Predeclared builtin and runtime types are the only symbols without authored
+declarations. Primitive builtins record `SymbolBuiltinType` and an exact
+`BuiltinType` discriminator. Compiler-owned runtime types record
+`SymbolRuntimeType` and an exact `RuntimeType` discriminator. Both use stable
+compiler-owned `SymbolID`s and a zero `SyntaxRef`; consumers never infer either
+identity from spelling.
 
 Ordinary declarations use their declaration node as `SyntaxRef`. An imported
 module qualifier uses the corresponding `ImportDecl` as its declaration
@@ -178,12 +244,13 @@ Scopes are explicit stored values, not a mutable global current scope.
 - Type parameters belong to the declaration environment visible to its
   signature and body.
 - Methods retain their containing nominal type and defining module.
-- Anonymous functions own a function scope and retain links to their defining
-  lexical environment.
+- Anonymous functions own a function scope. Resolution may follow the defining
+  lexical chain only to identify prohibited references to enclosing
+  function-local storage; it does not define a runtime environment.
 
 Scope creation order follows module and source order and is deterministic.
 
-## Reserved builtin types
+## Reserved primitive and runtime types
 
 The prelude contains exactly these `SymbolBuiltinType` symbols in this fixed
 order:
@@ -203,14 +270,40 @@ The prelude and its symbols count toward `MaxScopes` and `MaxSymbols`. A limit
 too small to construct the complete prelude produces bounded `N0006` recovery;
 the resolver never silently omits a builtin in an otherwise successful result.
 
-Builtin names are reserved throughout the language. No import qualifier,
-module declaration, local binding, parameter, loop binding, type parameter,
+Immediately after the primitive builtins, `04b` installs two compiler-owned
+runtime identities in this order:
+
+```go
+type RuntimeType uint8
+const (
+    RuntimeAllocator RuntimeType = iota + 1
+    RuntimeContext
+)
+```
+
+`RuntimeAllocator` has source spelling `Allocator`, is bound in the prelude,
+and participates in ordinary type-name resolution. `RuntimeContext` has no
+source spelling and is not installed in any lexical binding table; phase 6
+obtains it only through the runtime API when generating `ContextExpr`.
+Compiler-owned field symbols follow in fixed declaration/member order and are
+reachable only through `Result.Members(owner)`: `Allocator.ptr`,
+`Allocator.alloc`, `Allocator.realloc`, `Allocator.free`, then
+`Context.default_allocator`. They have zero `SyntaxRef`s and do not create a
+synthetic syntax tree, generated source declaration, scope, or qualified-name
+string.
+
+Primitive builtin names and `Allocator` are reserved throughout the language.
+No import qualifier, module declaration, local binding, parameter, loop binding, type parameter,
 field, variant, or method may declare one of these names. This prohibition also
 applies in member namespaces: a builtin name cannot be hidden, shadowed, or
 repurposed anywhere. A rejected declaration receives an error symbol and
 `N0007`; it is not installed into its lexical or member namespace. Subsequent
 lookup therefore continues to select the builtin where that category is
 legal.
+
+The internal Context identity is compiler-reserved rather than text-reserved:
+it has no spelling that source lookup can select. In particular, neither
+`Context` nor `__pebble_context` is a magic type name.
 
 ## Declaration collection
 
@@ -296,13 +389,24 @@ requirements.
 
 ## Anonymous functions and captures
 
-References from an anonymous function to bindings in an enclosing function are
-recorded as captures in deterministic first-reference order. `04b` identifies
-the captured `SymbolID`; it does not choose closure layout or claim the backend
-supports that capture. The checker may diagnose an unsupported capture until
-closure semantics are implemented.
+A nongeneric anonymous function has a noncapturing, globally hoisted semantic
+model. It may reference module globals, imported module members, and other
+module-level declarations. It may not capture parameters, locals, loop
+bindings, or any other storage owned by an enclosing function.
 
-Module globals and imported module members are not closure captures.
+When lexical resolution finds such a prohibited reference, `04b` records the
+enclosing anonymous-function `SyntaxRef` and captured `SymbolID` in
+deterministic first-reference order. These capture records are evidence for
+phase 6 diagnostic `C0617`; they do not authorize capture lifting or an
+environment. The implicit Pebble `Context` is calling-convention state and is
+not a lexical reference or capture. Module/global references are not capture
+records.
+
+Valid anonymous functions are later represented as hoisted global function
+identities. Closure objects, environment allocation, capture lifting, heap
+allocation, and closure lowering are outside the current language. Whether
+closures are ever added is an explicit future language decision, not an
+assumption of this resolver contract.
 
 ## Diagnostics
 
@@ -316,7 +420,7 @@ Initial stable codes:
 | `N0004` | imported module has no requested member |
 | `N0005` | name resolves to an invalid category for the syntax position |
 | `N0006` | symbol-count, scope-count, scope-depth, or diagnostic limit |
-| `N0007` | declaration attempts to use a reserved builtin type name |
+| `N0007` | declaration attempts to use a reserved primitive or runtime type name |
 
 Duplicate diagnostics label both the new and original declaration. Undefined
 and qualified-member diagnostics point at authored reference spans. Resolution
@@ -343,9 +447,10 @@ parameter/body collision, sibling reuse, block lifetime, loop lifetime,
 function type parameters, aggregate members and methods, qualified module
 lookup, qualifier shadowing, missing module member, anonymous-function capture,
 and neutral brackets whose category follows the resolved base.
-The corpus also covers every builtin identity, deterministic prelude ordering,
-module-to-prelude parentage, and rejected builtin redeclarations in lexical and
-member namespaces.
+The corpus also covers every builtin and runtime identity, deterministic
+prelude ordering, module-to-prelude parentage, successful `Allocator` lookup,
+ordinary lookup failure for the internal Context identity, and rejected
+primitive/`Allocator` redeclarations in lexical and member namespaces.
 
 Most behavior uses plain `.peb` files and expected diagnostic-code
 directories. Optional `.symbols.golden`, `.scopes.golden`, or
@@ -362,7 +467,7 @@ directories. Optional `.symbols.golden`, `.scopes.golden`, or
 - validate generic requirements or specialize generics;
 - mutate syntax or insert coercions;
 - assign backend symbol names;
-- implement closure layout.
+- define closure semantics or runtime environments for anonymous functions.
 
 ## Completion criteria
 
@@ -375,9 +480,12 @@ directories. Optional `.symbols.golden`, `.scopes.golden`, or
 - Module declarations support forward references; locals remain sequential.
 - Duplicate, shadowing, parameter, loop, member, and qualifier rules match the
   contract.
-- Builtin references resolve to fixed prelude symbols, and no authored
-  declaration can reuse a builtin name.
-- Anonymous-function captures are recorded without global mutable context.
+- Primitive and source-spellable runtime references resolve to fixed prelude
+  symbols, and no authored declaration can reuse a reserved name. The internal
+  Context symbol remains unavailable to ordinary source lookup.
+- Anonymous-function references to enclosing function-local storage are
+  recorded as prohibited-capture evidence in stable first-reference order;
+  module/global references are not captures.
 - Neutral brackets use resolved identity where possible and remain explicit
   where type information is required.
 - Syntax trees and authored names remain unchanged.

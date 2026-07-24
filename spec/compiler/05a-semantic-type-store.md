@@ -284,6 +284,13 @@ positions. Syntax acceptance does not imply semantic validity. `05b`
 type-syntax resolution diagnoses invalid anonymous aggregate use with
 source-driven fixtures; `05a` never interns such syntax.
 
+Compiler-owned runtime records are nominal rather than primitive. `Allocator`
+and the implicit runtime `Context` each use
+`Nominal(runtime SymbolID, [])`; neither extends `BuiltinKind` or `Builtins`.
+Their fields remain prepared declaration metadata outside the key exactly like
+authored nominal fields. The store neither knows their spellings nor inserts
+the hidden context ABI parameter into `FunctionKey` parameter lists.
+
 ## Nominal and declared types
 
 One declaration receives one nominal identity:
@@ -375,6 +382,7 @@ Only stable semantic meanings enter the store:
 | recovery error | one `05b` `Error` term, not a `TypeID` |
 | overloaded/capability-constrained value | `05b` constraints over terms |
 | partial generic application | phase-7/`05b` term or diagnostic |
+| compiler-owned Allocator or Context | `Nominal(runtime SymbolID, [])` |
 
 Literal values are not interned, so their arbitrary-precision representation,
 memory limits, fitting, and defaulting belong to `05b`. After constraints are

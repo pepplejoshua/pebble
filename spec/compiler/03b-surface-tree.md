@@ -41,7 +41,8 @@ replaces the original span.
 
 | Node | Syntactic contents |
 | --- | --- |
-| `File` | ordered declarations and EOF |
+| `File` | ordered declaration or declaration-recovery children followed by exactly one `EndOfFile` child |
+| `EndOfFile` | the lexer EOF token; no children |
 | `ImportDecl` | import keyword, path token, semicolon |
 | `BindingDecl` | `let`/`var`, name, optional type, optional initializer |
 | `TypeDecl` | name, type parameters, defining type |
@@ -103,7 +104,8 @@ retains `+=`; typed IR later makes evaluation and conversion behavior explicit.
 | `TupleTerm` | ordered terms, including one-element tuples |
 | `ArrayExpr` | ordered elements |
 | `ArrayRepeatExpr` | value and count expression |
-| `RecordExpr` | optional explicit base and ordered field initializers |
+| `RecordExpr` | optional explicit base, delimiter-recovery children, ordered `RecordField` children, and inter-field recovery children |
+| `RecordField` | authored member `Name` or name-recovery child, optional missing-`=` recovery, and value expression or recovery child |
 | `FunctionTerm` | modifiers, type parameters, signature, optional body |
 | `PartialMemberExpr` | leading dot and member name |
 
@@ -122,6 +124,25 @@ Calls and record bodies are independent postfix nodes. The tree for
 `constructors[i](value)` is a call whose callee is a bracket application. The
 tree for `Factory[T].{ value = x }` is a record expression whose explicit base
 is a bracket application. Neither tree asserts what the bracket means.
+
+`RecordField` is the structural container for one authored initializer; it is
+not an out-of-band pair stored in `RecordExpr`. Its first child is the authored
+member `Name`, or the zero-width `Missing` node emitted when that name is
+absent. If `=` is missing, a second zero-width `Missing` child follows the name
+child. The final child is the parsed value expression; expression recovery may
+make that child `Missing` or `Error`. No other children occur. Children
+therefore remain in authored/recovery order. The field span starts at the
+token/insertion position at which the member name was expected and ends at the
+final value/recovery child's end. Comma/closing-brace recovery belongs to the
+enclosing `RecordExpr`, not to the preceding field.
+
+`RecordExpr` child order is: optional explicit base; optional zero-width
+`Missing` for `{`; then authored `RecordField` children in source order with
+any `Error` recovery child immediately after the field that preceded the bad
+separator; and optional zero-width `Missing` for `}`. Real braces/commas remain
+tokens represented by the parent span and do not become children. A complete
+record span includes its delimiters; a recovered span ends at the real closing
+brace or the missing-closing insertion point.
 
 ## Type-only forms
 
@@ -153,6 +174,12 @@ Both carry an expected category and span. Later phases must explicitly detect
 them and either propagate an error value or skip the enclosing construct. They
 must not infer meaning from a missing/error node.
 
+`EndOfFile` is always present even after declaration recovery reaches its
+limit. It is the final `File` child, has no children, carries the EOF token,
+and has the lexer's zero-width EOF span. It is structural termination, not a
+declaration, expression, or recovery value. `Missing` or `Error` declaration
+children may precede it but never replace it.
+
 ## Spans
 
 - A complete node spans from its first real token start through its last real
@@ -164,6 +191,8 @@ must not infer meaning from a missing/error node.
 - Grouping, tuple, call, bracket, block, and record spans include delimiters.
 - The `File` span is `[0, file.Len())`, including trailing trivia represented by
   the source even though trivia has no token node.
+- `EndOfFile` has the lexer's zero-width span at the end of the file and remains
+  the final child even when the `File` span includes trailing trivia.
 
 ## Parse API
 
