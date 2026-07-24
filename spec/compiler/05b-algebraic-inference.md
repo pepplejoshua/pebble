@@ -177,10 +177,11 @@ ceiling of 1,024 even when a larger value is requested. This bounds the few
 depth-recursive reducers independently of the host stack; broad shapes and
 unbounded searches still use explicit stacks and separate counters.
 
-### Immutable declaration program
+### Prepared declaration program
 
-`Program` is the phase-6-facing result of type-syntax resolution. Its records
-are closed data, not undefined interfaces:
+`Program` is the preparation- and solve-time result of type-syntax resolution.
+It privately retains `ProgramInputs` and is therefore not a phase-6 validation
+handoff. Its semantic records are closed data, not undefined interfaces:
 
 ```go
 type DeclarationState uint8
@@ -295,9 +296,108 @@ never recognizes a builtin from source text. Because `04b` reserves builtin
 names globally, no authored declaration can replace that identity.
 
 `RuntimeTypes` is returned by value and is valid only when both IDs are
-store-owned nominals prepared successfully. It is immutable and safe for
-concurrent reads with the rest of the frozen `Program`; sessions never mutate
-it.
+store-owned nominals prepared successfully. Sessions never mutate it. The
+post-solve snapshot below copies it; phase 6 validation does not retain the
+`Program` that produced it.
+
+### Immutable downstream semantic snapshot
+
+After exactly one `Session.Solve`, the compiler creates the tree-free semantic
+view consumed by phase 6 validation:
+
+```go
+func Snapshot(
+    program *Program,
+    solution *Solution,
+    diagnostics *diagnostic.DiagnosticSet,
+) (*SemanticSnapshot, bool)
+
+func (s *SemanticSnapshot) Types() *types.Snapshot
+func (s *SemanticSnapshot) Resolution() *symbol.Result
+func (s *SemanticSnapshot) TypeDeclaration(symbol.SymbolID) (TypeDeclaration, bool)
+func (s *SemanticSnapshot) TypeDeclarations() []TypeDeclaration
+func (s *SemanticSnapshot) Signature(symbol.SymbolID) (Signature, bool)
+func (s *SemanticSnapshot) Signatures() []Signature
+func (s *SemanticSnapshot) Template(TemplateID) (TypeTemplate, bool)
+func (s *SemanticSnapshot) Templates() []TypeTemplate
+func (s *SemanticSnapshot) RuntimeTypes() (RuntimeTypes, bool)
+func (s *SemanticSnapshot) TypeParameter(symbol.SymbolID) (types.TypeID, bool)
+func (s *SemanticSnapshot) OwnerParameters(symbol.SymbolID) []symbol.SymbolID
+func (s *SemanticSnapshot) Matches(solution *Solution) bool
+```
+
+`Snapshot` is the one post-solve construction API. It requires a nonnil valid
+`Program` and the final `Solution` returned by `Solve` for one session created
+from that exact program. A final failed solution is permitted so downstream
+recovery can inspect independent facts; an unfinalized, fabricated, repeated-
+solve recovery, foreign-program, or different-session solution is not. The
+program carries an opaque program token, each session carries a fresh opaque
+solve token, and the final solution copies both tokens plus the store length at
+solve finalization. These tokens contain no backpointer or mutable state.
+`Snapshot` checks both identities and requires the exclusively locked store
+length to equal the solution's captured length. `Matches` later checks the
+same program and solve tokens, finalization marker, and captured type-snapshot
+length. Thus a semantic snapshot cannot be paired with an earlier or later
+solution even when a program is reused.
+
+Construction holds the program's existing store-ownership lock, calls
+`ProgramInputs.Types.Snapshot`, captures the exact immutable
+`ProgramInputs.Resolution`, and then copies into private storage, in this
+deterministic order: templates by `TemplateID`; declarations, signatures, and
+type-parameter bindings by `SymbolID`; each descriptor/list in its authored
+order; owner records by owner `SymbolID`; and runtime identities by value.
+It preserves every prepared `TypeTemplate`, `TypeDeclaration`,
+`MemberDescriptor`, `Signature`, runtime type, type-parameter binding, and
+owner parameter order needed downstream. Slice/map fields and returned
+records are defensively copied. `Types` returns the owned immutable type
+snapshot. `Resolution` returns the exact immutable tree-free `symbol.Result`
+used to prepare the program; 04b's immutable copied-accessor contract applies,
+and the semantic snapshot retains no resolver, graph, module, source, or syntax
+input through it. `SemanticSnapshot` is the sole phase-6 handoff location and
+authority for this resolution pointer; compilation metadata must not duplicate
+it. No accessor returns mutable backing storage. Capturing this already bounded
+immutable result does not copy or create resolution records.
+
+Before publication, construction validates template IDs and child references,
+descriptor/signature references, owner/parameter ordering, runtime identities,
+and every copied declaration, member, callable, owner, type-parameter, runtime,
+and solution-owned `SymbolID` against that exact resolution result. For
+resolver-owned syntax roles it verifies the corresponding immutable reference,
+qualifier, bracket, capture, or member query; value syntax that has no resolver
+record is not required to fabricate one. It validates every nonzero `TypeID`
+in the copied program data and final solution
+against `types.Snapshot.Contains`. `TypeFinal` must contain a captured ID;
+`TypeError` must contain none. It also validates all symbol, syntax, slot,
+requirement, instantiation, method, and selected-alternative result tables as
+complete according to the final solution contract. A final unsuccessful
+solution may contain documented `TypeError` entries; incompleteness is not the
+same as unsuccessful inference.
+
+Every copied template node, child, declaration, member, signature component,
+owner parameter, type-parameter binding, runtime identity, and solution entry
+charges `MaxDecompositionSteps`; individual template/list widths remain
+bounded by `MaxShapeComponents`, and the type copy uses the 05a bounds. Counts
+and prospective allocations use checked arithmetic. Snapshot diagnostics use
+the existing `MaxDiagnostics` budget. No snapshot-specific unbounded limit is
+introduced.
+
+The operation is atomic: any identity mismatch, incomplete/fabricated
+solution, invalid reference or `TypeID`, store-length mismatch, type-snapshot
+failure, or resource exhaustion emits bounded `T0512`, returns `(nil, false)`,
+and publishes no partial snapshot. `Program`, `Solution`, and the original
+store remain unchanged. The returned object owns all copied state and is safe
+for concurrent reads. It contains no `ProgramInputs`, graph, module value,
+source file set or bytes, syntax tree/node, resolver callback, mutable store,
+reporter, alias-preparation state, interning ability, session, constraint, or
+solver cell. Hiding any such value behind a read-only interface does not
+satisfy this contract.
+
+Programs remain reusable for independent sequential inference sessions. Each
+session produces its own final solution and, when requested immediately after
+that solve under the serialized lifecycle, its own independent semantic
+snapshot. The original append-only store is neither frozen nor reachable from
+the snapshot and remains available to separately authorized later sequential
+compiler phases; this contract designs no phase-7 behavior.
 
 ### Session builder and immutable solution
 
@@ -476,9 +576,11 @@ entries remain `TypeFinal`, every affected or unresolved entry is `TypeError`,
 and no zero or recovery ID is published. Backend-consumable typed IR requires
 `Successful()` and later phase-6 success.
 
-The program and solution own copied immutable tables. They expose no union-find nodes,
-literal buffers, constraints, mutable slices, AST pointers, or syntax-node
-decorations.
+The solution owns copied immutable tables and exposes no union-find node,
+literal buffer, constraint, mutable slice, AST pointer, syntax-node decoration,
+or session reference. Its private program/solve ownership tokens contain no
+backpointer. `Program` deliberately retains preparation inputs and is removed
+from the downstream boundary by `SemanticSnapshot`.
 
 ## Solver identities, terms, and shapes
 
@@ -886,8 +988,11 @@ records themselves are not passed to `Session.Add` and never appear in
   `A`, and records the phase-6 assignment relationship. The expectation is
   evidence, not a write.
 - An unannotated initialized binding allocates `S`, generates initializer `I`,
-  and emits `Equal(S,I)`. A binding with neither usable annotation nor
-  initializer becomes `Error` with `T0510`.
+  and emits `Equal(S,I)`. For a binding with neither usable annotation nor
+  initializer, phase 6 uses `Session.Error` only as silent recovery and
+  publishes the affected symbol as `TypeError` to suppress dependent
+  inference cascades. This case does not emit `T0510`; phase 6 retains the
+  binding form and 06b emits the sole authoritative `C0602`.
 - Global and local `let`/`var` use the same equations. Mutability, initialization
   order, and whether a left side is a place belong to phase 6.
 - Assignment generates left `L` and right `R` independently, passes `L` as
@@ -1250,7 +1355,7 @@ Phase 6 owns the semantic traversal. Before `Solve`, it must make explicit:
 - the phase-6 records for assignments, calls, casts, operators, indexing,
   places, and control flow that will require post-solve validation;
 
-After `Solve`, phase 6 owns:
+After `Solve` and successful immutable snapshot construction, phase 6 owns:
 
 - the concrete numeric conversion matrix;
 - which operators each concrete or symbolic type supports;
@@ -1265,10 +1370,11 @@ After `Solve`, phase 6 owns:
 
 `05b` must not silently add a numeric widening, choose an operator overload,
 erase a calling convention, allow pointer arithmetic, insert a cast, or ask
-layout to choose a type. Phase 6 consumes `Solution`, validates its retained
-relationships, and may produce explicit typed-IR coercions; it may not rewrite
-solver results. Any equation needed to select a type must be emitted during
-generation before `Solve`, never discovered during post-solve validation. A
+layout to choose a type. Phase 6 consumes the matching `SemanticSnapshot` and
+`Solution`, validates its retained relationships, and may produce explicit
+typed-IR coercions; it may not rewrite solver results. It does not retain or
+query `Program` or `types.Store`. Any equation needed to select a type must be
+emitted during generation before `Solve`, never discovered during post-solve validation. A
 post-solve rule that would need another equation is a phase-boundary bug and
 requires the phase-6 generation contract to be corrected.
 
@@ -1332,6 +1438,10 @@ allocation, retry loops, diagnostic cascades, or output proportional to an
 implicit infinite expansion. Store errors are translated without retry and
 without changing `05a`.
 
+`SemanticSnapshot` construction follows the same rule: it charges each copied
+record/component, validates before publication, and translates a 05a snapshot
+error or ownership inconsistency to the one bounded `T0512` recovery path.
+
 ## Testing contract
 
 Direct Go tests in `compiler/internal/infer` are authoritative where terms,
@@ -1365,6 +1475,12 @@ IDs, equations, or solver structure are clearer than source text:
 - ordinary and guarded solved slots are bounded, copied, snapshot-local, and
   queryable only when active; unselected guarded slots neither default nor
   diagnose their otherwise-unconstrained terms;
+- semantic snapshot copying preserves deterministic descriptor/template/
+  owner order and exact type IDs; mismatched program/solve tokens, stale store
+  lengths, incomplete solutions, invalid type IDs, and lowered copy limits
+  fail atomically with `T0512`; copied snapshots remain tree-free and safe for
+  concurrent reads while the original program can serve a later independent
+  sequential session;
 - contextual same-type operator evidence solves `i32` arithmetic literals,
   minimum signed unary negation, and optional injection without permitting
   mixed concrete numeric types or rejecting string addition; reversed operand,
@@ -1483,11 +1599,18 @@ diagnoses, and no AST clone or monomorphized name exists.
 
 ### Slice 05b.8: determinism and recovery hardening
 
-Own the diagnostic formatting adapter, recovery fixtures, fuzz seeds, and
-repeated-run tests. Complete when partial solutions remain queryable,
+Own `semantic_snapshot.go`, its direct ownership/copy/race tests, the diagnostic
+formatting adapter, recovery fixtures, fuzz seeds, and repeated-run tests.
+Complete when partial solutions remain queryable, immutable semantic snapshots
+are deterministic and tree-free, mismatched or incomplete solutions fail
+atomically with `T0512`,
 successful solutions contain no unresolved inference, all limits have
 adversarial coverage, and phase 6 can consume solutions without access to
 solver internals.
+
+This continuation begins only after the 05a `types.Snapshot` extension exists.
+It must use that API and must not reproduce type-snapshot storage or copying in
+`infer`.
 
 Each slice handoff reports owned files, public/internal contracts, direct and
 source tests, commands and results, resource limits exercised, deterministic

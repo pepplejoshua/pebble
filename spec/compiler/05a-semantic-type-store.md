@@ -44,10 +44,10 @@ Callers must preserve store ownership.
 The store owns copies of all variable-length key data. Public accessors return
 scalars, iterators, or copies and never mutable backing slices or entry
 pointers. Store mutation consists only of appending a new immutable entry and
-its lookup index. The first implementation is single-owner and not safe for
-concurrent calls, including reads concurrent with `Intern`. A later read-only
-concurrency contract requires a separate specification; `05b` must serialize
-access now.
+its lookup index. The store is single-owner and not safe for concurrent calls,
+including reads concurrent with `Intern`. Consumers needing concurrent or
+post-owner reads use the immutable `Snapshot` below; taking a snapshot is
+serialized with all store access.
 
 ## Public contract
 
@@ -70,6 +70,14 @@ func (s *Store) Kind(id TypeID) (Kind, bool)
 func (s *Store) Key(id TypeID) (TypeKey, bool)
 func (s *Store) Len() uint32
 func (s *Store) IDs() iter.Seq[TypeID]
+func (s *Store) Snapshot() (*Snapshot, error)
+
+func (s *Snapshot) Builtins() Builtins
+func (s *Snapshot) Kind(id TypeID) (Kind, bool)
+func (s *Snapshot) Key(id TypeID) (TypeKey, bool)
+func (s *Snapshot) Len() uint32
+func (s *Snapshot) Contains(id TypeID) bool
+func (s *Snapshot) IDs() iter.Seq[TypeID]
 ```
 
 Zero-valued limits select these defaults: `MaxTypes = 1,048,576`,
@@ -89,6 +97,50 @@ IDs and iteration repeat exactly. Hash-map bucket order is never observable.
 consumers use `TypeKey` accessors for children, function components, nominal
 declaration, and generic arguments; the package must not add parallel
 `IsNumeric`, `Fields`, layout, display-name, or backend-name APIs.
+
+## Immutable read snapshot
+
+`Store.Snapshot` is the only way phase 6 receives semantic-type access after
+the single inference solve. The caller must hold exclusive ownership of the
+store for the complete call. The operation copies every issued key in
+ascending `TypeID` order and copies `Builtins` by value. It preserves the
+captured store's exact snapshot-local ID numbering: key `i` in the copy has
+the same `TypeID` as key `i` in the store, and every builtin field is
+unchanged.
+
+The returned `Snapshot` owns all of its entries and variable-length key
+components. It retains no pointer, callback, map, slice, interning index, or
+other route to the originating `Store`. `Key` returns a defensive key copy;
+`Builtins` is a value; `IDs` yields ascending IDs; `Contains` is exactly the
+zero-and-range check for the captured entry set. As with the store, a bare
+compact `TypeID` that happens to be in range cannot prove foreign-store
+ownership. Owner-bearing inference containers provide that stronger evidence
+at their boundary. A `Snapshot` exposes no `Intern`, mutable slice/map, or
+mutation operation and is safe for unrestricted concurrent reads after
+publication.
+
+Construction validates before publication that all builtin identities are
+present and exact, every copied entry is a valid closed key, and every child
+is nonzero and contained in the captured prefix. Entry count remains bounded
+by `MaxTypes`; each copied key and its owned components is recharged against
+`MaxKeyComponents` and its constructor-specific limits. Total copy work is
+therefore bounded by the already accepted `MaxTypes` and per-key bounds, with
+checked arithmetic before allocation. No new unbounded snapshot allowance is
+introduced.
+
+The operation builds into private temporary storage and publishes only after
+all validation and copying succeeds. Invalid store state or a configured
+limit failure returns an error matching `ErrInvalidKey` or
+`ErrLimitExceeded`, returns no partial snapshot, and leaves the store
+unchanged. Process allocation failure follows the existing process-level
+out-of-memory policy. The inference boundary translates a returned error to
+bounded `T0512` recovery.
+
+Taking a snapshot does not freeze, destroy, or transfer ownership of the
+append-only store. IDs already captured remain stable if an authorized later
+sequential phase appends more types; that later access is separate from, and
+is not reachable through, the phase-6 snapshot. This statement preserves the
+store lifetime without specifying phase 7.
 
 ## `TypeKey`
 
@@ -403,8 +455,8 @@ The closed `Kind`/`Key` contract supplies only these decompositions:
 - `05b` uses builtin kind for `Numeric`, `Integral`, `Ordered`, and
   `LiteralFits`; function convention/parameters/result/variadic for `Callable`;
   and recursive key decomposition for `Equal` and occurs/substitution work.
-- Phase 6 uses pointer/array/slice/tuple/optional/function components for
-  `Assignable` and conversions. `HasField` obtains only nominal declaration
+- Phase 6 uses `Snapshot` pointer/array/slice/tuple/optional/function
+  components for `Assignable` and conversions. `HasField` obtains only nominal declaration
   and generic arguments here, then queries checked declaration metadata by
   `SymbolID`; the type store does not own fields.
 - Phase 7 uses `TypeParameter` declaration identity, nominal generic
@@ -430,7 +482,8 @@ store queries.
 
 - to `05b`: canonical builtins, immutable structural/nominal keys, interning,
   and decomposition;
-- to phase 6: final equality and components for checking policy;
+- to phase 6: an immutable copied `Snapshot` containing final equality and
+  components for checking policy;
 - to phase 7: parameter/declaration identity and canonical substitution
   results;
 - to typed IR: snapshot-local final `TypeID`s;
@@ -470,11 +523,15 @@ Direct Go structural tests in `compiler/internal/types` are authoritative for:
 - identical ordered call streams producing identical IDs and `IDs` order
   across stores, including with forced hash seeds;
 - each resource limit failing atomically and leaving `Len` unchanged;
+- snapshot copying preserving IDs, builtins, key order, and defensive copies,
+  with atomic invalid/limit failure and no originating-store reachability;
+- unrestricted concurrent snapshot reads under `go test -race`, while store
+  creation, interning, and snapshot creation remain serialized;
 - zero keys, unknown tags/enums, zero/out-of-range children and symbols, and
   excessive components returning stable errors;
-- single-owner concurrency expectations documented and exercised under
-  `go test -race` by the ordinary serialized API tests, not by unsupported
-  concurrent mutation tests.
+- single-owner store concurrency expectations documented and exercised under
+  `go test -race` by serialized store tests, not by unsupported concurrent
+  store mutation tests.
 
 `05b` owns source-driven `.peb` fixtures for bare and nested anonymous
 aggregates, alias chains, alias cycles, generic aliases, and concrete aliases.
@@ -493,6 +550,7 @@ compiler/internal/types/id.go
 compiler/internal/types/key.go
 compiler/internal/types/store.go
 compiler/internal/types/builtin.go
+compiler/internal/types/snapshot.go
 compiler/internal/types/*_test.go
 ```
 
@@ -501,9 +559,10 @@ compatibility wrappers around prototype `Type *`, a second type
 representation, or production solver/checker code.
 
 Completion requires the exact public contract above; immutable full-key
-interning; all builtin, collision, nominal, generic, invalid-input, limit, and
-determinism tests; no globals or host-pointer identity; and no generated names
-or layouts in stored entries. Verify from `compiler/` with:
+interning; atomic independent snapshots; all builtin, collision, nominal,
+generic, invalid-input, limit, snapshot, race, and determinism tests; no globals
+or host-pointer identity; and no generated names or layouts in stored entries.
+Verify from `compiler/` with:
 
 ```sh
 go test ./...
@@ -514,6 +573,11 @@ go vet ./...
 Also run `git diff --check` from the repository root. The handoff reports the
 public API, default limits, test-only collision mechanism, files, commands and
 results, commit, and any contract discrepancy found in `05b` or later specs.
+
+The `types.Snapshot` extension is the first implementation prerequisite for
+the downstream chain `05a type snapshot -> 05b.8 semantic snapshot -> 06a.8
+handoff -> 06b.1 validation`. Downstream slices consume this API; they must not
+implement a private replacement.
 
 The nominal-only aggregate rule in this document is accepted language
 behavior, not an implementation choice or open decision. Transparent aliases
