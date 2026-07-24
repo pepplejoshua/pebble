@@ -258,7 +258,7 @@ func testProgram(t *testing.T) (*Program, *types.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Program{valid: true, inputs: ProgramInputs{Types: store, LiteralTarget: LiteralTarget{WordBits: 64}}, declarations: map[symbol.SymbolID]TypeDeclaration{}, typeParams: map[symbol.SymbolID]types.TypeID{}}, store
+	return &Program{storeMu: &sync.Mutex{}, valid: true, inputs: ProgramInputs{Types: store, LiteralTarget: LiteralTarget{WordBits: 64}}, declarations: map[symbol.SymbolID]TypeDeclaration{}, typeParams: map[symbol.SymbolID]types.TypeID{}}, store
 }
 
 func TestEquationOrderDoesNotChooseTypes(t *testing.T) {

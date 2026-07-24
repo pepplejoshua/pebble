@@ -341,7 +341,7 @@ func (p *Program) materializeTemplate(id TemplateID, mapping map[symbol.SymbolID
 	default:
 		return 0, false
 	}
-	result, err := p.inputs.Types.Intern(key)
+	result, err := p.internType(key)
 	if err != nil {
 		if report {
 			p.reporter.error(CodeResourceLimit, fmt.Sprintf("cannot intern resolved type: %v", err), Origin{})
@@ -352,7 +352,7 @@ func (p *Program) materializeTemplate(id TemplateID, mapping map[symbol.SymbolID
 }
 
 func (p *Program) builtinType(kind symbol.BuiltinType) (types.TypeID, bool) {
-	b := p.inputs.Types.Builtins()
+	b := p.builtins()
 	switch kind {
 	case symbol.BuiltinBool:
 		return b.Bool, true

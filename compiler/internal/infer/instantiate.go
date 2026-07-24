@@ -83,7 +83,7 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 	var declaration symbol.SymbolID
 	var arguments []Term
 	if id, known := s.resolvedType(receiver); known {
-		key, _ := s.program.inputs.Types.Key(id)
+		key, _ := s.program.typeKey(id)
 		decl, ids, nominal := key.Nominal()
 		if !nominal {
 			return false, s.conflict(CodeCapability, "field receiver is not a nominal type", origin), false
@@ -253,13 +253,13 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		return 0, nil, false, true
 	}
 	if id, known := s.resolvedType(receiver); known {
-		key, ok := s.program.inputs.Types.Key(id)
+		key, ok := s.program.typeKey(id)
 		if !ok {
 			return 0, nil, false, s.conflict(CodeDamagedInput, "method receiver type is foreign", origin)
 		}
 		if key.Kind() == types.Pointer {
 			id, _ = key.Child()
-			key, ok = s.program.inputs.Types.Key(id)
+			key, ok = s.program.typeKey(id)
 			if !ok {
 				return 0, nil, false, s.conflict(CodeDamagedInput, "method receiver pointee type is foreign", origin)
 			}

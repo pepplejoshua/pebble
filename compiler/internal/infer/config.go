@@ -17,6 +17,7 @@ const (
 	DefaultMaxChoices            uint32 = 1 << 16
 	DefaultMaxChoiceAlternatives uint32 = 8
 	DefaultMaxChoiceStates       uint64 = 1 << 20
+	DefaultMaxSolvedSlots        uint32 = 1 << 22
 	DefaultMaxDiagnostics        uint32 = 50
 )
 
@@ -38,6 +39,7 @@ type Config struct {
 	MaxChoices            uint32
 	MaxChoiceAlternatives uint32
 	MaxChoiceStates       uint64
+	MaxSolvedSlots        uint32
 	MaxDiagnostics        uint32
 }
 
@@ -90,6 +92,9 @@ func normalizeConfig(c Config) Config {
 	}
 	if c.MaxChoiceStates == 0 {
 		c.MaxChoiceStates = DefaultMaxChoiceStates
+	}
+	if c.MaxSolvedSlots == 0 {
+		c.MaxSolvedSlots = DefaultMaxSolvedSlots
 	}
 	if c.MaxDiagnostics == 0 {
 		c.MaxDiagnostics = DefaultMaxDiagnostics

@@ -6,7 +6,7 @@ import (
 )
 
 func (s *Session) builtinClass(id types.TypeID) typesBuiltin {
-	key, ok := s.program.inputs.Types.Key(id)
+	key, ok := s.program.typeKey(id)
 	if !ok {
 		return builtinOther
 	}
@@ -67,7 +67,7 @@ func (s *Session) checkCapabilities(caps capability, id types.TypeID, origin Ori
 	if caps == 0 {
 		return true
 	}
-	key, ok := s.program.inputs.Types.Key(id)
+	key, ok := s.program.typeKey(id)
 	if !ok {
 		return s.conflict(CodeCapability, "capability subject is not a store-owned type", origin)
 	}
@@ -91,7 +91,7 @@ func (s *Session) applyCapability(term Term, cap capability, origin Origin) (boo
 		return false, true
 	}
 	if term.kind == termKnown {
-		key, _ := s.program.inputs.Types.Key(term.known)
+		key, _ := s.program.typeKey(term.known)
 		if parameter, rigid := key.TypeParameter(); rigid {
 			if origin.GenericOwner == 0 {
 				return false, s.conflict(CodeDamagedInput, "rigid capability constraint has no generic owner", origin)
@@ -184,7 +184,7 @@ func (s *Session) recordLiteralRequirement(owner symbol.SymbolID, subject types.
 }
 
 func (s *Session) typeParameter(id types.TypeID) (symbol.SymbolID, bool) {
-	key, ok := s.program.inputs.Types.Key(id)
+	key, ok := s.program.typeKey(id)
 	if !ok {
 		return 0, false
 	}
@@ -196,7 +196,7 @@ func (s *Session) literalFits(literal, candidate Term, origin Origin) (bool, boo
 		return false, true
 	}
 	if candidate.kind == termKnown {
-		key, _ := s.program.inputs.Types.Key(candidate.known)
+		key, _ := s.program.typeKey(candidate.known)
 		if _, rigid := key.TypeParameter(); rigid {
 			return s.unify(literal, candidate, origin)
 		}

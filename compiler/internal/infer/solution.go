@@ -26,6 +26,10 @@ type SyntaxType struct {
 	Syntax symbol.SyntaxRef
 	Result TypeResult
 }
+type SlotType struct {
+	Slot   SlotID
+	Result TypeResult
+}
 
 type RequirementKind uint8
 
@@ -72,6 +76,8 @@ type Solution struct {
 	instantiations map[symbol.SyntaxRef]Instantiation
 	methods        map[symbol.SyntaxRef]MethodSelection
 	selections     map[ConstraintID]uint32
+	slots          map[SlotID]TypeResult
+	orderedSlots   []SlotType
 }
 
 func (r *Solution) Successful() bool { return r != nil && r.successful }
@@ -124,6 +130,19 @@ func (r *Solution) SyntaxTypes() []SyntaxType {
 		out = append(out, SyntaxType{ref, r.syntax[ref]})
 	}
 	return out
+}
+func (r *Solution) Slot(id SlotID) (TypeResult, bool) {
+	if r == nil || id.owner == nil || id.ordinal == 0 {
+		return TypeResult{}, false
+	}
+	value, ok := r.slots[id]
+	return value, ok
+}
+func (r *Solution) Slots() []SlotType {
+	if r == nil {
+		return nil
+	}
+	return append([]SlotType(nil), r.orderedSlots...)
 }
 func (r *Solution) Requirements(owner symbol.SymbolID) []Requirement {
 	if r == nil {

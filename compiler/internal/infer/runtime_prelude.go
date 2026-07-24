@@ -25,33 +25,33 @@ func (p *Program) prepareRuntimePrelude() {
 		return
 	}
 
-	allocator, err := p.inputs.Types.Intern(types.NominalKey(allocatorSymbol, nil))
+	allocator, err := p.internType(types.NominalKey(allocatorSymbol, nil))
 	if err != nil {
 		p.runtimeFailure(fmt.Sprintf("cannot intern Allocator runtime type: %v", err))
 		return
 	}
-	context, err := p.inputs.Types.Intern(types.NominalKey(contextSymbol, nil))
+	context, err := p.internType(types.NominalKey(contextSymbol, nil))
 	if err != nil {
 		p.runtimeFailure(fmt.Sprintf("cannot intern Context runtime type: %v", err))
 		return
 	}
-	builtins := p.inputs.Types.Builtins()
-	voidPointer, err := p.inputs.Types.Intern(types.PointerKey(builtins.Void))
+	builtins := p.builtins()
+	voidPointer, err := p.internType(types.PointerKey(builtins.Void))
 	if err != nil {
 		p.runtimeFailure(fmt.Sprintf("cannot intern runtime void pointer: %v", err))
 		return
 	}
-	alloc, err := p.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, builtins.Uint}, voidPointer, false))
+	alloc, err := p.internType(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, builtins.Uint}, voidPointer, false))
 	if err != nil {
 		p.runtimeFailure(fmt.Sprintf("cannot intern Allocator.alloc type: %v", err))
 		return
 	}
-	realloc, err := p.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, voidPointer, builtins.Uint}, voidPointer, false))
+	realloc, err := p.internType(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, voidPointer, builtins.Uint}, voidPointer, false))
 	if err != nil {
 		p.runtimeFailure(fmt.Sprintf("cannot intern Allocator.realloc type: %v", err))
 		return
 	}
-	free, err := p.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, voidPointer}, builtins.Void, false))
+	free, err := p.internType(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, voidPointer}, builtins.Void, false))
 	if err != nil {
 		p.runtimeFailure(fmt.Sprintf("cannot intern Allocator.free type: %v", err))
 		return

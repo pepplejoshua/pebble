@@ -16,7 +16,7 @@ func (p *Program) prepareDeclarations() {
 		if sym.Kind != symbol.SymbolTypeParameter || sym.Error {
 			continue
 		}
-		id, err := p.inputs.Types.Intern(types.TypeParameterKey(sym.ID))
+		id, err := p.internType(types.TypeParameterKey(sym.ID))
 		if err != nil {
 			p.valid = false
 			p.reporter.error(CodeResourceLimit, fmt.Sprintf("cannot intern rigid type parameter: %v", err), Origin{Span: sym.Span, Symbol: sym.ID})
@@ -76,7 +76,7 @@ func (p *Program) prepareDeclarations() {
 		if decl.Form != DeclarationNominal || decl.State != DeclarationReady || len(decl.Parameters) != 0 || decl.Template != 0 {
 			continue
 		}
-		id, err := p.inputs.Types.Intern(types.NominalKey(decl.Symbol, nil))
+		id, err := p.internType(types.NominalKey(decl.Symbol, nil))
 		if err != nil {
 			p.declarationFailure(decl.Symbol, CodeResourceLimit, fmt.Sprintf("cannot predeclare nominal type: %v", err))
 			continue
@@ -279,14 +279,14 @@ func (p *Program) memberTypeTemplate(member symbol.Symbol, owner symbol.SymbolID
 	if member.Kind == symbol.SymbolVariant {
 		declNode, tree, ok := p.node(member.Declaration)
 		if ok && declNode.Kind() == syntax.Name {
-			return p.knownTemplate(p.inputs.Types.Builtins().Void)
+			return p.knownTemplate(p.builtins().Void)
 		}
 		if ok {
 			children := semanticNodeIDs(tree, declNode.Children())
 			if len(children) > 0 {
 				last, _ := tree.Node(children[len(children)-1])
 				if last.Kind() == syntax.Name && len(children) == 1 {
-					return p.knownTemplate(p.inputs.Types.Builtins().Void)
+					return p.knownTemplate(p.builtins().Void)
 				}
 			}
 		}

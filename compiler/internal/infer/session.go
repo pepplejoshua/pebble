@@ -49,6 +49,21 @@ type publishedInstantiation struct {
 	arguments []Term
 }
 
+type publishedSlot struct {
+	id          SlotID
+	term        Term
+	choice      ChoiceRef
+	alternative uint32
+	guarded     bool
+}
+
+type slotPublicationKey struct {
+	term        Term
+	choice      ChoiceRef
+	alternative uint32
+	guarded     bool
+}
+
 type methodState struct {
 	method    symbol.SymbolID
 	arguments []Term
@@ -94,6 +109,8 @@ type Session struct {
 	resolveMemo         map[resolveKey]TypeResult
 	requirements        []Requirement
 	selections          map[ConstraintID]uint32
+	slots               []publishedSlot
+	slotPublications    map[slotPublicationKey]bool
 	speculative         bool
 	speculativeConflict *inferenceConflict
 	failed              bool
@@ -109,6 +126,7 @@ func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config 
 		methodStates:   make(map[symbol.SyntaxRef]methodState),
 		methodSites:    make(map[symbol.SyntaxRef]bool),
 		resolveMemo:    make(map[resolveKey]TypeResult), selections: make(map[ConstraintID]uint32),
+		slotPublications: make(map[slotPublicationKey]bool),
 	}
 	if program == nil || !program.valid || program.inputs.Types == nil {
 		s.invalid = true
@@ -170,7 +188,7 @@ func (s *Session) Known(id types.TypeID) Term {
 	if !s.mutable() {
 		return s.errorTerm()
 	}
-	if _, ok := s.program.inputs.Types.Key(id); !ok {
+	if _, ok := s.program.typeKey(id); !ok {
 		s.reporter.error(CodeResourceLimit, "known term uses a TypeID outside the prepared store", Origin{})
 		s.failed = true
 		return s.errorTerm()
@@ -233,6 +251,27 @@ func (s *Session) NegateLiteral(term Term, origin Origin) Term {
 }
 
 func (s *Session) Add(value Constraint) ConstraintID {
+	return s.addConstraint(value)
+}
+
+// AddChoice atomically adds one top-level OneOf and returns the unforgeable
+// capability used for guarded publication.
+func (s *Session) AddChoice(value Constraint) (ConstraintID, ChoiceRef) {
+	if value.kind != constraintOneOf {
+		if s.mutable() {
+			s.reporter.error(CodeResourceLimit, "AddChoice requires one top-level OneOf constraint", value.origin)
+			s.failed = true
+		}
+		return 0, ChoiceRef{}
+	}
+	id := s.addConstraint(value)
+	if id == 0 {
+		return 0, ChoiceRef{}
+	}
+	return id, ChoiceRef{owner: s.token, constraint: id, alternatives: uint32(len(value.alternatives))}
+}
+
+func (s *Session) addConstraint(value Constraint) ConstraintID {
 	if !s.mutable() {
 		return 0
 	}
@@ -276,6 +315,47 @@ func (s *Session) Add(value Constraint) ConstraintID {
 	for _, site := range methodSites {
 		s.methodSites[site] = true
 	}
+	return id
+}
+
+func (s *Session) PublishSlot(term Term) SlotID {
+	return s.publishSlot(ChoiceRef{}, 0, term, false)
+}
+
+func (s *Session) PublishGuardedSlot(choice ChoiceRef, alternative uint32, term Term) SlotID {
+	return s.publishSlot(choice, alternative, term, true)
+}
+
+func (s *Session) publishSlot(choice ChoiceRef, alternative uint32, term Term, guarded bool) SlotID {
+	if !s.mutable() {
+		return SlotID{}
+	}
+	if !term.belongs(s.token) {
+		s.invalidTerm("slot publication contains a foreign or invalid term", Origin{})
+		return SlotID{}
+	}
+	if guarded {
+		if choice.owner != s.token || !choice.constraint.IsValid() || choice.alternatives == 0 || alternative >= choice.alternatives || int(choice.constraint) > len(s.constraints) || s.constraints[choice.constraint-1].value.kind != constraintOneOf {
+			s.invalidTerm("guarded slot uses an invalid or foreign choice alternative", Origin{})
+			return SlotID{}
+		}
+	} else if choice.owner != nil || choice.constraint.IsValid() || choice.alternatives != 0 || alternative != 0 {
+		s.invalidTerm("ordinary slot has invalid guard state", Origin{})
+		return SlotID{}
+	}
+	key := slotPublicationKey{term: term, choice: choice, alternative: alternative, guarded: guarded}
+	if s.slotPublications[key] {
+		s.invalidTerm("solved slot published more than once", Origin{})
+		return SlotID{}
+	}
+	if uint32(len(s.slots)) >= s.config.MaxSolvedSlots {
+		s.limit("solved slot", uint64(s.config.MaxSolvedSlots), Origin{})
+		s.failed = true
+		return SlotID{}
+	}
+	id := SlotID{owner: s.token, ordinal: uint32(len(s.slots) + 1)}
+	s.slots = append(s.slots, publishedSlot{id: id, term: term, choice: choice, alternative: alternative, guarded: guarded})
+	s.slotPublications[key] = true
 	return id
 }
 
@@ -362,6 +442,19 @@ func (s *Session) validateConstraint(value Constraint, depth uint32) error {
 			if !validTerm(term) {
 				return fmt.Errorf("method-selection constraint contains a foreign explicit argument")
 			}
+		}
+	case constraintCallable:
+		if !validTerm(value.a) || !validTerm(value.b) {
+			return fmt.Errorf("invalid callable constraint")
+		}
+		for _, argument := range value.arguments {
+			if !validTerm(argument.Source) || !validTerm(argument.Destination) {
+				return fmt.Errorf("callable constraint contains a foreign or invalid argument")
+			}
+		}
+	case constraintIndexable, constraintSliceable:
+		if !validTerm(value.a) || !validTerm(value.b) {
+			return fmt.Errorf("invalid structural constraint")
 		}
 	case constraintShape:
 		if !validTerm(value.a) || !validShape(value.shape, s.token) {

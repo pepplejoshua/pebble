@@ -16,7 +16,9 @@ const (
 	termError
 )
 
-type sessionToken struct{}
+// Keep the token non-zero-sized: Go permits distinct zero-sized allocations to
+// share an address, which would defeat cross-session ownership checks.
+type sessionToken struct{ _ byte }
 
 // Term is one closed inference term. Its payload is intentionally opaque.
 type Term struct {

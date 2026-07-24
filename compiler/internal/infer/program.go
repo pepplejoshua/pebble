@@ -2,6 +2,7 @@ package infer
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
@@ -123,6 +124,7 @@ type RuntimeTypes struct {
 }
 
 type Program struct {
+	storeMu      *sync.Mutex
 	inputs       ProgramInputs
 	config       Config
 	valid        bool
@@ -137,6 +139,35 @@ type Program struct {
 	reporter     *reporter
 	runtimeTypes RuntimeTypes
 	runtimeReady bool
+}
+
+// 05a deliberately exposes a single-owner Store. All 05b access that may run
+// from independent sessions is serialized through the prepared Program.
+func (p *Program) typeKey(id types.TypeID) (types.TypeKey, bool) {
+	if p.storeMu == nil {
+		return p.inputs.Types.Key(id)
+	}
+	p.storeMu.Lock()
+	defer p.storeMu.Unlock()
+	return p.inputs.Types.Key(id)
+}
+
+func (p *Program) internType(key types.TypeKey) (types.TypeID, error) {
+	if p.storeMu == nil {
+		return p.inputs.Types.Intern(key)
+	}
+	p.storeMu.Lock()
+	defer p.storeMu.Unlock()
+	return p.inputs.Types.Intern(key)
+}
+
+func (p *Program) builtins() types.Builtins {
+	if p.storeMu == nil {
+		return p.inputs.Types.Builtins()
+	}
+	p.storeMu.Lock()
+	defer p.storeMu.Unlock()
+	return p.inputs.Types.Builtins()
 }
 
 func (p *Program) TypeDeclaration(id symbol.SymbolID) (TypeDeclaration, bool) {
@@ -225,7 +256,7 @@ func (p *Program) addTemplate(v TypeTemplate) TemplateID {
 func Prepare(inputs ProgramInputs, diagnostics *diagnostic.DiagnosticSet, config Config) *Program {
 	config = normalizeConfig(config)
 	p := &Program{
-		inputs: inputs, config: config, valid: true,
+		storeMu: &sync.Mutex{}, inputs: inputs, config: config, valid: true,
 		declarations: make(map[symbol.SymbolID]TypeDeclaration),
 		signatures:   make(map[symbol.SymbolID]Signature),
 		typeParams:   make(map[symbol.SymbolID]types.TypeID),

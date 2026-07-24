@@ -255,7 +255,7 @@ func (s *Session) matchKnownShape(id types.TypeID, shape Shape, origin Origin) (
 	if !s.stepDecompose(origin) {
 		return false, false
 	}
-	key, ok := s.program.inputs.Types.Key(id)
+	key, ok := s.program.typeKey(id)
 	if !ok {
 		return false, s.conflict(CodeResourceLimit, "shape match uses a foreign TypeID", origin)
 	}
@@ -380,7 +380,7 @@ func (s *Session) materializeShape(shape Shape) (types.TypeID, bool) {
 	if s.speculative {
 		return 0, false
 	}
-	id, err := s.program.inputs.Types.Intern(key)
+	id, err := s.program.internType(key)
 	if err != nil {
 		s.conflict(CodeResourceLimit, fmt.Sprintf("cannot intern inferred type: %v", err), Origin{})
 		return 0, false
@@ -545,7 +545,7 @@ func childOrigin(origin Origin, index int) Origin {
 }
 
 func (s *Session) describeTypeConflict(a, b types.TypeID) string {
-	ka, _ := s.program.inputs.Types.Kind(a)
-	kb, _ := s.program.inputs.Types.Kind(b)
-	return fmt.Sprintf("cannot unify semantic type kind %d with kind %d", ka, kb)
+	ka, _ := s.program.typeKey(a)
+	kb, _ := s.program.typeKey(b)
+	return fmt.Sprintf("cannot unify semantic type kind %d with kind %d", ka.Kind(), kb.Kind())
 }

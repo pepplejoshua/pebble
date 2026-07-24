@@ -25,9 +25,10 @@ func (s *Session) Solve() *Solution {
 		s.solveOrdinary()
 		s.solveChoices()
 		s.solveOrdinary()
-		s.defaultLiterals()
+		inactive := s.inactiveGuardedRoots()
+		s.defaultLiterals(inactive)
 		s.solveOrdinary()
-		s.finalizeUnresolved()
+		s.finalizeUnresolved(inactive)
 	}
 	result := s.freezeSolution()
 	s.solved = true
@@ -91,6 +92,15 @@ func (s *Session) apply(value Constraint) applyResult {
 		return applyResult{changed: changed, success: ok, delayed: delayed}
 	case constraintSelectMethod:
 		changed, ok, delayed := s.selectMethod(value)
+		return applyResult{changed: changed, success: ok, delayed: delayed}
+	case constraintCallable:
+		changed, ok, delayed := s.callable(value.a, value.arguments, value.b, value.origin)
+		return applyResult{changed: changed, success: ok, delayed: delayed}
+	case constraintIndexable:
+		changed, ok, delayed := s.indexable(value.a, value.b, value.origin)
+		return applyResult{changed: changed, success: ok, delayed: delayed}
+	case constraintSliceable:
+		changed, ok, delayed := s.sliceable(value.a, value.b, value.origin)
 		return applyResult{changed: changed, success: ok, delayed: delayed}
 	default:
 		return applyResult{success: false, delayed: true}
@@ -327,11 +337,14 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 	return s.solveConstraintSet(value.alternatives[viable[0]].Constraints)
 }
 
-func (s *Session) defaultLiterals() {
-	builtins := s.program.inputs.Types.Builtins()
+func (s *Session) defaultLiterals(inactive map[InferID]bool) {
+	builtins := s.program.builtins()
 	for index := range s.cells {
 		id := InferID(index + 1)
 		if s.find(id) != id {
+			continue
+		}
+		if inactive[id] {
 			continue
 		}
 		cell := &s.cells[index]
@@ -359,12 +372,17 @@ func (s *Session) literalDefaultBlocked(root InferID) bool {
 			continue
 		}
 		switch entry.value.kind {
-		case constraintHasField, constraintSelectMethod:
+		case constraintHasField, constraintSelectMethod, constraintCallable, constraintIndexable, constraintSliceable:
 			if s.termHasRoot(entry.value.a, root) || s.termHasRoot(entry.value.b, root) {
 				return true
 			}
 			for _, term := range entry.value.explicit {
 				if s.termHasRoot(term, root) {
+					return true
+				}
+			}
+			for _, argument := range entry.value.arguments {
+				if s.termHasRoot(argument.Source, root) || s.termHasRoot(argument.Destination, root) {
 					return true
 				}
 			}
@@ -380,10 +398,13 @@ func (s *Session) termHasRoot(term Term, root InferID) bool {
 	return s.find(term.id) == root
 }
 
-func (s *Session) finalizeUnresolved() {
+func (s *Session) finalizeUnresolved(inactive map[InferID]bool) {
 	for index := range s.cells {
 		id := InferID(index + 1)
 		if s.find(id) != id {
+			continue
+		}
+		if inactive[id] {
 			continue
 		}
 		cell := &s.cells[index]
@@ -402,6 +423,7 @@ func (s *Session) freezeSolution() *Solution {
 		symbols:    make(map[symbol.SymbolID]TypeResult), syntax: make(map[symbol.SyntaxRef]TypeResult),
 		requirements: make(map[symbol.SymbolID][]Requirement), instantiations: make(map[symbol.SyntaxRef]Instantiation),
 		methods: make(map[symbol.SyntaxRef]MethodSelection), selections: make(map[ConstraintID]uint32),
+		slots: make(map[SlotID]TypeResult),
 	}
 	for _, id := range sortedSymbolIDs(s.symbolRoots) {
 		result.symbols[id] = s.termResult(s.symbolRoots[id])
@@ -464,6 +486,20 @@ func (s *Session) freezeSolution() *Solution {
 	}
 	for id, selected := range s.selections {
 		result.selections[id] = selected
+	}
+	for _, published := range s.slots {
+		if published.guarded {
+			selected, ok := s.selections[published.choice.constraint]
+			if !ok || selected != published.alternative {
+				continue
+			}
+		}
+		value := s.termResult(published.term)
+		result.slots[published.id] = value
+		result.orderedSlots = append(result.orderedSlots, SlotType{Slot: published.id, Result: value})
+		if value.State == TypeError {
+			result.successful = false
+		}
 	}
 	return result
 }
