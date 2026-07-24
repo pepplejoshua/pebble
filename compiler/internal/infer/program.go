@@ -265,6 +265,14 @@ func (p *Program) RuntimeTypes() (RuntimeTypes, bool) {
 	return p.runtimeTypes, true
 }
 
+func (p *Program) TypeParameter(id symbol.SymbolID) (types.TypeID, bool) {
+	if p == nil || id == 0 {
+		return 0, false
+	}
+	v, ok := p.typeParams[id]
+	return v, ok
+}
+
 func cloneDeclaration(v TypeDeclaration) TypeDeclaration {
 	v.Parameters = append([]symbol.SymbolID(nil), v.Parameters...)
 	v.Members = append([]MemberDescriptor(nil), v.Members...)

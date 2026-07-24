@@ -261,6 +261,49 @@ func testProgram(t *testing.T) (*Program, *types.Store) {
 	return &Program{storeMu: &sync.Mutex{}, valid: true, inputs: ProgramInputs{Types: store, LiteralTarget: LiteralTarget{WordBits: 64}}, declarations: map[symbol.SymbolID]TypeDeclaration{}, typeParams: map[symbol.SymbolID]types.TypeID{}}, store
 }
 
+func TestProgramTypeParameter(t *testing.T) {
+	parameter := symbol.SymbolID(41)
+	rigid := types.TypeID(0xfedcba98)
+	program := &Program{typeParams: map[symbol.SymbolID]types.TypeID{parameter: rigid}}
+
+	if got, ok := program.TypeParameter(parameter); !ok || got != rigid {
+		t.Fatalf("TypeParameter(%d) = %d, %v; want exact %d, true", parameter, got, ok, rigid)
+	}
+	for _, id := range []symbol.SymbolID{0, 42, 9001} {
+		if got, ok := program.TypeParameter(id); ok || got != 0 {
+			t.Errorf("TypeParameter(%d) = %d, %v; want 0, false", id, got, ok)
+		}
+	}
+	var nilProgram *Program
+	if got, ok := nilProgram.TypeParameter(parameter); ok || got != 0 {
+		t.Fatalf("nil Program TypeParameter(%d) = %d, %v; want 0, false", parameter, got, ok)
+	}
+
+	if allocations := testing.AllocsPerRun(100, func() {
+		got, ok := program.TypeParameter(parameter)
+		if !ok || got != rigid {
+			panic("TypeParameter changed during repeated reads")
+		}
+	}); allocations != 0 {
+		t.Fatalf("TypeParameter allocated %v times per read", allocations)
+	}
+
+	var wait sync.WaitGroup
+	for range 16 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 100 {
+				if got, ok := program.TypeParameter(parameter); !ok || got != rigid {
+					t.Errorf("concurrent TypeParameter(%d) = %d, %v; want %d, true", parameter, got, ok, rigid)
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+}
+
 func TestEquationOrderDoesNotChooseTypes(t *testing.T) {
 	run := func(reverse bool) []diagnostic.Code {
 		program, store := testProgram(t)
