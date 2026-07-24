@@ -26,6 +26,9 @@ type retainedRecord struct {
 	TypeUse             *typeUseRecord
 	ContextFlow         *contextFlowRecord
 	UnsupportedCallable *unsupportedCallableRecord
+	Expression          *expressionRecord
+	Aggregate           *aggregateRecord
+	Compatibility       *compatibilityRecord
 }
 
 func cloneRetainedRecord(value retainedRecord) retainedRecord {
@@ -54,6 +57,18 @@ func cloneRetainedRecord(value retainedRecord) retainedRecord {
 		copy.TypeParameters = append([]symbol.SyntaxRef(nil), value.UnsupportedCallable.TypeParameters...)
 		value.UnsupportedCallable = &copy
 	}
+	if value.Expression != nil {
+		copy := cloneExpressionRecord(*value.Expression)
+		value.Expression = &copy
+	}
+	if value.Aggregate != nil {
+		copy := cloneAggregateRecord(*value.Aggregate)
+		value.Aggregate = &copy
+	}
+	if value.Compatibility != nil {
+		copy := *value.Compatibility
+		value.Compatibility = &copy
+	}
 	return value
 }
 
@@ -73,6 +88,15 @@ func (value *retainedRecord) assignHeader(header recordHeader) {
 	}
 	if value.UnsupportedCallable != nil {
 		value.UnsupportedCallable.Header = header
+	}
+	if value.Expression != nil {
+		value.Expression.Header = header
+	}
+	if value.Aggregate != nil {
+		value.Aggregate.Header = header
+	}
+	if value.Compatibility != nil {
+		value.Compatibility.Header = header
 	}
 }
 
@@ -130,6 +154,63 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 			return nil, 0, false
 		}
 		components += uint64(len(value.UnsupportedCallable.TypeParameters))
+	}
+	if value.Expression != nil {
+		payloads++
+		expression := value.Expression
+		if expression.Header != value.Header || expression.Kind < expressionName || expression.Kind > expressionMember || expression.Result == 0 {
+			return nil, 0, false
+		}
+		if expression.Kind == expressionLiteral {
+			if expression.Literal.Kind < literalInteger || expression.Literal.Kind > literalNone {
+				return nil, 0, false
+			}
+		} else if expression.Literal.Kind != 0 || len(expression.Literal.NumericBytes) != 0 || expression.Literal.Bool || expression.Literal.Rune != 0 || expression.Literal.Text != "" {
+			return nil, 0, false
+		}
+		if (expression.Literal.Kind == literalInteger || expression.Literal.Kind == literalFloat) != (len(expression.Literal.NumericBytes) != 0) {
+			return nil, 0, false
+		}
+		if expression.Kind != expressionInterpolated && len(expression.Parts) != 0 {
+			return nil, 0, false
+		}
+		add(expression.Result)
+		for _, id := range expression.Children {
+			if id == 0 {
+				return nil, 0, false
+			}
+			add(id)
+		}
+		components += uint64(len(expression.Literal.NumericBytes)) + uint64(len(expression.Parts))
+		for _, part := range expression.Parts {
+			if part.Kind < interpolationText || part.Kind > interpolationValue || (part.Kind == interpolationValue) != (part.Value != 0) {
+				return nil, 0, false
+			}
+			add(part.Value)
+		}
+	}
+	if value.Aggregate != nil {
+		payloads++
+		aggregate := value.Aggregate
+		if aggregate.Header != value.Header || aggregate.Kind < aggregateStruct || aggregate.Kind > aggregateTaggedVariant || aggregate.Result == 0 {
+			return nil, 0, false
+		}
+		add(aggregate.Result, aggregate.Receiver)
+		for _, field := range aggregate.Fields {
+			if field.Field == (symbol.SyntaxRef{}) || field.NameSyntax == (symbol.SyntaxRef{}) || field.Value == 0 || field.Destination == 0 {
+				return nil, 0, false
+			}
+			add(field.Value, field.Destination)
+		}
+		components += uint64(len(aggregate.Fields)) + uint64(len(aggregate.DeclarationFields))
+	}
+	if value.Compatibility != nil {
+		payloads++
+		compatibility := value.Compatibility
+		if compatibility.Header != value.Header || compatibility.Source == 0 || compatibility.Destination == 0 || compatibility.Role < compatibilityAssignment || compatibility.Role > compatibilityBranch {
+			return nil, 0, false
+		}
+		add(compatibility.Source, compatibility.Destination)
 	}
 	if payloads > 1 {
 		return nil, 0, false

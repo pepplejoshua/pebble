@@ -197,7 +197,7 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	}
 	annotationRef, initializerRef, annotationPresent, initializerPresent := bindingParts(ref, node)
 	origin := w.origin(ref, node, "binding", binding.ID, ctx.genericOwner)
-	symbolTerm := w.session.Variable(origin)
+	symbolTerm := w.symbolTerm(binding.ID, origin)
 	annotation := typedValue{}
 	if annotationPresent {
 		annotation = w.resolveType(annotationRef, ctx.typeOwner, ctx.genericOwner, "binding annotation")
@@ -208,7 +208,10 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		initializerOrigin := w.originForRef(initializerRef, "binding initializer", binding.ID, ctx.genericOwner)
 		initializer = w.newValue(w.session.Variable(initializerOrigin), initializerOrigin)
 		w.valuesBySyntax[initializerRef] = initializer
-		if !annotationPresent {
+		if annotationPresent {
+			w.expectations[initializerRef] = w.expectationFor(initializerRef, annotation.ID, compatibilityAssignment)
+			w.retainCompatibility(ref, ctx.genericOwner, initializer.ID, annotation.ID, compatibilityAssignment, 0, binding.ID, binding.Span, false)
+		} else {
 			w.session.Add(infer.Equal(symbolTerm, initializer.Term, origin))
 		}
 	}
@@ -403,6 +406,7 @@ func (w *walker) handleFunctionLiteral(ref symbol.SyntaxRef, node syntax.Node, c
 	origin := w.origin(ref, node, "function literal", ctx.typeOwner, ctx.genericOwner)
 	term := w.session.Error(origin)
 	if len(captures) == 0 {
+		w.projectFunctionExpectation(ref, ctx, record, result)
 		parameters := make([]infer.Shape, len(record.Parameters))
 		for index, id := range record.Parameters {
 			parameters[index] = infer.Leaf(w.generation.values[id-1].Term)
@@ -413,6 +417,7 @@ func (w *walker) handleFunctionLiteral(ref symbol.SyntaxRef, node syntax.Node, c
 	expression, published := w.publishSyntax(ref, term, origin)
 	record.Expression = expression.ID
 	record.Header.Suppressed = len(captures) != 0 || !published
+	w.successfulExpressions[ref] = len(captures) == 0 && published
 	w.retainCallable(record)
 	return false
 }

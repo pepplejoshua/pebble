@@ -7,18 +7,21 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 type walkContext struct {
-	callable     callableRef
-	typeOwner    symbol.SymbolID
-	genericOwner symbol.SymbolID
-	nominalOwner symbol.SymbolID
-	unsupported  bool
-	typePosition bool
-	typeRoot     bool
-	preparedType bool
-	controlDepth uint32
+	callable      callableRef
+	typeOwner     symbol.SymbolID
+	genericOwner  symbol.SymbolID
+	nominalOwner  symbol.SymbolID
+	unsupported   bool
+	typePosition  bool
+	typeRoot      bool
+	preparedType  bool
+	controlDepth  uint32
+	expected      expectedType
+	suppressValue bool
 }
 
 type walkItem struct {
@@ -28,20 +31,28 @@ type walkItem struct {
 }
 
 type walker struct {
-	generation       *generation
-	evaluator        *constantEvaluator
-	program          *infer.Program
-	session          *infer.Session
-	visited          map[symbol.SyntaxRef]bool
-	order            []symbol.SyntaxRef
-	symbolsAt        map[symbol.SyntaxRef][]symbol.Symbol
-	resolvedTypes    map[symbol.SyntaxRef]bool
-	preparedTypes    map[symbol.SyntaxRef]bool
-	valuesBySyntax   map[symbol.SyntaxRef]typedValue
-	publishedSymbols map[symbol.SymbolID]bool
-	publishedSyntax  map[symbol.SyntaxRef]bool
-	publishedSlots   map[infer.Term]infer.SlotID
-	runtimeTypes     func() (infer.RuntimeTypes, bool)
+	generation            *generation
+	evaluator             *constantEvaluator
+	program               *infer.Program
+	session               *infer.Session
+	visited               map[symbol.SyntaxRef]bool
+	order                 []symbol.SyntaxRef
+	symbolsAt             map[symbol.SyntaxRef][]symbol.Symbol
+	resolvedTypes         map[symbol.SyntaxRef]bool
+	preparedTypes         map[symbol.SyntaxRef]bool
+	valuesBySyntax        map[symbol.SyntaxRef]typedValue
+	valuesBySymbol        map[symbol.SymbolID]typedValue
+	termsBySymbol         map[symbol.SymbolID]infer.Term
+	knownValues           map[valueID]types.TypeID
+	expectations          map[symbol.SyntaxRef]expectedType
+	optionalDestinations  map[symbol.SyntaxRef]valueID
+	expressionPlans       map[symbol.SyntaxRef]*expressionPlan
+	placeCandidates       map[symbol.SyntaxRef]valueID
+	successfulExpressions map[symbol.SyntaxRef]bool
+	publishedSymbols      map[symbol.SymbolID]bool
+	publishedSyntax       map[symbol.SyntaxRef]bool
+	publishedSlots        map[infer.Term]infer.SlotID
+	runtimeTypes          func() (infer.RuntimeTypes, bool)
 }
 
 type preparedFacts struct {
@@ -72,7 +83,11 @@ func newWalker(generation *generation, evaluator *constantEvaluator, program *in
 		visited: make(map[symbol.SyntaxRef]bool), symbolsAt: make(map[symbol.SyntaxRef][]symbol.Symbol),
 		resolvedTypes: make(map[symbol.SyntaxRef]bool), preparedTypes: make(map[symbol.SyntaxRef]bool),
 		valuesBySyntax: make(map[symbol.SyntaxRef]typedValue), publishedSymbols: make(map[symbol.SymbolID]bool),
-		publishedSyntax: make(map[symbol.SyntaxRef]bool), publishedSlots: make(map[infer.Term]infer.SlotID),
+		valuesBySymbol: make(map[symbol.SymbolID]typedValue), termsBySymbol: make(map[symbol.SymbolID]infer.Term), knownValues: make(map[valueID]types.TypeID),
+		expectations: make(map[symbol.SyntaxRef]expectedType), optionalDestinations: make(map[symbol.SyntaxRef]valueID), expressionPlans: make(map[symbol.SyntaxRef]*expressionPlan),
+		placeCandidates:       make(map[symbol.SyntaxRef]valueID),
+		successfulExpressions: make(map[symbol.SyntaxRef]bool),
+		publishedSyntax:       make(map[symbol.SyntaxRef]bool), publishedSlots: make(map[infer.Term]infer.SlotID),
 	}
 	if program != nil {
 		w.runtimeTypes = program.RuntimeTypes
@@ -108,6 +123,11 @@ func (w *walker) walkTree(item module.Module) {
 		current := stack[last]
 		stack = stack[:last]
 		if current.exit {
+			if item.Tree != nil {
+				if node, ok := item.Tree.Node(current.ref.Node); ok {
+					w.finishExpression(current.ref, node, current.ctx, item.Tree)
+				}
+			}
 			w.generation.leaveTraversal()
 			continue
 		}
@@ -125,6 +145,9 @@ func (w *walker) walkTree(item module.Module) {
 		}
 		w.visited[current.ref] = true
 		w.order = append(w.order, current.ref)
+		if expected, ok := w.expectations[current.ref]; ok {
+			current.ctx.expected = expected
+		}
 		node, ok := item.Tree.Node(current.ref.Node)
 		if !ok {
 			w.generation.report("traversal reached an invalid syntax node", spanForRef(w.generation.inputs, current.ref))
@@ -132,7 +155,7 @@ func (w *walker) walkTree(item module.Module) {
 			continue
 		}
 		children := w.dispatch(current.ref, node, current.ctx, item.Tree)
-		stack = append(stack, walkItem{exit: true})
+		stack = append(stack, walkItem{ref: current.ref, ctx: current.ctx, exit: true})
 		for index := len(children) - 1; index >= 0; index-- {
 			stack = append(stack, children[index])
 		}
@@ -165,14 +188,17 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 		syntax.BlockStmt, syntax.ReturnStmt, syntax.IfStmt, syntax.WhileStmt,
 		syntax.RangeLoopStmt, syntax.ForStmt, syntax.SwitchStmt, syntax.SwitchCase,
 		syntax.DeferStmt, syntax.PrintStmt, syntax.BreakStmt, syntax.ContinueStmt,
-		syntax.AssignmentStmt, syntax.ExpressionStmt, syntax.Name, syntax.Path,
-		syntax.Literal, syntax.InterpolatedString, syntax.SomeExpr, syntax.SizeofExpr, syntax.PrefixTerm,
+		syntax.AssignmentStmt, syntax.ExpressionStmt, syntax.PrefixTerm,
 		syntax.PostfixExpr, syntax.BinaryExpr, syntax.CallExpr, syntax.BracketApply,
-		syntax.SliceExpr, syntax.MemberExpr, syntax.CastExpr, syntax.GroupedTerm, syntax.TupleTerm,
-		syntax.ArrayExpr, syntax.ArrayRepeatExpr, syntax.RecordExpr, syntax.RecordField,
-		syntax.PartialMemberExpr, syntax.StructType, syntax.UnionType, syntax.EnumType,
+		syntax.SliceExpr, syntax.MemberExpr, syntax.CastExpr,
+		syntax.StructType, syntax.UnionType, syntax.EnumType,
 		syntax.FieldDecl, syntax.VariantDecl, syntax.Parameter, syntax.TypeParameter:
 		return w.structuralChildren(ref, node, ctx, tree)
+	case syntax.Name, syntax.Path, syntax.Literal, syntax.InterpolatedString,
+		syntax.SomeExpr, syntax.SizeofExpr, syntax.GroupedTerm, syntax.TupleTerm,
+		syntax.ArrayExpr, syntax.ArrayRepeatExpr, syntax.RecordExpr, syntax.RecordField,
+		syntax.PartialMemberExpr:
+		return w.prepareExpression(ref, node, ctx, tree)
 	case syntax.EndOfFile:
 		return nil
 	case syntax.BindingDecl, syntax.ExternBinding:
@@ -195,10 +221,13 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 		}
 		unsupported := w.handleFunctionLiteral(ref, node, ctx)
 		items := childItems(ref, node, ctx)
+		item, _ := w.generation.inputs.Graph.Module(ref.Module)
+		_, _, _, bodyNode := functionParts(item.Tree, node)
 		for index := range items {
 			items[index].ctx.callable = callableRef{Syntax: ref}
 			items[index].ctx.unsupported = unsupported
 			items[index].ctx.controlDepth = 0
+			items[index].ctx.suppressValue = items[index].ref.Node != bodyNode
 		}
 		return items
 	default:
@@ -209,6 +238,34 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 
 func (w *walker) structuralChildren(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree) []walkItem {
 	items := childItems(ref, node, ctx)
+	switch node.Kind() {
+	case syntax.ImportDecl, syntax.ExternBinding, syntax.Parameter, syntax.TypeParameter, syntax.FieldDecl, syntax.VariantDecl:
+		for index := range items {
+			items[index].ctx.suppressValue = true
+		}
+	case syntax.BindingDecl:
+		_, initializer, _, initializerPresent := bindingParts(ref, node)
+		for index := range items {
+			items[index].ctx.suppressValue = !initializerPresent || items[index].ref != initializer
+		}
+	case syntax.TypeDecl, syntax.ExternType:
+		for index := range items {
+			child, _ := tree.Node(items[index].ref.Node)
+			switch child.Kind() {
+			case syntax.StructType, syntax.UnionType, syntax.EnumType:
+				items[index].ctx.suppressValue = false
+			default:
+				items[index].ctx.suppressValue = true
+			}
+		}
+	case syntax.StructType, syntax.UnionType, syntax.EnumType:
+		for index := range items {
+			child, _ := tree.Node(items[index].ref.Node)
+			if child.Kind() == syntax.Name || child.Kind() == syntax.Literal {
+				items[index].ctx.suppressValue = true
+			}
+		}
+	}
 	if isControlContainer(node.Kind()) {
 		if ctx.controlDepth >= w.generation.config.MaxControlDepth {
 			w.generation.reportLimit("control depth", uint64(w.generation.config.MaxControlDepth))
@@ -275,8 +332,9 @@ func (w *walker) callableChildren(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 	if !ok {
 		return items
 	}
-	_, _, resultNode, _ := functionParts(tree, node)
+	_, _, resultNode, bodyNode := functionParts(tree, node)
 	for index := range items {
+		items[index].ctx.suppressValue = items[index].ref.Node != bodyNode
 		items[index].ctx.callable = callableRef{Symbol: callable.ID, Syntax: ref}
 		items[index].ctx.typeOwner = callable.ID
 		if signature, prepared := w.program.Signature(callable.ID); prepared && len(signature.TypeParams) != 0 {
@@ -323,16 +381,36 @@ func (w *walker) publishSymbol(id symbol.SymbolID, term infer.Term, origin infer
 		w.generation.report("invalid, duplicate, or over-limit symbol publication", origin.Span)
 		return typedValue{}, false
 	}
+	if existing, ok := w.termsBySymbol[id]; ok && existing != term {
+		w.session.Add(infer.Equal(existing, term, origin))
+		term = existing
+	} else {
+		w.termsBySymbol[id] = term
+	}
 	value, ok := w.commitPublication(term, origin, root)
 	if !ok {
 		return typedValue{}, false
 	}
 	w.session.PublishSymbol(id, term)
 	w.publishedSymbols[id] = true
+	w.valuesBySymbol[id] = value
 	return value, true
 }
 
+func (w *walker) symbolTerm(id symbol.SymbolID, origin infer.Origin) infer.Term {
+	if term, ok := w.termsBySymbol[id]; ok {
+		return term
+	}
+	term := w.session.Variable(origin)
+	w.termsBySymbol[id] = term
+	return term
+}
+
 func (w *walker) publishSyntax(ref symbol.SyntaxRef, term infer.Term, origin infer.Origin) (typedValue, bool) {
+	if existing, reserved := w.valuesBySyntax[ref]; reserved && existing.ID != 0 && !w.publishedSyntax[ref] {
+		w.session.Add(infer.Equal(existing.Term, term, origin))
+		return w.publishExistingSyntax(ref, existing, origin)
+	}
 	root := valueRoot{Kind: rootSyntax, Syntax: ref}
 	if w.publishedSyntax[ref] || !w.canPublish(root) {
 		w.generation.report("invalid, duplicate, or over-limit syntax publication", origin.Span)
@@ -344,6 +422,50 @@ func (w *walker) publishSyntax(ref symbol.SyntaxRef, term infer.Term, origin inf
 	}
 	w.session.PublishSyntax(ref, term)
 	w.publishedSyntax[ref] = true
+	w.valuesBySyntax[ref] = value
+	return value, true
+}
+
+func (w *walker) publishExistingSyntax(ref symbol.SyntaxRef, value typedValue, origin infer.Origin) (typedValue, bool) {
+	if value.ID == 0 || w.publishedSyntax[ref] || !w.canPublish(valueRoot{Kind: rootSyntax, Syntax: ref}) {
+		w.generation.report("invalid, duplicate, or over-limit syntax publication", origin.Span)
+		return value, false
+	}
+	if !w.generation.addRoot(value.ID, valueRoot{Kind: rootSyntax, Syntax: ref}) {
+		return value, false
+	}
+	w.session.PublishSyntax(ref, value.Term)
+	w.publishedSyntax[ref] = true
+	w.valuesBySyntax[ref] = value
+	return value, true
+}
+
+func (w *walker) rootExistingSlot(value typedValue, origin infer.Origin) (typedValue, bool) {
+	g := w.generation
+	if g == nil || g.state != generationMutable || value.ID == 0 || !g.hasValue(value.ID) || g.values[value.ID-1].Term != value.Term {
+		if g != nil {
+			g.report("invalid recovery slot value", origin.Span)
+		}
+		return value, false
+	}
+	if root, rooted := g.roots.root(value.ID); rooted {
+		return value, root.Kind == rootSlot && !root.Alternative.Guarded
+	}
+	slot, exists := w.publishedSlots[value.Term]
+	if !exists {
+		slot = w.session.PublishSlot(value.Term)
+		if slot == (infer.SlotID{}) {
+			g.report("inference rejected recovery slot publication", origin.Span)
+			return value, false
+		}
+	}
+	if !g.addRoot(value.ID, valueRoot{Kind: rootSlot, Slot: slot}) {
+		g.report("recovery slot publication could not be rooted", origin.Span)
+		return value, false
+	}
+	if !exists {
+		w.publishedSlots[value.Term] = slot
+	}
 	return value, true
 }
 

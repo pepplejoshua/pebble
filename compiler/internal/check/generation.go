@@ -201,6 +201,47 @@ func (g *generation) addRecord(value retainedRecord) (recordID, bool) {
 			return 0, false
 		}
 	}
+	if value.Expression != nil {
+		if value.Expression.Symbol != 0 && !g.validSymbol(value.Expression.Symbol) {
+			g.report("expression record contains an invalid symbol", value.Header.Span)
+			return 0, false
+		}
+		if value.Expression.Specialized != 0 && uint64(value.Expression.Specialized) > uint64(len(g.records.values)) {
+			g.report("expression record contains an invalid specialized join", value.Header.Span)
+			return 0, false
+		}
+		if value.Expression.Specialized != 0 {
+			joined := g.records.values[value.Expression.Specialized-1]
+			if joined.Header.Syntax != value.Header.Syntax || joined.Header.Alternative != value.Header.Alternative || joined.Header.Owner != value.Header.Owner {
+				g.report("expression record contains a mismatched specialized join", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
+	if value.Aggregate != nil {
+		if value.Aggregate.Declaration != 0 && !g.validSymbol(value.Aggregate.Declaration) {
+			g.report("aggregate record contains an invalid declaration", value.Header.Span)
+			return 0, false
+		}
+		for _, field := range value.Aggregate.Fields {
+			if !g.validSyntax(field.Field) || !g.validSyntax(field.NameSyntax) || !g.validRecordSpan(field.NameSyntax, field.NameSpan) || (field.Member != 0 && !g.validSymbol(field.Member)) {
+				g.report("aggregate record contains invalid field evidence", value.Header.Span)
+				return 0, false
+			}
+		}
+		for _, field := range value.Aggregate.DeclarationFields {
+			if !g.validSymbol(field) {
+				g.report("aggregate record contains an invalid declaration field", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
+	if value.Compatibility != nil {
+		if value.Compatibility.DestinationSymbol != 0 && !g.validSymbol(value.Compatibility.DestinationSymbol) {
+			g.report("compatibility record contains an invalid destination symbol", value.Header.Span)
+			return 0, false
+		}
+	}
 	id, ok := g.records.append(value, g.hasValue, g.hasControl, g.config.MaxSemanticRecords, g.config.MaxRecordComponents)
 	if !ok {
 		g.report("invalid, foreign, or over-limit semantic record", value.Header.Span)

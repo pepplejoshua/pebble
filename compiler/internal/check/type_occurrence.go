@@ -4,6 +4,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 type typeUseKind uint8
@@ -22,11 +23,24 @@ type typeUseRecord struct {
 }
 
 type typedValue struct {
-	ID   valueID
-	Term infer.Term
+	ID    valueID
+	Term  infer.Term
+	Known types.TypeID
 }
 
 func (w *walker) resolveType(ref symbol.SyntaxRef, typeOwner, genericOwner symbol.SymbolID, role string) typedValue {
+	return w.resolveTypeUse(ref, typeOwner, genericOwner, role, typeUseAnnotation)
+}
+
+func (w *walker) resolveTypeUse(ref symbol.SyntaxRef, typeOwner, genericOwner symbol.SymbolID, role string, kind typeUseKind) typedValue {
+	return w.resolveTypeOccurrence(ref, typeOwner, genericOwner, role, kind, true)
+}
+
+func (w *walker) resolveUnrecordedType(ref symbol.SyntaxRef, typeOwner, genericOwner symbol.SymbolID, role string) typedValue {
+	return w.resolveTypeOccurrence(ref, typeOwner, genericOwner, role, 0, false)
+}
+
+func (w *walker) resolveTypeOccurrence(ref symbol.SyntaxRef, typeOwner, genericOwner symbol.SymbolID, role string, kind typeUseKind, retain bool) typedValue {
 	if w.resolvedTypes[ref] {
 		w.generation.report("type occurrence resolved more than once", spanForRef(w.generation.inputs, ref))
 		return w.errorValue(ref, typeOwner, genericOwner, role)
@@ -40,8 +54,14 @@ func (w *walker) resolveType(ref symbol.SyntaxRef, typeOwner, genericOwner symbo
 		term = w.session.Known(result.Type)
 	}
 	value, published := w.newSlotValue(term, origin)
+	if !suppressed {
+		value.Known = result.Type
+		w.knownValues[value.ID] = result.Type
+	}
 	suppressed = suppressed || !published
-	w.retainTypeUse(ref, genericOwner, value.ID, suppressed)
+	if retain {
+		w.retainTypeUse(ref, genericOwner, value.ID, kind, suppressed)
+	}
 	return value
 }
 
@@ -50,13 +70,13 @@ func (w *walker) preparedType(ref symbol.SyntaxRef, term infer.Term, typeOwner, 
 	origin := w.originForRef(ref, role, typeOwner, genericOwner)
 	value, published := w.newSlotValue(term, origin)
 	suppressed = suppressed || !published
-	w.retainTypeUse(ref, genericOwner, value.ID, suppressed)
+	w.retainTypeUse(ref, genericOwner, value.ID, typeUseAnnotation, suppressed)
 	return value
 }
 
-func (w *walker) retainTypeUse(ref symbol.SyntaxRef, genericOwner symbol.SymbolID, value valueID, suppressed bool) {
+func (w *walker) retainTypeUse(ref symbol.SyntaxRef, genericOwner symbol.SymbolID, value valueID, kind typeUseKind, suppressed bool) {
 	header := w.header(ref, genericOwner, suppressed)
-	record := typeUseRecord{Header: header, Kind: typeUseAnnotation, Type: value}
+	record := typeUseRecord{Header: header, Kind: kind, Type: value}
 	w.generation.addRecord(retainedRecord{Header: header, TypeUse: &record})
 }
 

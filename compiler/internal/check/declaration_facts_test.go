@@ -375,8 +375,9 @@ func TestDeclarationFactsInitializerPlaceholderRetainsExactValue(t *testing.T) {
 	if !ok || reserved.ID != initializer || reserved.Term != facts.Generation.values[initializer-1].Term {
 		t.Fatalf("initializer reservation = %+v, record value=%d", reserved, initializer)
 	}
-	if _, rooted := facts.Generation.roots.root(initializer); rooted {
-		t.Fatal("06a.3 prematurely rooted initializer placeholder")
+	root, rooted := facts.Generation.roots.root(initializer)
+	if !rooted || root.Kind != rootSyntax || root.Syntax != initializerRef {
+		t.Fatalf("06a.4 did not attach the initializer syntax root to its reserved value: %+v", root)
 	}
 }
 

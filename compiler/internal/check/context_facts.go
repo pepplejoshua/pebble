@@ -42,9 +42,15 @@ func (w *walker) handleContext(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		term = w.session.Known(runtime.Context)
 	}
 	value, published := w.publishSyntax(ref, term, origin)
+	if !suppressed {
+		value.Known = runtime.Context
+		w.knownValues[value.ID] = runtime.Context
+		w.valuesBySyntax[ref] = value
+	}
 	if !published {
 		suppressed = true
 	}
+	w.successfulExpressions[ref] = published && !suppressed
 	header := w.header(ref, ctx.genericOwner, suppressed)
 	record := contextFlowRecord{
 		Header: header, Kind: contextExpression,

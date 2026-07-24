@@ -1,0 +1,6 @@
+let exact i32 = 42;
+let maybe ?i32 = 7;
+let pair (i32, str) = (1, "one");
+let pointer *i32 = nil;
+let absent ?i32 = none;
+let present ?i32 = some 2;
