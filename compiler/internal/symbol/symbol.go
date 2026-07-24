@@ -70,6 +70,7 @@ const (
 	SymbolExternFunction
 	SymbolExternBinding
 	SymbolBuiltinType
+	SymbolRuntimeType
 )
 
 func (k SymbolKind) String() string {
@@ -104,6 +105,8 @@ func (k SymbolKind) String() string {
 		return "extern binding"
 	case SymbolBuiltinType:
 		return "builtin type"
+	case SymbolRuntimeType:
+		return "runtime type"
 	default:
 		return "unknown"
 	}
@@ -146,6 +149,15 @@ func (b BuiltinType) String() string {
 	}
 	return "unknown"
 }
+
+// RuntimeType identifies a compiler-owned nominal type independently of any
+// source spelling or backend name.
+type RuntimeType uint8
+
+const (
+	RuntimeAllocator RuntimeType = iota + 1
+	RuntimeContext
+)
 
 // ScopeKind describes an authored or declaration environment.
 type ScopeKind uint8
@@ -194,6 +206,7 @@ type Symbol struct {
 	ImportTarget ModuleID
 	Generic      bool
 	Builtin      BuiltinType
+	Runtime      RuntimeType
 	Error        bool
 }
 
@@ -296,6 +309,7 @@ type Result struct {
 	Symbols      *SymbolStore
 	prelude      ScopeID
 	builtins     [BuiltinF64 + 1]SymbolID
+	runtimes     [RuntimeContext + 1]SymbolID
 	references   map[SyntaxRef]Resolution
 	qualifiers   map[SyntaxRef]ModuleID
 	brackets     map[SyntaxRef]BracketMode
@@ -316,6 +330,14 @@ func (r *Result) Builtin(kind BuiltinType) (SymbolID, bool) {
 		return 0, false
 	}
 	id := r.builtins[kind]
+	return id, id != 0
+}
+
+func (r *Result) Runtime(kind RuntimeType) (SymbolID, bool) {
+	if r == nil || kind == 0 || int(kind) >= len(r.runtimes) {
+		return 0, false
+	}
+	id := r.runtimes[kind]
 	return id, id != 0
 }
 
@@ -367,7 +389,7 @@ func (r *Result) Dump(w io.Writer) error {
 		}
 	}
 	for _, symbol := range r.Symbols.All() {
-		if _, err := fmt.Fprintf(w, "symbol %d %s %q module=%d scope=%d node=%d containing=%d target=%d generic=%t builtin=%s error=%t\n", symbol.ID, symbol.Kind, symbol.Name, symbol.Module, symbol.Scope, symbol.Declaration.Node, symbol.Containing, symbol.ImportTarget, symbol.Generic, symbol.Builtin, symbol.Error); err != nil {
+		if _, err := fmt.Fprintf(w, "symbol %d %s %q module=%d scope=%d node=%d containing=%d target=%d generic=%t builtin=%s runtime=%d error=%t\n", symbol.ID, symbol.Kind, symbol.Name, symbol.Module, symbol.Scope, symbol.Declaration.Node, symbol.Containing, symbol.ImportTarget, symbol.Generic, symbol.Builtin, symbol.Runtime, symbol.Error); err != nil {
 			return err
 		}
 	}

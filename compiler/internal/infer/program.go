@@ -115,6 +115,13 @@ type Signature struct {
 	Variadic   bool
 }
 
+// RuntimeTypes contains the two compiler-owned nominal identities prepared
+// for phase 6. It is returned by value from a frozen Program.
+type RuntimeTypes struct {
+	Allocator types.TypeID
+	Context   types.TypeID
+}
+
 type Program struct {
 	inputs       ProgramInputs
 	config       Config
@@ -128,6 +135,8 @@ type Program struct {
 	aliasState   map[symbol.SymbolID]uint8
 	aliasStack   []symbol.SymbolID
 	reporter     *reporter
+	runtimeTypes RuntimeTypes
+	runtimeReady bool
 }
 
 func (p *Program) TypeDeclaration(id symbol.SymbolID) (TypeDeclaration, bool) {
@@ -187,6 +196,13 @@ func (p *Program) Template(id TemplateID) (TypeTemplate, bool) {
 	return v, true
 }
 
+func (p *Program) RuntimeTypes() (RuntimeTypes, bool) {
+	if p == nil || !p.runtimeReady {
+		return RuntimeTypes{}, false
+	}
+	return p.runtimeTypes, true
+}
+
 func cloneDeclaration(v TypeDeclaration) TypeDeclaration {
 	v.Parameters = append([]symbol.SymbolID(nil), v.Parameters...)
 	v.Members = append([]MemberDescriptor(nil), v.Members...)
@@ -231,6 +247,7 @@ func Prepare(inputs ProgramInputs, diagnostics *diagnostic.DiagnosticSet, config
 	for _, m := range inputs.Graph.Modules() {
 		p.modules[m.ID] = m
 	}
+	p.prepareRuntimePrelude()
 	p.prepareDeclarations()
 	p.prepareSignatures()
 	p.reporter.flush()

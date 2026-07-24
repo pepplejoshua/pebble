@@ -1,0 +1,2 @@
+type Allocator = struct {};
+fn invalid() void { let Allocator = 1; }

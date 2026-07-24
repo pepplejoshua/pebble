@@ -1,0 +1,2 @@
+fn first(value Context) void {}
+fn second(value __pebble_context) void {}

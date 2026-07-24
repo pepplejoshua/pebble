@@ -73,7 +73,7 @@ func (p *Program) prepareDeclarations() {
 	// Predeclare only concrete nominal identities. Generic declarations remain
 	// SymbolID-identified constructors until application.
 	for _, decl := range p.TypeDeclarations() {
-		if decl.Form != DeclarationNominal || decl.State != DeclarationReady || len(decl.Parameters) != 0 {
+		if decl.Form != DeclarationNominal || decl.State != DeclarationReady || len(decl.Parameters) != 0 || decl.Template != 0 {
 			continue
 		}
 		id, err := p.inputs.Types.Intern(types.NominalKey(decl.Symbol, nil))

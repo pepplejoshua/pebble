@@ -98,6 +98,28 @@ func (r *resolver) installPrelude() {
 		id := r.addSymbol(Symbol{Name: kind.String(), Kind: SymbolBuiltinType, Scope: scope, Builtin: kind}, true, 0)
 		r.result.builtins[kind] = id
 	}
+	allocator := r.addSymbol(Symbol{Name: "Allocator", Kind: SymbolRuntimeType, Scope: scope, Runtime: RuntimeAllocator}, true, 0)
+	context := r.addSymbol(Symbol{Kind: SymbolRuntimeType, Scope: scope, Runtime: RuntimeContext}, false, 0)
+	r.result.runtimes[RuntimeAllocator] = allocator
+	r.result.runtimes[RuntimeContext] = context
+	for _, member := range []struct {
+		owner SymbolID
+		name  string
+	}{
+		{allocator, "ptr"},
+		{allocator, "alloc"},
+		{allocator, "realloc"},
+		{allocator, "free"},
+		{context, "default_allocator"},
+	} {
+		if member.owner == 0 {
+			continue
+		}
+		id := r.addSymbol(Symbol{Name: member.name, Kind: SymbolField, Containing: member.owner}, false, 0)
+		if id != 0 {
+			r.result.members[member.owner] = append(r.result.members[member.owner], id)
+		}
+	}
 }
 
 func normalizedConfig(c Config) Config {
@@ -356,9 +378,9 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 		return 0
 	}
 	symbol.ID = SymbolID(len(r.result.Symbols.values) + 1)
-	if symbol.Builtin == 0 && symbol.Name != "" && !symbol.Error && reservedBuiltin(symbol.Name) {
+	if symbol.Builtin == 0 && symbol.Runtime == 0 && symbol.Name != "" && !symbol.Error && reservedBuiltin(symbol.Name) {
 		symbol.Error = true
-		r.report(CodeReservedBuiltin, fmt.Sprintf("%q is a reserved builtin type name", symbol.Name), symbol.Span)
+		r.report(CodeReservedBuiltin, fmt.Sprintf("%q is a reserved compiler-owned type name", symbol.Name), symbol.Span)
 	}
 	if bind && symbol.Name != "" && !symbol.Error {
 		if original, duplicate := r.bindings[symbol.Scope][symbol.Name]; duplicate {
@@ -379,6 +401,9 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 }
 
 func reservedBuiltin(name string) bool {
+	if name == "Allocator" {
+		return true
+	}
 	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
 		if name == kind.String() {
 			return true

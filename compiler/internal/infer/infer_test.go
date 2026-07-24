@@ -5,9 +5,252 @@ import (
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
+	"github.com/pepplejoshua/pebble/compiler/internal/module"
+	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
+
+func TestRuntimePreludeNominalsMembersAndSourceResolution(t *testing.T) {
+	program, diagnostics := prepareSource(t, []byte(`fn preserve(value Allocator) Allocator => value;`))
+	if diagnostics.HasErrors() {
+		t.Fatalf("prepare diagnostics: %+v", diagnostics.Items())
+	}
+	runtimeTypes, ok := program.RuntimeTypes()
+	if !ok {
+		t.Fatal("runtime types are unavailable")
+	}
+	allocatorSymbol, _ := program.inputs.Resolution.Runtime(symbol.RuntimeAllocator)
+	contextSymbol, _ := program.inputs.Resolution.Runtime(symbol.RuntimeContext)
+	assertNominalIdentity(t, program.inputs.Types, runtimeTypes.Allocator, allocatorSymbol)
+	assertNominalIdentity(t, program.inputs.Types, runtimeTypes.Context, contextSymbol)
+
+	builtins := program.inputs.Types.Builtins()
+	voidPointer, _ := program.inputs.Types.Intern(types.PointerKey(builtins.Void))
+	alloc, _ := program.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, builtins.Uint}, voidPointer, false))
+	realloc, _ := program.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, voidPointer, builtins.Uint}, voidPointer, false))
+	free, _ := program.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{voidPointer, voidPointer}, builtins.Void, false))
+	assertRuntimeMembers(t, program, allocatorSymbol, []string{"ptr", "alloc", "realloc", "free"}, []types.TypeID{voidPointer, alloc, realloc, free})
+	assertRuntimeMembers(t, program, contextSymbol, []string{"default_allocator"}, []types.TypeID{runtimeTypes.Allocator})
+
+	for _, callback := range []struct {
+		id         types.TypeID
+		parameters []types.TypeID
+		result     types.TypeID
+	}{
+		{alloc, []types.TypeID{voidPointer, builtins.Uint}, voidPointer},
+		{realloc, []types.TypeID{voidPointer, voidPointer, builtins.Uint}, voidPointer},
+		{free, []types.TypeID{voidPointer, voidPointer}, builtins.Void},
+	} {
+		key, _ := program.inputs.Types.Key(callback.id)
+		convention, parameters, result, variadic, ok := key.Function()
+		if !ok || convention != types.Pebble || variadic || result != callback.result || !equalTypeIDs(parameters, callback.parameters) {
+			t.Fatalf("callback key=%+v convention=%d parameters=%v result=%d variadic=%v", key, convention, parameters, result, variadic)
+		}
+	}
+
+	var allocatorOccurrence symbol.SyntaxRef
+	for _, reference := range program.inputs.Resolution.References() {
+		if reference.Symbol == allocatorSymbol {
+			allocatorOccurrence = reference.Syntax
+			break
+		}
+	}
+	session := NewSession(program, diagnostic.NewDiagnosticSet(), Config{})
+	resolved := session.ResolveType(allocatorOccurrence, 0)
+	if resolved.State != TypeFinal || resolved.Type != runtimeTypes.Allocator {
+		t.Fatalf("Allocator resolution = %+v", resolved)
+	}
+	if !session.Solve().Successful() {
+		t.Fatal("source-resolution session failed")
+	}
+
+	second, secondDiagnostics := prepareSource(t, []byte(`fn preserve(value Allocator) Allocator => value;`))
+	secondRuntime, secondOK := second.RuntimeTypes()
+	secondAllocator, _ := second.inputs.Resolution.Runtime(symbol.RuntimeAllocator)
+	secondContext, _ := second.inputs.Resolution.Runtime(symbol.RuntimeContext)
+	if secondDiagnostics.HasErrors() || !secondOK {
+		t.Fatalf("second runtime preparation failed: types=%+v diagnostics=%+v", secondRuntime, secondDiagnostics.Items())
+	}
+	assertNominalIdentity(t, second.inputs.Types, secondRuntime.Allocator, secondAllocator)
+	assertNominalIdentity(t, second.inputs.Types, secondRuntime.Context, secondContext)
+	secondBuiltins := second.inputs.Types.Builtins()
+	secondVoidPointer, _ := second.inputs.Types.Intern(types.PointerKey(secondBuiltins.Void))
+	secondAlloc, _ := second.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{secondVoidPointer, secondBuiltins.Uint}, secondVoidPointer, false))
+	secondRealloc, _ := second.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{secondVoidPointer, secondVoidPointer, secondBuiltins.Uint}, secondVoidPointer, false))
+	secondFree, _ := second.inputs.Types.Intern(types.FunctionKey(types.Pebble, []types.TypeID{secondVoidPointer, secondVoidPointer}, secondBuiltins.Void, false))
+	assertRuntimeMembers(t, second, secondAllocator, []string{"ptr", "alloc", "realloc", "free"}, []types.TypeID{secondVoidPointer, secondAlloc, secondRealloc, secondFree})
+	assertRuntimeMembers(t, second, secondContext, []string{"default_allocator"}, []types.TypeID{secondRuntime.Allocator})
+}
+
+func TestRuntimePreludeHasFieldAndConcurrentSessions(t *testing.T) {
+	program, diagnostics := prepareSource(t, []byte(`fn preserve(value Allocator) Allocator => value;`))
+	if diagnostics.HasErrors() {
+		t.Fatalf("prepare diagnostics: %+v", diagnostics.Items())
+	}
+	runtimeTypes, _ := program.RuntimeTypes()
+	allocatorSymbol, _ := program.inputs.Resolution.Runtime(symbol.RuntimeAllocator)
+	contextSymbol, _ := program.inputs.Resolution.Runtime(symbol.RuntimeContext)
+	allocatorExpected := runtimeMemberTypes(t, program, allocatorSymbol)
+	contextExpected := runtimeMemberTypes(t, program, contextSymbol)
+
+	run := func(local *diagnostic.DiagnosticSet) {
+		session := NewSession(program, local, Config{})
+		node := symbol.SyntaxRef{Module: 1, Node: 1}
+		for index, name := range []string{"ptr", "alloc", "realloc", "free"} {
+			field := session.Variable(Origin{Role: name})
+			session.Add(HasField(session.Known(runtimeTypes.Allocator), name, field, Origin{Role: name}))
+			ref := node
+			ref.Node += syntax.NodeID(index)
+			session.PublishSyntax(ref, field)
+		}
+		contextField := session.Variable(Origin{Role: "default_allocator"})
+		session.Add(HasField(session.Known(runtimeTypes.Context), "default_allocator", contextField, Origin{Role: "default_allocator"}))
+		contextRef := symbol.SyntaxRef{Module: 1, Node: 20}
+		session.PublishSyntax(contextRef, contextField)
+		solution := session.Solve()
+		if !solution.Successful() || local.HasErrors() {
+			t.Errorf("runtime HasField failed: %+v", local.Items())
+			return
+		}
+		for index := range allocatorExpected {
+			ref := node
+			ref.Node += syntax.NodeID(index)
+			got, _ := solution.SyntaxType(ref)
+			if got.Type != allocatorExpected[index] {
+				t.Errorf("Allocator field %d type=%d want=%d", index, got.Type, allocatorExpected[index])
+			}
+		}
+		got, _ := solution.SyntaxType(contextRef)
+		if got.Type != contextExpected[0] {
+			t.Errorf("Context.default_allocator type=%d want=%d", got.Type, contextExpected[0])
+		}
+	}
+
+	run(diagnostic.NewDiagnosticSet())
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			run(diagnostic.NewDiagnosticSet())
+		}()
+	}
+	wait.Wait()
+}
+
+func TestDamagedRuntimePreludeDoesNotPublishTypes(t *testing.T) {
+	diagnostics := diagnostic.NewDiagnosticSet()
+	sources := source.NewFileSet()
+	provider := inferenceMemoryProvider{"main.peb": []byte(`fn valid() void {}`)}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "types"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{MaxSymbols: 16})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := store.Len()
+	program := Prepare(ProgramInputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, ArrayLengths: fixedArrayLengths{}, LiteralTarget: LiteralTarget{WordBits: 64}}, diagnostics, Config{})
+	if runtimeTypes, ok := program.RuntimeTypes(); ok || runtimeTypes != (RuntimeTypes{}) {
+		t.Fatalf("damaged runtime types = %+v, %v", runtimeTypes, ok)
+	}
+	if store.Len() != before || !hasDiagnostic(diagnostics, CodeResourceLimit) {
+		t.Fatalf("store len %d -> %d diagnostics=%+v", before, store.Len(), diagnostics.Items())
+	}
+}
+
+func TestDamagedRuntimePreludeAllocatorOccurrenceDoesNotEmitTypeDiagnostic(t *testing.T) {
+	diagnostics := diagnostic.NewDiagnosticSet()
+	sources := source.NewFileSet()
+	provider := inferenceMemoryProvider{"main.peb": []byte(`fn preserve(value Allocator) Allocator => value;`)}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "types"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	allocator, ok := resolution.Runtime(symbol.RuntimeAllocator)
+	if !ok {
+		t.Fatal("valid 04b result is missing Allocator")
+	}
+	foundOccurrence := false
+	for _, reference := range resolution.References() {
+		if reference.Symbol == allocator && reference.State == symbol.ResolutionResolved {
+			foundOccurrence = true
+			break
+		}
+	}
+	if !foundOccurrence {
+		t.Fatal("valid authored Allocator occurrence was not resolved by 04b")
+	}
+	store, err := types.New(types.Config{MaxTypes: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := Prepare(ProgramInputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, ArrayLengths: fixedArrayLengths{}, LiteralTarget: LiteralTarget{WordBits: 64}}, diagnostics, Config{})
+	if _, ready := program.RuntimeTypes(); ready {
+		t.Fatal("runtime prelude unexpectedly succeeded against the limited store")
+	}
+	resourceDiagnostics, typeDiagnostics := 0, 0
+	for _, item := range diagnostics.Items() {
+		switch item.Code {
+		case CodeResourceLimit:
+			resourceDiagnostics++
+		case CodeInvalidType:
+			typeDiagnostics++
+		}
+	}
+	if resourceDiagnostics != 1 || typeDiagnostics != 0 {
+		t.Fatalf("runtime diagnostics: T0512=%d T0501=%d items=%+v", resourceDiagnostics, typeDiagnostics, diagnostics.Items())
+	}
+}
+
+func assertNominalIdentity(t *testing.T, store *types.Store, id types.TypeID, declaration symbol.SymbolID) {
+	t.Helper()
+	key, ok := store.Key(id)
+	if !ok {
+		t.Fatalf("type %d is not store-owned", id)
+	}
+	gotDeclaration, arguments, ok := key.Nominal()
+	if !ok || gotDeclaration != declaration || len(arguments) != 0 {
+		t.Fatalf("nominal type %d = declaration %d arguments %v", id, gotDeclaration, arguments)
+	}
+}
+
+func assertRuntimeMembers(t *testing.T, program *Program, owner symbol.SymbolID, names []string, expected []types.TypeID) {
+	t.Helper()
+	declaration, ok := program.TypeDeclaration(owner)
+	if !ok || declaration.State != DeclarationReady || declaration.Form != DeclarationNominal || len(declaration.Members) != len(names) {
+		t.Fatalf("runtime declaration %d = %+v", owner, declaration)
+	}
+	for index, member := range declaration.Members {
+		value, _ := program.inputs.Resolution.Symbols.Symbol(member.Symbol)
+		template, templateOK := program.Template(member.Type)
+		if value.Name != names[index] || value.Containing != owner || !templateOK || template.Kind != TemplateKnown || template.Known != expected[index] {
+			t.Fatalf("member %d = %+v symbol=%+v template=%+v", index, member, value, template)
+		}
+	}
+}
+
+func runtimeMemberTypes(t *testing.T, program *Program, owner symbol.SymbolID) []types.TypeID {
+	t.Helper()
+	declaration, _ := program.TypeDeclaration(owner)
+	result := make([]types.TypeID, len(declaration.Members))
+	for index, member := range declaration.Members {
+		template, _ := program.Template(member.Type)
+		result[index] = template.Known
+	}
+	return result
+}
+
+func equalTypeIDs(a, b []types.TypeID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index := range a {
+		if a[index] != b[index] {
+			return false
+		}
+	}
+	return true
+}
 
 func testProgram(t *testing.T) (*Program, *types.Store) {
 	t.Helper()
@@ -19,7 +262,7 @@ func testProgram(t *testing.T) (*Program, *types.Store) {
 }
 
 func TestEquationOrderDoesNotChooseTypes(t *testing.T) {
-	run := func(reverse bool) (types.TypeID, []diagnostic.Code) {
+	run := func(reverse bool) []diagnostic.Code {
 		program, store := testProgram(t)
 		diagnostics := diagnostic.NewDiagnosticSet()
 		session := NewSession(program, diagnostics, Config{})
@@ -35,16 +278,19 @@ func TestEquationOrderDoesNotChooseTypes(t *testing.T) {
 		session.PublishSymbol(1, a)
 		solution := session.Solve()
 		got, _ := solution.SymbolType(1)
+		if got.State != TypeFinal || got.Type != store.Builtins().I32 {
+			t.Fatalf("reverse=%v result=%+v", reverse, got)
+		}
 		var codes []diagnostic.Code
 		for _, item := range diagnostics.Items() {
 			codes = append(codes, item.Code)
 		}
-		return got.Type, codes
+		return codes
 	}
-	a, ac := run(false)
-	b, bc := run(true)
-	if a != b || len(ac) != 0 || len(bc) != 0 {
-		t.Fatalf("ordered solve = (%d,%v), reversed = (%d,%v)", a, ac, b, bc)
+	forward := run(false)
+	reverse := run(true)
+	if len(forward) != 0 || len(reverse) != 0 {
+		t.Fatalf("ordered diagnostics=%v reversed diagnostics=%v", forward, reverse)
 	}
 }
 

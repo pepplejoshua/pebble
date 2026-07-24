@@ -174,6 +174,46 @@ func TestBuiltinTypesLiveInReservedPrelude(t *testing.T) {
 	}
 }
 
+func TestRuntimeTypesHaveStableCompilerOwnedIdentities(t *testing.T) {
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": "fn preserve(value Allocator) Allocator => value;"}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	allocator, ok := result.Runtime(RuntimeAllocator)
+	if !ok {
+		t.Fatal("missing Allocator runtime identity")
+	}
+	context, ok := result.Runtime(RuntimeContext)
+	if !ok || context != allocator+1 {
+		t.Fatalf("runtime identities allocator=%d context=%d", allocator, context)
+	}
+	allocatorSymbol, _ := result.Symbols.Symbol(allocator)
+	contextSymbol, _ := result.Symbols.Symbol(context)
+	if allocatorSymbol.Kind != SymbolRuntimeType || allocatorSymbol.Runtime != RuntimeAllocator || allocatorSymbol.Name != "Allocator" || allocatorSymbol.Declaration != (SyntaxRef{}) {
+		t.Fatalf("Allocator symbol = %+v", allocatorSymbol)
+	}
+	if contextSymbol.Kind != SymbolRuntimeType || contextSymbol.Runtime != RuntimeContext || contextSymbol.Name != "" || contextSymbol.Declaration != (SyntaxRef{}) {
+		t.Fatalf("Context symbol = %+v", contextSymbol)
+	}
+	moduleValue, _ := graph.Module(graph.Root)
+	file, _ := sources.File(moduleValue.Source)
+	refs := namedReferences(t, result, moduleValue, file, "Allocator")
+	if len(refs) != 2 {
+		t.Fatalf("Allocator references = %+v", refs)
+	}
+	for _, ref := range refs {
+		if ref.State != ResolutionResolved || ref.Symbol != allocator {
+			t.Fatalf("Allocator reference = %+v", ref)
+		}
+	}
+	if got := result.Members(allocator); len(got) != 4 {
+		t.Fatalf("Allocator members = %v", got)
+	}
+	if got := result.Members(context); len(got) != 1 {
+		t.Fatalf("Context members = %v", got)
+	}
+}
+
 func TestDirectAliasBodiesAndFunctionResultsResolveAsTypes(t *testing.T) {
 	text := "type Base = struct {}; type Alias = Base; fn use() Base {}"
 	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
@@ -452,7 +492,7 @@ func TestConfiguredLimitsAndInvalidInputsAreBounded(t *testing.T) {
 }
 
 func TestRequiredFixtureShapes(t *testing.T) {
-	required := []string{"valid/forward_and_scopes.peb", "valid/generics_members_brackets.peb", "valid/capture.peb", "valid/multimodule/qualified/main.peb", "invalid/N0001/block_lifetime.peb", "invalid/N0001/loop_lifetime.peb", "invalid/N0001/local_forward.peb", "invalid/N0002/cross_kind.peb", "invalid/N0002/parameter_body.peb", "invalid/N0002/parameters.peb", "invalid/N0002/members.peb", "invalid/N0002/multimodule/qualifier_collision/main.peb", "invalid/N0003/not_a_qualifier.peb", "invalid/N0003/multimodule/qualifier_shadow/main.peb", "invalid/N0004/multimodule/missing_member/main.peb", "invalid/N0005/category.peb", "invalid/N0005/value_as_type.peb", "invalid/N0007/reserved_builtin.peb", "recovery/damaged.peb"}
+	required := []string{"valid/forward_and_scopes.peb", "valid/generics_members_brackets.peb", "valid/capture.peb", "valid/runtime_allocator.peb", "valid/multimodule/qualified/main.peb", "invalid/N0001/block_lifetime.peb", "invalid/N0001/loop_lifetime.peb", "invalid/N0001/local_forward.peb", "invalid/N0001/runtime_context_hidden.peb", "invalid/N0002/cross_kind.peb", "invalid/N0002/parameter_body.peb", "invalid/N0002/parameters.peb", "invalid/N0002/members.peb", "invalid/N0002/multimodule/qualifier_collision/main.peb", "invalid/N0003/not_a_qualifier.peb", "invalid/N0003/multimodule/qualifier_shadow/main.peb", "invalid/N0004/multimodule/missing_member/main.peb", "invalid/N0005/category.peb", "invalid/N0005/value_as_type.peb", "invalid/N0007/reserved_builtin.peb", "invalid/N0007/reserved_allocator.peb", "recovery/damaged.peb"}
 	root := filepath.Join(repoRoot(t), "tests", "names")
 	for _, relative := range required {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {

@@ -1,0 +1,1 @@
+fn preserve(value Allocator) Allocator => value;
