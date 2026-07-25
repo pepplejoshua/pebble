@@ -75,12 +75,22 @@ with two rows:
 
 | enum | any concrete integer | explicit; total; yields the variant's zero-based declaration ordinal |
 | concrete integer | `?enum` | explicit; checked; yields `some` variant when the value names one and `none` otherwise |
+| concrete integer | `enum` | explicit; asserted; traps at runtime when the value names no variant |
 
-`integer -> enum` is spelled as a cast to the **optional** enum type, so the
-cast expression's type is still exactly its authored destination and `06a`'s
-rule that a cast has the exact destination type is preserved. A cast directly
-to the bare enum type stays forbidden, because it has no meaning for an
-out-of-range value.
+`integer -> enum` has two authored forms, and the destination spelling selects
+the failure behavior. Both produce exactly their authored destination type, so
+`06a`'s rule that a cast has the exact destination type is preserved in both.
+
+- `n as ?Color` is the **handled** form. The author expects failure to be
+  possible and receives a `none` to inspect. Nothing traps.
+- `n as Color` is the **asserted** form. The author is claiming the value
+  names a variant. The check still happens, but a failure is a runtime fault,
+  not a value.
+
+This pair already exists in the language: postfix `!` force-unwraps an
+optional and faults when it is empty, while `some`/`none` handling is the safe
+path. The two cast spellings are the same choice with the same syntactic
+weight, so neither failure mode is reachable by accident.
 
 ```pebble
 type Color = enum { red, green, blue };
@@ -88,7 +98,22 @@ type Color = enum { red, green, blue };
 let n int = Color.green as int;      // 1, total
 let c ?Color = 1 as ?Color;          // some green
 let bad ?Color = 99 as ?Color;       // none, handled by the caller
+let d Color = fromC() as Color;      // asserted; faults if fromC() is out of range
 ```
+
+The asserted form joins the existing family of runtime-checked operations
+alongside optional force-unwrap, bounds checks, and checked numeric casts. It
+therefore inherits, rather than reopens, the still-open decision in `06b`
+§"Resolved upstream contracts and future decisions" about release-mode
+behavior for those faults. Its diagnostic must name the offending integer and
+the target enum, matching the other members of that family.
+
+### Injection is not conversion
+
+`Color.red as ?Color` is optional injection of a value that is already a
+`Color`, not a checked conversion, and must remain so. Only a **concrete
+integer** source selects the checked row. The matrix rows above are keyed on
+the source type for exactly this reason.
 
 ### 2. Scope: payloadless enums only
 
@@ -107,6 +132,11 @@ conversion set, in the same family as `CheckedIndex` and `CheckedSlice` but
 producing an optional rather than faulting. It does not participate in
 release-mode fault behavior, because it has no failure path — an out-of-range
 input is an ordinary `none`.
+
+`integer -> enum` requires a second node that performs the same test and
+faults instead. It does participate in release-mode fault behavior, on the
+same terms as optional force-unwrap and bounds checks. Both nodes share one
+range test; they differ only in what they do when it fails.
 
 ## Amendment to `06a-semantic-fact-generation.md`
 
@@ -175,9 +205,12 @@ fn roundTrip() void {
     let n int = Color.blue as int;   // 2
     let back ?Color = n as ?Color;   // some blue
     let bad ?Color = 7 as ?Color;    // none
+    let sure Color = n as Color;     // blue; would fault if n named no variant
 }
 ```
 
-`Color.blue as ?int` and `7 as Color` must both be rejected, the first because
-optional injection of a total conversion is not a checked conversion, the
-second because a bare enum destination has no meaning for an invalid value.
+Required rejections: `7 as Color` and `7 as ?Color` are both compile-time
+errors because `7` is a constant naming no variant — the asserted form must
+not compile into a guaranteed fault, and the handled form must not compile
+into a guaranteed `none`. `Color.red as ?Color` is optional injection, not a
+checked conversion. Tagged-union variants convert in neither direction.
