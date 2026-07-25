@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 )
 
@@ -401,6 +403,7 @@ fn nominal(color Color) void {
 	facts := run06a3(inputs, diagnostics, Config{})
 	item, _ := inputs.Graph.Module(inputs.Graph.Root)
 	scalar, nominal := 0, 0
+	var nominalValues []symbol.SyntaxRef
 	for _, ref := range facts.Walk.order {
 		node, _ := facts.Walk.node(ref.Module, ref.Node)
 		if node.Kind() != syntax.SwitchCase {
@@ -409,6 +412,7 @@ fn nominal(color Color) void {
 		for _, value := range switchCaseValues(ref, node, item.Tree) {
 			if facts.Walk.nominalCase(value, item.Tree) {
 				nominal++
+				nominalValues = append(nominalValues, value)
 				if _, evaluated := facts.Constants.memo[value]; evaluated {
 					t.Fatal("nominal case was constant evaluated")
 				}
@@ -448,6 +452,70 @@ fn nominal(color Color) void {
 			t.Fatalf("switch record retains %d subject values", len(retained.Control.Values))
 		}
 	}
+	// The nominal switch does not merely classify: it reaches a solution, and the
+	// subject and the payloadless variant case land on the same enum TypeID.
+	subject, found := nominalSwitchSubject(t, facts, item.Tree)
+	if !found {
+		t.Fatal("no nominal switch subject was retained")
+	}
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("nominal switch did not solve: successful=%v diagnostics=%+v", solution.Successful(), diagnostics.Items())
+	}
+	subjectType, ok := solution.SyntaxType(subject)
+	if !ok || subjectType.State != infer.TypeFinal || subjectType.Type == 0 {
+		t.Fatalf("nominal switch subject type = %+v (found=%v)", subjectType, ok)
+	}
+	if len(nominalValues) != 1 {
+		t.Fatalf("nominal case values = %d", len(nominalValues))
+	}
+	caseType, ok := solution.SyntaxType(nominalValues[0])
+	if !ok || caseType.State != infer.TypeFinal {
+		t.Fatalf("nominal case type = %+v (found=%v)", caseType, ok)
+	}
+	if caseType.Type != subjectType.Type {
+		t.Fatalf("nominal case type %d differs from subject type %d", caseType.Type, subjectType.Type)
+	}
+	key, ok := inputs.Types.Key(subjectType.Type)
+	if !ok {
+		t.Fatalf("subject type %d is not interned", subjectType.Type)
+	}
+	declaration, arguments, nominalKey := key.Nominal()
+	if !nominalKey || len(arguments) != 0 {
+		t.Fatalf("subject type key = %+v", key)
+	}
+	if resolved, found := inputs.Resolution.Symbols.Symbol(declaration); !found || resolved.Name != "Color" {
+		t.Fatalf("nominal switch subject declaration = %+v", resolved)
+	}
+}
+
+// nominalSwitchSubject returns the subject of the single switch statement whose
+// cases classify as nominal.
+func nominalSwitchSubject(t *testing.T, facts *preparedFacts, tree *syntax.Tree) (symbol.SyntaxRef, bool) {
+	t.Helper()
+	for _, ref := range facts.Walk.order {
+		node, _ := facts.Walk.node(ref.Module, ref.Node)
+		if node.Kind() != syntax.SwitchStmt {
+			continue
+		}
+		subject, ok := switchSubject(ref, node, tree)
+		if !ok {
+			continue
+		}
+		for _, id := range node.Children() {
+			child, found := tree.Node(id)
+			if !found || child.Kind() != syntax.SwitchCase {
+				continue
+			}
+			caseRef := symbol.SyntaxRef{Module: ref.Module, Node: id}
+			for _, value := range switchCaseValues(caseRef, child, tree) {
+				if facts.Walk.nominalCase(value, tree) {
+					return subject, true
+				}
+			}
+		}
+	}
+	return symbol.SyntaxRef{}, false
 }
 
 func TestSwitchFactsInvalidConstantRecoversIntoLaterStatements(t *testing.T) {
