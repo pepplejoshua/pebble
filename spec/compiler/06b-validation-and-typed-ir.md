@@ -401,7 +401,9 @@ reclassify legality. `char` is never a numeric compatibility family.
 | `?A` | `A` or differing optional payload | forbidden; `!` is a checked operation, not conversion |
 | nominal | identical nominal `TypeID` | identity |
 | nominal | any different nominal/structural type | forbidden |
-| enum | integer or reverse | forbidden |
+| enum | any concrete integer | explicit; total; yields the variant's zero-based declaration ordinal |
+| concrete integer | `?enum` | explicit; checked; yields `some` variant when the value names one and `none` otherwise |
+| concrete integer | `enum` | explicit; asserted; traps at runtime when the value names no variant |
 | union | payload or reverse | forbidden; variant operations are dedicated nodes |
 | function | identical function `TypeID` | identity |
 | function | any distinct function type | forbidden; no variance, variadic adaptation, or convention adapter |
@@ -413,6 +415,29 @@ bounded and cycle-free because `05a` keys are immutable finite graphs.
 
 `Pebble` and `C` function types are distinct and incompatible for assignment,
 arguments, returns, equality, indirect adaptation, and `as`.
+
+`enum -> integer` and `integer -> enum` apply to `enum` declarations only;
+`union enum` tagged-union variants carry a payload, so an integer does not
+determine a value, and tagged-union-to-integer conversion in either direction
+remains forbidden. A variant's integer is its zero-based declaration-order
+ordinal; Pebble enums have no explicit variant values.
+
+`integer -> enum` has two authored destination spellings, and the spelling
+selects the failure behavior. Both produce exactly their authored destination
+type. `n as ?Color` is the handled form: the value in range yields `some`
+variant, and an out-of-range value yields `none` with no trap. `n as Color`
+is the asserted form: the same range test runs, but an out-of-range value is
+a runtime fault rather than a value, joining the existing family of
+runtime-checked operations alongside optional force-unwrap and bounds checks,
+and it is bound by the same still-open release-mode fault-behavior decision
+below. When the source is a compile-time constant accepted by the `06a`
+constant language, the conversion is decided during checking instead of at
+runtime: an in-range constant lowers to the variant with no runtime test, and
+an out-of-range constant is a compile-time diagnostic in both destination
+forms — neither form may compile a known-bad constant into a guaranteed
+runtime outcome. `Color.red as ?Color` is optional injection of an
+already-`Color` value, not a checked conversion; only a concrete integer
+source selects the checked or asserted row.
 
 ## Exact operator validation
 
@@ -437,7 +462,9 @@ the exact token/family, and, for a rigid subject, matching
 Same-type concrete numeric operands are mandatory; no conversion is inserted
 inside an operator. Pointer equality requires the exact pointer `TypeID` and
 may include a context-shaped `nil`; pointer ordering and arithmetic are
-forbidden. Arrays, slices, tuples, optionals, structs, unions, tagged unions,
+forbidden on an ordinary pointer in this contract, pending the future unsafe-
+pointer feature that may deliberately reopen them on a distinct pointer form.
+Arrays, slices, tuples, optionals, structs, unions, tagged unions,
 opaque externs, functions, and `void` are not equatable in this contract.
 Enum ordering is declaration order and requires exact nominal identity.
 Division and invalid-shift runtime behavior is represented explicitly for
@@ -936,6 +963,7 @@ IntegerCast, IntegerToFloat, FloatToInteger, FloatCast
 OptionalInject, TupleCoerce
 CheckedOptionalUnwrap, CheckedIndex, CheckedSlice
 CheckedArithmetic, CheckedShift
+EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum
 ```
 
 No identity coercion node exists. `TupleCoerce` owns ordered component
@@ -943,6 +971,12 @@ coercions and evaluates its source once. `CheckedArithmetic` and
 `CheckedShift` retain the exact operator and fault category while leaving
 release-mode response to phase 10. Check nodes contain enough semantic metadata
 for lowering to implement the chosen rule without inspecting syntax.
+`OptionalIntegerToEnum` and `CheckedIntegerToEnum` share one range test
+against the destination enum's variant count and differ only in outcome:
+the former produces `?Enum` and never faults, the latter produces `Enum` and
+joins `CheckedArithmetic`/`CheckedShift` under the same release-mode fault
+policy. A constant source that names no variant is rejected in `06b` and
+lowers to neither node.
 
 **Evaluation sequencing**
 

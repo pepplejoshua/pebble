@@ -1244,10 +1244,12 @@ specialization, lowering, or backend ABI.
 
 Language decisions already marked future by phase 6 remain future: dynamic or
 zero-initialized globals, uninitialized locals, full slice lifetime/escape,
-unsafe pointers, enum/integer conversion, untagged-union safety, closure
-support, bound-method values, C variadic promotions/adapters, public traits,
-and runtime overflow/ABI behavior. Closure support is an explicit unresolved
-language decision, not an assumed roadmap item; the current anonymous-function
+unsafe pointers, untagged-union safety, closure support, bound-method values,
+C variadic promotions/adapters, public traits, and runtime overflow/ABI
+behavior. Enum/integer conversion is no longer on this list: it is decided,
+in both directions, per `06b`'s composite conversion matrix. Closure support
+is an explicit unresolved language decision, not an assumed roadmap item;
+the current anonymous-function
 contract is noncapturing and globally hoisted. `06a` records the authored
 relationships needed by accepted rules but does not add speculative machinery
 for them.

@@ -1,8 +1,11 @@
 # Amendment: enum and integer conversion
 
-**Status:** Accepted in principle by the language author; spec edits below are
-Proposed. Owner: `06b` conversion matrix, with a one-line correction in `06a`
-and an `OPEN-DECISIONS.md` update.
+**Status:** Accepted and applied. The composite matrix, `06a`'s deferred
+list, and `OPEN-DECISIONS.md` all reflect this document. Kept here as the
+design record and rationale; the normative text is now in
+`06b-validation-and-typed-ir.md` §"Composite matrix"/"Exact operator
+validation" and `06a-semantic-fact-generation.md` §"Deferred to `06b` or
+later phases".
 
 **Decision:** Pebble supports conversion between an enum and an integer, in
 both directions, with deliberately asymmetric safety:

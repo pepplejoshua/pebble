@@ -16,8 +16,8 @@ depending on them in the rewrite.
 
 ## Semantics
 
-- Pointer arithmetic and pointer comparison
-- Enum conversion rules
+- Pointer arithmetic and ordering on a future unsafe-pointer form (equality
+  and nil comparison on an ordinary pointer are decided; see Resolved)
 - Semantic representation and C ABI of `char`
 - Untagged-union safety model
 - Function compatibility across calling conventions
@@ -51,6 +51,21 @@ documents. They are recorded here so they are not reopened by mistake.
   constant language, so all globals are determined at compile time and there
   is no runtime ordering to specify. This becomes a live decision again only
   if non-constant global initializers are ever accepted.
+- **Enum conversion rules: decided.** `enum -> integer` is a total explicit
+  conversion to the variant's zero-based declaration ordinal.
+  `integer -> enum` is explicit and checked: `n as ?Enum` yields `none` for a
+  value naming no variant, and `n as Enum` asserts validity and traps at
+  runtime instead, joining the same release-mode fault-behavior question as
+  optional force-unwrap and bounds checks. Tagged (`union enum`) variants are
+  excluded; a payload cannot be recovered from an integer. Explicit variant
+  values and reading a variant's name remain future extensions, tracked in
+  `proposals/enum-integer-conversion.md` and
+  `proposals/open-language-decisions.md` §3.10–3.11.
+- **Pointer equality and nil comparison: decided.**
+  `06b-validation-and-typed-ir.md` §"Exact operator validation" accepts
+  pointer `==`/`!=` by exact `TypeID`, including against a context-shaped
+  `nil`. Ordering and arithmetic on an ordinary pointer remain forbidden,
+  pending the still-open decision above about a future unsafe-pointer form.
 
 ## Documentation method
 
