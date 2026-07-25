@@ -45,6 +45,9 @@ func (s *Session) termIsError(term Term) bool {
 }
 
 func (s *Session) recoverTerms(terms ...Term) bool {
+	if s.Fatal() {
+		return false
+	}
 	changed := false
 	for _, term := range terms {
 		if !term.belongs(s.token) || term.kind == termKnown || term.kind == termError {

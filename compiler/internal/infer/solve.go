@@ -17,31 +17,30 @@ func (s *Session) Solve() *Solution {
 		return &Solution{}
 	}
 	if s.solved {
-		s.reporter.error(CodeResourceLimit, "inference session is already solved", Origin{})
-		s.reporter.flush()
+		if !s.Fatal() {
+			s.reporter.error(CodeResourceLimit, "inference session is already solved", Origin{})
+			s.reporter.flush()
+		}
 		return repeatedSolveRecovery(s.token)
 	}
-	if !s.invalid && !s.fatal {
+	if !s.Fatal() {
 		s.solveOrdinary()
-		if !s.fatal {
+		if !s.Fatal() {
 			s.solveChoices()
 		}
-		if !s.fatal {
+		if !s.Fatal() {
 			s.solveOrdinary()
 		}
-		if !s.fatal {
+		if !s.Fatal() {
 			inactive := s.inactiveGuardedRoots()
 			s.defaultLiterals(inactive)
-			if !s.fatal {
+			if !s.Fatal() {
 				s.solveOrdinary()
 			}
-			if !s.fatal {
+			if !s.Fatal() {
 				s.finalizeUnresolved(inactive)
 			}
 		}
-	}
-	if s.fatal {
-		clear(s.selections)
 	}
 	result := s.freezeSolution()
 	s.solved = true
@@ -51,13 +50,13 @@ func (s *Session) Solve() *Solution {
 }
 
 func (s *Session) solveOrdinary() {
-	if s.fatal {
+	if s.Fatal() {
 		return
 	}
 	for {
 		changed := false
 		for index := range s.constraints {
-			if s.fatal {
+			if s.Fatal() {
 				return
 			}
 			entry := &s.constraints[index]
@@ -65,7 +64,7 @@ func (s *Session) solveOrdinary() {
 				continue
 			}
 			result := s.apply(entry.value)
-			if s.fatal {
+			if s.Fatal() {
 				return
 			}
 			changed = changed || result.changed
@@ -74,15 +73,17 @@ func (s *Session) solveOrdinary() {
 				changed = true
 			} else {
 				if !s.chargeRequeue(entry, entry.value.origin) {
-					entry.done = true
+					if !s.Fatal() {
+						entry.done = true
+					}
 				}
 			}
 		}
-		if s.fatal {
+		if s.Fatal() {
 			return
 		}
 		materialized, _ := s.materializeReadyShapes()
-		if s.fatal {
+		if s.Fatal() {
 			return
 		}
 		changed = changed || materialized
@@ -221,7 +222,7 @@ func cloneCells(values []ufCell) []ufCell {
 }
 
 func (s *Session) solveChoices() {
-	if s.fatal {
+	if s.Fatal() {
 		return
 	}
 	var choices []int
@@ -245,11 +246,14 @@ func (s *Session) solveChoices() {
 	var firstConflict *inferenceConflict
 	var explore func(int, map[ConstraintID]uint32)
 	explore = func(position int, selected map[ConstraintID]uint32) {
-		if len(solutions) >= 2 || s.fatal {
+		if len(solutions) >= 2 || s.Fatal() {
 			return
 		}
 		if position == len(choices) {
 			s.solveOrdinary()
+			if s.Fatal() {
+				return
+			}
 			if !s.failed {
 				copySelections := make(map[ConstraintID]uint32, len(selected))
 				for id, alternative := range selected {
@@ -262,7 +266,7 @@ func (s *Session) solveChoices() {
 		level := s.snapshot()
 		entry := s.constraints[choices[position]]
 		for alternativeIndex, alternative := range entry.value.alternatives {
-			if len(solutions) >= 2 || s.fatal {
+			if len(solutions) >= 2 || s.Fatal() {
 				break
 			}
 			s.choiceStates++
@@ -280,34 +284,45 @@ func (s *Session) solveChoices() {
 			if s.solveConstraintSet(alternative.Constraints) && !s.failed {
 				s.solveOrdinary()
 			}
+			if s.Fatal() {
+				return
+			}
 			if !s.failed {
 				selected[entry.id] = uint32(alternativeIndex)
 				explore(position+1, selected)
+				if s.Fatal() {
+					return
+				}
 				delete(selected, entry.id)
 			} else if firstConflict == nil && s.speculativeConflict != nil {
 				firstConflict = s.speculativeConflict
 			}
+		}
+		if s.Fatal() {
+			return
 		}
 		s.restore(level)
 	}
 	s.restore(searchBase)
 	s.speculative = true
 	explore(0, make(map[ConstraintID]uint32))
-	fatalConflict := cloneConflict(s.speculativeConflict)
-	s.speculative = false
-	s.speculativeConflict = nil
-	if s.fatal {
+	if s.Fatal() {
+		fatalConflict := cloneConflict(s.speculativeConflict)
 		s.restore(base)
-		for _, index := range choices {
-			s.constraints[index].done = true
-		}
+		s.speculative = false
+		s.speculativeConflict = nil
+		// Rollback restores the pre-choice failure bit. Fatal finalization is
+		// independently unsuccessful regardless of the branch's mutations.
+		s.failed = true
 		if fatalConflict != nil && fatalConflict.code == CodeResourceLimit {
-			s.conflict(fatalConflict.code, fatalConflict.message, fatalConflict.origin, fatalConflict.related...)
+			s.reporter.error(fatalConflict.code, fatalConflict.message, fatalConflict.origin, fatalConflict.related...)
 		} else {
-			s.conflict(CodeResourceLimit, "fatal failure during inference choice evaluation", s.constraints[choices[0]].value.origin)
+			s.reporter.error(CodeResourceLimit, "fatal failure during inference choice evaluation", s.constraints[choices[0]].value.origin)
 		}
 		return
 	}
+	s.speculative = false
+	s.speculativeConflict = nil
 	if len(solutions) == 1 {
 		s.restore(solutions[0].state)
 		s.failed = inheritedFailure
@@ -339,7 +354,7 @@ func (s *Session) solveConstraintSet(values []Constraint) bool {
 	for {
 		changed := false
 		for _, value := range values {
-			if s.fatal {
+			if s.Fatal() {
 				return false
 			}
 			if value.kind == constraintOneOf {
@@ -350,7 +365,7 @@ func (s *Session) solveConstraintSet(values []Constraint) bool {
 				continue
 			}
 			result := s.apply(value)
-			if s.fatal {
+			if s.Fatal() {
 				return false
 			}
 			if !result.success {
@@ -369,7 +384,7 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 	parentConflict := s.speculativeConflict
 	viable := make([]int, 0, len(value.alternatives))
 	for index, alternative := range value.alternatives {
-		if s.fatal {
+		if s.Fatal() {
 			break
 		}
 		s.choiceStates++
@@ -385,11 +400,17 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 		if s.solveConstraintSet(alternative.Constraints) && !s.failed {
 			viable = append(viable, index)
 		}
+		if s.Fatal() {
+			return false
+		}
+	}
+	if s.Fatal() {
+		return false
 	}
 	fatalConflict := cloneConflict(s.speculativeConflict)
 	s.restore(base)
 	s.speculativeConflict = parentConflict
-	if s.fatal {
+	if s.Fatal() {
 		if fatalConflict != nil {
 			s.speculativeConflict = fatalConflict
 		}
@@ -408,12 +429,12 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 }
 
 func (s *Session) defaultLiterals(inactive map[InferID]bool) {
-	if s.fatal {
+	if s.Fatal() {
 		return
 	}
 	builtins := s.program.builtins()
 	for index := range s.cells {
-		if s.fatal {
+		if s.Fatal() {
 			return
 		}
 		id := InferID(index + 1)
@@ -435,8 +456,14 @@ func (s *Session) defaultLiterals(inactive map[InferID]bool) {
 			target = builtins.F64
 		}
 		if s.fitLiterals(cell.literals, target, cell.origin) && s.checkCapabilities(cell.capabilities, target, cell.origin) {
+			if s.Fatal() {
+				return
+			}
 			cell.known = target
 		} else {
+			if s.Fatal() {
+				return
+			}
 			cell.error = true
 		}
 	}
@@ -475,7 +502,7 @@ func (s *Session) termHasRoot(term Term, root InferID) bool {
 }
 
 func (s *Session) finalizeUnresolved(inactive map[InferID]bool) {
-	if s.fatal {
+	if s.Fatal() {
 		return
 	}
 	for index := range s.cells {
@@ -491,6 +518,9 @@ func (s *Session) finalizeUnresolved(inactive map[InferID]bool) {
 			continue
 		}
 		s.reporter.error(CodeUnresolved, "inference variable has no unique semantic type", cell.origin)
+		if s.Fatal() {
+			return
+		}
 		cell.error = true
 		s.failed = true
 	}
@@ -553,6 +583,9 @@ func (s *Session) freezeSolution() *Solution {
 	for _, ref := range instRefs {
 		published := s.instantiations[ref]
 		if published.guarded {
+			if s.Fatal() {
+				continue
+			}
 			selected, ok := s.selections[published.choice.constraint]
 			if !ok || selected != published.alternative {
 				continue
@@ -587,23 +620,28 @@ func (s *Session) freezeSolution() *Solution {
 		}
 		result.methods[ref] = MethodSelection{Site: ref, Method: state.method, Arguments: arguments}
 	}
-	selectionIDs := make([]int, 0, len(s.selections))
-	for id := range s.selections {
-		selectionIDs = append(selectionIDs, int(id))
-	}
-	sort.Ints(selectionIDs)
-	for _, rawID := range selectionIDs {
-		id := ConstraintID(rawID)
-		selected := s.selections[id]
-		result.selections[id] = selected
-		alternatives := uint32(0)
-		if id.IsValid() && uint64(id) <= uint64(len(s.constraints)) {
-			alternatives = uint32(len(s.constraints[id-1].value.alternatives))
+	if !s.Fatal() {
+		selectionIDs := make([]int, 0, len(s.selections))
+		for id := range s.selections {
+			selectionIDs = append(selectionIDs, int(id))
 		}
-		result.manifest.selections = append(result.manifest.selections, selectionTableManifest{id: id, alternative: selected, alternatives: alternatives})
+		sort.Ints(selectionIDs)
+		for _, rawID := range selectionIDs {
+			id := ConstraintID(rawID)
+			selected := s.selections[id]
+			result.selections[id] = selected
+			alternatives := uint32(0)
+			if id.IsValid() && uint64(id) <= uint64(len(s.constraints)) {
+				alternatives = uint32(len(s.constraints[id-1].value.alternatives))
+			}
+			result.manifest.selections = append(result.manifest.selections, selectionTableManifest{id: id, alternative: selected, alternatives: alternatives})
+		}
 	}
 	for _, published := range s.slots {
 		if published.guarded {
+			if s.Fatal() {
+				continue
+			}
 			selected, ok := s.selections[published.choice.constraint]
 			if !ok || selected != published.alternative {
 				continue

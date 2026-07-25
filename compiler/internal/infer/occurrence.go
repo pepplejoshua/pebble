@@ -38,20 +38,28 @@ func (s *Session) applyTypeOccurrence(value Constraint) (bool, bool) {
 	result, ok := s.typeOccurrenceMemo[key]
 	if !ok {
 		result = s.resolveTypeOccurrence(value.ref, value.owner, value.origin)
-		s.typeOccurrenceMemo[key] = result
 	}
 	if result.conflict != nil {
-		return false, s.conflict(result.conflict.code, result.conflict.message, result.conflict.origin, result.conflict.related...)
+		success := s.conflict(result.conflict.code, result.conflict.message, result.conflict.origin, result.conflict.related...)
+		if !s.Fatal() && !ok {
+			s.typeOccurrenceMemo[key] = result
+		}
+		return false, success
+	}
+	if !ok {
+		s.typeOccurrenceMemo[key] = result
 	}
 	return s.constrainShape(value.a, result.shape, value.origin)
 }
 
 func (s *Session) resolveTypeOccurrence(ref symbol.SyntaxRef, owner symbol.SymbolID, origin Origin) occurrenceResult {
 	local := newReporter(diagnostic.NewDiagnosticSet(), s.config.MaxDiagnostics)
+	local.onFatal = s.markFatal
+	local.isFatal = s.Fatal
 	scratch := s.program.resolutionScratch(local)
 	scratch.deferMaterialization = true
 	template := scratch.resolveTemplate(ref, owner, false, 0)
-	if template == 0 {
+	if template == 0 || s.Fatal() {
 		return occurrenceResult{conflict: occurrenceConflict(local, origin)}
 	}
 	shape, ok := s.occurrenceTemplateShape(scratch, template, owner, 0)
@@ -148,11 +156,15 @@ func (s *Session) applyValueOccurrence(value Constraint) bool {
 		return s.conflict(conflict.code, conflict.message, conflict.origin, conflict.related...)
 	}
 	conflict := s.valueOccurrenceConflict(value.ref, value.origin, 0)
-	s.valueOccurrenceMemo[value.ref] = conflict
 	if conflict == nil {
+		s.valueOccurrenceMemo[value.ref] = nil
 		return true
 	}
-	return s.conflict(conflict.code, conflict.message, conflict.origin, conflict.related...)
+	success := s.conflict(conflict.code, conflict.message, conflict.origin, conflict.related...)
+	if !s.Fatal() {
+		s.valueOccurrenceMemo[value.ref] = conflict
+	}
+	return success
 }
 
 func (s *Session) valueOccurrenceConflict(ref symbol.SyntaxRef, origin Origin, depth uint32) *inferenceConflict {

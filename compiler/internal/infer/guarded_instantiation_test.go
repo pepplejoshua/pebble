@@ -197,7 +197,7 @@ func TestGuardedInstantiationValidationDuplicatesAndLimitsAreAtomic(t *testing.T
 		session.PublishGuardedInstantiation(choice, 0, symbol.SyntaxRef{Module: 1, Node: 11}, 50, []Term{term})
 		session.PublishGuardedInstantiation(choice, 0, symbol.SyntaxRef{Module: 1, Node: 12}, 50, []Term{term})
 		session.Solve()
-		if len(session.instantiations) != 1 || session.instantiationArguments != 1 || !hasDiagnostic(diagnostics, CodeResourceLimit) {
+		if len(session.instantiations) != 0 || session.instantiationArguments != 0 || !hasDiagnostic(diagnostics, CodeResourceLimit) {
 			t.Fatalf("publications=%d arguments=%d diagnostics=%+v", len(session.instantiations), session.instantiationArguments, diagnostics.Items())
 		}
 	})

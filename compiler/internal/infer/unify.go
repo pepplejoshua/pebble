@@ -99,7 +99,9 @@ func (s *Session) unify(a, b Term, origin Origin) (bool, bool) {
 		pc.origin = cc.origin
 	}
 	if pc.known != 0 && !s.validateKnownRoot(parent, origin) {
-		pc.error = true
+		if !s.Fatal() {
+			pc.error = true
+		}
 		return true, false
 	}
 	return true, true
@@ -204,6 +206,9 @@ func (s *Session) constrainShape(subject Term, shape Shape, origin Origin) (bool
 		return false, true
 	}
 	if s.occurs(root, shape) {
+		if s.Fatal() {
+			return false, false
+		}
 		return false, s.markRootConflict(root, CodeOccursCheck, "recursive inference shape failed occurs check", origin)
 	}
 	if cell.known != 0 {
@@ -389,12 +394,12 @@ func (s *Session) materializeShape(shape Shape) (types.TypeID, bool) {
 }
 
 func (s *Session) materializeReadyShapes() (bool, bool) {
-	if s.fatal {
+	if s.Fatal() {
 		return false, false
 	}
 	changed := false
 	for index := range s.cells {
-		if s.fatal {
+		if s.Fatal() {
 			return changed, false
 		}
 		id := InferID(index + 1)
@@ -406,13 +411,16 @@ func (s *Session) materializeReadyShapes() (bool, bool) {
 			continue
 		}
 		known, ok := s.materializeShape(*cell.shape)
-		if s.fatal {
+		if s.Fatal() {
 			return changed, false
 		}
 		if !ok {
 			continue
 		}
 		if !s.fitLiterals(cell.literals, known, cell.origin) || !s.checkCapabilities(cell.capabilities, known, cell.origin) {
+			if s.Fatal() {
+				return changed, false
+			}
 			cell.error = true
 			continue
 		}
@@ -461,18 +469,22 @@ func (s *Session) stepDecompose(origin Origin) bool {
 
 func (s *Session) markRootConflict(root InferID, code diagnostic.Code, message string, origin Origin) bool {
 	s.conflict(code, message, origin, s.cells[root-1].origin)
-	s.cells[root-1].error = true
+	if !s.Fatal() {
+		s.cells[root-1].error = true
+	}
 	return false
 }
 func (s *Session) markRootsConflict(a, b InferID, code diagnostic.Code, message string, origin Origin) bool {
 	s.conflict(code, message, origin, s.cells[a-1].origin, s.cells[b-1].origin)
-	s.cells[a-1].error = true
-	s.cells[b-1].error = true
+	if !s.Fatal() {
+		s.cells[a-1].error = true
+		s.cells[b-1].error = true
+	}
 	return false
 }
 func (s *Session) conflict(code diagnostic.Code, message string, origin Origin, related ...Origin) bool {
 	if code == CodeResourceLimit {
-		s.fatal = true
+		s.markFatal()
 	}
 	if s.speculative {
 		if s.speculativeConflict == nil || (code == CodeResourceLimit && s.speculativeConflict.code != CodeResourceLimit) {
@@ -484,10 +496,17 @@ func (s *Session) conflict(code diagnostic.Code, message string, origin Origin, 
 	s.failed = true
 	return false
 }
-func (s *Session) markRootError(root InferID) bool { s.cells[root-1].error = true; return false }
+func (s *Session) markRootError(root InferID) bool {
+	if !s.Fatal() {
+		s.cells[root-1].error = true
+	}
+	return false
+}
 func (s *Session) markRootsError(a, b InferID) bool {
-	s.cells[a-1].error = true
-	s.cells[b-1].error = true
+	if !s.Fatal() {
+		s.cells[a-1].error = true
+		s.cells[b-1].error = true
+	}
 	return false
 }
 

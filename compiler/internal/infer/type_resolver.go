@@ -435,7 +435,7 @@ func (p *Program) resolveConcreteOccurrence(ref symbol.SyntaxRef, owner symbol.S
 	// Program remains immutable and can be shared by independent sessions.
 	scratch := p.resolutionScratch(r)
 	template := scratch.resolveTemplate(ref, owner, false, 0)
-	if template == 0 {
+	if template == 0 || r.sessionFatal() {
 		return TypeResult{State: TypeError}
 	}
 	mapping := make(map[symbol.SymbolID]types.TypeID)

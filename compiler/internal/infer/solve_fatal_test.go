@@ -191,6 +191,99 @@ func TestFatalDuringChoiceExplorationIsOrderIndependent(t *testing.T) {
 	}
 }
 
+func TestFatalChoiceRollsBackCompleteSpeculativeState(t *testing.T) {
+	program, preparation := prepareSource(t, []byte(`
+type Container = struct { member int; };
+fn use(container Container, valueSymbol int) void {
+    container.member[((valueSymbol))];
+}
+`))
+	if preparation.HasErrors() {
+		t.Fatalf("prepare diagnostics: %+v", preparation.Items())
+	}
+	valueRef := occurrenceRef(t, program, "valueSymbol")
+	groupedRef := bracketArgumentContaining(t, program, valueRef)
+	fatalOrigin := Origin{Span: source.NewSpan(7, 11, 19), Role: "fatal grouped occurrence"}
+	var baseline diagnostic.Diagnostic
+
+	for _, reverse := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fatal first", true: "fatal second"}[reverse], func(t *testing.T) {
+			diagnostics := diagnostic.NewDiagnosticSet()
+			session := NewSession(program, diagnostics, Config{MaxTypeSyntaxDepth: 1})
+			published := session.Variable(Origin{Role: "published root"})
+			session.PublishSyntax(valueRef, published)
+			fatalAlternative := Alternative{Label: "fatal", Constraints: []Constraint{
+				ValueOccurrence(valueRef, Origin{Role: "branch occurrence memo"}),
+				Equal(published, session.Known(program.inputs.Types.Builtins().Int), Origin{Role: "branch binding"}),
+				ValueOccurrence(groupedRef, fatalOrigin),
+			}}
+			viableAlternative := Alternative{Label: "viable", Constraints: []Constraint{
+				ValueOccurrence(valueRef, Origin{Role: "viable occurrence"}),
+			}}
+			alternatives := []Alternative{fatalAlternative, viableAlternative}
+			fatalIndex := uint32(0)
+			if reverse {
+				alternatives[0], alternatives[1] = alternatives[1], alternatives[0]
+				fatalIndex = 1
+			}
+			choiceID, choice := session.AddChoice(OneOf(alternatives, Origin{Role: "choice"}))
+			guarded := session.PublishGuardedSlot(choice, fatalIndex, published)
+			site := groupedRef
+			session.PublishGuardedInstantiation(choice, fatalIndex, site, 50, []Term{published})
+			base := session.snapshot()
+
+			solution := session.Solve()
+
+			if !session.Fatal() || session.speculative || session.speculativeConflict != nil {
+				t.Fatalf("fatal lifecycle not normalized: fatal=%v speculative=%v conflict=%+v", session.Fatal(), session.speculative, session.speculativeConflict)
+			}
+			got := session.snapshot()
+			if !got.failed {
+				t.Fatal("fatal rollback did not force unsuccessful finalization")
+			}
+			got.failed = base.failed
+			if !reflect.DeepEqual(got, base) {
+				t.Fatalf("speculative state survived rollback\nbase: %+v\n got: %+v", base, got)
+			}
+			if len(session.selections) != 0 {
+				t.Fatalf("fatal rollback retained selections: %+v", session.selections)
+			}
+			result, publishedSyntax := solution.SyntaxType(valueRef)
+			if solution.Successful() || !publishedSyntax || result.State != TypeError {
+				t.Fatalf("fatal solution=%v syntax=(%+v,%v)", solution.Successful(), result, publishedSyntax)
+			}
+			if _, ok := solution.Selection(choiceID); ok {
+				t.Fatal("fatal solution published a selection")
+			}
+			if _, ok := solution.Slot(guarded); ok || len(solution.Slots()) != 0 {
+				t.Fatal("fatal solution published a guarded slot")
+			}
+			if _, ok := solution.Instantiation(site); ok {
+				t.Fatal("fatal solution published a guarded instantiation")
+			}
+			expected := diagnostic.Diagnostic{
+				Severity: diagnostic.Error,
+				Code:     CodeResourceLimit,
+				Message:  "value-occurrence depth limit exceeded",
+				Primary:  diagnostic.Label{Span: fatalOrigin.Span, Message: fatalOrigin.Role},
+			}
+			items := diagnostics.Items()
+			if len(items) != 1 || !reflect.DeepEqual(items[0], expected) {
+				t.Fatalf("reverse=%v diagnostics=%#v want=%#v", reverse, items, expected)
+			}
+			if reverse && !reflect.DeepEqual(items[0], baseline) {
+				t.Fatalf("reversed exploration changed fatal diagnostic\nforward: %#v\nreverse: %#v", baseline, items[0])
+			}
+			if !reverse {
+				baseline = items[0]
+			}
+			if !reflect.DeepEqual(solution.SyntaxTypes(), solution.SyntaxTypes()) || !reflect.DeepEqual(solution.Slots(), solution.Slots()) {
+				t.Fatal("fatal immutable queries are nondeterministic")
+			}
+		})
+	}
+}
+
 func TestFatalAfterChoiceSelectionClearsGuardedPublications(t *testing.T) {
 	program, store := testProgram(t)
 	diagnostics := diagnostic.NewDiagnosticSet()
@@ -254,7 +347,7 @@ func assertFatalRecovery(t *testing.T, session *Session, solution *Solution, dia
 	if !reflect.DeepEqual(solution.Slots(), solution.Slots()) || !reflect.DeepEqual(solution.SymbolTypes(), solution.SymbolTypes()) || !reflect.DeepEqual(solution.SyntaxTypes(), solution.SyntaxTypes()) {
 		t.Fatal("fatal recovery queries are nondeterministic")
 	}
-	if !session.fatal {
+	if !session.Fatal() {
 		t.Fatal("T0512 did not leave the session fatal")
 	}
 }

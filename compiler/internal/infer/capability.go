@@ -131,7 +131,9 @@ func (s *Session) applyCapability(term Term, cap capability, origin Origin) (boo
 			return true, true
 		}
 		if !s.checkCapabilities(cell.capabilities, cell.known, origin) {
-			cell.error = true
+			if !s.Fatal() {
+				cell.error = true
+			}
 			return true, false
 		}
 	}
@@ -139,6 +141,9 @@ func (s *Session) applyCapability(term Term, cap capability, origin Origin) (boo
 }
 
 func (s *Session) recordRequirement(owner symbol.SymbolID, cap capability, parameter symbol.SymbolID, subject types.TypeID, origin Origin) {
+	if s.Fatal() {
+		return
+	}
 	var kind RequirementKind
 	switch cap {
 	case capNumeric:
@@ -162,6 +167,9 @@ func (s *Session) recordRequirement(owner symbol.SymbolID, cap capability, param
 }
 
 func (s *Session) recordLiteralRequirement(owner symbol.SymbolID, subject types.TypeID, literal literalValue, origin Origin) {
+	if s.Fatal() {
+		return
+	}
 	parameter, _ := s.typeParameter(subject)
 	requirement := Requirement{Owner: owner, Parameter: parameter, Kind: RequirementLiteralFits, Subject: subject, Origin: origin}
 	if literal.kind == literalInteger {

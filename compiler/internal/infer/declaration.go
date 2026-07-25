@@ -234,6 +234,9 @@ func (p *Program) resolveAliasDeclaration(id symbol.SymbolID, depth uint32) Temp
 		return 0
 	}
 	template := p.resolveTemplate(symbol.SyntaxRef{Module: sym.Module, Node: bodyID}, id, false, depth+1)
+	if p.reporter.sessionFatal() {
+		return 0
+	}
 	p.aliasStack = p.aliasStack[:len(p.aliasStack)-1]
 	p.aliasState[id] = 2
 	value := p.declarations[id]
@@ -421,5 +424,8 @@ func (p *Program) setDeclarationError(id symbol.SymbolID) {
 func (p *Program) declarationFailure(id symbol.SymbolID, code diagnostic.Code, message string) {
 	sym, _ := p.inputs.Resolution.Symbols.Symbol(id)
 	p.reporter.error(code, message, Origin{Span: sym.Span, Symbol: id})
+	if p.reporter.sessionFatal() {
+		return
+	}
 	p.setDeclarationError(id)
 }

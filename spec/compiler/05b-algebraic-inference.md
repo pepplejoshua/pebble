@@ -419,6 +419,7 @@ func (s *Session) PublishSlot(Term) SlotID
 func (s *Session) PublishGuardedSlot(ChoiceRef, uint32, Term) SlotID
 func (s *Session) PublishInstantiation(symbol.SyntaxRef, symbol.SymbolID, []Term)
 func (s *Session) PublishGuardedInstantiation(ChoiceRef, uint32, symbol.SyntaxRef, symbol.SymbolID, []Term)
+func (s *Session) Fatal() bool
 func (s *Session) Solve() *Solution
 ```
 
@@ -426,6 +427,25 @@ Every mutator fails atomically with a bounded `T0512` diagnostic after its
 limit is reached. Calling a mutator after `Solve`, calling `Solve` twice, or
 mixing terms from different sessions is an inconsistent-input error, not a
 panic.
+
+`Fatal` is the authoritative read-only, allocation-free builder lifecycle
+query. Nil and invalid sessions report true. It becomes true immediately when
+any session-owned path produces or schedules `T0512`, including a diagnostic-
+budget overflow before diagnostics are flushed, and remains true through and
+after `Solve`. `T0501` through `T0511` recovery does not set it. Once true,
+the current operation performs no subsequent forward cell, memo, publication,
+constraint-progress, requirement, selection, counter, or table mutation.
+Transactional choice evaluation is the exception: it must preserve the exact
+fatal conflict, restore the complete pre-speculation snapshot, leave
+speculative mode, clear speculative-only conflict state, and only then publish
+that preserved `T0512` once outside speculation. This rollback cannot mark a
+choice complete, retain a selection, or resume solving.
+Later mutators publish nothing, leave all session tables and counters
+unchanged, and return their ordinary recovery or zero result without emitting
+cascading diagnostics. Mutation after a completed solve and repeated `Solve`
+set the same state; all solve-stage and speculative barriers consult this one
+query. It exposes no diagnostic collection, solver cell, counter, memo table,
+publication table, or other private mutation state.
 
 The second argument to `ResolveType` is the containing callable or type
 declaration, or zero for a module-level nongeneric environment. It selects the
@@ -1472,8 +1492,9 @@ mistakes still report. Alias cycles report once per cycle, oversized literals
 once per token, and unresolved components once at their smallest source
 origin. When the diagnostic limit is reached, the final retained diagnostic is
 replaced by one `T0512` limit diagnostic and further inference diagnostics are
-suppressed. Earlier phase diagnostics are never removed or counted as 05b's
-budget.
+suppressed. The owning session becomes fatal as soon as that replacement is
+scheduled, before flush. Earlier phase diagnostics are never removed or
+counted as 05b's budget.
 
 ## Resource safety
 

@@ -28,6 +28,8 @@ type reporter struct {
 	items    []diagnostic.Diagnostic
 	overflow bool
 	emitted  uint32
+	onFatal  func()
+	isFatal  func() bool
 }
 
 func newReporter(set *diagnostic.DiagnosticSet, max uint32) *reporter {
@@ -46,9 +48,17 @@ func (r *reporter) add(item diagnostic.Diagnostic) {
 		return
 	}
 	r.overflow = true
+	r.markFatal()
+	r.materializeOverflow()
 }
 
 func (r *reporter) error(code diagnostic.Code, message string, origin Origin, related ...Origin) {
+	if r == nil {
+		return
+	}
+	if code == CodeResourceLimit {
+		r.markFatal()
+	}
 	item := diagnostic.Diagnostic{
 		Severity: diagnostic.Error,
 		Code:     code,
@@ -61,19 +71,34 @@ func (r *reporter) error(code diagnostic.Code, message string, origin Origin, re
 	r.add(item)
 }
 
+func (r *reporter) markFatal() {
+	if r != nil && r.onFatal != nil {
+		r.onFatal()
+	}
+}
+
+func (r *reporter) sessionFatal() bool {
+	return r != nil && r.isFatal != nil && r.isFatal()
+}
+
+func (r *reporter) materializeOverflow() {
+	if r == nil || !r.overflow || len(r.items) == 0 {
+		return
+	}
+	last := len(r.items) - 1
+	r.items[last] = diagnostic.Diagnostic{
+		Severity: diagnostic.Error,
+		Code:     CodeResourceLimit,
+		Message:  fmt.Sprintf("inference diagnostic limit of %d reached", r.max),
+		Primary:  r.items[last].Primary,
+	}
+}
+
 func (r *reporter) flush() {
 	if r == nil {
 		return
 	}
-	if r.overflow && len(r.items) != 0 {
-		last := len(r.items) - 1
-		r.items[last] = diagnostic.Diagnostic{
-			Severity: diagnostic.Error,
-			Code:     CodeResourceLimit,
-			Message:  fmt.Sprintf("inference diagnostic limit of %d reached", r.max),
-			Primary:  r.items[last].Primary,
-		}
-	}
+	r.materializeOverflow()
 	for _, item := range r.items {
 		r.set.Add(item)
 	}

@@ -142,6 +142,8 @@ func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config 
 		valueOccurrenceMemo: make(map[symbol.SyntaxRef]*inferenceConflict),
 		slotPublications:    make(map[slotPublicationKey]bool),
 	}
+	s.reporter.onFatal = s.markFatal
+	s.reporter.isFatal = s.Fatal
 	if program == nil || !program.valid || program.inputs.Types == nil {
 		s.invalid = true
 		s.reporter.error(CodeResourceLimit, "inference session requires a valid prepared program", Origin{})
@@ -150,6 +152,19 @@ func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config 
 		s.reporter.error(CodeResourceLimit, "inference session requires a program identity", Origin{})
 	}
 	return s
+}
+
+// Fatal reports whether the session can no longer accept facts or perform
+// inference. It exposes only the builder lifecycle barrier, not diagnostics or
+// mutable solver state.
+func (s *Session) Fatal() bool {
+	return s == nil || s.invalid || s.fatal
+}
+
+func (s *Session) markFatal() {
+	if s != nil {
+		s.fatal = true
+	}
 }
 
 func (s *Session) errorTerm() Term {
@@ -174,12 +189,15 @@ func (s *Session) mutable() bool {
 	if s == nil {
 		return false
 	}
+	if s.Fatal() {
+		return false
+	}
 	if s.solved {
 		s.reporter.error(CodeResourceLimit, "inference session is already solved", Origin{})
 		s.reporter.flush()
 		return false
 	}
-	return !s.invalid
+	return true
 }
 
 func (s *Session) newCell(origin Origin, kind termKind, literal *literalValue) Term {
@@ -242,7 +260,10 @@ func (s *Session) FloatLiteral(text []byte, origin Origin) Term {
 }
 
 func (s *Session) NegateLiteral(term Term, origin Origin) Term {
-	if !s.mutable() || !term.belongs(s.token) {
+	if !s.mutable() {
+		return s.errorTerm()
+	}
+	if !term.belongs(s.token) {
 		return s.invalidTerm("negated literal belongs to another session", origin)
 	}
 	if term.kind != termIntLiteral && term.kind != termFloatLiteral {
@@ -643,6 +664,9 @@ func (s *Session) ResolveType(ref symbol.SyntaxRef, owner symbol.SymbolID) TypeR
 	result := s.program.resolveConcreteOccurrence(ref, owner, s.reporter)
 	if result.State == TypeError {
 		s.failed = true
+	}
+	if s.Fatal() {
+		return result
 	}
 	s.resolveMemo[key] = result
 	return result

@@ -309,6 +309,9 @@ func (s *Session) failMethodState(site symbol.SyntaxRef, message string, origin 
 }
 
 func (s *Session) failMethodArguments(site symbol.SyntaxRef) {
+	if s.Fatal() {
+		return
+	}
 	state := s.methodStates[site]
 	for _, term := range state.arguments[state.ownedFrom:] {
 		if term.kind == termVariable || term.kind == termIntLiteral || term.kind == termFloatLiteral {
