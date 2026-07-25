@@ -21,14 +21,27 @@ func (s *Session) Solve() *Solution {
 		s.reporter.flush()
 		return repeatedSolveRecovery(s.token)
 	}
-	if !s.invalid {
+	if !s.invalid && !s.fatal {
 		s.solveOrdinary()
-		s.solveChoices()
-		s.solveOrdinary()
-		inactive := s.inactiveGuardedRoots()
-		s.defaultLiterals(inactive)
-		s.solveOrdinary()
-		s.finalizeUnresolved(inactive)
+		if !s.fatal {
+			s.solveChoices()
+		}
+		if !s.fatal {
+			s.solveOrdinary()
+		}
+		if !s.fatal {
+			inactive := s.inactiveGuardedRoots()
+			s.defaultLiterals(inactive)
+			if !s.fatal {
+				s.solveOrdinary()
+			}
+			if !s.fatal {
+				s.finalizeUnresolved(inactive)
+			}
+		}
+	}
+	if s.fatal {
+		clear(s.selections)
 	}
 	result := s.freezeSolution()
 	s.solved = true
@@ -38,14 +51,23 @@ func (s *Session) Solve() *Solution {
 }
 
 func (s *Session) solveOrdinary() {
+	if s.fatal {
+		return
+	}
 	for {
 		changed := false
 		for index := range s.constraints {
+			if s.fatal {
+				return
+			}
 			entry := &s.constraints[index]
 			if entry.done || entry.value.kind == constraintOneOf {
 				continue
 			}
 			result := s.apply(entry.value)
+			if s.fatal {
+				return
+			}
 			changed = changed || result.changed
 			if !result.delayed {
 				entry.done = true
@@ -56,7 +78,13 @@ func (s *Session) solveOrdinary() {
 				}
 			}
 		}
+		if s.fatal {
+			return
+		}
 		materialized, _ := s.materializeReadyShapes()
+		if s.fatal {
+			return
+		}
 		changed = changed || materialized
 		if !changed {
 			return
@@ -311,6 +339,9 @@ func (s *Session) solveConstraintSet(values []Constraint) bool {
 	for {
 		changed := false
 		for _, value := range values {
+			if s.fatal {
+				return false
+			}
 			if value.kind == constraintOneOf {
 				// Nested choices are viable only if exactly one nested branch is viable.
 				if !s.solveInlineChoice(value) {
@@ -319,6 +350,9 @@ func (s *Session) solveConstraintSet(values []Constraint) bool {
 				continue
 			}
 			result := s.apply(value)
+			if s.fatal {
+				return false
+			}
 			if !result.success {
 				return false
 			}
@@ -374,8 +408,14 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 }
 
 func (s *Session) defaultLiterals(inactive map[InferID]bool) {
+	if s.fatal {
+		return
+	}
 	builtins := s.program.builtins()
 	for index := range s.cells {
+		if s.fatal {
+			return
+		}
 		id := InferID(index + 1)
 		if s.find(id) != id {
 			continue
@@ -435,6 +475,9 @@ func (s *Session) termHasRoot(term Term, root InferID) bool {
 }
 
 func (s *Session) finalizeUnresolved(inactive map[InferID]bool) {
+	if s.fatal {
+		return
+	}
 	for index := range s.cells {
 		id := InferID(index + 1)
 		if s.find(id) != id {

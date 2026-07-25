@@ -389,8 +389,14 @@ func (s *Session) materializeShape(shape Shape) (types.TypeID, bool) {
 }
 
 func (s *Session) materializeReadyShapes() (bool, bool) {
+	if s.fatal {
+		return false, false
+	}
 	changed := false
 	for index := range s.cells {
+		if s.fatal {
+			return changed, false
+		}
 		id := InferID(index + 1)
 		if s.find(id) != id {
 			continue
@@ -400,6 +406,9 @@ func (s *Session) materializeReadyShapes() (bool, bool) {
 			continue
 		}
 		known, ok := s.materializeShape(*cell.shape)
+		if s.fatal {
+			return changed, false
+		}
 		if !ok {
 			continue
 		}
