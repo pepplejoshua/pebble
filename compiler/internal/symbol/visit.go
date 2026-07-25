@@ -573,16 +573,9 @@ func (r *resolver) resolveBracket(ctx walkContext, nodeID syntax.NodeID, node sy
 		return Resolution{Syntax: ref, State: ResolutionError}
 	}
 	base := r.resolveNodeWithContext(ctx, children[0], contextAny)
-	mode := BracketDeferred
+	mode := r.classifyBracketBase(ctx, children[0], base, expected)
 	if base.State == ResolutionResolved {
 		symbol, _ := r.result.Symbols.Symbol(base.Symbol)
-		if symbol.Generic && (isTypeSymbol(symbol.Kind) || isCallableSymbol(symbol.Kind)) {
-			mode = BracketTypeNames
-		} else if isRuntimeSymbol(symbol.Kind) {
-			mode = BracketValueNames
-		} else if expected == contextType && isTypeSymbol(symbol.Kind) {
-			mode = BracketTypeNames
-		}
 		if !validCategory(symbol.Kind, expected) {
 			r.invalidCategory(symbol, expected, nodeSpan(ctx.module.Tree, children[0]))
 			base.State = ResolutionError
@@ -599,6 +592,87 @@ func (r *resolver) resolveBracket(ctx walkContext, nodeID syntax.NodeID, node sy
 		}
 	}
 	return base
+}
+
+func (r *resolver) classifyBracketBase(ctx walkContext, baseID syntax.NodeID, base Resolution, expected nameContext) BracketMode {
+	node, ok := ctx.module.Tree.Node(baseID)
+	if !ok {
+		return BracketDeferred
+	}
+	if node.Kind() == syntax.GroupedTerm {
+		children := semanticChildren(ctx.module.Tree, node)
+		if len(children) == 1 {
+			if enclosed, ok := r.resolutionForBracketClassification(ctx, children[0]); ok {
+				base = enclosed
+			}
+			return r.classifyBracketBase(ctx, children[0], base, expected)
+		}
+		return BracketValueNames
+	}
+	if node.Kind() == syntax.MemberExpr || node.Kind() == syntax.PartialMemberExpr {
+		return BracketDeferred
+	}
+	if node.Kind() != syntax.Name && node.Kind() != syntax.Path {
+		switch node.Kind() {
+		case syntax.Literal, syntax.InterpolatedString, syntax.ContextExpr,
+			syntax.SomeExpr, syntax.SizeofExpr, syntax.PrefixTerm,
+			syntax.PostfixExpr, syntax.BinaryExpr, syntax.CastExpr,
+			syntax.CallExpr, syntax.BracketApply, syntax.SliceExpr,
+			syntax.TupleTerm, syntax.ArrayExpr, syntax.ArrayRepeatExpr,
+			syntax.RecordExpr:
+			return BracketValueNames
+		case syntax.FunctionTerm:
+			if node.Data()&syntax.FunctionBodyPresent != 0 {
+				return BracketValueNames
+			}
+		}
+		return BracketDeferred
+	}
+	if base.State != ResolutionResolved {
+		return BracketDeferred
+	}
+	symbol, ok := r.result.Symbols.Symbol(base.Symbol)
+	if !ok {
+		return BracketDeferred
+	}
+	if symbol.Generic && (isTypeSymbol(symbol.Kind) || isCallableSymbol(symbol.Kind)) {
+		return BracketTypeNames
+	}
+	if isRuntimeSymbol(symbol.Kind) || isCallableSymbol(symbol.Kind) {
+		return BracketValueNames
+	}
+	if expected == contextType && isTypeSymbol(symbol.Kind) {
+		return BracketTypeNames
+	}
+	return BracketDeferred
+}
+
+func (r *resolver) resolutionForBracketClassification(ctx walkContext, nodeID syntax.NodeID) (Resolution, bool) {
+	node, ok := ctx.module.Tree.Node(nodeID)
+	if !ok {
+		return Resolution{}, false
+	}
+	if node.Kind() == syntax.GroupedTerm {
+		children := semanticChildren(ctx.module.Tree, node)
+		if len(children) == 1 {
+			return r.resolutionForBracketClassification(ctx, children[0])
+		}
+		return Resolution{}, false
+	}
+	ref := SyntaxRef{Module: ctx.module.ID, Node: nodeID}
+	if node.Kind() == syntax.Name {
+		resolution, ok := r.result.references[ref]
+		return resolution, ok
+	}
+	if node.Kind() == syntax.Path {
+		children := semanticChildren(ctx.module.Tree, node)
+		if len(children) != 0 {
+			memberRef := SyntaxRef{Module: ctx.module.ID, Node: children[len(children)-1]}
+			resolution, ok := r.result.references[memberRef]
+			return resolution, ok
+		}
+	}
+	return Resolution{}, false
 }
 
 func (r *resolver) resolveNodeWithContext(ctx walkContext, nodeID syntax.NodeID, expected nameContext) Resolution {

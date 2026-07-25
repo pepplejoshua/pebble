@@ -378,11 +378,23 @@ statically named aggregate members. Runtime member selection such as
 base already identifies a nominal declaration without type inference.
 
 Neutral `BracketApply` is never classified from capitalization or spelling.
-When ordinary resolution selects a generic type or generic callable directly,
-its bracket arguments enter type-name resolution. When it selects a runtime
-binding, arguments enter value-name resolution. Bases whose category depends
-on expression typing remain explicitly unresolved for the checker; `04b` does
-not guess.
+Classification is closed over the authored base shape and resolved identity:
+
+- a directly resolved generic type or generic callable, and a valid
+  type-context application, uses `BracketTypeNames`;
+- a directly resolved runtime value or nongeneric callable uses
+  `BracketValueNames`, as does every base shape that syntax proves is an
+  expression value: literals, aggregate/value expressions, calls, operators,
+  casts, function values, and completed bracket applications;
+- `BracketDeferred` is reserved for bases whose category genuinely requires
+  expression typing, initially type-directed member and method forms, plus
+  deterministic damaged-input recovery where no successful identity exists.
+
+Transparent grouping preserves the enclosed base classification. The selected
+mode fixes argument traversal exactly: type names for `BracketTypeNames`, value
+expressions for `BracketValueNames`, and neutral traversal for
+`BracketDeferred`. Resolution does not use inferred types, following-call
+shape, traversal order, capitalization, or spelling to change that mode.
 
 The checker later validates arity, indexability, concrete types, and generic
 requirements.

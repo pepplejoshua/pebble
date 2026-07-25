@@ -321,7 +321,7 @@ func TestAnonymousCaptureOrderAndExclusions(t *testing.T) {
 }
 
 func TestNeutralBracketModesFollowResolvedBase(t *testing.T) {
-	text := "type Unit=struct{}; fn identity[T](value T) T=>value; fn use(runtime Unit, value Unit) Unit { let a=identity[Unit](value); let b=runtime[value]; return a; }"
+	text := "type Unit=struct{}; type Box[T]=struct{}; fn identity[T](value T) T=>value; fn plain(value Unit) Unit=>value; fn use(box Box[Unit], runtime Unit, value Unit) Unit { let a=identity[Unit](value); let b=runtime[value]; let c=plain[value]; let d=(identity)[Unit](value); return a; }"
 	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
 	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
 		t.Fatalf("diagnostics: %+v", got)
@@ -338,8 +338,78 @@ func TestNeutralBracketModesFollowResolvedBase(t *testing.T) {
 			modes = append(modes, mode)
 		}
 	})
-	if !reflect.DeepEqual(modes, []BracketMode{BracketTypeNames, BracketValueNames}) {
+	if !reflect.DeepEqual(modes, []BracketMode{BracketTypeNames, BracketTypeNames, BracketValueNames, BracketValueNames, BracketTypeNames}) {
 		t.Fatalf("bracket modes = %v", modes)
+	}
+}
+
+func TestExpressionOnlyBracketBasesUseValueNames(t *testing.T) {
+	text := `
+type Unit=struct{};
+fn identity[T](value T) T=>value;
+fn use(value Unit, argument Unit) Unit {
+    let literal="x"[0];
+    let array=[value][argument];
+    let tuple=(value, value)[argument];
+    let call=identity(value)[argument];
+    let operator=(value + value)[argument];
+    let cast=(value as Unit)[argument];
+    let function=(fn(item Unit) Unit => item)[argument];
+    return value;
+}`
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	main, _ := graph.Module(graph.Root)
+	file, _ := sources.File(main.Source)
+	count := 0
+	walkTree(main.Tree, main.Tree.Root(), func(id syntax.NodeID, node syntax.Node) {
+		if node.Kind() != syntax.BracketApply {
+			return
+		}
+		count++
+		if mode, ok := result.Bracket(SyntaxRef{Module: main.ID, Node: id}); !ok || mode != BracketValueNames {
+			t.Fatalf("bracket %q mode = %d, %t", file.Slice(node.Span()), mode, ok)
+		}
+		children := semanticChildren(main.Tree, node)
+		if len(children) != 2 {
+			t.Fatalf("bracket %q children = %v", file.Slice(node.Span()), children)
+		}
+		argumentNode, _ := main.Tree.Node(children[1])
+		if argumentNode.Kind() == syntax.Name {
+			argument, ok := result.Reference(SyntaxRef{Module: main.ID, Node: children[1]})
+			if !ok || argument.State != ResolutionResolved || argument.Symbol == 0 {
+				t.Fatalf("value argument for %q = %+v, %t", file.Slice(node.Span()), argument, ok)
+			}
+		}
+	})
+	if count != 7 {
+		t.Fatalf("bracket count = %d", count)
+	}
+}
+
+func TestDamagedExpressionBracketKeepsValueModeWithoutIdentity(t *testing.T) {
+	text := `fn use() str { let value="x"[]; return value; }`
+	result, _, graph, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	main, _ := graph.Module(graph.Root)
+	count := 0
+	walkTree(main.Tree, main.Tree.Root(), func(id syntax.NodeID, node syntax.Node) {
+		if node.Kind() != syntax.BracketApply {
+			return
+		}
+		count++
+		if mode, ok := result.Bracket(SyntaxRef{Module: main.ID, Node: id}); !ok || mode != BracketValueNames {
+			t.Fatalf("damaged bracket mode = %d, %t", mode, ok)
+		}
+		for _, childID := range node.Children()[1:] {
+			if reference, ok := result.Reference(SyntaxRef{Module: main.ID, Node: childID}); ok && reference.State == ResolutionResolved {
+				t.Fatalf("damaged argument invented identity: %+v", reference)
+			}
+		}
+	})
+	if count != 1 {
+		t.Fatalf("bracket count = %d", count)
 	}
 }
 
