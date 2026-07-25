@@ -288,6 +288,9 @@ func (p *Program) substituteTemplate(id TemplateID, mapping map[symbol.SymbolID]
 
 func (p *Program) compositeTemplate(value TypeTemplate) TemplateID {
 	temporary := p.addTemplate(value)
+	if p.deferMaterialization {
+		return temporary
+	}
 	if id, ok := p.materializeTemplate(temporary, nil, false); ok {
 		p.templates = p.templates[:len(p.templates)-1]
 		return p.knownTemplate(id)

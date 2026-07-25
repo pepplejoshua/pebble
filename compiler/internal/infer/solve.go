@@ -87,6 +87,11 @@ func (s *Session) apply(value Constraint) applyResult {
 	case constraintInstantiate:
 		changed, ok := s.instantiate(value)
 		return applyResult{changed: changed, success: ok}
+	case constraintTypeOccurrence:
+		changed, ok := s.applyTypeOccurrence(value)
+		return applyResult{changed: changed, success: ok}
+	case constraintValueOccurrence:
+		return applyResult{success: s.applyValueOccurrence(value)}
 	case constraintHasField:
 		changed, ok, delayed := s.hasField(value.a, value.name, value.b, value.origin)
 		return applyResult{changed: changed, success: ok, delayed: delayed}
@@ -119,11 +124,13 @@ func (s *Session) chargeRequeue(entry *storedConstraint, origin Origin) bool {
 }
 
 type sessionSnapshot struct {
-	cells        []ufCell
-	requirements []Requirement
-	failed       bool
-	methodStates map[symbol.SyntaxRef]methodState
-	constraints  []constraintProgress
+	cells               []ufCell
+	requirements        []Requirement
+	failed              bool
+	methodStates        map[symbol.SyntaxRef]methodState
+	constraints         []constraintProgress
+	typeOccurrenceMemo  map[resolveKey]occurrenceResult
+	valueOccurrenceMemo map[symbol.SyntaxRef]*inferenceConflict
 }
 
 type constraintProgress struct {
@@ -146,7 +153,7 @@ func (s *Session) snapshot() sessionSnapshot {
 	for i, entry := range s.constraints {
 		constraints[i] = constraintProgress{done: entry.done, requeues: entry.requeues}
 	}
-	return sessionSnapshot{cells: cells, requirements: append([]Requirement(nil), s.requirements...), failed: s.failed, methodStates: cloneMethodStates(s.methodStates), constraints: constraints}
+	return sessionSnapshot{cells: cells, requirements: append([]Requirement(nil), s.requirements...), failed: s.failed, methodStates: cloneMethodStates(s.methodStates), constraints: constraints, typeOccurrenceMemo: cloneTypeOccurrenceMemo(s.typeOccurrenceMemo), valueOccurrenceMemo: cloneValueOccurrenceMemo(s.valueOccurrenceMemo)}
 }
 
 func (s *Session) restore(snapshot sessionSnapshot) {
@@ -154,6 +161,8 @@ func (s *Session) restore(snapshot sessionSnapshot) {
 	s.requirements = snapshot.requirements
 	s.failed = snapshot.failed
 	s.methodStates = cloneMethodStates(snapshot.methodStates)
+	s.typeOccurrenceMemo = cloneTypeOccurrenceMemo(snapshot.typeOccurrenceMemo)
+	s.valueOccurrenceMemo = cloneValueOccurrenceMemo(snapshot.valueOccurrenceMemo)
 	for i, progress := range snapshot.constraints {
 		s.constraints[i].done = progress.done
 		s.constraints[i].requeues = progress.requeues
@@ -184,6 +193,9 @@ func cloneCells(values []ufCell) []ufCell {
 }
 
 func (s *Session) solveChoices() {
+	if s.fatal {
+		return
+	}
 	var choices []int
 	for i, entry := range s.constraints {
 		if !entry.done && entry.value.kind == constraintOneOf {
@@ -205,7 +217,7 @@ func (s *Session) solveChoices() {
 	var firstConflict *inferenceConflict
 	var explore func(int, map[ConstraintID]uint32)
 	explore = func(position int, selected map[ConstraintID]uint32) {
-		if len(solutions) >= 2 {
+		if len(solutions) >= 2 || s.fatal {
 			return
 		}
 		if position == len(choices) {
@@ -222,7 +234,7 @@ func (s *Session) solveChoices() {
 		level := s.snapshot()
 		entry := s.constraints[choices[position]]
 		for alternativeIndex, alternative := range entry.value.alternatives {
-			if len(solutions) >= 2 {
+			if len(solutions) >= 2 || s.fatal {
 				break
 			}
 			s.choiceStates++
@@ -253,8 +265,21 @@ func (s *Session) solveChoices() {
 	s.restore(searchBase)
 	s.speculative = true
 	explore(0, make(map[ConstraintID]uint32))
+	fatalConflict := cloneConflict(s.speculativeConflict)
 	s.speculative = false
 	s.speculativeConflict = nil
+	if s.fatal {
+		s.restore(base)
+		for _, index := range choices {
+			s.constraints[index].done = true
+		}
+		if fatalConflict != nil && fatalConflict.code == CodeResourceLimit {
+			s.conflict(fatalConflict.code, fatalConflict.message, fatalConflict.origin, fatalConflict.related...)
+		} else {
+			s.conflict(CodeResourceLimit, "fatal failure during inference choice evaluation", s.constraints[choices[0]].value.origin)
+		}
+		return
+	}
 	if len(solutions) == 1 {
 		s.restore(solutions[0].state)
 		s.failed = inheritedFailure
@@ -310,6 +335,9 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 	parentConflict := s.speculativeConflict
 	viable := make([]int, 0, len(value.alternatives))
 	for index, alternative := range value.alternatives {
+		if s.fatal {
+			break
+		}
 		s.choiceStates++
 		if s.choiceStates > s.config.MaxChoiceStates {
 			s.restore(base)
@@ -324,8 +352,16 @@ func (s *Session) solveInlineChoice(value Constraint) bool {
 			viable = append(viable, index)
 		}
 	}
+	fatalConflict := cloneConflict(s.speculativeConflict)
 	s.restore(base)
 	s.speculativeConflict = parentConflict
+	if s.fatal {
+		if fatalConflict != nil {
+			s.speculativeConflict = fatalConflict
+		}
+		s.failed = true
+		return false
+	}
 	if len(viable) != 1 {
 		message := "nested inference choice has no viable alternative"
 		if len(viable) > 1 {

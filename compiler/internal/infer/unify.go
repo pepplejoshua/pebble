@@ -462,8 +462,11 @@ func (s *Session) markRootsConflict(a, b InferID, code diagnostic.Code, message 
 	return false
 }
 func (s *Session) conflict(code diagnostic.Code, message string, origin Origin, related ...Origin) bool {
+	if code == CodeResourceLimit {
+		s.fatal = true
+	}
 	if s.speculative {
-		if s.speculativeConflict == nil {
+		if s.speculativeConflict == nil || (code == CodeResourceLimit && s.speculativeConflict.code != CodeResourceLimit) {
 			s.speculativeConflict = &inferenceConflict{code: code, message: message, origin: origin, related: append([]Origin(nil), related...)}
 		}
 	} else {

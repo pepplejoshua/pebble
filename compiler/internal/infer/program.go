@@ -124,22 +124,23 @@ type RuntimeTypes struct {
 }
 
 type Program struct {
-	storeMu      *sync.Mutex
-	identity     *programToken
-	inputs       ProgramInputs
-	config       Config
-	valid        bool
-	templates    []TypeTemplate
-	declarations map[symbol.SymbolID]TypeDeclaration
-	signatures   map[symbol.SymbolID]Signature
-	typeParams   map[symbol.SymbolID]types.TypeID
-	owners       map[symbol.SymbolID][]symbol.SymbolID
-	modules      map[module.ModuleID]module.Module
-	aliasState   map[symbol.SymbolID]uint8
-	aliasStack   []symbol.SymbolID
-	reporter     *reporter
-	runtimeTypes RuntimeTypes
-	runtimeReady bool
+	storeMu              *sync.Mutex
+	identity             *programToken
+	inputs               ProgramInputs
+	config               Config
+	valid                bool
+	templates            []TypeTemplate
+	declarations         map[symbol.SymbolID]TypeDeclaration
+	signatures           map[symbol.SymbolID]Signature
+	typeParams           map[symbol.SymbolID]types.TypeID
+	owners               map[symbol.SymbolID][]symbol.SymbolID
+	modules              map[module.ModuleID]module.Module
+	aliasState           map[symbol.SymbolID]uint8
+	aliasStack           []symbol.SymbolID
+	reporter             *reporter
+	runtimeTypes         RuntimeTypes
+	runtimeReady         bool
+	deferMaterialization bool
 }
 
 // 05a deliberately exposes a single-owner Store. All 05b access that may run

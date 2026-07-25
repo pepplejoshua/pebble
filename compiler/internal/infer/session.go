@@ -76,6 +76,11 @@ type resolveKey struct {
 	owner symbol.SymbolID
 }
 
+type occurrenceResult struct {
+	shape    Shape
+	conflict *inferenceConflict
+}
+
 type inferenceConflict struct {
 	code    diagnostic.Code
 	message string
@@ -107,6 +112,8 @@ type Session struct {
 	methodStates        map[symbol.SyntaxRef]methodState
 	methodSites         map[symbol.SyntaxRef]bool
 	resolveMemo         map[resolveKey]TypeResult
+	typeOccurrenceMemo  map[resolveKey]occurrenceResult
+	valueOccurrenceMemo map[symbol.SyntaxRef]*inferenceConflict
 	requirements        []Requirement
 	selections          map[ConstraintID]uint32
 	slots               []publishedSlot
@@ -114,6 +121,7 @@ type Session struct {
 	speculative         bool
 	speculativeConflict *inferenceConflict
 	failed              bool
+	fatal               bool
 }
 
 func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config Config) *Session {
@@ -126,7 +134,9 @@ func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config 
 		methodStates:   make(map[symbol.SyntaxRef]methodState),
 		methodSites:    make(map[symbol.SyntaxRef]bool),
 		resolveMemo:    make(map[resolveKey]TypeResult), selections: make(map[ConstraintID]uint32),
-		slotPublications: make(map[slotPublicationKey]bool),
+		typeOccurrenceMemo:  make(map[resolveKey]occurrenceResult),
+		valueOccurrenceMemo: make(map[symbol.SyntaxRef]*inferenceConflict),
+		slotPublications:    make(map[slotPublicationKey]bool),
 	}
 	if program == nil || !program.valid || program.inputs.Types == nil {
 		s.invalid = true
@@ -479,6 +489,25 @@ func (s *Session) validateConstraint(value Constraint, depth uint32) error {
 				return fmt.Errorf("invalid instantiation substitution")
 			}
 			seen[sub.Parameter] = true
+		}
+	case constraintTypeOccurrence:
+		if !validTerm(value.a) || value.ref.Module == 0 || value.ref.Node == 0 {
+			return fmt.Errorf("invalid type-occurrence constraint")
+		}
+		if _, _, ok := s.program.node(value.ref); !ok {
+			return fmt.Errorf("type-occurrence constraint uses foreign or damaged syntax")
+		}
+		if value.owner != 0 {
+			if _, ok := s.program.inputs.Resolution.Symbols.Symbol(value.owner); !ok {
+				return fmt.Errorf("type-occurrence constraint uses a foreign owner")
+			}
+		}
+	case constraintValueOccurrence:
+		if value.ref.Module == 0 || value.ref.Node == 0 {
+			return fmt.Errorf("invalid value-occurrence constraint")
+		}
+		if _, _, ok := s.program.node(value.ref); !ok {
+			return fmt.Errorf("value-occurrence constraint uses foreign or damaged syntax")
 		}
 	case constraintOneOf:
 		if uint32(len(value.alternatives)) == 0 || uint32(len(value.alternatives)) > s.config.MaxChoiceAlternatives {

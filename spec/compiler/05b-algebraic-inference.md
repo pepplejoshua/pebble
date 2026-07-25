@@ -841,6 +841,8 @@ Sliceable(receiverType, resultType)
 LiteralFits(literal, candidateType)
 Shape(subject, algebraicShape)
 Instantiate(templateType, substitutions, subject)
+TypeOccurrence(ref, rigidOwner, subject)
+ValueOccurrence(ref)
 OneOf(ordered alternatives)
 ```
 
@@ -886,6 +888,8 @@ func Sliceable(receiver, result Term, origin Origin) Constraint
 func LiteralFits(literal, candidate Term, origin Origin) Constraint
 func ConstrainShape(subject Term, shape Shape, origin Origin) Constraint
 func Instantiate(template TemplateID, substitutions []Substitution, subject Term, origin Origin) Constraint
+func TypeOccurrence(ref symbol.SyntaxRef, owner symbol.SymbolID, subject Term, origin Origin) Constraint
+func ValueOccurrence(ref symbol.SyntaxRef, origin Origin) Constraint
 func OneOf(alternatives []Alternative, origin Origin) Constraint
 ```
 
@@ -902,6 +906,11 @@ owned by phase 6 and are tagged with the corresponding alternative index.
 `Selection` reports the unique chosen zero-based alternative after solving.
 `OneOf` is not an operator-overload registry and does not contain callbacks or
 checker policy.
+
+`TypeOccurrence` and `ValueOccurrence` are the closed category gates used by
+those two alternatives. They retain only snapshot-local identities and copied
+origins. Neither accepts a callback, spelling, lookup policy, mutable tree, or
+checker-owned record.
 
 The ordered `CallableArgument` values correspond one-to-one with authored call
 arguments. For each fixed function parameter, `Destination` is equated with
@@ -944,6 +953,8 @@ role; they never replace provenance with an internal solver location.
 | `LiteralFits(lit,candidate)` | literal expected types, literal equality, and final selection | Delay until candidate is a known builtin. A rigid type parameter retains an exact `LiteralFits` generic obligation. Exact integer bounds use signedness, exact width, or `LiteralTarget.WordBits`. An exact rational fits `f32` or `f64` when IEEE-754 round-to-nearest, ties-to-even produces a finite value; ordinary rounding and underflow to signed zero are allowed, overflow to infinity is not. The check uses integer/rational comparisons rather than host floating arithmetic. Success binds the literal occurrence to the candidate. A known wrong category or out-of-range value fails `T0508`. `Error` suppresses it. | `05b` literal selection; this is not conversion between concrete types |
 | `Shape(subject,shape)` | tuple/array/function/optional construction, nil/none recovery, and instantiation expansion | Bind or merge a root shape, recursively match a known key, or materialize a fully known shape. Delay on unresolved leaves. Constructor, arity, convention, variadic, nominal declaration, or array-length mismatch fails `T0505`. Occurs failure is `T0506`. | `05b` structural identity |
 | `Instantiate(template,subst,subject)` | generic calls, generic member receivers/results, and generic aliases | Recursively expand the known symbolic template in stable child order, replace listed rigid parameters, and emit `Shape`. Delay only if the template descriptor is damaged; missing/duplicate substitutions or invalid template structure fail `T0501`. | `05b` substitution; phase 7 owns specialization |
+| `TypeOccurrence(ref,owner,subject)` | type argument of a deferred bracket | Resolve the exact immutable syntax occurrence under the selected rigid owner from the prepared program. During speculation, represent composite results as algebraic shapes and known leaves rather than interning a `TypeID`; relate the shape to `subject`. A valid occurrence that is not a type rejects only its alternative with `T0501`. In-tree `Missing`/`Error` nodes and absent or damaged immutable resolution evidence retain deterministic `T0511`. Foreign identities, malformed builder inputs, inconsistent ownership, and resource limits are fatal `T0512`. | `03b` syntax, `04b` identity/category evidence, and `05b` prepared type templates |
+| `ValueOccurrence(ref)` | runtime argument of a deferred bracket | Prove from the exact immutable syntax node and stored `04b` reference/bracket evidence that the occurrence can denote a runtime value. Type-only and wrong-category occurrences reject only their alternative with `T0501`. It performs no checker policy, lookup by spelling, callback, publication, or mutation. In-tree `Missing`/`Error` nodes and absent or damaged immutable resolution evidence retain deterministic `T0511`. Foreign identities, malformed builder inputs, inconsistent ownership, and resource limits are fatal `T0512`. | `03b` syntax and `04b` immutable resolution evidence |
 | `OneOf(alternatives)` | phase-6 rules with genuinely disjoint inference interpretations | Propagate common facts first. Eliminate alternatives that conflict under a rollback snapshot. Commit the only surviving alternative; zero survivors fail with the smallest branch conflict, while multiple viable alternatives fail with `T0509`. Exploration is source ordered, bounded, and never uses first-success semantics. | phase 6 defines each alternative; `05b` proves uniqueness |
 
 No failure is emitted when any required input term is `Error`. A constraint
@@ -1115,7 +1126,9 @@ records themselves are not passed to `Session.Add` and never appear in
 - `BracketDeferred` generates the base and retains both the base's resolved
   category facts and the bracket syntax. Phase 6 constructs a two-alternative
   `OneOf` through `AddChoice`: generic application with type-argument facts, or runtime indexing
-  with value-argument and `Indexable` facts. It tags every branch constraint,
+  with value-argument and `Indexable` facts. The generic branch begins with
+  `TypeOccurrence(argument, owner, typeArgument)`; the runtime branch begins
+  with `ValueOccurrence(argument)`. It tags every branch constraint,
   checker record, and runtime-value solved slot with the exact choice and
   alternative index. Syntax/results that exist only in the runtime branch use
   alternative-guarded slots rather than unconditional syntax publication.
@@ -1244,6 +1257,18 @@ copies; it never mutates `types.Store` speculatively. Shapes that would require
 interning remain complete keys inside the branch and are interned only after
 that branch is committed. Failed or ambiguous branches therefore cannot
 consume `TypeID`s or perturb deterministic interning order.
+
+The rollback boundary includes failure state, speculative diagnostics,
+type/value occurrence memo tables, solved terms, requirements, delayed method
+state, and constraint progress. Losing alternatives cannot retain a memoized
+category decision, solved type, requirement, default, root, or diagnostic.
+`T0512` is never an alternative conflict: it replaces any earlier nonfatal
+speculative conflict with its exact code, message, primary origin, and related
+origins, aborts choice exploration, and cannot make another alternative appear
+uniquely viable. If all alternatives
+instead fail semantically, the deterministic smallest underlying conflict is
+published; two category failures therefore retain `T0501` rather than being
+rewritten as `T0509`.
 
 Hash-map iteration must never determine constraint IDs, work order,
 representatives, defaulting, diagnostic selection, result ordering, ordered
@@ -1472,6 +1497,11 @@ IDs, equations, or solver structure are clearer than source text:
 - `OneOf` commits a unique viable alternative, reports zero or multiple viable
   alternatives deterministically, rolls back failed facts, and never consumes
   speculative `TypeID`s;
+- type/value occurrence gates select local and qualified deferred-bracket
+  arguments, isolate inactive diagnostics and memoized state, retain `T0501`
+  when neither category survives, retain damaged immutable evidence as
+  `T0511`, and treat lowered limits, foreign identities, or malformed inputs as
+  fatal `T0512` under both cold and memoized evaluation;
 - ordinary and guarded solved slots are bounded, copied, snapshot-local, and
   queryable only when active; unselected guarded slots neither default nor
   diagnose their otherwise-unconstrained terms;

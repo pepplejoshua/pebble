@@ -43,6 +43,8 @@ const (
 	constraintLiteralFits
 	constraintShape
 	constraintInstantiate
+	constraintTypeOccurrence
+	constraintValueOccurrence
 	constraintOneOf
 )
 
@@ -54,6 +56,8 @@ type Constraint struct {
 	site          symbol.SyntaxRef
 	shape         Shape
 	template      TemplateID
+	owner         symbol.SymbolID
+	ref           symbol.SyntaxRef
 	substitutions []Substitution
 	explicit      []Term
 	arguments     []CallableArgument
@@ -97,6 +101,12 @@ func ConstrainShape(subject Term, shape Shape, origin Origin) Constraint {
 func Instantiate(template TemplateID, substitutions []Substitution, subject Term, origin Origin) Constraint {
 	copySub := append([]Substitution(nil), substitutions...)
 	return Constraint{kind: constraintInstantiate, a: subject, template: template, substitutions: copySub, origin: origin}
+}
+func TypeOccurrence(ref symbol.SyntaxRef, owner symbol.SymbolID, subject Term, origin Origin) Constraint {
+	return Constraint{kind: constraintTypeOccurrence, ref: ref, owner: owner, a: subject, origin: origin}
+}
+func ValueOccurrence(ref symbol.SyntaxRef, origin Origin) Constraint {
+	return Constraint{kind: constraintValueOccurrence, ref: ref, origin: origin}
 }
 func OneOf(alternatives []Alternative, origin Origin) Constraint {
 	copyAlternatives := make([]Alternative, len(alternatives))

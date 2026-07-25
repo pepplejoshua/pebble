@@ -836,8 +836,11 @@ Consume the resolved `04b` bracket mode:
   alternatives ordered generic then index, add it through `AddChoice`, and tag every branch constraint,
   record, and slot with that exact choice and alternative `0`/`1`.
 
-The generic branch contains only type-application facts and publications. The
-runtime branch contains value traversal facts, `Integral(index)`,
+The generic branch gates each argument with
+`infer.TypeOccurrence(argument, owner, typeArgument)` before its
+type-application facts and publications. The runtime branch gates its one
+argument with `infer.ValueOccurrence(argument)` before its value traversal
+facts, `Integral(index)`,
 `Indexable(base,result)`, and alternative-guarded slots for the bracket value,
 runtime argument syntax, and branch-only synthetic destinations. It does not
 use unconditional `PublishSyntax` for those values. `06b` consumes records and
@@ -845,10 +848,13 @@ slots only when `Solution.Selection(choice)` matches their tag. An unselected
 branch has no successful syntax result, defaulting root, or branch-local
 diagnostic; an ambiguous/failed choice has no typed-IR-capable result.
 
-No spelling, capitalization, following call, traversal order, or first success
-selects an interpretation. `OneOf` remains confined to this genuine generic-
-application versus runtime-index ambiguity and contains algebraic constraints
-only.
+Both gates use only immutable syntax and `04b` evidence. A wrong semantic
+category rejects its alternative without publishing a diagnostic; `T0512`
+from a limit or inconsistent snapshot aborts the choice and is never evidence
+for the other alternative. No spelling, capitalization, following call,
+traversal order, or first success selects an interpretation. `OneOf` remains
+confined to this genuine generic-application versus runtime-index ambiguity
+and contains algebraic constraints only.
 
 Indexing visits base/index, emits `Integral(index)`, allocates a result, and
 emits `Indexable(base,result)`. That closed relation implements:
@@ -1171,7 +1177,9 @@ and entry, and builds typed IR without any session builder operation.
 
 ## Upstream status and deferred features
 
-All contracts required to implement `06a` and supply `06b` are resolved:
+Most upstream contracts required to implement `06a` and supply `06b` are
+resolved. The remaining implementation dependencies must be completed in
+their owning slices rather than treated as checker-local policy:
 
 - `03b` defines `EndOfFile` and `RecordField` with their real child/span/
   recovery contracts, and the dispatch above covers every `syntax.NodeKind`;
@@ -1181,7 +1189,9 @@ All contracts required to implement `06a` and supply `06b` are resolved:
   evidence; valid nongeneric literals use their `FunctionTerm` `SyntaxRef` as
   the source identity for global hoisting and require no anonymous symbol;
 - `05b` supplies bounded ordinary and alternative-guarded `SlotID` roots,
-  plus closed delayed `Callable`, `Indexable`, and `Sliceable` constraints;
+  closed delayed `Callable`, `Indexable`, and `Sliceable` constraints, and the
+  alternative-safe `TypeOccurrence`/`ValueOccurrence` gates required before
+  slice 06a.5 can generate deferred brackets;
 - deferred brackets tag facts, records, and guarded roots with one exact
   choice/alternative, so inactive branches cannot default or diagnose;
 - the record/root contracts above retain every identity, expression child,
@@ -1190,7 +1200,6 @@ All contracts required to implement `06a` and supply `06b` are resolved:
 - `Program.RuntimeTypes()` supplies `ContextExpr`, while hidden context remains
   checker-owned propagation metadata outside authored function keys.
 
-There are no remaining unresolved language-contract blockers for this task.
 The implementation prerequisite for slice 06a.8 is the completed 05a
 type-snapshot extension followed by the 05b.8 semantic-snapshot continuation.
 Slices 06a.2 through 06a.7 may proceed earlier wherever their existing
