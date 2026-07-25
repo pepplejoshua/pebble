@@ -1,0 +1,19 @@
+import "./colors";
+
+fn process(color Color) i32 {
+    switch color {
+    case Color.red:
+        return 1;
+    case Color.green:
+        return 2;
+    case Color.blue:
+        return 3;
+    else:
+        return 0;
+    }
+}
+
+fn main() void {
+    let result = process(Color.red);
+    print result;
+}

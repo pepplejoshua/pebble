@@ -1,0 +1,5 @@
+fn conflict() void {
+    let x u8 = 1;
+    let y i32 = 2;
+    let z i32 = x + y;
+}

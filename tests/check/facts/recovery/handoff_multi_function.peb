@@ -1,0 +1,26 @@
+fn helper() i32 {
+    return 42;
+}
+
+fn compute(value i32) i32 {
+    let result = 0;
+    while value > 0 {
+        switch value {
+        case 1:
+            result = 10;
+        case 2:
+            result = 20;
+        else:
+            result = 30;
+        }
+        value = value - 1;
+    }
+    defer print result;
+    return result;
+}
+
+fn main() void {
+    let x = helper();
+    let y = compute(x);
+    print y;
+}

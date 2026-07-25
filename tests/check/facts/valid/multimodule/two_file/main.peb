@@ -1,0 +1,9 @@
+import "./helper";
+
+fn use_helper() i32 {
+    return helper_fn();
+}
+
+fn main() void {
+    print use_helper();
+}
