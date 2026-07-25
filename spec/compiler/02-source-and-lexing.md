@@ -88,8 +88,9 @@ type scope:
 int uint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char str void
 ```
 
-The lexer has no special token kind for each built-in type. Whether these
-predeclared names may be shadowed is a name-resolution decision.
+The lexer has no special token kind for each built-in type. These
+predeclared names are reserved and cannot be shadowed; see
+[04b Name resolution](04b-name-resolution.md).
 
 ## Whitespace and comments
 

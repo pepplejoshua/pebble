@@ -5,10 +5,9 @@ depending on them in the rewrite.
 
 ## Highest priority
 
-1. Which implicit conversions exist between concrete numeric types?
-2. Are generic requirements inferred only, explicitly expressible, or both?
-3. What source-level behavior is guaranteed for overflow in each release mode?
-4. What are the ownership and lifetime rules for slices and strings?
+1. Are generic requirements inferred only, explicitly expressible, or both?
+2. What source-level behavior is guaranteed for overflow in each release mode?
+3. What are the ownership and lifetime rules for slices and strings?
 
 ## Syntax and parser
 
@@ -22,8 +21,6 @@ depending on them in the rewrite.
 - Semantic representation and C ABI of `char`
 - Untagged-union safety model
 - Function compatibility across calling conventions
-- Constant-expression language and evaluation rules
-- Global initialization ordering
 - Closure capture semantics
 
 ## Backend and runtime
@@ -34,6 +31,26 @@ depending on them in the rewrite.
 - Panic and safety-check behavior
 - Freestanding runtime requirements
 - Target data-model assumptions
+
+## Resolved
+
+These were listed as open and have since been decided by the phase
+documents. They are recorded here so they are not reopened by mistake.
+
+- **Implicit conversions between concrete numeric types: none.** Every
+  distinct concrete numeric pair requires an explicit `as` cast.
+  `06b-validation-and-typed-ir.md` states it directly: "There is no implicit
+  conversion between distinct concrete numeric types. `int`, `uint`, every
+  exact-width integer, `f32`, and `f64` are distinct."
+- **Constant-expression language and evaluation rules: specified.**
+  `06a-semantic-fact-generation.md` defines the accepted constant grammar
+  and its exclusions in "Constant evaluator and `ArrayLengthEvaluator`".
+  Slice `06a.2` implements it.
+- **Global initialization ordering: moot by construction.** Every non-extern
+  global `let`/`var` requires a constant initializer accepted by the `06a`
+  constant language, so all globals are determined at compile time and there
+  is no runtime ordering to specify. This becomes a live decision again only
+  if non-constant global initializers are ever accepted.
 
 ## Documentation method
 

@@ -641,6 +641,10 @@ in the phase docs that never made it into the file at all.
 
 ### Listed as open but actually resolved (stale)
 
+The three entries in this subsection have since been moved to a `Resolved`
+section in `OPEN-DECISIONS.md`. They are kept here with their reasoning so
+the resolution can be re-checked.
+
 - **"Which implicit conversions exist between concrete numeric types?"**
   (highest priority #1). Resolved: none. `06b-validation-and-typed-ir.md`'s
   primitive conversion matrix (§"Compatibility and coercions") states flatly
