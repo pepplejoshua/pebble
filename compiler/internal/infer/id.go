@@ -19,7 +19,7 @@ type SlotID struct {
 	ordinal uint32
 }
 
-// ChoiceRef is the session-owned capability required to guard a solved slot.
+// ChoiceRef is the session-owned capability required to guard a publication.
 type ChoiceRef struct {
 	owner        *sessionToken
 	constraint   ConstraintID

@@ -1,8 +1,8 @@
 package infer
 
 // inactiveGuardedRoots returns the final representatives whose only published
-// or constrained use is an unselected guarded slot. Such roots are deliberately
-// invisible to defaulting and unresolved-variable recovery.
+// or constrained use is an unselected guarded publication. Such roots are
+// deliberately invisible to defaulting and unresolved-variable recovery.
 func (s *Session) inactiveGuardedRoots() map[InferID]bool {
 	inactive := make(map[InferID]bool)
 	markCandidate := func(term Term) {
@@ -24,6 +24,18 @@ func (s *Session) inactiveGuardedRoots() map[InferID]bool {
 			}
 		}
 	}
+	for _, value := range s.instantiations {
+		if !value.guarded {
+			continue
+		}
+		selected, ok := s.selections[value.choice.constraint]
+		if ok && selected == value.alternative {
+			continue
+		}
+		for _, term := range value.arguments {
+			markCandidate(term)
+		}
+	}
 	if len(inactive) == 0 {
 		return inactive
 	}
@@ -34,6 +46,12 @@ func (s *Session) inactiveGuardedRoots() map[InferID]bool {
 		markLive(term)
 	}
 	for _, value := range s.instantiations {
+		if value.guarded {
+			selected, ok := s.selections[value.choice.constraint]
+			if !ok || selected != value.alternative {
+				continue
+			}
+		}
 		for _, term := range value.arguments {
 			markLive(term)
 		}

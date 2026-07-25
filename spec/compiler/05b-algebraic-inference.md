@@ -418,6 +418,7 @@ func (s *Session) PublishSyntax(symbol.SyntaxRef, Term)
 func (s *Session) PublishSlot(Term) SlotID
 func (s *Session) PublishGuardedSlot(ChoiceRef, uint32, Term) SlotID
 func (s *Session) PublishInstantiation(symbol.SyntaxRef, symbol.SymbolID, []Term)
+func (s *Session) PublishGuardedInstantiation(ChoiceRef, uint32, symbol.SyntaxRef, symbol.SymbolID, []Term)
 func (s *Session) Solve() *Solution
 ```
 
@@ -527,9 +528,36 @@ empty denominator; floating requirements use canonical decimal numerator and
 positive denominator. Concrete policy obligations remain owned by phase 6 and
 are not smuggled into this result.
 
+`PublishInstantiation` remains the unconditional publication for an explicit
+or inferred generic application. `PublishGuardedInstantiation` has the same
+site, generic identity, ordered argument, ownership, copying, and deterministic
+solution contracts, but attaches the publication to one exact session-owned
+`OneOf` alternative. Ordinary and guarded instantiations share one duplicate
+namespace keyed by site: a site may be published exactly once by either API.
+`MaxShapeComponents` independently bounds both the total ordinary-plus-guarded
+publication count and the cumulative number of retained arguments across those
+publications. Site duplication and every caller-supplied term are validated
+before either bound is preflighted and before the argument slice is copied.
+Cumulative arguments are preflighted without overflow, and the counter
+advances only immediately before successful insertion. Invalid sites or
+generic identities, foreign terms or choices, invalid alternative indices,
+duplicates, either limit's exhaustion, and post-solve mutation leave the
+publication table, retained-argument counter, and caller storage unchanged and
+produce bounded `T0512` recovery.
+
+A guarded instantiation's arguments are roots only if its exact alternative is
+the unique committed selection. Only then does it appear in
+`Solution.Instantiation` and the ordered instantiation manifest. If another
+alternative is selected, or if the choice is failed or ambiguous, the
+publication is absent. Its arguments alone cannot become reachable, default,
+emit `T0510` or another branch-local diagnostic, or enter the downstream
+semantic-snapshot manifest. An argument independently reachable through an
+ordinary or selected publication retains that independent liveness. No
+callback or checker-owned generic policy participates in this filtering.
+
 Every unconditional or selected root explicitly published by phase 6 has an
-entry; an unselected guarded slot is the sole intentional absence. `05b` does
-not decide
+entry; an unselected guarded slot or guarded instantiation is intentionally
+absent. `05b` does not decide
 which syntax is value-producing and does not invent entries by traversing the
 tree. Phase 6 must publish every binding, parameter, callable, field, variant
 payload, and value-producing expression required by later checking or typed
@@ -1129,9 +1157,13 @@ records themselves are not passed to `Session.Add` and never appear in
   with value-argument and `Indexable` facts. The generic branch begins with
   `TypeOccurrence(argument, owner, typeArgument)`; the runtime branch begins
   with `ValueOccurrence(argument)`. It tags every branch constraint,
-  checker record, and runtime-value solved slot with the exact choice and
-  alternative index. Syntax/results that exist only in the runtime branch use
-  alternative-guarded slots rather than unconditional syntax publication.
+  checker record, generic instantiation publication, and runtime-value solved
+  slot with the exact choice and alternative index. A generic application
+  nested in either deferred-bracket alternative uses
+  `PublishGuardedInstantiation`; it must not use unconditional
+  `PublishInstantiation`. Syntax/results that exist
+  only in the runtime branch use alternative-guarded slots rather than
+  unconditional syntax publication.
   Unselected type/value branches publish no successful syntax type, cause no
   defaulting, and emit no branch-local diagnostic. The solver commits only the
   unique viable branch; if both or neither remain viable it emits `T0509` and

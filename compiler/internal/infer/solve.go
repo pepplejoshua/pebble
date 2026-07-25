@@ -508,8 +508,14 @@ func (s *Session) freezeSolution() *Solution {
 	}
 	sort.Slice(instRefs, func(i, j int) bool { return refLess(instRefs[i], instRefs[j]) })
 	for _, ref := range instRefs {
-		result.manifest.instantiations = append(result.manifest.instantiations, ref)
 		published := s.instantiations[ref]
+		if published.guarded {
+			selected, ok := s.selections[published.choice.constraint]
+			if !ok || selected != published.alternative {
+				continue
+			}
+		}
+		result.manifest.instantiations = append(result.manifest.instantiations, ref)
 		arguments := make([]TypeResult, len(published.arguments))
 		for i, term := range published.arguments {
 			arguments[i] = s.termResult(term)

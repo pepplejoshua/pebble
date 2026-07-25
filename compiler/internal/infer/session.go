@@ -44,9 +44,12 @@ type storedConstraint struct {
 }
 
 type publishedInstantiation struct {
-	site      symbol.SyntaxRef
-	generic   symbol.SymbolID
-	arguments []Term
+	site        symbol.SyntaxRef
+	generic     symbol.SymbolID
+	arguments   []Term
+	choice      ChoiceRef
+	alternative uint32
+	guarded     bool
 }
 
 type publishedSlot struct {
@@ -89,39 +92,40 @@ type inferenceConflict struct {
 }
 
 type Session struct {
-	program             *Program
-	config              Config
-	token               *sessionToken
-	reporter            *reporter
-	solved              bool
-	solution            *Solution
-	invalid             bool
-	cells               []ufCell
-	constraints         []storedConstraint
-	origins             []Origin
-	shapeComponents     uint32
-	unificationSteps    uint64
-	decompositionSteps  uint64
-	totalRequeues       uint64
-	choiceStates        uint64
-	choiceCount         uint32
-	constraintCount     uint64
-	symbolRoots         map[symbol.SymbolID]Term
-	syntaxRoots         map[symbol.SyntaxRef]Term
-	instantiations      map[symbol.SyntaxRef]publishedInstantiation
-	methodStates        map[symbol.SyntaxRef]methodState
-	methodSites         map[symbol.SyntaxRef]bool
-	resolveMemo         map[resolveKey]TypeResult
-	typeOccurrenceMemo  map[resolveKey]occurrenceResult
-	valueOccurrenceMemo map[symbol.SyntaxRef]*inferenceConflict
-	requirements        []Requirement
-	selections          map[ConstraintID]uint32
-	slots               []publishedSlot
-	slotPublications    map[slotPublicationKey]bool
-	speculative         bool
-	speculativeConflict *inferenceConflict
-	failed              bool
-	fatal               bool
+	program                *Program
+	config                 Config
+	token                  *sessionToken
+	reporter               *reporter
+	solved                 bool
+	solution               *Solution
+	invalid                bool
+	cells                  []ufCell
+	constraints            []storedConstraint
+	origins                []Origin
+	shapeComponents        uint32
+	unificationSteps       uint64
+	decompositionSteps     uint64
+	totalRequeues          uint64
+	choiceStates           uint64
+	choiceCount            uint32
+	constraintCount        uint64
+	symbolRoots            map[symbol.SymbolID]Term
+	syntaxRoots            map[symbol.SyntaxRef]Term
+	instantiations         map[symbol.SyntaxRef]publishedInstantiation
+	instantiationArguments uint64
+	methodStates           map[symbol.SyntaxRef]methodState
+	methodSites            map[symbol.SyntaxRef]bool
+	resolveMemo            map[resolveKey]TypeResult
+	typeOccurrenceMemo     map[resolveKey]occurrenceResult
+	valueOccurrenceMemo    map[symbol.SyntaxRef]*inferenceConflict
+	requirements           []Requirement
+	selections             map[ConstraintID]uint32
+	slots                  []publishedSlot
+	slotPublications       map[slotPublicationKey]bool
+	speculative            bool
+	speculativeConflict    *inferenceConflict
+	failed                 bool
+	fatal                  bool
 }
 
 func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config Config) *Session {
@@ -403,6 +407,16 @@ func (s *Session) PublishSyntax(ref symbol.SyntaxRef, term Term) {
 }
 
 func (s *Session) PublishInstantiation(site symbol.SyntaxRef, generic symbol.SymbolID, arguments []Term) {
+	s.publishInstantiation(ChoiceRef{}, 0, site, generic, arguments, false)
+}
+
+// PublishGuardedInstantiation publishes one generic application only when the
+// exact OneOf alternative identified by choice is selected.
+func (s *Session) PublishGuardedInstantiation(choice ChoiceRef, alternative uint32, site symbol.SyntaxRef, generic symbol.SymbolID, arguments []Term) {
+	s.publishInstantiation(choice, alternative, site, generic, arguments, true)
+}
+
+func (s *Session) publishInstantiation(choice ChoiceRef, alternative uint32, site symbol.SyntaxRef, generic symbol.SymbolID, arguments []Term, guarded bool) {
 	if !s.mutable() {
 		return
 	}
@@ -410,18 +424,48 @@ func (s *Session) PublishInstantiation(site symbol.SyntaxRef, generic symbol.Sym
 		s.invalidTerm("invalid generic instantiation publication", Origin{Syntax: site, Symbol: generic})
 		return
 	}
-	copyArgs := append([]Term(nil), arguments...)
-	for _, term := range copyArgs {
-		if !term.belongs(s.token) {
-			s.invalidTerm("generic argument belongs to another session", Origin{Syntax: site, Symbol: generic})
+	if guarded {
+		if choice.owner != s.token || !choice.constraint.IsValid() || choice.alternatives == 0 || alternative >= choice.alternatives || uint64(choice.constraint) > uint64(len(s.constraints)) {
+			s.invalidTerm("guarded generic instantiation uses an invalid or foreign choice alternative", Origin{Syntax: site, Symbol: generic})
 			return
 		}
+		stored := s.constraints[choice.constraint-1].value
+		if stored.kind != constraintOneOf || choice.alternatives != uint32(len(stored.alternatives)) {
+			s.invalidTerm("guarded generic instantiation uses an invalid or foreign choice alternative", Origin{Syntax: site, Symbol: generic})
+			return
+		}
+	} else if choice != (ChoiceRef{}) || alternative != 0 {
+		s.invalidTerm("ordinary generic instantiation has invalid guard state", Origin{Syntax: site, Symbol: generic})
+		return
 	}
 	if _, exists := s.instantiations[site]; exists {
 		s.invalidTerm("generic instantiation published more than once", Origin{Syntax: site, Symbol: generic})
 		return
 	}
-	s.instantiations[site] = publishedInstantiation{site: site, generic: generic, arguments: copyArgs}
+	for _, term := range arguments {
+		if !term.belongs(s.token) {
+			s.invalidTerm("generic argument belongs to another session", Origin{Syntax: site, Symbol: generic})
+			return
+		}
+	}
+	componentLimit := uint64(s.config.MaxShapeComponents)
+	if uint64(len(s.instantiations)) >= componentLimit {
+		s.limit("generic instantiation publication", componentLimit, Origin{Syntax: site, Symbol: generic})
+		s.failed = true
+		return
+	}
+	argumentCount := uint64(len(arguments))
+	if argumentCount > componentLimit || s.instantiationArguments > componentLimit-argumentCount {
+		s.limit("retained generic instantiation argument", componentLimit, Origin{Syntax: site, Symbol: generic})
+		s.failed = true
+		return
+	}
+	copyArgs := append([]Term(nil), arguments...)
+	s.instantiationArguments += argumentCount
+	s.instantiations[site] = publishedInstantiation{
+		site: site, generic: generic, arguments: copyArgs,
+		choice: choice, alternative: alternative, guarded: guarded,
+	}
 }
 
 func (s *Session) addOrigin(origin Origin) OriginID {

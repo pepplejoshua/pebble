@@ -434,7 +434,10 @@ identity/implicit/explicit/forbidden after solving.
 - `PublishGuardedSlot` for every value or synthetic result that exists only in
   one deferred-bracket alternative;
 - `PublishInstantiation` once for each explicit or inferred generic
-  application site;
+  application site that exists unconditionally;
+- `PublishGuardedInstantiation` once for each generic application that exists
+  only inside one deferred-bracket alternative, tagged with that exact choice
+  and alternative;
 - the `SelectMethod` site required for `Solution.Method`.
 
 Generic constructors without a complete application, type-only occurrences,
@@ -808,7 +811,10 @@ relationship. For an inferred or explicit generic call:
 2. equate leading explicit type arguments with their variables;
 3. emit `Instantiate` for receiver, parameter, and result templates;
 4. add receiver, argument, and expected-result evidence;
-5. call `PublishInstantiation(site,generic,orderedVariables)` once;
+5. call `PublishInstantiation(site,generic,orderedVariables)` once when the
+   application is unconditional, or
+   `PublishGuardedInstantiation(choice,alternative,site,generic,orderedVariables)`
+   once when it is nested in a deferred-bracket alternative;
 6. retain the generic declaration and site for phase 7.
 
 Omitted arguments use the same variables. `_` is unsupported. An explicit
@@ -834,7 +840,8 @@ Consume the resolved `04b` bracket mode:
   index record only;
 - `BracketDeferred`: in one node visit, create exactly two `OneOf`
   alternatives ordered generic then index, add it through `AddChoice`, and tag every branch constraint,
-  record, and slot with that exact choice and alternative `0`/`1`.
+  record, slot, and branch-local generic instantiation with that exact choice
+  and alternative `0`/`1`.
 
 The generic branch gates each argument with
 `infer.TypeOccurrence(argument, owner, typeArgument)` before its
@@ -847,6 +854,11 @@ use unconditional `PublishSyntax` for those values. `06b` consumes records and
 slots only when `Solution.Selection(choice)` matches their tag. An unselected
 branch has no successful syntax result, defaulting root, or branch-local
 diagnostic; an ambiguous/failed choice has no typed-IR-capable result.
+Generic applications nested in either branch use guarded instantiation
+publication, so an inactive, failed, or ambiguous branch likewise contributes
+no `Solution.Instantiation`, ordered manifest entry, or semantic-snapshot
+manifest entry. Ordinary `PublishInstantiation` is forbidden for such a
+branch-local application.
 
 Both gates use only immutable syntax and `04b` evidence. A wrong semantic
 category rejects its alternative without publishing a diagnostic; `T0512`
@@ -1166,6 +1178,10 @@ lookup. `valueRoot.Parameter` is used only by `rootInstantiation` and
 contains `infer.Term`, `InferID`, `ChoiceRef`, or a derivation recipe. A
 checker-owned known type that lacks an honest symbol or syntax publication
 uses an ordinary slot; it does not add another root kind.
+An instantiation root belonging to a deferred alternative carries the same
+alternative tag as its record and is filtered before lookup. This agrees with
+the guarded 05b solution manifest: inactive, failed, and ambiguous choices
+cannot make an instantiation argument root readable.
 
 If `Solution.Successful()` is false, the unified checker may ask `06b` only to
 perform diagnostics explicitly independent of the failed type. These include
@@ -1193,7 +1209,9 @@ their owning slices rather than treated as checker-local policy:
   alternative-safe `TypeOccurrence`/`ValueOccurrence` gates required before
   slice 06a.5 can generate deferred brackets;
 - deferred brackets tag facts, records, and guarded roots with one exact
-  choice/alternative, so inactive branches cannot default or diagnose;
+  choice/alternative, and use guarded instantiation publication for nested
+  generic applications, so inactive branches cannot default, diagnose, or
+  publish specialization arguments;
 - the record/root contracts above retain every identity, expression child,
   literal/interpolation payload, control mode, and policy input 06b needs
   without syntax reinterpretation;
