@@ -122,17 +122,17 @@ func (w *walker) termForTemplate(template infer.TemplateID, parameters []symbol.
 		return w.session.Known(id)
 	default:
 		term := w.session.Variable(origin)
-		w.session.Add(infer.Instantiate(template, w.rigidTerms(parameters, origin), term, origin))
+		w.addConstraint(infer.Instantiate(template, w.rigidTerms(parameters, origin), term, origin))
 		return term
 	}
 }
 
 func (w *walker) retainBinding(value bindingRecord) {
-	w.generation.addRecord(retainedRecord{Header: value.Header, Binding: &value})
+	w.addRecord(retainedRecord{Header: value.Header, Binding: &value})
 }
 
 func (w *walker) retainCallable(value callableRecord) {
-	w.generation.addRecord(retainedRecord{Header: value.Header, Callable: &value})
+	w.addRecord(retainedRecord{Header: value.Header, Callable: &value})
 }
 
 func (w *walker) callableErrorResult(ref symbol.SyntaxRef, owner, genericOwner symbol.SymbolID, role string) typedValue {
@@ -201,7 +201,7 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	annotation := typedValue{}
 	if annotationPresent {
 		annotation = w.resolveType(annotationRef, ctx.typeOwner, ctx.genericOwner, "binding annotation")
-		w.session.Add(infer.Equal(symbolTerm, annotation.Term, origin))
+		w.addConstraint(infer.Equal(symbolTerm, annotation.Term, origin))
 	}
 	initializer := typedValue{}
 	if initializerPresent {
@@ -210,9 +210,11 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		w.valuesBySyntax[initializerRef] = initializer
 		if annotationPresent {
 			w.expectations[initializerRef] = w.expectationFor(initializerRef, annotation.ID, compatibilityAssignment)
-			w.retainCompatibility(ref, ctx.genericOwner, initializer.ID, annotation.ID, compatibilityAssignment, 0, binding.ID, binding.Span, false)
+			if !w.deferredExpression(initializerRef) {
+				w.retainCompatibility(ref, ctx.genericOwner, initializer.ID, annotation.ID, compatibilityAssignment, 0, binding.ID, binding.Span, false)
+			}
 		} else {
-			w.session.Add(infer.Equal(symbolTerm, initializer.Term, origin))
+			w.addConstraint(infer.Equal(symbolTerm, initializer.Term, origin))
 		}
 	}
 	if !annotationPresent && !initializerPresent {
@@ -227,6 +229,31 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		AnnotationPresent: annotationPresent, InitializerPresent: initializerPresent,
 		Global: global, Mutable: mutable,
 	})
+}
+
+func (w *walker) deferredExpression(ref symbol.SyntaxRef) bool {
+	node, ok := w.node(ref.Module, ref.Node)
+	if !ok {
+		return false
+	}
+	if node.Kind() == syntax.BracketApply {
+		mode, found := w.generation.inputs.Resolution.Bracket(ref)
+		return found && mode == symbol.BracketDeferred
+	}
+	if node.Kind() != syntax.CallExpr {
+		return false
+	}
+	children := node.Children()
+	if len(children) == 0 {
+		return false
+	}
+	callee := symbol.SyntaxRef{Module: ref.Module, Node: children[0]}
+	calleeNode, found := w.node(callee.Module, callee.Node)
+	if !found || calleeNode.Kind() != syntax.BracketApply {
+		return false
+	}
+	mode, found := w.generation.inputs.Resolution.Bracket(callee)
+	return found && mode == symbol.BracketDeferred
 }
 
 func (w *walker) handleNamedCallable(ref symbol.SyntaxRef, node syntax.Node) {
@@ -300,7 +327,7 @@ func (w *walker) handleNamedCallable(ref symbol.SyntaxRef, node syntax.Node) {
 		}
 		origin := w.origin(ref, node, "callable", callable.ID, 0)
 		term := w.session.Variable(origin)
-		w.session.Add(infer.ConstrainShape(term, infer.FunctionShape(signature.Convention, parameters, infer.Leaf(result.Term), signature.Variadic), w.origin(ref, node, "callable shape", callable.ID, 0)))
+		w.addConstraint(infer.ConstrainShape(term, infer.FunctionShape(signature.Convention, parameters, infer.Leaf(result.Term), signature.Variadic), w.origin(ref, node, "callable shape", callable.ID, 0)))
 		_, published := w.publishSymbol(callable.ID, term, origin)
 		record.Header.Suppressed = record.Header.Suppressed || !published
 	}
@@ -362,7 +389,7 @@ func (w *walker) handleFunctionLiteral(ref symbol.SyntaxRef, node syntax.Node, c
 		}
 		header := w.header(ref, ctx.genericOwner, true)
 		record := unsupportedCallableRecord{Header: header, TypeParameters: parameterRefs}
-		w.generation.addRecord(retainedRecord{Header: header, UnsupportedCallable: &record})
+		w.addRecord(retainedRecord{Header: header, UnsupportedCallable: &record})
 		return true
 	}
 	record := callableRecord{
@@ -412,7 +439,7 @@ func (w *walker) handleFunctionLiteral(ref symbol.SyntaxRef, node syntax.Node, c
 			parameters[index] = infer.Leaf(w.generation.values[id-1].Term)
 		}
 		term = w.session.Variable(origin)
-		w.session.Add(infer.ConstrainShape(term, infer.FunctionShape(record.Convention, parameters, infer.Leaf(result.Term), record.Variadic), w.origin(ref, node, "function literal shape", ctx.typeOwner, ctx.genericOwner)))
+		w.addConstraint(infer.ConstrainShape(term, infer.FunctionShape(record.Convention, parameters, infer.Leaf(result.Term), record.Variadic), w.origin(ref, node, "function literal shape", ctx.typeOwner, ctx.genericOwner)))
 	}
 	expression, published := w.publishSyntax(ref, term, origin)
 	record.Expression = expression.ID

@@ -242,6 +242,32 @@ func (g *generation) addRecord(value retainedRecord) (recordID, bool) {
 			return 0, false
 		}
 	}
+	if value.Call != nil {
+		if value.Call.Target.Symbol != 0 && !g.validSymbol(value.Call.Target.Symbol) {
+			g.report("call record contains an invalid target symbol", value.Header.Span)
+			return 0, false
+		}
+		if value.Call.Target.Site != (symbol.SyntaxRef{}) && !g.validSyntax(value.Call.Target.Site) {
+			g.report("call record contains an invalid target site", value.Header.Span)
+			return 0, false
+		}
+		if value.Call.Target.Kind == callDirect && value.Call.Target.Symbol != 0 {
+			if target, ok := g.inputs.Resolution.Symbols.Symbol(value.Call.Target.Symbol); !ok || target.Generic != (value.Call.Target.Site != (symbol.SyntaxRef{})) {
+				g.report("call record has an inexact generic application site", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
+	if value.Member != nil {
+		if value.Member.Member != 0 && !g.validSymbol(value.Member.Member) {
+			g.report("member record contains an invalid member symbol", value.Header.Span)
+			return 0, false
+		}
+		if !g.validSyntax(value.Member.Header.Syntax) || !g.validRecordSpan(value.Member.Header.Syntax, value.Member.NameSpan) {
+			g.report("member record contains invalid name evidence", value.Header.Span)
+			return 0, false
+		}
+	}
 	id, ok := g.records.append(value, g.hasValue, g.hasControl, g.config.MaxSemanticRecords, g.config.MaxRecordComponents)
 	if !ok {
 		g.report("invalid, foreign, or over-limit semantic record", value.Header.Span)

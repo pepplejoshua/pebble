@@ -57,5 +57,5 @@ func (w *walker) handleContext(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		Caller: ctx.callable, Context: runtime.Context,
 	}
 	_ = value
-	w.generation.addRecord(retainedRecord{Header: header, ContextFlow: &record})
+	w.addRecord(retainedRecord{Header: header, ContextFlow: &record})
 }

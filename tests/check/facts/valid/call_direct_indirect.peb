@@ -1,0 +1,4 @@
+fn add(left i32, right i32) i32 => left;
+let direct i32 = add(1, 2);
+let function fn(i32, i32) i32 = add;
+let indirect i32 = function(3, 4);

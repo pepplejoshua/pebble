@@ -1,0 +1,3 @@
+fn identity(value i32) i32 => value;
+let failed = missing(1);
+let valid i32 = identity(2);

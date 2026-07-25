@@ -1,0 +1,6 @@
+type Box = struct {
+    fn echo[T](self Box, value T) T => value;
+};
+let box Box = Box.{};
+let inferred i32 = box.echo(1);
+let explicit i32 = box.echo[i32](2);

@@ -1,0 +1,5 @@
+type Wrapper[T] = struct { value T; };
+type Box = struct { fn consume[T](self Box, value T) void {} };
+let box Box = Box.{};
+let wrapped Wrapper[i32] = Wrapper[i32].{ value = 1 };
+let consumed void = box.consume[Wrapper[i32]](wrapped);

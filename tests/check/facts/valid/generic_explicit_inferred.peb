@@ -1,0 +1,4 @@
+fn identity[T](value T) T => value;
+let inferred i32 = identity(1);
+let explicit i32 = identity[i32](2);
+let standalone fn(i32) i32 = identity[i32];

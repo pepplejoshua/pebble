@@ -96,7 +96,7 @@ func (w *walker) finishTuple(ref symbol.SyntaxRef, node syntax.Node, ctx walkCon
 		}
 	}
 	if len(shapes) != 0 {
-		w.session.Add(infer.ConstrainShape(result.Term, infer.TupleShape(shapes), origin))
+		w.addConstraint(infer.ConstrainShape(result.Term, infer.TupleShape(shapes), origin))
 	}
 	return result
 }
@@ -137,10 +137,10 @@ func (w *walker) finishArray(ref symbol.SyntaxRef, node syntax.Node, ctx walkCon
 		if child.ID == 0 {
 			continue
 		}
-		w.session.Add(infer.Equal(child.Term, plan.arrayElement.Term, w.originForRef(childRef, "array element", ctx.typeOwner, ctx.genericOwner)))
+		w.addConstraint(infer.Equal(child.Term, plan.arrayElement.Term, w.originForRef(childRef, "array element", ctx.typeOwner, ctx.genericOwner)))
 		w.retainCompatibility(ref, ctx.genericOwner, child.ID, plan.arrayElement.ID, compatibilityTupleComponent, uint32(ordinal), 0, spanForRef(w.generation.inputs, childRef), false)
 	}
-	w.session.Add(infer.ConstrainShape(result.Term, infer.ArrayShape(uint64(len(plan.children)), infer.Leaf(plan.arrayElement.Term)), origin))
+	w.addConstraint(infer.ConstrainShape(result.Term, infer.ArrayShape(uint64(len(plan.children)), infer.Leaf(plan.arrayElement.Term)), origin))
 	return result
 }
 
@@ -180,7 +180,7 @@ func (w *walker) finishArrayRepeat(ref symbol.SyntaxRef, node syntax.Node, ctx w
 	result := w.expressionResult(ref, w.session.Variable(origin), origin)
 	child := w.firstChildValue(plan)
 	if plan.arrayKnown {
-		w.session.Add(infer.ConstrainShape(result.Term, infer.ArrayShape(plan.arrayLength, infer.Leaf(child.Term)), origin))
+		w.addConstraint(infer.ConstrainShape(result.Term, infer.ArrayShape(plan.arrayLength, infer.Leaf(child.Term)), origin))
 	}
 	if len(plan.children) != 0 {
 		if expected, ok := w.expectations[plan.children[0]]; ok && expected.Destination != 0 {
@@ -225,7 +225,7 @@ func (w *walker) prepareRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		origin := w.originForRef(fieldRef, expectedRoleText(compatibilityRecordField, fieldOrdinal), ctx.typeOwner, ctx.genericOwner)
 		field.destination, _ = w.newSlotValue(w.session.Variable(origin), origin)
 		if field.nameText != "" {
-			w.session.Add(infer.HasField(w.recordReceiverTerm(ctx, rp, origin), field.nameText, field.destination.Term, origin))
+			w.addConstraint(infer.HasField(w.recordReceiverTerm(ctx, rp, origin), field.nameText, field.destination.Term, origin))
 		}
 		if field.value != (symbol.SyntaxRef{}) {
 			w.expectations[field.value] = w.expectationFor(field.value, field.destination.ID, compatibilityRecordField)
@@ -279,21 +279,21 @@ func (w *walker) finishRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 		result := w.failExpression(ref, origin)
 		header := w.header(ref, ctx.genericOwner, true)
 		aggregate := aggregateRecord{Header: header, Kind: aggregateStruct, Result: result.ID, Receiver: rp.receiver.ID, Declaration: rp.declaration, Fields: fields, DeclarationFields: rp.declarationFields}
-		plan.specialized, _ = w.generation.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
+		plan.specialized, _ = w.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
 		return
 	}
 	result := w.expressionResult(ref, receiver, origin)
-	w.session.Add(infer.Equal(result.Term, receiver, origin))
+	w.addConstraint(infer.Equal(result.Term, receiver, origin))
 	header := w.header(ref, ctx.genericOwner, !w.publishedSyntax[ref])
 	aggregate := aggregateRecord{Header: header, Kind: aggregateStruct, Result: result.ID, Receiver: rp.receiver.ID, Declaration: rp.declaration, Fields: fields, DeclarationFields: rp.declarationFields}
-	specialized, _ := w.generation.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
+	specialized, _ := w.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
 	plan.specialized = specialized
 	if specialized == 0 || !w.publishedSyntax[ref] {
 		return
 	}
 	w.successfulExpressions[ref] = true
 	record := expressionRecord{Header: header, Kind: expressionRecordValue, Result: result.ID, Children: runtime, Specialized: specialized}
-	w.generation.addRecord(retainedRecord{Header: header, Expression: &record})
+	w.addRecord(retainedRecord{Header: header, Expression: &record})
 }
 
 func (w *walker) finishPartialMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree, plan *expressionPlan, origin infer.Origin) typedValue {
@@ -321,13 +321,13 @@ func (w *walker) finishPartialMember(ref symbol.SyntaxRef, node syntax.Node, ctx
 	memberOrigin := w.originForRef(nameRef, "partial member", ctx.typeOwner, ctx.genericOwner)
 	memberDestination, _ := w.newSlotValue(w.session.Variable(memberOrigin), memberOrigin)
 	if name != "" {
-		w.session.Add(infer.HasField(receiver.Term, name, memberDestination.Term, memberOrigin))
+		w.addConstraint(infer.HasField(receiver.Term, name, memberDestination.Term, memberOrigin))
 	}
-	w.session.Add(infer.Equal(result.Term, w.session.Known(id), origin))
+	w.addConstraint(infer.Equal(result.Term, w.session.Known(id), origin))
 	header := w.header(ref, ctx.genericOwner, declaration == 0 || name == "")
 	field := fieldValue{Field: ref, NameSyntax: nameRef, Name: string([]byte(name)), NameSpan: nameNode.Span(), Member: member, Value: result.ID, Destination: memberDestination.ID}
 	aggregate := aggregateRecord{Header: header, Kind: aggregateEnumVariant, Result: result.ID, Receiver: receiver.ID, Declaration: declaration, Fields: []fieldValue{field}, DeclarationFields: declarationFields}
-	plan.specialized, _ = w.generation.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
+	plan.specialized, _ = w.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
 	plan.symbol = member
 	return result
 }

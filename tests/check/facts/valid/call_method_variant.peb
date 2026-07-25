@@ -1,0 +1,8 @@
+type Box = struct {
+    value i32;
+    fn get(self Box) i32 => self.value;
+};
+type Choice = union enum { empty void; value i32; };
+let box Box = Box.{ value = 1 };
+let method i32 = box.get();
+let variant Choice = Choice.value(2);

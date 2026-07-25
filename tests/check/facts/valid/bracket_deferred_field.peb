@@ -1,0 +1,4 @@
+type Box = struct { text str; };
+let box Box = Box.{ text = "x" };
+let index int = 0;
+let value char = box.text[index];

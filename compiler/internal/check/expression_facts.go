@@ -196,6 +196,13 @@ func (w *walker) prepareExpression(ref symbol.SyntaxRef, node syntax.Node, ctx w
 		w.prepareArrayRepeat(ref, node, ctx, tree, items, plan)
 	case syntax.RecordExpr:
 		w.prepareRecord(ref, node, ctx, tree, items, plan)
+	case syntax.PrefixTerm, syntax.PostfixExpr, syntax.BinaryExpr:
+		for i := range items {
+			child, _ := tree.Node(items[i].ref.Node)
+			if child.Kind() != syntax.Missing && child.Kind() != syntax.Error {
+				plan.children = append(plan.children, items[i].ref)
+			}
+		}
 	}
 	return items
 }
@@ -250,7 +257,7 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		plan.symbol = resolution.Symbol
 		term := w.symbolTerm(resolution.Symbol, origin)
 		value = w.expressionResult(ref, term, origin)
-		w.session.Add(infer.Equal(value.Term, term, origin))
+		w.addConstraint(infer.Equal(value.Term, term, origin))
 		if plan.symbol != 0 {
 			if resolved, found := w.generation.inputs.Resolution.Symbols.Symbol(plan.symbol); found {
 				switch resolved.Kind {
@@ -282,7 +289,7 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		kind = expressionSome
 		value = w.expressionResult(ref, w.session.Variable(origin), origin)
 		child := w.firstChildValue(plan)
-		w.session.Add(infer.ConstrainShape(value.Term, infer.OptionalShape(infer.Leaf(child.Term)), origin))
+		w.addConstraint(infer.ConstrainShape(value.Term, infer.OptionalShape(infer.Leaf(child.Term)), origin))
 	case syntax.SizeofExpr:
 		kind = expressionSizeof
 		value = w.expressionResult(ref, w.session.Known(w.generation.inputs.Types.Builtins().Uint), origin)
@@ -290,7 +297,7 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		kind = expressionGrouped
 		child := w.firstChildValue(plan)
 		value = w.expressionResult(ref, child.Term, origin)
-		w.session.Add(infer.Equal(value.Term, child.Term, origin))
+		w.addConstraint(infer.Equal(value.Term, child.Term, origin))
 		if len(plan.children) != 0 {
 			if _, place := w.placeCandidates[plan.children[0]]; place && w.generation.trackPlace() {
 				w.placeCandidates[ref] = value.ID
@@ -308,6 +315,15 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 	case syntax.PartialMemberExpr:
 		kind = expressionPartialMember
 		value = w.finishPartialMember(ref, node, ctx, tree, plan, origin)
+	case syntax.PrefixTerm:
+		kind = expressionPrefix
+		value = w.expressionResult(ref, w.session.Variable(origin), origin)
+	case syntax.PostfixExpr:
+		kind = expressionPostfix
+		value = w.expressionResult(ref, w.session.Variable(origin), origin)
+	case syntax.BinaryExpr:
+		kind = expressionBinary
+		value = w.expressionResult(ref, w.session.Variable(origin), origin)
 	default:
 		return
 	}
@@ -331,12 +347,12 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 	}
 	header := w.header(ref, ctx.genericOwner, !w.publishedSyntax[ref])
 	record := expressionRecord{Header: header, Kind: kind, Result: value.ID, Children: children, Symbol: plan.symbol, Literal: plan.literal, Parts: plan.parts, Specialized: plan.specialized}
-	w.generation.addRecord(retainedRecord{Header: header, Expression: &record})
+	w.addRecord(retainedRecord{Header: header, Expression: &record})
 }
 
 func (w *walker) expressionResult(ref symbol.SyntaxRef, term infer.Term, origin infer.Origin) typedValue {
 	if existing, ok := w.valuesBySyntax[ref]; ok && existing.ID != 0 {
-		w.session.Add(infer.Equal(existing.Term, term, origin))
+		w.addConstraint(infer.Equal(existing.Term, term, origin))
 		if !w.publishedSyntax[ref] {
 			existing, _ = w.publishExistingSyntax(ref, existing, origin)
 		}
@@ -350,7 +366,7 @@ func (w *walker) expressionResult(ref symbol.SyntaxRef, term infer.Term, origin 
 func (w *walker) failExpression(ref symbol.SyntaxRef, origin infer.Origin) typedValue {
 	errorTerm := w.session.Error(origin)
 	if existing, ok := w.valuesBySyntax[ref]; ok && existing.ID != 0 {
-		w.session.Add(infer.Equal(existing.Term, errorTerm, origin))
+		w.addConstraint(infer.Equal(existing.Term, errorTerm, origin))
 		existing, _ = w.rootExistingSlot(existing, origin)
 		w.successfulExpressions[ref] = false
 		return existing
@@ -410,12 +426,12 @@ func (w *walker) finishLiteral(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		plan.literal.Kind = literalNil
 		pointee := w.shapeLeaf(ctx.expected, types.Pointer, origin)
 		term = w.session.Variable(origin)
-		w.session.Add(infer.ConstrainShape(term, infer.PointerShape(infer.Leaf(pointee.Term)), origin))
+		w.addConstraint(infer.ConstrainShape(term, infer.PointerShape(infer.Leaf(pointee.Term)), origin))
 	case syntax.KwNone:
 		plan.literal.Kind = literalNone
 		payload := w.shapeLeaf(ctx.expected, types.Optional, origin)
 		term = w.session.Variable(origin)
-		w.session.Add(infer.ConstrainShape(term, infer.OptionalShape(infer.Leaf(payload.Term)), origin))
+		w.addConstraint(infer.ConstrainShape(term, infer.OptionalShape(infer.Leaf(payload.Term)), origin))
 	}
 	return w.expressionResult(ref, term, origin)
 }
@@ -467,5 +483,5 @@ func (w *walker) retainExistingExpression(ref symbol.SyntaxRef, node syntax.Node
 	}
 	header := w.header(ref, ctx.genericOwner, false)
 	record := expressionRecord{Header: header, Kind: kind, Result: value.ID}
-	w.generation.addRecord(retainedRecord{Header: header, Expression: &record})
+	w.addRecord(retainedRecord{Header: header, Expression: &record})
 }

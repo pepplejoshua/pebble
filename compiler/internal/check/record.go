@@ -29,6 +29,10 @@ type retainedRecord struct {
 	Expression          *expressionRecord
 	Aggregate           *aggregateRecord
 	Compatibility       *compatibilityRecord
+	Call                *callRecord
+	Member              *memberRecord
+	Index               *indexRecord
+	Requirement         *requirementRecord
 }
 
 func cloneRetainedRecord(value retainedRecord) retainedRecord {
@@ -69,6 +73,22 @@ func cloneRetainedRecord(value retainedRecord) retainedRecord {
 		copy := *value.Compatibility
 		value.Compatibility = &copy
 	}
+	if value.Call != nil {
+		copy := cloneCallRecord(*value.Call)
+		value.Call = &copy
+	}
+	if value.Member != nil {
+		copy := *value.Member
+		value.Member = &copy
+	}
+	if value.Index != nil {
+		copy := *value.Index
+		value.Index = &copy
+	}
+	if value.Requirement != nil {
+		copy := *value.Requirement
+		value.Requirement = &copy
+	}
 	return value
 }
 
@@ -97,6 +117,18 @@ func (value *retainedRecord) assignHeader(header recordHeader) {
 	}
 	if value.Compatibility != nil {
 		value.Compatibility.Header = header
+	}
+	if value.Call != nil {
+		value.Call.Header = header
+	}
+	if value.Member != nil {
+		value.Member.Header = header
+	}
+	if value.Index != nil {
+		value.Index.Header = header
+	}
+	if value.Requirement != nil {
+		value.Requirement.Header = header
 	}
 }
 
@@ -211,6 +243,50 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 			return nil, 0, false
 		}
 		add(compatibility.Source, compatibility.Destination)
+	}
+	if value.Call != nil {
+		payloads++
+		call := value.Call
+		if call.Header != value.Header || call.Target.Kind < callDirect || call.Target.Kind > callVariant || call.Callee == 0 || call.Result == 0 {
+			return nil, 0, false
+		}
+		static := call.Target.Kind == callDirect || call.Target.Kind == callVariant
+		if static != (call.Target.Symbol != 0) || (call.Target.Kind == callMethod) != (call.Receiver != 0) || call.Target.Kind == callMethod && call.Target.Site == (symbol.SyntaxRef{}) || call.Target.Kind == callIndirect && (call.Target.Site != (symbol.SyntaxRef{}) || call.Target.ConventionKnown) || call.Target.Kind == callVariant && call.Target.Site != (symbol.SyntaxRef{}) {
+			return nil, 0, false
+		}
+		add(call.Callee, call.Receiver, call.Result)
+		for ordinal, argument := range call.Arguments {
+			if argument.Source == 0 || argument.Destination == 0 || argument.Ordinal != uint32(ordinal) || argument.Variadic && (!call.Target.Variadic || argument.Ordinal < call.Target.FixedCount) {
+				return nil, 0, false
+			}
+			add(argument.Source, argument.Destination)
+		}
+		components += uint64(len(call.Arguments))
+	}
+	if value.Member != nil {
+		payloads++
+		member := value.Member
+		static := member.Kind == memberStatic || member.Kind == memberVariant
+		if member.Header != value.Header || member.Kind < memberStatic || member.Kind > memberVariant || member.Result == 0 || static != (member.Member != 0) || static == (member.Base != 0) || member.Name == "" || (member.Kind != memberTuple && member.TupleOrdinal != 0) {
+			return nil, 0, false
+		}
+		add(member.Base, member.Result)
+	}
+	if value.Index != nil {
+		payloads++
+		index := value.Index
+		if index.Header != value.Header || index.Mode < indexValue || index.Mode > indexSlice || index.Base == 0 || index.Result == 0 || index.StartPresent != (index.Start != 0) || index.EndPresent != (index.End != 0) || index.Mode == indexValue && (!index.StartPresent || index.EndPresent) {
+			return nil, 0, false
+		}
+		add(index.Base, index.Start, index.End, index.Result)
+	}
+	if value.Requirement != nil {
+		payloads++
+		requirement := value.Requirement
+		if requirement.Header != value.Header || requirement.Kind < requirementNumeric || requirement.Kind > requirementUnsupportedConstruction || requirement.Subject == 0 || requirement.Kind >= requirementUnsupportedField && requirement.Operator != 0 {
+			return nil, 0, false
+		}
+		add(requirement.Subject)
 	}
 	if payloads > 1 {
 		return nil, 0, false

@@ -109,12 +109,12 @@ func (w *walker) applyExpected(actual typedValue, exactLiteral infer.Term, expec
 	destination := w.generation.values[expected.Destination-1]
 	switch expected.Kind {
 	case expectIdentity:
-		w.session.Add(infer.Equal(actual.Term, destination.Term, origin))
+		w.addConstraint(infer.Equal(actual.Term, destination.Term, origin))
 	case expectLiteral:
 		if exactLiteral == (infer.Term{}) {
 			exactLiteral = actual.Term
 		}
-		w.session.Add(infer.LiteralFits(exactLiteral, destination.Term, origin))
+		w.addConstraint(infer.LiteralFits(exactLiteral, destination.Term, origin))
 	}
 }
 
@@ -148,14 +148,14 @@ func (w *walker) projectFunctionExpectation(ref symbol.SyntaxRef, ctx walkContex
 		destination.Known = parameter
 		w.knownValues[destination.ID] = parameter
 		actual := w.generation.values[record.Parameters[index]-1]
-		w.session.Add(infer.Equal(actual.Term, destination.Term, origin))
+		w.addConstraint(infer.Equal(actual.Term, destination.Term, origin))
 	}
 	resultOrigin := w.originForRef(ref, "function expected result", ctx.typeOwner, ctx.genericOwner)
 	destination, published := w.newSlotValue(w.session.Known(expectedResult), resultOrigin)
 	if published {
 		destination.Known = expectedResult
 		w.knownValues[destination.ID] = expectedResult
-		w.session.Add(infer.Equal(result.Term, destination.Term, resultOrigin))
+		w.addConstraint(infer.Equal(result.Term, destination.Term, resultOrigin))
 	}
 }
 
@@ -165,7 +165,7 @@ func (w *walker) retainCompatibility(ref symbol.SyntaxRef, genericOwner symbol.S
 		Header: header, Source: sourceValue, Destination: destination, Role: role,
 		Ordinal: ordinal, DestinationSymbol: destinationSymbol, DestinationSpan: destinationSpan,
 	}
-	id, _ := w.generation.addRecord(retainedRecord{Header: header, Compatibility: &record})
+	id, _ := w.addRecord(retainedRecord{Header: header, Compatibility: &record})
 	return id
 }
 

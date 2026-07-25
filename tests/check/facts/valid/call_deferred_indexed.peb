@@ -1,0 +1,5 @@
+fn identity[T](value T) T => value;
+type Box = struct { functions [1]fn(i32) i32; };
+let function fn(i32) i32 = identity[i32];
+let box Box = Box.{ functions = [function] };
+let result i32 = box.functions[0](1);

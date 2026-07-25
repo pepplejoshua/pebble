@@ -77,7 +77,7 @@ func (w *walker) preparedType(ref symbol.SyntaxRef, term infer.Term, typeOwner, 
 func (w *walker) retainTypeUse(ref symbol.SyntaxRef, genericOwner symbol.SymbolID, value valueID, kind typeUseKind, suppressed bool) {
 	header := w.header(ref, genericOwner, suppressed)
 	record := typeUseRecord{Header: header, Kind: kind, Type: value}
-	w.generation.addRecord(retainedRecord{Header: header, TypeUse: &record})
+	w.addRecord(retainedRecord{Header: header, TypeUse: &record})
 }
 
 func (w *walker) errorValue(ref symbol.SyntaxRef, typeOwner, genericOwner symbol.SymbolID, role string) typedValue {

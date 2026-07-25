@@ -11,17 +11,49 @@ import (
 )
 
 type walkContext struct {
-	callable      callableRef
-	typeOwner     symbol.SymbolID
-	genericOwner  symbol.SymbolID
-	nominalOwner  symbol.SymbolID
-	unsupported   bool
-	typePosition  bool
-	typeRoot      bool
-	preparedType  bool
-	controlDepth  uint32
-	expected      expectedType
-	suppressValue bool
+	callable       callableRef
+	typeOwner      symbol.SymbolID
+	genericOwner   symbol.SymbolID
+	nominalOwner   symbol.SymbolID
+	unsupported    bool
+	typePosition   bool
+	typeRoot       bool
+	preparedType   bool
+	controlDepth   uint32
+	expected       expectedType
+	suppressValue  bool
+	immediateCall  bool
+	callSite       symbol.SyntaxRef
+	deferredMember bool
+	branch         *branchFacts
+}
+
+type branchRoot struct {
+	value typedValue
+}
+
+type branchInstantiation struct {
+	site      symbol.SyntaxRef
+	generic   symbol.SymbolID
+	arguments []infer.Term
+}
+
+type pendingBranchRecord struct {
+	local recordID
+	value retainedRecord
+}
+
+type branchFacts struct {
+	index          uint32
+	constraints    []infer.Constraint
+	records        []pendingBranchRecord
+	roots          []branchRoot
+	instantiations []branchInstantiation
+	rooted         map[valueID]bool
+	requirements   uint32
+	typeSibling    *branchFacts
+	typeOwner      symbol.SymbolID
+	genericOwner   symbol.SymbolID
 }
 
 type walkItem struct {
@@ -47,11 +79,15 @@ type walker struct {
 	expectations          map[symbol.SyntaxRef]expectedType
 	optionalDestinations  map[symbol.SyntaxRef]valueID
 	expressionPlans       map[symbol.SyntaxRef]*expressionPlan
+	memberPlans           map[symbol.SyntaxRef]*memberPlan
+	callPlans             map[symbol.SyntaxRef]*callPlan
+	bracketPlans          map[symbol.SyntaxRef]*bracketPlan
 	placeCandidates       map[symbol.SyntaxRef]valueID
 	successfulExpressions map[symbol.SyntaxRef]bool
 	publishedSymbols      map[symbol.SymbolID]bool
 	publishedSyntax       map[symbol.SyntaxRef]bool
 	publishedSlots        map[infer.Term]infer.SlotID
+	activeBranch          *branchFacts
 	runtimeTypes          func() (infer.RuntimeTypes, bool)
 }
 
@@ -85,6 +121,7 @@ func newWalker(generation *generation, evaluator *constantEvaluator, program *in
 		valuesBySyntax: make(map[symbol.SyntaxRef]typedValue), publishedSymbols: make(map[symbol.SymbolID]bool),
 		valuesBySymbol: make(map[symbol.SymbolID]typedValue), termsBySymbol: make(map[symbol.SymbolID]infer.Term), knownValues: make(map[valueID]types.TypeID),
 		expectations: make(map[symbol.SyntaxRef]expectedType), optionalDestinations: make(map[symbol.SyntaxRef]valueID), expressionPlans: make(map[symbol.SyntaxRef]*expressionPlan),
+		memberPlans: make(map[symbol.SyntaxRef]*memberPlan), callPlans: make(map[symbol.SyntaxRef]*callPlan), bracketPlans: make(map[symbol.SyntaxRef]*bracketPlan),
 		placeCandidates:       make(map[symbol.SyntaxRef]valueID),
 		successfulExpressions: make(map[symbol.SyntaxRef]bool),
 		publishedSyntax:       make(map[symbol.SyntaxRef]bool), publishedSlots: make(map[infer.Term]infer.SlotID),
@@ -123,11 +160,22 @@ func (w *walker) walkTree(item module.Module) {
 		current := stack[last]
 		stack = stack[:last]
 		if current.exit {
+			w.activeBranch = current.ctx.branch
 			if item.Tree != nil {
 				if node, ok := item.Tree.Node(current.ref.Node); ok {
-					w.finishExpression(current.ref, node, current.ctx, item.Tree)
+					switch node.Kind() {
+					case syntax.CallExpr:
+						w.finishCall(current.ref, node, current.ctx)
+					case syntax.MemberExpr:
+						w.finishMember(current.ref, node, current.ctx)
+					case syntax.BracketApply:
+						w.finishBracket(current.ref, node, current.ctx, item.Tree)
+					default:
+						w.finishExpression(current.ref, node, current.ctx, item.Tree)
+					}
 				}
 			}
+			w.activeBranch = nil
 			w.generation.leaveTraversal()
 			continue
 		}
@@ -154,12 +202,62 @@ func (w *walker) walkTree(item module.Module) {
 			w.generation.leaveTraversal()
 			continue
 		}
+		w.activeBranch = current.ctx.branch
 		children := w.dispatch(current.ref, node, current.ctx, item.Tree)
+		w.activeBranch = nil
 		stack = append(stack, walkItem{ref: current.ref, ctx: current.ctx, exit: true})
 		for index := len(children) - 1; index >= 0; index-- {
 			stack = append(stack, children[index])
 		}
 	}
+}
+
+func (w *walker) addConstraint(value infer.Constraint) infer.ConstraintID {
+	if w.activeBranch != nil {
+		w.activeBranch.constraints = append(w.activeBranch.constraints, value)
+		return 0
+	}
+	return w.session.Add(value)
+}
+
+func (w *walker) addRecord(value retainedRecord) (recordID, bool) {
+	if w.activeBranch == nil {
+		return w.generation.addRecord(value)
+	}
+	if uint64(len(w.activeBranch.records)) >= uint64(^uint32(0)) {
+		w.generation.report("too many deferred-branch records", value.Header.Span)
+		return 0, false
+	}
+	id := recordID(len(w.activeBranch.records) + 1)
+	value.Header.ID = 0
+	w.activeBranch.records = append(w.activeBranch.records, pendingBranchRecord{local: id, value: cloneRetainedRecord(value)})
+	return id, true
+}
+
+func (w *walker) publishInstantiation(site symbol.SyntaxRef, generic symbol.SymbolID, arguments []infer.Term) {
+	if w.activeBranch == nil {
+		w.session.PublishInstantiation(site, generic, arguments)
+		return
+	}
+	w.activeBranch.instantiations = append(w.activeBranch.instantiations, branchInstantiation{
+		site: site, generic: generic, arguments: append([]infer.Term(nil), arguments...),
+	})
+}
+
+func (w *walker) queueBranchRoot(value typedValue) bool {
+	branch := w.activeBranch
+	if branch == nil || value.ID == 0 || !w.generation.hasValue(value.ID) {
+		return false
+	}
+	if branch.rooted == nil {
+		branch.rooted = make(map[valueID]bool)
+	}
+	if branch.rooted[value.ID] {
+		return true
+	}
+	branch.rooted[value.ID] = true
+	branch.roots = append(branch.roots, branchRoot{value: value})
+	return true
 }
 
 func childItems(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext) []walkItem {
@@ -188,16 +286,20 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 		syntax.BlockStmt, syntax.ReturnStmt, syntax.IfStmt, syntax.WhileStmt,
 		syntax.RangeLoopStmt, syntax.ForStmt, syntax.SwitchStmt, syntax.SwitchCase,
 		syntax.DeferStmt, syntax.PrintStmt, syntax.BreakStmt, syntax.ContinueStmt,
-		syntax.AssignmentStmt, syntax.ExpressionStmt, syntax.PrefixTerm,
-		syntax.PostfixExpr, syntax.BinaryExpr, syntax.CallExpr, syntax.BracketApply,
-		syntax.SliceExpr, syntax.MemberExpr, syntax.CastExpr,
+		syntax.AssignmentStmt, syntax.ExpressionStmt, syntax.SliceExpr, syntax.CastExpr,
 		syntax.StructType, syntax.UnionType, syntax.EnumType,
 		syntax.FieldDecl, syntax.VariantDecl, syntax.Parameter, syntax.TypeParameter:
 		return w.structuralChildren(ref, node, ctx, tree)
+	case syntax.CallExpr:
+		return w.prepareCall(ref, node, ctx, tree)
+	case syntax.MemberExpr:
+		return w.prepareMember(ref, node, ctx, tree)
+	case syntax.BracketApply:
+		return w.prepareBracket(ref, node, ctx, tree)
 	case syntax.Name, syntax.Path, syntax.Literal, syntax.InterpolatedString,
 		syntax.SomeExpr, syntax.SizeofExpr, syntax.GroupedTerm, syntax.TupleTerm,
 		syntax.ArrayExpr, syntax.ArrayRepeatExpr, syntax.RecordExpr, syntax.RecordField,
-		syntax.PartialMemberExpr:
+		syntax.PartialMemberExpr, syntax.PrefixTerm, syntax.PostfixExpr, syntax.BinaryExpr:
 		return w.prepareExpression(ref, node, ctx, tree)
 	case syntax.EndOfFile:
 		return nil
@@ -376,13 +478,31 @@ func dispatchedNodeKind(kind syntax.NodeKind) bool {
 }
 
 func (w *walker) publishSymbol(id symbol.SymbolID, term infer.Term, origin infer.Origin) (typedValue, bool) {
+	if w.activeBranch != nil {
+		if id == 0 || w.publishedSymbols[id] {
+			return typedValue{}, false
+		}
+		if existing, ok := w.termsBySymbol[id]; ok && existing != term {
+			w.addConstraint(infer.Equal(existing, term, origin))
+			term = existing
+		} else {
+			w.termsBySymbol[id] = term
+		}
+		value := w.newValue(term, origin)
+		if !w.queueBranchRoot(value) {
+			return typedValue{}, false
+		}
+		w.publishedSymbols[id] = true
+		w.valuesBySymbol[id] = value
+		return value, true
+	}
 	root := valueRoot{Kind: rootSymbol, Symbol: id}
 	if id == 0 || w.publishedSymbols[id] || !w.canPublish(root) {
 		w.generation.report("invalid, duplicate, or over-limit symbol publication", origin.Span)
 		return typedValue{}, false
 	}
 	if existing, ok := w.termsBySymbol[id]; ok && existing != term {
-		w.session.Add(infer.Equal(existing, term, origin))
+		w.addConstraint(infer.Equal(existing, term, origin))
 		term = existing
 	} else {
 		w.termsBySymbol[id] = term
@@ -407,8 +527,19 @@ func (w *walker) symbolTerm(id symbol.SymbolID, origin infer.Origin) infer.Term 
 }
 
 func (w *walker) publishSyntax(ref symbol.SyntaxRef, term infer.Term, origin infer.Origin) (typedValue, bool) {
+	if w.activeBranch != nil {
+		if existing, reserved := w.valuesBySyntax[ref]; reserved && existing.ID != 0 && !w.publishedSyntax[ref] {
+			w.addConstraint(infer.Equal(existing.Term, term, origin))
+			return w.publishExistingSyntax(ref, existing, origin)
+		}
+		if w.publishedSyntax[ref] {
+			return typedValue{}, false
+		}
+		value := w.newValue(term, origin)
+		return w.publishExistingSyntax(ref, value, origin)
+	}
 	if existing, reserved := w.valuesBySyntax[ref]; reserved && existing.ID != 0 && !w.publishedSyntax[ref] {
-		w.session.Add(infer.Equal(existing.Term, term, origin))
+		w.addConstraint(infer.Equal(existing.Term, term, origin))
 		return w.publishExistingSyntax(ref, existing, origin)
 	}
 	root := valueRoot{Kind: rootSyntax, Syntax: ref}
@@ -427,6 +558,16 @@ func (w *walker) publishSyntax(ref symbol.SyntaxRef, term infer.Term, origin inf
 }
 
 func (w *walker) publishExistingSyntax(ref symbol.SyntaxRef, value typedValue, origin infer.Origin) (typedValue, bool) {
+	if w.activeBranch != nil {
+		if value.ID == 0 || w.publishedSyntax[ref] || !w.queueBranchRoot(value) {
+			return value, false
+		}
+		// This records that the authored occurrence was generated. The actual
+		// solution publication is an alternative-guarded slot, never syntax.
+		w.publishedSyntax[ref] = true
+		w.valuesBySyntax[ref] = value
+		return value, true
+	}
 	if value.ID == 0 || w.publishedSyntax[ref] || !w.canPublish(valueRoot{Kind: rootSyntax, Syntax: ref}) {
 		w.generation.report("invalid, duplicate, or over-limit syntax publication", origin.Span)
 		return value, false
@@ -441,6 +582,9 @@ func (w *walker) publishExistingSyntax(ref symbol.SyntaxRef, value typedValue, o
 }
 
 func (w *walker) rootExistingSlot(value typedValue, origin infer.Origin) (typedValue, bool) {
+	if w.activeBranch != nil {
+		return value, w.queueBranchRoot(value)
+	}
 	g := w.generation
 	if g == nil || g.state != generationMutable || value.ID == 0 || !g.hasValue(value.ID) || g.values[value.ID-1].Term != value.Term {
 		if g != nil {
@@ -507,6 +651,14 @@ func (w *walker) newSlotValue(term infer.Term, origin infer.Origin) (typedValue,
 	id, ok := g.addValue(generatedValue{Term: term, Origin: origin})
 	if !ok {
 		return typedValue{Term: term}, false
+	}
+	if w.activeBranch != nil {
+		value := typedValue{ID: id, Term: term}
+		if !w.queueBranchRoot(value) {
+			g.values = g.values[:len(g.values)-1]
+			return typedValue{Term: term}, false
+		}
+		return value, true
 	}
 	slot, exists := w.publishedSlots[term]
 	if !exists {
