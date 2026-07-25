@@ -36,6 +36,7 @@ const (
 	constraintIntegral
 	constraintOrdered
 	constraintHasField
+	constraintHasComponent
 	constraintSelectMethod
 	constraintCallable
 	constraintIndexable
@@ -52,6 +53,7 @@ const (
 type Constraint struct {
 	kind          constraintKind
 	a, b, c       Term
+	ordinal       uint32
 	name          string
 	site          symbol.SyntaxRef
 	shape         Shape
@@ -79,6 +81,9 @@ func Ordered(term Term, origin Origin) Constraint {
 }
 func HasField(receiver Term, name string, field Term, origin Origin) Constraint {
 	return Constraint{kind: constraintHasField, a: receiver, b: field, name: name, origin: origin}
+}
+func HasComponent(receiver Term, ordinal uint32, result Term, origin Origin) Constraint {
+	return Constraint{kind: constraintHasComponent, a: receiver, b: result, ordinal: ordinal, origin: origin}
 }
 func SelectMethod(receiver Term, name string, callable Term, explicit []Term, site symbol.SyntaxRef, origin Origin) Constraint {
 	return Constraint{kind: constraintSelectMethod, a: receiver, b: callable, name: name, site: site, explicit: append([]Term(nil), explicit...), origin: origin}

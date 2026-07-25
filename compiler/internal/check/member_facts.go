@@ -116,6 +116,8 @@ func (w *walker) finishMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 	switch p.kind {
 	case memberField:
 		w.addConstraint(infer.HasField(base.Term, p.nameText, term, origin))
+	case memberTuple:
+		w.addConstraint(infer.HasComponent(base.Term, p.ordinal, term, origin))
 	case memberMethod:
 		site := p.callSite
 		if site == (symbol.SyntaxRef{}) {

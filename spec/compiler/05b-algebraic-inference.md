@@ -886,6 +886,7 @@ Numeric(t)
 Integral(t)
 Ordered(t)
 HasField(receiverType, name, fieldType)
+HasComponent(receiverType, ordinal, resultType)
 SelectMethod(receiverType, name, callableType, explicitTypeArguments, site)
 Callable(calleeType, orderedSourceDestinationArguments, resultType)
 Indexable(receiverType, resultType)
@@ -933,6 +934,7 @@ func Numeric(term Term, origin Origin) Constraint
 func Integral(term Term, origin Origin) Constraint
 func Ordered(term Term, origin Origin) Constraint
 func HasField(receiver Term, name string, field Term, origin Origin) Constraint
+func HasComponent(receiver Term, ordinal uint32, result Term, origin Origin) Constraint
 func SelectMethod(receiver Term, name string, callable Term, explicit []Term, site symbol.SyntaxRef, origin Origin) Constraint
 func Callable(callee Term, arguments []CallableArgument, result Term, origin Origin) Constraint
 func Indexable(receiver, result Term, origin Origin) Constraint
@@ -998,6 +1000,7 @@ role; they never replace provenance with an internal solver location.
 | `Integral(t)` | integral-only literal/operator/index rules | Same attachment/delay behavior as `Numeric`. Known target-word or fixed-width integer succeeds; floats and nonnumeric types fail `T0507`; rigid parameters retain an obligation. | `05b` builtin category |
 | `Ordered(t)` | ordering syntax and symbolic generic bodies | Variables attach; literals delay until selected; rigid parameters retain `Ordered(parameter)`. A known type makes inference progress by fixing the obligation's subject but does not prove that a particular operator is supported. It is handed to phase 6. `Error` is suppressed-complete; this constraint does not otherwise fail in `05b`, and phase 6 owns any unsatisfied concrete ordering diagnostic. | phase 6 operator policy |
 | `HasField(recv,name,field)` | type-directed member access and record construction | Strip no conversions. Delay until the receiver is a known nominal, optional/pointer behavior has been made explicit by another rule, or a nominal shape identifies its declaration and arguments. Query ordered declaration metadata by `SymbolID`, instantiate its field descriptor, equate it with `field`, and succeed. A known nonnominal or missing field fails `T0507`. `Error` suppresses it. | `05b` member shape; phase 6 owns accessibility, place, method, and category policy |
+| `HasComponent(recv,ordinal,result)` | authored tuple component access | Strip no conversions. Delay until the receiver is a known tuple type or a tuple shape whose arity is fixed. On a tuple of arity `N`, an `ordinal` less than `N` equates `result` with that component and succeeds. An `ordinal` of `N` or greater fails `T0507`. A known nontuple receiver fails `T0507`; unresolved structure uses ordinary `T0510`. A rigid type parameter makes the constraint checker-deferred complete, recovers `result` to `Error` without an inference diagnostic, and invents no trait; phase 6 retains the unsupported checker requirement. `Error` suppresses it. | `05b` closed component structure; phase 6 owns place, mutability, and legality |
 | `SelectMethod(recv,name,callable,explicit,site)` | an immediate instance-method call, including a generic method selected through a deferred member/bracket | Delay until `recv` is a known nominal, pointer-to-nominal, or corresponding shape. Query only that declaration's ordered `04b Members`; require exactly one same-spelled `SymbolMethod`; substitute containing-type arguments from the receiver, relate leading explicit method-type arguments, allocate the remaining method-local inference variables once in source constraint order, instantiate the prepared method signature, and equate its complete explicit-self function shape with `callable`. Record the selected method `SymbolID` and all method-local type arguments at `site`. A nonnominal receiver, missing/wrong-category member, excess explicit argument, or damaged signature fails deterministically. `Error` suppresses it. | `05b` delayed identity and substitution; phase 6 owns call legality and bound-method rejection |
 | `Callable(callee,args,result)` | indirect calls whose complete function key is not independently known during generation | Delay while the callee lacks concrete structure. Once it is a concrete function type or matching function shape, decompose its authored fixed parameters in order into each argument `Destination`, equate its result with `result`, and preserve its exact calling convention and variadic bit in the callee structure; argument `Source` terms are not equated to fixed parameters. Nonvariadic arity must match; a variadic key requires at least its fixed count and uses source identity only for tail destinations as defined above. It never invents or guesses Pebble versus C. A concrete nonfunction or impossible arity fails with `T0507`; absent independent callable evidence ends in ordinary `T0510` unresolved recovery. A rigid type parameter makes the constraint checker-deferred complete, recovers argument destinations/result to `Error` without an inference diagnostic, and invents no requirement; phase 6 retains the unsupported checker requirement. `Error` suppresses it. | `05b` closed function structure; phase 6 owns arguments, convention legality, variadic policy, and calls |
 | `Indexable(recv,result)` | value indexing, including the runtime branch of a deferred bracket | Delay until receiver structure is available. Array and slice structure equate `result` with the element; known `str` equates it with `char`. Any other concrete receiver fails with `T0507`; unresolved structure uses ordinary `T0510`. A rigid type parameter makes the constraint checker-deferred complete, recovers `result` to `Error` without an inference diagnostic, and invents no trait; phase 6 retains the unsupported checker requirement. `Error` suppresses it. | `05b` closed index-result structure; phase 6 owns index type, place, bounds, and legality |
@@ -1018,15 +1021,15 @@ explicit target type—but never repeats the mismatch that produced the error.
 `Ordered` fact is emitted only after phase 6 selects a rule that requires it;
 it is not proof that every ordering spelling is legal for that type.
 
-`Callable`, `Indexable`, and `Sliceable` participate in the same single solve
-and the same ascending-`ConstraintID` worklists as every other delayed
-constraint. Each examination and structural decomposition is charged to the
-existing requeue/decomposition limits; no private retry loop or unbounded
-watcher exists. They retain exact origins, wake only from monotonic root/shape
-progress, are equation-insertion-order independent, and become silently
-complete through `Error`. They expose only the closed structural relations in
-the table and no phase-6 legality, conversion, bounds, lifetime, or trait
-policy.
+`Callable`, `Indexable`, `Sliceable`, and `HasComponent` participate in the
+same single solve and the same ascending-`ConstraintID` worklists as every
+other delayed constraint. Each examination and structural decomposition is
+charged to the existing requeue/decomposition limits; no private retry loop
+or unbounded watcher exists. They retain exact origins, wake only from
+monotonic root/shape progress, are equation-insertion-order independent, and
+become silently complete through `Error`. They expose only the closed
+structural relations in the table and no phase-6 legality, conversion,
+bounds, lifetime, or trait policy.
 
 ## Phase-6 fact-generation contract
 
@@ -1657,12 +1660,12 @@ produce identical normalized results and no recovery term is interned.
 ### Slice 05b.5: ordered worklists and capabilities
 
 Own `solve.go`, `capability.go`, capability tables, and direct fixed-point/limit
-tests. Implement source-ordered rounds, monotonic progress, delayed member/
-callable/indexable/sliceable constraints, bounded choice rollback, literal
-fitting/defaulting, ambiguity, requeue bounds, and error suppression. Complete
-when all stages terminate, only genuinely unconstrained literals default,
-closed structural constraints are equation-order independent, and first-
-success choice is impossible.
+tests. Implement source-ordered rounds, monotonic progress, delayed
+member/component/callable/indexable/sliceable constraints, bounded choice
+rollback, literal fitting/defaulting, ambiguity, requeue bounds, and error
+suppression. Complete when all stages terminate, only genuinely unconstrained
+literals default, closed structural constraints are equation-order
+independent, and first-success choice is impossible.
 
 ### Slice 05b.6: builder publication and bidirectional primitives
 

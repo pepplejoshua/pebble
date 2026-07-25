@@ -521,6 +521,10 @@ func (s *Session) validateConstraint(value Constraint, depth uint32) error {
 		if !validTerm(value.a) || !validTerm(value.b) || value.name == "" {
 			return fmt.Errorf("invalid field constraint")
 		}
+	case constraintHasComponent:
+		if !validTerm(value.a) || !validTerm(value.b) {
+			return fmt.Errorf("invalid component constraint")
+		}
 	case constraintSelectMethod:
 		if !validTerm(value.a) || !validTerm(value.b) || value.name == "" || value.site.Module == 0 || value.site.Node == 0 {
 			return fmt.Errorf("invalid method-selection constraint")

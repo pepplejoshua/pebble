@@ -124,6 +124,9 @@ func (s *Session) apply(value Constraint) applyResult {
 	case constraintHasField:
 		changed, ok, delayed := s.hasField(value.a, value.name, value.b, value.origin)
 		return applyResult{changed: changed, success: ok, delayed: delayed}
+	case constraintHasComponent:
+		changed, ok, delayed := s.hasComponent(value.a, value.ordinal, value.b, value.origin)
+		return applyResult{changed: changed, success: ok, delayed: delayed}
 	case constraintSelectMethod:
 		changed, ok, delayed := s.selectMethod(value)
 		return applyResult{changed: changed, success: ok, delayed: delayed}
@@ -475,7 +478,7 @@ func (s *Session) literalDefaultBlocked(root InferID) bool {
 			continue
 		}
 		switch entry.value.kind {
-		case constraintHasField, constraintSelectMethod, constraintCallable, constraintIndexable, constraintSliceable:
+		case constraintHasField, constraintHasComponent, constraintSelectMethod, constraintCallable, constraintIndexable, constraintSliceable:
 			if s.termHasRoot(entry.value.a, root) || s.termHasRoot(entry.value.b, root) {
 				return true
 			}

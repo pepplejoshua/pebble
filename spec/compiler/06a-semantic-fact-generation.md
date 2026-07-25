@@ -785,8 +785,9 @@ equals the member occurrence with that symbol term. A type-directed field
 visits the receiver, allocates/publishes the member result, emits
 `HasField(receiver,name,result)`, and retains the copied name, exact name span,
 member result, and place projection.
-Tuple numeric members retain the parsed index and base; structural
-decomposition belongs to their generation shape and final legality to `06b`.
+A tuple numeric member visits the receiver, allocates and publishes the member
+result, emits `HasComponent(receiver,ordinal,result)`, and retains the parsed
+index, base, and place projection. Final legality belongs to `06b`.
 
 An immediate instance-method call emits:
 

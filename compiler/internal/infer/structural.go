@@ -263,6 +263,52 @@ func (s *Session) sliceable(receiver, result Term, origin Origin) (bool, bool, b
 	}
 }
 
+func (s *Session) hasComponent(receiver Term, ordinal uint32, result Term, origin Origin) (bool, bool, bool) {
+	state, known, shape := s.structure(receiver)
+	switch state {
+	case structuralUnresolved:
+		return false, true, true
+	case structuralError:
+		return s.recoverTerms(result), true, false
+	case structuralRigid:
+		return s.recoverTerms(result), true, false
+	case structuralKnown:
+		if !s.stepDecompose(origin) {
+			return false, false, false
+		}
+		key, ok := s.program.typeKey(known)
+		if !ok {
+			return s.failStructural("component receiver is not a store-owned type", origin, []Term{result})
+		}
+		elements, ok := key.Elements()
+		if !ok {
+			return s.failStructural("type is not structurally a tuple", origin, []Term{result})
+		}
+		if uint64(ordinal) >= uint64(len(elements)) {
+			return s.failStructural("tuple ordinal is out of range", origin, []Term{result})
+		}
+		changed, success := s.unify(result, s.Known(elements[ordinal]), origin)
+		return changed, success, false
+	case structuralShape:
+		if shape.kind == shapeLeaf {
+			return false, true, true
+		}
+		if shape.kind != shapeTuple {
+			return s.failStructural("type shape is not structurally a tuple", origin, []Term{result})
+		}
+		if !s.stepDecompose(origin) {
+			return false, false, false
+		}
+		if uint64(ordinal) >= uint64(len(shape.children)) {
+			return s.failStructural("tuple ordinal is out of range", origin, []Term{result})
+		}
+		changed, success := s.unifyShapeWithTerm(shape.children[ordinal], result, origin)
+		return changed, success, false
+	default:
+		return false, true, true
+	}
+}
+
 func (s *Session) failStructural(message string, origin Origin, recovery []Term) (bool, bool, bool) {
 	changed := s.recoverTerms(recovery...)
 	s.conflict(CodeCapability, message, origin)
