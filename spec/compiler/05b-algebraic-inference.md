@@ -740,9 +740,13 @@ owned immutable copies; helpers never expose their backing words.
 
 The lexer token for `52` denotes a positive `IntLiteral(52)`. Source `-52` is
 unary negation over that term. When the operand is a literal, generation
-creates the exact signed literal `-52` without first requiring `52` to fit the
-candidate type. Thus `-128` may fit `i8` while `128` does not. Repeated unary
-negation is exact. Negation of a nonliteral remains an operator obligation.
+consumes its pristine one-cell exact-literal term: `NegateLiteral` clones and
+negates the owned payload in place, updates its origin, and returns the same
+`Term` and `InferID`. It allocates no inference cell and leaves no positive or
+intermediate literal available for defaulting. The operation rejects foreign,
+malformed, or already-unified components atomically. Thus `-128` may fit `i8`
+while `128` does not, and repeated unary negation remains exact. Negation of a
+nonliteral remains an operator obligation.
 
 ## Type-syntax resolution
 

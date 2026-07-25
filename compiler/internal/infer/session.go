@@ -271,21 +271,30 @@ func (s *Session) NegateLiteral(term Term, origin Origin) Term {
 		return s.errorTerm()
 	}
 	root := s.find(term.id)
-	if root == 0 || len(s.cells[root-1].literals) != 1 {
-		return s.errorTerm()
+	if root == 0 || root != term.id {
+		return s.invalidTerm("negated literal has an invalid or non-unique inference root", origin)
 	}
-	v := s.cells[root-1].literals[0].clone()
+	cell := &s.cells[root-1]
+	// A union root gains rank when two pristine cells merge; a rank-zero root
+	// therefore cannot own another cell. Together with root == term.id this
+	// proves that changing the payload cannot rewrite a larger component.
+	if cell.parent != root || cell.rank != 0 || cell.minimum != root || cell.known != 0 || cell.shape != nil || cell.capabilities != 0 || len(cell.capabilityEvidence) != 0 || cell.error || len(cell.literals) != 1 {
+		return s.invalidTerm("negated literal has incompatible inference evidence", origin)
+	}
+	v := cell.literals[0].clone()
+	if (term.kind == termIntLiteral && (v.kind != literalInteger || v.integer == nil || v.rational != nil)) ||
+		(term.kind == termFloatLiteral && (v.kind != literalFloat || v.rational == nil || v.integer != nil)) {
+		return s.invalidTerm("negated literal has a malformed exact payload", origin)
+	}
 	v.origin = origin
 	if v.kind == literalInteger {
 		v.integer.Neg(v.integer)
 	} else {
 		v.rational.Neg(v.rational)
 	}
-	kind := termIntLiteral
-	if v.kind == literalFloat {
-		kind = termFloatLiteral
-	}
-	return s.newCell(origin, kind, &v)
+	cell.origin = origin
+	cell.literals[0] = v
+	return term
 }
 
 func (s *Session) Add(value Constraint) ConstraintID {
