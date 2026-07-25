@@ -182,9 +182,12 @@ to the phase-6 constant evaluator, which already evaluates enum variants. The
 conversion rules above would then read the declared value instead of the
 ordinal, with no change to their wording.
 
-This is a separate decision and does not block the conversion rules. It should
-be settled before anyone relies on enum-to-integer values crossing a process
-or language boundary.
+This is a separate decision and does not block the conversion rules. It is
+explicitly deferred as a future extension, not an immediate priority; see
+`open-language-decisions.md` §3.10. It should be settled before anyone relies
+on enum-to-integer values crossing a process or language boundary. A related
+future extension, reading a variant's name so an enum can be printed, is
+recorded as §3.11 of the same document.
 
 ## Non-goals
 

@@ -579,6 +579,64 @@ nested block comments "may be added later" (§"Whitespace and comments").
 None of this is exotic to work around, but each is a small daily-writing
 surprise if you assume a C-like lexer.
 
+### 3.10 Explicit enum variant values
+
+**Undecided.** Whether an enum may declare the integer value of each variant,
+rather than always using declaration order.
+
+```pebble
+type Perm = enum { read = 1, write = 2, exec = 4 };   // not expressible today
+```
+
+**Where:** `03a-grammar.md` §Types fixes `enum_type` to identifiers only, with
+no value clause. `proposals/enum-integer-conversion.md` §"Open follow-on
+question" describes the consequences in detail.
+
+**Blocks:** nothing today. The accepted enum/integer conversion rules are
+already written in terms of "the variant's value" and need no change if this
+is added later.
+
+**Costs you:** three things, all of which bite at the C boundary. Bit-flag
+enums cannot be expressed, because flags need `1, 2, 4, 8` and ordinals only
+produce `0, 1, 2, 3`. A C enum whose values are not sequential cannot be
+mirrored, so converting a Pebble enum to an integer and handing it to that C
+function is silently wrong. And reordering variants changes their integers,
+so anything serialized to disk or sent over a wire breaks when a variant is
+inserted anywhere but the end. C has the same hazard and offers explicit
+values as the fix; Pebble currently offers nothing.
+
+### 3.11 Reading an enum variant's name, and printing an enum
+
+**Undecided.** Whether an enum value can yield the spelling of its variant,
+and relatedly whether `print` accepts an enum operand at all.
+
+```pebble
+type Color = enum { red, green, blue };
+print Color.red;        // rejected today: C0612, nominal operand
+let s str = Color.red as str;   // not expressible today
+```
+
+**Where:** `06b-validation-and-typed-ir.md` §"Remaining declaration and
+statement legality" restricts `print` to `bool`, `char`, `str`, integers, and
+floats, and emits `C0612` for nominal operands. No document discusses
+variant-name reflection in any form.
+
+**Blocks:** nothing today.
+
+**Costs you:** you cannot print, log, or format an enum without hand-writing a
+`switch` that maps every variant to a string literal, and updating it every
+time a variant is added. That makes debugging output and error messages
+markedly more tedious than they need to be, and the hand-written mapping
+silently goes stale when someone adds a variant and forgets the switch.
+
+**Note:** unlike the conversions already accepted, this one is not free. The
+compiler must emit a variant-name table into the binary for every enum whose
+name is read, which has code-size consequences and interacts with the
+freestanding-runtime requirements in `10-c-backend-and-runtime.md` and the
+code-size controls flagged in `07-generics.md`. A design would need to say
+whether the table is emitted always, only when the feature is used, or never
+in freestanding builds.
+
 ---
 
 ## Key dependencies between decisions
