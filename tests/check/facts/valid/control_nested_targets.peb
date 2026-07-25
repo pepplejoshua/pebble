@@ -1,0 +1,15 @@
+fn jumps(flag bool, value i32) void {
+    while flag {
+        switch value {
+        case 0: break;
+        else: continue;
+        }
+    }
+    switch value {
+    case 1:
+        while flag { break; }
+    else:
+        print value;
+    }
+    return;
+}

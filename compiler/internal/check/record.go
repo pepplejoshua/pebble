@@ -37,6 +37,8 @@ type retainedRecord struct {
 	Member              *memberRecord
 	Index               *indexRecord
 	Requirement         *requirementRecord
+	Control             *controlRecord
+	Defer               *deferRecord
 }
 
 func cloneRetainedRecord(value retainedRecord) retainedRecord {
@@ -111,6 +113,15 @@ func cloneRetainedRecord(value retainedRecord) retainedRecord {
 		copy := *value.Requirement
 		value.Requirement = &copy
 	}
+	if value.Control != nil {
+		copy := *value.Control
+		copy.Values = append([]controlValue(nil), value.Control.Values...)
+		value.Control = &copy
+	}
+	if value.Defer != nil {
+		copy := *value.Defer
+		value.Defer = &copy
+	}
 	return value
 }
 
@@ -163,6 +174,12 @@ func (value *retainedRecord) assignHeader(header recordHeader) {
 	}
 	if value.Requirement != nil {
 		value.Requirement.Header = header
+	}
+	if value.Control != nil {
+		value.Control.Header = header
+	}
+	if value.Defer != nil {
+		value.Defer.Header = header
 	}
 }
 
@@ -365,6 +382,22 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 			return nil, 0, false
 		}
 		add(requirement.Subject)
+	}
+	if value.Control != nil {
+		payloads++
+		control := value.Control
+		if control.Header != value.Header || !validControlRecord(*control) {
+			return nil, 0, false
+		}
+		for _, entry := range control.Values {
+			add(entry.Value)
+		}
+	}
+	if value.Defer != nil {
+		payloads++
+		if value.Defer.Header != value.Header || value.Defer.Region == 0 || value.Defer.Statement == (symbol.SyntaxRef{}) {
+			return nil, 0, false
+		}
 	}
 	if payloads > 1 {
 		return nil, 0, false

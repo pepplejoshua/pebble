@@ -1,0 +1,16 @@
+fn describe() void {
+    print "done";
+}
+
+fn compute(limit i32, flag bool) i32 {
+    var total i32 = 0;
+    loop 0..limit : index { total += index; }
+    loop 1..=2 { total = total + 1; }
+    while flag { break; }
+    for var step i32 = 0; step < limit; step += 1 { continue; }
+    for ; ; { break; }
+    if flag { total++; } else { total = total - 1; }
+    { describe(); }
+    total;
+    return total;
+}

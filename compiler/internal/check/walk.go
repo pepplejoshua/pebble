@@ -19,7 +19,7 @@ type walkContext struct {
 	typePosition   bool
 	typeRoot       bool
 	preparedType   bool
-	controlDepth   uint32
+	control        controlContext
 	expected       expectedType
 	suppressValue  bool
 	immediateCall  bool
@@ -94,6 +94,7 @@ type walker struct {
 	publishedSymbols      map[symbol.SymbolID]bool
 	publishedSyntax       map[symbol.SyntaxRef]bool
 	publishedSlots        map[infer.Term]infer.SlotID
+	deferOrdinals         map[controlID]uint32
 	activeBranch          *branchFacts
 	runtimeTypes          func() (infer.RuntimeTypes, bool)
 }
@@ -135,6 +136,7 @@ func newWalker(generation *generation, evaluator *constantEvaluator, program *in
 		places:                make(map[symbol.SyntaxRef]placeCandidate),
 		successfulExpressions: make(map[symbol.SyntaxRef]bool),
 		publishedSyntax:       make(map[symbol.SyntaxRef]bool), publishedSlots: make(map[infer.Term]infer.SlotID),
+		deferOrdinals:         make(map[controlID]uint32),
 	}
 	if program != nil {
 		w.runtimeTypes = program.RuntimeTypes
@@ -184,8 +186,11 @@ func (w *walker) walkTree(item module.Module) {
 						w.finishOperator(current.ref, node, current.ctx)
 					case syntax.CastExpr:
 						w.finishCast(current.ref, node, current.ctx)
-					case syntax.AssignmentStmt:
-						w.finishAssignment(current.ref, node, current.ctx)
+					case syntax.BlockStmt, syntax.ReturnStmt, syntax.IfStmt, syntax.WhileStmt,
+						syntax.RangeLoopStmt, syntax.ForStmt, syntax.SwitchStmt, syntax.SwitchCase,
+						syntax.DeferStmt, syntax.PrintStmt, syntax.BreakStmt, syntax.ContinueStmt,
+						syntax.AssignmentStmt, syntax.ExpressionStmt:
+						w.finishStatement(current.ref, node, current.ctx, item.Tree)
 					case syntax.SliceExpr:
 						w.finishSlice(current.ref, node, current.ctx)
 					default:
@@ -304,13 +309,14 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 		_ = w.session.Error(w.origin(ref, node, "error syntax", ctx.typeOwner, ctx.genericOwner))
 		return nil
 	case syntax.File, syntax.ImportDecl, syntax.ExternDecl, syntax.ExternBlock,
-		syntax.BlockStmt, syntax.ReturnStmt, syntax.IfStmt, syntax.WhileStmt,
-		syntax.RangeLoopStmt, syntax.ForStmt, syntax.SwitchStmt, syntax.SwitchCase,
-		syntax.DeferStmt, syntax.PrintStmt, syntax.BreakStmt, syntax.ContinueStmt,
-		syntax.ExpressionStmt,
 		syntax.StructType, syntax.UnionType, syntax.EnumType,
 		syntax.FieldDecl, syntax.VariantDecl, syntax.Parameter, syntax.TypeParameter:
 		return w.structuralChildren(ref, node, ctx, tree)
+	case syntax.BlockStmt, syntax.ReturnStmt, syntax.IfStmt, syntax.WhileStmt,
+		syntax.RangeLoopStmt, syntax.ForStmt, syntax.SwitchStmt, syntax.SwitchCase,
+		syntax.DeferStmt, syntax.PrintStmt, syntax.BreakStmt, syntax.ContinueStmt,
+		syntax.AssignmentStmt, syntax.ExpressionStmt:
+		return w.prepareStatement(ref, node, ctx, tree)
 	case syntax.CallExpr:
 		return w.prepareCall(ref, node, ctx, tree)
 	case syntax.MemberExpr:
@@ -321,8 +327,6 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 		return w.prepareOperator(ref, node, ctx, tree)
 	case syntax.CastExpr:
 		return w.prepareCast(ref, node, ctx, tree)
-	case syntax.AssignmentStmt:
-		return w.prepareAssignment(ref, node, ctx, tree)
 	case syntax.SliceExpr:
 		return w.prepareSlice(ref, node, ctx, tree)
 	case syntax.Name, syntax.Path, syntax.Literal, syntax.InterpolatedString,
@@ -357,9 +361,9 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 		for index := range items {
 			items[index].ctx.callable = callableRef{Syntax: ref}
 			items[index].ctx.unsupported = unsupported
-			items[index].ctx.controlDepth = 0
 			items[index].ctx.suppressValue = items[index].ref.Node != bodyNode
 		}
+		w.beginCallableRegion(ref, items, callableRef{Syntax: ref}, !unsupported)
 		return items
 	default:
 		w.generation.report("unknown syntax node kind in closed dispatch", node.Span())
@@ -394,15 +398,6 @@ func (w *walker) structuralChildren(ref symbol.SyntaxRef, node syntax.Node, ctx 
 			child, _ := tree.Node(items[index].ref.Node)
 			if child.Kind() == syntax.Name || child.Kind() == syntax.Literal {
 				items[index].ctx.suppressValue = true
-			}
-		}
-	}
-	if isControlContainer(node.Kind()) {
-		if ctx.controlDepth >= w.generation.config.MaxControlDepth {
-			w.generation.reportLimit("control depth", uint64(w.generation.config.MaxControlDepth))
-		} else {
-			for index := range items {
-				items[index].ctx.controlDepth = ctx.controlDepth + 1
 			}
 		}
 	}
@@ -447,16 +442,6 @@ func (w *walker) structuralChildren(ref symbol.SyntaxRef, node syntax.Node, ctx 
 	return items
 }
 
-func isControlContainer(kind syntax.NodeKind) bool {
-	switch kind {
-	case syntax.BlockStmt, syntax.IfStmt, syntax.WhileStmt, syntax.RangeLoopStmt,
-		syntax.ForStmt, syntax.SwitchStmt, syntax.SwitchCase, syntax.DeferStmt:
-		return true
-	default:
-		return false
-	}
-}
-
 func (w *walker) callableChildren(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree) []walkItem {
 	items := childItems(ref, node, ctx)
 	callable, ok := w.callableSymbol(ref)
@@ -480,6 +465,8 @@ func (w *walker) callableChildren(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 			items[index].ctx.typePosition, items[index].ctx.typeRoot, items[index].ctx.preparedType = true, true, true
 		}
 	}
+	bodyPresent := node.Kind() != syntax.ExternFunction && node.Data()&syntax.FunctionBodyPresent != 0
+	w.beginCallableRegion(ref, items, callableRef{Symbol: callable.ID, Syntax: ref}, bodyPresent)
 	return items
 }
 

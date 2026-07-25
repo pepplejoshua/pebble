@@ -1,0 +1,8 @@
+fn recover(value i32) void {
+    switch value {
+    case 1 / 0: print 1;
+    else: print 2;
+    }
+    print value;
+    return;
+}

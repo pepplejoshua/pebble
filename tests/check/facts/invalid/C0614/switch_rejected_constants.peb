@@ -1,0 +1,7 @@
+fn choose(value i32) void {
+    switch value {
+    case 1 / 0: print 1;
+    case sizeof i32: print 2;
+    else: print 3;
+    }
+}
