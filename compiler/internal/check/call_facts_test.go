@@ -271,3 +271,37 @@ fn inspect[T](value T) void { let field = value.unknown; }
 	}
 	t.Fatalf("requirement payload not generated: %+v", requirementDiagnostics.Items())
 }
+
+// A static or variant member is exactly its resolved symbol term. The member
+// rule must not allocate a session variable it then discards on those paths:
+// the abandoned variable is never constrained and reports a spurious T0510.
+func TestMemberFactsStaticAndVariantLeakNoInferenceVariable(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Color = enum { red, green, blue };
+type Choice = union enum { empty void; value i32; };
+fn f() void {
+    let shade Color = Color.red;
+    let taken Choice = Choice.value(2);
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("payloadless variant in value position did not solve: %+v", diagnostics.Items())
+	}
+	variants := 0
+	for _, retained := range facts.Generation.records.values {
+		if retained.Member == nil || retained.Member.Kind != memberVariant {
+			continue
+		}
+		variants++
+		if retained.Member.Member == 0 {
+			t.Fatalf("variant member record has no resolved identity: %+v", retained.Member)
+		}
+	}
+	// Only the payloadless variant reaches the member rule; a tagged variant
+	// construction is a callVariant site and owns a call record instead.
+	if variants != 1 {
+		t.Fatalf("variant member records = %d", variants)
+	}
+}

@@ -104,10 +104,16 @@ func (w *walker) finishMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 			return
 		}
 	}
-	term := w.session.Variable(origin)
-	switch p.kind {
-	case memberStatic, memberVariant:
+	// A static or variant member is exactly its resolved symbol term. Allocating
+	// a session variable first and then discarding it on those paths would leave
+	// an unconstrained inference variable behind and report a spurious T0510.
+	term := infer.Term{}
+	if p.kind == memberStatic || p.kind == memberVariant {
 		term = w.symbolTerm(p.member, origin)
+	} else {
+		term = w.session.Variable(origin)
+	}
+	switch p.kind {
 	case memberField:
 		w.addConstraint(infer.HasField(base.Term, p.nameText, term, origin))
 	case memberMethod:

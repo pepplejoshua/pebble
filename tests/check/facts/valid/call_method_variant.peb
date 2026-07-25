@@ -3,6 +3,8 @@ type Box = struct {
     fn get(self Box) i32 => self.value;
 };
 type Choice = union enum { empty void; value i32; };
+type Color = enum { red, green, blue };
 let box Box = Box.{ value = 1 };
 let method i32 = box.get();
 let variant Choice = Choice.value(2);
+let shade Color = Color.red;
