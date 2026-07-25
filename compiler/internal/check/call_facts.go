@@ -247,6 +247,11 @@ func (w *walker) prepareDirect(p *callPlan, ref symbol.SyntaxRef, ctx walkContex
 		for i, t := range signature.Inputs {
 			term := w.termForTemplate(t, nil, origin)
 			v, _ := w.newSlotValue(term, origin)
+			if template, found := w.program.Template(t); found && template.Kind == infer.TemplateKnown {
+				v.Known = template.Known
+				w.knownValues[v.ID] = template.Known
+				w.rigidValues[v.ID] = w.isRigidType(template.Known)
+			}
 			p.destinations = append(p.destinations, v)
 			_ = i
 		}

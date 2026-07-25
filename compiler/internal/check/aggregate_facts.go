@@ -131,6 +131,7 @@ func (w *walker) prepareArray(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 }
 
 func (w *walker) finishArray(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, plan *expressionPlan, origin infer.Origin) typedValue {
+	plan.arrayKnown, plan.arrayLength = true, uint64(len(plan.children))
 	result := w.expressionResult(ref, w.session.Variable(origin), origin)
 	for ordinal, childRef := range plan.children {
 		child := w.valuesBySyntax[childRef]

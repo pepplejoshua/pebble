@@ -258,6 +258,60 @@ func (g *generation) addRecord(value retainedRecord) (recordID, bool) {
 			}
 		}
 	}
+	if value.Operator != nil && value.Operator.GenericOwner != 0 && !g.validSymbol(value.Operator.GenericOwner) {
+		g.report("operator record contains an invalid generic owner", value.Header.Span)
+		return 0, false
+	}
+	if value.Assignment != nil && !g.validSyntax(value.Assignment.Statement) {
+		g.report("assignment record contains invalid statement syntax", value.Header.Span)
+		return 0, false
+	}
+	if value.Assignment != nil {
+		moduleValue, moduleOK := g.inputs.Graph.Module(value.Assignment.Statement.Module)
+		node, nodeOK := moduleValue.Tree.Node(value.Assignment.Statement.Node)
+		if !moduleOK || !nodeOK || node.Kind() != syntax.AssignmentStmt && node.Kind() != syntax.PostfixExpr {
+			g.report("assignment record does not name an assignment occurrence", value.Header.Span)
+			return 0, false
+		}
+	}
+	if value.Place != nil {
+		if value.Place.Root != 0 && !g.validSymbol(value.Place.Root) {
+			g.report("place record contains an invalid root", value.Header.Span)
+			return 0, false
+		}
+		if value.Place.Root != 0 {
+			root, _ := g.inputs.Resolution.Symbols.Symbol(value.Place.Root)
+			if root.Kind != value.Place.RootKind {
+				g.report("place record root kind does not match its symbol", value.Header.Span)
+				return 0, false
+			}
+			module, moduleOK := g.inputs.Graph.Module(root.Declaration.Module)
+			if !moduleOK {
+				g.report("place record root declaration is not owned by the module graph", value.Header.Span)
+				return 0, false
+			}
+			declaration, declarationOK := module.Tree.Node(root.Declaration.Node)
+			if !declarationOK {
+				g.report("place record root declaration is invalid", value.Header.Span)
+				return 0, false
+			}
+			mutable := (declaration.Kind() == syntax.BindingDecl || declaration.Kind() == syntax.ExternBinding) && declaration.Token() == syntax.KwVar
+			if value.Place.RootMutable != mutable {
+				g.report("place record root mutability does not match its declaration", value.Header.Span)
+				return 0, false
+			}
+		}
+		for _, projection := range value.Place.Projections {
+			if projection.Member != 0 && !g.validSymbol(projection.Member) {
+				g.report("place record contains an invalid member", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
+	if value.Index != nil && value.Index.EscapeDestination != 0 && !g.validSymbol(value.Index.EscapeDestination) {
+		g.report("index record contains an invalid escape destination", value.Header.Span)
+		return 0, false
+	}
 	if value.Member != nil {
 		if value.Member.Member != 0 && !g.validSymbol(value.Member.Member) {
 			g.report("member record contains an invalid member symbol", value.Header.Span)

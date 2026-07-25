@@ -1,0 +1,5 @@
+fn recover() void {
+    missing = ;
+    var valid i32 = 0;
+    valid = 1;
+}

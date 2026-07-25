@@ -95,8 +95,9 @@ func (w *walker) expectationFor(ref symbol.SyntaxRef, destination valueID, role 
 					}
 				}
 			}
+			return expectedType{Kind: expectIdentity, Destination: destination, Role: role}
 		}
-		return expectedType{Kind: expectIdentity, Destination: destination, Role: role}
+		return none
 	default:
 		return none
 	}

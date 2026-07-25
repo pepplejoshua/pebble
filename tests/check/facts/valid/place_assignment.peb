@@ -1,0 +1,5 @@
+fn update(values [2]i32) void {
+    var value i32 = values[0];
+    value += 1;
+    values[1] = value;
+}

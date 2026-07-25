@@ -85,6 +85,9 @@ func (w *walker) header(ref symbol.SyntaxRef, genericOwner symbol.SymbolID, supp
 }
 
 func (w *walker) newValue(term infer.Term, origin infer.Origin) typedValue {
+	if w.session == nil || w.session.Fatal() {
+		return typedValue{Term: term}
+	}
 	id, ok := w.generation.addValue(generatedValue{Term: term, Origin: origin})
 	if !ok {
 		return typedValue{Term: w.session.Error(origin)}
@@ -205,6 +208,7 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	}
 	initializer := typedValue{}
 	if initializerPresent {
+		w.escapeDestinations[initializerRef] = binding.ID
 		initializerOrigin := w.originForRef(initializerRef, "binding initializer", binding.ID, ctx.genericOwner)
 		initializer = w.newValue(w.session.Variable(initializerOrigin), initializerOrigin)
 		w.valuesBySyntax[initializerRef] = initializer
@@ -220,7 +224,13 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	if !annotationPresent && !initializerPresent {
 		symbolTerm = w.session.Error(origin)
 	}
-	_, published := w.publishSymbol(binding.ID, symbolTerm, origin)
+	publishedValue, published := w.publishSymbol(binding.ID, symbolTerm, origin)
+	if published && annotation.Known != 0 {
+		publishedValue.Known = annotation.Known
+		w.valuesBySymbol[binding.ID] = publishedValue
+		w.knownValues[publishedValue.ID] = annotation.Known
+		w.rigidValues[publishedValue.ID] = w.isRigidType(annotation.Known)
+	}
 	header := w.header(ref, ctx.genericOwner, !published || (!annotationPresent && !initializerPresent))
 	kind, global, mutable := w.bindingKind(binding, node)
 	w.retainBinding(bindingRecord{
@@ -308,6 +318,17 @@ func (w *walker) handleNamedCallable(ref symbol.SyntaxRef, node syntax.Node) {
 		}
 		parameterOrigin := w.originForRef(parameterSymbol.Declaration, "parameter", id, genericOwner)
 		parameterValue, published := w.publishSymbol(id, typeValue.Term, parameterOrigin)
+		if w.session.Fatal() {
+			return
+		}
+		if template, found := w.program.Template(signature.Inputs[index]); published && found && template.Kind == infer.TemplateKnown {
+			parameterValue.Known = template.Known
+			w.valuesBySymbol[id] = parameterValue
+			w.knownValues[parameterValue.ID] = template.Known
+			w.rigidValues[parameterValue.ID] = w.isRigidType(template.Known)
+		} else if published && found && template.Kind == infer.TemplateParameter {
+			w.rigidValues[parameterValue.ID] = true
+		}
 		record.Parameters = append(record.Parameters, parameterValue.ID)
 		parameterHeader := w.header(parameterSymbol.Declaration, genericOwner, !published)
 		w.retainBinding(bindingRecord{
@@ -319,6 +340,9 @@ func (w *walker) handleNamedCallable(ref symbol.SyntaxRef, node syntax.Node) {
 	resultRef := symbol.SyntaxRef{Module: ref.Module, Node: resultNode}
 	resultTerm := w.termForTemplate(signature.Result, signature.TypeParams, w.originForRef(resultRef, "result annotation", callable.ID, genericOwner))
 	result := w.preparedType(resultRef, resultTerm, callable.ID, genericOwner, "result annotation", false)
+	if w.session.Fatal() {
+		return
+	}
 	record.Result = result.ID
 	if len(signature.TypeParams) == 0 {
 		parameters := make([]infer.Shape, len(record.Parameters))

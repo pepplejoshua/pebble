@@ -30,6 +30,10 @@ type retainedRecord struct {
 	Aggregate           *aggregateRecord
 	Compatibility       *compatibilityRecord
 	Call                *callRecord
+	Cast                *castRecord
+	Operator            *operatorRecord
+	Assignment          *assignmentRecord
+	Place               *placeRecord
 	Member              *memberRecord
 	Index               *indexRecord
 	Requirement         *requirementRecord
@@ -77,6 +81,24 @@ func cloneRetainedRecord(value retainedRecord) retainedRecord {
 		copy := cloneCallRecord(*value.Call)
 		value.Call = &copy
 	}
+	if value.Cast != nil {
+		copy := *value.Cast
+		value.Cast = &copy
+	}
+	if value.Operator != nil {
+		copy := *value.Operator
+		copy.Operands = append([]valueID(nil), value.Operator.Operands...)
+		value.Operator = &copy
+	}
+	if value.Assignment != nil {
+		copy := *value.Assignment
+		value.Assignment = &copy
+	}
+	if value.Place != nil {
+		copy := *value.Place
+		copy.Projections = append([]placeProjection(nil), value.Place.Projections...)
+		value.Place = &copy
+	}
 	if value.Member != nil {
 		copy := *value.Member
 		value.Member = &copy
@@ -120,6 +142,18 @@ func (value *retainedRecord) assignHeader(header recordHeader) {
 	}
 	if value.Call != nil {
 		value.Call.Header = header
+	}
+	if value.Cast != nil {
+		value.Cast.Header = header
+	}
+	if value.Operator != nil {
+		value.Operator.Header = header
+	}
+	if value.Assignment != nil {
+		value.Assignment.Header = header
+	}
+	if value.Place != nil {
+		value.Place.Header = header
 	}
 	if value.Member != nil {
 		value.Member.Header = header
@@ -263,6 +297,50 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 		}
 		components += uint64(len(call.Arguments))
 	}
+	if value.Cast != nil {
+		payloads++
+		v := value.Cast
+		if v.Header != value.Header || v.Source == 0 || v.Destination == 0 || v.Result == 0 {
+			return nil, 0, false
+		}
+		add(v.Source, v.Destination, v.Result)
+	}
+	if value.Operator != nil {
+		payloads++
+		v := value.Operator
+		if v.Header != value.Header || !validOperatorRecord(*v) || v.Result == 0 || (v.GenericOwner != 0 && v.GenericOwner != value.Header.Owner) {
+			return nil, 0, false
+		}
+		add(v.Result)
+		for _, id := range v.Operands {
+			if id == 0 {
+				return nil, 0, false
+			}
+			add(id)
+		}
+	}
+	if value.Assignment != nil {
+		payloads++
+		v := value.Assignment
+		if v.Header != value.Header || v.Kind < assignmentSimple || v.Kind > assignmentCompound || v.Place == 0 || v.Source == 0 || v.Statement != value.Header.Syntax || !validAssignmentOperator(v.Kind, v.Operator) {
+			return nil, 0, false
+		}
+		add(v.Place, v.Source)
+	}
+	if value.Place != nil {
+		payloads++
+		v := value.Place
+		if v.Header != value.Header || len(v.Projections) == 0 || v.RootKind == symbol.SymbolError || (v.Root == 0) != (v.RootKind == 0) || (v.Root != 0) != (v.Projections[0].Kind == placeStorage) {
+			return nil, 0, false
+		}
+		for _, p := range v.Projections {
+			if !validPlaceProjection(p) {
+				return nil, 0, false
+			}
+			add(p.Base, p.Index)
+		}
+		components += uint64(len(v.Projections))
+	}
 	if value.Member != nil {
 		payloads++
 		member := value.Member
@@ -275,7 +353,7 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 	if value.Index != nil {
 		payloads++
 		index := value.Index
-		if index.Header != value.Header || index.Mode < indexValue || index.Mode > indexSlice || index.Base == 0 || index.Result == 0 || index.StartPresent != (index.Start != 0) || index.EndPresent != (index.End != 0) || index.Mode == indexValue && (!index.StartPresent || index.EndPresent) {
+		if index.Header != value.Header || index.Mode < indexValue || index.Mode > indexSlice || index.Base == 0 || index.Result == 0 || index.StartPresent != (index.Start != 0) || index.EndPresent != (index.End != 0) || index.Mode == indexValue && (!index.StartPresent || index.EndPresent) || !index.HasKnownArrayLength && index.KnownArrayLength != 0 {
 			return nil, 0, false
 		}
 		add(index.Base, index.Start, index.End, index.Result)

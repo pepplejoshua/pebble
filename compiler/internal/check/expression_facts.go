@@ -258,12 +258,21 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		term := w.symbolTerm(resolution.Symbol, origin)
 		value = w.expressionResult(ref, term, origin)
 		w.addConstraint(infer.Equal(value.Term, term, origin))
+		if known := w.valuesBySymbol[resolution.Symbol].Known; known != 0 {
+			value.Known = known
+			w.knownValues[value.ID] = known
+			w.valuesBySyntax[ref] = value
+		}
+		if symbolValue := w.valuesBySymbol[resolution.Symbol]; w.rigidValues[symbolValue.ID] {
+			w.rigidValues[value.ID] = true
+		}
 		if plan.symbol != 0 {
 			if resolved, found := w.generation.inputs.Resolution.Symbols.Symbol(plan.symbol); found {
 				switch resolved.Kind {
 				case symbol.SymbolBinding, symbol.SymbolParameter, symbol.SymbolLoopBinding, symbol.SymbolExternBinding:
 					if w.generation.trackPlace() {
 						w.placeCandidates[ref] = value.ID
+						w.storagePlace(ref, value.ID, resolution.Symbol)
 					}
 				}
 			}
@@ -297,10 +306,19 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		kind = expressionGrouped
 		child := w.firstChildValue(plan)
 		value = w.expressionResult(ref, child.Term, origin)
+		if child.Known != 0 {
+			value.Known = child.Known
+			w.knownValues[value.ID] = child.Known
+			w.valuesBySyntax[ref] = value
+		}
+		if w.rigidValues[child.ID] {
+			w.rigidValues[value.ID] = true
+		}
 		w.addConstraint(infer.Equal(value.Term, child.Term, origin))
 		if len(plan.children) != 0 {
-			if _, place := w.placeCandidates[plan.children[0]]; place && w.generation.trackPlace() {
+			if _, place := w.places[plan.children[0]]; place && w.generation.trackPlace() {
 				w.placeCandidates[ref] = value.ID
+				w.copyPlace(ref, plan.children[0], value.ID)
 			}
 		}
 	case syntax.TupleTerm:
@@ -433,7 +451,20 @@ func (w *walker) finishLiteral(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		term = w.session.Variable(origin)
 		w.addConstraint(infer.ConstrainShape(term, infer.OptionalShape(infer.Leaf(payload.Term)), origin))
 	}
-	return w.expressionResult(ref, term, origin)
+	value := w.expressionResult(ref, term, origin)
+	switch plan.literal.Kind {
+	case literalBool:
+		value.Known = b.Bool
+	case literalChar:
+		value.Known = b.Char
+	case literalString:
+		value.Known = b.Str
+	}
+	if value.Known != 0 {
+		w.knownValues[value.ID] = value.Known
+		w.valuesBySyntax[ref] = value
+	}
+	return value
 }
 
 func (w *walker) shapeLeaf(expected expectedType, kind types.Kind, origin infer.Origin) typedValue {

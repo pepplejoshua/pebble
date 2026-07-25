@@ -209,14 +209,22 @@ func (w *walker) finishBracket(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	}
 	w.addConstraint(infer.Integral(index.Term, origin))
 	w.addConstraint(infer.Indexable(base.Term, p.result.Term, origin))
+	if w.session.Fatal() {
+		return
+	}
 	result, ok := w.publishExistingSyntax(ref, p.result, origin)
+	if w.session.Fatal() {
+		return
+	}
 	if !ok {
 		return
 	}
 	header := w.header(ref, ctx.genericOwner, false)
 	record := indexRecord{Header: header, Mode: indexValue, Base: base.ID, Start: index.ID, Result: result.ID, StartPresent: true}
+	w.applyKnownArrayLength(&record, p.base)
 	specialized, _ := w.addRecord(retainedRecord{Header: header, Index: &record})
 	w.retainRequirement(header, requirementUnsupportedIndex, base.ID)
+	w.deriveIndexPlace(ref, p.base, base, index, result)
 	w.retainBracket(ref, ctx, result, specialized, alternativeTag{}, []valueID{base.ID, index.ID})
 	_ = tree
 }
@@ -248,6 +256,11 @@ func (w *walker) finishDeferredBracket(ref symbol.SyntaxRef, ctx walkContext, p 
 	w.retainBracket(ref, ctx, p.genericResult, genericSpecialized, alternativeTag{}, []valueID{receiver.ID})
 	w.retainDeferredResultCompatibility(ref, ctx, p.genericResult)
 	w.activeBranch = p.runtimeBranch
+	memberHeader := w.header(p.base, ctx.genericOwner, false)
+	runtimeMember := memberRecord{Header: memberHeader, Kind: memberField, Base: receiver.ID, Result: p.memberValue.ID, Name: p.deferredMember.nameText, NameSpan: p.deferredMember.nameSpan}
+	runtimeMemberSpecialized, _ := w.addRecord(retainedRecord{Header: memberHeader, Member: &runtimeMember})
+	w.retainRequirement(memberHeader, requirementUnsupportedField, receiver.ID)
+	w.addRecord(retainedRecord{Header: memberHeader, Expression: &expressionRecord{Header: memberHeader, Kind: expressionMember, Result: p.memberValue.ID, Children: []valueID{receiver.ID}, Specialized: runtimeMemberSpecialized}})
 	record := indexRecord{Header: header, Mode: indexValue, Base: p.memberValue.ID, Start: argument.ID, Result: p.result.ID, StartPresent: true}
 	specialized, _ := w.addRecord(retainedRecord{Header: header, Index: &record})
 	w.retainRequirement(header, requirementUnsupportedIndex, p.memberValue.ID)
@@ -256,6 +269,14 @@ func (w *walker) finishDeferredBracket(ref symbol.SyntaxRef, ctx walkContext, p 
 	w.activeBranch = previous
 	if !p.deferChoice {
 		w.successfulExpressions[ref] = w.finalizeDeferredChoice(ref, ctx, p)
+		if w.successfulExpressions[ref] {
+			w.deriveProjectionPlace(p.base, p.deferredMember.base, p.memberValue.ID, placeProjection{Kind: placeField, Base: receiver.ID})
+			w.deriveIndexPlace(ref, p.base, p.memberValue, argument, p.result)
+			if candidate, ok := w.places[ref]; ok {
+				candidate.alternative = p.tag
+				w.places[ref] = candidate
+			}
+		}
 	} else {
 		// The enclosing call completes and publishes the shared choice.
 		w.successfulExpressions[ref] = true

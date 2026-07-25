@@ -215,6 +215,9 @@ func TestDeclarationFactsPublicationDuplicateAndRootFailureAreAtomic(t *testing.
 		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || walk.publishedSymbols[bindings[1]] {
 			t.Fatal("root failure left orphan value/root/publication")
 		}
+		if _, exists := walk.termsBySymbol[bindings[1]]; exists {
+			t.Fatal("root preflight failure retained a symbol term")
+		}
 	})
 	t.Run("slot root limit", func(t *testing.T) {
 		walk, bindings, _ := newPublicationWalker(t, 1)
@@ -234,7 +237,7 @@ func TestDeclarationFactsPublicationDuplicateAndRootFailureAreAtomic(t *testing.
 		}
 	})
 	t.Run("Session slot rejection", func(t *testing.T) {
-		walk, _, _ := newPublicationWalkerWithConfig(t, Config{
+		walk, _, diagnostics := newPublicationWalkerWithConfig(t, Config{
 			MaxSyntaxVisits: 4,
 			Inference:       infer.Config{MaxSolvedSlots: 1},
 		})
@@ -242,27 +245,110 @@ func TestDeclarationFactsPublicationDuplicateAndRootFailureAreAtomic(t *testing.
 			t.Fatal("slot capacity setup failed")
 		}
 		values, roots := len(walk.generation.values), len(walk.generation.roots.values)
+		counters := walk.generation.counters
 		term := walk.session.Known(walk.generation.inputs.Types.Builtins().Bool)
 		if value, ok := walk.newSlotValue(term, infer.Origin{}); ok || value.ID != 0 {
 			t.Fatalf("rejected Session slot retained a generated identity: %+v", value)
 		}
-		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots {
+		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || walk.generation.counters != counters {
 			t.Fatal("rejected Session slot left an orphan generated value or root")
+		}
+		if len(walk.publishedSlots) != 0 {
+			t.Fatal("rejected Session slot retained checker slot state")
+		}
+		walk.session.Solve()
+		requireSingleDiagnosticCode(t, diagnostics, infer.CodeResourceLimit)
+		if _, ok := walk.addRecord(retainedRecord{}); ok || len(walk.generation.records.values) != 0 {
+			t.Fatal("fatal slot rejection allowed later semantic record publication")
 		}
 	})
 	t.Run("Session duplicate slot rejection", func(t *testing.T) {
-		walk, _, _ := newPublicationWalker(t, 4)
+		walk, _, diagnostics := newPublicationWalker(t, 4)
 		term := walk.session.Known(walk.generation.inputs.Types.Builtins().I32)
 		if slot := walk.session.PublishSlot(term); slot == (infer.SlotID{}) {
 			t.Fatal("duplicate slot setup failed")
 		}
 		values, roots := len(walk.generation.values), len(walk.generation.roots.values)
+		counters := walk.generation.counters
 		if value, ok := walk.newSlotValue(term, infer.Origin{}); ok || value.ID != 0 {
 			t.Fatalf("duplicate Session slot retained a generated identity: %+v", value)
 		}
-		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || len(walk.publishedSlots) != 0 {
+		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || len(walk.publishedSlots) != 0 || walk.generation.counters != counters {
 			t.Fatal("duplicate Session slot left partial checker publication state")
 		}
+		walk.session.Solve()
+		requireSingleDiagnosticCode(t, diagnostics, infer.CodeResourceLimit)
+	})
+	t.Run("Session recovery slot rejection", func(t *testing.T) {
+		walk, _, diagnostics := newPublicationWalkerWithConfig(t, Config{
+			MaxSyntaxVisits: 4,
+			Inference:       infer.Config{MaxSolvedSlots: 1},
+		})
+		term := walk.session.Known(walk.generation.inputs.Types.Builtins().Bool)
+		value := walk.newValue(term, infer.Origin{})
+		if value.ID == 0 {
+			t.Fatal("recovery value setup failed")
+		}
+		if slot := walk.session.PublishSlot(walk.session.Known(walk.generation.inputs.Types.Builtins().I32)); slot == (infer.SlotID{}) {
+			t.Fatal("slot capacity setup failed")
+		}
+		values, roots := len(walk.generation.values), len(walk.generation.roots.values)
+		counters := walk.generation.counters
+		if rooted, ok := walk.rootExistingSlot(value, infer.Origin{}); ok || rooted.ID != value.ID {
+			t.Fatalf("rejected recovery slot result=%+v ok=%v", rooted, ok)
+		}
+		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || len(walk.publishedSlots) != 0 || walk.generation.counters != counters {
+			t.Fatal("rejected recovery slot changed checker publication state")
+		}
+		walk.session.Solve()
+		requireSingleDiagnosticCode(t, diagnostics, infer.CodeResourceLimit)
+	})
+	t.Run("Session duplicate symbol rejection", func(t *testing.T) {
+		walk, bindings, diagnostics := newPublicationWalker(t, 4)
+		term := walk.session.Known(walk.generation.inputs.Types.Builtins().I32)
+		walk.session.PublishSymbol(bindings[0], term)
+		values, roots := len(walk.generation.values), len(walk.generation.roots.values)
+		counters := walk.generation.counters
+		if value, ok := walk.publishSymbol(bindings[0], term, infer.Origin{Symbol: bindings[0]}); ok || value.ID != 0 {
+			t.Fatalf("duplicate Session symbol retained a generated identity: %+v", value)
+		}
+		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || walk.publishedSymbols[bindings[0]] || walk.generation.counters != counters {
+			t.Fatal("duplicate Session symbol left checker value/root/publication state")
+		}
+		if _, exists := walk.valuesBySymbol[bindings[0]]; exists {
+			t.Fatal("duplicate Session symbol retained checker value lookup")
+		}
+		if _, exists := walk.termsBySymbol[bindings[0]]; exists {
+			t.Fatal("duplicate Session symbol retained checker term lookup")
+		}
+		walk.session.Solve()
+		requireSingleDiagnosticCode(t, diagnostics, infer.CodeResourceLimit)
+		if _, ok := walk.addRecord(retainedRecord{}); ok || len(walk.generation.records.values) != 0 {
+			t.Fatal("fatal symbol rejection allowed later semantic record publication")
+		}
+	})
+	t.Run("Session duplicate symbol restores existing term", func(t *testing.T) {
+		walk, bindings, diagnostics := newPublicationWalker(t, 4)
+		origin := infer.Origin{Symbol: bindings[0]}
+		previous := walk.symbolTerm(bindings[0], origin)
+		walk.session.PublishSymbol(bindings[0], previous)
+		incoming := walk.session.Known(walk.generation.inputs.Types.Builtins().I32)
+		values, roots := len(walk.generation.values), len(walk.generation.roots.values)
+		counters := walk.generation.counters
+		if value, ok := walk.publishSymbol(bindings[0], incoming, origin); ok || value.ID != 0 {
+			t.Fatalf("duplicate Session symbol retained a generated identity: %+v", value)
+		}
+		if got, exists := walk.termsBySymbol[bindings[0]]; !exists || got != previous {
+			t.Fatalf("existing symbol term=%+v present=%v, want %+v", got, exists, previous)
+		}
+		if len(walk.generation.values) != values || len(walk.generation.roots.values) != roots || walk.publishedSymbols[bindings[0]] || walk.generation.counters != counters {
+			t.Fatal("duplicate Session symbol changed checker publication state")
+		}
+		if _, exists := walk.valuesBySymbol[bindings[0]]; exists {
+			t.Fatal("duplicate Session symbol retained checker value lookup")
+		}
+		walk.session.Solve()
+		requireSingleDiagnosticCode(t, diagnostics, infer.CodeResourceLimit)
 	})
 }
 

@@ -48,6 +48,9 @@ func (w *walker) resolveTypeOccurrence(ref symbol.SyntaxRef, typeOwner, genericO
 	w.resolvedTypes[ref] = true
 	origin := w.originForRef(ref, role, typeOwner, genericOwner)
 	result := w.session.ResolveType(ref, typeOwner)
+	if w.session.Fatal() {
+		return typedValue{Term: w.session.Error(origin)}
+	}
 	term := w.session.Error(origin)
 	suppressed := result.State != infer.TypeFinal
 	if !suppressed {

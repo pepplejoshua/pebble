@@ -133,6 +133,12 @@ func (w *walker) finishMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 	if p.kind == memberMethod {
 		w.retainRequirement(header, requirementUnsupportedMethod, base.ID)
 	}
+	if p.kind == memberField {
+		w.deriveProjectionPlace(ref, p.base, result.ID, placeProjection{Kind: placeField, Base: base.ID, Member: p.member})
+	}
+	if p.kind == memberTuple {
+		w.deriveProjectionPlace(ref, p.base, result.ID, placeProjection{Kind: placeTuple, Base: base.ID, TupleOrdinal: p.ordinal})
+	}
 	w.successfulExpressions[ref] = true
 	w.applyExpected(result, infer.Term{}, ctx.expected, origin)
 	expression := expressionRecord{Header: header, Kind: expressionMember, Result: result.ID, Symbol: p.member, Specialized: specialized}

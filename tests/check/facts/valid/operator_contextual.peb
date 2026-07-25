@@ -1,0 +1,4 @@
+let arithmetic i32 = 1 + 2;
+let optional ?i32 = some (1 + 2);
+let minimum i8 = -128;
+let text str = "peb" + "ble";

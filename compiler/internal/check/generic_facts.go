@@ -34,6 +34,9 @@ type requirementRecord struct {
 }
 
 func (w *walker) retainRequirement(header recordHeader, kind requirementKind, subject valueID) {
+	if w.session == nil || w.session.Fatal() {
+		return
+	}
 	if header.Owner == 0 || subject == 0 {
 		return
 	}

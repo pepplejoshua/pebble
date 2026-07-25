@@ -1,0 +1,5 @@
+fn inspect(value i32, optional ?i32) i32 {
+    let pointer *i32 = &value;
+    let copied i32 = *pointer;
+    return optional! + copied;
+}
