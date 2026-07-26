@@ -322,7 +322,7 @@ Every node kind defined by `03b` is handled exactly once:
 | Surface nodes | Generation action |
 | --- | --- |
 | `File`, `EndOfFile`, `ImportDecl` | visit ordered declarations and the final EOF child; `EndOfFile` and imports produce no semantic value or inference fact |
-| `BindingDecl`, `ExternBinding` | binding rules and symbol publication |
+| `BindingDecl`, `ExternBinding` | binding rules and symbol publication; a local `BindingDecl` additionally retains a `controlBinding` statement record |
 | `TypeDecl`, `ExternType`, `StructType`, `UnionType`, `EnumType`, `FieldDecl`, `VariantDecl` | consume prepared descriptors and visit authored members/types |
 | `FunctionDecl`, `ExternFunction`, `FunctionTerm`, `Parameter`, `TypeParameter`, `ExternDecl`, `ExternBlock` | callable/signature/body rules |
 | `BlockStmt`, `ReturnStmt`, `IfStmt`, `WhileStmt`, `RangeLoopStmt`, `ForStmt`, `SwitchStmt`, `SwitchCase`, `DeferStmt`, `PrintStmt`, `BreakStmt`, `ContinueStmt`, `AssignmentStmt`, `ExpressionStmt` | statement facts and control records |
@@ -479,7 +479,8 @@ type memberRecord struct { Header recordHeader; Kind memberKind; Base, Result va
 type fieldValue struct { Field, NameSyntax symbol.SyntaxRef; Name string; NameSpan source.Span; Member symbol.SymbolID; Value, Destination valueID; Ordinal uint32 }
 type aggregateRecord struct { Header recordHeader; Kind aggregateKind; Result, Receiver valueID; Declaration symbol.SymbolID; Fields []fieldValue; DeclarationFields []symbol.SymbolID }
 type controlValue struct { Role controlValueRole; Value valueID; Ordinal uint32 }
-type controlRecord struct { Header recordHeader; Kind controlKind; Region, Target controlID; Callable callableRef; StatementForm statementForm; Values []controlValue; ConditionPresent, ElsePresent, RangeInclusive bool }
+type structuralChild struct { Role structuralRole; Ordinal uint32; Arm symbol.SyntaxRef }
+type controlRecord struct { Header recordHeader; Kind controlKind; Region, Target controlID; Callable callableRef; StatementForm statementForm; Values []controlValue; Composition []structuralChild; ConditionPresent, ElsePresent, RangeInclusive bool }
 type deferRecord struct { Header recordHeader; Region controlID; Ordinal uint32; Statement symbol.SyntaxRef }
 type callableRef struct { Symbol symbol.SymbolID; Syntax symbol.SyntaxRef }
 type contextFlowRecord struct { Header recordHeader; Kind contextFlowKind; Caller callableRef; Callee valueID; Context types.TypeID }
@@ -504,9 +505,10 @@ const ( aggregateStruct aggregateKind = iota + 1; aggregateEnumVariant; aggregat
 const ( indexValue indexMode = iota + 1; indexSlice )
 const ( placeStorage placeKind = iota + 1; placeDereference; placeField; placeTuple; placeIndex )
 const ( memberStatic memberKind = iota + 1; memberField; memberTuple; memberMethod; memberVariant )
-const ( controlFunction controlKind = iota + 1; controlBlock; controlReturn; controlIf; controlWhile; controlRangeLoop; controlFor; controlSwitch; controlSwitchCase; controlBreak; controlContinue; controlDefer; controlPrint; controlExpression )
+const ( controlFunction controlKind = iota + 1; controlBlock; controlReturn; controlIf; controlWhile; controlRangeLoop; controlFor; controlSwitch; controlSwitchCase; controlBreak; controlContinue; controlDefer; controlPrint; controlExpression; controlBinding )
 const ( statementPrint statementForm = iota + 1; statementDiscard; statementAssignment; statementCall; statementPostfixUpdate; statementOther )
 const ( valueCondition controlValueRole = iota + 1; valueSubject; valueCase; valueReturn; valueRangeStart; valueRangeEnd; valueRangeIterator; valuePrintOperand; valueDiscarded )
+const ( roleThen structuralRole = iota + 1; roleElse; roleInitializer; roleUpdate; roleBody; roleCase )
 const ( compatibilityAssignment compatibilityRole = iota + 1; compatibilityArgument; compatibilityReturn; compatibilityRecordField; compatibilityTupleComponent; compatibilityOptionalInjection; compatibilityBranch )
 const ( contextExpression contextFlowKind = iota + 1; contextForward; contextNone; contextIndirect )
 const ( requirementNumeric requirementKind = iota + 1; requirementIntegral; requirementOrdered; requirementEquatable; requirementLiteralFits; requirementUnsupportedField; requirementUnsupportedMethod; requirementUnsupportedIndex; requirementUnsupportedSlice; requirementUnsupportedCall; requirementUnsupportedConversion; requirementUnsupportedLayout; requirementUnsupportedPrint; requirementUnsupportedConstruction; requirementUnsupportedComponent )
@@ -538,15 +540,33 @@ bounds and escape destination; references into the sole frozen control-region
 hierarchy;
 named-or-anonymous callable identity; explicit condition/else/range modes;
 callable owner/signature/captures/inline request; binding form; type-use root;
-candidate target; statement form; and every ordered value role. A zero
+candidate target; statement form; every ordered value role; and the ordered
+structural composition of each region-owning statement. A zero
 optional handle is allowed only when its corresponding presence flag or record
 kind says the authored component is absent.
 
+`Composition` is the statement-role analogue of `Values`: `Values` names the
+expressions a control record owns, `Composition` names the statements it
+owns. Each entry pairs a closed `structuralRole` with the `SyntaxRef` of the
+arm filling that role, plus a zero-based `Ordinal` used only by `roleCase`.
+It is addressed by `SyntaxRef` rather than `recordID` because a region-owning
+statement retains its own record on entry, before its arms are visited, so no
+arm has a `recordID` yet; its `SyntaxRef` is already available from
+`node.Children()` with no dependency on traversal order. `Composition` stores
+no parent link and no depth: the frozen `controlRegion` arena remains the sole
+authority for lexical parentage, derived depth, and ordered region children,
+exactly as stated above. Structural composition and lexical containment are
+separate relationships, and the freeze audit cross-validates them rather than
+letting either duplicate the other.
+
 Constructors copy component slices, charge every component, and reject foreign
-or zero handles atomically. Alternative-tagged records are consumed by `06b`
-only when their `OneOf` selection matches. Records contain identities and
-handles, never callbacks, AST pointers, generated names, layouts, conversions,
-or typed-IR nodes.
+or zero handles atomically. Every `Composition` entry is charged to
+`MaxRecordComponents` alongside the record's `Values` and `Controls`, and
+`Composition` slices are defensively copied on retention and on every frozen
+access, exactly as `Values` already is. Alternative-tagged records are consumed
+by `06b` only when their `OneOf` selection matches. Records contain identities
+and handles, never callbacks, AST pointers, generated names, layouts,
+conversions, or typed-IR nodes.
 
 ## Declaration and type facts
 
@@ -674,6 +694,8 @@ Statements are visited in authored order and retain structure without deciding
 post-solve legality:
 
 - `BlockStmt`: allocate a lexical control/defer region and visit children.
+- `BindingDecl`: a local binding retains a `controlBinding` leaf record for its
+  lexical region. See "Local binding statements" below.
 - `ReturnStmt`: bare return emits `Equal(result,void)`; value return visits the
   expression with result expectation and retains return compatibility.
 - `IfStmt`, `WhileStmt`, authored `ForStmt` condition: visit condition and emit
@@ -702,13 +724,103 @@ The frozen `controlRegion` arena is the sole authority for parentage, derived
 depth, and ordered region children. A `controlRecord` contains no parent or
 child list. Region-owning kinds (`controlFunction`, `controlBlock`,
 `controlIf`, loop, switch, and switch-case kinds) name their own region; leaf
-statements name the lexical region that contains them. A region-owning
-record's structural arms or bodies are that region's children in the
-kind-specific authored order.
+statements name the lexical region that contains them.
 Control records retain loop/switch candidate targets, callable ownership,
 authored statement order through record allocation, defer registration order,
-and syntax spans. `06a` does not calculate reachability, exhaustiveness,
-definite return, defer edge expansion, or entry-point validity.
+structural composition, and syntax spans. `06a` does not calculate
+reachability, exhaustiveness, definite return, defer edge expansion, or
+entry-point validity.
+
+### Structural composition
+
+Region parentage alone cannot identify which arm of a region-owning statement
+a given record fills. Pebble permits any statement as an `if` arm, a loop body,
+or a `for` clause, not only a block, and a leaf arm allocates no region: an
+`if` retains one region and stamps every arm into it, so `if flag return; else
+print 1;` produces two leaf records naming the same region with nothing
+distinguishing then from else. Region children exist only for arms that happen
+to be region-owning, so no ordinal over that list can name a bare arm at all.
+
+Every region-owning control record therefore retains an ordered
+`Composition []structuralChild`, naming each authored arm by role:
+
+| Kind | Allowed roles, in this exact order |
+| --- | --- |
+| `controlIf` | exactly one `roleThen`; then `roleElse` iff `ElsePresent` |
+| `controlWhile` | exactly one `roleBody` |
+| `controlFor` | `roleInitializer` iff `ForInitializerPresent`; then `roleUpdate` iff `ForUpdatePresent`; then exactly one `roleBody` |
+| `controlRangeLoop` | exactly one `roleBody`; bounds and iterator remain `controlValue` roles |
+| `controlSwitch` | one `roleCase` per authored ordinary case in authored order, `Ordinal` contiguous ascending from zero; `roleElse` iff `ElsePresent`, in its authored position |
+| `controlSwitchCase` | exactly one `roleBody`; case values remain `controlValue` roles |
+| `controlFunction`, `controlBlock`, and every leaf kind | `Composition` is empty |
+
+`Ordinal` is zero outside `roleCase`. No two entries share one
+`(Role, Ordinal)`. A role outside its kind's allowed set, a zero `Arm`, a
+gapped or duplicated case ordinal, or a non-empty `Composition` on a kind whose
+row requires none is rejected atomically when the record is appended.
+
+One producer derives this, and both the generator and the freeze audit use it:
+
+```go
+func expectedComposition(
+    ref symbol.SyntaxRef,
+    node syntax.Node,
+    tree *syntax.Tree,
+) []structuralChild
+```
+
+`expectedComposition` reads only the immutable surface node and its children.
+It never consults resolution, records, regions, or traversal state, so it
+returns the same value whenever it is called. Each statement rule assigns its
+result directly; no rule constructs `Composition` by any other means.
+
+The producer resolves arms positionally, and must not reuse the
+`Missing`/`Error`-filtering helpers that serve constraint generation, because a
+damaged arm's reference is retained rather than dropped:
+
+- `IfStmt`: `roleThen` is child 1; `roleElse` is child 2 when present.
+- `WhileStmt`: `roleBody` is child 1.
+- `ForStmt`: `roleInitializer` is child 0 when `ForInitializerPresent`.
+  `roleBody` is the last child. `roleUpdate` is the child immediately before
+  the body when `ForUpdatePresent`. Anchoring the body and update from the end
+  and the initializer from the start is exact regardless of how many recovery
+  placeholders the parser inserted between clauses, because the parser appends
+  the body last on every path and inserts nothing between update and body. The
+  `for` condition is an expression and never a `Composition` role.
+- `RangeLoopStmt` and `SwitchCase`: `roleBody` is the last child.
+- `SwitchStmt`: each child whose kind is `SwitchCase` takes a role — `roleElse`
+  when its token is the else keyword, otherwise `roleCase` with the next
+  ordinal. Children of any other kind are recovery insertions and take no role.
+
+`Composition` records structural roles only. It duplicates no parentage: the
+region arena still owns parent, depth, and children, and the freeze audit
+below cross-validates the two views rather than trusting either alone.
+
+### Local binding statements
+
+A local `BindingDecl` retains a `controlBinding` leaf record naming its
+enclosing lexical region. Without it a local binding would have no region, no
+statement form, and no sequential position, leaving `06b` unable to order it
+for reachability or defer scope; and a `for` initializer that is a binding
+would name an arm no control record could resolve.
+
+Retention happens on entry to the binding rule, before any symbol lookup, and
+is gated only on the presence of a lexical control region. It does not depend
+on the binding's symbol resolving, publishing, or existing at all: a statement
+occupies its position regardless, and dropping its record would corrupt the
+order of every statement around it in addition to whatever diagnostic the
+binding already produced.
+
+The region gate is exact on its own. Region stamping begins only when a
+callable body is entered, so a module-level declaration always has no region
+and a function-local one always has a region, independent of any symbol.
+Globals and extern module-level bindings are excluded by that gate. Parameters
+and range-loop iterators are excluded structurally: neither is a `BindingDecl`,
+and neither reaches the binding rule.
+
+A `controlBinding` record carries no `Composition` and no `Values`; the
+binding's annotation and initializer remain on its `bindingRecord`. Both
+records share one `SyntaxRef`, each with a single payload.
 
 ## Expression facts
 
@@ -1039,11 +1151,54 @@ stated, a post-solve ownership audit:
    target exists in the same function-root tree; exactly one
    `controlFunction` record owns each function root, and every record below it
    carries the same `callableRef`;
-9. the tree-free compilation snapshot has one copied module entry per reachable
-   module, a complete dependency order, valid import targets/spans, one root
-   module, valid source metadata, and complete source-ordered top-level
-   declaration identities;
-10. record order is deterministic source/allocation order.
+9. every region-owning control record's structural composition is exact and
+   resolves correctly, checked in this order and stopping at the first
+   failure, so that no later check trusts a record an earlier one rejected:
+   1. **exact reconstruction** — calling `expectedComposition` again on the
+      record's own surface node reproduces the retained `Composition` entry
+      for entry: same length, same order, same `Role`, same `Ordinal`, same
+      `Arm`. This is what proves the retained roles are correct rather than
+      merely well formed; without it a swapped then/else satisfies every other
+      check;
+   2. **unique control record** — each `Arm` is named by exactly one retained
+      record whose payload is a control record. Records carrying any other
+      payload at that same `SyntaxRef`, including the `bindingRecord` that
+      accompanies every `controlBinding`, are not counted and cause no
+      ambiguity;
+   3. **kind correspondence** — that record's `controlKind` is exactly the one
+      its arm's surface kind requires: `BindingDecl` to `controlBinding`,
+      `BlockStmt` to `controlBlock`, `ReturnStmt` to `controlReturn`, `IfStmt`
+      to `controlIf`, `WhileStmt` to `controlWhile`, `RangeLoopStmt` to
+      `controlRangeLoop`, `ForStmt` to `controlFor`, `SwitchStmt` to
+      `controlSwitch`, `SwitchCase` to `controlSwitchCase`, `BreakStmt` to
+      `controlBreak`, `ContinueStmt` to `controlContinue`, `DeferStmt` to
+      `controlDefer`, `PrintStmt` to `controlPrint`, and both `AssignmentStmt`
+      and `ExpressionStmt` to `controlExpression`. This is a closed mapping
+      from surface kind to control kind, not a reversible one, and is never
+      derived from spelling, statement form, record order, or any heuristic.
+      Any other non-recovery arm kind, and any mismatch, fails;
+   4. **lexical placement** — a leaf arm's record names exactly the parent
+      record's own region; a region-owning arm's record names an existing
+      region whose parent is exactly the parent record's region. This
+      cross-validates the region arena against the structural role and adds no
+      second parentage authority;
+10. every retained `controlBinding` record names a `BindingDecl` occurrence, is
+    a leaf, carries an empty `Composition`, and names an existing nonzero
+    region; no `controlBinding` record exists for a global binding, an extern
+    module-level binding, a parameter, or a range-loop iterator;
+11. the tree-free compilation snapshot has one copied module entry per reachable
+    module, a complete dependency order, valid import targets/spans, one root
+    module, valid source metadata, and complete source-ordered top-level
+    declaration identities;
+12. record order is deterministic source/allocation order.
+
+Invariant 9 resolves arms against the immutable graph, which is still
+available at this point and is discarded only after the handoff is built. A
+`Composition` entry whose `Arm` names a `Missing` or `Error` node is ordinary
+parser recovery: it is retained and still checked by 9.1, and exempted from
+9.2, 9.3, and 9.4, since no record exists to resolve. Recovery therefore
+produces no additional `C0619`; whatever damaged the syntax already reported
+it and already set `GenerationHadErrors`, which already prevents typed IR.
 
 If the audit fails, emit `C0619`, use bounded error recovery, and do not call
 `Solve` with a fact graph known to have an unreadable required result. If it
@@ -1167,6 +1322,9 @@ It returns copied regions in ascending `controlID`, including copied child
 slices. Region count is bounded by `MaxSemanticRecords`, depth by
 `MaxControlDepth`, and children are derived once at freeze from `Parent`; no
 record constructor or 06b consumer may supply or mutate a second hierarchy.
+`Composition` slices are copied on every retained-record access by the same
+rule that copies `Values`, so no consumer can reach or mutate generation
+storage through a structural role.
 
 `frozenRoots` stores only `rootSyntax`, `rootSymbol`, `rootInstantiation`,
 `rootMethod`, or `rootSlot`. A slot root carries only its
@@ -1275,7 +1433,8 @@ Fixtures assert fact-generation success/failure and stable diagnostic codes;
 they do not assert conversion or typed-IR policy owned by `06b`. Optional
 sidecars are used only for provenance labels. Direct tests assert terms,
 constraints, publications, records, alternative tags, counts, traversal
-order, constant values, runtime context facts, and frozen handoff shape.
+order, constant values, runtime context facts, structural composition, and
+frozen handoff shape.
 
 Required fact fixtures/direct cases include contextually inferred `i32`
 arithmetic literals, minimum signed literal through unary negation, optional
@@ -1525,6 +1684,22 @@ suppression.
 
 ### Slice 06a.7: statements, control regions, switches, and defer
 
+The structural-composition amendment reopens accepted 06a.7 and 06a.8 as one
+coupled implementation/acceptance task. While that task is active it has
+exclusive ownership of the union of both slices' files plus the shared
+integration files below; no concurrent checker task may edit them:
+
+```text
+compiler/internal/check/record.go
+compiler/internal/check/generation.go
+compiler/internal/check/declaration_facts.go
+compiler/internal/check/declaration_facts_test.go
+compiler/internal/check/control_facts.go
+compiler/internal/check/control_facts_test.go
+compiler/internal/check/solve_handoff.go
+compiler/internal/check/solve_handoff_test.go
+```
+
 **Owned files:**
 
 ```text
@@ -1539,21 +1714,47 @@ tests/check/facts/invalid/C0614/switch_*.peb
 tests/check/facts/recovery/control_*.peb
 ```
 
+This slice also extends the `controlRecord` shape, the `controlKind` and
+`structuralRole` enums, per-record validation, component charging, and
+defensive copying in `record.go`, and adds `controlBinding` retention to the
+binding rule in `declaration_facts.go`. `controlKind` gains `controlBinding`
+by appending it; no existing discriminator value is renumbered.
+
 **Input/output:** visit every statement once and emit condition, return, range,
-switch constant/variant, candidate target, lexical region, and defer records.
-No reachability or exit validation.
+switch constant/variant, candidate target, lexical region, structural
+composition, local-binding, and defer records. No reachability or exit
+validation.
 
 **Complete when:** nested region/target/defer identities are deterministic,
 deferred statements are not revisited, omitted `for` conditions create no
-syntax node, condition/else/range modes are explicit, and all contained
-expressions retain their facts.
+syntax node, condition/else/range modes are explicit, all contained
+expressions retain their facts, every region-owning record's `Composition`
+comes from `expectedComposition` and satisfies its kind's role, order,
+cardinality, and ordinal rules, every `Arm` is graph-owned and charged to
+`MaxRecordComponents`, `Composition` is copied defensively, a damaged arm
+retains its entry rather than dropping it, and every local `BindingDecl`
+retains a `controlBinding` record naming its region even when its symbol is
+absent, while globals, extern module-level bindings, parameters, and
+range-loop iterators retain none.
 
 **Tests/fixtures:** direct region/target/defer assertions and the owned
-`control_*`, `defer_*`, and `switch_*` sources.
+`control_*`, `defer_*`, and `switch_*` sources. Composition coverage spans
+every region-owning kind in both bare-arm and block-arm form; `if` with and
+without `else`; `for` with each combination of present and absent initializer
+and update; a `switch` with an else case and at least two ordinary cases,
+proving contiguous ascending ordinals and the else case in its authored
+position; and a damaged arm proving its entry is retained. Binding coverage
+proves a local binding retains `controlBinding` both when its symbol resolves
+and when no binding symbol exists at all, that a `for` initializer which is a
+binding resolves to that record, and that a global, an extern module-level
+binding, a parameter, and a range-loop iterator each retain none.
 
 **Limits/recovery:** lower control depth, visits, records/components,
 constant work, and diagnostics; recover from an invalid switch constant and
-continue into a later statement.
+continue into a later statement. Prove atomic per-record rejection for a role
+outside its kind's set, a nonzero `Ordinal` outside `roleCase`, a duplicate
+`(Role, Ordinal)`, gapped case ordinals, a zero `Arm`, an `Arm` the graph does
+not own, and a non-empty `Composition` on a leaf, block, or function kind.
 
 **Verification:** `go test ./internal/check -run 'TestStatementFacts|TestControlFacts|TestDeferFacts|TestSwitchFacts'`, then the common suite and `git diff --check`.
 
@@ -1589,10 +1790,28 @@ matches exactly one final solution; repeated runs/forced map seeds produce
 identical normalized facts and diagnostics; and no graph, module value, source
 bytes/file set, tree, AST node, program, mutable store, term, `InferID`,
 `ChoiceRef`, or session escapes. Every successful expression record
-and its copied payload/children passes the freeze audit.
+and its copied payload/children passes the freeze audit. Every region-owning
+control record passes invariant 9's four ordered checks — exact
+reconstruction, unique control record, kind correspondence, lexical placement
+— and every `controlBinding` record passes invariant 10.
 
 **Tests/fixtures:** direct freeze/solve/determinism assertions, the repository
 fact runner, owned multimodule cases, and `handoff_*` recovery sources.
+Composition-audit coverage proves each of the four ordered checks rejects
+independently, with the earlier checks passing so the intended one is isolated:
+a retained `Composition` disagreeing with `expectedComposition` by swapped
+then and else, by a missing or fabricated `for` initializer or update, and by
+reordered, missing, or extra switch cases; an `Arm` that is graph-owned and
+resolves to a real control record but names an unrelated sibling statement; a
+correct `Arm` whose record carries the wrong `controlKind`; a leaf arm whose
+record names a region other than its parent's; and a region-owning arm whose
+own region has the wrong parent. Matching positives are asserted alongside
+each: a bare leaf arm, a local-binding arm, and a block or nested-control arm,
+covering both branches of the placement rule. A damaged arm is proved exempt
+from the last three checks while still satisfying exact reconstruction, and
+proved to add no `C0619` beyond the one already reported for the damage. Every
+rejection is atomic and yields a failed handoff with `Semantics == nil` and
+`GenerationHadErrors == true`.
 
 **Limits/recovery:** combine every checker and inference limit with independent
 later roots; explicitly lower solved-slot, choice, requeue, and decomposition

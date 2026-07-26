@@ -99,10 +99,13 @@ Zero values select:
 
 `MaxDiagnostics`, `MaxSemanticRecords`, `MaxRecordComponents`,
 `MaxControlDepth`, `MaxTrackedPlaces`, and `MaxGenericRequirements` are shared
-with `06a`; `06b` does not maintain competing values. Tests may lower every
-limit. Work is charged before allocation or append. A limit failure emits one
-bounded `C0619`, prevents typed-IR publication, and may continue only with
-independent diagnostics that require no missing result.
+with `06a`; `06b` does not maintain competing configured values. `06b` starts
+a fresh phase-local diagnostic counter at zero while appending to the same
+`DiagnosticSet`; diagnostics retained by `06a` do not consume the `06b`
+counter. Tests may lower every limit. Work is charged before allocation or
+append. A limit failure emits one bounded `C0619`, prevents typed-IR
+publication, and may continue only with independent diagnostics that require
+no missing result.
 
 Nil handoff, foreign or inconsistent snapshot identities, mutable/session
 state in frozen storage, or a semantic snapshot and solution for different
@@ -170,7 +173,8 @@ func (r frozenRecords) Controls() []controlRegion
 // later closed payload accessors preserve this copied, ordered ownership
 
 type frozenConstants struct { /* private ordered memoized values */ }
-func (c frozenConstants) Value(symbol.SyntaxRef) (constantValue, bool)
+func (c frozenConstants) All() []frozenConstant
+func (c frozenConstants) Constant(symbol.SyntaxRef) (constantResult, bool)
 ```
 
 `rootedValue` pairs one `valueID` with the `valueRoot` owned by `06a`; it
@@ -186,8 +190,12 @@ is exact:
 | `rootMethod` | `Solution.Method(site).Arguments[ordinal]` |
 | `rootSlot` | `Solution.Slot(SlotID)` after guard selection |
 
-`All` is used once for bounded completeness/duplicate auditing; every semantic
-consumer then calls only `Root(valueID)`. There is no syntax or symbol reverse
+`Roots.All` and `Constants.All` are each consumed once to perform bounded
+completeness/duplicate auditing and build local immutable lookup indices.
+Every semantic consumer then uses those indices; it does not repeatedly scan
+the frozen slices through their linear point accessors. A constant-dependent
+rule accepts only `constantKnown`; `constantError` and `constantUnavailable`
+are recovery states, not values. There is no syntax or symbol reverse
 accessor. For `rootInstantiation` and `rootMethod`, `Parameter` is a zero-based
 ordinal and must be less than the corresponding solved `Arguments` length
 before access. Every lookup checks exact kind, site, ordinal, selected
@@ -226,7 +234,7 @@ This table is the audited join, not a second record definition:
 | static/field/tuple/method/variant category, base/result, selected member or copied authored name, name span/ordinal | `memberRecord` |
 | aggregate category/declaration/receiver/result, authored field/name bytes/span/value/destination order, declaration field order | `aggregateRecord`, `fieldValue` |
 | region parent, derived depth, and ordered children | `frozenRecords.Controls()` entries of the 06a-owned `controlRegion` arena |
-| control kind/owning region/target, named-or-anonymous `callableRef`, statement form, condition/subject/case/return/range/print/discard roles, explicit condition/else/range mode | `controlRecord`, `controlValue` |
+| control kind/owning region/target, named-or-anonymous `callableRef`, statement form, condition/subject/case/return/range/print/discard roles, explicit condition/else/range mode, and exact authored structural roles/arms | `controlRecord`, `controlValue`, `controlRecord.Composition`, `structuralChild` |
 | lexical region, registration order, checked statement identity | `deferRecord` |
 | context expression/forward/none/indirect action, caller identity, callee root, exact Context `TypeID` | `contextFlowRecord`, cross-checked with `Semantics.RuntimeTypes()` |
 | generic owner, solved rigid subject, exact supported/unsupported requirement kind and operator/use origin | `requirementRecord` plus `Solution.Requirements(owner)` |
@@ -323,9 +331,10 @@ hash seed, diagnostic arrival order, or pointer identity is observable.
 When a required root is `TypeError` or the exact occurrence is already
 invalidated upstream, dependent policy diagnostics are suppressed. Independent
 record and control errors still report. One operation owns one primary
-diagnostic; child records mark the failure as explained. `MaxDiagnostics`
-replaces the final retained 06b diagnostic with `C0619` and suppresses later
-06b diagnostics without changing earlier-phase budgets.
+diagnostic; child records mark the failure as explained. The fresh phase-local
+`MaxDiagnostics` counter replaces the final retained 06b diagnostic with
+`C0619` and suppresses later 06b diagnostics without altering, counting, or
+replacing earlier-phase diagnostics.
 
 ## Compatibility and coercions
 
@@ -581,8 +590,13 @@ a type-directed field/variant, and the owning
 the member was not statically selected, 06b inspects only the solved nominal
 declaration's ordered member descriptors, joins their `SymbolID`s to immutable
 symbol records, and matches the copied name; it never searches another
-declaration or a lexical scope. Field result type must match
-the instantiated descriptor. Tuple members use the retained numeric ordinal.
+declaration or a lexical scope. The selected member must belong to the solved
+receiver declaration's ordered members and its symbol category must match the
+retained `memberKind`; the result root must be `TypeFinal` and owned by the
+semantic type snapshot. The concrete instantiated field/component result was
+already established by 05b `HasField`/`HasComponent`; 06b does not recompute
+template substitution or intern a replacement type. Tuple members use the
+retained numeric ordinal.
 Fields are callable only when their solved type is a function. Unknown,
 wrong-category, cross-declaration, or unsupported opaque/union member use emits
 `C0605` once.
@@ -690,18 +704,32 @@ type Requirement struct {
     Kind        RequirementKind
     Subject     types.TypeID // rigid TypeParameter ID
     Origin      symbol.SyntaxRef
-    Operator    token.Kind
+    Operator    syntax.TokenKind
     LiteralKind infer.ExactLiteralKind
     Numerator   string
     Denominator string
 }
 ```
 
-Numeric, integral, ordered, and literal-fit records must join exactly with one
-`05b` requirement by owner, rigid parameter identity, kind, and origin.
-`Equatable` is checker-owned. Normalize by owner `SymbolID`, declared parameter
-ordinal, kind, then first source origin; duplicate equivalent uses produce one
-interface requirement with all use sites retained as related labels.
+Numeric, integral, and ordered 06a records join the one matching 05b
+requirement by `(Owner, Kind, Subject)`; `Origin` is not a join key. The joined
+record origins are retained in source order for diagnostics, and the published
+origin is the earliest `infer.Origin.Syntax`. `Equatable` is checker-owned and
+comes only from its 06a use-site records. `LiteralFits` comes directly from
+`Solution.Requirements(owner)` with its canonical literal payload and earliest
+`Origin.Syntax`; 06a retains no duplicate literal-fit record and 06b promises
+no additional use-site label for it.
+
+Normalize by owner `SymbolID`, declared parameter ordinal, requirement kind,
+then first source origin. Equivalent duplicate uses publish one interface
+requirement; numeric/integral/ordered/equatable use-site records remain
+available as stable related labels. A missing or mismatched required join is
+`C0619`, not a newly inferred requirement.
+
+`Operator` is the earliest joined use site's authored token for
+numeric/integral/ordered/equatable and zero for `LiteralFits`. `LiteralKind`,
+`Numerator`, and `Denominator` are populated exactly for `LiteralFits` and are
+zero/empty for every other kind.
 
 Concrete operands are validated immediately by the operator/literal rules.
 At a generic call, `06b` attaches the normalized declaration requirements to
@@ -747,11 +775,44 @@ roots; valid record/defer regions and targets; one function record per root;
 and consistent `callableRef` throughout each function tree. Failure is
 `C0619` and prevents IR.
 
-Region-owning control records interpret their arena children in the exact
-kind-specific authored order retained by 06a; leaf records belong to their
-named lexical region. Record allocation order supplies statement order within
-one region. Flow analysis may compute reachability and exit sets, but it may
-not manufacture, reparent, or reorder a region.
+Because 06a compared each composition with the surface tree, checked graph
+ownership and syntax-kind/control-kind correspondence, then discarded the
+tree, 06b trusts that audited portion of the accepted handoff and does not
+pretend to repeat it. For a handoff with `GenerationHadErrors == false`, it can
+and does recheck the remaining tree-free invariants: valid role/ordinal ranges
+and exact cardinality for the parent kind; nonzero unique arms; exactly one
+matching frozen control record per arm; exact leaf-versus-region-owner lexical
+placement in the frozen arena; and component/record limits. A damaged handoff
+already has `GenerationHadErrors == true`, so recovery arms require no
+tree-free classification and can produce neither flow nor IR. Any disagreement
+in a supposedly successful handoff is `C0619`.
+
+The `controlRegion` arena remains the sole authority for lexical parentage,
+depth, ordered child regions, and defer scope. `controlRecord.Composition` is a
+separate exact structural-role relation; it does not duplicate or replace
+parentage. Flow analysis follows this composition and never assigns meaning to
+a child-region ordinal. The closed authored roles are:
+
+```text
+controlIf         -> roleThen, optional roleElse
+controlWhile      -> roleBody
+controlFor        -> optional roleInitializer, optional roleUpdate, roleBody
+controlRangeLoop  -> roleBody
+controlSwitch     -> authored roleCase/roleElse arms; roleCase ordinal 0..n-1
+controlSwitchCase -> roleBody
+```
+
+Conditions, bounds, subjects, and case labels remain `controlValue` roles and
+are not structural statement arms.
+
+Each non-recovery arm resolves to exactly one control record, whose closed
+control kind and lexical placement were audited by 06a. A local binding is the
+leaf `controlBinding` and participates in its enclosing sequential statement
+order like every other leaf. `Missing`/`Error` arms remain present in exact
+composition but imply `GenerationHadErrors`; 06b does not assign them flow or
+IR. Record allocation order supplies ordinary statement order within one
+region. Flow analysis may compute reachability and exit sets, but it may not
+manufacture, reparent, reorder, or reinterpret a region or arm.
 
 Each statement maps incoming reachability to this exit set:
 
@@ -789,6 +850,10 @@ until reachability resumes and ends again.
 Floating, pointer, optional, tuple, array, slice, struct, union, function, and
 opaque subjects are invalid switch categories. Exhaustive switch exits are
 the union of reachable case exits; nonexhaustive switches add fallthrough.
+Variant declaration ordinals and exhaustiveness use the declaration-complete
+ordered `Semantics.Resolution().Members(declaration)` list, not the filtered
+`Semantics.TypeDeclaration(declaration).Members` list. Each member is then
+joined to its immutable symbol descriptor to confirm variant category.
 
 Every `deferRecord` registers a checked statement with its lexical region in
 authored order. Deferred expressions execute at exit, not registration.
@@ -862,6 +927,14 @@ never become fake runtime values. `06b` follows `expressionRecord` and the
 specialized frozen records; it does not reread AST children. Synthetic nodes
 have their originating operation's span and an explicit synthetic role.
 
+The leading node identifiers in the seven category blocks below, in their
+written order, form the exact closed `tir.NodeKind` enumeration. Production
+declares them as one contiguous nonzero `iota` range with a private exclusive
+upper bound; it
+adds no unnamed tag and omits none. Category metadata, normalized dumping, and
+verification are indexed or exhaustively dispatched from that same range so
+the inventory cannot drift between independent switches.
+
 | 03b surface kinds | Closed validation and IR disposition |
 | --- | --- |
 | `File` | one ordered `Module` container |
@@ -931,9 +1004,10 @@ the frozen decoded payloads. No phase after 06b parses literal syntax. A symbol
 value contains `SymbolID`; a field/variant contains the selected member identity.
 `SourceAlias` represents a successful grouping/shared surface occurrence whose
 semantic value is its one already typed child; it preserves the occurrence's
-own `SyntaxRef` and span without creating a coercion or second evaluation. An
-identity `as` cast uses a cast-tagged `SourceAlias`; no identity coercion node
-is invented.
+own `SyntaxRef` and span without creating a coercion or second evaluation. Its
+payload has `ExplicitCast bool`. Grouping and other shared aliases set it
+false; an authored identity `as` cast sets it true. There is no second alias
+tag and no identity coercion node.
 
 **Places and loads**
 
@@ -1022,7 +1096,12 @@ The IR verifier checks closed tags, valid IDs, ownership, child kinds, type
 agreement, source-map completeness, temp dominance/single definition,
 region/target membership, defer-edge order, context action versus convention,
 and absence of recovery values. Verification failure is `C0619` and discards
-the unit.
+the unit. Its dispatch is total over the contiguous `NodeKind` range: zero and
+out-of-range tags fail; every in-range tag executes its exact category/payload
+checks; no default branch accepts a node. One table-driven totality test walks
+the complete range and proves that category metadata, verifier dispatch, and
+normalized dumping cover the same tags. Per-tag tests construct at least one
+valid node and one malformed payload/child case through test-only builders.
 
 ### Stable publication and dumps
 
@@ -1139,9 +1218,9 @@ not deferred hardening.
 Common verification from `compiler/` is:
 
 ```sh
-GOCACHE=/tmp/pebble-go-cache go test ./...
-GOCACHE=/tmp/pebble-go-cache go test -race ./...
-GOCACHE=/tmp/pebble-go-cache go vet ./...
+GOCACHE=/tmp/pebble-codex-gocache go test ./...
+GOCACHE=/tmp/pebble-codex-gocache go test -race ./...
+GOCACHE=/tmp/pebble-codex-gocache go vet ./...
 ```
 
 Use a fresh external cache directory when isolation is required. From the
@@ -1150,15 +1229,59 @@ fixtures or writes build artifacts into the repository.
 
 ## Dependency-ordered implementation slices
 
-Implementation starts only after 06a review and acceptance. The upstream
-language contracts used by all slices are complete; the concrete snapshot
-implementation prerequisites for 06b.1 remain mandatory.
+Implementation starts only after the accepted 06a structural-composition
+amendment is implemented and its complete 06a.8 handoff is accepted. The
+dependency order is normative:
+
+```text
+06b.7a
+  -> 06b.1
+  -> 06b.2
+  -> 06b.3a, 06b.3c, and 06b.5b where file ownership permits
+  -> 06b.3b after 06b.3a
+  -> 06b.4 after the relevant 06b.3 member/index decisions
+  -> 06b.5a
+  -> 06b.5c after 06b.5a
+  -> 06b.6 after compatibility/member/place decisions
+  -> 06b.7b
+  -> 06b.8
+```
+
+Independent nodes on one line may run concurrently only with exclusive files.
+The concrete snapshot implementation prerequisites for 06b.1 remain
+mandatory.
+
+### Slice 06b.7a: closed TIR store and total verifier
+
+**Owned files:**
+
+```text
+compiler/internal/tir/id.go
+compiler/internal/tir/node.go
+compiler/internal/tir/unit.go
+compiler/internal/tir/verify.go
+compiler/internal/tir/*_test.go
+```
+
+**Input/output:** implement the immutable ID/store/unit foundation, the exact
+closed `NodeKind` range above, category metadata, normalized synthetic-unit
+dumping, and the total verifier. Test-only builders may construct valid and
+damaged synthetic units; this slice consumes no checker result.
+
+**Complete when:** ID ownership and deterministic stores hold; every exact tag
+has one valid and one malformed verifier case; zero/out-of-range tags fail;
+the range/category/verifier/dumper totality test passes; `SourceAlias` has the
+single `ExplicitCast` flag; and synthetic unit access is immutable and
+race-safe. No 06b semantic builder exists yet.
+
+**Verification:**
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/tir -run 'TestUnit|TestVerify|TestNodeKind|TestDump'`, common suite, then `git diff --check`.
 
 ### Slice 06b.1: handoff resolution, lifecycle, and result shell
 
 **Prerequisite:** the chain `05a type snapshot -> 05b.8 semantic snapshot ->
-06a.8 handoff` is complete. This slice consumes those APIs and must not
-implement a local substitute.
+accepted complete 06a.8 handoff -> 06b.7a TIR identities` is complete. This
+slice consumes those APIs and must not implement a local substitute.
 
 **Owned files:**
 
@@ -1180,7 +1303,8 @@ arenas and a failed/success-capable result shell. No policy or IR yet.
 
 **Complete when:** every record handle resolves through its documented
 symbol/syntax/instantiation/method/ordinary-slot/selected-guarded-slot root,
-using only `Roots.All` for the audit and `Roots.Root(valueID)` for lookup;
+using one `Roots.All` pass to audit and construct its bounded local lookup;
+using one `Constants.All` pass for the analogous constant index;
 zero-based instantiation/method ordinals are bounds checked, inactive
 alternatives disappear, `Semantics.Matches(Solution)` and every captured
 `TypeID` hold, the complete handoff is tree-free and store-free, arbitrary
@@ -1199,7 +1323,7 @@ limits; partial and failed solutions; fuzz frozen record tags; concurrent read
 of failed results.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/check -run 'TestValidationInput|TestSolvedRecord|TestResult|TestValidationFixtures/Handoff'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestValidationInput|TestSolvedRecord|TestResult|TestValidationFixtures/Handoff'`, common suite, then `git diff --check`.
 
 ### Slice 06b.2: primitive/composite compatibility and operators
 
@@ -1235,60 +1359,84 @@ diagnostic limits; `TypeError` suppression; fuzz `TypeKey` pairs/operators;
 parallel read-only classification.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/check -run 'TestCompatibility|TestOperatorValidation|TestValidationFixtures/(Conversion|Operator)'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestCompatibility|TestOperatorValidation|TestValidationFixtures/(Conversion|Operator)'`, common suite, then `git diff --check`.
 
-### Slice 06b.3: calls, context, members, aggregates, brackets, and bounds
+### Slice 06b.3a: members, aggregates, and variants
+
+**Owned files:**
+
+```text
+compiler/internal/check/member_validation.go
+compiler/internal/check/aggregate_validation.go
+compiler/internal/check/member_validation_test.go
+compiler/internal/check/aggregate_validation_test.go
+tests/check/validation/valid/aggregate_*.peb
+tests/check/validation/invalid/C0601/field_*.peb
+tests/check/validation/invalid/C0605/*.peb
+```
+
+**Input/output:** consume member/aggregate records, expression records,
+`Semantics` declarations and resolution members, selected methods, and field
+compatibility; produce exact member, construction, and variant decisions.
+
+**Complete when:** member ownership/category checks use the solved declaration;
+05b-established instantiated results are not recomputed; record fields are
+complete; variants are closed; and no lexical lookup or syntax reinterpretation
+remains.
+
+**Verification:**
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestMemberValidation|TestAggregateValidation|TestValidationFixtures/Aggregate'`, common suite, then `git diff --check`.
+
+### Slice 06b.3b: calls, callable declarations, and context
+
+**Prerequisite:** 06b.3a, because variant construction is a closed call target.
 
 **Owned files:**
 
 ```text
 compiler/internal/check/call_validation.go
-compiler/internal/check/member_validation.go
-compiler/internal/check/aggregate_validation.go
-compiler/internal/check/index_validation.go
 compiler/internal/check/context_validation.go
 compiler/internal/check/call_validation_test.go
-compiler/internal/check/member_validation_test.go
-compiler/internal/check/aggregate_validation_test.go
-compiler/internal/check/index_validation_test.go
 compiler/internal/check/context_validation_test.go
 tests/check/validation/valid/call_*.peb
-tests/check/validation/valid/aggregate_*.peb
-tests/check/validation/valid/index_*.peb
 tests/check/validation/valid/callable_*.peb
 tests/check/validation/invalid/C0601/call_*.peb
-tests/check/validation/invalid/C0601/field_*.peb
 tests/check/validation/invalid/C0604/*.peb
-tests/check/validation/invalid/C0605/*.peb
 tests/check/validation/invalid/C0608/*.peb
-tests/check/validation/invalid/C0609/*.peb
 tests/check/validation/invalid/C0617/*.peb
 ```
 
-**Input/output:** consume call/member/aggregate/index/context records,
-expression records, immutable bracket queries, `Semantics` descriptors,
-method/instantiation/choice/slot solutions, constants, and coercion plans;
-produce exact semantic call/member/construction/check/context/hoisting plans.
+**Input/output:** consume call/context/callable records, prepared signatures,
+method/instantiation solutions, 3a variant decisions, and compatibility plans;
+produce direct/indirect/method/variant call, context, and hoisting decisions.
 
-**Complete when:** no lookup or syntax reinterpretation remains, hidden
-context action is exact, record fields are complete, variants are closed, and
-every dynamic bound has a check plan. Generic anonymous functions produce the
-sole `C0608`; nongeneric literals are hoisted without captures or closure IR.
-
-**Direct/source tests:** direct/indirect/method/variant/generic calls, both
-conventions, arity, captures, all bracket modes, record duplicates/missing,
-tuple/member categories, all index/slice rows and constant failures.
-
-**Matrix/control coverage:** all fixed-argument/field/payload conversions;
-switch-member facts remain stable for slice 06b.6; slice source categories and
-check plans pass to IR without a lifetime/escape decision.
-
-**Limits/failure/recovery/fuzz/race:** lower records/components/bounds/
-diagnostics; failed method/choice/solve suppression; fuzz call targets and
-bounds; parallel frozen-semantic-snapshot reads.
+**Complete when:** target, convention, arity, receiver, fixed arguments, hidden
+context action, capture policy, and generic-anonymous rejection are exact.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/check -run 'TestCallValidation|TestMemberValidation|TestAggregateValidation|TestIndexValidation|TestContextValidation|TestValidationFixtures/(Call|Aggregate|Index|Callable)'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestCallValidation|TestContextValidation|TestValidationFixtures/(Call|Callable)'`, common suite, then `git diff --check`.
+
+### Slice 06b.3c: brackets, indexing, slicing, and bounds
+
+**Owned files:**
+
+```text
+compiler/internal/check/index_validation.go
+compiler/internal/check/index_validation_test.go
+tests/check/validation/valid/index_*.peb
+tests/check/validation/invalid/C0609/*.peb
+```
+
+**Input/output:** consume immutable bracket selections, active guarded records,
+index records, constants, and place metadata; produce generic/index/slice
+classification and exact static or dynamic check plans.
+
+**Complete when:** all bracket modes and index/slice rows are closed, inactive
+alternatives disappear, every dynamic bound has a check plan, and slice source
+category is preserved without deciding lifetime representation.
+
+**Verification:**
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestIndexValidation|TestValidationFixtures/Index'`, common suite, then `git diff --check`.
 
 ### Slice 06b.4: places, mutation, assignments, and coercion plans
 
@@ -1323,52 +1471,77 @@ limits; erroneous bases and failed solve; fuzz projection chains; independent
 parallel place validation.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/check -run 'TestPlaceValidation|TestAssignmentValidation|TestValidationFixtures/Place'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestPlaceValidation|TestAssignmentValidation|TestValidationFixtures/Place'`, common suite, then `git diff --check`.
 
-### Slice 06b.5: generic requirements, globals, and entry point
+### Slice 06b.5a: generic requirement interfaces
 
 **Owned files:**
 
 ```text
 compiler/internal/check/requirement_validation.go
-compiler/internal/check/global_validation.go
-compiler/internal/check/entry_validation.go
 compiler/internal/check/requirement_validation_test.go
-compiler/internal/check/global_validation_test.go
-compiler/internal/check/entry_validation_test.go
 tests/check/validation/valid/generic_*.peb
-tests/check/validation/valid/global_*.peb
-tests/check/validation/valid/sizeof_*.peb
-tests/check/validation/valid/entry_*.peb
-tests/check/validation/invalid/C0602/*.peb
 tests/check/validation/invalid/C0610/*.peb
-tests/check/validation/invalid/C0615/*.peb
-tests/check/validation/invalid/C0616/*.peb
-tests/check/validation/invalid/C0620/*.peb
 ```
 
 **Input/output:** join 06a requirement records with `Solution.Requirements`,
-validate constant globals and `sizeof`, and validate configured entry identity;
-publish normalized requirements and entry metadata.
+consume literal-fit directly from the solution, and publish the normalized
+generic interface.
 
 **Complete when:** symbolic bodies publish the closed ordered interface,
-unsupported requirements fail, globals are constant, and no spelling selects
-an entry.
-
-**Direct/source tests:** every requirement kind/order/deduplication, mismatch,
-generic receiver/argument/result instantiation, forward/imported globals,
-binding initializer forms, accepted/rejected `sizeof`, every entry rejection,
-and both accepted entry results.
-
-**Matrix/control coverage:** rigid identity/no conversion and literal-fit
-requirements; entry/global failures do not change function flow.
-
-**Limits/failure/recovery/fuzz/race:** lower requirements/constants/
-diagnostics; failed solve and independent valid owners; fuzz requirement joins
-and entry symbols; parallel requirement reads.
+unsupported requirements fail, equivalent uses deduplicate, and every
+record-owned join and solver-owned literal payload follows the exact rules
+above.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/check -run 'TestRequirementValidation|TestGlobalValidation|TestEntryValidation|TestValidationFixtures/(Generic|Global|Sizeof|Entry)'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestRequirementValidation|TestValidationFixtures/Generic'`, common suite, then `git diff --check`.
+
+### Slice 06b.5b: globals, bindings, and `sizeof`
+
+**Owned files:**
+
+```text
+compiler/internal/check/global_validation.go
+compiler/internal/check/global_validation_test.go
+tests/check/validation/valid/global_*.peb
+tests/check/validation/valid/sizeof_*.peb
+tests/check/validation/invalid/C0602/*.peb
+tests/check/validation/invalid/C0615/*.peb
+tests/check/validation/invalid/C0616/*.peb
+```
+
+**Input/output:** consume binding/type-use records and the local indexed
+`constantKnown` results; publish binding/global/sizeof decisions.
+
+**Complete when:** initializer policy is exact, globals are constant, extern
+forms are closed, and `sizeof` retains only its semantic type with no layout.
+
+**Verification:**
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestGlobalValidation|TestValidationFixtures/(Global|Sizeof)'`, common suite, then `git diff --check`.
+
+### Slice 06b.5c: configured entry point
+
+**Prerequisite:** 06b.5a is accepted. Entry legality includes the normalized
+absence of generic requirements.
+
+**Owned files:**
+
+```text
+compiler/internal/check/entry_validation.go
+compiler/internal/check/entry_validation_test.go
+tests/check/validation/valid/entry_*.peb
+tests/check/validation/invalid/C0620/*.peb
+```
+
+**Input/output:** consume only `Config.Entry`, root-module identity, immutable
+symbol/signature facts, solved type, callable/capture decisions, and normalized
+requirements; publish entry metadata or `C0620`.
+
+**Complete when:** every accepted/rejected entry rule above is identity-based,
+`EntryNone` is inert, and no name search or spelling convention exists.
+
+**Verification:**
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestEntryValidation|TestValidationFixtures/Entry'`, common suite, then `git diff --check`.
 
 ### Slice 06b.6: structural flow, switches, returns, reachability, and defer
 
@@ -1398,8 +1571,10 @@ sets, targets, narrowing, reachability, definite return, and exact defer chains.
 
 **Complete when:** all structural composition rules are deterministic,
 the frozen control-region arena is the only parent/depth/children authority,
-unreachable warnings occur once per region, and every lexical exit has its
-correct reverse defer order.
+flow follows exact `Composition` roles rather than child-region ordinals,
+`controlBinding` participates as a leaf, declaration-complete variants govern
+switches, unreachable warnings occur once per region, and every lexical exit
+has its correct reverse defer order.
 
 **Direct/source tests:** exhaustive exit-set cross-product, nested loop/switch
 targets, scalar/nominal switches, constant-true loops, invalid returns,
@@ -1414,26 +1589,25 @@ limits; failed condition/return roots with independent regions; fuzz valid and
 damaged frozen region arenas; parallel function analysis.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/check -run 'TestControlValidation|TestSwitchValidation|TestDeferValidation|TestValidationFixtures/(Control|Defer|Statement)'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestControlValidation|TestSwitchValidation|TestDeferValidation|TestValidationFixtures/(Control|Defer|Statement)'`, common suite, then `git diff --check`.
 
-### Slice 06b.7: typed-IR store, construction, and verifier
+### Slice 06b.7b: typed-IR construction and publication candidate
 
 **Owned files:**
 
 ```text
-compiler/internal/tir/id.go
-compiler/internal/tir/node.go
-compiler/internal/tir/unit.go
-compiler/internal/tir/verify.go
-compiler/internal/tir/*_test.go
 compiler/internal/check/ir_builder.go
 compiler/internal/check/ir_builder_test.go
 tests/check/ir/valid/*.peb
 tests/check/ir/*.tir.golden
 ```
 
+**Prerequisite:** accepted 06b.1-06b.6 decisions and the immutable 06b.7a
+store/verifier.
+
 **Input/output:** consume only successful semantic decisions from slices
-06b.1-06b.6; construct, verify, freeze, and return the closed `tir.Unit`.
+06b.1-06b.6; construct through the 06b.7a package, verify, freeze, and return
+the closed `tir.Unit` candidate.
 
 **Complete when:** every successful surface node maps once, every decision is
 explicit, evaluation is single/left-to-right, spans are complete, and the
@@ -1449,12 +1623,11 @@ character/string/interpolation payloads preserve their exact order and value.
 **Matrix/control coverage:** every accepted coercion becomes the exact node;
 every control exit/implicit return/defer chain becomes exact IR.
 
-**Limits/failure/recovery/fuzz/race:** lower node/component/dump limits;
-inject malformed IDs/tags and failed semantic input; fuzz verifier/unit
-builders; concurrent immutable unit reads.
+**Limits/failure/recovery/fuzz/race:** lower node/component/dump limits; reject
+failed semantic input; fuzz builder inputs; concurrently read immutable units.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./internal/tir ./internal/check -run 'TestIR|TestUnit|TestVerify|TestIRFixtures'`, common suite, then `git diff --check`.
+`GOCACHE=/tmp/pebble-codex-gocache go test ./internal/check -run 'TestIRBuilder|TestIRFixtures'`, common suite, then `git diff --check`.
 
 ### Slice 06b.8: publication gate, determinism, recovery, fuzz, and race
 
@@ -1492,9 +1665,9 @@ failed solve, recovery, and later valid declarations; run all fuzz seeds and
 `go test -race` concurrent reads/independent compilations.
 
 **Verification:**
-`GOCACHE=/tmp/pebble-go-cache go test ./...`,
-`GOCACHE=/tmp/pebble-go-cache go test -race ./...`,
-`GOCACHE=/tmp/pebble-go-cache go vet ./...`, then repository-root
+`GOCACHE=/tmp/pebble-codex-gocache go test ./...`,
+`GOCACHE=/tmp/pebble-codex-gocache go test -race ./...`,
+`GOCACHE=/tmp/pebble-codex-gocache go vet ./...`, then repository-root
 `git diff --check`.
 
 Each slice handoff reports exact files, input/output contracts, matrix and
@@ -1504,8 +1677,10 @@ phases 03, 04b, 05a, or 05b to make implementation easier.
 
 ## Resolved upstream contracts and future decisions
 
-There are no remaining unresolved language-contract blockers for 06b. Its
-first slice still has the mandatory implementation prerequisites below:
+There are no remaining unresolved language-contract decisions for 06b. The
+accepted structural-composition contract must still be implemented and pass
+the complete 06a.8 handoff before any 06b slice begins. The implementation
+prerequisites are:
 
 - 04b supplies the concrete immutable checker queries.
 - 05b supplies ordinary and guarded solved slots, conditional guarded
@@ -1517,8 +1692,8 @@ first slice still has the mandatory implementation prerequisites below:
   `unsupportedCallableRecord` and `C0608`; valid nongeneric anonymous
   functions are noncapturing and globally hoisted.
 - The audited 06a root/record contract supplies every identity, solved value,
-  child order, policy payload, context fact, span, and deterministic order
-  used here.
+  structural role/arm, runtime child order, policy payload, context fact, span,
+  and deterministic order used here.
 - The handoff is tree-free; module/import/declaration IR and entry identity use
   only copied compilation metadata, `SemanticSnapshot`, frozen records, and
   immutable symbol descriptors.
@@ -1526,10 +1701,11 @@ first slice still has the mandatory implementation prerequisites below:
   the sole hierarchy, and empty bindings recover silently before their one
   06b-owned `C0602`.
 
-The implementation chain is `05a type-snapshot extension -> 05b.8
-semantic-snapshot continuation -> 06a.8 handoff -> 06b.1 validation`.
-`06b.1` must consume the completed upstream APIs and must not implement a
-private type snapshot, semantic snapshot, or alternate handoff locally.
+The upstream chain is `05a type-snapshot extension -> 05b.8 semantic-snapshot
+continuation -> accepted complete 06a.8 handoff`. After that, implementation
+starts with `06b.7a` so `06b.1` can refer to real TIR identities. `06b.1` must
+consume the completed upstream APIs and must not implement a private type
+snapshot, semantic snapshot, or alternate handoff locally.
 
 Two decisions remain explicitly future and nonblocking:
 
