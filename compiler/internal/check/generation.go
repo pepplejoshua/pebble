@@ -258,6 +258,14 @@ func (g *generation) addRecord(value retainedRecord) (recordID, bool) {
 			}
 		}
 	}
+	if value.Control != nil {
+		for _, entry := range value.Control.Composition {
+			if !g.validSyntax(entry.Arm) {
+				g.report("control record composition names invalid syntax", value.Header.Span)
+				return 0, false
+			}
+		}
+	}
 	if value.Operator != nil && value.Operator.GenericOwner != 0 && !g.validSymbol(value.Operator.GenericOwner) {
 		g.report("operator record contains an invalid generic owner", value.Header.Span)
 		return 0, false

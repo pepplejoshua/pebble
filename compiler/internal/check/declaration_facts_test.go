@@ -10,6 +10,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -556,6 +557,137 @@ func TestDeclarationFactsFreezePreservesExactRecords(t *testing.T) {
 		if record.Callable != nil && len(record.Callable.Parameters) != 0 && record.Callable.Parameters[0] == 0 {
 			t.Fatal("freeze exposed callable parameter backing storage")
 		}
+	}
+}
+
+// controlBindingRecords returns every retained controlBinding control record.
+func controlBindingRecords(records []retainedRecord) []retainedRecord {
+	var out []retainedRecord
+	for _, record := range records {
+		if record.Control != nil && record.Control.Kind == controlBinding {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+// TestDeclarationFactsLocalBindingRetainsControlBinding proves an ordinary
+// local let/var is no longer invisible to sequential flow: each retains its
+// own controlBinding record, in authored order, in the function's own block
+// region, as a leaf with an empty Composition.
+func TestDeclarationFactsLocalBindingRetainsControlBinding(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn h() void {
+    let x = 1;
+    let y = 2;
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if diagnostics.HasErrors() {
+		t.Fatalf("valid diagnostics: %+v", diagnostics.Items())
+	}
+	bindings := controlBindingRecords(facts.Generation.records.values)
+	if len(bindings) != 2 {
+		t.Fatalf("controlBinding records = %d, want 2", len(bindings))
+	}
+	for _, record := range bindings {
+		ctrl := record.Control
+		if regionOwningControl(ctrl.Kind) {
+			t.Fatalf("controlBinding %+v is region-owning", ctrl)
+		}
+		if len(ctrl.Composition) != 0 {
+			t.Fatalf("controlBinding %+v carries a nonempty composition", ctrl)
+		}
+		if ctrl.Region == 0 {
+			t.Fatalf("controlBinding %+v has no region", ctrl)
+		}
+		if bindings[0].Control.Region != ctrl.Region {
+			t.Fatalf("controlBinding records disagree on region: %+v vs %+v", bindings[0].Control, ctrl)
+		}
+		item, ok := inputs.Graph.Module(record.Header.Syntax.Module)
+		if !ok {
+			t.Fatal("missing module")
+		}
+		node, ok := item.Tree.Node(record.Header.Syntax.Node)
+		if !ok || node.Kind() != syntax.BindingDecl {
+			t.Fatalf("controlBinding record names kind %v, want BindingDecl", node.Kind())
+		}
+	}
+	if bindings[0].Header.ID >= bindings[1].Header.ID {
+		t.Fatalf("controlBinding records not in authored order: %+v", bindings)
+	}
+}
+
+// TestDeclarationFactsControlBindingRetainedWithoutSymbol proves the
+// top-of-function gate is symbol-independent: retention happens even for the
+// exact failure handleBinding's own early return covers, where
+// declarationSymbols(ref) resolves no SymbolBinding/SymbolExternBinding
+// symbol at all (binding.ID == 0).
+func TestDeclarationFactsControlBindingRetainedWithoutSymbol(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn body() void {
+    let x i32 = 1;
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if diagnostics.HasErrors() {
+		t.Fatalf("valid diagnostics: %+v", diagnostics.Items())
+	}
+	var ref symbol.SyntaxRef
+	var node syntax.Node
+	for _, candidate := range facts.Walk.order {
+		candidateNode, ok := facts.Walk.node(candidate.Module, candidate.Node)
+		if ok && candidateNode.Kind() == syntax.BindingDecl {
+			ref, node = candidate, candidateNode
+			break
+		}
+	}
+	if ref == (symbol.SyntaxRef{}) {
+		t.Fatal("no BindingDecl found")
+	}
+	var region controlID
+	before := len(controlBindingRecords(facts.Generation.records.values))
+	for _, record := range facts.Generation.records.values {
+		if record.Control != nil && record.Control.Kind == controlBinding && record.Header.Syntax == ref {
+			region = record.Control.Region
+		}
+	}
+	if region == 0 {
+		t.Fatal("setup: no existing controlBinding region to reuse")
+	}
+	// Simulate declarationSymbols(ref) resolving no binding symbol at all,
+	// exactly the case handleBinding's own `if binding.ID == 0 { return }`
+	// covers, independent from the top-of-function gate this proves.
+	saved := facts.Walk.symbolsAt[ref]
+	delete(facts.Walk.symbolsAt, ref)
+	ctx := walkContext{control: controlContext{region: region}, callable: callableRef{Syntax: ref}}
+	facts.Walk.handleBinding(ref, node, ctx)
+	facts.Walk.symbolsAt[ref] = saved
+
+	after := len(controlBindingRecords(facts.Generation.records.values))
+	if after != before+1 {
+		t.Fatalf("controlBinding records = %d, want %d (symbol-independent retention failed)", after, before+1)
+	}
+}
+
+// TestDeclarationFactsNoControlBindingForGlobalsExternsParametersOrIterators
+// proves the structural exclusion holds: a global binding, an extern
+// module-level binding, a function parameter, and a range-loop iterator each
+// retain no controlBinding record.
+func TestDeclarationFactsNoControlBindingForGlobalsExternsParametersOrIterators(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+let global_value i32 = 1;
+extern { let extern_value i32; }
+fn f(param i32) void {
+    loop 0..param : idx { print idx; }
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if diagnostics.HasErrors() {
+		t.Fatalf("valid diagnostics: %+v", diagnostics.Items())
+	}
+	if bindings := controlBindingRecords(facts.Generation.records.values); len(bindings) != 0 {
+		t.Fatalf("controlBinding records = %+v, want none", bindings)
 	}
 }
 

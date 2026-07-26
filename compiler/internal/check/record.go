@@ -116,6 +116,7 @@ func cloneRetainedRecord(value retainedRecord) retainedRecord {
 	if value.Control != nil {
 		copy := *value.Control
 		copy.Values = append([]controlValue(nil), value.Control.Values...)
+		copy.Composition = append([]structuralChild(nil), value.Control.Composition...)
 		value.Control = &copy
 	}
 	if value.Defer != nil {
@@ -392,6 +393,7 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 		for _, entry := range control.Values {
 			add(entry.Value)
 		}
+		components += uint64(len(control.Composition))
 	}
 	if value.Defer != nil {
 		payloads++

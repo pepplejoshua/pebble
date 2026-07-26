@@ -188,6 +188,11 @@ func (w *walker) handleTypeDeclaration(ref symbol.SyntaxRef, node syntax.Node) {
 }
 
 func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext) {
+	if ctx.control.region != 0 {
+		w.retainControl(ref, ctx, controlEmission{
+			kind: controlBinding, form: statementOther, region: ctx.control.region,
+		})
+	}
 	var binding symbol.Symbol
 	for _, value := range w.declarationSymbols(ref) {
 		if value.Kind == symbol.SymbolBinding || value.Kind == symbol.SymbolExternBinding {
