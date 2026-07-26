@@ -141,6 +141,9 @@ func (w *walker) finishMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 	if p.kind == memberMethod {
 		w.retainRequirement(header, requirementUnsupportedMethod, base.ID)
 	}
+	if p.kind == memberTuple {
+		w.retainRequirement(header, requirementUnsupportedComponent, base.ID)
+	}
 	if p.kind == memberField {
 		w.deriveProjectionPlace(ref, p.base, result.ID, placeProjection{Kind: placeField, Base: base.ID, Member: p.member})
 	}

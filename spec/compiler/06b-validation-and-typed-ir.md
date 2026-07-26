@@ -709,9 +709,10 @@ the immutable instantiation reference. Phase 7 proves them against concrete
 arguments and owns specialization-time diagnostics/caching. `06b` neither
 specializes nor accepts a body based on a call site.
 
-Field/method/index/call requirements on an otherwise unconstrained parameter,
-conversion to/from a parameter, layout, printing, and construction have no
-accepted requirement kind and emit `C0610` in the generic body.
+Field/tuple-component/method/index/call requirements on an otherwise
+unconstrained parameter, conversion to/from a parameter, layout, printing, and
+construction have no accepted requirement kind and emit `C0610` in the generic
+body.
 
 ## Constants, globals, and `sizeof`
 

@@ -24,6 +24,7 @@ const (
 	requirementUnsupportedLayout
 	requirementUnsupportedPrint
 	requirementUnsupportedConstruction
+	requirementUnsupportedComponent
 )
 
 type requirementRecord struct {

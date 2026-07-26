@@ -509,7 +509,7 @@ const ( statementPrint statementForm = iota + 1; statementDiscard; statementAssi
 const ( valueCondition controlValueRole = iota + 1; valueSubject; valueCase; valueReturn; valueRangeStart; valueRangeEnd; valueRangeIterator; valuePrintOperand; valueDiscarded )
 const ( compatibilityAssignment compatibilityRole = iota + 1; compatibilityArgument; compatibilityReturn; compatibilityRecordField; compatibilityTupleComponent; compatibilityOptionalInjection; compatibilityBranch )
 const ( contextExpression contextFlowKind = iota + 1; contextForward; contextNone; contextIndirect )
-const ( requirementNumeric requirementKind = iota + 1; requirementIntegral; requirementOrdered; requirementEquatable; requirementLiteralFits; requirementUnsupportedField; requirementUnsupportedMethod; requirementUnsupportedIndex; requirementUnsupportedSlice; requirementUnsupportedCall; requirementUnsupportedConversion; requirementUnsupportedLayout; requirementUnsupportedPrint; requirementUnsupportedConstruction )
+const ( requirementNumeric requirementKind = iota + 1; requirementIntegral; requirementOrdered; requirementEquatable; requirementLiteralFits; requirementUnsupportedField; requirementUnsupportedMethod; requirementUnsupportedIndex; requirementUnsupportedSlice; requirementUnsupportedCall; requirementUnsupportedConversion; requirementUnsupportedLayout; requirementUnsupportedPrint; requirementUnsupportedConstruction; requirementUnsupportedComponent )
 ```
 
 `operatorFamily` uses the exact rows in the operator table below and is paired
@@ -966,11 +966,11 @@ origins plus checker-owned `Equatable` candidates. Records are allocated in
 owner, source, and parameter order; normalization and concrete policy belong
 to `06b`/phase 7.
 
-Field access, method lookup, indexing, calling an unconstrained parameter,
-conversion, layout, printing, and construction have no accepted generic
-requirement kind. `06a` still generates their operands and retains an
-unsupported-requirement record; it does not invent a trait or accept the body
-from one observed instantiation.
+Field access, tuple-component access, method lookup, indexing, calling an
+unconstrained parameter, conversion, layout, printing, and construction have
+no accepted generic requirement kind. `06a` still generates their operands
+and retains an unsupported-requirement record; it does not invent a trait or
+accept the body from one observed instantiation.
 
 Call-site receiver, explicit arguments, ordinary arguments, and expected
 result all contribute before the one solve. Phase 7 receives the final

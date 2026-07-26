@@ -378,7 +378,7 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 	if value.Requirement != nil {
 		payloads++
 		requirement := value.Requirement
-		if requirement.Header != value.Header || requirement.Kind < requirementNumeric || requirement.Kind > requirementUnsupportedConstruction || requirement.Subject == 0 || requirement.Kind >= requirementUnsupportedField && requirement.Operator != 0 {
+		if requirement.Header != value.Header || requirement.Kind < requirementNumeric || requirement.Kind > requirementUnsupportedComponent || requirement.Subject == 0 || requirement.Kind >= requirementUnsupportedField && requirement.Operator != 0 {
 			return nil, 0, false
 		}
 		add(requirement.Subject)

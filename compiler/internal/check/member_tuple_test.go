@@ -57,3 +57,53 @@ fn f() void {
 		t.Fatalf("expected CodeCapability in diagnostics: %+v", items)
 	}
 }
+
+func TestTupleComponentRigidRetainsUnsupportedRequirement(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn first[T](value T) T => value.0;
+`)})
+
+	facts := run06a3(inputs, diagnostics, Config{})
+	var member *memberRecord
+	var requirement *requirementRecord
+	var requirementRetained retainedRecord
+	for i := range facts.Generation.records.values {
+		retained := &facts.Generation.records.values[i]
+		if retained.Member != nil && retained.Member.Kind == memberTuple {
+			if member != nil {
+				t.Fatal("multiple tuple-member records")
+			}
+			member = retained.Member
+		}
+		if retained.Requirement != nil && retained.Requirement.Kind == requirementUnsupportedComponent {
+			if requirement != nil {
+				t.Fatal("multiple unsupported-component requirements")
+			}
+			requirement = retained.Requirement
+			requirementRetained = *retained
+		}
+	}
+	if member == nil || requirement == nil {
+		t.Fatalf("member=%+v requirement=%+v diagnostics=%+v", member, requirement, diagnostics.Items())
+	}
+	requirementHeader, memberHeader := requirement.Header, member.Header
+	requirementHeader.ID, memberHeader.ID = 0, 0
+	if requirementHeader != memberHeader || requirement.Subject != member.Base || requirement.Operator != 0 || requirement.Header.Owner == 0 {
+		t.Fatalf("member=%+v requirement=%+v", member, requirement)
+	}
+	if got := facts.Generation.counters.genericRequirements; got != 1 {
+		t.Fatalf("generic requirements=%d, want 1", got)
+	}
+	if diagnostics.HasErrors() {
+		t.Fatalf("generation diagnostics=%+v", diagnostics.Items())
+	}
+	invalid := cloneRetainedRecord(requirementRetained)
+	header := invalid.Header
+	header.ID = 0
+	invalid.assignHeader(header)
+	invalid.Requirement.Kind = requirementUnsupportedComponent + 1
+	before, components := len(facts.Generation.records.values), facts.Generation.records.components
+	if id, ok := facts.Generation.addRecord(invalid); ok || id != 0 || len(facts.Generation.records.values) != before || facts.Generation.records.components != components {
+		t.Fatal("out-of-range requirement kind mutated the record arena")
+	}
+}
