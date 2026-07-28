@@ -192,29 +192,55 @@ func validNode(t *testing.T, b *Builder, kind NodeKind, refs map[NodeID]struct{}
 	return Node{}
 }
 
-// TestVerifyCompleteValid builds one unit containing a valid instance of every
-// tag and checks that verification succeeds.
-func TestVerifyCompleteValid(t *testing.T) {
+// newCompleteContextBuilder creates a Builder with a complete, valid context:
+// a module, one region, one instantiation, and one function whose body contains
+// a shared TempBind/TempRead pair. This is the fixture used for both the
+// complete valid test and the per-tag malformed tests.
+func newCompleteContextBuilder(t *testing.T) (*Builder, map[NodeID]struct{}, TempID) {
+	t.Helper()
 	b := newTestBuilder(t)
 	refs := make(map[NodeID]struct{})
+	sharedTemp := addCompleteContextWithTemp(t, b, false, false)
+	return b, refs, sharedTemp
+}
+
+// addCompleteContextWithTemp adds the common context (module, region,
+// instantiation, and one function body with a TempBind/TempRead pair) to b,
+// using a freshly allocated shared temp. If damageBind or damageRead is true,
+// the corresponding node's Temp field is zeroed before being added. It returns
+// the shared TempID.
+func addCompleteContextWithTemp(t *testing.T, b *Builder, damageBind, damageRead bool) TempID {
+	t.Helper()
 	if err := b.AddModule(smallModule()); err != nil {
 		t.Fatalf("AddModule: %v", err)
 	}
-	// Allocate one region and one function so nodes referencing them are valid.
 	r := mustRegion(t, b)
-	// Add an instantiation so GenericFunctionValue can reference it.
 	if _, err := b.AddInstantiation(Instantiation{Site: ref(module.ModuleID(1), syntax.NodeID(1)), Declaration: 1, TypeArgs: []types.TypeID{1}}); err != nil {
 		t.Fatalf("AddInstantiation: %v", err)
 	}
-	// Pre-add TempBind and TempRead inside a function body so they are valid.
 	sharedTemp := mustTemp(t, b)
-	bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: sharedTemp, Children: []NodeID{boolLit(t, b)}})
-	read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Temp: sharedTemp})
-	exprStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{read}})
-	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{bind, exprStmt}})
+	bind := Node{Kind: TempBind, Span: span(), Temp: sharedTemp, Children: []NodeID{boolLit(t, b)}}
+	if damageBind {
+		bind.Temp = 0
+	}
+	bindID := mustNode(t, b, bind)
+	read := Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Temp: sharedTemp}
+	if damageRead {
+		read.Temp = 0
+	}
+	readID := mustNode(t, b, read)
+	exprStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{readID}})
+	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{bindID, exprStmt}})
 	if _, err := b.AddFunctionDecl(FunctionDecl{Symbol: 1, Span: source.Span{Source: 1}, Node: body}); err != nil {
 		t.Fatalf("AddFunctionDecl: %v", err)
 	}
+	return sharedTemp
+}
+
+// TestVerifyCompleteValid builds one unit containing a valid instance of every
+// tag and checks that verification succeeds.
+func TestVerifyCompleteValid(t *testing.T) {
+	b, refs, sharedTemp := newCompleteContextBuilder(t)
 	for _, kind := range NodeKinds() {
 		if kind == TempBind || kind == TempRead {
 			continue
@@ -233,23 +259,74 @@ func TestVerifyCompleteValid(t *testing.T) {
 	}
 }
 
-// TestVerifyMalformedPerTag constructs a valid node for each tag, damages one
-// payload field, and asserts verification fails.
+// TestVerifyMalformedPerTag constructs a valid node for each tag in a complete
+// context, verifies the undamaged baseline builds, damages one payload field,
+// and asserts verification fails.
 func TestVerifyMalformedPerTag(t *testing.T) {
 	for _, kind := range NodeKinds() {
 		t.Run(kind.String(), func(t *testing.T) {
-			b := newTestBuilder(t)
-			refs := make(map[NodeID]struct{})
-			n := validNode(t, b, kind, refs, 0)
+			switch kind {
+			case TempBind:
+				testMalformedTempBind(t)
+				return
+			case TempRead:
+				testMalformedTempRead(t)
+				return
+			}
+
+			// Baseline: undamaged node must build cleanly in complete context.
+			b, refs, sharedTemp := newCompleteContextBuilder(t)
+			n := validNode(t, b, kind, refs, sharedTemp)
+			if _, err := b.AddNode(n); err != nil {
+				t.Fatalf("baseline AddNode %s: %v", kind, err)
+			}
+			if _, err := b.Build(); err != nil {
+				t.Fatalf("baseline Build %s: %v", kind, err)
+			}
+
+			// Damaged: one payload field mutated; build must fail.
+			b, refs, sharedTemp = newCompleteContextBuilder(t)
+			n = validNode(t, b, kind, refs, sharedTemp)
 			n = damageNode(t, b, kind, n, refs)
 			if _, err := b.AddNode(n); err != nil {
-				// Limit errors before add are acceptable as a failure mode.
 				return
 			}
 			if _, err := b.Build(); err == nil {
 				t.Fatalf("expected verification failure for damaged %s", kind)
 			}
 		})
+	}
+}
+
+func testMalformedTempBind(t *testing.T) {
+	t.Helper()
+	// Baseline: the helper's own TempBind/TempRead pair builds.
+	b, _, _ := newCompleteContextBuilder(t)
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("baseline TempBind: %v", err)
+	}
+
+	// Damaged: zero the Temp field on the body TempBind.
+	b = newTestBuilder(t)
+	addCompleteContextWithTemp(t, b, true, false)
+	if _, err := b.Build(); err == nil {
+		t.Fatalf("expected verification failure for damaged TempBind")
+	}
+}
+
+func testMalformedTempRead(t *testing.T) {
+	t.Helper()
+	// Baseline: the helper's own TempBind/TempRead pair builds.
+	b, _, _ := newCompleteContextBuilder(t)
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("baseline TempRead: %v", err)
+	}
+
+	// Damaged: zero the Temp field on the body TempRead.
+	b = newTestBuilder(t)
+	addCompleteContextWithTemp(t, b, false, true)
+	if _, err := b.Build(); err == nil {
+		t.Fatalf("expected verification failure for damaged TempRead")
 	}
 }
 
