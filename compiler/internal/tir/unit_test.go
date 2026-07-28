@@ -373,9 +373,12 @@ func TestDumpTotality(t *testing.T) {
 					})
 					// Update body to reference TempBind.
 					// We can't edit a frozen node, so replace it
-					// by building a new Block.
+					// by building a new Block. It belongs to a
+					// separate function, so it needs its own
+					// region, not the first function's.
+					r2 := mustRegion(t, b)
 					body2 := mustNode(t, b, Node{
-						Kind: Block, Span: span(), Region: r,
+						Kind: Block, Span: span(), Region: r2,
 						Children: []NodeID{tb},
 					})
 					// Register a second function so dominance
@@ -397,8 +400,9 @@ func TestDumpTotality(t *testing.T) {
 						Kind: ExpressionStatement, Span: span(),
 						Children: []NodeID{tr},
 					})
+					r2 := mustRegion(t, b)
 					body2 := mustNode(t, b, Node{
-						Kind: Block, Span: span(), Region: r,
+						Kind: Block, Span: span(), Region: r2,
 						Children: []NodeID{tb, es},
 					})
 					mustFunction(t, b, body2)

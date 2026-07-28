@@ -666,3 +666,71 @@ func TestVerifyTotality(t *testing.T) {
 		}
 	}
 }
+
+// TestVerifySingleFunctionRegionOwnership verifies that a normal single-function
+// program with a region still builds successfully. This is a regression guard
+// ensuring the cross-function checks are not too strict.
+func TestVerifySingleFunctionRegionOwnership(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+	exprStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blk := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{exprStmt}})
+	_ = mustFunction(t, b, blk)
+	mustBuild(t, b)
+}
+
+// TestVerifyCrossFunctionRegionReference checks that a node in one function
+// cannot reference a Region ID introduced by a different function.
+func TestVerifyCrossFunctionRegionReference(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+
+	// Function A owns region r.
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{boolLit(t, b)}})
+	_ = mustFunction(t, b, blkA)
+
+	// Function B illegitimately references region r.
+	exprStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{exprStmt}})
+	_ = mustFunction(t, b, blkB)
+
+	mustFailBuild(t, b)
+}
+
+// TestVerifyCrossFunctionTargetReference checks that a Break/Continue node
+// whose Target names a region owned by a different function is rejected.
+func TestVerifyCrossFunctionTargetReference(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+
+	// Function A owns region r.
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{boolLit(t, b)}})
+	_ = mustFunction(t, b, blkA)
+
+	// Function B has a Break targeting region r (owned by A).
+	brk := mustNode(t, b, Node{Kind: Break, Span: span(), Target: r})
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{brk}})
+	_ = mustFunction(t, b, blkB)
+
+	mustFailBuild(t, b)
+}
+
+// TestVerifyCrossFunctionDeferChain checks that a Return whose DeferChain
+// names a DeferRegister node belonging to a different function is rejected.
+func TestVerifyCrossFunctionDeferChain(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+
+	// Function A owns a DeferRegister in region r.
+	deferStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	deferReg := mustNode(t, b, Node{Kind: DeferRegister, Span: span(), Region: r, Children: []NodeID{deferStmt}})
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{deferReg}})
+	_ = mustFunction(t, b, blkA)
+
+	// Function B has a Return whose DeferChain references deferReg from A.
+	ret := mustNode(t, b, Node{Kind: Return, Span: span(), Function: 2, DeferChain: []NodeID{deferReg}})
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{ret}})
+	_ = mustFunction(t, b, blkB)
+
+	mustFailBuild(t, b)
+}

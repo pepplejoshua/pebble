@@ -17,10 +17,12 @@ func verify(u *Unit, maxErrors uint32) error {
 	if u.snapshot == nil {
 		return fmt.Errorf("unit has no owning type snapshot")
 	}
+	regionCount := int(u.regionCount)
 	v := &verifier{
 		u:              u,
 		maxErrors:      maxErrors,
 		nodeFunction:   make([]FunctionID, len(u.nodes)),
+		regionFunction: make([]FunctionID, regionCount),
 		definedTemps:   make(map[TempID]NodeID),
 		availableTemps: make(map[FunctionID]map[TempID]bool),
 	}
@@ -36,6 +38,7 @@ type verifier struct {
 	maxErrors      uint32
 	errors         []error
 	nodeFunction   []FunctionID
+	regionFunction []FunctionID
 	definedTemps   map[TempID]NodeID
 	availableTemps map[FunctionID]map[TempID]bool
 }
@@ -56,6 +59,7 @@ func (v *verifier) run() {
 	v.verifySourceMap()
 	v.verifyFunctions()
 	v.verifyRegions()
+	v.computeRegionFunctions()
 	v.verifyTemps()
 	v.verifyDeclarations()
 	v.verifyInstantiations()
@@ -120,6 +124,60 @@ func (v *verifier) markNodeFunction(id NodeID, fid FunctionID, visited map[NodeI
 	v.nodeFunction[id-1] = fid
 	for _, child := range v.u.nodes[id-1].Children {
 		v.markNodeFunction(child, fid, visited)
+	}
+}
+
+func (v *verifier) computeRegionFunctions() {
+	// First pass: establish region ownership (first claim wins) across
+	// every node before any Target/DeferChain check runs. These must be
+	// two genuinely separate passes over the full node list, not merged
+	// into one loop — a Target reference to a region can be reached before
+	// that region's true owner is, purely by node insertion order, which
+	// would let the second pass silently miss a real violation if it ran
+	// interleaved with the first instead of after it completes everywhere.
+	for i, n := range v.u.nodes {
+		if n.Region == 0 || uint64(n.Region) > uint64(v.u.regionCount) {
+			continue
+		}
+		fid := v.nodeFunction[i]
+		if fid == 0 {
+			continue
+		}
+		ridx := n.Region - 1
+		if v.regionFunction[ridx] == 0 {
+			v.regionFunction[ridx] = fid
+		} else if v.regionFunction[ridx] != fid {
+			v.errorf("node %d (%s) region %d owned by function %d, referenced from function %d", i+1, n.Kind, n.Region, v.regionFunction[ridx], fid)
+		}
+	}
+
+	// Second pass: check Target and DeferChain ownership now that region
+	// ownership is fully established.
+	for i, n := range v.u.nodes {
+		fid := v.nodeFunction[i]
+		if fid == 0 {
+			continue
+		}
+
+		if n.Target != 0 && uint64(n.Target) <= uint64(v.u.regionCount) {
+			ridx := n.Target - 1
+			if v.regionFunction[ridx] != 0 && v.regionFunction[ridx] != fid {
+				v.errorf("node %d (%s) targets region %d owned by function %d, but node belongs to function %d", i+1, n.Kind, n.Target, v.regionFunction[ridx], fid)
+			}
+		}
+
+		for _, d := range n.DeferChain {
+			if !d.IsValid() || uint64(d) > uint64(len(v.u.nodes)) {
+				continue // already reported by expectDeferRegister
+			}
+			if v.u.nodes[d-1].Kind != DeferRegister {
+				continue // already reported by expectDeferRegister
+			}
+			dfid := v.nodeFunction[d-1]
+			if dfid != 0 && dfid != fid {
+				v.errorf("node %d (%s) defer chain entry %d belongs to function %d, but node belongs to function %d", i+1, n.Kind, d, dfid, fid)
+			}
+		}
 	}
 }
 
