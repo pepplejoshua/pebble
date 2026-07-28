@@ -2,7 +2,10 @@ package tir
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -440,4 +443,151 @@ func TestUnitAddRegionOverflow(t *testing.T) {
 	if rid != 0 {
 		t.Fatalf("expected zero RegionID on overflow, got %d", rid)
 	}
+}
+
+func TestDumpSliceFormatPreservation(t *testing.T) {
+	snap := testSnapshot(t)
+	boolType := builtinType(snap, types.Bool)
+	intType := builtinType(snap, types.Int)
+
+	b := NewBuilder(snap, Config{})
+
+	// Add three leaf nodes to use as children.
+	c1 := mustNode(t, b, Node{Kind: BoolLiteral, Type: boolType, Span: span(), Literal: Literal{Kind: LiteralBool, Bool: true}})
+	c2 := mustNode(t, b, Node{Kind: BoolLiteral, Type: boolType, Span: span(), Literal: Literal{Kind: LiteralBool, Bool: false}})
+	c3 := mustNode(t, b, Node{Kind: BoolLiteral, Type: boolType, Span: span(), Literal: Literal{Kind: LiteralBool, Bool: true}})
+
+	// TupleValue with Children = [c1, c2, c3].
+	_ = mustNode(t, b, Node{
+		Kind:     TupleValue,
+		Type:     boolType,
+		Span:     span(),
+		Children: []NodeID{c1, c2, c3},
+	})
+
+	// TupleCoerce node with TypeArgs to exercise the in-switch typeargs path.
+	// Needs at least 2 children (both value-category).
+	child1 := mustNode(t, b, Node{Kind: BoolLiteral, Type: boolType, Span: span(), Literal: Literal{Kind: LiteralBool, Bool: true}})
+	child2 := mustNode(t, b, Node{Kind: BoolLiteral, Type: boolType, Span: span(), Literal: Literal{Kind: LiteralBool, Bool: false}})
+	_ = mustNode(t, b, Node{
+		Kind:     TupleCoerce,
+		Type:     boolType,
+		Span:     span(),
+		TypeArgs: []types.TypeID{intType, boolType},
+		Children: []NodeID{child1, child2},
+	})
+
+	// ExternDeclaration node with Parameters to exercise the params path.
+	_ = mustNode(t, b, Node{
+		Kind: ExternDeclaration, Symbol: 42, Convention: types.Pebble, Span: span(),
+		Parameters: []Parameter{
+			{Symbol: 10, Type: intType},
+			{Symbol: 20, Type: boolType},
+		},
+	})
+
+	u := mustBuild(t, b)
+
+	var buf bytes.Buffer
+	if err := u.Dump(&buf); err != nil {
+		t.Fatalf("Dump: %v", err)
+	}
+	out := buf.String()
+
+	// Verify children format: space-separated NodeID values inside brackets.
+	// Go's %v for []NodeID (a []uint32 without String()) produces "[1 2 3]".
+	childrenWant := " children=[1 2 3]"
+	if !strings.Contains(out, childrenWant) {
+		t.Errorf("dump missing children format %q\ngot:\n%s", childrenWant, out)
+	}
+
+	// Verify typeargs format for TupleCoerce (in-switch path).
+	// Format is " typeargs=[T1 T2]" where T1, T2 are the TypeID integers.
+	typeargsWant := fmt.Sprintf(" typeargs=[%d %d]", intType, boolType)
+	if !strings.Contains(out, typeargsWant) {
+		t.Errorf("dump missing typeargs format %q\ngot:\n%s", typeargsWant, out)
+	}
+
+	// Verify params format: "Sym:Type Sym:Type" pairs.
+	paramsWant := fmt.Sprintf(" params=[%d:%d %d:%d]", 10, intType, 20, boolType)
+	if !strings.Contains(out, paramsWant) {
+		t.Errorf("dump missing params format %q\ngot:\n%s", paramsWant, out)
+	}
+}
+
+func TestDumpBoundedAllocation(t *testing.T) {
+	snap := testSnapshot(t)
+	boolType := builtinType(snap, types.Bool)
+
+	const hugeSize = 500_000
+	const maxDumpBytes uint64 = 512
+
+	// Build a Unit directly (we're in package tir) so the TupleValue is
+	// the FIRST node.  This ensures Dump reaches the children=%v printf
+	// before overflowing on other node output.
+	//
+	// Node layout:
+	//   NodeID 1: TupleValue with Children = [2..500001]
+	//   NodeID 2..500001: BoolLiteral leaf nodes (needed as valid children)
+	children := make([]NodeID, hugeSize)
+	nodes := make([]Node, 0, hugeSize+1)
+	for i := range children {
+		children[i] = NodeID(i + 2) // leaf IDs start at 2
+		nodes = append(nodes, Node{
+			Kind: BoolLiteral, Type: boolType, Span: span(),
+			Literal: Literal{Kind: LiteralBool, Bool: true},
+		})
+	}
+	// TupleValue is node 1 — the first node Dump processes.
+	nodes = append([]Node{{
+		Kind:     TupleValue,
+		Type:     boolType,
+		Span:     span(),
+		Children: children,
+	}}, nodes...)
+
+	u := &Unit{
+		snapshot: snap,
+		nodes:    nodes,
+		config:   Config{MaxDumpBytes: maxDumpBytes},
+	}
+
+	// Verify Dump returns ErrDumpOverflow.
+	var buf bytes.Buffer
+	err := u.Dump(&buf)
+	if err != ErrDumpOverflow {
+		t.Fatalf("expected ErrDumpOverflow, got %v (buf.Len=%d)", err, buf.Len())
+	}
+
+	// Measure byte allocation: run Dump multiple times with GC disabled
+	// so transient allocations accumulate in the heap, then measure heap growth.
+	runtime.GC() // clean slate
+	var mBefore runtime.MemStats
+	runtime.ReadMemStats(&mBefore)
+
+	oldPerc := debug.SetGCPercent(-1) // disable GC
+	const dumpRuns = 10
+	for i := 0; i < dumpRuns; i++ {
+		var b2 bytes.Buffer
+		_ = u.Dump(&b2)
+	}
+	debug.SetGCPercent(oldPerc) // re-enable GC
+	runtime.GC()
+
+	var mAfter runtime.MemStats
+	runtime.ReadMemStats(&mAfter)
+
+	heapGrowth := mAfter.TotalAlloc - mBefore.TotalAlloc
+	// With the fixed code, each Dump call allocates at most O(MaxDumpBytes)
+	// worth of intermediate strings (small per-element Sprintf calls, each
+	// freed quickly). With the old code, Sprintf(" children=%v", hugeSlice)
+	// would allocate ~1 MB per call — proportional to the slice, not the
+	// budget. Over dumpRuns calls that's ~10 MB, far exceeding our bound.
+	bound := uint64(maxDumpBytes) * uint64(dumpRuns) * 10
+	if heapGrowth > bound {
+		t.Errorf("Dump allocated %d bytes over %d calls (> %d bound, MaxDumpBytes=%d); allocation not bounded to budget",
+			heapGrowth, dumpRuns, bound, maxDumpBytes)
+	}
+	t.Logf("Dump allocated %d bytes over %d calls (bound %d, MaxDumpBytes=%d, %d children)",
+		heapGrowth, dumpRuns, bound, maxDumpBytes, hugeSize)
 }

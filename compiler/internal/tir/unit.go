@@ -556,6 +556,29 @@ func (c *countingWriter) printf(format string, args ...any) error {
 	return err
 }
 
+// printSlice writes a space-separated, bracket-enclosed slice incrementally,
+// checking the byte budget after each element. This avoids pre-formatting the
+// entire slice with Sprintf, which would allocate unboundedly before the
+// budget check.
+func (d *dumper) printSlice(name string, n int, elem func(i int) string) error {
+	// Write " name=["
+	if err := d.cw.printf(" %s=[", name); err != nil {
+		return err
+	}
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			if _, err := d.cw.Write([]byte{' '}); err != nil {
+				return err
+			}
+		}
+		if _, err := d.cw.Write([]byte(elem(i))); err != nil {
+			return err
+		}
+	}
+	_, err := d.cw.Write([]byte{']'})
+	return err
+}
+
 type dumper struct {
 	cw *countingWriter
 }
@@ -805,7 +828,9 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 	case Load:
 		// payload printed via children
 	case TupleCoerce:
-		if err := d.cw.printf(" typeargs=%v", n.TypeArgs); err != nil {
+		if err := d.printSlice("typeargs", len(n.TypeArgs), func(i int) string {
+			return fmt.Sprintf("%d", n.TypeArgs[i])
+		}); err != nil {
 			return err
 		}
 	case TempBind:
@@ -836,7 +861,9 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 	}
 
 	if len(n.Children) > 0 {
-		if err := d.cw.printf(" children=%v", n.Children); err != nil {
+		if err := d.printSlice("children", len(n.Children), func(i int) string {
+			return fmt.Sprintf("%d", n.Children[i])
+		}); err != nil {
 			return err
 		}
 	}
@@ -845,12 +872,16 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		for i, p := range n.Parameters {
 			params[i] = fmt.Sprintf("%d:%d", p.Symbol, p.Type)
 		}
-		if err := d.cw.printf(" params=%v", params); err != nil {
+		if err := d.printSlice("params", len(params), func(i int) string {
+			return params[i]
+		}); err != nil {
 			return err
 		}
 	}
 	if len(n.TypeArgs) > 0 && n.Kind != TupleCoerce {
-		if err := d.cw.printf(" typeargs=%v", n.TypeArgs); err != nil {
+		if err := d.printSlice("typeargs", len(n.TypeArgs), func(i int) string {
+			return fmt.Sprintf("%d", n.TypeArgs[i])
+		}); err != nil {
 			return err
 		}
 	}
