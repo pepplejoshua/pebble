@@ -155,6 +155,9 @@ func (v *verifier) verifyNode(id NodeID) {
 	if n.Origin != (source.Span{}) && n.SyntheticRole == "" {
 		v.errorf("node %d (%s) synthetic Origin without role", id, n.Kind)
 	}
+	if n.SyntheticRole != "" && n.Origin == (source.Span{}) {
+		v.errorf("node %d (%s) synthetic role without Origin", id, n.Kind)
+	}
 
 	// ExplicitCast only on SourceAlias.
 	if n.ExplicitCast && n.Kind != SourceAlias {
@@ -191,6 +194,10 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.allowOnly(id, n, "Symbol", "Function", "Parameters", "ResultType", "Convention", "Variadic", "Inline", "HasBody", "Children")
 		v.requireSymbol(id, n)
 		v.requireFunction(id, n)
+		v.requireConvention(id, n)
+		if n.ResultType == 0 {
+			v.errorf("node %d FunctionDeclaration requires ResultType", id)
+		}
 		for i, p := range n.Parameters {
 			if p.Symbol == 0 {
 				v.errorf("node %d FunctionDeclaration parameter[%d] missing symbol", id, i)
@@ -200,8 +207,9 @@ func (v *verifier) verifyNode(id NodeID) {
 			}
 		}
 	case ExternDeclaration:
-		v.allowOnly(id, n, "Symbol", "Convention", "Variadic")
+		v.allowOnly(id, n, "Symbol", "Function", "Parameters", "ResultType", "Convention", "Variadic", "Inline")
 		v.requireSymbol(id, n)
+		v.requireConvention(id, n)
 		if n.HasBody {
 			v.errorf("node %d ExternDeclaration must not have body", id)
 		}
@@ -424,6 +432,9 @@ func (v *verifier) verifyNode(id NodeID) {
 		if n.ContextAction == 0 {
 			v.errorf("node %d ContextValue requires ContextAction", id)
 		}
+		if n.ContextAction != ContextExpr {
+			v.errorf("node %d ContextValue must use ContextExpr", id)
+		}
 	case InterpolatedString:
 		v.allowOnly(id, n, "Children")
 		for i := range n.Children {
@@ -513,11 +524,23 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCount(id, n, 1, 1)
 		v.expectChildCategory(id, n, 0, CategoryPlace)
 
-	case DirectCall, MethodCall:
+	case DirectCall:
 		v.allowOnly(id, n, "Symbol", "Convention", "ContextAction", "TypeArgs", "Children")
 		v.requireSymbol(id, n)
 		v.requireConvention(id, n)
 		v.requireContextAction(id, n)
+		for i := range n.Children {
+			v.expectChildCategory(id, n, i, CategoryValue)
+		}
+		v.checkContextActionConvention(id, n)
+	case MethodCall:
+		v.allowOnly(id, n, "Symbol", "Convention", "ContextAction", "TypeArgs", "Children")
+		v.requireSymbol(id, n)
+		v.requireConvention(id, n)
+		v.requireContextAction(id, n)
+		if len(n.Children) < 1 {
+			v.errorf("node %d MethodCall requires at least one child (receiver)", id)
+		}
 		for i := range n.Children {
 			v.expectChildCategory(id, n, i, CategoryValue)
 		}
@@ -653,7 +676,6 @@ func (v *verifier) allowOnly(id NodeID, n Node, fields ...string) {
 	check("TypeArgs", len(n.TypeArgs) > 0)
 	check("DeferChain", len(n.DeferChain) > 0)
 	check("Requirements", len(n.Requirements) > 0)
-	check("SyntheticRole", n.SyntheticRole != "")
 }
 
 func (v *verifier) requireSymbol(id NodeID, n Node) {
