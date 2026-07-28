@@ -7,6 +7,7 @@ import (
 
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -1024,4 +1025,44 @@ func TestVerifyImplicitReturnCorrectFunction(t *testing.T) {
 	_ = mustFunction(t, b, body)
 
 	mustBuild(t, b)
+}
+
+// TestVerifySourceMapDeterminism proves that verifySourceMap's first-loop
+// errors are deterministic: multiple runs of verify on the same unit produce
+// the same first error even when multiple source-map entries are damaged.
+func TestVerifySourceMapDeterminism(t *testing.T) {
+	snap := testSnapshot(t)
+	boolType := builtinType(snap, types.Bool)
+	sp := span()
+
+	nodes := []Node{
+		{Kind: BoolLiteral, Type: boolType, Span: sp, Syntax: ref(1, 1), Literal: Literal{Kind: LiteralBool, Bool: true}},
+	}
+
+	sourceMap := map[symbol.SyntaxRef]NodeID{
+		ref(module.ModuleID(1), syntax.NodeID(1)): 1,
+		ref(module.ModuleID(1), syntax.NodeID(2)): 2,
+		ref(module.ModuleID(1), syntax.NodeID(3)): 3,
+		ref(module.ModuleID(1), syntax.NodeID(4)): 4,
+	}
+
+	u := &Unit{
+		snapshot:  snap,
+		nodes:     nodes,
+		sourceMap: sourceMap,
+		config:    Config{MaxVerifyErrors: DefaultMaxVerifyErrors},
+	}
+
+	var firstErr string
+	for i := 0; i < 50; i++ {
+		err := verify(u, DefaultMaxVerifyErrors)
+		if err == nil {
+			t.Fatal("expected verification error for damaged source map")
+		}
+		if i == 0 {
+			firstErr = err.Error()
+		} else if err.Error() != firstErr {
+			t.Fatalf("nondeterministic verification: iteration %d got %q, expected %q", i, err.Error(), firstErr)
+		}
+	}
 }

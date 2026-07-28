@@ -903,7 +903,8 @@ func (v *verifier) expectDeferRegister(id NodeID, d NodeID) {
 }
 
 func (v *verifier) verifySourceMap() {
-	for ref, id := range v.u.sourceMap {
+	for _, ref := range v.u.SourceRefs() {
+		id := v.u.sourceMap[ref]
 		if !id.IsValid() || uint64(id) > uint64(len(v.u.nodes)) {
 			v.errorf("sourcemap %d:%d maps to invalid node %d", ref.Module, ref.Node, id)
 			continue
