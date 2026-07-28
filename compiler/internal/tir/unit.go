@@ -687,10 +687,16 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		if err := d.cw.printf(" symbol=%d", n.Symbol); err != nil {
 			return err
 		}
+	case Store:
+		// payload printed via children
 	case CompoundStore:
 		if err := d.cw.printf(" operator=%d", n.Operator); err != nil {
 			return err
 		}
+	case ExpressionStatement:
+		// payload printed via children
+	case Print:
+		// payload printed via children
 	case Return, ImplicitReturn:
 		if err := d.cw.printf(" function=%d defer=%v", n.Function, n.DeferChain); err != nil {
 			return err
@@ -728,6 +734,18 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		if err := d.cw.printf(" float=%q", n.Literal.Float); err != nil {
 			return err
 		}
+	case NilPointer:
+		// no additional payload
+	case NoneOptional:
+		// no additional payload
+	case SomeOptional:
+		// payload printed via children
+	case TupleValue:
+		// payload printed via children
+	case ArrayValue:
+		// payload printed via children
+	case ArrayRepeat:
+		// payload printed via children
 	case RecordConstruct:
 		if err := d.cw.printf(" symbol=%d fields=%d", n.Symbol, len(n.Fields)); err != nil {
 			return err
@@ -744,6 +762,12 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		if err := d.cw.printf(" member=%d", n.Member); err != nil {
 			return err
 		}
+	case ContextValue:
+		if err := d.cw.printf(" context=%s", n.ContextAction.String()); err != nil {
+			return err
+		}
+	case InterpolatedString:
+		// payload printed via children
 	case SizeofType:
 		if err := d.cw.printf(" typearg=%d", n.TypeArg); err != nil {
 			return err
@@ -778,6 +802,8 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		}
 	case DereferencePlace, CheckedIndexPlace:
 		// payload printed via children
+	case Load:
+		// payload printed via children
 	case TupleCoerce:
 		if err := d.cw.printf(" typeargs=%v", n.TypeArgs); err != nil {
 			return err
@@ -795,6 +821,18 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 			n.Convention, n.ContextAction.String(), n.Symbol, n.Member); err != nil {
 			return err
 		}
+	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum:
+		// payload printed via children
+	case CheckedOptionalUnwrap:
+		// payload printed via children
+	case CheckedIndex:
+		// payload printed via children
+	case CheckedSlice:
+		// payload printed via children
+	case Sequence:
+		// payload printed via children
+	default:
+		return fmt.Errorf("dumpNode: unhandled kind %s", n.Kind)
 	}
 
 	if len(n.Children) > 0 {

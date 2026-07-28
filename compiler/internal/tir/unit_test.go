@@ -2,6 +2,8 @@ package tir
 
 import (
 	"bytes"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -316,6 +318,111 @@ func TestUnitRequirementAndInstantiation(t *testing.T) {
 	ins2 := u.Instantiations()
 	if ins2[0].TypeArgs[0] == 999 {
 		t.Fatal("instantiation TypeArgs not defensive")
+	}
+}
+
+func TestDumpTotality(t *testing.T) {
+	snap := testSnapshot(t)
+	intType := builtinType(snap, types.Int)
+
+	for _, kind := range NodeKinds() {
+		t.Run(kind.String(), func(t *testing.T) {
+			b := newTestBuilder(t)
+
+			// Common infrastructure that validNode (in verify_test.go)
+			// may depend on.
+			r := mustRegion(t, b) // RegionID 1
+
+			// We create the function body before adding the test node so
+			// that verifyTemps dominance can reach TempBind/TempRead.
+			// For most tags this body is empty (no children on Block).
+			body := mustNode(t, b, Node{
+				Kind: Block, Span: span(), Region: r,
+			})
+			mustFunction(t, b, body) // FunctionID 1
+			mustTemp(t, b)           // TempID 1
+
+			if _, err := b.AddInstantiation(Instantiation{
+				Site:        ref(module.ModuleID(1), syntax.NodeID(1)),
+				Declaration: 1,
+				TypeArgs:    []types.TypeID{intType},
+			}); err != nil {
+				t.Fatalf("AddInstantiation: %v", err)
+			}
+
+			var panicked bool
+			var dumpErr error
+
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicked = true
+					}
+				}()
+
+				// TempBind/TempRead must be reachable from the body
+				// Block through the dominance tree.  Handle them
+				// specially: chain Block -> [TempBind,
+				// ExpressionStatement -> TempRead].
+				switch kind {
+				case TempBind:
+					tid := mustTemp(t, b) // TempID 2
+					tb := mustNode(t, b, Node{
+						Kind: TempBind, Span: span(),
+						Temp: tid, Children: []NodeID{boolLit(t, b)},
+					})
+					// Update body to reference TempBind.
+					// We can't edit a frozen node, so replace it
+					// by building a new Block.
+					body2 := mustNode(t, b, Node{
+						Kind: Block, Span: span(), Region: r,
+						Children: []NodeID{tb},
+					})
+					// Register a second function so dominance
+					// traversal covers the new block.
+					mustFunction(t, b, body2)
+
+				case TempRead:
+					tb := mustNode(t, b, Node{
+						Kind: TempBind, Span: span(),
+						Temp: 1, Children: []NodeID{boolLit(t, b)},
+					})
+					tr := mustNode(t, b, Node{
+						Kind: TempRead, Type: intType,
+						Span: span(), Temp: 1,
+					})
+					// TempRead is a value; wrap in a nonvalue
+					// ExpressionStatement to nest inside Block.
+					es := mustNode(t, b, Node{
+						Kind: ExpressionStatement, Span: span(),
+						Children: []NodeID{tr},
+					})
+					body2 := mustNode(t, b, Node{
+						Kind: Block, Span: span(), Region: r,
+						Children: []NodeID{tb, es},
+					})
+					mustFunction(t, b, body2)
+
+				default:
+					refs := make(map[NodeID]struct{})
+					n := validNode(t, b, kind, refs, 0)
+					mustNode(t, b, n)
+				}
+
+				u, buildErr := b.Build()
+				if buildErr != nil {
+					t.Fatalf("Build failed for tag %s: %v", kind, buildErr)
+				}
+				dumpErr = u.Dump(io.Discard)
+			}()
+
+			if panicked {
+				t.Fatalf("dump panicked for tag %s", kind)
+			}
+			if dumpErr != nil && strings.Contains(dumpErr.Error(), "unhandled kind") {
+				t.Fatalf("dump reported unhandled kind for tag %s: %v", kind, dumpErr)
+			}
+		})
 	}
 }
 
