@@ -154,11 +154,11 @@ func validNode(t *testing.T, b *Builder, kind NodeKind, refs map[NodeID]struct{}
 	case Load:
 		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(StoragePlace)}}
 	case DirectCall:
-		return Node{Kind: kind, Type: boolType, Span: span, Symbol: 1, Convention: types.Pebble, ContextAction: ContextForward, Children: []NodeID{ensureChild(BoolLiteral)}}
+		return Node{Kind: kind, Type: boolType, Span: span, Symbol: 1, Convention: types.Pebble, ContextAction: ContextForward, FunctionType: boolType, Children: []NodeID{ensureChild(BoolLiteral)}}
 	case IndirectCall:
-		return Node{Kind: kind, Type: boolType, Span: span, Convention: types.C, ContextAction: ContextNone, Children: []NodeID{ensureChild(BoolLiteral)}}
+		return Node{Kind: kind, Type: boolType, Span: span, Convention: types.C, ContextAction: ContextNone, FunctionType: boolType, Children: []NodeID{ensureChild(BoolLiteral)}}
 	case MethodCall:
-		return Node{Kind: kind, Type: boolType, Span: span, Symbol: 1, Convention: types.Pebble, ContextAction: ContextForward, Children: []NodeID{ensureChild(BoolLiteral)}}
+		return Node{Kind: kind, Type: boolType, Span: span, Symbol: 1, Convention: types.Pebble, ContextAction: ContextForward, FunctionType: boolType, Children: []NodeID{ensureChild(BoolLiteral)}}
 	case VariantConstruct:
 		return Node{Kind: kind, Type: intType, Span: span, Member: 1}
 	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum:
@@ -526,6 +526,32 @@ func TestVerifyDeferChainInvalid(t *testing.T) {
 	ret := mustNode(t, b, Node{Kind: Return, Span: span(), Function: 1, DeferChain: []NodeID{1}})
 	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{ret}})
 	_ = mustFunction(t, b, body)
+	mustFailBuild(t, b)
+}
+
+// TestVerifySwitchCaseLiteral checks that SwitchCase accepts a literal-constant
+// case and rejects a case with both CaseValue and Literal set.
+func TestVerifySwitchCaseLiteral(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+	block := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r})
+
+	// Literal case with CaseValue zero — must succeed.
+	_ = mustNode(t, b, Node{Kind: SwitchCase, Span: span(), Region: r, Literal: Literal{Kind: LiteralInteger, IntegerNum: "1"}, Children: []NodeID{block}})
+	mustBuild(t, b)
+
+	// Both CaseValue and Literal set — must fail.
+	b = newTestBuilder(t)
+	r = mustRegion(t, b)
+	block = mustNode(t, b, Node{Kind: Block, Span: span(), Region: r})
+	_ = mustNode(t, b, Node{Kind: SwitchCase, Span: span(), Region: r, CaseValue: 1, Literal: Literal{Kind: LiteralInteger, IntegerNum: "1"}, Children: []NodeID{block}})
+	mustFailBuild(t, b)
+
+	// Both HasElse and Literal set — must fail.
+	b = newTestBuilder(t)
+	r = mustRegion(t, b)
+	block = mustNode(t, b, Node{Kind: Block, Span: span(), Region: r})
+	_ = mustNode(t, b, Node{Kind: SwitchCase, Span: span(), Region: r, HasElse: true, Literal: Literal{Kind: LiteralInteger, IntegerNum: "1"}, Children: []NodeID{block}})
 	mustFailBuild(t, b)
 }
 

@@ -336,14 +336,20 @@ func (v *verifier) verifyNode(id NodeID) {
 			}
 		}
 	case SwitchCase:
-		v.allowOnly(id, n, "Region", "CaseValue", "HasElse", "Children")
+		v.allowOnly(id, n, "Region", "CaseValue", "HasElse", "Children", "Literal")
 		v.requireRegion(id, n)
 		v.expectChildCount(id, n, 1, 2)
-		if n.CaseValue == 0 && !n.HasElse {
-			v.errorf("node %d SwitchCase requires CaseValue or HasElse", id)
+		if n.CaseValue == 0 && !n.HasElse && n.Literal == (Literal{}) {
+			v.errorf("node %d SwitchCase requires CaseValue, Literal, or HasElse", id)
 		}
 		if n.HasElse && n.CaseValue != 0 {
 			v.errorf("node %d SwitchCase cannot have both CaseValue and HasElse", id)
+		}
+		if n.HasElse && n.Literal != (Literal{}) {
+			v.errorf("node %d SwitchCase cannot have both Literal and HasElse", id)
+		}
+		if n.CaseValue != 0 && n.Literal != (Literal{}) {
+			v.errorf("node %d SwitchCase cannot have both CaseValue and Literal", id)
 		}
 	case Break, Continue:
 		v.allowOnly(id, n, "Target", "DeferChain")
@@ -525,19 +531,25 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCategory(id, n, 0, CategoryPlace)
 
 	case DirectCall:
-		v.allowOnly(id, n, "Symbol", "Convention", "ContextAction", "TypeArgs", "Children")
+		v.allowOnly(id, n, "Symbol", "Convention", "ContextAction", "TypeArgs", "Children", "FunctionType")
 		v.requireSymbol(id, n)
 		v.requireConvention(id, n)
 		v.requireContextAction(id, n)
+		if n.FunctionType == 0 {
+			v.errorf("node %d DirectCall requires FunctionType", id)
+		}
 		for i := range n.Children {
 			v.expectChildCategory(id, n, i, CategoryValue)
 		}
 		v.checkContextActionConvention(id, n)
 	case MethodCall:
-		v.allowOnly(id, n, "Symbol", "Convention", "ContextAction", "TypeArgs", "Children")
+		v.allowOnly(id, n, "Symbol", "Convention", "ContextAction", "TypeArgs", "Children", "FunctionType")
 		v.requireSymbol(id, n)
 		v.requireConvention(id, n)
 		v.requireContextAction(id, n)
+		if n.FunctionType == 0 {
+			v.errorf("node %d MethodCall requires FunctionType", id)
+		}
 		if len(n.Children) < 1 {
 			v.errorf("node %d MethodCall requires at least one child (receiver)", id)
 		}
@@ -546,9 +558,12 @@ func (v *verifier) verifyNode(id NodeID) {
 		}
 		v.checkContextActionConvention(id, n)
 	case IndirectCall:
-		v.allowOnly(id, n, "Convention", "ContextAction", "Children")
+		v.allowOnly(id, n, "Convention", "ContextAction", "Children", "FunctionType")
 		v.requireConvention(id, n)
 		v.requireContextAction(id, n)
+		if n.FunctionType == 0 {
+			v.errorf("node %d IndirectCall requires FunctionType", id)
+		}
 		if len(n.Children) < 1 {
 			v.errorf("node %d IndirectCall requires at least callee child", id)
 		}
@@ -669,6 +684,7 @@ func (v *verifier) allowOnly(id NodeID, n Node, fields ...string) {
 	check("GenericRef", n.GenericRef != 0)
 	check("CaseValue", n.CaseValue != 0)
 	check("ResultType", n.ResultType != 0)
+	check("FunctionType", n.FunctionType != 0)
 	check("Literal", n.Literal != (Literal{}))
 	check("Children", len(n.Children) > 0)
 	check("Parameters", len(n.Parameters) > 0)

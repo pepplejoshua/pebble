@@ -322,6 +322,12 @@ type Node struct {
 	// Type is required for value and place nodes; zero for nonvalue nodes.
 	Type types.TypeID
 
+	// FunctionType is the type of the callee symbol/value for call nodes
+	// (DirectCall, IndirectCall, MethodCall). It is the function *value's* own
+	// type, distinct from Type (the call's result type) and from ResultType
+	// (a declaration's own declared result type).
+	FunctionType types.TypeID
+
 	// Span is the authored source span. Synthetic nodes set Origin instead.
 	Span source.Span
 
