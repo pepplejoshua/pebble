@@ -584,6 +584,9 @@ func TestDumpBoundedAllocation(t *testing.T) {
 	// would allocate ~1 MB per call — proportional to the slice, not the
 	// budget. Over dumpRuns calls that's ~10 MB, far exceeding our bound.
 	bound := uint64(maxDumpBytes) * uint64(dumpRuns) * 10
+	if raceEnabled {
+		bound *= 8
+	}
 	if heapGrowth > bound {
 		t.Errorf("Dump allocated %d bytes over %d calls (> %d bound, MaxDumpBytes=%d); allocation not bounded to budget",
 			heapGrowth, dumpRuns, bound, maxDumpBytes)
