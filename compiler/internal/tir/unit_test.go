@@ -318,3 +318,15 @@ func TestUnitRequirementAndInstantiation(t *testing.T) {
 		t.Fatal("instantiation TypeArgs not defensive")
 	}
 }
+
+func TestUnitAddRegionOverflow(t *testing.T) {
+	b := newTestBuilder(t)
+	b.regionCount = ^uint32(0)
+	rid, err := b.AddRegion()
+	if err != ErrLimitExceeded {
+		t.Fatalf("expected ErrLimitExceeded, got %v", err)
+	}
+	if rid != 0 {
+		t.Fatalf("expected zero RegionID on overflow, got %d", rid)
+	}
+}

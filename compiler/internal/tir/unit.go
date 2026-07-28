@@ -361,6 +361,9 @@ func (b *Builder) AddRegion() (RegionID, error) {
 	if err := b.checkFrozen(); err != nil {
 		return 0, err
 	}
+	if b.regionCount+1 < b.regionCount {
+		return 0, ErrLimitExceeded
+	}
 	b.regionCount++
 	return RegionID(b.regionCount), nil
 }
