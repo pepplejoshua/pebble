@@ -591,3 +591,95 @@ func TestDumpBoundedAllocation(t *testing.T) {
 	t.Logf("Dump allocated %d bytes over %d calls (bound %d, MaxDumpBytes=%d, %d children)",
 		heapGrowth, dumpRuns, bound, maxDumpBytes, hugeSize)
 }
+
+func TestUnitAddRegionLimit(t *testing.T) {
+	b := NewBuilder(testSnapshot(t), Config{MaxIRComponents: 1})
+	if err := b.AddGlobalDecl(GlobalDecl{Symbol: 1, Span: span(), Type: builtinType(testSnapshot(t), types.Int)}); err != nil {
+		t.Fatalf("AddGlobalDecl: %v", err)
+	}
+	_, err := b.AddRegion()
+	if err != ErrLimitExceeded {
+		t.Fatalf("expected ErrLimitExceeded, got %v", err)
+	}
+	if b.regionCount != 0 {
+		t.Fatalf("regionCount should remain 0 after failed AddRegion, got %d", b.regionCount)
+	}
+}
+
+func TestUnitAddTempLimit(t *testing.T) {
+	b := NewBuilder(testSnapshot(t), Config{MaxIRComponents: 1})
+	if err := b.AddGlobalDecl(GlobalDecl{Symbol: 1, Span: span(), Type: builtinType(testSnapshot(t), types.Int)}); err != nil {
+		t.Fatalf("AddGlobalDecl: %v", err)
+	}
+	_, err := b.AddTemp()
+	if err != ErrLimitExceeded {
+		t.Fatalf("expected ErrLimitExceeded, got %v", err)
+	}
+	if b.nextTemp != 0 {
+		t.Fatalf("nextTemp should remain 0 after failed AddTemp, got %d", b.nextTemp)
+	}
+	if b.tempCount != 0 {
+		t.Fatalf("tempCount should remain 0 after failed AddTemp, got %d", b.tempCount)
+	}
+}
+
+func TestUnitMapSourceLimit(t *testing.T) {
+	b := NewBuilder(testSnapshot(t), Config{MaxIRComponents: 1})
+	if err := b.AddGlobalDecl(GlobalDecl{Symbol: 1, Span: span(), Type: builtinType(testSnapshot(t), types.Int)}); err != nil {
+		t.Fatalf("AddGlobalDecl: %v", err)
+	}
+	ref := ref(module.ModuleID(1), syntax.NodeID(1))
+	err := b.MapSource(ref, NodeID(1))
+	if err != ErrLimitExceeded {
+		t.Fatalf("expected ErrLimitExceeded, got %v", err)
+	}
+	if _, ok := b.sourceMap[ref]; ok {
+		t.Fatal("sourceMap should not contain ref after failed MapSource")
+	}
+}
+
+func TestUnitMapSourceIdempotentLimit(t *testing.T) {
+	b := NewBuilder(testSnapshot(t), Config{MaxIRComponents: 1})
+	ref := ref(module.ModuleID(1), syntax.NodeID(1))
+	id := NodeID(1)
+	if err := b.MapSource(ref, id); err != nil {
+		t.Fatalf("MapSource: %v", err)
+	}
+	if err := b.MapSource(ref, id); err != nil {
+		t.Fatalf("identical MapSource should succeed under exhausted budget, got %v", err)
+	}
+	if _, ok := b.sourceMap[ref]; !ok {
+		t.Fatal("sourceMap should still contain ref after idempotent MapSource")
+	}
+}
+
+func TestUnitMapSourceConflictNoCharge(t *testing.T) {
+	b := NewBuilder(testSnapshot(t), Config{MaxIRComponents: 2})
+	ref := ref(module.ModuleID(1), syntax.NodeID(1))
+	id1 := NodeID(1)
+	id2 := NodeID(2)
+	if err := b.MapSource(ref, id1); err != nil {
+		t.Fatalf("MapSource first: %v", err)
+	}
+	if err := b.MapSource(ref, id2); err == nil {
+		t.Fatal("duplicate source map should fail")
+	}
+	if err := b.AddGlobalDecl(GlobalDecl{Symbol: 1, Span: span(), Type: builtinType(testSnapshot(t), types.Int)}); err != nil {
+		t.Fatalf("AddGlobalDecl should succeed after conflicting MapSource, got %v", err)
+	}
+}
+
+func TestUnitComponentsInUnitCounts(t *testing.T) {
+	b := newTestBuilder(t)
+	_ = mustRegion(t, b)
+	_ = mustTemp(t, b)
+	ref := ref(module.ModuleID(1), syntax.NodeID(1))
+	_ = simpleValue(t, b, BoolLiteral, builtinType(testSnapshot(t), types.Bool), ref)
+	u := mustBuild(t, b)
+
+	got := componentsInUnit(u)
+	// 1 node + 1 sourceMap entry + 1 region + 1 temp = 4
+	if got != 4 {
+		t.Fatalf("componentsInUnit = %d, want 4", got)
+	}
+}

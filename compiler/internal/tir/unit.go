@@ -364,6 +364,10 @@ func (b *Builder) AddRegion() (RegionID, error) {
 	if b.regionCount+1 < b.regionCount {
 		return 0, ErrLimitExceeded
 	}
+	if !canAdd(b.components, 1, b.config.MaxIRComponents) {
+		return 0, ErrLimitExceeded
+	}
+	b.components++
 	b.regionCount++
 	return RegionID(b.regionCount), nil
 }
@@ -377,6 +381,10 @@ func (b *Builder) AddTemp() (TempID, error) {
 	if b.nextTemp+1 < b.nextTemp {
 		return 0, ErrLimitExceeded
 	}
+	if !canAdd(b.components, 1, b.config.MaxIRComponents) {
+		return 0, ErrLimitExceeded
+	}
+	b.components++
 	b.nextTemp++
 	b.tempCount++
 	return b.nextTemp, nil
@@ -464,10 +472,17 @@ func (b *Builder) MapSource(ref symbol.SyntaxRef, id NodeID) error {
 	if !id.IsValid() {
 		return ErrInvalidNode
 	}
-	if existing, ok := b.sourceMap[ref]; ok && existing != id {
-		return errors.New("duplicate source map entry")
+	if existing, ok := b.sourceMap[ref]; ok {
+		if existing != id {
+			return errors.New("duplicate source map entry")
+		}
+		return nil
+	}
+	if !canAdd(b.components, 1, b.config.MaxIRComponents) {
+		return ErrLimitExceeded
 	}
 	b.sourceMap[ref] = id
+	b.components++
 	return nil
 }
 
@@ -948,5 +963,6 @@ func componentsInUnit(u *Unit) uint64 {
 			uint64(len(n.DeferChain)) +
 			uint64(len(n.Requirements))
 	}
+	c += uint64(u.regionCount) + uint64(u.tempCount) + uint64(len(u.sourceMap))
 	return c
 }
