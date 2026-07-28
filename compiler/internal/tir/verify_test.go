@@ -508,6 +508,71 @@ func TestVerifyTempReadBeforeBind(t *testing.T) {
 	mustFailBuild(t, b)
 }
 
+func TestVerifyRecordConstructFieldMissingSymbol(t *testing.T) {
+	b := newTestBuilder(t)
+	val := boolLit(t, b)
+	_ = mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 0, Value: val}}})
+	mustFailBuild(t, b)
+}
+
+func TestVerifyRecordConstructFieldValueOutOfRange(t *testing.T) {
+	b := newTestBuilder(t)
+	_ = mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 1, Value: NodeID(999)}}})
+	mustFailBuild(t, b)
+}
+
+func TestVerifyRecordConstructFieldValueNonvalue(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+	blk := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r})
+	_ = mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 1, Value: blk}}})
+	mustFailBuild(t, b)
+}
+
+func TestVerifyRecordConstructDuplicateField(t *testing.T) {
+	b := newTestBuilder(t)
+	v1 := boolLit(t, b)
+	v2 := boolLit(t, b)
+	_ = mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 1, Value: v1}, {Field: 1, Value: v2}}})
+	mustFailBuild(t, b)
+}
+
+func TestVerifyRecordConstructValid(t *testing.T) {
+	b := newTestBuilder(t)
+	v1 := boolLit(t, b)
+	v2 := intLit(t, b, builtinType(testSnapshot(t), types.Int))
+	_ = mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 1, Value: v1}, {Field: 2, Value: v2}}})
+	mustBuild(t, b)
+}
+
+func TestVerifyRecordConstructFieldTempReadBoundEarlier(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+	tid := mustTemp(t, b)
+	val := boolLit(t, b)
+	bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: tid, Children: []NodeID{val}})
+	read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Temp: tid})
+	rec := mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 1, Value: read}}})
+	exprStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{rec}})
+	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{bind, exprStmt}})
+	_ = mustFunction(t, b, body)
+	mustBuild(t, b)
+}
+
+func TestVerifyRecordConstructFieldTempReadBeforeBind(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+	tid := mustTemp(t, b)
+	val := boolLit(t, b)
+	read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Temp: tid})
+	rec := mustNode(t, b, Node{Kind: RecordConstruct, Type: builtinType(testSnapshot(t), types.Bool), Span: span(), Symbol: 1, Fields: []FieldInit{{Field: 1, Value: read}}})
+	exprStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{rec}})
+	bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: tid, Children: []NodeID{val}})
+	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{exprStmt, bind}})
+	_ = mustFunction(t, b, body)
+	mustFailBuild(t, b)
+}
+
 func TestVerifyTempDominanceSiblingArms(t *testing.T) {
 	t.Run("if arms do not share bindings", func(t *testing.T) {
 		b := newTestBuilder(t)

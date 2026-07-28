@@ -128,6 +128,9 @@ func (v *verifier) markNodeFunction(id NodeID, fid FunctionID, visited map[NodeI
 	for _, child := range v.u.nodes[id-1].Children {
 		v.markNodeFunction(child, fid, visited)
 	}
+	for _, f := range v.u.nodes[id-1].Fields {
+		v.markNodeFunction(f.Value, fid, visited)
+	}
 }
 
 func (v *verifier) computeRegionFunctions() {
@@ -478,6 +481,25 @@ func (v *verifier) verifyNode(id NodeID) {
 	case RecordConstruct:
 		v.allowOnly(id, n, "Symbol", "Fields")
 		v.requireSymbol(id, n)
+		seen := make(map[symbol.SymbolID]struct{})
+		for i, f := range n.Fields {
+			if f.Field == 0 {
+				v.errorf("node %d RecordConstruct field[%d] missing Field symbol", id, i)
+			}
+			if !f.Value.IsValid() || uint64(f.Value) > uint64(len(v.u.nodes)) {
+				v.errorf("node %d RecordConstruct field[%d] value %d out of range", id, i, f.Value)
+				continue
+			}
+			cat, _ := CategoryOf(v.u.nodes[f.Value-1].Kind)
+			if cat != CategoryValue {
+				v.errorf("node %d RecordConstruct field[%d]=%d has category %s, want value", id, i, f.Value, cat)
+			}
+			if _, ok := seen[f.Field]; ok {
+				v.errorf("node %d RecordConstruct duplicate field %d", id, f.Field)
+			} else {
+				seen[f.Field] = struct{}{}
+			}
+		}
 	case HoistedFunctionValue:
 		v.allowOnly(id, n, "Symbol", "Function")
 		v.requireSymbol(id, n)
@@ -987,6 +1009,9 @@ func (v *verifier) checkTempDominance(id NodeID, fid FunctionID, visited map[Nod
 
 	for _, child := range n.Children {
 		v.checkTempDominance(child, fid, visited)
+	}
+	for _, f := range n.Fields {
+		v.checkTempDominance(f.Value, fid, visited)
 	}
 
 	if branching {
