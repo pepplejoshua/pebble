@@ -77,7 +77,10 @@ func TestConfigDefaultsAndInferenceOwnership(t *testing.T) {
 		MaxControlDepth: DefaultMaxControlDepth, MaxTrackedPlaces: DefaultMaxTrackedPlaces,
 		MaxGenericRequirements: DefaultMaxGenericRequirements, MaxConstantDepth: DefaultMaxConstantDepth,
 		MaxConstantOperations: DefaultMaxConstantOperations, MaxConstantBits: DefaultMaxConstantBits,
-		MaxDiagnostics: DefaultMaxDiagnostics,
+		MaxDiagnostics:     DefaultMaxDiagnostics,
+		MaxValidationSteps: DefaultMaxValidationSteps, MaxIRNodes: DefaultMaxIRNodes,
+		MaxIRComponents: DefaultMaxIRComponents, MaxFlowStates: DefaultMaxFlowStates,
+		MaxDeferEdges: DefaultMaxDeferEdges, MaxDumpBytes: DefaultMaxDumpBytes,
 	}
 	if got != want {
 		t.Fatalf("normalized config:\n got %+v\nwant %+v", got, want)
@@ -89,6 +92,8 @@ func TestConfigDefaultsAndInferenceOwnership(t *testing.T) {
 		MaxRecordComponents: 4, MaxControlDepth: 5, MaxTrackedPlaces: 6,
 		MaxGenericRequirements: 7, MaxConstantDepth: 8, MaxConstantOperations: 9,
 		MaxConstantBits: 10, MaxDiagnostics: 11,
+		MaxValidationSteps: 12, MaxIRNodes: 13, MaxIRComponents: 14,
+		MaxFlowStates: 15, MaxDeferEdges: 16, MaxDumpBytes: 17,
 	}
 	if normalized := normalizeConfig(lowered); normalized != lowered {
 		t.Fatalf("lowered config changed: got %+v want %+v", normalized, lowered)
