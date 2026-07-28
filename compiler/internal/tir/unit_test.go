@@ -683,3 +683,29 @@ func TestUnitComponentsInUnitCounts(t *testing.T) {
 		t.Fatalf("componentsInUnit = %d, want 4", got)
 	}
 }
+
+// TestVerifyDeepNestingIterative demonstrates that the iterative TIR
+// traversals in markNodeFunction and checkTempDominance succeed under a
+// goroutine stack ceiling far too small for the equivalent recursive walk.
+// The depth lives on the heap-allocated explicit stack, so lowering the
+// native stack maximum with debug.SetMaxStack does not constrain it.
+func TestVerifyDeepNestingIterative(t *testing.T) {
+	oldMax := debug.SetMaxStack(64 * 1024)
+	defer debug.SetMaxStack(oldMax)
+
+	b := newTestBuilder(t)
+	const depth = 10000
+
+	// Innermost block holds a single leaf statement so the traversal is not
+	// just a chain of empty blocks.
+	leafExpr := boolLit(t, b)
+	leafStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{leafExpr}})
+	inner := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{leafStmt}})
+
+	for i := 1; i < depth; i++ {
+		inner = mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{inner}})
+	}
+
+	_ = mustFunction(t, b, inner)
+	mustBuild(t, b)
+}

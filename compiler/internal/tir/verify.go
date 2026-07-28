@@ -116,20 +116,26 @@ func (v *verifier) computeNodeFunctions() {
 	}
 }
 
-func (v *verifier) markNodeFunction(id NodeID, fid FunctionID, visited map[NodeID]bool) {
-	if !id.IsValid() || uint64(id) > uint64(len(v.u.nodes)) {
-		return
-	}
-	if visited[id] {
-		return
-	}
-	visited[id] = true
-	v.nodeFunction[id-1] = fid
-	for _, child := range v.u.nodes[id-1].Children {
-		v.markNodeFunction(child, fid, visited)
-	}
-	for _, f := range v.u.nodes[id-1].Fields {
-		v.markNodeFunction(f.Value, fid, visited)
+func (v *verifier) markNodeFunction(rootID NodeID, fid FunctionID, visited map[NodeID]bool) {
+	stack := []NodeID{rootID}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if !id.IsValid() || uint64(id) > uint64(len(v.u.nodes)) {
+			continue
+		}
+		if visited[id] {
+			continue
+		}
+		visited[id] = true
+		v.nodeFunction[id-1] = fid
+		n := v.u.nodes[id-1]
+		for _, child := range n.Children {
+			stack = append(stack, child)
+		}
+		for _, f := range n.Fields {
+			stack = append(stack, f.Value)
+		}
 	}
 }
 
@@ -956,79 +962,115 @@ func (v *verifier) verifyTemps() {
 	}
 }
 
-func (v *verifier) checkTempDominance(id NodeID, fid FunctionID, visited map[NodeID]bool) {
-	if !id.IsValid() || uint64(id) > uint64(len(v.u.nodes)) {
-		return
-	}
-	if visited[id] {
-		return
-	}
-	visited[id] = true
+func (v *verifier) checkTempDominance(rootID NodeID, fid FunctionID, visited map[NodeID]bool) {
+	var stack []func()
+	push := func(f func()) { stack = append(stack, f) }
 
-	n := v.u.nodes[id-1]
-	available := v.availableTemps[fid]
-	if available == nil {
-		available = make(map[TempID]bool)
-		v.availableTemps[fid] = available
-	}
+	var visit func(id NodeID)
+	visit = func(id NodeID) {
+		if !id.IsValid() || uint64(id) > uint64(len(v.u.nodes)) {
+			return
+		}
+		if visited[id] {
+			return
+		}
+		visited[id] = true
 
-	branching := n.Kind == If || n.Kind == Switch || n.Kind == While || n.Kind == For || n.Kind == RangeLoop
-	var saved map[TempID]bool
-	if branching {
-		saved = make(map[TempID]bool)
-		for t := range available {
-			saved[t] = true
+		n := v.u.nodes[id-1]
+		available := v.availableTemps[fid]
+		if available == nil {
+			available = make(map[TempID]bool)
+			v.availableTemps[fid] = available
 		}
-	}
 
-	if n.Kind == If || n.Kind == Switch {
-		if len(n.Children) > 0 {
-			v.checkTempDominance(n.Children[0], fid, visited)
-		}
-		postPrefix := make(map[TempID]bool)
-		for t := range available {
-			postPrefix[t] = true
-		}
-		for _, child := range n.Children[1:] {
+		branching := n.Kind == If || n.Kind == Switch || n.Kind == While || n.Kind == For || n.Kind == RangeLoop
+		var saved map[TempID]bool
+		if branching {
+			saved = make(map[TempID]bool)
 			for t := range available {
-				delete(available, t)
-			}
-			for t := range postPrefix {
-				available[t] = true
-			}
-			v.checkTempDominance(child, fid, visited)
-		}
-		for t := range available {
-			delete(available, t)
-		}
-		for t := range saved {
-			available[t] = true
-		}
-		return
-	}
-
-	for _, child := range n.Children {
-		v.checkTempDominance(child, fid, visited)
-	}
-	for _, f := range n.Fields {
-		v.checkTempDominance(f.Value, fid, visited)
-	}
-
-	if branching {
-		for t := range available {
-			if !saved[t] {
-				delete(available, t)
+				saved[t] = true
 			}
 		}
+
+		if n.Kind == If || n.Kind == Switch {
+			arms := n.Children
+			if len(arms) > 0 {
+				arms = arms[1:]
+			}
+
+			var dispatchArm func(postPrefix map[TempID]bool, idx int)
+			dispatchArm = func(postPrefix map[TempID]bool, idx int) {
+				if idx >= len(arms) {
+					for t := range available {
+						delete(available, t)
+					}
+					for t := range saved {
+						available[t] = true
+					}
+					return
+				}
+				for t := range available {
+					delete(available, t)
+				}
+				for t := range postPrefix {
+					available[t] = true
+				}
+				child := arms[idx]
+				push(func() { dispatchArm(postPrefix, idx+1) })
+				push(func() { visit(child) })
+			}
+
+			startArms := func() {
+				postPrefix := make(map[TempID]bool)
+				for t := range available {
+					postPrefix[t] = true
+				}
+				dispatchArm(postPrefix, 0)
+			}
+
+			if len(n.Children) > 0 {
+				push(func() { startArms() })
+				push(func() { visit(n.Children[0]) })
+			} else {
+				startArms()
+			}
+			return
+		}
+
+		finalize := func() {
+			if branching {
+				for t := range available {
+					if !saved[t] {
+						delete(available, t)
+					}
+				}
+			}
+			switch n.Kind {
+			case TempBind:
+				available[n.Temp] = true
+			case TempRead:
+				if !available[n.Temp] {
+					v.errorf("node %d TempRead of temp %d is not dominated by its TempBind", id, n.Temp)
+				}
+			}
+		}
+
+		push(func() { finalize() })
+		for i := len(n.Fields) - 1; i >= 0; i-- {
+			val := n.Fields[i].Value
+			push(func() { visit(val) })
+		}
+		for i := len(n.Children) - 1; i >= 0; i-- {
+			child := n.Children[i]
+			push(func() { visit(child) })
+		}
 	}
 
-	switch n.Kind {
-	case TempBind:
-		available[n.Temp] = true
-	case TempRead:
-		if !available[n.Temp] {
-			v.errorf("node %d TempRead of temp %d is not dominated by its TempBind", id, n.Temp)
-		}
+	push(func() { visit(rootID) })
+	for len(stack) > 0 {
+		fn := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		fn()
 	}
 }
 
