@@ -795,6 +795,34 @@ func TestVerifyCrossFunctionTargetReference(t *testing.T) {
 	mustFailBuild(t, b)
 }
 
+// TestVerifyOwnershipTypeArg checks that a TypeArg not owned by the snapshot
+// is rejected.
+func TestVerifyOwnershipTypeArg(t *testing.T) {
+	b := newTestBuilder(t)
+	_ = mustNode(t, b, Node{Kind: TypeUse, Span: span(), TypeArg: 999})
+	mustFailBuild(t, b)
+}
+
+// TestVerifyOwnershipResultType checks that a ResultType not owned by the
+// snapshot is rejected.
+func TestVerifyOwnershipResultType(t *testing.T) {
+	b := newTestBuilder(t)
+	fid, err := b.AddFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("AddFunctionDecl: %v", err)
+	}
+	_ = mustNode(t, b, Node{Kind: FunctionDeclaration, Span: span(), Symbol: 1, Function: fid, Convention: types.Pebble, Parameters: []Parameter{{Symbol: 1, Type: builtinType(testSnapshot(t), types.Int)}}, ResultType: 999, HasBody: true})
+	mustFailBuild(t, b)
+}
+
+// TestVerifyOwnershipFunctionType checks that a FunctionType not owned by the
+// snapshot is rejected.
+func TestVerifyOwnershipFunctionType(t *testing.T) {
+	b := newTestBuilder(t)
+	_ = mustNode(t, b, Node{Kind: DirectCall, Span: span(), Type: builtinType(testSnapshot(t), types.Bool), Symbol: 1, Convention: types.Pebble, ContextAction: ContextForward, FunctionType: 999, Children: []NodeID{boolLit(t, b)}})
+	mustFailBuild(t, b)
+}
+
 // TestVerifyCrossFunctionDeferChain checks that a Return whose DeferChain
 // names a DeferRegister node belonging to a different function is rejected.
 func TestVerifyCrossFunctionDeferChain(t *testing.T) {

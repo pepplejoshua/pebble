@@ -369,8 +369,7 @@ type Node struct {
 	Fields []FieldInit
 
 	// Generic reference.
-	GenericOwner symbol.SymbolID
-	GenericRef   uint32
+	GenericRef uint32
 
 	// Operator data.
 	Operator     syntax.TokenKind

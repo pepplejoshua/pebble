@@ -68,6 +68,9 @@ func (v *verifier) run() {
 func (v *verifier) verifySnapshotOwnership() {
 	for i, n := range v.u.nodes {
 		v.checkTypeInSnapshot("node", NodeID(i+1), n.Type)
+		v.checkTypeInSnapshot("node", NodeID(i+1), n.TypeArg)
+		v.checkTypeInSnapshot("node", NodeID(i+1), n.ResultType)
+		v.checkTypeInSnapshot("node", NodeID(i+1), n.FunctionType)
 		for j, p := range n.Parameters {
 			v.checkTypeInSnapshot(fmt.Sprintf("node[%d].parameter[%d]", i, j), 0, p.Type)
 		}
