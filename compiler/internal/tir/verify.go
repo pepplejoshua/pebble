@@ -956,6 +956,32 @@ func (v *verifier) checkTempDominance(id NodeID, fid FunctionID, visited map[Nod
 		}
 	}
 
+	if n.Kind == If || n.Kind == Switch {
+		if len(n.Children) > 0 {
+			v.checkTempDominance(n.Children[0], fid, visited)
+		}
+		postPrefix := make(map[TempID]bool)
+		for t := range available {
+			postPrefix[t] = true
+		}
+		for _, child := range n.Children[1:] {
+			for t := range available {
+				delete(available, t)
+			}
+			for t := range postPrefix {
+				available[t] = true
+			}
+			v.checkTempDominance(child, fid, visited)
+		}
+		for t := range available {
+			delete(available, t)
+		}
+		for t := range saved {
+			available[t] = true
+		}
+		return
+	}
+
 	for _, child := range n.Children {
 		v.checkTempDominance(child, fid, visited)
 	}

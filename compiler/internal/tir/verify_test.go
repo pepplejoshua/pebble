@@ -508,6 +508,86 @@ func TestVerifyTempReadBeforeBind(t *testing.T) {
 	mustFailBuild(t, b)
 }
 
+func TestVerifyTempDominanceSiblingArms(t *testing.T) {
+	t.Run("if arms do not share bindings", func(t *testing.T) {
+		b := newTestBuilder(t)
+		rIf := mustRegion(t, b)
+		rThen := mustRegion(t, b)
+		rElse := mustRegion(t, b)
+		rFunc := mustRegion(t, b)
+		tid := mustTemp(t, b)
+
+		bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: tid, Children: []NodeID{boolLit(t, b)}})
+		thenBlock := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rThen, Children: []NodeID{bind}})
+		read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Temp: tid})
+		readStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{read}})
+		elseBlock := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rElse, Children: []NodeID{readStmt}})
+		ifNode := mustNode(t, b, Node{Kind: If, Span: span(), Region: rIf, HasElse: true, Children: []NodeID{boolLit(t, b), thenBlock, elseBlock}})
+		body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rFunc, Children: []NodeID{ifNode}})
+		_ = mustFunction(t, b, body)
+
+		mustFailBuild(t, b)
+	})
+
+	t.Run("switch cases do not share bindings", func(t *testing.T) {
+		b := newTestBuilder(t)
+		rSwitch := mustRegion(t, b)
+		rCase1 := mustRegion(t, b)
+		rCase2 := mustRegion(t, b)
+		rFunc := mustRegion(t, b)
+		tid := mustTemp(t, b)
+
+		bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: tid, Children: []NodeID{boolLit(t, b)}})
+		case1Block := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rCase1, Children: []NodeID{bind}})
+		case1 := mustNode(t, b, Node{Kind: SwitchCase, Span: span(), Region: rCase1, CaseValue: 1, Children: []NodeID{case1Block}})
+		read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Temp: tid})
+		readStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{read}})
+		case2Block := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rCase2, Children: []NodeID{readStmt}})
+		case2 := mustNode(t, b, Node{Kind: SwitchCase, Span: span(), Region: rCase2, CaseValue: 2, Children: []NodeID{case2Block}})
+		switchNode := mustNode(t, b, Node{Kind: Switch, Span: span(), Region: rSwitch, Children: []NodeID{boolLit(t, b), case1, case2}})
+		body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rFunc, Children: []NodeID{switchNode}})
+		_ = mustFunction(t, b, body)
+
+		mustFailBuild(t, b)
+	})
+
+	t.Run("binding before if is available in an arm", func(t *testing.T) {
+		b := newTestBuilder(t)
+		rFunc := mustRegion(t, b)
+		rIf := mustRegion(t, b)
+		rThen := mustRegion(t, b)
+		tid := mustTemp(t, b)
+
+		bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: tid, Children: []NodeID{boolLit(t, b)}})
+		read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Temp: tid})
+		readStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{read}})
+		thenBlock := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rThen, Children: []NodeID{readStmt}})
+		ifNode := mustNode(t, b, Node{Kind: If, Span: span(), Region: rIf, Children: []NodeID{boolLit(t, b), thenBlock}})
+		body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rFunc, Children: []NodeID{bind, ifNode}})
+		_ = mustFunction(t, b, body)
+
+		mustBuild(t, b)
+	})
+
+	t.Run("binding and read in one arm remain sequential", func(t *testing.T) {
+		b := newTestBuilder(t)
+		rFunc := mustRegion(t, b)
+		rIf := mustRegion(t, b)
+		rThen := mustRegion(t, b)
+		tid := mustTemp(t, b)
+
+		bind := mustNode(t, b, Node{Kind: TempBind, Span: span(), Temp: tid, Children: []NodeID{boolLit(t, b)}})
+		read := mustNode(t, b, Node{Kind: TempRead, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Temp: tid})
+		readStmt := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{read}})
+		thenBlock := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rThen, Children: []NodeID{bind, readStmt}})
+		ifNode := mustNode(t, b, Node{Kind: If, Span: span(), Region: rIf, Children: []NodeID{boolLit(t, b), thenBlock}})
+		body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rFunc, Children: []NodeID{ifNode}})
+		_ = mustFunction(t, b, body)
+
+		mustBuild(t, b)
+	})
+}
+
 // TestVerifyDeferChain checks that defer chains contain DeferRegister nodes.
 func TestVerifyDeferChain(t *testing.T) {
 	b := newTestBuilder(t)
