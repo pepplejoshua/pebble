@@ -907,3 +907,121 @@ func TestVerifyCrossFunctionDeferChain(t *testing.T) {
 
 	mustFailBuild(t, b)
 }
+
+// TestVerifySharedFunctionOwnership rejects two functions whose body
+// subgraphs both reach the same node (node claimed by multiple owners).
+func TestVerifySharedFunctionOwnership(t *testing.T) {
+	b := newTestBuilder(t)
+	rA := mustRegion(t, b)
+	rB := mustRegion(t, b)
+
+	// Shared node: an ExpressionStatement reachable from both function bodies.
+	shared := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+
+	// Function A body includes shared as a child of its Block. Each
+	// function gets its own region so the only conflict under test is the
+	// shared node itself, not an unrelated cross-function region reuse.
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rA, Children: []NodeID{shared}})
+	_ = mustFunction(t, b, blkA)
+
+	// Function B body also includes shared as a child of its Block.
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: rB, Children: []NodeID{shared}})
+	_ = mustFunction(t, b, blkB)
+
+	mustFailBuild(t, b)
+}
+
+// TestVerifySeparateFunctionsBuild verifies that two functions with entirely
+// separate, non-overlapping subgraphs still build successfully.
+func TestVerifySeparateFunctionsBuild(t *testing.T) {
+	b := newTestBuilder(t)
+	r1 := mustRegion(t, b)
+	r2 := mustRegion(t, b)
+
+	stmtA := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r1, Children: []NodeID{stmtA}})
+	_ = mustFunction(t, b, blkA)
+
+	stmtB := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r2, Children: []NodeID{stmtB}})
+	_ = mustFunction(t, b, blkB)
+
+	mustBuild(t, b)
+}
+
+// TestVerifyReturnWrongFunction rejects a Return that declares a FunctionID
+// which does not match the function that actually owns the node.
+func TestVerifyReturnWrongFunction(t *testing.T) {
+	b := newTestBuilder(t)
+
+	// Function A body: a distinct region, and a properly wrapped
+	// (nonvalue) statement so this function contributes no unrelated
+	// errors of its own.
+	stmtA := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{stmtA}})
+	fidA := mustFunction(t, b, blkA)
+
+	// Function B body: same shape, its own region.
+	stmtB := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{stmtB}})
+	_ = mustFunction(t, b, blkB)
+
+	// Function C's Return declares Function: fidA+1 (function B's ID),
+	// but is actually owned by function C (a third, distinct function) -
+	// neither A nor B, so this is unambiguously the wrong FunctionID.
+	ret := mustNode(t, b, Node{Kind: Return, Span: span(), Function: fidA + 1, Children: []NodeID{boolLit(t, b)}})
+	blkC := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{ret}})
+	_ = mustFunction(t, b, blkC)
+
+	mustFailBuild(t, b)
+}
+
+// TestVerifyImplicitReturnWrongFunction rejects an ImplicitReturn that
+// declares a FunctionID which does not match the owning function.
+func TestVerifyImplicitReturnWrongFunction(t *testing.T) {
+	b := newTestBuilder(t)
+
+	// Function A body: distinct region, properly wrapped statement.
+	stmtA := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkA := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{stmtA}})
+	fidA := mustFunction(t, b, blkA)
+
+	// Function B body: same shape, its own region.
+	stmtB := mustNode(t, b, Node{Kind: ExpressionStatement, Span: span(), Children: []NodeID{boolLit(t, b)}})
+	blkB := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{stmtB}})
+	_ = mustFunction(t, b, blkB)
+
+	// Function C's ImplicitReturn declares Function: fidA+1 (function B's
+	// ID), but is actually owned by function C - neither A nor B.
+	ir := mustNode(t, b, Node{Kind: ImplicitReturn, Span: span(), Function: fidA + 1})
+	blkC := mustNode(t, b, Node{Kind: Block, Span: span(), Region: mustRegion(t, b), Children: []NodeID{ir}})
+	_ = mustFunction(t, b, blkC)
+
+	mustFailBuild(t, b)
+}
+
+// TestVerifyReturnCorrectFunction is a regression guard: a Return correctly
+// declaring its containing function's FunctionID still builds successfully.
+func TestVerifyReturnCorrectFunction(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+
+	ret := mustNode(t, b, Node{Kind: Return, Span: span(), Function: 1, Children: []NodeID{boolLit(t, b)}})
+	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{ret}})
+	_ = mustFunction(t, b, body)
+
+	mustBuild(t, b)
+}
+
+// TestVerifyImplicitReturnCorrectFunction is a regression guard: an
+// ImplicitReturn correctly declaring its containing function still builds.
+func TestVerifyImplicitReturnCorrectFunction(t *testing.T) {
+	b := newTestBuilder(t)
+	r := mustRegion(t, b)
+
+	ir := mustNode(t, b, Node{Kind: ImplicitReturn, Span: span(), Function: 1})
+	body := mustNode(t, b, Node{Kind: Block, Span: span(), Region: r, Children: []NodeID{ir}})
+	_ = mustFunction(t, b, body)
+
+	mustBuild(t, b)
+}

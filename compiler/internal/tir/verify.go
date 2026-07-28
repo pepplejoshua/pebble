@@ -128,6 +128,10 @@ func (v *verifier) markNodeFunction(rootID NodeID, fid FunctionID, visited map[N
 			continue
 		}
 		visited[id] = true
+		if existing := v.nodeFunction[id-1]; existing != 0 && existing != fid {
+			v.errorf("node %d is owned by multiple functions (%d and %d)", id, existing, fid)
+			continue
+		}
 		v.nodeFunction[id-1] = fid
 		n := v.u.nodes[id-1]
 		for _, child := range n.Children {
@@ -337,6 +341,11 @@ func (v *verifier) verifyNode(id NodeID) {
 	case Return:
 		v.allowOnly(id, n, "Function", "Children", "DeferChain")
 		v.requireFunction(id, n)
+		if n.Function != 0 && uint64(n.Function) <= uint64(len(v.u.functions)) && v.nodeFunction[id-1] != 0 {
+			if v.nodeFunction[id-1] != n.Function {
+				v.errorf("node %d %s declares Function %d, but is owned by function %d", id, n.Kind, n.Function, v.nodeFunction[id-1])
+			}
+		}
 		if len(n.Children) > 1 {
 			v.errorf("node %d Return has too many children", id)
 		}
@@ -349,6 +358,11 @@ func (v *verifier) verifyNode(id NodeID) {
 	case ImplicitReturn:
 		v.allowOnly(id, n, "Function", "DeferChain")
 		v.requireFunction(id, n)
+		if n.Function != 0 && uint64(n.Function) <= uint64(len(v.u.functions)) && v.nodeFunction[id-1] != 0 {
+			if v.nodeFunction[id-1] != n.Function {
+				v.errorf("node %d %s declares Function %d, but is owned by function %d", id, n.Kind, n.Function, v.nodeFunction[id-1])
+			}
+		}
 		for _, d := range n.DeferChain {
 			v.expectDeferRegister(id, d)
 		}
