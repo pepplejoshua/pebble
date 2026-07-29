@@ -146,6 +146,7 @@ func TestValidationFixtures(t *testing.T) {
 	t.Run("Callable", func(t *testing.T) {
 		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/callable_*.peb")
 		capturePaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0617/*.peb")
+		genericPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0608/*.peb")
 
 		for _, path := range validPaths {
 			path := path
@@ -157,15 +158,22 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 
-		// Generic anonymous functions currently fail run06a's snapshot pipeline
-		// with T0510/T0512 before validateCallableRecords can see their record.
-
 		for _, path := range capturePaths {
 			path := path
 			t.Run(filepath.Base(path), func(t *testing.T) {
 				diagnostics, handoff, records := runValidationFixture(t, path)
 				if validateCallableRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeCaptureViolation) {
 					t.Fatalf("capturing anonymous callable was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range genericPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCallableRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeGenericAnonymous) {
+					t.Fatalf("generic anonymous callable was not rejected: diagnostics=%+v", diagnostics.Items())
 				}
 			})
 		}

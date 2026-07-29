@@ -524,6 +524,48 @@ func TestDeclarationFactsGenericAnonymousDoesNotResolveInvalidOwner(t *testing.T
 	}
 }
 
+// TestDeclarationFactsGenericAnonymousReachesFullPipeline is a regression test
+// for a fixed bug in infer.semanticSnapshotBuilder.validateOwnerJoins: a type
+// parameter with no owner (Containing == 0, exactly what an unsupported
+// generic anonymous function's own type parameter gets from the resolver,
+// since it has no containing symbol to register against) was included when
+// building the owner-table's expected join, while prepareDeclarations already
+// skips registering owners for Containing == 0. That inconsistency made
+// run06a fail with T0512 ("semantic snapshot owner table is missing or has
+// an extra owner") for this exact source, even though nothing was actually
+// wrong -- and meant no 06b validator could ever observe this construct
+// through the real run06a/resolveRecords pipeline, only via direct record
+// fabrication (see TestValidateCallableRecordsRejectsCapturesAndGenericAnonymous
+// in call_validation_test.go).
+func TestDeclarationFactsGenericAnonymousReachesFullPipeline(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`let identity = fn[T](value T) T => value;`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.Semantics == nil || handoff.Solution == nil {
+		t.Fatalf("run06a failed to produce a usable handoff: %+v", diagnostics.Items())
+	}
+	for _, item := range diagnostics.Items() {
+		if item.Code == "T0512" {
+			t.Fatalf("owner table inconsistency resurfaced: %+v", diagnostics.Items())
+		}
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatalf("records did not resolve: %+v", diagnostics.Items())
+	}
+	found := false
+	for _, retained := range handoff.Records.Records() {
+		if retained.UnsupportedCallable != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected an active unsupportedCallableRecord to reach the real pipeline")
+	}
+	if validateCallableRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeGenericAnonymous) {
+		t.Fatalf("generic anonymous function was not rejected end-to-end: %+v", diagnostics.Items())
+	}
+}
+
 func TestDeclarationFactsFreezePreservesExactRecords(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn use(value i32) void { let local i32 = value; context; }`)})
 	facts := run06a3(inputs, diagnostics, Config{})

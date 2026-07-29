@@ -961,6 +961,14 @@ func (b *semanticSnapshotBuilder) validateOwnerJoins() error {
 			continue
 		}
 		expectedBindings = append(expectedBindings, value.ID)
+		if value.Containing == 0 {
+			// A type parameter with no owner (e.g. an unsupported generic
+			// anonymous function's own parameter, which the resolver never
+			// assigns a containing symbol for) has no owners-table entry to
+			// join against -- prepareDeclarations skips it for the same
+			// reason (see its own `if sym.Containing != 0` guard).
+			continue
+		}
 		expectedOwners[value.Containing] = append(expectedOwners[value.Containing], value.ID)
 	}
 	for _, id := range sortedMapSymbolIDs(b.program.signatures) {
