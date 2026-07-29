@@ -9,6 +9,11 @@ import (
 
 const CodeCall diagnostic.Code = "C0604"
 
+const (
+	CodeCaptureViolation diagnostic.Code = "C0617"
+	CodeGenericAnonymous diagnostic.Code = "C0608"
+)
+
 func validateCallRecords(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
 	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil {
 		return true
@@ -123,6 +128,76 @@ func validateCallRecords(handoff *solveHandoff, records *solvedRecords, diagnost
 		if !valid {
 			report(call.Header)
 		}
+	}
+	return !failed
+}
+
+func validateCallableRecords(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
+	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil {
+		return true
+	}
+	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
+	failed := false
+	report := func(code diagnostic.Code, header recordHeader, message string) {
+		failed = true
+		reporter.add(diagnostic.Diagnostic{
+			Severity: diagnostic.Error,
+			Code:     code,
+			Message:  message,
+			Primary:  diagnostic.Label{Span: header.Span},
+		})
+	}
+	resolution := handoff.Semantics.Resolution()
+	if resolution == nil || resolution.Symbols == nil {
+		return true
+	}
+	typeSnapshot := handoff.Semantics.Types()
+
+	for _, retained := range handoff.Records.Records() {
+		if !activeOperatorRecord(handoff, retained.Header) || retained.Callable == nil {
+			continue
+		}
+		callable := retained.Callable
+		invalidConvention := callable.Kind == callableExtern && callable.Convention != types.C
+
+		if callable.BodyPresent && callable.Convention != types.Pebble {
+			invalidConvention = true
+		}
+		if callable.Variadic && callable.Convention != types.C {
+			invalidConvention = true
+		}
+		if invalidConvention {
+			report(CodeCall, callable.Header, "callable declaration is invalid")
+		}
+
+		if callable.Kind == callableMethod && len(callable.Parameters) != 0 {
+			self, ok := records.Root(callable.Parameters[0])
+			if ok && self.State == infer.TypeFinal {
+				selfKey, keyOK := typeSnapshot.Key(self.Type)
+				method, methodOK := resolution.Symbols.Symbol(callable.Symbol)
+				declaration, declarationOK := handoff.Semantics.TypeDeclaration(method.Containing)
+				if keyOK && methodOK && declarationOK && declaration.Concrete != 0 {
+					selfType := self.Type
+					if selfKey.Kind() == types.Pointer {
+						selfType, keyOK = selfKey.Child()
+					}
+					if keyOK && selfType != declaration.Concrete {
+						report(CodeCall, callable.Header, "method self parameter is invalid")
+					}
+				}
+			}
+		}
+
+		if callable.Kind == callableLiteral && len(callable.Captures) != 0 {
+			report(CodeCaptureViolation, callable.Header, "anonymous function captures an enclosing binding")
+		}
+	}
+
+	for _, retained := range handoff.Records.Records() {
+		if retained.UnsupportedCallable == nil || !activeOperatorRecord(handoff, retained.Header) {
+			continue
+		}
+		report(CodeGenericAnonymous, retained.UnsupportedCallable.Header, "generic anonymous functions are unsupported")
 	}
 	return !failed
 }
