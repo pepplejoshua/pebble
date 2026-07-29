@@ -1,0 +1,3 @@
+fn cast(value i32) i64 {
+    return value as i64;
+}

@@ -1,0 +1,17 @@
+fn arithmetic(a i32, b i64, x f32, y f64) void {
+    let neg = -a;
+    let float_neg = -x;
+    let sub = a - a;
+    let mul = a * a;
+    let div = a / a;
+    let text = "a" + "b";
+    let bits = ~a;
+    let remainder = a % a;
+    let anded = a & a;
+    let ored = a | a;
+    let xored = a ^ a;
+    let shifted = a << b;
+    let shifted_back = a >> b;
+    let mixed = x + x;
+    let mixed_float = y / y;
+}

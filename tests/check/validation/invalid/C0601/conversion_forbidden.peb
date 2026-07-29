@@ -1,0 +1,6 @@
+type Left = struct { value i32; };
+type Right = struct { value i32; };
+
+fn forbidden(value Left) void {
+    let other Right = value;
+}

@@ -1,0 +1,3 @@
+fn negate(value uint) uint {
+    return -value;
+}

@@ -1,0 +1,17 @@
+type Color = enum { red, blue };
+
+fn boolean_and_ordering(a bool, b bool, c char, s str, n i32, color Color) void {
+    let not_value = !a;
+    let and_value = a && b;
+    let or_value = a || b;
+    let char_order = c < c;
+    let string_order = s <= s;
+    let numeric_order = n >= n;
+    let enum_order = color > color;
+    let bool_equal = a == b;
+    let char_equal = c != c;
+    let string_equal = s == s;
+    let numeric_equal = n == n;
+    let enum_equal = color != color;
+    let pointer_equal = &n == &n;
+}
