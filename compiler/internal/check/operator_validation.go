@@ -24,14 +24,7 @@ func activeOperatorRecord(handoff *solveHandoff, header recordHeader) bool {
 	return ok && selected == header.Alternative.Index
 }
 
-func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
-	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil {
-		return true
-	}
-	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
-
-	// Requirements are retained separately from their operator, so index them
-	// first to make rigidity independent of record ordering.
+func rigidOperatorValues(handoff *solveHandoff) map[uint32]map[valueID]bool {
 	rigid := make(map[uint32]map[valueID]bool)
 	for _, record := range handoff.Records.Records() {
 		if record.Requirement == nil || record.Requirement.Operator == 0 || !activeOperatorRecord(handoff, record.Header) {
@@ -46,6 +39,16 @@ func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, 
 		}
 		rigid[owner][record.Requirement.Subject] = true
 	}
+	return rigid
+}
+
+func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
+	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil {
+		return true
+	}
+	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
+
+	rigid := rigidOperatorValues(handoff)
 
 	failed := false
 	for _, retained := range handoff.Records.Records() {
@@ -132,6 +135,82 @@ func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, 
 			bad = concrete(0) && (!leftOK || !isIntegerBuiltin(left))
 			bad = bad || concrete(1) && (!rightOK || !isIntegerBuiltin(right))
 			bad = bad || !resultMatches(0)
+		}
+		if bad {
+			failed = true
+			reporter.add(diagnostic.Diagnostic{Severity: diagnostic.Error, Code: CodeOperator, Message: "operator operands or result have invalid types", Primary: diagnostic.Label{Span: op.Header.Span}})
+		}
+	}
+	return !failed
+}
+
+func validateBooleanOperators(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
+	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil {
+		return true
+	}
+	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
+	rigid := rigidOperatorValues(handoff)
+	failed := false
+	for _, retained := range handoff.Records.Records() {
+		op := retained.Operator
+		if op == nil || !activeOperatorRecord(handoff, retained.Header) ||
+			(op.Family != operatorBoolean && op.Family != operatorOrdering && op.Family != operatorEquality) {
+			continue
+		}
+
+		ids := append(append([]valueID(nil), op.Operands...), op.Result)
+		typeIDs := make([]types.TypeID, len(ids))
+		keys := make([]types.TypeKey, len(ids))
+		resolved := make([]bool, len(ids))
+		for i, id := range ids {
+			result, ok := records.Root(id)
+			if !ok || result.State != infer.TypeFinal {
+				continue
+			}
+			key, ok := handoff.Semantics.Types().Key(result.Type)
+			if !ok {
+				continue
+			}
+			typeIDs[i], keys[i], resolved[i] = result.Type, key, true
+		}
+
+		isRigid := rigid[uint32(op.Header.Owner)]
+		concrete := func(index int) bool {
+			return resolved[index] && (index >= len(op.Operands) || !isRigid[op.Operands[index]])
+		}
+		isBool := func(index int) bool {
+			kind, ok := keys[index].Builtin()
+			return ok && kind == types.Bool
+		}
+		bad := false
+		switch op.Family {
+		case operatorBoolean:
+			for i := range op.Operands {
+				bad = bad || concrete(i) && !isBool(i)
+			}
+			bad = bad || concrete(len(op.Operands)) && !isBool(len(op.Operands))
+		case operatorOrdering, operatorEquality:
+			for i := range op.Operands {
+				if !concrete(i) {
+					continue
+				}
+				key := keys[i]
+				builtin, builtinOK := key.Builtin()
+				allowed := builtinOK && (isIntegerBuiltin(builtin) || isFloatBuiltin(builtin))
+				if op.Family == operatorOrdering {
+					allowed = allowed || builtinOK && (builtin == types.Char || builtin == types.Str)
+				} else {
+					allowed = allowed || builtinOK && (builtin == types.Bool || builtin == types.Char || builtin == types.Str) || key.Kind() == types.Pointer
+				}
+				allowed = allowed || isEnumType(handoff.Semantics, typeIDs[i])
+				bad = bad || !allowed
+			}
+			if concrete(0) && concrete(1) {
+				bad = bad || typeIDs[0] != typeIDs[1]
+			}
+			if concrete(len(op.Operands)) {
+				bad = bad || !isBool(len(op.Operands))
+			}
 		}
 		if bad {
 			failed = true
