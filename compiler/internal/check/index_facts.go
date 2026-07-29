@@ -78,7 +78,13 @@ func (w *walker) finishSlice(ref symbol.SyntaxRef, node syntax.Node, ctx walkCon
 		return
 	}
 	header := w.header(ref, ctx.genericOwner, false)
-	record := indexRecord{Header: header, Mode: indexSlice, Base: base.ID, Start: start.ID, End: end.ID, Result: result.ID, StartPresent: start.ID != 0, EndPresent: end.ID != 0}
+	if p.start != (symbol.SyntaxRef{}) {
+		w.evaluateIndexBound(p.start)
+	}
+	if p.end != (symbol.SyntaxRef{}) {
+		w.evaluateIndexBound(p.end)
+	}
+	record := indexRecord{Header: header, Mode: indexSlice, Base: base.ID, Start: start.ID, End: end.ID, Result: result.ID, StartPresent: start.ID != 0, EndPresent: end.ID != 0, StartSyntax: p.start, EndSyntax: p.end}
 	record.EscapeDestination = w.escapeDestinations[ref]
 	w.applyKnownArrayLength(&record, p.base)
 	specialized, ok := w.addRecord(retainedRecord{Header: header, Index: &record})

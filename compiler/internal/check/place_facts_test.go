@@ -3,6 +3,7 @@ package check
 import (
 	"testing"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 )
 
@@ -166,6 +167,73 @@ fn main(array [3]i32) void {
 	}
 	if solution := facts.Session.Solve(); !solution.Successful() || diagnostics.HasErrors() {
 		t.Fatalf("diagnostics=%+v", diagnostics.Items())
+	}
+}
+
+func TestIndexFactsRetainBoundSyntaxAndConstants(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn main(array [3]i32, start i32) void {
+ let sliced []i32 = array[1:2];
+ let indexed i32 = array[0];
+ let runtime []i32 = array[start:];
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil {
+		t.Fatalf("06a did not produce a handoff: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatalf("records did not resolve: %+v", diagnostics.Items())
+	}
+	var sliced, indexed, runtime *indexRecord
+	for _, retained := range handoff.Records.Records() {
+		if retained.Index == nil {
+			continue
+		}
+		switch {
+		case retained.Index.Mode == indexSlice && retained.Index.EndPresent:
+			sliced = retained.Index
+		case retained.Index.Mode == indexValue:
+			indexed = retained.Index
+		case retained.Index.Mode == indexSlice && retained.Index.StartPresent:
+			runtime = retained.Index
+		}
+	}
+	if sliced == nil || indexed == nil || runtime == nil {
+		t.Fatalf("missing index records: sliced=%v indexed=%v runtime=%v", sliced != nil, indexed != nil, runtime != nil)
+	}
+	if sliced.StartSyntax == (symbol.SyntaxRef{}) || sliced.EndSyntax == (symbol.SyntaxRef{}) || indexed.StartSyntax == (symbol.SyntaxRef{}) {
+		t.Fatalf("missing bound syntax refs: sliced=%+v indexed=%+v", sliced, indexed)
+	}
+	for _, bound := range []struct {
+		ref  symbol.SyntaxRef
+		want string
+	}{
+		{sliced.StartSyntax, "1"},
+		{sliced.EndSyntax, "2"},
+		{indexed.StartSyntax, "0"},
+	} {
+		item, exists := inputs.Graph.Module(bound.ref.Module)
+		if !exists {
+			t.Fatalf("missing module for bound ref %+v", bound.ref)
+		}
+		boundNode, exists := item.Tree.Node(bound.ref.Node)
+		file, fileExists := inputs.Sources.File(boundNode.Span().Source)
+		if !exists || !fileExists || string(file.Slice(boundNode.Span())) != bound.want {
+			t.Fatalf("bound ref %+v does not span %q", bound.ref, bound.want)
+		}
+		result, found := records.Constant(bound.ref)
+		if !found || result.State != constantKnown || result.Value.Integer.String() != bound.want {
+			t.Fatalf("constant for %+v = %+v, found=%v, want %s", bound.ref, result, found, bound.want)
+		}
+	}
+	if runtime.StartSyntax == (symbol.SyntaxRef{}) {
+		t.Fatal("runtime bound syntax ref missing")
+	}
+	result, found := records.Constant(runtime.StartSyntax)
+	if !found || result.State == constantKnown {
+		t.Fatalf("runtime constant = %+v, found=%v", result, found)
 	}
 }
 

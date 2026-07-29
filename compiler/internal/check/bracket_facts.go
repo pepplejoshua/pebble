@@ -1,6 +1,7 @@
 package check
 
 import (
+	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -22,6 +23,17 @@ type indexRecord struct {
 	KnownArrayLength         uint64
 	HasKnownArrayLength      bool
 	EscapeDestination        symbol.SymbolID
+	StartSyntax, EndSyntax   symbol.SyntaxRef
+}
+
+func (w *walker) evaluateIndexBound(ref symbol.SyntaxRef) {
+	if w.evaluator == nil {
+		return
+	}
+	budget := w.evaluator.budget
+	w.evaluator.budget = newGenerationDiagnosticBudget(diagnostic.NewDiagnosticSet(), w.evaluator.config.MaxDiagnostics)
+	w.evaluator.evaluate(ref)
+	w.evaluator.budget = budget
 }
 
 type guardedBranchRoot struct {
@@ -220,7 +232,8 @@ func (w *walker) finishBracket(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		return
 	}
 	header := w.header(ref, ctx.genericOwner, false)
-	record := indexRecord{Header: header, Mode: indexValue, Base: base.ID, Start: index.ID, Result: result.ID, StartPresent: true}
+	w.evaluateIndexBound(p.arguments[0])
+	record := indexRecord{Header: header, Mode: indexValue, Base: base.ID, Start: index.ID, Result: result.ID, StartPresent: true, StartSyntax: p.arguments[0]}
 	w.applyKnownArrayLength(&record, p.base)
 	specialized, _ := w.addRecord(retainedRecord{Header: header, Index: &record})
 	w.retainRequirement(header, requirementUnsupportedIndex, base.ID)
@@ -261,7 +274,8 @@ func (w *walker) finishDeferredBracket(ref symbol.SyntaxRef, ctx walkContext, p 
 	runtimeMemberSpecialized, _ := w.addRecord(retainedRecord{Header: memberHeader, Member: &runtimeMember})
 	w.retainRequirement(memberHeader, requirementUnsupportedField, receiver.ID)
 	w.addRecord(retainedRecord{Header: memberHeader, Expression: &expressionRecord{Header: memberHeader, Kind: expressionMember, Result: p.memberValue.ID, Children: []valueID{receiver.ID}, Specialized: runtimeMemberSpecialized}})
-	record := indexRecord{Header: header, Mode: indexValue, Base: p.memberValue.ID, Start: argument.ID, Result: p.result.ID, StartPresent: true}
+	w.evaluateIndexBound(p.arguments[0])
+	record := indexRecord{Header: header, Mode: indexValue, Base: p.memberValue.ID, Start: argument.ID, Result: p.result.ID, StartPresent: true, StartSyntax: p.arguments[0]}
 	specialized, _ := w.addRecord(retainedRecord{Header: header, Index: &record})
 	w.retainRequirement(header, requirementUnsupportedIndex, p.memberValue.ID)
 	w.retainBracket(ref, ctx, p.result, specialized, alternativeTag{}, []valueID{p.memberValue.ID, argument.ID})
