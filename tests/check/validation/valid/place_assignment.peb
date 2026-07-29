@@ -1,0 +1,4 @@
+fn check() void {
+    var target i32 = 1;
+    target = 2;
+}

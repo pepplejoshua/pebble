@@ -204,6 +204,47 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Place", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/place_*.peb")
+		assignmentMismatchPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0601/assignment_*.peb")
+		invalidPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0606/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				placeOK := validatePlaceRecords(handoff, records, diagnostics, Config{})
+				assignmentOK := validateAssignmentRecords(handoff, records, diagnostics, Config{})
+				compatibilityOK := validateCompatibilityRecords(handoff, records, diagnostics, Config{})
+				if !placeOK || !assignmentOK || !compatibilityOK || hasValidationDiagnostic(diagnostics, CodePlace) || hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("valid place fixture was rejected: place=%v assignment=%v compatibility=%v diagnostics=%+v", placeOK, assignmentOK, compatibilityOK, diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range assignmentMismatchPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCompatibilityRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("invalid assignment type mismatch was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range invalidPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				placeOK := validatePlaceRecords(handoff, records, diagnostics, Config{})
+				assignmentOK := validateAssignmentRecords(handoff, records, diagnostics, Config{})
+				if placeOK && assignmentOK || !hasValidationDiagnostic(diagnostics, CodePlace) {
+					t.Fatalf("invalid place fixture was not rejected: place=%v assignment=%v diagnostics=%+v", placeOK, assignmentOK, diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {

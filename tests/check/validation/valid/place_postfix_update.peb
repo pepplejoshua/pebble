@@ -1,0 +1,7 @@
+fn check() void {
+    var value i32 = 1;
+    value++;
+    for var i i32 = 0; i < 3; i++ {
+        value = i;
+    }
+}

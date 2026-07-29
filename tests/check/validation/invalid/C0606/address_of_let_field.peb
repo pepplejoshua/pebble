@@ -1,0 +1,6 @@
+type Box = struct { value i32; };
+
+fn check() *i32 {
+    let box Box;
+    return &box.value;
+}
