@@ -1,0 +1,3 @@
+fn check(array [3]i32) void {
+    let value i32 = array[1];
+}

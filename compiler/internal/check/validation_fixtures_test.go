@@ -170,6 +170,32 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Index", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/index_*.peb")
+		invalidPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0609/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if !validateIndexRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeIndexBound) {
+					t.Fatalf("valid index fixture was rejected: %+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range invalidPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				valid := validateIndexRecords(handoff, records, diagnostics, Config{})
+				if valid || !hasValidationDiagnostic(diagnostics, CodeIndexBound) {
+					t.Fatalf("invalid index was not rejected: valid=%v diagnostics=%+v", valid, diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {

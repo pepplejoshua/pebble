@@ -1,0 +1,5 @@
+fn check(array [3]i32, values []i32, text str, index i32) void {
+    let runtimeArray i32 = array[index];
+    let runtimeSlice []i32 = values[index:];
+    let runtimeString char = text[index];
+}
