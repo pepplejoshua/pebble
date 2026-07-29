@@ -139,6 +139,79 @@ func classifyComposite(snapshot *infer.SemanticSnapshot, sourceID, destinationID
 	return compatibleForbidden, true
 }
 
+// coercionKind identifies which typed-IR operation applies to a compatible
+// (implicit or explicit) conversion pair.
+type coercionKind uint8
+
+const (
+	coercionNone coercionKind = iota + 1
+	coercionIntegerCast
+	coercionIntegerToFloat
+	coercionFloatToInteger
+	coercionFloatCast
+	coercionOptionalInject
+	coercionTupleCoerce
+	coercionEnumToInteger
+	coercionOptionalIntegerToEnum
+	coercionCheckedIntegerToEnum
+)
+
+// coercionFor returns the typed-IR operation kind that would coerce sourceID
+// to destinationID given their known compatibilityClass. class must be
+// compatibleImplicit or compatibleExplicit for meaningful results; identity
+// and forbidden pairs always return coercionNone.
+func coercionFor(snapshot *infer.SemanticSnapshot, class compatibilityClass, sourceID, destinationID types.TypeID) coercionKind {
+	if class == compatibleIdentity || class == compatibleForbidden {
+		return coercionNone
+	}
+	sourceKey, _ := snapshot.Types().Key(sourceID)
+	destKey, _ := snapshot.Types().Key(destinationID)
+
+	srcBuiltin, srcIsBuiltin := sourceKey.Builtin()
+	dstBuiltin, dstIsBuiltin := destKey.Builtin()
+
+	if srcIsBuiltin && dstIsBuiltin {
+		if isIntegerBuiltin(srcBuiltin) && isFloatBuiltin(dstBuiltin) {
+			return coercionIntegerToFloat
+		}
+		if isFloatBuiltin(srcBuiltin) && isIntegerBuiltin(dstBuiltin) {
+			return coercionFloatToInteger
+		}
+		if isIntegerBuiltin(srcBuiltin) && isIntegerBuiltin(dstBuiltin) {
+			return coercionIntegerCast
+		}
+		if isFloatBuiltin(srcBuiltin) && isFloatBuiltin(dstBuiltin) {
+			return coercionFloatCast
+		}
+	}
+
+	if destKey.Kind() == types.Optional {
+		if child, ok := destKey.Child(); ok && child == sourceID {
+			return coercionOptionalInject
+		}
+	}
+
+	if sourceKey.Kind() == types.Tuple && destKey.Kind() == types.Tuple {
+		return coercionTupleCoerce
+	}
+
+	if isEnumType(snapshot, sourceID) && dstIsBuiltin && isIntegerBuiltin(dstBuiltin) {
+		return coercionEnumToInteger
+	}
+
+	if srcIsBuiltin && isIntegerBuiltin(srcBuiltin) && isEnumType(snapshot, destinationID) {
+		return coercionCheckedIntegerToEnum
+	}
+
+	if srcIsBuiltin && isIntegerBuiltin(srcBuiltin) && destKey.Kind() == types.Optional {
+		if child, ok := destKey.Child(); ok && isEnumType(snapshot, child) {
+			return coercionOptionalIntegerToEnum
+		}
+	}
+
+	return coercionNone
+}
+
 func classify(snapshot *infer.SemanticSnapshot, sourceID, destinationID types.TypeID) compatibilityClass {
 	if snapshot == nil || snapshot.Types() == nil {
 		return compatibleForbidden

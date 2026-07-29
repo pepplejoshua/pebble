@@ -216,3 +216,58 @@ func TestClassifyCompositeMatrix(t *testing.T) {
 		t.Fatal("both-Builtin composite classification returned ok=true")
 	}
 }
+
+func TestCoercionFor(t *testing.T) {
+	f := newCompositeFixture(t)
+	s := f.snapshot
+	ids := f.ids
+	builtins := s.Types().Builtins()
+
+	cases := []struct {
+		name string
+		src  types.TypeID
+		dst  types.TypeID
+		want coercionKind
+	}{
+		// 1. compatibleIdentity → coercionNone
+		{"identity builtin", f.a, f.a, coercionNone},
+		{"identity pointer", ids["ptrA"], ids["ptrA"], coercionNone},
+		{"identity array", ids["arrayA"], ids["arrayA"], coercionNone},
+		{"identity slice", ids["sliceA"], ids["sliceA"], coercionNone},
+		// 2. compatibleForbidden → coercionNone
+		{"forbidden builtin", f.b, f.a, coercionNone},
+		{"forbidden pointer", ids["ptrA"], ids["ptrB"], coercionNone},
+		{"forbidden array payload", ids["arrayA"], ids["arrayB"], coercionNone},
+		{"forbidden different slice", ids["sliceA"], ids["sliceB"], coercionNone},
+		// 3. integer cast (different integer builtins)
+		{"integer cast i32→u32", f.a, builtins.U32, coercionIntegerCast},
+		{"integer cast u32→i32", builtins.U32, f.a, coercionIntegerCast},
+		{"integer cast u64→i64", builtins.U64, builtins.I64, coercionIntegerCast},
+		// 4. integer↔float and float↔float
+		{"integer to float i32→f32", f.a, builtins.F32, coercionIntegerToFloat},
+		{"integer to float i64→f64", builtins.I64, builtins.F64, coercionIntegerToFloat},
+		{"float to integer f32→i32", builtins.F32, f.a, coercionFloatToInteger},
+		{"float to integer f64→i64", builtins.F64, builtins.I64, coercionFloatToInteger},
+		{"float cast f32→f64", builtins.F32, builtins.F64, coercionFloatCast},
+		{"float cast f64→f32", builtins.F64, builtins.F32, coercionFloatCast},
+		// 5. optional injection
+		{"optional inject A→?A", f.a, f.optionalA, coercionOptionalInject},
+		{"optional inject ?A→??A", f.optionalA, f.optionalOptionalA, coercionOptionalInject},
+		// 6. tuple coerce
+		{"implicit tuple coerce", ids["tupleImplicit"], ids["tupleImplicitDestination"], coercionTupleCoerce},
+		{"explicit tuple coerce", ids["tupleExplicit"], ids["tupleExplicitDestination"], coercionTupleCoerce},
+		// 7. enum conversions
+		{"enum to integer", f.enum, f.integer, coercionEnumToInteger},
+		{"integer to bare enum", f.integer, f.enum, coercionCheckedIntegerToEnum},
+		{"integer to optional enum", f.integer, ids["optionalEnum"], coercionOptionalIntegerToEnum},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			class := classify(s, tc.src, tc.dst)
+			got := coercionFor(s, class, tc.src, tc.dst)
+			if got != tc.want {
+				t.Errorf("coercionFor(classify=%d, ...) = %d, want %d", class, got, tc.want)
+			}
+		})
+	}
+}
