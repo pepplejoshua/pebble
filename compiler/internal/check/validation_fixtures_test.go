@@ -64,6 +64,46 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Aggregate", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/aggregate_*.peb")
+		conversionPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0601/field_*.peb")
+		memberPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0605/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				aggregateOK := validateAggregateRecords(handoff, records, diagnostics, Config{})
+				compatibilityOK := validateCompatibilityRecords(handoff, records, diagnostics, Config{})
+				if !aggregateOK || !compatibilityOK || hasValidationDiagnostic(diagnostics, CodeMember) || hasValidationDiagnostic(diagnostics, CodeAggregate) || hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("valid aggregate fixture was rejected: aggregate=%v compatibility=%v diagnostics=%+v", aggregateOK, compatibilityOK, diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range conversionPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCompatibilityRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("invalid aggregate field conversion was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range memberPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				aggregateOK := validateAggregateRecords(handoff, records, diagnostics, Config{})
+				memberOK := validateMemberRecords(handoff, records, diagnostics, Config{})
+				if aggregateOK && memberOK || !hasValidationDiagnostic(diagnostics, CodeMember) {
+					t.Fatalf("invalid aggregate member was not rejected: aggregate=%v member=%v diagnostics=%+v", aggregateOK, memberOK, diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {

@@ -1,0 +1,16 @@
+type Left = struct {
+    value i32;
+};
+
+type Right = struct {
+    value i32;
+};
+
+type Box = struct {
+    value Right;
+};
+
+fn check() void {
+    let left Left = Left.{ value = 1 };
+    let box Box = Box.{ value = left };
+}

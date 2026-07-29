@@ -1,0 +1,5 @@
+type Color = enum { red, blue };
+
+fn check() void {
+    let color Color = .red;
+}

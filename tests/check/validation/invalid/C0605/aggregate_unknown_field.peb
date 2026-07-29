@@ -1,0 +1,7 @@
+type Box = struct {
+    value i32;
+};
+
+fn check() void {
+    let box Box = Box.{ missing = 1 };
+}

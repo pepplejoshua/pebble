@@ -1,0 +1,8 @@
+type Box = struct {
+    value i32;
+    other i32;
+};
+
+fn check() void {
+    let box Box = .{ value = 1, other = 2 };
+}
