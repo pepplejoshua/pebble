@@ -1,0 +1,11 @@
+type Left = struct {
+    value i32;
+};
+
+fn takes(value i32) void {
+}
+
+fn check() void {
+    let left Left = Left.{ value = 1 };
+    takes(left);
+}

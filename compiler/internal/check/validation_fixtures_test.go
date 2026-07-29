@@ -104,6 +104,72 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Call", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/call_*.peb")
+		conversionPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0601/call_*.peb")
+		callPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0604/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				callOK := validateCallRecords(handoff, records, diagnostics, Config{})
+				compatibilityOK := validateCompatibilityRecords(handoff, records, diagnostics, Config{})
+				if !callOK || !compatibilityOK || hasValidationDiagnostic(diagnostics, CodeCall) || hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("valid call fixture was rejected: call=%v compatibility=%v diagnostics=%+v", callOK, compatibilityOK, diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range conversionPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCompatibilityRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("invalid call argument conversion was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range callPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCallRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeCall) {
+					t.Fatalf("invalid call was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+	})
+
+	t.Run("Callable", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/callable_*.peb")
+		capturePaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0617/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if !validateCallableRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeCaptureViolation) || hasValidationDiagnostic(diagnostics, CodeGenericAnonymous) {
+					t.Fatalf("valid callable fixture was rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+
+		// Generic anonymous functions currently fail run06a's snapshot pipeline
+		// with T0510/T0512 before validateCallableRecords can see their record.
+
+		for _, path := range capturePaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCallableRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeCaptureViolation) {
+					t.Fatalf("capturing anonymous callable was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {

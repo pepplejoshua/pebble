@@ -1,0 +1,4 @@
+fn make(value i32) fn() i32 {
+    let inner = fn() i32 => value;
+    return inner;
+}

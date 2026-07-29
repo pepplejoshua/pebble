@@ -1,0 +1,5 @@
+fn add(left i32, right i32) i32 => left + right;
+
+fn check() void {
+    let result i32 = add(1, 2);
+}

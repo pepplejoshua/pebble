@@ -1,0 +1,4 @@
+fn make() fn() i32 {
+    let value = fn() i32 => 1;
+    return value;
+}

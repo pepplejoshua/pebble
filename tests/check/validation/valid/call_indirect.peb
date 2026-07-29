@@ -1,0 +1,6 @@
+fn add(left i32, right i32) i32 => left + right;
+
+fn check() void {
+    let function fn(i32, i32) i32 = add;
+    let result i32 = function(1, 2);
+}
