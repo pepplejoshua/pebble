@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -96,5 +98,121 @@ func TestClassifyPrimitiveNonBuiltinReturnsFalse(t *testing.T) {
 	}
 	if _, ok := classifyPrimitive(builtinKey, arrayKey); ok {
 		t.Error("classifyPrimitive(builtinKey, arrayKey) returned ok=true; want false")
+	}
+}
+
+type compositeFixture struct {
+	snapshot          *infer.SemanticSnapshot
+	a, b              types.TypeID
+	integer           types.TypeID
+	enum, tagged      types.TypeID
+	optionalA         types.TypeID
+	optionalOptionalA types.TypeID
+	ids               map[string]types.TypeID
+}
+
+func newCompositeFixture(t *testing.T) compositeFixture {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Color = enum { red, blue };
+type Choice = union enum { value i32; };
+fn main() void {}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if facts == nil || facts.Program == nil || facts.Session == nil {
+		t.Fatal("failed to prepare composite fixture")
+	}
+	var color, choice symbol.SymbolID
+	for _, value := range inputs.Resolution.Symbols.All() {
+		if value.Name == "Color" {
+			color = value.ID
+		}
+		if value.Name == "Choice" {
+			choice = value.ID
+		}
+	}
+	if color == 0 || choice == 0 {
+		t.Fatal("failed to find nominal fixture declarations")
+	}
+	store := inputs.Types
+	intern := func(key types.TypeKey) types.TypeID {
+		id, err := store.Intern(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a := store.Builtins().I32
+	b := store.Builtins().Char
+	enum := intern(types.NominalKey(color, nil))
+	tagged := intern(types.NominalKey(choice, nil))
+	optionalA := intern(types.OptionalKey(a))
+	optionalOptionalA := intern(types.OptionalKey(optionalA))
+	ids := map[string]types.TypeID{
+		"ptrA": intern(types.PointerKey(a)), "ptrA2": intern(types.PointerKey(a)), "ptrB": intern(types.PointerKey(b)),
+		"arrayA": intern(types.ArrayKey(3, a)), "arrayB": intern(types.ArrayKey(3, b)),
+		"arrayA5": intern(types.ArrayKey(5, a)), "sliceA": intern(types.SliceKey(a)), "sliceB": intern(types.SliceKey(b)),
+		"tupleImplicit":             intern(types.TupleKey([]types.TypeID{a, optionalA})),
+		"tupleImplicitDestination":  intern(types.TupleKey([]types.TypeID{a, optionalOptionalA})),
+		"tupleExplicit":             intern(types.TupleKey([]types.TypeID{a, store.Builtins().F32})),
+		"tupleExplicitDestination":  intern(types.TupleKey([]types.TypeID{a, store.Builtins().F64})),
+		"tupleForbidden":            intern(types.TupleKey([]types.TypeID{a, b})),
+		"tupleForbiddenDestination": intern(types.TupleKey([]types.TypeID{a, a})),
+		"tupleShort":                intern(types.TupleKey([]types.TypeID{a})),
+		"fnPebble":                  intern(types.FunctionKey(types.Pebble, []types.TypeID{a}, a, false)),
+		"fnC":                       intern(types.FunctionKey(types.C, []types.TypeID{a}, a, false)),
+		"optionalB":                 intern(types.OptionalKey(b)), "optionalEnum": intern(types.OptionalKey(enum)),
+	}
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("composite fixture solve failed: %+v", diagnostics.Items())
+	}
+	snapshot, ok := infer.Snapshot(facts.Program, solution, diagnostics)
+	if !ok {
+		t.Fatal("failed to build composite semantic snapshot")
+	}
+	return compositeFixture{snapshot: snapshot, a: a, b: b, integer: store.Builtins().I32, enum: enum, tagged: tagged, optionalA: optionalA, optionalOptionalA: optionalOptionalA, ids: ids}
+}
+
+func TestClassifyCompositeMatrix(t *testing.T) {
+	f := newCompositeFixture(t)
+	s := f.snapshot
+	ids := f.ids
+	if ids["ptrA"] != ids["ptrA2"] {
+		t.Fatal("structurally identical pointers were not interned to one TypeID")
+	}
+	cases := []struct {
+		name     string
+		src, dst types.TypeID
+		want     compatibilityClass
+	}{
+		{"identical pointer", ids["ptrA"], ids["ptrA"], compatibleIdentity},
+		{"different pointer payload", ids["ptrA"], ids["ptrB"], compatibleForbidden},
+		{"different array payload", ids["arrayA"], ids["arrayB"], compatibleForbidden},
+		{"different array length", ids["arrayA"], ids["arrayA5"], compatibleForbidden},
+		{"different slices", ids["sliceA"], ids["sliceB"], compatibleForbidden},
+		{"optional injection", f.a, f.optionalA, compatibleImplicit},
+		{"nested optional injection", f.optionalA, f.optionalOptionalA, compatibleImplicit},
+		{"optional unwrap", f.optionalA, f.a, compatibleForbidden},
+		{"different optional payload", f.optionalA, ids["optionalB"], compatibleForbidden},
+		{"enum to integer", f.enum, f.integer, compatibleExplicit},
+		{"integer to enum", f.integer, f.enum, compatibleExplicit},
+		{"integer to optional enum", f.integer, ids["optionalEnum"], compatibleExplicit},
+		{"integer to tagged union", f.integer, f.tagged, compatibleForbidden},
+		{"implicit tuple", ids["tupleImplicit"], ids["tupleImplicitDestination"], compatibleImplicit},
+		{"explicit tuple", ids["tupleExplicit"], ids["tupleExplicitDestination"], compatibleExplicit},
+		{"forbidden tuple", ids["tupleForbidden"], ids["tupleForbiddenDestination"], compatibleForbidden},
+		{"different tuple arity", ids["tupleShort"], ids["tupleImplicit"], compatibleForbidden},
+		{"distinct functions", ids["fnPebble"], ids["fnC"], compatibleForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classify(s, tc.src, tc.dst); got != tc.want {
+				t.Fatalf("classify = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	if _, ok := classifyComposite(s, f.integer, s.Types().Builtins().F64); ok {
+		t.Fatal("both-Builtin composite classification returned ok=true")
 	}
 }

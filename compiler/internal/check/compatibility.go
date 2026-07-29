@@ -1,6 +1,9 @@
 package check
 
-import "github.com/pepplejoshua/pebble/compiler/internal/types"
+import (
+	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
+)
 
 // compatibilityClass describes the conversion legality between a source and
 // destination type pair.
@@ -41,8 +44,7 @@ func isFloatBuiltin(k types.BuiltinKind) bool {
 // classifyPrimitive returns the compatibility class for a primitive
 // (Builtin-kind) source and destination. The second return value is false
 // when either source or destination is not a Builtin kind, signalling that
-// the caller should defer to composite classification (which does not exist
-// yet).
+// the caller should defer to composite classification.
 func classifyPrimitive(source, destination types.TypeKey) (compatibilityClass, bool) {
 	srcKind, srcOK := source.Builtin()
 	dstKind, dstOK := destination.Builtin()
@@ -60,4 +62,97 @@ func classifyPrimitive(source, destination types.TypeKey) (compatibilityClass, b
 		return compatibleExplicit, true
 	}
 	return compatibleForbidden, true
+}
+
+func isEnumType(snapshot *infer.SemanticSnapshot, id types.TypeID) bool {
+	if snapshot == nil || snapshot.Types() == nil {
+		return false
+	}
+	key, ok := snapshot.Types().Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	declaration, _, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	value, ok := snapshot.TypeDeclaration(declaration)
+	return ok && value.Nominal == infer.NominalEnum
+}
+
+func classifyComposite(snapshot *infer.SemanticSnapshot, sourceID, destinationID types.TypeID) (compatibilityClass, bool) {
+	if snapshot == nil || snapshot.Types() == nil {
+		return 0, false
+	}
+	source, sourceOK := snapshot.Types().Key(sourceID)
+	destination, destinationOK := snapshot.Types().Key(destinationID)
+	if !sourceOK || !destinationOK {
+		return 0, false
+	}
+	if source.Kind() == types.Builtin && destination.Kind() == types.Builtin {
+		return 0, false
+	}
+	if sourceID == destinationID {
+		return compatibleIdentity, true
+	}
+
+	sourceBuiltin, sourceIsBuiltin := source.Builtin()
+	destinationBuiltin, destinationIsBuiltin := destination.Builtin()
+	if isEnumType(snapshot, sourceID) && destinationIsBuiltin && isIntegerBuiltin(destinationBuiltin) {
+		return compatibleExplicit, true
+	}
+	if sourceIsBuiltin && isIntegerBuiltin(sourceBuiltin) && isEnumType(snapshot, destinationID) {
+		return compatibleExplicit, true
+	}
+	if sourceIsBuiltin && isIntegerBuiltin(sourceBuiltin) && destination.Kind() == types.Optional {
+		if child, ok := destination.Child(); ok && isEnumType(snapshot, child) {
+			return compatibleExplicit, true
+		}
+	}
+	if destination.Kind() == types.Optional {
+		if child, ok := destination.Child(); ok && child == sourceID {
+			return compatibleImplicit, true
+		}
+	}
+
+	if source.Kind() == types.Tuple && destination.Kind() == types.Tuple {
+		sourceElements, _ := source.Elements()
+		destinationElements, _ := destination.Elements()
+		if len(sourceElements) != len(destinationElements) {
+			return compatibleForbidden, true
+		}
+		allImplicit := true
+		for index := range sourceElements {
+			class := classify(snapshot, sourceElements[index], destinationElements[index])
+			if class == compatibleForbidden {
+				return compatibleForbidden, true
+			}
+			if class == compatibleExplicit {
+				allImplicit = false
+			}
+		}
+		if allImplicit {
+			return compatibleImplicit, true
+		}
+		return compatibleExplicit, true
+	}
+	return compatibleForbidden, true
+}
+
+func classify(snapshot *infer.SemanticSnapshot, sourceID, destinationID types.TypeID) compatibilityClass {
+	if snapshot == nil || snapshot.Types() == nil {
+		return compatibleForbidden
+	}
+	sourceKey, sourceOK := snapshot.Types().Key(sourceID)
+	destinationKey, destinationOK := snapshot.Types().Key(destinationID)
+	if !sourceOK || !destinationOK {
+		return compatibleForbidden
+	}
+	if class, ok := classifyPrimitive(sourceKey, destinationKey); ok {
+		return class
+	}
+	if class, ok := classifyComposite(snapshot, sourceID, destinationID); ok {
+		return class
+	}
+	return compatibleForbidden
 }
