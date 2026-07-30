@@ -1,6 +1,7 @@
 package check
 
 import (
+	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
@@ -38,6 +39,7 @@ type bindingRecord struct {
 	Annotation, Initializer               valueID
 	AnnotationPresent, InitializerPresent bool
 	Global, Mutable                       bool
+	InitializerSyntax                     symbol.SyntaxRef
 }
 
 type callableRecord struct {
@@ -204,6 +206,7 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		return
 	}
 	annotationRef, initializerRef, annotationPresent, initializerPresent := bindingParts(ref, node)
+	_, global, _ := w.bindingKind(binding, node)
 	origin := w.origin(ref, node, "binding", binding.ID, ctx.genericOwner)
 	symbolTerm := w.symbolTerm(binding.ID, origin)
 	annotation := typedValue{}
@@ -225,6 +228,12 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		} else {
 			w.addConstraint(infer.Equal(symbolTerm, initializer.Term, origin))
 		}
+		if global && w.evaluator != nil {
+			budget := w.evaluator.budget
+			w.evaluator.budget = newGenerationDiagnosticBudget(diagnostic.NewDiagnosticSet(), w.evaluator.config.MaxDiagnostics)
+			w.evaluator.evaluate(initializerRef)
+			w.evaluator.budget = budget
+		}
 	}
 	if !annotationPresent && !initializerPresent {
 		symbolTerm = w.session.Error(origin)
@@ -237,12 +246,12 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		w.rigidValues[publishedValue.ID] = w.isRigidType(annotation.Known)
 	}
 	header := w.header(ref, ctx.genericOwner, !published || (!annotationPresent && !initializerPresent))
-	kind, global, mutable := w.bindingKind(binding, node)
+	kind, _, mutable := w.bindingKind(binding, node)
 	w.retainBinding(bindingRecord{
 		Header: header, Symbol: binding.ID, Kind: kind,
 		Annotation: annotation.ID, Initializer: initializer.ID,
 		AnnotationPresent: annotationPresent, InitializerPresent: initializerPresent,
-		Global: global, Mutable: mutable,
+		Global: global, Mutable: mutable, InitializerSyntax: initializerRef,
 	})
 }
 

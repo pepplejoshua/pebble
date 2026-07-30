@@ -468,6 +468,45 @@ func TestDeclarationFactsInitializerPlaceholderRetainsExactValue(t *testing.T) {
 	}
 }
 
+func TestDeclarationFactsGlobalInitializerRetainsSyntaxAndConstant(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`let value i32 = 1;`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil {
+		t.Fatalf("06a did not produce a handoff: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatalf("records did not resolve: %+v", diagnostics.Items())
+	}
+	var binding *bindingRecord
+	for _, retained := range handoff.Records.Records() {
+		if retained.Binding == nil || !retained.Binding.Global {
+			continue
+		}
+		value, exists := inputs.Resolution.Symbols.Symbol(retained.Binding.Symbol)
+		if exists && value.Name == "value" {
+			binding = retained.Binding
+			break
+		}
+	}
+	if binding == nil || !binding.InitializerPresent || binding.InitializerSyntax == (symbol.SyntaxRef{}) {
+		t.Fatalf("global binding = %+v", binding)
+	}
+	item, exists := inputs.Graph.Module(binding.InitializerSyntax.Module)
+	if !exists {
+		t.Fatalf("missing module for initializer ref %+v", binding.InitializerSyntax)
+	}
+	node, exists := item.Tree.Node(binding.InitializerSyntax.Node)
+	file, fileExists := inputs.Sources.File(node.Span().Source)
+	if !exists || !fileExists || string(file.Slice(node.Span())) != "1" {
+		t.Fatalf("initializer ref %+v does not span %q", binding.InitializerSyntax, "1")
+	}
+	result, found := records.Constant(binding.InitializerSyntax)
+	if !found || result.State != constantKnown || result.Value.Kind != constantInteger || result.Value.Integer.String() != "1" {
+		t.Fatalf("constant for %+v = %+v, found=%v, want integer 1", binding.InitializerSyntax, result, found)
+	}
+}
+
 func TestDeclarationFactsAnonymousAndUnsupportedRecords(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 let global i32 = 1;
