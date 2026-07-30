@@ -290,6 +290,69 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Global", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/global_*.peb")
+		c0602Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0602/*.peb")
+		c0616Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0616/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if !validateBindings(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeBindingInitializer) || hasValidationDiagnostic(diagnostics, CodeNonconstantGlobal) {
+					t.Fatalf("valid global fixture was rejected: %+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0602Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateBindings(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeBindingInitializer) {
+					t.Fatalf("invalid C0602 fixture was not rejected: %+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0616Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateBindings(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeNonconstantGlobal) {
+					t.Fatalf("invalid C0616 fixture was not rejected: %+v", diagnostics.Items())
+				}
+			})
+		}
+	})
+
+	t.Run("Sizeof", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/sizeof_*.peb")
+		invalidPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0615/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if !validateSizeof(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeAggregate) {
+					t.Fatalf("valid sizeof fixture was rejected: %+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range invalidPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				sizeofOK := validateSizeof(handoff, records, diagnostics, Config{})
+				aggregateOK := validateAggregateRecords(handoff, records, diagnostics, Config{})
+				if (sizeofOK && aggregateOK) || !hasValidationDiagnostic(diagnostics, CodeAggregate) {
+					t.Fatalf("invalid C0615 fixture was not rejected: sizeof=%v aggregate=%v diagnostics=%+v", sizeofOK, aggregateOK, diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {

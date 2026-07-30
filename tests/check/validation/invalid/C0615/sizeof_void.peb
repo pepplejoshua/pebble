@@ -1,0 +1,1 @@
+let x u64 = sizeof void;
