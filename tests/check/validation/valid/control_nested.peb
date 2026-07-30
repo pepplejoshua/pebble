@@ -1,0 +1,12 @@
+fn nested(flag bool, x i32) void {
+    if flag {
+        while x > 0 {
+            switch x {
+            case 1: print 1;
+            case 2: print 2;
+            else: print 0;
+            }
+            x = x - 1;
+        }
+    }
+}

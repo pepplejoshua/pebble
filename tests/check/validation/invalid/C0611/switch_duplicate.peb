@@ -1,0 +1,7 @@
+type Color = enum { red, blue };
+fn classify(color Color) i32 {
+    switch color {
+    case Color.red, Color.red: return 1;
+    case Color.blue: return 2;
+    }
+}

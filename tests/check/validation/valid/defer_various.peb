@@ -1,0 +1,10 @@
+fn f(flag bool, x i32) void {
+    defer print 1;
+    defer { print 2; }
+    defer x = 3;
+    if flag {
+        defer print 4;
+        while flag { defer print 5; break; }
+    }
+    return;
+}

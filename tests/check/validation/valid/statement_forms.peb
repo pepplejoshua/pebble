@@ -1,0 +1,8 @@
+fn helper() void {}
+
+fn f() void {
+    var x i32 = 0;
+    helper();
+    x++;
+    print 42;
+}

@@ -354,6 +354,194 @@ func TestValidationFixtures(t *testing.T) {
 		}
 	})
 
+	t.Run("Control", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/control_*.peb")
+		returnMismatchPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0601/return_*.peb")
+		c0607Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0607/*.peb")
+		c0611Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0611/*.peb")
+		c0618Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0618/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeMissingReturn) || hasValidationDiagnostic(diagnostics, CodeInvalidTarget) || hasValidationDiagnostic(diagnostics, CodeUnreachable) || hasValidationDiagnostic(diagnostics, CodeGeneration) {
+					t.Fatalf("valid control fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range returnMismatchPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				diagnostics, handoff, records := runValidationFixture(t, path)
+				if validateCompatibilityRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("invalid C0601 return fixture was not rejected: diagnostics=%+v", diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0607Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeMissingReturn) {
+					t.Fatalf("invalid C0607 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0611Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeInvalidTarget) {
+					t.Fatalf("invalid C0611 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0618Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if !result.Successful() || !hasValidationDiagnostic(diagnostics, CodeUnreachable) {
+					t.Fatalf("C0618 fixture expected warning: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+	})
+
+	t.Run("Defer", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/defer_*.peb")
+		c0613Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0613/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeInvalidDefer) {
+					t.Fatalf("valid defer fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0613Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeInvalidDefer) {
+					t.Fatalf("invalid C0613 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+	})
+
+	t.Run("Statement", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/statement_*.peb")
+		c0612Paths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0612/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeStatementForm) {
+					t.Fatalf("valid statement fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range c0612Paths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeStatementForm) {
+					t.Fatalf("invalid C0612 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+	})
+
 	t.Run("Entry", func(t *testing.T) {
 		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/entry_*.peb")
 		invalidPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0620/*.peb")

@@ -58,11 +58,11 @@ func (r *Result) IR() *tir.Unit {
 
 // run06b is the package-private entry point for 06b validation. It runs the
 // steps that exist at this point (auditHandoff, resolveRecords,
-// validateRequirements, and entry validation), then returns a Result. Later
-// slices will extend this function to run the remaining validation-order steps
-// (declarations, members/calls/brackets, operators/places/compatibility,
-// structural control flow, typed-IR construction) before finalizing Result —
-// this function is deliberately incomplete right now, not broken.
+// validateRequirements, entry validation, structural control-flow
+// validation, and defer validation), then returns a Result. Later slices
+// will extend this function to run the remaining validation-order steps
+// (typed-IR construction) before finalizing Result — this function is
+// deliberately incomplete right now, not broken.
 func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config Config) *Result {
 	config = normalizeConfig(config)
 
@@ -79,6 +79,18 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 		return &Result{successful: false}
 	}
 	if !validateEntry(handoff, records, requirements, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !auditControlArena(handoff, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateControlFlow(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateSwitches(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateDefers(handoff, records, diagnostics, config) {
 		return &Result{successful: false}
 	}
 
