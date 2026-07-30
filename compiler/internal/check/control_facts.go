@@ -55,6 +55,7 @@ type controlValue struct {
 	Role    controlValueRole
 	Value   valueID
 	Ordinal uint32
+	Syntax  symbol.SyntaxRef
 }
 
 type structuralRole uint8
@@ -434,7 +435,7 @@ func (w *walker) reserveControlValue(ref symbol.SyntaxRef, ctx walkContext, role
 	if value.ID == 0 || !w.generation.hasValue(value.ID) {
 		return controlValue{}, typedValue{}, false
 	}
-	return controlValue{Role: role, Value: value.ID, Ordinal: ordinal}, value, true
+	return controlValue{Role: role, Value: value.ID, Ordinal: ordinal, Syntax: ref}, value, true
 }
 
 func (w *walker) reserveCondition(ref symbol.SyntaxRef, ctx walkContext, purpose string) (controlValue, bool) {
@@ -570,7 +571,7 @@ func (w *walker) prepareRangeLoop(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 			bindingOrigin := w.originForRef(ref, "range iterator", binding.ID, ctx.genericOwner)
 			bound, published := w.publishSymbol(binding.ID, w.symbolTerm(binding.ID, bindingOrigin), bindingOrigin)
 			if published && bound.ID != 0 {
-				emission.values = append(emission.values, controlValue{Role: valueRangeIterator, Value: bound.ID})
+				emission.values = append(emission.values, controlValue{Role: valueRangeIterator, Value: bound.ID, Syntax: iterator})
 				if startOK {
 					w.addConstraint(infer.Equal(bound.Term, startValue.Term, bindingOrigin))
 				}

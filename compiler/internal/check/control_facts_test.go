@@ -1092,3 +1092,69 @@ func TestControlFactsCompositionChargesComponents(t *testing.T) {
 		t.Fatal("over-limit record mutated the arena")
 	}
 }
+
+// TestControlValueSyntaxIsPopulated proves every controlValue retains the
+// SyntaxRef of the authored expression it was reserved from, and that the
+// ref's span matches the exact source text. For a genuinely constant case
+// value, records.Constant(entry.Syntax) returns a known integer.
+func TestControlValueSyntaxIsPopulated(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn check(value i32, flag bool) void {
+    if flag { print 1; }
+    switch value { case 1: print 2; case 2: print 3; else: print 4; }
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if diagnostics.HasErrors() {
+		t.Fatalf("diagnostics: %+v", diagnostics.Items())
+	}
+	item, _ := inputs.Graph.Module(inputs.Graph.Root)
+	var conditionFound, caseFound bool
+	for _, record := range controlRecords(facts) {
+		for _, entry := range record.Values {
+			switch entry.Role {
+			case valueCondition:
+				if entry.Syntax == (symbol.SyntaxRef{}) {
+					t.Fatal("condition controlValue has empty Syntax")
+				}
+				node, ok := item.Tree.Node(entry.Syntax.Node)
+				if !ok {
+					t.Fatalf("condition Syntax node %d not found", entry.Syntax.Node)
+				}
+				file, fileOK := inputs.Sources.File(node.Span().Source)
+				if !fileOK || string(file.Slice(node.Span())) != "flag" {
+					t.Fatalf("condition Syntax span = %q, want %q", string(file.Slice(node.Span())), "flag")
+				}
+				conditionFound = true
+			case valueCase:
+				if entry.Syntax == (symbol.SyntaxRef{}) {
+					t.Fatal("case controlValue has empty Syntax")
+				}
+				node, ok := item.Tree.Node(entry.Syntax.Node)
+				if !ok {
+					t.Fatalf("case Syntax node %d not found", entry.Syntax.Node)
+				}
+				file, fileOK := inputs.Sources.File(node.Span().Source)
+				if !fileOK {
+					t.Fatalf("case Syntax file not found for %v", entry.Syntax)
+				}
+				span := string(file.Slice(node.Span()))
+				if span != "1" && span != "2" {
+					t.Fatalf("case Syntax span = %q, want %q or %q", span, "1", "2")
+				}
+				frozen := facts.Constants.freeze()
+				result, found := frozen.Constant(entry.Syntax)
+				if !found || result.State != constantKnown || result.Value.Kind != constantInteger || result.Value.Integer.String() != span {
+					t.Fatalf("records.Constant(%v) = %+v, found=%v, want known integer %s", entry.Syntax, result, found, span)
+				}
+				caseFound = true
+			}
+		}
+	}
+	if !conditionFound {
+		t.Fatal("no condition controlValue found")
+	}
+	if !caseFound {
+		t.Fatal("no case controlValue found")
+	}
+}
