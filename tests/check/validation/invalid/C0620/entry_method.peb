@@ -1,0 +1,1 @@
+type Box = struct { fn entry(self Box) void {} };

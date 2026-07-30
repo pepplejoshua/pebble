@@ -353,6 +353,53 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Entry", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/entry_*.peb")
+		invalidPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0620/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				id := entrySymbol(t, inputs, "entry")
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
+					t.Fatalf("valid entry fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range invalidPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				id := entrySymbol(t, inputs, "entry")
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
+					t.Fatalf("invalid entry fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {
