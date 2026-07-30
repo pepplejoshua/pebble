@@ -9,9 +9,10 @@ import (
 
 // Result is the immutable result of 06b validation.
 type Result struct {
-	successful bool
-	solution   *infer.Solution
-	records    *solvedRecords
+	successful   bool
+	solution     *infer.Solution
+	records      *solvedRecords
+	requirements map[symbol.SymbolID][]Requirement
 }
 
 func (r *Result) Successful() bool {
@@ -32,11 +33,11 @@ func (r *Result) SymbolType(id symbol.SymbolID) (infer.TypeResult, bool) {
 	return r.solution.SymbolType(id)
 }
 
-func (r *Result) Requirements(owner symbol.SymbolID) []infer.Requirement {
-	if r == nil || r.solution == nil {
+func (r *Result) Requirements(owner symbol.SymbolID) []Requirement {
+	if r == nil {
 		return nil
 	}
-	return r.solution.Requirements(owner)
+	return append([]Requirement(nil), r.requirements[owner]...)
 }
 
 func (r *Result) Instantiation(ref symbol.SyntaxRef) (infer.Instantiation, bool) {
@@ -59,7 +60,7 @@ func (r *Result) IR() *tir.Unit {
 // two steps that exist at this point (auditHandoff and resolveRecords), then
 // returns a Result. Later slices will extend this function to run the
 // remaining validation-order steps (declarations, members/calls/brackets,
-// operators/places/compatibility, generic requirements, structural control
+// operators/places/compatibility, structural control
 // flow, entry point, typed-IR construction) before finalizing Result — this
 // function is deliberately incomplete right now, not broken.
 func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config Config) *Result {
@@ -73,10 +74,15 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	if !ok {
 		return &Result{successful: false}
 	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, config)
+	if !ok {
+		return &Result{successful: false}
+	}
 
 	return &Result{
-		successful: true,
-		solution:   handoff.Solution,
-		records:    records,
+		successful:   true,
+		solution:     handoff.Solution,
+		records:      records,
+		requirements: requirements,
 	}
 }
