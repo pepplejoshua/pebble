@@ -750,3 +750,118 @@ func TestAuditControlArenaRejectsRegionOwnerInChildRegion(t *testing.T) {
 		t.Fatal("expected C0619 for region-owning arm in wrong child region")
 	}
 }
+
+func validateControlFixture(t *testing.T, source string) (*diagnostic.DiagnosticSet, bool) {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.Semantics == nil || handoff.Solution == nil {
+		t.Fatalf("06a did not produce a handoff: %+v", diagnostics.Items())
+	}
+	if handoff.GenerationHadErrors {
+		t.Fatalf("06a reported errors: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatalf("records did not resolve: %+v", diagnostics.Items())
+	}
+	return diagnostics, validateControlFlow(handoff, records, diagnostics, Config{})
+}
+
+func TestValidateControlFlowMissingReturnAndImplicitVoidReturn(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn missing(flag bool) i32 {
+    if flag { return 1; }
+}
+`)
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("missing non-void return was accepted: %+v", diagnostics.Items())
+	}
+
+	diagnostics, valid = validateControlFixture(t, `
+fn fallsOff() void {
+    print 1;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("void fallthrough was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateControlFlowUnreachableWarningIsNotDuplicated(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn unreachable() void {
+    return;
+    print 1;
+    print 2;
+}
+`)
+	if !valid {
+		t.Fatalf("warning-only flow validation failed: %+v", diagnostics.Items())
+	}
+	count := 0
+	for _, item := range diagnostics.Items() {
+		if item.Code == CodeUnreachable {
+			count++
+			if item.Severity != diagnostic.Warning {
+				t.Fatalf("unreachable diagnostic is not a warning: %+v", item)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("got %d unreachable warnings, want one: %+v", count, diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowExhaustiveEnumSwitchNoElse verifies that an
+// exhaustive enum switch without else, where every case returns, is accepted
+// (no false-positive C0607).
+func TestValidateControlFlowExhaustiveEnumSwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+type Color = enum { red, blue };
+fn classify(color Color) i32 {
+    switch color {
+    case Color.red: return 1;
+    case Color.blue: return 2;
+    }
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("exhaustive enum switch without else was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowNonExhaustiveEnumSwitchNoElse verifies that a
+// non-exhaustive enum switch without else (missing a variant) is still
+// correctly rejected with C0607.
+func TestValidateControlFlowNonExhaustiveEnumSwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+type Color = enum { red, blue, green };
+fn classify(color Color) i32 {
+    switch color {
+    case Color.red: return 1;
+    case Color.blue: return 2;
+    }
+}
+`)
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("non-exhaustive enum switch without else was accepted: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowExhaustiveBoolSwitchNoElse verifies that a bool
+// switch covering both true and false without else, where every case
+// returns, is accepted (no false-positive C0607).
+func TestValidateControlFlowExhaustiveBoolSwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn classify(flag bool) i32 {
+    switch flag {
+    case true: return 1;
+    case false: return 0;
+    }
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("exhaustive bool switch without else was rejected: %+v", diagnostics.Items())
+	}
+}
