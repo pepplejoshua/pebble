@@ -1,0 +1,3 @@
+fn literal[T](value T) T {
+	return value + 1;
+}

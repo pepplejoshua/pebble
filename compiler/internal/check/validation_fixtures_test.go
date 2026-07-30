@@ -245,6 +245,51 @@ func TestValidationFixtures(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Generic", func(t *testing.T) {
+		validPaths := validationFixturePaths(t, "../../../tests/check/validation/valid/generic_*.peb")
+		invalidPaths := validationFixturePaths(t, "../../../tests/check/validation/invalid/C0610/*.peb")
+
+		for _, path := range validPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeUnsupportedGeneric) {
+					t.Fatalf("valid generic fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+
+		for _, path := range invalidPaths {
+			path := path
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostics := diagnostic.NewDiagnosticSet()
+				inputs, _ := factInputs(t, checkProvider{"main.peb": contents})
+				handoff := run06a(inputs, diagnostics, Config{})
+				if handoff == nil {
+					t.Fatalf("06a did not produce a handoff for %s", path)
+				}
+				result := run06b(handoff, diagnostics, Config{})
+				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeUnsupportedGeneric) {
+					t.Fatalf("invalid generic fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+				}
+			})
+		}
+	})
 }
 
 func validationFixturePaths(t *testing.T, pattern string) []string {

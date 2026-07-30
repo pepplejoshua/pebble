@@ -1,0 +1,3 @@
+fn field[T](value T) i32 {
+	return value.field;
+}
