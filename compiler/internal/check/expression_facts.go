@@ -72,14 +72,15 @@ type interpolationPart struct {
 }
 
 type expressionRecord struct {
-	Header      recordHeader
-	Kind        expressionKind
-	Result      valueID
-	Children    []valueID
-	Symbol      symbol.SymbolID
-	Literal     literalPayload
-	Parts       []interpolationPart
-	Specialized recordID
+	Header       recordHeader
+	Kind         expressionKind
+	Result       valueID
+	Children     []valueID
+	Symbol       symbol.SymbolID
+	Literal      literalPayload
+	Parts        []interpolationPart
+	Specialized  recordID
+	TypeArgument valueID
 }
 
 type expressionPlan struct {
@@ -364,7 +365,7 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		}
 	}
 	header := w.header(ref, ctx.genericOwner, !w.publishedSyntax[ref])
-	record := expressionRecord{Header: header, Kind: kind, Result: value.ID, Children: children, Symbol: plan.symbol, Literal: plan.literal, Parts: plan.parts, Specialized: plan.specialized}
+	record := expressionRecord{Header: header, Kind: kind, Result: value.ID, Children: children, Symbol: plan.symbol, Literal: plan.literal, Parts: plan.parts, Specialized: plan.specialized, TypeArgument: plan.typeValue.ID}
 	w.addRecord(retainedRecord{Header: header, Expression: &record})
 }
 

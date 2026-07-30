@@ -1,6 +1,9 @@
 package check
 
 import (
+	"math/big"
+	"strings"
+
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -20,7 +23,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		MaxDumpBytes: config.MaxDumpBytes,
 	})
 	state := &irBuildState{handoff: handoff, records: records, builder: b}
-	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.buildBlocks() || !state.buildRequirements(requirements) {
+	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.buildBlocks() || !state.buildRequirements(requirements) {
 		return nil, false
 	}
 	unit, err := b.Build()
@@ -31,12 +34,14 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 }
 
 type irBuildState struct {
-	handoff       *solveHandoff
-	records       *solvedRecords
-	builder       *tir.Builder
-	functions     map[symbol.SymbolID]tir.FunctionID
-	functionNodes map[symbol.SymbolID]tir.NodeID
-	regions       map[controlID]tir.RegionID
+	handoff             *solveHandoff
+	records             *solvedRecords
+	builder             *tir.Builder
+	functions           map[symbol.SymbolID]tir.FunctionID
+	functionNodes       map[symbol.SymbolID]tir.NodeID
+	regions             map[controlID]tir.RegionID
+	values              map[valueID]tir.NodeID
+	expressionsByResult map[valueID]*expressionRecord
 }
 
 func (s *irBuildState) addNode(node tir.Node, ref symbol.SyntaxRef) (tir.NodeID, bool) {
@@ -292,4 +297,193 @@ func (s *irBuildState) buildRequirements(groups map[symbol.SymbolID][]Requiremen
 		}
 	}
 	return true
+}
+
+func (s *irBuildState) indexExpressions() bool {
+	s.expressionsByResult = make(map[valueID]*expressionRecord)
+	for _, retained := range s.handoff.Records.Records() {
+		if !activeOperatorRecord(s.handoff, retained.Header) {
+			continue
+		}
+		if retained.Expression != nil {
+			s.expressionsByResult[retained.Expression.Result] = retained.Expression
+		}
+	}
+	return true
+}
+
+// buildValue is the single shared, recursive, memoized dispatcher for typed-IR
+// value construction. It builds children before parents and memoizes every
+// valueID so a value referenced by multiple parents is only built once.
+func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
+	if id == 0 {
+		return 0, false
+	}
+	if existing, ok := s.values[id]; ok {
+		return existing, true
+	}
+	record, ok := s.expressionsByResult[id]
+	if !ok {
+		return 0, false
+	}
+	typ, ok := typeOfValue(s.records, id)
+	if !ok {
+		return 0, false
+	}
+	node := tir.Node{Type: typ, Span: record.Header.Span, Syntax: record.Header.Syntax}
+	switch record.Kind {
+	case expressionLiteral:
+		if !s.buildLiteral(record, &node) {
+			return 0, false
+		}
+	case expressionName, expressionPath:
+		if !s.buildSymbolValue(record, &node) {
+			return 0, false
+		}
+	case expressionMember:
+		if !s.buildVariantMember(record, &node) {
+			return 0, false
+		}
+	case expressionContext:
+		node.Kind = tir.ContextValue
+		node.ContextAction = tir.ContextExpr
+	case expressionSizeof:
+		if !s.buildSizeof(record, &node) {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	if node.Kind == 0 {
+		return 0, false
+	}
+	nid, ok := s.addNode(node, record.Header.Syntax)
+	if !ok {
+		return 0, false
+	}
+	if s.values == nil {
+		s.values = make(map[valueID]tir.NodeID)
+	}
+	s.values[id] = nid
+	return nid, true
+}
+
+func (s *irBuildState) buildLiteral(record *expressionRecord, node *tir.Node) bool {
+	switch record.Literal.Kind {
+	case literalBool:
+		node.Kind = tir.BoolLiteral
+		node.Literal = tir.Literal{Kind: tir.LiteralBool, Bool: record.Literal.Bool}
+	case literalChar:
+		node.Kind = tir.CharLiteral
+		node.Literal = tir.Literal{Kind: tir.LiteralChar, Char: record.Literal.Rune}
+	case literalString:
+		node.Kind = tir.StringLiteral
+		node.Literal = tir.Literal{Kind: tir.LiteralString, String: record.Literal.Text}
+	case literalInteger:
+		node.Kind = tir.IntegerLiteral
+		num, den, ok := decodeIntegerLiteral(record.Literal.NumericBytes)
+		if !ok {
+			return false
+		}
+		node.Literal = tir.Literal{Kind: tir.LiteralInteger, IntegerNum: num, IntegerDen: den}
+	case literalFloat:
+		node.Kind = tir.FloatLiteral
+		str, ok := decodeFloatLiteral(record.Literal.NumericBytes)
+		if !ok {
+			return false
+		}
+		node.Literal = tir.Literal{Kind: tir.LiteralFloat, Float: str}
+	case literalNil:
+		node.Kind = tir.NilPointer
+	case literalNone:
+		node.Kind = tir.NoneOptional
+	default:
+		return false
+	}
+	return true
+}
+
+func (s *irBuildState) buildSymbolValue(record *expressionRecord, node *tir.Node) bool {
+	sym, ok := s.symbol(record.Symbol)
+	if !ok {
+		return false
+	}
+	switch sym.Kind {
+	case symbol.SymbolBinding, symbol.SymbolParameter, symbol.SymbolLoopBinding, symbol.SymbolExternBinding, symbol.SymbolField:
+		node.Kind = tir.SymbolValue
+		node.Symbol = record.Symbol
+	case symbol.SymbolVariant:
+		node.Kind = tir.EnumVariantValue
+		node.Member = record.Symbol
+	default:
+		return false
+	}
+	return true
+}
+
+// buildVariantMember handles a dotted member access that resolves to an enum
+// variant with no runtime base (e.g. Color.red). The member machinery records
+// these as expressionMember with a variant symbol; the selected variant becomes
+// an EnumVariantValue.
+func (s *irBuildState) buildVariantMember(record *expressionRecord, node *tir.Node) bool {
+	if len(record.Children) != 0 {
+		return false
+	}
+	sym, ok := s.symbol(record.Symbol)
+	if !ok || sym.Kind != symbol.SymbolVariant {
+		return false
+	}
+	node.Kind = tir.EnumVariantValue
+	node.Member = record.Symbol
+	return true
+}
+
+func (s *irBuildState) buildSizeof(record *expressionRecord, node *tir.Node) bool {
+	argType, ok := typeOfValue(s.records, record.TypeArgument)
+	if !ok {
+		return false
+	}
+	node.Kind = tir.SizeofType
+	node.TypeArg = argType
+	return true
+}
+
+func decodeIntegerLiteral(bytes []byte) (string, string, bool) {
+	stripped := make([]byte, 0, len(bytes))
+	for _, b := range bytes {
+		if b != '_' {
+			stripped = append(stripped, b)
+		}
+	}
+	base := 10
+	digits := string(stripped)
+	switch {
+	case strings.HasPrefix(digits, "0x") || strings.HasPrefix(digits, "0X"):
+		base, digits = 16, digits[2:]
+	case strings.HasPrefix(digits, "0b") || strings.HasPrefix(digits, "0B"):
+		base, digits = 2, digits[2:]
+	case strings.HasPrefix(digits, "0o") || strings.HasPrefix(digits, "0O"):
+		base, digits = 8, digits[2:]
+	}
+	if digits == "" {
+		return "", "", false
+	}
+	value, ok := new(big.Int).SetString(digits, base)
+	if !ok {
+		return "", "", false
+	}
+	return value.String(), "1", true
+}
+
+func decodeFloatLiteral(bytes []byte) (string, bool) {
+	stripped := make([]byte, 0, len(bytes))
+	for _, b := range bytes {
+		if b != '_' {
+			stripped = append(stripped, b)
+		}
+	}
+	if len(stripped) == 0 {
+		return "", false
+	}
+	return string(stripped), true
 }
