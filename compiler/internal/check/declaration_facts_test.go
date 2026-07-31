@@ -122,6 +122,28 @@ extern { fn foreign(value i32) i32; let external i32; }
 	}
 }
 
+func TestDeclarationFactsAnonymousCallableHasSymbol(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`let value = fn(argument i32) i32 => argument;`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if diagnostics.HasErrors() {
+		t.Fatalf("diagnostics: %+v", diagnostics.Items())
+	}
+	var literal *callableRecord
+	for _, record := range callableRecords(facts.Generation.records.values) {
+		if record.Kind == callableLiteral {
+			literal = record
+			break
+		}
+	}
+	if literal == nil || literal.Symbol == 0 {
+		t.Fatalf("anonymous callable record = %+v", literal)
+	}
+	sym, ok := inputs.Resolution.Symbols.Symbol(literal.Symbol)
+	if !ok || sym.Kind != symbol.SymbolFunction || sym.Error || sym.Declaration != literal.Header.Syntax {
+		t.Fatalf("anonymous callable symbol = %+v, ok=%v", sym, ok)
+	}
+}
+
 func TestDeclarationFactsBodyOwnerGenericOwnerAndIndependentRecovery(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 fn body() void { let damaged; let valid ?*i32 = nil; }

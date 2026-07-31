@@ -136,7 +136,7 @@ func newWalker(generation *generation, evaluator *constantEvaluator, program *in
 		places:                make(map[symbol.SyntaxRef]placeCandidate),
 		successfulExpressions: make(map[symbol.SyntaxRef]bool),
 		publishedSyntax:       make(map[symbol.SyntaxRef]bool), publishedSlots: make(map[infer.Term]infer.SlotID),
-		deferOrdinals:         make(map[controlID]uint32),
+		deferOrdinals: make(map[controlID]uint32),
 	}
 	if program != nil {
 		w.runtimeTypes = program.RuntimeTypes
@@ -363,7 +363,11 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 			items[index].ctx.unsupported = unsupported
 			items[index].ctx.suppressValue = items[index].ref.Node != bodyNode
 		}
-		w.beginCallableRegion(ref, items, callableRef{Syntax: ref}, !unsupported)
+		callable := callableRef{Syntax: ref}
+		if value, ok := w.callableSymbol(ref); ok {
+			callable.Symbol = value.ID
+		}
+		w.beginCallableRegion(ref, items, callable, !unsupported)
 		return items
 	default:
 		w.generation.report("unknown syntax node kind in closed dispatch", node.Span())

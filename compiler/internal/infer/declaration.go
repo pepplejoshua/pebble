@@ -143,6 +143,9 @@ func (p *Program) prepareSignatures() {
 			p.signatures[sym.ID] = Signature{Symbol: sym.ID, State: DeclarationError}
 			continue
 		}
+		if node.Kind() == syntax.FunctionTerm {
+			continue
+		}
 		params := p.parametersFor(sym.ID)
 		typeParams := append([]symbol.SymbolID(nil), p.owners[sym.ID]...)
 		if sym.Kind == symbol.SymbolMethod && sym.Containing != 0 {

@@ -2611,11 +2611,8 @@ func TestIRFixtures(t *testing.T) {
 }
 
 func TestIRBuilderNodeKindCoverage(t *testing.T) {
-	// HoistedFunctionValue and GenericFunctionValue are deliberately
-	// unimplemented follow-ups, not missing coverage: anonymous function
-	// literals have no real SymbolID upstream, and generic function references
-	// need instantiation-reference machinery not built in this slice. Both are
-	// tracked separately from this coverage test.
+	// HoistedFunctionValue is covered by the focused test below. Generic function
+	// references still need instantiation-reference machinery not built here.
 	//
 	// TempBind, TempRead, and Sequence are permanent architectural exclusions,
 	// not an implementation gap. They are the frozen schema's general-purpose
@@ -2647,6 +2644,45 @@ func TestIRBuilderNodeKindCoverage(t *testing.T) {
 		}
 		if _, ok := irBuilderCoverageSeen[kind]; !ok {
 			t.Fatalf("node kind %v was not produced by a real IR unit", kind)
+		}
+	}
+}
+
+func TestIRBuilderHoistedAnonymousFunctionValues(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn consume(value fn() i32) void { }
+fn main() void {
+    let stored = fn() i32 => 1;
+    consume(fn() i32 => 2);
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("anonymous functions must build")
+	}
+	values := nodesOfKind(unit, tir.HoistedFunctionValue)
+	if len(values) != 2 {
+		t.Fatalf("HoistedFunctionValue count = %d, want 2", len(values))
+	}
+	declarations := unit.FunctionDeclarations()
+	if len(declarations) < 3 {
+		t.Fatalf("function declarations = %d, want named and anonymous bodies", len(declarations))
+	}
+	for _, id := range values {
+		node := unit.Nodes()[id-1]
+		if node.Symbol == 0 || node.Function == 0 {
+			t.Fatalf("hoisted value = %+v", node)
+		}
+		found := false
+		for _, declaration := range declarations {
+			if declaration.FunctionID == node.Function {
+				if declaration.Symbol != node.Symbol || declaration.Node == 0 || unit.Nodes()[declaration.Node-1].Kind != tir.Block {
+					t.Fatalf("function declaration = %+v", declaration)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no declaration for hoisted function %d", node.Function)
 		}
 	}
 }

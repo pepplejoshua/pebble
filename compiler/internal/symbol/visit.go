@@ -456,10 +456,22 @@ func (r *resolver) resolveExpression(ctx walkContext, nodeID syntax.NodeID) Reso
 
 func (r *resolver) resolveAnonymousFunction(ctx walkContext, nodeID syntax.NodeID, node syntax.Node) {
 	ref := SyntaxRef{Module: ctx.module.ID, Node: nodeID}
-	fnScope := r.newScope(ScopeFunction, ctx.scope, ctx.module.ID, 0, ref)
+	id := r.addSymbol(Symbol{
+		Kind:        SymbolFunction,
+		Span:        node.Span(),
+		Module:      ctx.module.ID,
+		Scope:       ctx.scope,
+		Declaration: ref,
+	}, false, 0)
+	if id == 0 {
+		return
+	}
+	r.functionSymbols[ref] = id
+	fnScope := r.newScope(ScopeFunction, ctx.scope, ctx.module.ID, id, ref)
 	if fnScope == 0 {
 		return
 	}
+	r.functionScopes[ref] = fnScope
 	fnCtx := ctx
 	fnCtx.scope = fnScope
 	fnCtx.function = functionContext{ref: ref, anonymous: true}
@@ -470,9 +482,9 @@ func (r *resolver) resolveAnonymousFunction(ctx walkContext, nodeID syntax.NodeI
 		}
 		switch child.Kind() {
 		case syntax.TypeParameter:
-			id := r.collectNestedName(ctx.module, ctx.file, fnScope, childID, child, SymbolTypeParameter, 0, false)
-			if id != 0 {
-				r.symbolFunctions[id] = ref
+			parameterID := r.collectNestedName(ctx.module, ctx.file, fnScope, childID, child, SymbolTypeParameter, 0, false)
+			if parameterID != 0 {
+				r.symbolFunctions[parameterID] = ref
 			}
 		case syntax.Parameter:
 			parts := semanticNodeIDs(ctx.module.Tree, child.Children())
@@ -485,9 +497,9 @@ func (r *resolver) resolveAnonymousFunction(ctx walkContext, nodeID syntax.NodeI
 					continue
 				}
 				name := r.nodeText(ctx.file, part)
-				id := r.addSymbol(Symbol{Name: name, Kind: SymbolParameter, Span: part.Span(), Module: ctx.module.ID, Scope: fnScope, Declaration: SyntaxRef{Module: ctx.module.ID, Node: childID}, Error: name == ""}, true, 0)
-				if id != 0 {
-					r.symbolFunctions[id] = ref
+				parameterID := r.addSymbol(Symbol{Name: name, Kind: SymbolParameter, Span: part.Span(), Module: ctx.module.ID, Scope: fnScope, Declaration: SyntaxRef{Module: ctx.module.ID, Node: childID}, Error: name == ""}, true, 0)
+				if parameterID != 0 {
+					r.symbolFunctions[parameterID] = ref
 				}
 			}
 		}

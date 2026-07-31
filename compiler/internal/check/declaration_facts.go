@@ -431,7 +431,7 @@ func (w *walker) handleFunctionLiteral(ref symbol.SyntaxRef, node syntax.Node, c
 		return true
 	}
 	record := callableRecord{
-		Header: w.header(ref, ctx.genericOwner, false), Kind: callableLiteral,
+		Header: w.header(ref, ctx.genericOwner, false), Kind: callableLiteral, Symbol: w.callableSymbolID(ref),
 		Convention: types.Pebble, BodyPresent: true,
 		ExpressionBody: node.Data()&syntax.FunctionExpressionBody != 0,
 	}
@@ -485,6 +485,14 @@ func (w *walker) handleFunctionLiteral(ref symbol.SyntaxRef, node syntax.Node, c
 	w.successfulExpressions[ref] = len(captures) == 0 && published
 	w.retainCallable(record)
 	return false
+}
+
+func (w *walker) callableSymbolID(ref symbol.SyntaxRef) symbol.SymbolID {
+	callable, ok := w.callableSymbol(ref)
+	if !ok {
+		return 0
+	}
+	return callable.ID
 }
 
 func (w *walker) bindingKind(value symbol.Symbol, node syntax.Node) (bindingKind, bool, bool) {

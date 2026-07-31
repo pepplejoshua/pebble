@@ -138,6 +138,36 @@ func TestSequentialLocalBindingAndForwardModuleResolution(t *testing.T) {
 	}
 }
 
+func TestAnonymousFunctionHasStableFunctionSymbol(t *testing.T) {
+	result, diagnostics, graph, _ := resolveFiles(t, map[string]string{"main.peb": "let value = fn(argument i32) i32 => argument;"}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	item, _ := graph.Module(graph.Root)
+	var literal Symbol
+	for _, candidate := range result.Symbols.All() {
+		if candidate.Kind == SymbolFunction && candidate.Name == "" && candidate.Declaration.Module == item.ID {
+			literal = candidate
+			break
+		}
+	}
+	if literal.ID == 0 || literal.Error || literal.Kind != SymbolFunction {
+		t.Fatalf("anonymous function symbol = %+v", literal)
+	}
+	if literal.Scope == 0 || literal.Declaration.Node == 0 {
+		t.Fatalf("anonymous function identity = %+v", literal)
+	}
+	parameters := 0
+	for _, candidate := range result.Symbols.All() {
+		if candidate.Kind == SymbolParameter && candidate.Containing == 0 && candidate.Declaration.Module == item.ID {
+			parameters++
+		}
+	}
+	if parameters == 0 {
+		t.Fatal("anonymous function parameter was not assigned a distinct symbol")
+	}
+}
+
 func TestBuiltinTypesLiveInReservedPrelude(t *testing.T) {
 	text := "fn use(a bool, b char, c str, d int, e uint, f i8, g i16, h i32, i i64, j u8, k u16, l u32, m u64, n f32, o f64) void {}"
 	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})

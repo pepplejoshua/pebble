@@ -197,7 +197,7 @@ func (s *irBuildState) buildDeclarations() bool {
 	s.functionDecls = nil
 	functionOrdinal := 0
 	for _, retained := range s.handoff.Records.Records() {
-		if retained.Callable != nil && retained.Callable.Kind != callableLiteral {
+		if retained.Callable != nil {
 			c := retained.Callable
 			sym, ok := s.symbol(c.Symbol)
 			if !ok {
@@ -279,10 +279,33 @@ func (s *irBuildState) buildDeclarations() bool {
 
 func (s *irBuildState) symbolForParameter(owner symbol.SymbolID, ordinal int) (symbol.Symbol, bool) {
 	sig, ok := s.handoff.Semantics.Signature(owner)
-	if !ok || ordinal >= len(sig.Parameters) {
+	if ok {
+		if ordinal >= len(sig.Parameters) {
+			return symbol.Symbol{}, false
+		}
+		return s.symbol(sig.Parameters[ordinal])
+	}
+	ownerSymbol, ok := s.symbol(owner)
+	if !ok {
 		return symbol.Symbol{}, false
 	}
-	return s.symbol(sig.Parameters[ordinal])
+	resolution := s.handoff.Semantics.Resolution()
+	for _, scope := range resolution.Scopes.All() {
+		if scope.Kind != symbol.ScopeFunction || scope.Origin != ownerSymbol.Declaration {
+			continue
+		}
+		parameters := make([]symbol.Symbol, 0, len(scope.Symbols))
+		for _, id := range scope.Symbols {
+			candidate, exists := resolution.Symbols.Symbol(id)
+			if exists && candidate.Kind == symbol.SymbolParameter {
+				parameters = append(parameters, candidate)
+			}
+		}
+		if ordinal < len(parameters) {
+			return parameters[ordinal], true
+		}
+	}
+	return symbol.Symbol{}, false
 }
 
 func (s *irBuildState) buildTypeUses() bool {
@@ -1045,7 +1068,11 @@ func (s *irBuildState) finishFunctionDeclarations() bool {
 		if decl.kind == callableExtern {
 			kind = tir.ExternDeclaration
 		}
-		declNode, ok := s.addNode(tir.Node{Kind: kind, Span: decl.span, Syntax: decl.header, Symbol: decl.callable.Symbol, Function: fid, Parameters: decl.params, ResultType: decl.result, Convention: decl.convention, Variadic: decl.variadic, Inline: decl.inline, HasBody: decl.body}, decl.header)
+		declSyntax := decl.header
+		if decl.kind == callableLiteral {
+			declSyntax = symbol.SyntaxRef{}
+		}
+		declNode, ok := s.addNode(tir.Node{Kind: kind, Span: decl.span, Syntax: declSyntax, Symbol: decl.callable.Symbol, Function: fid, Parameters: decl.params, ResultType: decl.result, Convention: decl.convention, Variadic: decl.variadic, Inline: decl.inline, HasBody: decl.body}, declSyntax)
 		if !ok {
 			return false
 		}
@@ -1243,6 +1270,16 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		if !s.buildSymbolValue(record, &node) {
 			return 0, false
 		}
+	case expressionFunction:
+		callable := s.callableForSyntax(record.Header.Syntax)
+		if callable == nil || callable.Symbol == 0 || len(callable.Captures) != 0 {
+			return 0, false
+		}
+		function := s.functions[callable.Symbol]
+		if function == 0 {
+			return 0, false
+		}
+		node.Kind, node.Symbol, node.Function = tir.HoistedFunctionValue, callable.Symbol, function
 	case expressionMember:
 		if member := s.membersByResult[id]; member != nil && (member.Kind == memberField || member.Kind == memberTuple) {
 			if place, ok := s.buildPlaceForValue(id); ok {
@@ -1437,6 +1474,15 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 	}
 	s.values[id] = nid
 	return nid, true
+}
+
+func (s *irBuildState) callableForSyntax(ref symbol.SyntaxRef) *callableRecord {
+	for _, retained := range s.handoff.Records.Records() {
+		if retained.Callable != nil && retained.Header.Syntax == ref {
+			return retained.Callable
+		}
+	}
+	return nil
 }
 
 func mustType(records *solvedRecords, id valueID) types.TypeID {

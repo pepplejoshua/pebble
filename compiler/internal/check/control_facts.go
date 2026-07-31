@@ -363,6 +363,11 @@ func (w *walker) retainControl(ref symbol.SyntaxRef, ctx walkContext, emission c
 		return
 	}
 	callable := ctx.callable
+	if callable.Symbol == 0 {
+		if value, ok := w.callableSymbol(callable.Syntax); ok {
+			callable.Symbol = value.ID
+		}
+	}
 	if callable.Syntax == (symbol.SyntaxRef{}) || !w.generation.validSyntax(callable.Syntax) ||
 		callable.Symbol != 0 && !w.generation.validSymbol(callable.Symbol) {
 		w.generation.report("control record has no valid owning callable", spanForRef(w.generation.inputs, ref))

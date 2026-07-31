@@ -205,7 +205,7 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 	}
 	if value.Callable != nil {
 		payloads++
-		if value.Callable.Header != value.Header || value.Callable.Kind < callableNamed || value.Callable.Kind > callableLiteral || value.Callable.Result == 0 || (value.Callable.Kind == callableLiteral) != (value.Callable.Expression != 0) || (value.Callable.Kind == callableLiteral) != (value.Callable.Symbol == 0) {
+		if value.Callable.Header != value.Header || value.Callable.Kind < callableNamed || value.Callable.Kind > callableLiteral || value.Callable.Result == 0 || value.Callable.Kind == callableLiteral && (value.Callable.Expression == 0 || value.Callable.Symbol == 0) {
 			return nil, 0, false
 		}
 		add(value.Callable.Expression, value.Callable.Result)
