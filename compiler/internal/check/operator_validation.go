@@ -24,7 +24,7 @@ func activeOperatorRecord(handoff *solveHandoff, header recordHeader) bool {
 	return ok && selected == header.Alternative.Index
 }
 
-func rigidOperatorValues(handoff *solveHandoff) map[uint32]map[valueID]bool {
+func rigidOperatorValues(handoff *solveHandoff, records *solvedRecords) map[uint32]map[valueID]bool {
 	rigid := make(map[uint32]map[valueID]bool)
 	for _, record := range handoff.Records.Records() {
 		if record.Requirement == nil || record.Requirement.Operator == 0 || !activeOperatorRecord(handoff, record.Header) {
@@ -39,6 +39,28 @@ func rigidOperatorValues(handoff *solveHandoff) map[uint32]map[valueID]bool {
 		}
 		rigid[owner][record.Requirement.Subject] = true
 	}
+	// Literal-fit requirements are emitted directly by the solver rather than
+	// retained as operator requirements. Their subject is still a rigid type
+	// parameter, and the successful fit proves it is usable as a numeric value.
+	for _, owner := range handoff.Semantics.Signatures() {
+		for _, requirement := range handoff.Solution.Requirements(owner.Symbol) {
+			if requirement.Kind != infer.RequirementLiteralFits || requirement.Subject == 0 || requirement.Parameter == 0 {
+				continue
+			}
+			if rigid[uint32(owner.Symbol)] == nil {
+				rigid[uint32(owner.Symbol)] = make(map[valueID]bool)
+			}
+			for _, record := range handoff.Records.Records() {
+				if record.Header.Owner == owner.Symbol && record.Operator != nil {
+					for _, operand := range record.Operator.Operands {
+						if result, ok := records.Root(operand); ok && result.State == infer.TypeFinal && result.Type == requirement.Subject {
+							rigid[uint32(owner.Symbol)][operand] = true
+						}
+					}
+				}
+			}
+		}
+	}
 	return rigid
 }
 
@@ -48,7 +70,7 @@ func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, 
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
 
-	rigid := rigidOperatorValues(handoff)
+	rigid := rigidOperatorValues(handoff, records)
 
 	failed := false
 	for _, retained := range handoff.Records.Records() {
@@ -149,7 +171,7 @@ func validateBooleanOperators(handoff *solveHandoff, records *solvedRecords, dia
 		return true
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
-	rigid := rigidOperatorValues(handoff)
+	rigid := rigidOperatorValues(handoff, records)
 	failed := false
 	for _, retained := range handoff.Records.Records() {
 		op := retained.Operator

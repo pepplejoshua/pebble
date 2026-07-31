@@ -89,6 +89,14 @@ fn generic[T, U](left T, right U) T {
 	}
 }
 
+func TestValidateArithmeticOperatorsAcceptsLiteralFitRigidOperand(t *testing.T) {
+	diagnostics, successful := validateOperatorFixture(t, `
+fn literal[T](value T) T { return value + 1; }`)
+	if !successful || hasOperatorDiagnostic(diagnostics) {
+		t.Fatalf("literal-fit rigid arithmetic was rejected: %+v", diagnostics.Items())
+	}
+}
+
 // Real Pebble programs can't express a mismatched-operand binary arithmetic
 // expression, since 06a's own unification already rejects it (the root would
 // resolve to a TypeError state, which this validator silently skips). This

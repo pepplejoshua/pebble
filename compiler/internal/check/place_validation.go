@@ -25,12 +25,15 @@ func placeWritability(handoff *solveHandoff, records *solvedRecords, place *plac
 	if handoff == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil || place == nil {
 		return placeWritabilityUnresolved
 	}
-	writable := place.RootMutable
+	// Function parameters are mutable storage even though they are not `var`
+	// binding declarations. This remains scoped to the root binding and does
+	// not make immutable locals writable.
+	writable := place.RootMutable || place.RootKind == symbol.SymbolParameter
 	typeSnapshot := handoff.Semantics.Types()
 	for _, projection := range place.Projections {
 		switch projection.Kind {
 		case placeStorage:
-			writable = place.RootMutable
+			writable = place.RootMutable || place.RootKind == symbol.SymbolParameter
 		case placeDereference:
 			writable = true
 		case placeField, placeTuple:

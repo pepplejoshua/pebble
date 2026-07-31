@@ -34,15 +34,15 @@ func TestRun06bSuccess(t *testing.T) {
 	}
 }
 
-func TestRun06bIRReturnsNil(t *testing.T) {
+func TestRun06bIRPublishedOnSuccess(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})
 	handoff := run06a(inputs, diagnostics, Config{})
 	result := run06b(handoff, diagnostics, Config{})
 	if !result.Successful() {
 		t.Fatal("expected success")
 	}
-	if result.IR() != nil {
-		t.Fatal("IR() should return nil at this point in the project")
+	if result.IR() == nil {
+		t.Fatal("IR() should be non-nil for a successful result")
 	}
 }
 

@@ -56,6 +56,23 @@ func TestValidateAssignmentRecords(t *testing.T) {
 	}
 }
 
+func TestValidateAssignmentRecordsAllowsParameterMutationAcrossRegions(t *testing.T) {
+	for _, source := range []string{
+		`fn nested(flag bool, value i32) void {
+    if flag { while value > 0 { value = value - 1; } }
+}`,
+		`fn deferred(flag bool, value i32) void {
+    defer value = 3;
+    if flag { defer value = 4; }
+}`,
+	} {
+		diagnostics, handoff, records := runPlaceValidation(t, source)
+		if !validateAssignmentRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodePlace) {
+			t.Fatalf("parameter mutation in nested/deferred region was rejected: %+v", diagnostics.Items())
+		}
+	}
+}
+
 func TestValidateAssignmentRecordsRejectsImmutableTarget(t *testing.T) {
 	for _, source := range []string{
 		`fn check() void {

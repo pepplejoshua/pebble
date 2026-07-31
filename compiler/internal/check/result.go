@@ -13,6 +13,7 @@ type Result struct {
 	solution     *infer.Solution
 	records      *solvedRecords
 	requirements map[symbol.SymbolID][]Requirement
+	ir           *tir.Unit
 }
 
 func (r *Result) Successful() bool {
@@ -47,22 +48,25 @@ func (r *Result) Instantiation(ref symbol.SyntaxRef) (infer.Instantiation, bool)
 	return r.solution.Instantiation(ref)
 }
 
-// IR returns the typed-IR unit. It always returns nil at this point in the
-// project — real typed-IR construction is a much later slice's job (06b.7b),
-// and none of the six conditions the spec lists for a non-nil IR() (structural
-// control/global/context/generic-body/entry validation, typed-IR construction
-// and verification) exist yet.
+// IR returns the closed typed-IR unit, or nil when publication is gated off.
+// IR() is non-nil exactly when the whole checker succeeded: no earlier-phase
+// errors, a successful solve, every retained record resolved and validated,
+// structural control/global/context/generic-body/entry validation passed, and
+// typed-IR construction with its closed verification succeeded. run06b builds
+// the unit as its final step and stores it only on a fully successful result,
+// so a failed result always carries nil IR and a successful result always
+// carries non-nil IR.
 func (r *Result) IR() *tir.Unit {
-	return nil
+	if r == nil {
+		return nil
+	}
+	return r.ir
 }
 
-// run06b is the package-private entry point for 06b validation. It runs the
-// steps that exist at this point (auditHandoff, resolveRecords,
-// validateRequirements, entry validation, structural control-flow
-// validation, and defer validation), then returns a Result. Later slices
-// will extend this function to run the remaining validation-order steps
-// (typed-IR construction) before finalizing Result — this function is
-// deliberately incomplete right now, not broken.
+// run06b is the package-private entry point for 06b validation. It runs every
+// validator in the spec's validation order, then typed-IR construction and
+// closed verification via buildUnit as the final gate. Every step fails the
+// whole result; IR is stored only on a fully successful result.
 func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config Config) *Result {
 	config = normalizeConfig(config)
 
@@ -74,13 +78,58 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	if !ok {
 		return &Result{successful: false}
 	}
+
+	// Declarations, binding forms, globals, and callable declarations.
+	if !validateBindings(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateSizeof(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateCallableRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+
+	// Members, aggregates, calls, brackets, indices, slices, and context flow.
+	if !validateMemberRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateAggregateRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateCallRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateIndexRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateContextFlowRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	// Operators, casts, places, assignments, and compatibility.
+	if !validateArithmeticOperators(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateBooleanOperators(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validatePlaceRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateAssignmentRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+	if !validateCompatibilityRecords(handoff, records, diagnostics, config) {
+		return &Result{successful: false}
+	}
+
+	// Generic requirements.
 	requirements, ok := validateRequirements(handoff, records, diagnostics, config)
 	if !ok {
 		return &Result{successful: false}
 	}
-	if !validateEntry(handoff, records, requirements, diagnostics, config) {
-		return &Result{successful: false}
-	}
+
+	// Per-function structural control flow, defers, returns, and reachability.
 	if !auditControlArena(handoff, diagnostics, config) {
 		return &Result{successful: false}
 	}
@@ -94,10 +143,26 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 		return &Result{successful: false}
 	}
 
+	// Configured entry point.
+	if !validateEntry(handoff, records, requirements, diagnostics, config) {
+		return &Result{successful: false}
+	}
+
+	// Typed-IR construction and closed verification are the last step, gated
+	// so IR exists only when every earlier validation step succeeded. buildUnit
+	// returns ok == false for a generation that already had errors or for any
+	// IR construction/verification failure; either way the whole result fails
+	// and no unit is published.
+	unit, ok := buildUnit(handoff, records, requirements, config)
+	if !ok || unit == nil {
+		return &Result{successful: false}
+	}
+
 	return &Result{
 		successful:   true,
 		solution:     handoff.Solution,
 		records:      records,
 		requirements: requirements,
+		ir:           unit,
 	}
 }
