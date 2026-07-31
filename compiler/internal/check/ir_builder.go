@@ -63,6 +63,7 @@ type irBuildState struct {
 	byRegion                     map[controlID][]*controlRecord
 	bySyntax                     map[symbol.SyntaxRef]*controlRecord
 	owner                        map[controlID]*controlRecord
+	variantBySyntax              map[symbol.SyntaxRef]symbol.SymbolID
 	functionDecls                []irFunctionDecl
 	functionRegions              map[symbol.SymbolID]controlID
 	blockNodes                   map[controlID]tir.NodeID
@@ -489,6 +490,8 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 		return s.buildRangeLoop(ctrl)
 	case controlFor:
 		return s.buildFor(ctrl)
+	case controlSwitch:
+		return s.buildSwitch(ctrl)
 	case controlBreak:
 		if ctrl.Target == 0 {
 			return 0, false, false, false
@@ -510,8 +513,7 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 		node, ok = s.addNode(tir.Node{Kind: tir.Continue, Span: ctrl.Header.Span, Target: target}, ctrl.Header.Syntax)
 		return node, ok, false, true
 	default:
-		// controlSwitch, controlSwitchCase, controlDefer, and other later-part
-		// kinds are not yet buildable.
+		// controlDefer and other later-part kinds are not yet buildable.
 		return 0, false, true, false
 	}
 	return node, ok, false, false
@@ -660,6 +662,127 @@ func (s *irBuildState) buildFor(ctrl *controlRecord) (tir.NodeID, bool, bool, bo
 	return node, ok, false, false
 }
 
+func (s *irBuildState) buildSwitch(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
+	subject, ok := controlValueForRole(ctrl, valueSubject)
+	if !ok {
+		return 0, false, false, false
+	}
+	subjectNode, ok := s.buildValue(subject)
+	if !ok {
+		return 0, false, false, false
+	}
+	children := []tir.NodeID{subjectNode}
+	for i := range ctrl.Composition {
+		entry := &ctrl.Composition[i]
+		if entry.Role != roleCase && entry.Role != roleElse {
+			return 0, false, false, false
+		}
+		caseNodes, caseOK, unsupported := s.buildSwitchCase(entry)
+		if !caseOK {
+			return 0, false, unsupported, false
+		}
+		children = append(children, caseNodes...)
+	}
+	region, ok := s.controlRegion(ctrl)
+	if !ok {
+		return 0, false, false, false
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.Switch, Span: ctrl.Header.Span, Region: region, HasElse: ctrl.ElsePresent, Children: children}, ctrl.Header.Syntax)
+	// An else-less switch contributes fallthrough exactly when it is not
+	// exhaustive; an else-bearing switch covers the missing cases. This mirrors
+	// validateControlFlow's exit-set rule and keeps the root implicit-return
+	// synthesis from forcing a return after an exhaustive switch. As with If and
+	// loops, case bodies that themselves fall through are treated conservatively:
+	// the switch's own missing-else contribution is the part that matters for
+	// exit-set correctness.
+	diverges := ctrl.ElsePresent || switchIsExhaustive(s.handoff, s.records, ctrl, s.bySyntax)
+	return node, ok, false, diverges
+}
+
+// buildSwitchCase resolves one roleCase/roleElse composition child of a switch
+// to its controlSwitchCase control record and builds its SwitchCase node(s). A
+// roleCase child with a single authored case value produces one SwitchCase node;
+// a multi-value case produces one SwitchCase node per case value, all sharing the
+// arm's one body block. A roleElse child produces a single HasElse SwitchCase
+// node. Scalar case constants populate the node's Literal field; nominal
+// variants populate CaseValue, correlating through the same variantBySyntax and
+// records.Constant indexes the switch validators use.
+func (s *irBuildState) buildSwitchCase(child *structuralChild) ([]tir.NodeID, bool, bool) {
+	arm := s.bySyntax[child.Arm]
+	if arm == nil || arm.Kind != controlSwitchCase {
+		return nil, false, false
+	}
+	body := compositionForRole(arm, roleBody)
+	bodyNode, ok, unsupported := s.buildControlArm(body)
+	if !ok {
+		return nil, false, unsupported
+	}
+	region, ok := s.controlRegion(arm)
+	if !ok {
+		return nil, false, false
+	}
+	if child.Role == roleElse {
+		node, ok := s.addNode(tir.Node{Kind: tir.SwitchCase, Span: arm.Header.Span, Region: region, HasElse: true, Children: []tir.NodeID{bodyNode}}, arm.Header.Syntax)
+		if !ok {
+			return nil, false, false
+		}
+		return []tir.NodeID{node}, true, false
+	}
+	if len(arm.Values) == 0 {
+		return nil, false, false
+	}
+	nodes := make([]tir.NodeID, 0, len(arm.Values))
+	for _, entry := range arm.Values {
+		if entry.Role != valueCase {
+			return nil, false, false
+		}
+		node := tir.Node{Kind: tir.SwitchCase, Span: arm.Header.Span, Region: region, Children: []tir.NodeID{bodyNode}}
+		ref := arm.Header.Syntax
+		if len(nodes) != 0 {
+			ref = symbol.SyntaxRef{}
+		}
+		if variant := s.variantBySyntax[entry.Syntax]; variant != 0 {
+			node.CaseValue = variant
+		} else {
+			constResult, found := s.records.Constant(entry.Syntax)
+			if !found || constResult.State != constantKnown {
+				return nil, false, false
+			}
+			literal, ok := constantToLiteral(constResult.Value)
+			if !ok {
+				return nil, false, false
+			}
+			node.Literal = literal
+		}
+		nid, ok := s.addNode(node, ref)
+		if !ok {
+			return nil, false, false
+		}
+		nodes = append(nodes, nid)
+	}
+	return nodes, true, false
+}
+
+// constantToLiteral maps a frozen switch-case constant onto the closed SwitchCase
+// Literal payload. Integer constants carry their canonical big.Int string with
+// denominator one, exactly as buildLiteral does for authored integer literals.
+func constantToLiteral(value constantValue) (tir.Literal, bool) {
+	switch value.Kind {
+	case constantBoolean:
+		return tir.Literal{Kind: tir.LiteralBool, Bool: value.Boolean}, true
+	case constantCharacter:
+		return tir.Literal{Kind: tir.LiteralChar, Char: value.Character}, true
+	case constantString:
+		return tir.Literal{Kind: tir.LiteralString, String: value.String}, true
+	case constantInteger:
+		if value.Integer == nil {
+			return tir.Literal{}, false
+		}
+		return tir.Literal{Kind: tir.LiteralInteger, IntegerNum: value.Integer.String(), IntegerDen: "1"}, true
+	}
+	return tir.Literal{}, false
+}
+
 func (s *irBuildState) controlRegion(ctrl *controlRecord) (tir.RegionID, bool) {
 	for id, owner := range s.owner {
 		if owner == ctrl {
@@ -806,6 +929,7 @@ func (s *irBuildState) indexExpressions() bool {
 	s.callsBySyntax = make(map[symbol.SyntaxRef]*callRecord)
 	s.contextFlowsBySyntax = make(map[symbol.SyntaxRef]*contextFlowRecord)
 	s.places = make(map[symbol.SyntaxRef]*placeRecord)
+	s.variantBySyntax = make(map[symbol.SyntaxRef]symbol.SymbolID)
 	for _, retained := range s.handoff.Records.Records() {
 		if !activeOperatorRecord(s.handoff, retained.Header) {
 			continue
@@ -848,6 +972,9 @@ func (s *irBuildState) indexExpressions() bool {
 		}
 		if retained.Place != nil {
 			s.places[retained.Place.Header.Syntax] = retained.Place
+		}
+		if retained.Member != nil && retained.Member.Kind == memberVariant && retained.Member.Member != 0 {
+			s.variantBySyntax[retained.Header.Syntax] = retained.Member.Member
 		}
 	}
 	return true

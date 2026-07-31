@@ -1911,3 +1911,290 @@ let value Color = 1 as Color;
 	}
 	_ = records
 }
+
+// variantSymbols returns the symbols of every VariantDeclaration in the unit.
+func variantSymbols(t *testing.T, unit *tir.Unit) map[symbol.SymbolID]bool {
+	t.Helper()
+	variants := map[symbol.SymbolID]bool{}
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.VariantDeclaration {
+			variants[node.Symbol] = true
+		}
+	}
+	return variants
+}
+
+// functionBody returns the single function body block node.
+func functionBody(t *testing.T, unit *tir.Unit) tir.Node {
+	t.Helper()
+	for _, decl := range unit.FunctionDeclarations() {
+		if decl.Node == 0 {
+			continue
+		}
+		block := unit.Nodes()[decl.Node-1]
+		if block.Kind != tir.Block {
+			t.Fatalf("function body = %+v, want Block", block)
+		}
+		return block
+	}
+	t.Fatal("function declaration not found")
+	return tir.Node{}
+}
+
+func TestBuildUnitG2SwitchExhaustiveEnum(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+type Color = enum { red, blue, green };
+fn choose(value Color) void {
+    switch value {
+    case Color.red: { return; }
+    case Color.blue: { return; }
+    case Color.green: { return; }
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("exhaustive enum switch was not buildable")
+	}
+	switchNodes := nodesOfKind(unit, tir.Switch)
+	if len(switchNodes) != 1 {
+		t.Fatalf("Switch nodes = %d, want 1", len(switchNodes))
+	}
+	switchNode := unit.Nodes()[switchNodes[0]-1]
+	if switchNode.Kind != tir.Switch || switchNode.HasElse || switchNode.Region == 0 {
+		t.Fatalf("Switch node = %+v, want region and no else", switchNode)
+	}
+	if len(switchNode.Children) != 4 {
+		t.Fatalf("Switch children = %d, want subject plus 3 cases", len(switchNode.Children))
+	}
+	subject := unit.Nodes()[switchNode.Children[0]-1]
+	if subject.Kind != tir.SymbolValue || subject.Symbol == 0 {
+		t.Fatalf("Switch subject = %+v, want SymbolValue", subject)
+	}
+	variants := variantSymbols(t, unit)
+	if len(variants) != 3 {
+		t.Fatalf("variant declarations = %d, want 3", len(variants))
+	}
+	covered := map[symbol.SymbolID]bool{}
+	for i := 1; i < len(switchNode.Children); i++ {
+		caseNode := unit.Nodes()[switchNode.Children[i]-1]
+		if caseNode.Kind != tir.SwitchCase {
+			t.Fatalf("Switch child %d = %+v, want SwitchCase", i, caseNode)
+		}
+		if caseNode.CaseValue == 0 || caseNode.HasElse || caseNode.Literal != (tir.Literal{}) {
+			t.Fatalf("SwitchCase = %+v, want variant CaseValue", caseNode)
+		}
+		if !variants[caseNode.CaseValue] {
+			t.Fatalf("SwitchCase CaseValue %d is not a variant", caseNode.CaseValue)
+		}
+		covered[caseNode.CaseValue] = true
+		if caseNode.Region == 0 {
+			t.Fatal("SwitchCase has no region")
+		}
+		if len(caseNode.Children) != 1 {
+			t.Fatalf("SwitchCase children = %d, want one body block", len(caseNode.Children))
+		}
+		body := unit.Nodes()[caseNode.Children[0]-1]
+		if body.Kind != tir.Block || len(body.Children) != 1 {
+			t.Fatalf("case body = %+v, want one-statement Block", body)
+		}
+		if ret := unit.Nodes()[body.Children[0]-1]; ret.Kind != tir.Return {
+			t.Fatalf("case body statement = %+v, want Return", ret)
+		}
+	}
+	if len(covered) != 3 {
+		t.Fatalf("covered variants = %d, want all 3", len(covered))
+	}
+	block := functionBody(t, unit)
+	if len(block.Children) == 0 || block.Children[len(block.Children)-1] != switchNodes[0] {
+		t.Fatalf("function body children = %v, want the Switch last with no ImplicitReturn", block.Children)
+	}
+}
+
+func TestBuildUnitG2SwitchBoolExhaustive(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn choose(flag bool) void {
+    switch flag {
+    case true: { return; }
+    case false: { return; }
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("bool switch was not buildable")
+	}
+	switchNodes := nodesOfKind(unit, tir.Switch)
+	if len(switchNodes) != 1 {
+		t.Fatalf("Switch nodes = %d, want 1", len(switchNodes))
+	}
+	switchNode := unit.Nodes()[switchNodes[0]-1]
+	if switchNode.Kind != tir.Switch || switchNode.HasElse {
+		t.Fatalf("Switch node = %+v, want no else", switchNode)
+	}
+	if len(switchNode.Children) != 3 {
+		t.Fatalf("Switch children = %d, want subject plus two cases", len(switchNode.Children))
+	}
+	seenTrue, seenFalse := false, false
+	for i := 1; i < len(switchNode.Children); i++ {
+		caseNode := unit.Nodes()[switchNode.Children[i]-1]
+		if caseNode.Kind != tir.SwitchCase || caseNode.CaseValue != 0 || caseNode.HasElse {
+			t.Fatalf("SwitchCase = %+v, want scalar Literal case", caseNode)
+		}
+		if caseNode.Literal.Kind != tir.LiteralBool {
+			t.Fatalf("SwitchCase Literal = %+v, want bool literal", caseNode.Literal)
+		}
+		if caseNode.Literal.Bool {
+			seenTrue = true
+		} else {
+			seenFalse = true
+		}
+	}
+	if !seenTrue || !seenFalse {
+		t.Fatalf("bool cases not exhaustive: true=%t false=%t", seenTrue, seenFalse)
+	}
+	block := functionBody(t, unit)
+	if len(block.Children) == 0 || block.Children[len(block.Children)-1] != switchNodes[0] {
+		t.Fatalf("function body children = %v, want the Switch last with no ImplicitReturn", block.Children)
+	}
+}
+
+func TestBuildUnitG2SwitchScalarElse(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn grade(value i32) i32 {
+    switch value {
+    case 1: { return 10; }
+    else: { return 20; }
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("scalar switch with else was not buildable")
+	}
+	switchNodes := nodesOfKind(unit, tir.Switch)
+	if len(switchNodes) != 1 {
+		t.Fatalf("Switch nodes = %d, want 1", len(switchNodes))
+	}
+	switchNode := unit.Nodes()[switchNodes[0]-1]
+	if switchNode.Kind != tir.Switch || !switchNode.HasElse {
+		t.Fatalf("Switch node = %+v, want HasElse", switchNode)
+	}
+	if len(switchNode.Children) != 3 {
+		t.Fatalf("Switch children = %d, want subject, case, else", len(switchNode.Children))
+	}
+	caseNode := unit.Nodes()[switchNode.Children[1]-1]
+	if caseNode.Kind != tir.SwitchCase || caseNode.CaseValue != 0 || caseNode.HasElse {
+		t.Fatalf("scalar SwitchCase = %+v", caseNode)
+	}
+	if caseNode.Literal.Kind != tir.LiteralInteger || caseNode.Literal.IntegerNum != "1" || caseNode.Literal.IntegerDen != "1" {
+		t.Fatalf("scalar case Literal = %+v, want integer 1", caseNode.Literal)
+	}
+	if len(caseNode.Children) != 1 {
+		t.Fatalf("scalar case children = %d, want one body block", len(caseNode.Children))
+	}
+	if body := unit.Nodes()[caseNode.Children[0]-1]; body.Kind != tir.Block || len(body.Children) != 1 {
+		t.Fatalf("scalar case body = %+v", body)
+	} else if ret := unit.Nodes()[body.Children[0]-1]; ret.Kind != tir.Return {
+		t.Fatalf("scalar case body statement = %+v, want Return", ret)
+	}
+	elseNode := unit.Nodes()[switchNode.Children[2]-1]
+	if elseNode.Kind != tir.SwitchCase || !elseNode.HasElse || elseNode.CaseValue != 0 || elseNode.Literal != (tir.Literal{}) {
+		t.Fatalf("else SwitchCase = %+v, want HasElse", elseNode)
+	}
+	if len(elseNode.Children) != 1 {
+		t.Fatalf("else children = %d, want one body block", len(elseNode.Children))
+	}
+	if body := unit.Nodes()[elseNode.Children[0]-1]; body.Kind != tir.Block || len(body.Children) != 1 {
+		t.Fatalf("else body = %+v", body)
+	} else if ret := unit.Nodes()[body.Children[0]-1]; ret.Kind != tir.Return {
+		t.Fatalf("else body statement = %+v, want Return", ret)
+	}
+}
+
+func TestBuildUnitG2SwitchBreakTargetsSwitch(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f(flag bool) void {
+    switch flag {
+    case true: break;
+    case false: print 1;
+    }
+    print 2;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("switch with break was not buildable")
+	}
+	switchNodes := nodesOfKind(unit, tir.Switch)
+	breakNodes := nodesOfKind(unit, tir.Break)
+	if len(switchNodes) != 1 || len(breakNodes) != 1 {
+		t.Fatalf("Switch=%d Break=%d, want one each", len(switchNodes), len(breakNodes))
+	}
+	switchNode := unit.Nodes()[switchNodes[0]-1]
+	breakNode := unit.Nodes()[breakNodes[0]-1]
+	if breakNode.Kind != tir.Break || breakNode.Target == 0 {
+		t.Fatalf("Break node = %+v, want targeted break", breakNode)
+	}
+	if breakNode.Target != switchNode.Region {
+		t.Fatalf("break target %d, want switch region %d", breakNode.Target, switchNode.Region)
+	}
+}
+
+func TestBuildUnitG2SwitchMultiValueCase(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+type Color = enum { red, blue, green };
+fn choose(value Color) void {
+    switch value {
+    case Color.red, Color.blue: { return; }
+    case Color.green: { return; }
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("multi-value case switch was not buildable")
+	}
+	switchNodes := nodesOfKind(unit, tir.Switch)
+	if len(switchNodes) != 1 {
+		t.Fatalf("Switch nodes = %d, want 1", len(switchNodes))
+	}
+	switchNode := unit.Nodes()[switchNodes[0]-1]
+	if len(switchNode.Children) != 4 {
+		t.Fatalf("Switch children = %d, want subject plus 3 case nodes", len(switchNode.Children))
+	}
+	variants := variantSymbols(t, unit)
+	if len(variants) != 3 {
+		t.Fatalf("variant declarations = %d, want 3", len(variants))
+	}
+	covered := map[symbol.SymbolID]bool{}
+	bodyCounts := map[tir.NodeID]int{}
+	for i := 1; i < len(switchNode.Children); i++ {
+		node := unit.Nodes()[switchNode.Children[i]-1]
+		if node.Kind != tir.SwitchCase {
+			t.Fatalf("Switch child %d = %+v, want SwitchCase", i, node)
+		}
+		if node.CaseValue == 0 || node.HasElse || node.Literal != (tir.Literal{}) {
+			t.Fatalf("SwitchCase = %+v, want variant CaseValue", node)
+		}
+		if !variants[node.CaseValue] {
+			t.Fatalf("SwitchCase CaseValue %d is not a variant", node.CaseValue)
+		}
+		covered[node.CaseValue] = true
+		if len(node.Children) != 1 {
+			t.Fatalf("SwitchCase children = %d, want one body block", len(node.Children))
+		}
+		bodyCounts[node.Children[0]]++
+	}
+	if len(covered) != 3 {
+		t.Fatalf("covered variants = %d, want all 3", len(covered))
+	}
+	shared := 0
+	sole := 0
+	for _, count := range bodyCounts {
+		if count == 2 {
+			shared++
+		}
+		if count == 1 {
+			sole++
+		}
+	}
+	if shared != 1 || sole != 1 {
+		t.Fatalf("body sharing = %v, want one shared body and one sole body", bodyCounts)
+	}
+}
