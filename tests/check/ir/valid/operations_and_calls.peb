@@ -1,0 +1,16 @@
+fn add(left i32, right i32) i32 => left + right;
+fn helper() void {}
+
+fn operations(array [3]i32, values []i32, index i32, flag bool) void {
+    var local i32 = 0;
+    local = add(1, 2);
+    local += 1;
+    local++;
+    let value i32 = array[index];
+    let slice []i32 = values[index:];
+    let product i32 = -value * 2;
+    let selected bool = flag && (local > 0);
+    helper();
+    print product;
+    print selected;
+}

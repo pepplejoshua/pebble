@@ -1,0 +1,20 @@
+type Color = enum { red, blue, green };
+
+fn control(flag bool, value Color) void {
+    defer print 1;
+    if flag {
+        defer print 2;
+        while flag {
+            break;
+        }
+    } else {
+        print 3;
+    }
+    loop 0..3 : index { print index; }
+    loop 3..=4 : inclusive { print inclusive; }
+    switch value {
+    case Color.red: { return; }
+    case Color.blue: { return; }
+    case Color.green: { return; }
+    }
+}

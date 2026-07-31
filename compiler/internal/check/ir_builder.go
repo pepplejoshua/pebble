@@ -18,7 +18,7 @@ import (
 // buildUnit constructs the declaration/nonvalue portion of typed IR. It is
 // intentionally not called by run06b yet: later 06b.7b parts add values,
 // places, calls, coercions, and statements at this orchestration point.
-func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, config Config) (*tir.Unit, bool) {
+func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, config Config) (unit *tir.Unit, ok bool) {
 	if handoff == nil || handoff.GenerationHadErrors || handoff.Semantics == nil || handoff.Solution == nil || records == nil {
 		return nil, false
 	}
@@ -32,7 +32,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 	}
 	unit, err := b.Build()
 	if err != nil {
-		panic(err)
+		return nil, false
 	}
 	return unit, true
 }
@@ -1336,6 +1336,15 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		if !s.buildChildren(record, &node) {
 			return 0, false
 		}
+	case expressionSome:
+		if len(record.Children) != 1 {
+			return 0, false
+		}
+		payload, ok := s.buildValue(record.Children[0])
+		if !ok {
+			return 0, false
+		}
+		node.Kind, node.Children = tir.SomeOptional, []tir.NodeID{payload}
 	case expressionInterpolated:
 		node.Kind = tir.InterpolatedString
 		if !s.buildInterpolated(record, &node) {

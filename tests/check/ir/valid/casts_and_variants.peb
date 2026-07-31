@@ -1,0 +1,12 @@
+type Color = enum { red, blue };
+
+fn convert(value i32) i64 {
+    return value as i64;
+}
+
+fn choose(value Color) i32 {
+    if value == Color.red {
+        return 1;
+    }
+    return 2;
+}

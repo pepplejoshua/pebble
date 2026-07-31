@@ -1,14 +1,44 @@
 package check
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
+
+// irBuilderCoverageSeen accumulates node kinds across every unit this file's
+// own tests build, so TestIRBuilderNodeKindCoverage can assert real,
+// end-to-end coverage instead of a synthetic one. This only works because Go
+// runs a single file's tests in declaration order and nothing in this file
+// calls t.Parallel(): TestIRBuilderNodeKindCoverage must be declared after
+// every test whose coverage it depends on, and the whole package suite
+// (go test ./...) must run for the map to be populated — running it alone
+// via -run sees an empty map and fails.
+var irBuilderCoverageSeen = make(map[tir.NodeKind]string)
+
+func recordIRBuilderUnit(unit *tir.Unit) {
+	for _, node := range unit.Nodes() {
+		irBuilderCoverageSeen[node.Kind] = node.Kind.String()
+	}
+}
+
+func buildTestIRUnit(state *irBuildState) (*tir.Unit, error) {
+	unit, err := state.builder.Build()
+	if err == nil {
+		recordIRBuilderUnit(unit)
+	}
+	return unit, err
+}
 
 func TestBuildUnitDeclarations(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("let answer i32 = 1;\nfn main(value i32) i32 => value;\n")})
@@ -43,6 +73,30 @@ func TestBuildUnitDeclarations(t *testing.T) {
 	if !seenFunction || !seenGlobal {
 		t.Fatal("declaration nodes missing")
 	}
+}
+
+func TestBuildUnitImport(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{
+		"main.peb":   []byte("import \"./helper\";\nfn main() void { print helper::helper_fn(); }\n"),
+		"helper.peb": []byte("fn helper_fn() i32 { return 42; }\n"),
+	})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, Config{})
+	if !ok || unit == nil {
+		t.Fatal("buildUnit rejected valid import")
+	}
+	recordIRBuilderUnit(unit)
 }
 
 func TestBuildUnitLocalDeclaration(t *testing.T) {
@@ -97,21 +151,29 @@ func TestBuildUnitRejectsGenerationErrors(t *testing.T) {
 }
 
 func buildUnitFixture(t *testing.T, source string) (*tir.Unit, bool) {
+	return buildUnitFixtureWithConfig(t, source, Config{})
+}
+
+func buildUnitFixtureWithConfig(t *testing.T, source string, config Config) (*tir.Unit, bool) {
 	t.Helper()
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
-	handoff := run06a(inputs, diagnostics, Config{})
+	handoff := run06a(inputs, diagnostics, config)
 	if handoff == nil || handoff.GenerationHadErrors {
 		t.Fatalf("invalid fixture: %v", diagnostics.Items())
 	}
-	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(config))
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(config))
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	return buildUnit(handoff, records, requirements, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, config)
+	if ok && unit != nil {
+		recordIRBuilderUnit(unit)
+	}
+	return unit, ok
 }
 
 func nodesOfKind(unit *tir.Unit, kind tir.NodeKind) []tir.NodeID {
@@ -659,7 +721,7 @@ let o ?i32 = none;
 			t.Fatalf("buildValue failed for %v", tc.want)
 		}
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -736,7 +798,7 @@ fn double(value i32) i32 => value;
 	if _, ok := state.buildValue(valueID); !ok {
 		t.Fatal("buildValue failed for symbol value")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -788,7 +850,7 @@ fn contextful() void {
 	if _, ok := state.buildValue(sizeofID); !ok {
 		t.Fatal("buildValue failed for sizeof")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -892,7 +954,7 @@ func TestBuildValueTuple(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -909,7 +971,7 @@ func TestBuildValueArray(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -926,7 +988,7 @@ func TestBuildValueArrayRepeat(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -947,7 +1009,7 @@ func TestBuildValueRecordConstruct(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -964,7 +1026,7 @@ func TestBuildValuePrefixNegation(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -981,7 +1043,7 @@ func TestBuildValueBinaryNumeric(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -998,7 +1060,7 @@ func TestBuildValueFloatBinaryNumeric(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1028,7 +1090,7 @@ func TestBuildValueCheckedIntegralOperators(t *testing.T) {
 			if !ok {
 				t.Fatal("buildValue failed")
 			}
-			unit, err := state.builder.Build()
+			unit, err := buildTestIRUnit(state)
 			if err != nil {
 				t.Fatalf("Build failed: %v", err)
 			}
@@ -1047,7 +1109,7 @@ func TestBuildValueShortCircuit(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1064,7 +1126,7 @@ func TestBuildValueSourceAlias(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1081,7 +1143,7 @@ func TestBuildValueInterpolatedString(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1098,7 +1160,7 @@ func TestBuildValueNestedComposites(t *testing.T) {
 	if !ok {
 		t.Fatal("buildValue failed for nested tuple")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1155,6 +1217,7 @@ let field i32 = mutable.x;
 let rvalueField i32 = (Point.{ x = 9, y = 10 }).x;
 let tuple (i32, i32) = (5, 6);
 let component i32 = tuple.1;
+let directComponent i32 = (7, 8).1;
 fn indexed(array [2]i32) i32 => array[0];
 fn deref(p *i32) i32 => *p;
 `)
@@ -1173,7 +1236,7 @@ fn deref(p *i32) i32 => *p;
 			t.Fatalf("buildValue failed for %d kind=%v op=%+v member=%+v children=%v", id, e.Kind, state.operatorsByResult[id], state.membersByResult[id], e.Children)
 		}
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1210,7 +1273,7 @@ func TestBuildValueStringIndexIsNotPlace(t *testing.T) {
 	if !ok {
 		t.Fatal("string indexing failed to build")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1242,7 +1305,7 @@ let ff f32 = 1.0 as f32;
 			t.Fatalf("cast %d failed to build", id)
 		}
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1316,7 +1379,7 @@ func TestBuildRetainedPlaceUsesSpecificMemberResult(t *testing.T) {
 	if !ok {
 		t.Fatal("buildPlace failed for assignment destination")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1387,7 +1450,7 @@ let result i32 = add(1, 2);
 	if !ok {
 		t.Fatal("buildValue failed for direct call")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1434,7 +1497,7 @@ let result i32 = function(3, 4);
 	if !ok {
 		t.Fatal("buildValue failed for indirect call")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1485,7 +1548,7 @@ let result i32 = box.get();
 	if !ok {
 		t.Fatal("buildValue failed for method call")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1538,7 +1601,7 @@ let variant Choice = Choice.value(2);
 	if !ok {
 		t.Fatal("buildValue failed for variant construction")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1570,7 +1633,7 @@ let result i32 = foreign(7);
 	if !ok {
 		t.Fatal("buildValue failed for extern call")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1588,6 +1651,7 @@ let result i32 = foreign(7);
 
 func TestBuildValueGenericDirectCallTypeArgs(t *testing.T) {
 	state, records := testBuildValue(t, `
+type Box[T] = struct { value T; };
 fn identity[T](value T) T => value;
 let inferred i32 = identity(5);
 let explicit i32 = identity[i32](6);
@@ -1616,7 +1680,7 @@ let explicit i32 = identity[i32](6);
 		}
 		built[i] = nid
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1672,7 +1736,7 @@ fn read(p *Inner) i32 => (*p).value();
 			t.Fatal("buildValue failed for call")
 		}
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1771,7 +1835,7 @@ let result i32 = inject(5);
 	if !ok {
 		t.Fatal("buildValue failed for optional inject call")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1800,7 +1864,7 @@ let tuple (i64, f64) = (a, b);
 	if !ok {
 		t.Fatal("buildValue failed for tuple coerce")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1849,7 +1913,7 @@ let y i32 = x!;
 	if !ok {
 		t.Fatal("buildValue failed for optional unwrap")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1860,6 +1924,27 @@ let y i32 = x!;
 	child := unit.Nodes()[node.Children[0]-1]
 	if child.Kind != tir.SymbolValue {
 		t.Fatalf("optional unwrap child = %+v", child)
+	}
+}
+
+func TestBuildValueSomeOptional(t *testing.T) {
+	state, records := testBuildValue(t, "fn main() void { let x ?i32 = some 5; }\n")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionSome })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for some")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.SomeOptional || len(node.Children) != 1 {
+		t.Fatalf("some node = %+v", node)
+	}
+	payload := unit.Nodes()[node.Children[0]-1]
+	if payload.Kind != tir.IntegerLiteral || payload.Literal.IntegerNum != "5" {
+		t.Fatalf("some payload = %+v", payload)
 	}
 }
 
@@ -1881,7 +1966,7 @@ func TestBuildValueCheckedSlice(t *testing.T) {
 			if !ok {
 				t.Fatal("buildValue failed for slice")
 			}
-			unit, err := state.builder.Build()
+			unit, err := buildTestIRUnit(state)
 			if err != nil {
 				t.Fatalf("Build failed: %v", err)
 			}
@@ -1909,7 +1994,7 @@ let value i32 = color as i32;
 	if !ok {
 		t.Fatal("buildValue failed for enum-to-integer cast")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1934,7 +2019,7 @@ let value ?Color = 1 as ?Color;
 	if !ok {
 		t.Fatal("buildValue failed for optional integer-to-enum cast")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -1959,7 +2044,7 @@ let value Color = 1 as Color;
 	if !ok {
 		t.Fatal("buildValue failed for checked integer-to-enum cast")
 	}
-	unit, err := state.builder.Build()
+	unit, err := buildTestIRUnit(state)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -2420,6 +2505,7 @@ fn choose(value Color) void {
     case Color.green: { return; }
     }
 }
+
 `)
 	if !ok || unit == nil {
 		t.Fatal("multi-value case switch was not buildable")
@@ -2471,4 +2557,246 @@ fn choose(value Color) void {
 	if shared != 1 || sole != 1 {
 		t.Fatalf("body sharing = %v, want one shared body and one sole body", bodyCounts)
 	}
+}
+
+func irFixturePaths(t *testing.T) []string {
+	t.Helper()
+	return validationFixturePaths(t, "../../../tests/check/ir/valid/*.peb")
+}
+
+func buildIRFixturePath(t *testing.T, path string, config Config) (*tir.Unit, bool) {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": contents})
+	handoff := run06a(inputs, diagnostics, config)
+	if handoff == nil || handoff.GenerationHadErrors || handoff.Semantics == nil || handoff.Solution == nil {
+		t.Fatalf("06a rejected %s: %+v", path, diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(config))
+	if !ok {
+		t.Fatalf("records rejected %s: %+v", path, diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(config))
+	if !ok {
+		t.Fatalf("requirements rejected %s: %+v", path, diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, config)
+	if ok && unit != nil {
+		recordIRBuilderUnit(unit)
+	}
+	return unit, ok
+}
+
+func TestIRFixtures(t *testing.T) {
+	paths := irFixturePaths(t)
+	seen := make(map[tir.NodeKind]string)
+	for _, path := range paths {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			unit, ok := buildIRFixturePath(t, path, Config{})
+			if !ok || unit == nil {
+				t.Fatal("valid IR fixture was rejected")
+			}
+			for _, node := range unit.Nodes() {
+				seen[node.Kind] = filepath.Base(path)
+			}
+		})
+	}
+	if len(seen) == 0 {
+		t.Fatal("fixtures built no IR nodes")
+	}
+}
+
+func TestIRBuilderNodeKindCoverage(t *testing.T) {
+	// HoistedFunctionValue and GenericFunctionValue are deliberately
+	// unimplemented follow-ups, not missing coverage: anonymous function
+	// literals have no real SymbolID upstream, and generic function references
+	// need instantiation-reference machinery not built in this slice. Both are
+	// tracked separately from this coverage test.
+	//
+	// TempBind, TempRead, and Sequence are permanent architectural exclusions,
+	// not an implementation gap. They are the frozen schema's general-purpose
+	// mechanism for evaluating an authored expression more than once and
+	// capturing each result, but no construction path in this project's accepted
+	// 06b.7b work has ever needed to evaluate an authored expression more than
+	// once: every double-evaluation risk this slice actually encountered turned
+	// out to have a dedicated, single-evaluation closed-form node instead of
+	// needing a temp. G2's CompoundStore evaluates its place exactly once as a
+	// single child rather than expanding to Load+Arithmetic+Store; G3's postfix
+	// ++/-- builds as CompoundStore for the same reason; part E's MethodCall
+	// receiver is a single child evaluated once; and F2's TupleCoerce and the
+	// checked index-place bases are likewise single children. buildValue
+	// memoizes every valueID, so a child node referenced by multiple consumers
+	// (e.g. a TupleCoerce's source tuple and its coerced elements) is one
+	// runtime evaluation shared across the DAG, never silent double evaluation.
+	// These kinds are therefore architecturally unneeded for this specific
+	// language's semantics, not an oversight.
+	knownUnimplementedNodeKinds := map[tir.NodeKind]bool{
+		tir.HoistedFunctionValue: true,
+		tir.GenericFunctionValue: true,
+		tir.TempBind:             true,
+		tir.TempRead:             true,
+		tir.Sequence:             true,
+	}
+	for kind := tir.FirstNodeKind; kind <= tir.LastNodeKind; kind++ {
+		if knownUnimplementedNodeKinds[kind] {
+			continue
+		}
+		if _, ok := irBuilderCoverageSeen[kind]; !ok {
+			t.Fatalf("node kind %v was not produced by a real IR unit", kind)
+		}
+	}
+}
+
+func TestIRFixtureGolden(t *testing.T) {
+	unit, ok := buildIRFixturePath(t, "../../../tests/check/ir/valid/operations_and_calls.peb", Config{})
+	if !ok || unit == nil {
+		t.Fatal("golden fixture was rejected")
+	}
+	var got bytes.Buffer
+	if err := unit.Dump(&got); err != nil {
+		t.Fatalf("Dump failed: %v", err)
+	}
+	want, err := os.ReadFile("../../../tests/check/ir/operations_and_calls.tir.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("typed-IR dump mismatch: want %d bytes, got %d bytes", len(want), got.Len())
+	}
+}
+
+func TestIRBuilderCoverageLimits(t *testing.T) {
+	source := `fn main(value i32) i32 { let copy i32 = value + 1; return copy; }`
+	for _, tc := range []struct {
+		name   string
+		config Config
+	}{
+		{name: "nodes", config: Config{MaxIRNodes: 1}},
+		{name: "components", config: Config{MaxIRComponents: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("low %s limit panicked: %v", tc.name, recovered)
+				}
+			}()
+			unit, ok := buildUnitFixtureWithConfig(t, source, tc.config)
+			if ok || unit != nil {
+				t.Fatalf("low %s limit returned unit: ok=%v unit=%v", tc.name, ok, unit)
+			}
+		})
+	}
+	limited, ok := buildUnitFixtureWithConfig(t, source, Config{MaxDumpBytes: 1})
+	if !ok || limited == nil {
+		t.Fatal("MaxDumpBytes must not prevent building a valid unit")
+	}
+	if err := limited.Dump(io.Discard); err != tir.ErrDumpOverflow {
+		t.Fatalf("low dump limit error = %v, want %v", err, tir.ErrDumpOverflow)
+	}
+}
+
+func TestBuildUnitRejectsMalformedHandoff(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}")})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatal("valid setup was rejected")
+	}
+	if unit, ok := buildUnit(handoff, nil, nil, Config{}); ok || unit != nil {
+		t.Fatal("nil records must be rejected")
+	}
+}
+
+func TestIRBuilderConcurrentUnitReads(t *testing.T) {
+	unit, ok := buildIRFixturePath(t, "../../../tests/check/ir/valid/operations_and_calls.peb", Config{})
+	if !ok || unit == nil {
+		t.Fatal("concurrent-read fixture was rejected")
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				_ = unit.Nodes()
+				_ = unit.Modules()
+				_ = unit.FunctionDeclarations()
+				_ = unit.GlobalDeclarations()
+				_ = unit.SourceRefs()
+				var dump bytes.Buffer
+				if err := unit.Dump(&dump); err != nil {
+					t.Errorf("concurrent Dump failed: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func FuzzBuildUnit(f *testing.F) {
+	config := Config{
+		MaxSyntaxVisits: 500, MaxTraversalDepth: 64, MaxSemanticRecords: 1000,
+		MaxRecordComponents: 1000, MaxControlDepth: 64, MaxTrackedPlaces: 1000,
+		MaxGenericRequirements: 1000, MaxConstantDepth: 64, MaxConstantOperations: 2000,
+		MaxConstantBits: 2048, MaxDiagnostics: 300, MaxValidationSteps: 2000,
+		MaxIRNodes: 2000, MaxIRComponents: 10000, MaxFlowStates: 1000, MaxDeferEdges: 1000,
+		MaxDumpBytes: 1 << 20,
+	}
+	paths, err := filepath.Glob("../../../tests/check/ir/valid/*.peb")
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err == nil {
+			f.Add(contents)
+		}
+	}
+	f.Add([]byte("fn broken( int { let value = ; }"))
+	f.Fuzz(func(t *testing.T, contents []byte) {
+		if len(contents) > 512 {
+			return
+		}
+		// The pipeline this fuzzes runs earlier phases (parsing, symbol
+		// resolution, generation) that are out of this file's scope and may
+		// have their own unbounded-loop bugs on malformed input, distinct
+		// from anything buildUnit itself does. Run each case on its own
+		// goroutine with a hard deadline so a hang upstream fails this test
+		// cleanly instead of hanging `go test` (and, worse, saving a
+		// hanging input to testdata/fuzz/ that would replay and hang every
+		// future test run).
+		done := make(chan struct{})
+		var panicked any
+		go func() {
+			defer close(done)
+			defer func() {
+				panicked = recover()
+			}()
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": contents})
+			handoff := run06a(inputs, diagnostics, config)
+			if handoff == nil || handoff.GenerationHadErrors || handoff.Semantics == nil || handoff.Solution == nil {
+				return
+			}
+			records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(config))
+			if !ok {
+				return
+			}
+			requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(config))
+			if !ok {
+				return
+			}
+			_, _ = buildUnit(handoff, records, requirements, config)
+		}()
+		select {
+		case <-done:
+			if panicked != nil {
+				t.Fatalf("build pipeline panicked: %v", panicked)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("build pipeline hung (likely an upstream parsing/generation bug, not buildUnit itself) on input: %q", contents)
+		}
+	})
 }
