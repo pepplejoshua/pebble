@@ -637,3 +637,145 @@ func TestBuildValueInactiveComposite(t *testing.T) {
 		t.Fatal("buildValue built an inactive guarded composite")
 	}
 }
+
+func TestBuildValuePlacesAndLoads(t *testing.T) {
+	state, records := testBuildValue(t, `
+type Point = struct { x i32; y i32; };
+var mutable Point = Point.{ x = 1, y = 2 };
+let immutable Point = Point.{ x = 3, y = 4 };
+let field i32 = mutable.x;
+let rvalueField i32 = (Point.{ x = 9, y = 10 }).x;
+let tuple (i32, i32) = (5, 6);
+let component i32 = tuple.1;
+fn indexed(array [2]i32) i32 => array[0];
+fn deref(p *i32) i32 => *p;
+`)
+	ids := make([]valueID, 0)
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Expression != nil && (retained.Expression.Kind == expressionMember || retained.Expression.Kind == expressionBracket || retained.Expression.Kind == expressionPrefix) {
+			ids = append(ids, retained.Expression.Result)
+		}
+	}
+	if len(ids) < 4 {
+		t.Fatalf("projected expressions = %d", len(ids))
+	}
+	for _, id := range ids {
+		if _, ok := state.buildValue(id); !ok {
+			e := state.expressionsByResult[id]
+			t.Fatalf("buildValue failed for %d kind=%v op=%+v member=%+v children=%v", id, e.Kind, state.operatorsByResult[id], state.membersByResult[id], e.Children)
+		}
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[tir.NodeKind]bool{}
+	seenWritable, seenReadOnly := false, false
+	for _, id := range ids {
+		node := unit.Nodes()[state.values[id]-1]
+		seen[node.Kind] = true
+		if node.Kind == tir.Load && len(node.Children) != 1 {
+			t.Fatalf("load node = %+v", node)
+		}
+	}
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.StoragePlace {
+			seenWritable = seenWritable || node.Writable
+			seenReadOnly = seenReadOnly || !node.Writable
+		}
+	}
+	if !seenWritable || !seenReadOnly {
+		t.Fatal("storage place writability was not preserved")
+	}
+	for _, kind := range []tir.NodeKind{tir.Load, tir.FieldValue} {
+		if !seen[kind] {
+			t.Fatalf("missing %v", kind)
+		}
+	}
+	_ = records
+}
+
+func TestBuildValueStringIndexIsNotPlace(t *testing.T) {
+	state, records := testBuildValue(t, `fn index(text str, index i32) *char => text[index];`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionBracket })
+	if _, ok := state.buildValue(id); ok {
+		t.Fatal("string indexing unexpectedly built as a place/load")
+	}
+}
+
+func TestBuildRetainedPlaceChain(t *testing.T) {
+	state, _ := testBuildValue(t, `type Box = struct { value i32; }; fn main(box Box) void { box.value = 1; }`)
+	count := 0
+	for ref := range state.places {
+		if _, ok := state.buildPlace(ref); !ok {
+			t.Fatalf("buildPlace failed for %v", ref)
+		}
+		count++
+	}
+	if count == 0 {
+		t.Fatal("no retained place")
+	}
+}
+
+func TestBuildRetainedPlaceUsesSpecificMemberResult(t *testing.T) {
+	state, _ := testBuildValue(t, `type Point = struct { x i32; y i32; }; fn main(point Point) void { point.x = point.y; }`)
+	var xSymbol, ySymbol symbol.SymbolID
+	for _, sym := range state.handoff.Semantics.Resolution().Symbols.All() {
+		if sym.Kind != symbol.SymbolField {
+			continue
+		}
+		switch sym.Name {
+		case "x":
+			xSymbol = sym.ID
+		case "y":
+			ySymbol = sym.ID
+		}
+	}
+	if xSymbol == 0 || ySymbol == 0 {
+		t.Fatalf("missing field symbols: x=%d y=%d", xSymbol, ySymbol)
+	}
+
+	var xValue, yValue valueID
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Member == nil || retained.Member.Base == 0 {
+			continue
+		}
+		if retained.Member.Name == "x" {
+			xValue = retained.Member.Result
+		}
+		if retained.Member.Name == "y" {
+			yValue = retained.Member.Result
+		}
+	}
+	if xValue == 0 || yValue == 0 {
+		t.Fatalf("missing member values: x=%d y=%d", xValue, yValue)
+	}
+	if _, ok := state.buildValue(yValue); !ok {
+		t.Fatal("buildValue failed for right-hand member")
+	}
+	var placeRef symbol.SyntaxRef
+	for ref := range state.places {
+		placeRef = ref
+		break
+	}
+	place, ok := state.buildPlace(placeRef)
+	if !ok {
+		t.Fatal("buildPlace failed for assignment destination")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeNode := unit.Nodes()[place-1]
+	if placeNode.Kind != tir.FieldPlace || placeNode.Member != xSymbol || placeNode.Type != state.handoff.Semantics.Types().Builtins().I32 {
+		t.Fatalf("assignment place = %+v, want x field %d", placeNode, xSymbol)
+	}
+	rightNode := unit.Nodes()[state.values[yValue]-1]
+	if rightNode.Kind != tir.Load || len(rightNode.Children) != 1 {
+		t.Fatalf("right-hand member value = %+v", rightNode)
+	}
+	rightPlace := unit.Nodes()[rightNode.Children[0]-1]
+	if rightPlace.Kind != tir.FieldPlace || rightPlace.Member != ySymbol {
+		t.Fatalf("right-hand place = %+v, want y field %d", rightPlace, ySymbol)
+	}
+}
