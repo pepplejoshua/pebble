@@ -6,6 +6,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func TestBuildUnitDeclarations(t *testing.T) {
@@ -777,5 +778,428 @@ func TestBuildRetainedPlaceUsesSpecificMemberResult(t *testing.T) {
 	rightPlace := unit.Nodes()[rightNode.Children[0]-1]
 	if rightPlace.Kind != tir.FieldPlace || rightPlace.Member != ySymbol {
 		t.Fatalf("right-hand place = %+v, want y field %d", rightPlace, ySymbol)
+	}
+}
+
+// findSymbolID returns the first resolved symbol with the given name and kind.
+func findSymbolID(t *testing.T, handoff *solveHandoff, name string, kinds ...symbol.SymbolKind) symbol.SymbolID {
+	t.Helper()
+	for _, sym := range handoff.Semantics.Resolution().Symbols.All() {
+		if sym.Name != name {
+			continue
+		}
+		for _, kind := range kinds {
+			if sym.Kind == kind {
+				return sym.ID
+			}
+		}
+	}
+	t.Fatalf("symbol %s not found", name)
+	return 0
+}
+
+// requireCallValueID locates the expression result of a call matching match.
+func requireCallValueID(t *testing.T, state *irBuildState, records *solvedRecords, match func(*callRecord) bool) valueID {
+	t.Helper()
+	handoff := state.handoff
+	for _, retained := range handoff.Records.Records() {
+		if retained.Call == nil || !activeOperatorRecord(handoff, retained.Header) {
+			continue
+		}
+		if !match(retained.Call) {
+			continue
+		}
+		for _, candidate := range handoff.Records.Records() {
+			if candidate.Expression != nil && candidate.Expression.Kind == expressionCall && candidate.Header.Syntax == retained.Header.Syntax {
+				if _, ok := records.Root(candidate.Expression.Result); ok {
+					return candidate.Expression.Result
+				}
+			}
+		}
+	}
+	t.Fatal("matching call expression record not found")
+	return 0
+}
+
+func TestBuildValueDirectCall(t *testing.T) {
+	state, records := testBuildValue(t, `
+fn add(left i32, right i32) i32 => left + right;
+let result i32 = add(1, 2);
+`)
+	addID := findSymbolID(t, state.handoff, "add", symbol.SymbolFunction)
+	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callDirect && c.Target.Symbol == addID
+	})
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for direct call")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.DirectCall {
+		t.Fatalf("call node = %+v", node)
+	}
+	if node.Symbol != addID {
+		t.Fatalf("call Symbol = %d, want %d", node.Symbol, addID)
+	}
+	if node.Convention != types.Pebble {
+		t.Fatalf("call Convention = %v, want Pebble", node.Convention)
+	}
+	if node.ContextAction != tir.ContextForward {
+		t.Fatalf("call ContextAction = %v, want Forward", node.ContextAction)
+	}
+	if node.FunctionType == 0 {
+		t.Fatal("call FunctionType is zero")
+	}
+	if len(node.Children) != 2 {
+		t.Fatalf("call children = %d, want 2", len(node.Children))
+	}
+	first := unit.Nodes()[node.Children[0]-1]
+	second := unit.Nodes()[node.Children[1]-1]
+	if first.Kind != tir.IntegerLiteral || first.Literal.IntegerNum != "1" {
+		t.Fatalf("first argument = %+v", first)
+	}
+	if second.Kind != tir.IntegerLiteral || second.Literal.IntegerNum != "2" {
+		t.Fatalf("second argument = %+v", second)
+	}
+}
+
+func TestBuildValueIndirectCall(t *testing.T) {
+	state, records := testBuildValue(t, `
+fn add(left i32, right i32) i32 => left + right;
+let function fn(i32, i32) i32 = add;
+let result i32 = function(3, 4);
+`)
+	functionID := findSymbolID(t, state.handoff, "function", symbol.SymbolBinding)
+	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callIndirect
+	})
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for indirect call")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.IndirectCall {
+		t.Fatalf("call node = %+v", node)
+	}
+	if node.Symbol != 0 {
+		t.Fatalf("indirect call Symbol = %d, want none", node.Symbol)
+	}
+	if node.Convention != types.Pebble {
+		t.Fatalf("call Convention = %v, want Pebble", node.Convention)
+	}
+	if node.ContextAction != tir.ContextForward {
+		t.Fatalf("call ContextAction = %v, want Forward", node.ContextAction)
+	}
+	if node.FunctionType == 0 {
+		t.Fatal("call FunctionType is zero")
+	}
+	if len(node.Children) != 3 {
+		t.Fatalf("call children = %d, want callee plus two arguments", len(node.Children))
+	}
+	callee := unit.Nodes()[node.Children[0]-1]
+	if callee.Kind != tir.SymbolValue || callee.Symbol != functionID {
+		t.Fatalf("callee child = %+v, want symbol value %d", callee, functionID)
+	}
+	first := unit.Nodes()[node.Children[1]-1]
+	second := unit.Nodes()[node.Children[2]-1]
+	if first.Kind != tir.IntegerLiteral || first.Literal.IntegerNum != "3" {
+		t.Fatalf("first argument = %+v", first)
+	}
+	if second.Kind != tir.IntegerLiteral || second.Literal.IntegerNum != "4" {
+		t.Fatalf("second argument = %+v", second)
+	}
+}
+
+func TestBuildValueMethodCall(t *testing.T) {
+	state, records := testBuildValue(t, `
+type Box = struct { value i32; fn get(self Box) i32 => self.value; };
+let box Box = Box.{ value = 1 };
+let result i32 = box.get();
+`)
+	boxID := findSymbolID(t, state.handoff, "box", symbol.SymbolBinding)
+	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callMethod
+	})
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for method call")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.MethodCall {
+		t.Fatalf("call node = %+v", node)
+	}
+	if node.Symbol == 0 {
+		t.Fatal("method Symbol is zero")
+	}
+	var call *callRecord
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Call != nil && retained.Call.Target.Kind == callMethod {
+			call = retained.Call
+			break
+		}
+	}
+	method, ok := state.handoff.Solution.Method(call.Target.Site)
+	if !ok || method.Method != node.Symbol {
+		t.Fatalf("method Symbol = %d, want solved method %d", node.Symbol, method.Method)
+	}
+	if node.Convention != types.Pebble {
+		t.Fatalf("call Convention = %v, want Pebble", node.Convention)
+	}
+	if node.ContextAction != tir.ContextForward {
+		t.Fatalf("call ContextAction = %v, want Forward", node.ContextAction)
+	}
+	if node.FunctionType == 0 {
+		t.Fatal("call FunctionType is zero")
+	}
+	if len(node.Children) != 1 {
+		t.Fatalf("call children = %d, want receiver exactly once", len(node.Children))
+	}
+	receiver := unit.Nodes()[node.Children[0]-1]
+	if receiver.Kind != tir.SymbolValue || receiver.Symbol != boxID {
+		t.Fatalf("receiver child = %+v, want symbol value %d", receiver, boxID)
+	}
+}
+
+func TestBuildValueVariantConstruct(t *testing.T) {
+	state, records := testBuildValue(t, `
+type Choice = union enum { empty void; value i32; };
+let variant Choice = Choice.value(2);
+`)
+	valueVariantID := findSymbolID(t, state.handoff, "value", symbol.SymbolVariant)
+	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callVariant
+	})
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for variant construction")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.VariantConstruct {
+		t.Fatalf("construction node = %+v", node)
+	}
+	if node.Member != valueVariantID {
+		t.Fatalf("construction Member = %d, want variant %d", node.Member, valueVariantID)
+	}
+	if len(node.Children) != 1 {
+		t.Fatalf("construction children = %d, want 1", len(node.Children))
+	}
+	payload := unit.Nodes()[node.Children[0]-1]
+	if payload.Kind != tir.IntegerLiteral || payload.Literal.IntegerNum != "2" {
+		t.Fatalf("construction payload = %+v", payload)
+	}
+}
+
+func TestBuildValueExternCContextNone(t *testing.T) {
+	state, records := testBuildValue(t, `
+extern fn foreign(value i32) i32;
+let result i32 = foreign(7);
+`)
+	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callDirect
+	})
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for extern call")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.DirectCall {
+		t.Fatalf("call node = %+v", node)
+	}
+	if node.Convention != types.C {
+		t.Fatalf("call Convention = %v, want C", node.Convention)
+	}
+	if node.ContextAction != tir.ContextNone {
+		t.Fatalf("call ContextAction = %v, want None", node.ContextAction)
+	}
+}
+
+func TestBuildValueGenericDirectCallTypeArgs(t *testing.T) {
+	state, records := testBuildValue(t, `
+fn identity[T](value T) T => value;
+let inferred i32 = identity(5);
+let explicit i32 = identity[i32](6);
+`)
+	_ = records
+	identityID := findSymbolID(t, state.handoff, "identity", symbol.SymbolFunction)
+	var ids []valueID
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Call == nil || retained.Call.Target.Kind != callDirect || retained.Call.Target.Symbol != identityID {
+			continue
+		}
+		for _, candidate := range state.handoff.Records.Records() {
+			if candidate.Expression != nil && candidate.Expression.Kind == expressionCall && candidate.Header.Syntax == retained.Header.Syntax {
+				ids = append(ids, candidate.Expression.Result)
+			}
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("generic calls = %d, want 2", len(ids))
+	}
+	built := make([]tir.NodeID, len(ids))
+	for i, id := range ids {
+		nid, ok := state.buildValue(id)
+		if !ok {
+			t.Fatal("buildValue failed for generic call")
+		}
+		built[i] = nid
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	for _, nid := range built {
+		node := unit.Nodes()[nid-1]
+		if node.Kind != tir.DirectCall {
+			t.Fatalf("call node = %+v", node)
+		}
+		if node.Symbol != identityID {
+			t.Fatalf("call Symbol = %d, want %d", node.Symbol, identityID)
+		}
+		if len(node.TypeArgs) != 1 || node.TypeArgs[0] != state.handoff.Semantics.Types().Builtins().I32 {
+			t.Fatalf("call TypeArgs = %v, want [i32]", node.TypeArgs)
+		}
+	}
+}
+
+func TestBuildValueNestedCallsAndPlaceReceiver(t *testing.T) {
+	state, records := testBuildValue(t, `
+fn add(left i32, right i32) i32 => left + right;
+type Inner = struct { x i32; fn value(self Inner) i32 => self.x; };
+let nested i32 = add(add(1, 2), 3);
+fn read(p *Inner) i32 => (*p).value();
+`)
+	addID := findSymbolID(t, state.handoff, "add", symbol.SymbolFunction)
+	var outerID, innerID valueID
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Call == nil || retained.Call.Target.Kind != callDirect || retained.Call.Target.Symbol != addID {
+			continue
+		}
+		call := retained.Call
+		if len(call.Arguments) != 2 {
+			continue
+		}
+		argumentRecord := state.expressionsByResult[call.Arguments[0].Source]
+		if argumentRecord != nil && argumentRecord.Kind == expressionCall {
+			innerID = call.Arguments[0].Source
+		}
+		for _, candidate := range state.handoff.Records.Records() {
+			if candidate.Expression != nil && candidate.Expression.Kind == expressionCall && candidate.Header.Syntax == retained.Header.Syntax {
+				outerID = candidate.Expression.Result
+			}
+		}
+	}
+	if outerID == 0 || innerID == 0 {
+		t.Fatal("nested direct calls not found")
+	}
+	methodID := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callMethod
+	})
+	for _, id := range []valueID{outerID, innerID, methodID} {
+		if _, ok := state.buildValue(id); !ok {
+			t.Fatal("buildValue failed for call")
+		}
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	outerNode := unit.Nodes()[state.values[outerID]-1]
+	if outerNode.Kind != tir.DirectCall || len(outerNode.Children) != 2 {
+		t.Fatalf("outer call = %+v", outerNode)
+	}
+	innerNode := unit.Nodes()[outerNode.Children[0]-1]
+	if innerNode.Kind != tir.DirectCall || len(innerNode.Children) != 2 {
+		t.Fatalf("inner call = %+v", innerNode)
+	}
+	innerFirst := unit.Nodes()[innerNode.Children[0]-1]
+	innerSecond := unit.Nodes()[innerNode.Children[1]-1]
+	if innerFirst.Kind != tir.IntegerLiteral || innerFirst.Literal.IntegerNum != "1" {
+		t.Fatalf("inner first argument = %+v", innerFirst)
+	}
+	if innerSecond.Kind != tir.IntegerLiteral || innerSecond.Literal.IntegerNum != "2" {
+		t.Fatalf("inner second argument = %+v", innerSecond)
+	}
+	outerSecond := unit.Nodes()[outerNode.Children[1]-1]
+	if outerSecond.Kind != tir.IntegerLiteral || outerSecond.Literal.IntegerNum != "3" {
+		t.Fatalf("outer second argument = %+v", outerSecond)
+	}
+	methodNode := unit.Nodes()[state.values[methodID]-1]
+	if methodNode.Kind != tir.MethodCall || len(methodNode.Children) != 1 {
+		t.Fatalf("method call = %+v", methodNode)
+	}
+	receiver := unit.Nodes()[methodNode.Children[0]-1]
+	if receiver.Kind != tir.SourceAlias || len(receiver.Children) != 1 {
+		t.Fatalf("method receiver = %+v, want SourceAlias of the grouped dereference", receiver)
+	}
+	derefLoad := unit.Nodes()[receiver.Children[0]-1]
+	if derefLoad.Kind != tir.Load || len(derefLoad.Children) != 1 {
+		t.Fatalf("method receiver load = %+v", derefLoad)
+	}
+	receiverPlace := unit.Nodes()[derefLoad.Children[0]-1]
+	if receiverPlace.Kind != tir.DereferencePlace {
+		t.Fatalf("method receiver place = %+v", receiverPlace)
+	}
+}
+
+func TestBuildValueInactiveGuardedCall(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn add(left i32, right i32) i32 => left; let result i32 = add(1, 2);\n")})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	var callRef symbol.SyntaxRef
+	var callResult valueID
+	for i := range handoff.Records.values {
+		if handoff.Records.values[i].Call != nil {
+			callRef = handoff.Records.values[i].Header.Syntax
+		}
+	}
+	if callRef == (symbol.SyntaxRef{}) {
+		t.Fatal("no call record retained")
+	}
+	for i := range handoff.Records.values {
+		if handoff.Records.values[i].Header.Syntax == callRef {
+			handoff.Records.values[i].Header.Alternative = alternativeTag{Guarded: true, Choice: 999999, Index: 1}
+		}
+	}
+	state := testIRBuildState(t, handoff, records, requirements)
+	for _, retained := range handoff.Records.Records() {
+		if retained.Expression != nil && retained.Expression.Kind == expressionCall && retained.Header.Syntax == callRef {
+			callResult = retained.Expression.Result
+		}
+	}
+	if callResult == 0 {
+		t.Fatal("call expression record missing")
+	}
+	if _, ok := state.buildValue(callResult); ok {
+		t.Fatal("buildValue built an inactive guarded call")
 	}
 }
