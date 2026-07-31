@@ -465,6 +465,68 @@ func TestBuildUnitG1ImplicitVoidReturn(t *testing.T) {
 	t.Fatal("function declaration not found")
 }
 
+func TestBuildUnitG3ImplicitReturnDeferChain(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn f() void { defer print 1; }`)
+	if !ok || unit == nil {
+		t.Fatal("implicit-return defer fixture was not buildable")
+	}
+	registers := nodesOfKind(unit, tir.DeferRegister)
+	if len(registers) != 1 {
+		t.Fatalf("DeferRegister nodes = %d, want 1", len(registers))
+	}
+	if got := printedInteger(t, unit, deferRegisterChild(t, unit, registers[0])); got != "1" {
+		t.Fatalf("deferred statement prints %s, want 1", got)
+	}
+	block := functionBody(t, unit)
+	if len(block.Children) != 2 {
+		t.Fatalf("block children = %v, want DeferRegister then ImplicitReturn", block.Children)
+	}
+	implicit := unit.Nodes()[block.Children[1]-1]
+	if implicit.Kind != tir.ImplicitReturn {
+		t.Fatalf("second child = %+v, want ImplicitReturn", implicit)
+	}
+	if len(implicit.DeferChain) != 1 || implicit.DeferChain[0] != registers[0] {
+		t.Fatalf("ImplicitReturn DeferChain = %v, want [%d]", implicit.DeferChain, registers[0])
+	}
+}
+
+func TestBuildUnitG3ImplicitReturnNestedIfDefers(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f() void {
+    defer print 1;
+    if true { defer print 2; return; }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("nested implicit-return defer fixture was not buildable")
+	}
+	returnNodes := nodesOfKind(unit, tir.Return)
+	if len(returnNodes) != 1 {
+		t.Fatalf("Return nodes = %d, want 1", len(returnNodes))
+	}
+	returnNode := unit.Nodes()[returnNodes[0]-1]
+	if len(returnNode.DeferChain) != 2 {
+		t.Fatalf("Return DeferChain = %v, want 2 entries", returnNode.DeferChain)
+	}
+	for i, id := range returnNode.DeferChain {
+		want := []string{"2", "1"}[i]
+		if got := printedInteger(t, unit, deferRegisterChild(t, unit, id)); got != want {
+			t.Fatalf("return defer chain entry %d runs print %s, want %s", i, got, want)
+		}
+	}
+	block := functionBody(t, unit)
+	implicit := unit.Nodes()[block.Children[len(block.Children)-1]-1]
+	if implicit.Kind != tir.ImplicitReturn {
+		t.Fatalf("last child = %+v, want ImplicitReturn", implicit)
+	}
+	if len(implicit.DeferChain) != 1 {
+		t.Fatalf("ImplicitReturn DeferChain = %v, want outer defer only", implicit.DeferChain)
+	}
+	if got := printedInteger(t, unit, deferRegisterChild(t, unit, implicit.DeferChain[0])); got != "1" {
+		t.Fatalf("implicit-return defer chain runs print %s, want 1", got)
+	}
+}
+
 func TestBuildUnitG2BuildsIfDeferredFromG1(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `fn main(flag bool) void { if flag { print 1; } }`)
 	if !ok || unit == nil {
@@ -1910,6 +1972,218 @@ let value Color = 1 as Color;
 		t.Fatalf("checked integer-to-enum child = %+v", child)
 	}
 	_ = records
+}
+
+// deferRegisterChild returns the sole child of a DeferRegister node.
+func deferRegisterChild(t *testing.T, unit *tir.Unit, id tir.NodeID) tir.Node {
+	t.Helper()
+	node := unit.Nodes()[id-1]
+	if node.Kind != tir.DeferRegister || len(node.Children) != 1 {
+		t.Fatalf("node %d = %+v, want DeferRegister with one child", id, node)
+	}
+	return unit.Nodes()[node.Children[0]-1]
+}
+
+// printedInteger returns the literal of a one-operand Print whose operand is an
+// integer literal, or fails.
+func printedInteger(t *testing.T, unit *tir.Unit, node tir.Node) string {
+	t.Helper()
+	if node.Kind != tir.Print || len(node.Children) != 1 {
+		t.Fatalf("deferred statement = %+v, want Print of one operand", node)
+	}
+	operand := unit.Nodes()[node.Children[0]-1]
+	if operand.Kind != tir.IntegerLiteral {
+		t.Fatalf("print operand = %+v, want IntegerLiteral", operand)
+	}
+	return operand.Literal.IntegerNum
+}
+
+func TestBuildUnitG3DeferRegisterAndReturnChain(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn f() void { defer print 1; return; }`)
+	if !ok || unit == nil {
+		t.Fatal("defer fixture was not buildable")
+	}
+	registers := nodesOfKind(unit, tir.DeferRegister)
+	if len(registers) != 1 {
+		t.Fatalf("DeferRegister nodes = %d, want 1", len(registers))
+	}
+	register := unit.Nodes()[registers[0]-1]
+	if register.Kind != tir.DeferRegister || register.Region == 0 {
+		t.Fatalf("DeferRegister = %+v, want a region", register)
+	}
+	if statement := deferRegisterChild(t, unit, registers[0]); printedInteger(t, unit, statement) != "1" {
+		t.Fatalf("deferred statement = %+v, want print 1", statement)
+	}
+	block := functionBody(t, unit)
+	if len(block.Children) != 2 {
+		t.Fatalf("block children = %v, want DeferRegister then Return", block.Children)
+	}
+	if block.Children[0] != registers[0] {
+		t.Fatalf("first child = %d, want DeferRegister %d", block.Children[0], registers[0])
+	}
+	returnNode := unit.Nodes()[block.Children[1]-1]
+	if returnNode.Kind != tir.Return {
+		t.Fatalf("second child = %+v, want Return", returnNode)
+	}
+	if len(returnNode.DeferChain) != 1 || returnNode.DeferChain[0] != registers[0] {
+		t.Fatalf("Return DeferChain = %v, want [%d]", returnNode.DeferChain, registers[0])
+	}
+}
+
+func TestBuildUnitG3NestedDefersInnermostFirst(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f() void {
+    defer print 1;
+    defer print 2;
+    {
+        defer print 3;
+        return;
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("nested-defer fixture was not buildable")
+	}
+	returnNodes := nodesOfKind(unit, tir.Return)
+	if len(returnNodes) != 1 {
+		t.Fatalf("Return nodes = %d, want 1", len(returnNodes))
+	}
+	returnNode := unit.Nodes()[returnNodes[0]-1]
+	if len(returnNode.DeferChain) != 3 {
+		t.Fatalf("Return DeferChain = %v, want 3 entries", returnNode.DeferChain)
+	}
+	want := []string{"3", "2", "1"}
+	for i, id := range returnNode.DeferChain {
+		if got := printedInteger(t, unit, deferRegisterChild(t, unit, id)); got != want[i] {
+			t.Fatalf("defer chain entry %d runs print %s, want %s", i, got, want[i])
+		}
+	}
+}
+
+func TestBuildUnitG3BreakAndContinueDeferChains(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f(flag bool) void {
+    while flag {
+        defer print 1;
+        if flag { break; }
+        continue;
+    }
+    defer print 2;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("break/continue defer fixture was not buildable")
+	}
+	if registers := nodesOfKind(unit, tir.DeferRegister); len(registers) != 2 {
+		t.Fatalf("DeferRegister nodes = %d, want 2", len(registers))
+	}
+	breakNodes := nodesOfKind(unit, tir.Break)
+	continueNodes := nodesOfKind(unit, tir.Continue)
+	if len(breakNodes) != 1 || len(continueNodes) != 1 {
+		t.Fatalf("Break=%d Continue=%d, want one each", len(breakNodes), len(continueNodes))
+	}
+	exits := []struct {
+		name string
+		node tir.Node
+	}{{"break", unit.Nodes()[breakNodes[0]-1]}, {"continue", unit.Nodes()[continueNodes[0]-1]}}
+	for _, exit := range exits {
+		if len(exit.node.DeferChain) != 1 {
+			t.Fatalf("%s DeferChain = %v, want exactly the crossed while-body defer", exit.name, exit.node.DeferChain)
+		}
+		if got := printedInteger(t, unit, deferRegisterChild(t, unit, exit.node.DeferChain[0])); got != "1" {
+			t.Fatalf("%s defer chain entry prints %s, want print 1", exit.name, got)
+		}
+	}
+}
+
+func TestBuildUnitG3DeferAfterJumpStillIncluded(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f(flag bool) void {
+    while flag {
+        break;
+        defer print 1;
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("post-break defer fixture was not buildable")
+	}
+	breakNodes := nodesOfKind(unit, tir.Break)
+	if len(breakNodes) != 1 {
+		t.Fatalf("Break nodes = %d, want 1", len(breakNodes))
+	}
+	breakNode := unit.Nodes()[breakNodes[0]-1]
+	// Defers register on region entry in authored order, so a break anywhere in
+	// the region runs every defer the region registered, even one authored after
+	// the break. This mirrors defer_validation.go, which collects the whole
+	// crossed region's defers regardless of the exit's position.
+	if len(breakNode.DeferChain) != 1 {
+		t.Fatalf("Break DeferChain = %v, want the whole while-body defer set", breakNode.DeferChain)
+	}
+	if got := printedInteger(t, unit, deferRegisterChild(t, unit, breakNode.DeferChain[0])); got != "1" {
+		t.Fatalf("break defer chain entry prints %s, want print 1", got)
+	}
+}
+
+func TestBuildUnitG3PostfixUpdateSingleEvaluation(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f() i32 { return 42; }
+fn main() void {
+    var arr [3]i32 = [0; 3];
+    arr[f()]++;
+    var i i32 = 0;
+    i--;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("postfix fixture was not buildable")
+	}
+	compoundNodes := nodesOfKind(unit, tir.CompoundStore)
+	if len(compoundNodes) != 2 {
+		t.Fatalf("CompoundStore nodes = %d, want 2", len(compoundNodes))
+	}
+	var indexed, plain tir.Node
+	for _, id := range compoundNodes {
+		node := unit.Nodes()[id-1]
+		if len(node.Children) != 2 {
+			t.Fatalf("CompoundStore = %+v, want place/value children", node)
+		}
+		place := unit.Nodes()[node.Children[0]-1]
+		switch place.Kind {
+		case tir.CheckedIndexPlace:
+			indexed = node
+		case tir.StoragePlace:
+			plain = node
+		default:
+			t.Fatalf("CompoundStore place = %+v, want CheckedIndexPlace or StoragePlace", place)
+		}
+	}
+	if indexed.Kind != tir.CompoundStore || indexed.Operator != syntax.Plus {
+		t.Fatalf("indexed update = %+v, want CompoundStore with +", indexed)
+	}
+	if plain.Kind != tir.CompoundStore || plain.Operator != syntax.Minus {
+		t.Fatalf("plain update = %+v, want CompoundStore with -", plain)
+	}
+	indexedPlace := unit.Nodes()[indexed.Children[0]-1]
+	if indexedPlace.Kind != tir.CheckedIndexPlace || len(indexedPlace.Children) != 2 {
+		t.Fatalf("indexed update place = %+v, want two-child CheckedIndexPlace", indexedPlace)
+	}
+	index := unit.Nodes()[indexedPlace.Children[1]-1]
+	if index.Kind != tir.DirectCall {
+		t.Fatalf("indexed update index operand = %+v, want DirectCall", index)
+	}
+	if one := unit.Nodes()[indexed.Children[1]-1]; one.Kind != tir.IntegerLiteral || one.Literal.IntegerNum != "1" {
+		t.Fatalf("indexed update operand = %+v, want literal one", one)
+	}
+	if one := unit.Nodes()[plain.Children[1]-1]; one.Kind != tir.IntegerLiteral || one.Literal.IntegerNum != "1" {
+		t.Fatalf("plain update operand = %+v, want literal one", one)
+	}
+	// f() must be evaluated exactly once: the only DirectCall anywhere is the
+	// index operand of the single CompoundStore place, never duplicated.
+	directCalls := nodesOfKind(unit, tir.DirectCall)
+	if len(directCalls) != 1 || directCalls[0] != indexedPlace.Children[1] {
+		t.Fatalf("DirectCall nodes = %v, want exactly the one index operand", directCalls)
+	}
 }
 
 // variantSymbols returns the symbols of every VariantDeclaration in the unit.

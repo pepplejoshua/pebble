@@ -63,6 +63,10 @@ type irBuildState struct {
 	byRegion                     map[controlID][]*controlRecord
 	bySyntax                     map[symbol.SyntaxRef]*controlRecord
 	owner                        map[controlID]*controlRecord
+	defersByRegion               map[controlID][]*deferRecord
+	deferByStatement             map[symbol.SyntaxRef]*deferRecord
+	deferByHeader                map[symbol.SyntaxRef]*deferRecord
+	deferNodes                   map[symbol.SyntaxRef]tir.NodeID
 	variantBySyntax              map[symbol.SyntaxRef]symbol.SymbolID
 	functionDecls                []irFunctionDecl
 	functionRegions              map[symbol.SymbolID]controlID
@@ -347,6 +351,11 @@ func (s *irBuildState) buildRegionBlock(region controlID, root bool) (tir.NodeID
 	children := make([]tir.NodeID, 0, len(sequence))
 	canFallthrough := true
 	for _, ctrl := range sequence {
+		if s.deferByStatement[ctrl.Header.Syntax] != nil {
+			// A deferred statement is never a sequential statement: it runs only
+			// when its defer fires, built once as that DeferRegister's child.
+			continue
+		}
 		node, ok, unsupported, diverges := s.buildControlRecord(ctrl)
 		if !ok {
 			return 0, false, unsupported
@@ -355,7 +364,15 @@ func (s *irBuildState) buildRegionBlock(region controlID, root bool) (tir.NodeID
 		canFallthrough = !diverges
 	}
 	if root && canFallthrough && isVoidCallable(s, s.owner[region]) {
-		implicit, ok := s.addNode(tir.Node{Kind: tir.ImplicitReturn, Origin: s.owner[region].Header.Span, SyntheticRole: "implicit-return", Function: s.functions[s.owner[region].Callable.Symbol]}, symbol.SyntaxRef{})
+		var chain []tir.NodeID
+		if region != 0 {
+			built, ok := s.deferChainFor(region, 0)
+			if !ok {
+				return 0, false, false
+			}
+			chain = built
+		}
+		implicit, ok := s.addNode(tir.Node{Kind: tir.ImplicitReturn, Origin: s.owner[region].Header.Span, SyntheticRole: "implicit-return", Function: s.functions[s.owner[region].Callable.Symbol], DeferChain: chain}, symbol.SyntaxRef{})
 		if !ok {
 			return 0, false, false
 		}
@@ -449,6 +466,14 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 				_, operator := compoundOperator(assignment.Operator)
 				node, ok = s.addNode(tir.Node{Kind: tir.CompoundStore, Span: ctrl.Header.Span, Operator: operator, Children: []tir.NodeID{place, value}}, ctrl.Header.Syntax)
 			}
+		} else if ctrl.StatementForm == statementPostfixUpdate {
+			if len(ctrl.Values) != 1 {
+				return 0, false, false, false
+			}
+			node, ok = s.buildPostfixUpdate(ctrl)
+			if !ok {
+				return 0, false, false, false
+			}
 		} else if len(ctrl.Values) == 1 {
 			value, valueOK := s.buildValue(ctrl.Values[0].Value)
 			if !valueOK {
@@ -480,7 +505,11 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 			}
 			values = append(values, value)
 		}
-		node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values}, ctrl.Header.Syntax)
+		chain, chainOK := s.deferChainFor(ctrl.Region, 0)
+		if !chainOK {
+			return 0, false, false, false
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values, DeferChain: chain}, ctrl.Header.Syntax)
 		return node, ok, false, true
 	case controlIf:
 		return s.buildIf(ctrl)
@@ -500,7 +529,11 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 		if !mapped || target == 0 {
 			return 0, false, false, false
 		}
-		node, ok = s.addNode(tir.Node{Kind: tir.Break, Span: ctrl.Header.Span, Target: target}, ctrl.Header.Syntax)
+		chain, chainOK := s.deferChainFor(ctrl.Region, ctrl.Target)
+		if !chainOK {
+			return 0, false, false, false
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Break, Span: ctrl.Header.Span, Target: target, DeferChain: chain}, ctrl.Header.Syntax)
 		return node, ok, false, true
 	case controlContinue:
 		if ctrl.Target == 0 {
@@ -510,13 +543,143 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 		if !mapped || target == 0 {
 			return 0, false, false, false
 		}
-		node, ok = s.addNode(tir.Node{Kind: tir.Continue, Span: ctrl.Header.Span, Target: target}, ctrl.Header.Syntax)
+		chain, chainOK := s.deferChainFor(ctrl.Region, ctrl.Target)
+		if !chainOK {
+			return 0, false, false, false
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Continue, Span: ctrl.Header.Span, Target: target, DeferChain: chain}, ctrl.Header.Syntax)
 		return node, ok, false, true
+	case controlDefer:
+		node, ok, unsupported := s.buildDeferRegister(s.deferByHeader[ctrl.Header.Syntax])
+		return node, ok, unsupported, false
 	default:
-		// controlDefer and other later-part kinds are not yet buildable.
+		// controlSwitchCase is reached only by syntax through buildSwitchCase.
 		return 0, false, true, false
 	}
 	return node, ok, false, false
+}
+
+// buildDeferRegister builds one DeferRegister node from a frozen deferRecord.
+// The deferred statement's own control record is skipped from its region's
+// sequence and built here instead as the register's single child. The register
+// is memoized, so the same built statement node is shared by the containing
+// block's ordered children and by every exit whose DeferChain crosses this
+// region, exactly as lowering expects: it may expand a chain but never recompute
+// lexical behavior.
+func (s *irBuildState) buildDeferRegister(record *deferRecord) (tir.NodeID, bool, bool) {
+	if record == nil || record.Header.Syntax == (symbol.SyntaxRef{}) {
+		return 0, false, false
+	}
+	if existing := s.deferNodes[record.Header.Syntax]; existing != 0 {
+		return existing, true, false
+	}
+	region, ok := s.regions[record.Region]
+	if !ok || region == 0 {
+		return 0, false, false
+	}
+	stmt := s.bySyntax[record.Statement]
+	if stmt == nil {
+		return 0, false, false
+	}
+	switch stmt.Kind {
+	case controlReturn, controlBreak, controlContinue, controlDefer:
+		// Deferred return/break/continue/nested defer are C0613 hard errors and
+		// never survive into a generation-error-free handoff; reject defensively.
+		return 0, false, false
+	}
+	stmtNode, ok, unsupported, _ := s.buildControlRecord(stmt)
+	if !ok {
+		return 0, false, unsupported
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.DeferRegister, Span: record.Header.Span, Region: region, Children: []tir.NodeID{stmtNode}}, record.Header.Syntax)
+	if !ok {
+		return 0, false, false
+	}
+	s.deferNodes[record.Header.Syntax] = node
+	return node, true, false
+}
+
+// deferChainFor computes the exact ordered defer chain an exit crossing from
+// source toward target runs: walking the frozen control-region Parent chain from
+// source up, collecting every crossed region's registered defers in reverse
+// registration order (innermost region first), and stopping at target without
+// charging the target region itself. A zero target means the walk runs to the
+// function root. This mirrors defer_validation.go's edge walk exactly so
+// construction and validation attach the same defers to the same exits.
+func (s *irBuildState) deferChainFor(source, target controlID) ([]tir.NodeID, bool) {
+	controls := s.handoff.Records.Controls()
+	var chain []tir.NodeID
+	for current := source; current != 0; {
+		if uint64(current) > uint64(len(controls)) {
+			return nil, false
+		}
+		if current == target {
+			break
+		}
+		defers := s.defersByRegion[current]
+		for index := len(defers) - 1; index >= 0; index-- {
+			node, ok, _ := s.buildDeferRegister(defers[index])
+			if !ok {
+				return nil, false
+			}
+			chain = append(chain, node)
+		}
+		current = controls[current-1].Parent
+	}
+	return chain, true
+}
+
+// buildPostfixUpdate builds one postfix ++/-- statement as a CompoundStore: the
+// authored place is evaluated exactly once as the store's single place child and
+// the increment operand is the exact literal one, so no temporary is required.
+// The frozen schema has no dedicated postfix primitive, and the mutation's
+// result value (the place's old value) is never produced as a value node because
+// ++/-- are legal only as an expression statement or for-update (assignment is
+// never an expression). The mutation operatorRecord correlates through the
+// discarded statement value, exactly as assignment_validation.go correlates it.
+func (s *irBuildState) buildPostfixUpdate(ctrl *controlRecord) (tir.NodeID, bool) {
+	op := s.operatorsByResult[ctrl.Values[0].Value]
+	if op == nil || op.Family != operatorMutation {
+		return 0, false
+	}
+	place, placeOK := s.buildPlace(op.Header.Syntax)
+	if !placeOK {
+		return 0, false
+	}
+	one, oneOK := s.buildPostfixOne(op)
+	if !oneOK {
+		return 0, false
+	}
+	operator := syntax.Plus
+	if op.Token == syntax.MinusMinus {
+		operator = syntax.Minus
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.CompoundStore, Span: ctrl.Header.Span, Operator: operator, Children: []tir.NodeID{place, one}}, ctrl.Header.Syntax)
+	return node, ok
+}
+
+// buildPostfixOne synthesizes the exact-literal-one operand of a postfix
+// ++/-- statement. Its type is the mutated place's own type so CompoundStore's
+// single read-modify-write primitive applies a unit increment/decrement without
+// re-evaluating the authored place.
+func (s *irBuildState) buildPostfixOne(op *operatorRecord) (tir.NodeID, bool) {
+	if op == nil || len(op.Operands) == 0 {
+		return 0, false
+	}
+	typ, ok := typeOfValue(s.records, op.Operands[0])
+	if !ok || typ == 0 {
+		return 0, false
+	}
+	kind := tir.IntegerLiteral
+	literal := tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1", IntegerDen: "1"}
+	if key, found := s.handoff.Semantics.Types().Key(typ); found {
+		if builtin, isBuiltin := key.Builtin(); isBuiltin && isFloatBuiltin(builtin) {
+			kind = tir.FloatLiteral
+			literal = tir.Literal{Kind: tir.LiteralFloat, Float: "1.0"}
+		}
+	}
+	node, ok := s.addNode(tir.Node{Kind: kind, Type: typ, Origin: op.Header.Span, SyntheticRole: "postfix-update-one", Literal: literal}, symbol.SyntaxRef{})
+	return node, ok
 }
 
 // buildControlArm resolves one structural composition arm and builds its
@@ -981,15 +1144,31 @@ func (s *irBuildState) indexExpressions() bool {
 }
 
 // indexControls mirrors validateControlFlow's indexes so construction and
-// validation walk the frozen control arena in the same authored order.
+// validation walk the frozen control arena in the same authored order. It also
+// indexes defer records the same way defer_validation.go does: by region in
+// record order (which is exactly registration/Ordinal order per prepareDefer),
+// by deferred statement, and by header.
 func (s *irBuildState) indexControls() bool {
 	s.byRegion = make(map[controlID][]*controlRecord)
 	s.bySyntax = make(map[symbol.SyntaxRef]*controlRecord)
 	s.owner = make(map[controlID]*controlRecord)
+	s.defersByRegion = make(map[controlID][]*deferRecord)
+	s.deferByStatement = make(map[symbol.SyntaxRef]*deferRecord)
+	s.deferByHeader = make(map[symbol.SyntaxRef]*deferRecord)
+	s.deferNodes = make(map[symbol.SyntaxRef]tir.NodeID)
 	retainedRecords := s.handoff.Records.Records()
 	for i := range retainedRecords {
 		retained := &retainedRecords[i]
-		if retained.Control == nil || !activeOperatorRecord(s.handoff, retained.Header) {
+		if !activeOperatorRecord(s.handoff, retained.Header) {
+			continue
+		}
+		if retained.Defer != nil {
+			record := retained.Defer
+			s.defersByRegion[record.Region] = append(s.defersByRegion[record.Region], record)
+			s.deferByStatement[record.Statement] = record
+			s.deferByHeader[record.Header.Syntax] = record
+		}
+		if retained.Control == nil {
 			continue
 		}
 		ctrl := retained.Control
