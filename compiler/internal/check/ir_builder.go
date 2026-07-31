@@ -8,6 +8,7 @@ import (
 
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
+	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
@@ -37,24 +38,27 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 }
 
 type irBuildState struct {
-	handoff              *solveHandoff
-	records              *solvedRecords
-	builder              *tir.Builder
-	functions            map[symbol.SymbolID]tir.FunctionID
-	functionNodes        map[symbol.SymbolID]tir.NodeID
-	regions              map[controlID]tir.RegionID
-	values               map[valueID]tir.NodeID
-	places               map[symbol.SyntaxRef]*placeRecord
-	placeValues          map[valueID]tir.NodeID
-	expressionsByResult  map[valueID]*expressionRecord
-	aggregatesByRecord   map[recordID]*aggregateRecord
-	operatorsBySyntax    map[symbol.SyntaxRef]*operatorRecord
-	operatorsByResult    map[valueID]*operatorRecord
-	membersByResult      map[valueID]*memberRecord
-	indexesByResult      map[valueID]*indexRecord
-	indexesBySyntax      map[symbol.SyntaxRef]*indexRecord
-	callsBySyntax        map[symbol.SyntaxRef]*callRecord
-	contextFlowsBySyntax map[symbol.SyntaxRef]*contextFlowRecord
+	handoff               *solveHandoff
+	records               *solvedRecords
+	builder               *tir.Builder
+	functions             map[symbol.SymbolID]tir.FunctionID
+	functionNodes         map[symbol.SymbolID]tir.NodeID
+	regions               map[controlID]tir.RegionID
+	values                map[valueID]tir.NodeID
+	places                map[symbol.SyntaxRef]*placeRecord
+	placeValues           map[valueID]tir.NodeID
+	expressionsByResult   map[valueID]*expressionRecord
+	aggregatesByRecord    map[recordID]*aggregateRecord
+	castsByRecord         map[recordID]*castRecord
+	compatibilityBySource map[valueID]*compatibilityRecord
+	tuplesBySyntax        map[symbol.SyntaxRef][]*compatibilityRecord
+	operatorsBySyntax     map[symbol.SyntaxRef]*operatorRecord
+	operatorsByResult     map[valueID]*operatorRecord
+	membersByResult       map[valueID]*memberRecord
+	indexesByResult       map[valueID]*indexRecord
+	indexesBySyntax       map[symbol.SyntaxRef]*indexRecord
+	callsBySyntax         map[symbol.SyntaxRef]*callRecord
+	contextFlowsBySyntax  map[symbol.SyntaxRef]*contextFlowRecord
 }
 
 func (s *irBuildState) addNode(node tir.Node, ref symbol.SyntaxRef) (tir.NodeID, bool) {
@@ -315,6 +319,9 @@ func (s *irBuildState) buildRequirements(groups map[symbol.SymbolID][]Requiremen
 func (s *irBuildState) indexExpressions() bool {
 	s.expressionsByResult = make(map[valueID]*expressionRecord)
 	s.aggregatesByRecord = make(map[recordID]*aggregateRecord)
+	s.castsByRecord = make(map[recordID]*castRecord)
+	s.compatibilityBySource = make(map[valueID]*compatibilityRecord)
+	s.tuplesBySyntax = make(map[symbol.SyntaxRef][]*compatibilityRecord)
 	s.operatorsBySyntax = make(map[symbol.SyntaxRef]*operatorRecord)
 	s.operatorsByResult = make(map[valueID]*operatorRecord)
 	s.membersByResult = make(map[valueID]*memberRecord)
@@ -332,6 +339,17 @@ func (s *irBuildState) indexExpressions() bool {
 		}
 		if retained.Aggregate != nil {
 			s.aggregatesByRecord[retained.Aggregate.Header.ID] = retained.Aggregate
+		}
+		if retained.Cast != nil {
+			s.castsByRecord[retained.Cast.Header.ID] = retained.Cast
+		}
+		if retained.Compatibility != nil {
+			c := retained.Compatibility
+			if c.Role == compatibilityTupleComponent {
+				s.tuplesBySyntax[c.Header.Syntax] = append(s.tuplesBySyntax[c.Header.Syntax], c)
+			} else if _, exists := s.compatibilityBySource[c.Source]; !exists {
+				s.compatibilityBySource[c.Source] = c
+			}
 		}
 		if retained.Operator != nil {
 			s.operatorsBySyntax[retained.Operator.Header.Syntax] = retained.Operator
@@ -361,6 +379,10 @@ func (s *irBuildState) indexExpressions() bool {
 // value construction. It builds children before parents and memoizes every
 // valueID so a value referenced by multiple parents is only built once.
 func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
+	return s.buildValueBase(id)
+}
+
+func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 	if id == 0 {
 		return 0, false
 	}
@@ -377,6 +399,36 @@ func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
 	}
 	node := tir.Node{Type: typ, Span: record.Header.Span, Syntax: record.Header.Syntax}
 	switch record.Kind {
+	case expressionCast:
+		cast := s.castsByRecord[record.Specialized]
+		if cast == nil {
+			return 0, false
+		}
+		sourceType, sourceOK := typeOfValue(s.records, cast.Source)
+		destination, destinationOK := typeOfValue(s.records, cast.Destination)
+		if !sourceOK || !destinationOK {
+			return 0, false
+		}
+		child, childOK := s.buildValue(cast.Source)
+		if !childOK {
+			return 0, false
+		}
+		if sourceType == destination {
+			node.Kind, node.ExplicitCast, node.Children = tir.SourceAlias, true, []tir.NodeID{child}
+			break
+		}
+		class := classify(s.handoff.Semantics, sourceType, destination)
+		coercion := coercionFor(s.handoff.Semantics, class, sourceType, destination)
+		coercionNode := map[coercionKind]tir.NodeKind{
+			coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
+			coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
+			coercionEnumToInteger: tir.EnumToInteger, coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum,
+			coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
+		}[coercion]
+		if coercionNode == 0 {
+			return 0, false
+		}
+		node.Kind, node.Children = coercionNode, []tir.NodeID{child}
 	case expressionLiteral:
 		if !s.buildLiteral(record, &node) {
 			return 0, false
@@ -421,6 +473,39 @@ func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
 		if !s.buildChildren(record, &node) {
 			return 0, false
 		}
+		if components := s.tuplesBySyntax[record.Header.Syntax]; len(components) != 0 {
+			sort.Slice(components, func(i, j int) bool { return components[i].Ordinal < components[j].Ordinal })
+			tupleChildren := append([]tir.NodeID(nil), node.Children...)
+			typeArgs := make([]types.TypeID, 0, len(components))
+			needsCoercion := false
+			for _, component := range components {
+				destination, ok := typeOfValue(s.records, component.Destination)
+				if !ok || component.Ordinal >= uint32(len(tupleChildren)) {
+					return 0, false
+				}
+				child := tupleChildren[component.Ordinal]
+				sourceType := mustType(s.records, component.Source)
+				coercion := coercionFor(s.handoff.Semantics, classify(s.handoff.Semantics, sourceType, destination), sourceType, destination)
+				needsCoercion = needsCoercion || coercion != coercionNone
+				if coercion != coercionNone {
+					wrapped, ok := s.addCoercionNode(coercion, destination, child, record.Header.Span, symbol.SyntaxRef{})
+					if !ok {
+						return 0, false
+					}
+					child = wrapped
+				}
+				tupleChildren[component.Ordinal] = child
+				typeArgs = append(typeArgs, destination)
+			}
+			if !needsCoercion {
+				break
+			}
+			sourceTuple, ok := s.addNode(tir.Node{Kind: tir.TupleValue, Type: typ, Span: record.Header.Span, Children: append([]tir.NodeID(nil), node.Children...)}, symbol.SyntaxRef{})
+			if !ok {
+				return 0, false
+			}
+			node.Kind, node.TypeArgs, node.Children = tir.TupleCoerce, typeArgs, append([]tir.NodeID{sourceTuple}, tupleChildren...)
+		}
 	case expressionArray:
 		node.Kind = tir.ArrayValue
 		if !s.buildChildren(record, &node) {
@@ -450,7 +535,7 @@ func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
 		if !s.buildInterpolated(record, &node) {
 			return 0, false
 		}
-	case expressionPrefix, expressionBinary:
+	case expressionPrefix, expressionPostfix, expressionBinary:
 		op := s.operatorsByResult[id]
 		if op == nil {
 			op = s.operatorsBySyntax[record.Header.Syntax]
@@ -464,9 +549,61 @@ func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
 		} else if !s.buildOperatorValue(record, &node) {
 			return 0, false
 		}
+	case expressionSlice:
+		index := s.indexForValue(id, record.Header.Syntax)
+		if index == nil {
+			return 0, false
+		}
+		base, ok := s.buildValue(index.Base)
+		if !ok {
+			return 0, false
+		}
+		node.Kind, node.Children = tir.CheckedSlice, []tir.NodeID{base}
+		if index.StartPresent {
+			start, ok := s.buildValue(index.Start)
+			if !ok {
+				return 0, false
+			}
+			node.Children = append(node.Children, start)
+		}
+		if index.EndPresent {
+			end, ok := s.buildValue(index.End)
+			if !ok {
+				return 0, false
+			}
+			node.Children = append(node.Children, end)
+		}
 	case expressionBracket:
 		if place, ok := s.buildPlaceForValue(id); ok {
 			node.Kind, node.Children = tir.Load, []tir.NodeID{place}
+		} else if index := s.indexForValue(id, record.Header.Syntax); index != nil {
+			base, ok := s.buildValue(index.Base)
+			if !ok {
+				return 0, false
+			}
+			if index.Mode == indexValue {
+				start, ok := s.buildValue(index.Start)
+				if !ok {
+					return 0, false
+				}
+				node.Kind, node.Children = tir.CheckedIndex, []tir.NodeID{base, start}
+			} else {
+				node.Kind, node.Children = tir.CheckedSlice, []tir.NodeID{base}
+				if index.StartPresent {
+					start, ok := s.buildValue(index.Start)
+					if !ok {
+						return 0, false
+					}
+					node.Children = append(node.Children, start)
+				}
+				if index.EndPresent {
+					end, ok := s.buildValue(index.End)
+					if !ok {
+						return 0, false
+					}
+					node.Children = append(node.Children, end)
+				}
+			}
 		} else {
 			return 0, false
 		}
@@ -485,6 +622,48 @@ func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
 	}
 	s.values[id] = nid
 	return nid, true
+}
+
+func mustType(records *solvedRecords, id valueID) types.TypeID {
+	typ, _ := typeOfValue(records, id)
+	return typ
+}
+
+func (s *irBuildState) buildCompatibility(source valueID, compatibility *compatibilityRecord) (tir.NodeID, bool) {
+	sourceType, ok := typeOfValue(s.records, source)
+	if !ok {
+		return 0, false
+	}
+	destination, ok := typeOfValue(s.records, compatibility.Destination)
+	if !ok {
+		return s.buildValueBase(source)
+	}
+	class := classify(s.handoff.Semantics, sourceType, destination)
+	if class != compatibleImplicit {
+		return s.buildValueBase(source)
+	}
+	coercion := coercionFor(s.handoff.Semantics, class, sourceType, destination)
+	if coercion == coercionNone {
+		return s.buildValueBase(source)
+	}
+	child, ok := s.buildValueBase(source)
+	if !ok {
+		return 0, false
+	}
+	return s.addCoercionNode(coercion, destination, child, compatibility.Header.Span, symbol.SyntaxRef{})
+}
+
+func (s *irBuildState) addCoercionNode(kind coercionKind, destination types.TypeID, child tir.NodeID, span source.Span, ref symbol.SyntaxRef) (tir.NodeID, bool) {
+	irKind := map[coercionKind]tir.NodeKind{
+		coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
+		coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
+		coercionOptionalInject: tir.OptionalInject, coercionEnumToInteger: tir.EnumToInteger,
+		coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum, coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
+	}[kind]
+	if irKind == 0 {
+		return 0, false
+	}
+	return s.addNode(tir.Node{Kind: irKind, Type: destination, Span: span, Children: []tir.NodeID{child}}, ref)
 }
 
 // buildPlace folds a retained place record's complete projection chain. Place
@@ -1043,7 +1222,13 @@ func (s *irBuildState) buildCallChildren(call *callRecord, node *tir.Node) bool 
 	copy(sorted, call.Arguments)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Ordinal < sorted[j].Ordinal })
 	for _, argument := range sorted {
-		valueNode, ok := s.buildValue(argument.Source)
+		var valueNode tir.NodeID
+		var ok bool
+		if compatibility := s.compatibilityBySource[argument.Source]; compatibility != nil {
+			valueNode, ok = s.buildCompatibility(argument.Source, compatibility)
+		} else {
+			valueNode, ok = s.buildValue(argument.Source)
+		}
 		if !ok {
 			return false
 		}
@@ -1113,6 +1298,11 @@ func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.No
 	switch op.Form {
 	case operatorPrefix:
 		node.Kind = tir.PrefixValue
+	case operatorPostfix:
+		if op.Family != operatorOptionalForce || op.Token != syntax.Bang {
+			return false
+		}
+		node.Kind = tir.CheckedOptionalUnwrap
 	case operatorBinary:
 		if op.Family == operatorShift {
 			node.Kind = tir.CheckedShift
@@ -1139,7 +1329,10 @@ func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.No
 		}
 		children = append(children, operandNode)
 	}
-	node.Operator = op.Token
+	switch node.Kind {
+	case tir.PrefixValue, tir.BinaryValue, tir.ShortCircuitValue, tir.CheckedArithmetic, tir.CheckedShift:
+		node.Operator = op.Token
+	}
 	node.Children = children
 	return true
 }
@@ -1170,6 +1363,8 @@ func allowedOperatorFamily(family operatorFamily, form operatorForm) bool {
 		return form == operatorPrefix || form == operatorBinary
 	case operatorAdd, operatorShift, operatorOrdering, operatorEquality:
 		return form == operatorBinary
+	case operatorOptionalForce:
+		return form == operatorPostfix
 	}
 	return false
 }

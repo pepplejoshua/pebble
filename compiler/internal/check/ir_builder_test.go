@@ -1,6 +1,7 @@
 package check
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -748,8 +749,54 @@ fn deref(p *i32) i32 => *p;
 func TestBuildValueStringIndexIsNotPlace(t *testing.T) {
 	state, records := testBuildValue(t, `fn index(text str, index i32) *char => text[index];`)
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionBracket })
-	if _, ok := state.buildValue(id); ok {
-		t.Fatal("string indexing unexpectedly built as a place/load")
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("string indexing failed to build")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node := unit.Nodes()[nid-1]; node.Kind != tir.CheckedIndex || len(node.Children) != 2 {
+		t.Fatalf("string index node = %+v", node)
+	}
+}
+
+func TestBuildValueCastNodes(t *testing.T) {
+	state, records := testBuildValue(t, `
+let ii i64 = 1 as i64;
+let ifl f64 = 1 as f64;
+let fi i32 = 1.0 as i32;
+let ff f32 = 1.0 as f32;
+	fn identity(value i32) i32 => value as i32;
+`)
+	_ = records
+	var ids []valueID
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Expression != nil && retained.Expression.Kind == expressionCast {
+			ids = append(ids, retained.Expression.Result)
+		}
+	}
+	if len(ids) != 5 {
+		t.Fatalf("cast expressions = %d, want 5", len(ids))
+	}
+	for _, id := range ids {
+		if _, ok := state.buildValue(id); !ok {
+			t.Fatalf("cast %d failed to build", id)
+		}
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[tir.NodeKind]bool{}
+	for _, id := range ids {
+		seen[unit.Nodes()[state.values[id]-1].Kind] = true
+	}
+	for _, kind := range []tir.NodeKind{tir.IntegerCast, tir.IntegerToFloat, tir.FloatToInteger, tir.FloatCast, tir.SourceAlias} {
+		if !seen[kind] {
+			t.Fatalf("missing cast node kind %v", kind)
+		}
 	}
 }
 
@@ -1251,4 +1298,221 @@ func TestBuildValueInactiveGuardedCall(t *testing.T) {
 	if _, ok := state.buildValue(callResult); ok {
 		t.Fatal("buildValue built an inactive guarded call")
 	}
+}
+
+func TestBuildValueOptionalInject(t *testing.T) {
+	state, records := testBuildValue(t, `
+fn inject(value ?i32) i32 => value;
+let result i32 = inject(5);
+`)
+	_ = records
+	injectID := findSymbolID(t, state.handoff, "inject", symbol.SymbolFunction)
+	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callDirect && c.Target.Symbol == injectID
+	})
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for optional inject call")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.DirectCall || len(node.Children) != 1 {
+		t.Fatalf("call node = %+v", node)
+	}
+	arg := unit.Nodes()[node.Children[0]-1]
+	if arg.Kind != tir.OptionalInject || len(arg.Children) != 1 {
+		t.Fatalf("optional inject node = %+v", arg)
+	}
+	child := unit.Nodes()[arg.Children[0]-1]
+	if child.Kind != tir.IntegerLiteral || child.Literal.IntegerNum != "5" {
+		t.Fatalf("optional inject child = %+v", child)
+	}
+}
+
+func TestBuildValueTupleCoerce(t *testing.T) {
+	state, records := testBuildValue(t, `
+let a i32 = 1;
+let b i32 = 2;
+let tuple (i64, f64) = (a, b);
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionTuple })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for tuple coerce")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.TupleCoerce || len(node.Children) != 3 || len(node.TypeArgs) != 2 {
+		t.Fatalf("tuple coerce node = %+v", node)
+	}
+	tupleRecord := state.expressionsByResult[id]
+	components := state.tuplesBySyntax[tupleRecord.Header.Syntax]
+	if len(components) != 2 {
+		t.Fatalf("tuple component compatibility records = %d, want 2", len(components))
+	}
+	sort.Slice(components, func(i, j int) bool { return components[i].Ordinal < components[j].Ordinal })
+	var destElements [2]types.TypeID
+	for i, component := range components {
+		dest, ok := typeOfValue(records, component.Destination)
+		if !ok {
+			t.Fatalf("component %d destination has no type", i)
+		}
+		destElements[i] = dest
+	}
+	if node.TypeArgs[0] != destElements[0] || node.TypeArgs[1] != destElements[1] {
+		t.Fatalf("tuple coerce TypeArgs = %v, want %v", node.TypeArgs, destElements)
+	}
+	sourceTuple := unit.Nodes()[node.Children[0]-1]
+	if sourceTuple.Kind != tir.TupleValue || len(sourceTuple.Children) != 2 {
+		t.Fatalf("source tuple = %+v", sourceTuple)
+	}
+	firstCoerced := unit.Nodes()[node.Children[1]-1]
+	secondCoerced := unit.Nodes()[node.Children[2]-1]
+	if firstCoerced.Kind != tir.IntegerCast {
+		t.Fatalf("first coerced child = %+v", firstCoerced)
+	}
+	if secondCoerced.Kind != tir.IntegerToFloat {
+		t.Fatalf("second coerced child = %+v", secondCoerced)
+	}
+}
+
+func TestBuildValueCheckedOptionalUnwrap(t *testing.T) {
+	state, records := testBuildValue(t, `
+let x ?i32 = some 5;
+let y i32 = x!;
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionPostfix })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for optional unwrap")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.CheckedOptionalUnwrap || len(node.Children) != 1 {
+		t.Fatalf("optional unwrap node = %+v", node)
+	}
+	child := unit.Nodes()[node.Children[0]-1]
+	if child.Kind != tir.SymbolValue {
+		t.Fatalf("optional unwrap child = %+v", child)
+	}
+}
+
+func TestBuildValueCheckedSlice(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   string
+		wantKids int
+	}{
+		{"both bounds", "fn slice(arr []i32) []i32 => arr[1:3];", 3},
+		{"start omitted", "fn slice(arr []i32) []i32 => arr[:3];", 2},
+		{"end omitted", "fn slice(arr []i32) []i32 => arr[1:];", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, records := testBuildValue(t, tt.source)
+			id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionSlice })
+			nid, ok := state.buildValue(id)
+			if !ok {
+				t.Fatal("buildValue failed for slice")
+			}
+			unit, err := state.builder.Build()
+			if err != nil {
+				t.Fatalf("Build failed: %v", err)
+			}
+			node := unit.Nodes()[nid-1]
+			if node.Kind != tir.CheckedSlice || len(node.Children) != tt.wantKids {
+				t.Fatalf("slice node = %+v, want %d children", node, tt.wantKids)
+			}
+			base := unit.Nodes()[node.Children[0]-1]
+			if base.Kind != tir.SymbolValue {
+				t.Fatalf("slice base = %+v", base)
+			}
+			_ = records
+		})
+	}
+}
+
+func TestBuildValueEnumToInteger(t *testing.T) {
+	state, records := testBuildValue(t, `
+type Color = enum { red, blue };
+let color Color = Color.red;
+let value i32 = color as i32;
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for enum-to-integer cast")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.EnumToInteger || len(node.Children) != 1 {
+		t.Fatalf("enum-to-integer node = %+v", node)
+	}
+	child := unit.Nodes()[node.Children[0]-1]
+	if child.Kind != tir.SymbolValue {
+		t.Fatalf("enum-to-integer child = %+v", child)
+	}
+	_ = records
+}
+
+func TestBuildValueOptionalIntegerToEnum(t *testing.T) {
+	state, records := testBuildValue(t, `
+type Color = enum { red, blue };
+let value ?Color = 1 as ?Color;
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for optional integer-to-enum cast")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.OptionalIntegerToEnum || len(node.Children) != 1 {
+		t.Fatalf("optional integer-to-enum node = %+v", node)
+	}
+	child := unit.Nodes()[node.Children[0]-1]
+	if child.Kind != tir.IntegerLiteral || child.Literal.IntegerNum != "1" {
+		t.Fatalf("optional integer-to-enum child = %+v", child)
+	}
+	_ = records
+}
+
+func TestBuildValueCheckedIntegerToEnum(t *testing.T) {
+	state, records := testBuildValue(t, `
+type Color = enum { red, blue };
+let value Color = 1 as Color;
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for checked integer-to-enum cast")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.CheckedIntegerToEnum || len(node.Children) != 1 {
+		t.Fatalf("checked integer-to-enum node = %+v", node)
+	}
+	child := unit.Nodes()[node.Children[0]-1]
+	if child.Kind != tir.IntegerLiteral || child.Literal.IntegerNum != "1" {
+		t.Fatalf("checked integer-to-enum child = %+v", child)
+	}
+	_ = records
 }
