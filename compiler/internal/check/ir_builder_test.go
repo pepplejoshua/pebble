@@ -528,8 +528,57 @@ func TestBuildValueBinaryNumeric(t *testing.T) {
 		t.Fatalf("Build failed: %v", err)
 	}
 	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.CheckedArithmetic || node.Operator != syntax.Plus || len(node.Children) != 2 {
+		t.Fatalf("binary node = %+v", node)
+	}
+}
+
+func TestBuildValueFloatBinaryNumeric(t *testing.T) {
+	state, records := testBuildValue(t, "let sum f32 = 1.0 + 2.0;")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionBinary })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
 	if node.Kind != tir.BinaryValue || node.Operator != syntax.Plus || len(node.Children) != 2 {
 		t.Fatalf("binary node = %+v", node)
+	}
+}
+
+func TestBuildValueCheckedIntegralOperators(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   string
+		token    syntax.TokenKind
+		wantKind tir.NodeKind
+	}{
+		{name: "modulo", source: "let value i32 = 5 % 2;", token: syntax.Percent, wantKind: tir.CheckedArithmetic},
+		{name: "bitwise and", source: "let value i32 = 5 & 2;", token: syntax.Ampersand, wantKind: tir.BinaryValue},
+		{name: "shift left", source: "let value i32 = 5 << 2;", token: syntax.ShiftLeft, wantKind: tir.CheckedShift},
+		{name: "shift right", source: "let value i32 = 5 >> 2;", token: syntax.ShiftRight, wantKind: tir.CheckedShift},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, records := testBuildValue(t, tt.source)
+			id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionBinary })
+			nid, ok := state.buildValue(id)
+			if !ok {
+				t.Fatal("buildValue failed")
+			}
+			unit, err := state.builder.Build()
+			if err != nil {
+				t.Fatalf("Build failed: %v", err)
+			}
+			node := unit.Nodes()[nid-1]
+			if node.Kind != tt.wantKind || node.Operator != tt.token || len(node.Children) != 2 {
+				t.Fatalf("operator node = %+v", node)
+			}
+		})
 	}
 }
 
@@ -604,7 +653,7 @@ func TestBuildValueNestedComposites(t *testing.T) {
 		t.Fatalf("alias child = %+v", aliasNode)
 	}
 	binaryNode := unit.Nodes()[aliasNode.Children[0]-1]
-	if binaryNode.Kind != tir.BinaryValue {
+	if binaryNode.Kind != tir.CheckedArithmetic {
 		t.Fatalf("binary child = %+v", binaryNode)
 	}
 	arrayNode := unit.Nodes()[tupleNode.Children[1]-1]

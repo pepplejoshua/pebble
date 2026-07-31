@@ -1114,8 +1114,14 @@ func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.No
 	case operatorPrefix:
 		node.Kind = tir.PrefixValue
 	case operatorBinary:
-		if op.Family == operatorBoolean && (op.Token == syntax.LogicalAnd || op.Token == syntax.LogicalOr) {
+		if op.Family == operatorShift {
+			node.Kind = tir.CheckedShift
+		} else if op.Family == operatorBoolean && (op.Token == syntax.LogicalAnd || op.Token == syntax.LogicalOr) {
 			node.Kind = tir.ShortCircuitValue
+		} else if op.Family == operatorIntegralSame && op.Token == syntax.Percent {
+			node.Kind = tir.CheckedArithmetic
+		} else if (op.Family == operatorNumericSame || op.Family == operatorAdd) && s.operatorHasIntegerOperand(op) {
+			node.Kind = tir.CheckedArithmetic
 		} else {
 			node.Kind = tir.BinaryValue
 		}
@@ -1136,6 +1142,22 @@ func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.No
 	node.Operator = op.Token
 	node.Children = children
 	return true
+}
+
+func (s *irBuildState) operatorHasIntegerOperand(op *operatorRecord) bool {
+	if len(op.Operands) == 0 {
+		return false
+	}
+	typ, ok := typeOfValue(s.records, op.Operands[0])
+	if !ok {
+		return false
+	}
+	key, ok := s.handoff.Semantics.Types().Key(typ)
+	if !ok {
+		return false
+	}
+	builtin, ok := key.Builtin()
+	return ok && isIntegerBuiltin(builtin)
 }
 
 func allowedOperatorFamily(family operatorFamily, form operatorForm) bool {
