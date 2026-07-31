@@ -114,6 +114,302 @@ func buildUnitFixture(t *testing.T, source string) (*tir.Unit, bool) {
 	return buildUnit(handoff, records, requirements, Config{})
 }
 
+func nodesOfKind(unit *tir.Unit, kind tir.NodeKind) []tir.NodeID {
+	var out []tir.NodeID
+	for i, node := range unit.Nodes() {
+		if node.Kind == kind {
+			out = append(out, tir.NodeID(i+1))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return unit.Nodes()[out[i]-1].Span.Start < unit.Nodes()[out[j]-1].Span.Start
+	})
+	return out
+}
+
+func TestBuildUnitG2IfElseBothArmsReturn(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn choose(flag bool) i32 { if flag { return 1; } else { return 2; } }`)
+	if !ok || unit == nil {
+		t.Fatal("if/else fixture was not buildable")
+	}
+	ifNodes := nodesOfKind(unit, tir.If)
+	if len(ifNodes) != 1 {
+		t.Fatalf("If nodes = %d, want 1", len(ifNodes))
+	}
+	ifNode := unit.Nodes()[ifNodes[0]-1]
+	if ifNode.Kind != tir.If || !ifNode.HasElse || ifNode.Region == 0 || len(ifNode.Children) != 3 {
+		t.Fatalf("If node = %+v, want HasElse and condition/then/else children", ifNode)
+	}
+	condition := unit.Nodes()[ifNode.Children[0]-1]
+	if condition.Kind != tir.SymbolValue {
+		t.Fatalf("If condition = %+v, want SymbolValue", condition)
+	}
+	thenBlock := unit.Nodes()[ifNode.Children[1]-1]
+	elseBlock := unit.Nodes()[ifNode.Children[2]-1]
+	if thenBlock.Kind != tir.Block || len(thenBlock.Children) != 1 {
+		t.Fatalf("then arm = %+v, want one-statement Block", thenBlock)
+	}
+	if elseBlock.Kind != tir.Block || len(elseBlock.Children) != 1 {
+		t.Fatalf("else arm = %+v, want one-statement Block", elseBlock)
+	}
+	thenReturn := unit.Nodes()[thenBlock.Children[0]-1]
+	elseReturn := unit.Nodes()[elseBlock.Children[0]-1]
+	if thenReturn.Kind != tir.Return || thenReturn.Function == 0 || len(thenReturn.Children) != 1 {
+		t.Fatalf("then return = %+v", thenReturn)
+	}
+	if elseReturn.Kind != tir.Return || elseReturn.Function == 0 || len(elseReturn.Children) != 1 {
+		t.Fatalf("else return = %+v", elseReturn)
+	}
+	if thenReturn.Function != elseReturn.Function {
+		t.Fatalf("returns target different functions: %d != %d", thenReturn.Function, elseReturn.Function)
+	}
+	if value := unit.Nodes()[thenReturn.Children[0]-1]; value.Kind != tir.IntegerLiteral || value.Literal.IntegerNum != "1" {
+		t.Fatalf("then return value = %+v, want literal 1", value)
+	}
+	if value := unit.Nodes()[elseReturn.Children[0]-1]; value.Kind != tir.IntegerLiteral || value.Literal.IntegerNum != "2" {
+		t.Fatalf("else return value = %+v, want literal 2", value)
+	}
+}
+
+func TestBuildUnitG2WhileWithBreakInConditional(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn f(flag bool) void { while flag { if flag { break; } print 1; } }`)
+	if !ok || unit == nil {
+		t.Fatal("while fixture was not buildable")
+	}
+	whileNodes := nodesOfKind(unit, tir.While)
+	if len(whileNodes) != 1 {
+		t.Fatalf("While nodes = %d, want 1", len(whileNodes))
+	}
+	whileNode := unit.Nodes()[whileNodes[0]-1]
+	if whileNode.Region == 0 || len(whileNode.Children) != 2 {
+		t.Fatalf("While node = %+v, want region and condition/body children", whileNode)
+	}
+	condition := unit.Nodes()[whileNode.Children[0]-1]
+	if condition.Kind != tir.SymbolValue {
+		t.Fatalf("While condition = %+v, want SymbolValue", condition)
+	}
+	body := unit.Nodes()[whileNode.Children[1]-1]
+	if body.Kind != tir.Block || len(body.Children) != 2 {
+		t.Fatalf("While body = %+v, want If then Print", body)
+	}
+	ifNode := unit.Nodes()[body.Children[0]-1]
+	if ifNode.Kind != tir.If || ifNode.HasElse || len(ifNode.Children) != 2 {
+		t.Fatalf("body If = %+v, want no-else condition/then", ifNode)
+	}
+	if then := unit.Nodes()[ifNode.Children[1]-1]; then.Kind != tir.Block || len(then.Children) != 1 {
+		t.Fatalf("body If then = %+v", then)
+	} else {
+		breakNode := unit.Nodes()[then.Children[0]-1]
+		if breakNode.Kind != tir.Break || breakNode.Target == 0 {
+			t.Fatalf("body If break = %+v, want Break with target", breakNode)
+		}
+		if breakNode.Target != whileNode.Region {
+			t.Fatalf("break target %d, want enclosing while region %d", breakNode.Target, whileNode.Region)
+		}
+	}
+	if printNode := unit.Nodes()[body.Children[1]-1]; printNode.Kind != tir.Print {
+		t.Fatalf("while body second statement = %+v, want Print", printNode)
+	}
+}
+
+func TestBuildUnitG2RangeLoopExclusiveAndInclusive(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f() void {
+    loop 0..10 : x { print x; }
+    loop 5..=7 : y { print y; }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("range-loop fixture was not buildable")
+	}
+	rangeNodes := nodesOfKind(unit, tir.RangeLoop)
+	if len(rangeNodes) != 2 {
+		t.Fatalf("RangeLoop nodes = %d, want 2", len(rangeNodes))
+	}
+	exclusive := unit.Nodes()[rangeNodes[0]-1]
+	inclusive := unit.Nodes()[rangeNodes[1]-1]
+	if exclusive.Kind != tir.RangeLoop || exclusive.RangeInclusive || exclusive.Region == 0 || len(exclusive.Children) != 3 {
+		t.Fatalf("exclusive RangeLoop = %+v", exclusive)
+	}
+	if inclusive.Kind != tir.RangeLoop || !inclusive.RangeInclusive || inclusive.Region == 0 || len(inclusive.Children) != 3 {
+		t.Fatalf("inclusive RangeLoop = %+v", inclusive)
+	}
+	exclusiveStart := unit.Nodes()[exclusive.Children[0]-1]
+	exclusiveEnd := unit.Nodes()[exclusive.Children[1]-1]
+	if exclusiveStart.Kind != tir.IntegerLiteral || exclusiveStart.Literal.IntegerNum != "0" {
+		t.Fatalf("exclusive start = %+v, want 0", exclusiveStart)
+	}
+	if exclusiveEnd.Kind != tir.IntegerLiteral || exclusiveEnd.Literal.IntegerNum != "10" {
+		t.Fatalf("exclusive end = %+v, want 10", exclusiveEnd)
+	}
+	inclusiveStart := unit.Nodes()[inclusive.Children[0]-1]
+	inclusiveEnd := unit.Nodes()[inclusive.Children[1]-1]
+	if inclusiveStart.Kind != tir.IntegerLiteral || inclusiveStart.Literal.IntegerNum != "5" {
+		t.Fatalf("inclusive start = %+v, want 5", inclusiveStart)
+	}
+	if inclusiveEnd.Kind != tir.IntegerLiteral || inclusiveEnd.Literal.IntegerNum != "7" {
+		t.Fatalf("inclusive end = %+v, want 7", inclusiveEnd)
+	}
+	exclusiveBody := unit.Nodes()[exclusive.Children[2]-1]
+	if exclusiveBody.Kind != tir.Block || len(exclusiveBody.Children) != 1 {
+		t.Fatalf("exclusive body = %+v, want one-statement Block", exclusiveBody)
+	}
+	printNode := unit.Nodes()[exclusiveBody.Children[0]-1]
+	if printNode.Kind != tir.Print || len(printNode.Children) != 1 {
+		t.Fatalf("range-loop body statement = %+v, want Print", printNode)
+	}
+	iterator := unit.Nodes()[printNode.Children[0]-1]
+	if iterator.Kind != tir.SymbolValue || iterator.Symbol == 0 {
+		t.Fatalf("range iterator operand = %+v, want SymbolValue of the loop binding", iterator)
+	}
+}
+
+func TestBuildUnitG2ForWithClausesAndInfinite(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f(limit i32) i32 {
+    var total i32 = 0;
+    for var step i32 = 0; step < limit; step += 1 {
+        total = total + step;
+    }
+    return total;
+}
+fn g() void {
+    for ; ; { break; }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("for-loop fixture was not buildable")
+	}
+	forNodes := nodesOfKind(unit, tir.For)
+	if len(forNodes) != 2 {
+		t.Fatalf("For nodes = %d, want 2", len(forNodes))
+	}
+	claused := unit.Nodes()[forNodes[0]-1]
+	if claused.Kind != tir.For || claused.Region == 0 || len(claused.Children) != 4 {
+		t.Fatalf("claused For = %+v, want initializer/condition/update/body", claused)
+	}
+	initializer := unit.Nodes()[claused.Children[0]-1]
+	condition := unit.Nodes()[claused.Children[1]-1]
+	update := unit.Nodes()[claused.Children[2]-1]
+	body := unit.Nodes()[claused.Children[3]-1]
+	if initializer.Kind != tir.Initialize || initializer.Symbol == 0 {
+		t.Fatalf("for initializer = %+v, want Initialize", initializer)
+	}
+	if condition.Kind != tir.BinaryValue || condition.Operator != syntax.Less {
+		t.Fatalf("for condition = %+v, want BinaryValue with <", condition)
+	}
+	if update.Kind != tir.CompoundStore || update.Operator != syntax.Plus || len(update.Children) != 2 {
+		t.Fatalf("for update = %+v, want CompoundStore with +", update)
+	}
+	updatePlace := unit.Nodes()[update.Children[0]-1]
+	updateValue := unit.Nodes()[update.Children[1]-1]
+	if updatePlace.Kind != tir.StoragePlace || updateValue.Kind != tir.IntegerLiteral || updateValue.Literal.IntegerNum != "1" {
+		t.Fatalf("for update children = %+v, %+v, want StoragePlace and literal 1", updatePlace, updateValue)
+	}
+	if body.Kind != tir.Block || len(body.Children) != 1 {
+		t.Fatalf("for body = %+v, want one-statement Block", body)
+	}
+	infinite := unit.Nodes()[forNodes[1]-1]
+	if infinite.Kind != tir.For || infinite.Region == 0 || len(infinite.Children) != 1 {
+		t.Fatalf("infinite For = %+v, want single body child", infinite)
+	}
+	infiniteBody := unit.Nodes()[infinite.Children[0]-1]
+	if infiniteBody.Kind != tir.Block || len(infiniteBody.Children) != 1 {
+		t.Fatalf("infinite for body = %+v", infiniteBody)
+	}
+	breakNode := unit.Nodes()[infiniteBody.Children[0]-1]
+	if breakNode.Kind != tir.Break || breakNode.Target == 0 {
+		t.Fatalf("infinite for break = %+v, want Break with target", breakNode)
+	}
+	if breakNode.Target != infinite.Region {
+		t.Fatalf("infinite for break target %d, want loop region %d", breakNode.Target, infinite.Region)
+	}
+}
+
+func TestBuildUnitG2NestedContinueTargetsEnclosingLoop(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f(flag bool) void {
+    while flag {
+        while true { continue; }
+        print 1;
+    }
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("nested-loop fixture was not buildable")
+	}
+	whileNodes := nodesOfKind(unit, tir.While)
+	if len(whileNodes) != 2 {
+		t.Fatalf("While nodes = %d, want 2", len(whileNodes))
+	}
+	continueNodes := nodesOfKind(unit, tir.Continue)
+	if len(continueNodes) != 1 {
+		t.Fatalf("Continue nodes = %d, want 1", len(continueNodes))
+	}
+	continueNode := unit.Nodes()[continueNodes[0]-1]
+	if continueNode.Target == 0 {
+		t.Fatal("continue has no target")
+	}
+	outer := unit.Nodes()[whileNodes[0]-1]
+	inner := unit.Nodes()[whileNodes[1]-1]
+	if outer.Region == inner.Region {
+		t.Fatal("outer and inner loops share a region")
+	}
+	if continueNode.Target != inner.Region {
+		t.Fatalf("continue target %d, want inner loop region %d", continueNode.Target, inner.Region)
+	}
+	innerBody := unit.Nodes()[inner.Children[1]-1]
+	if innerBody.Kind != tir.Block || len(innerBody.Children) != 1 {
+		t.Fatalf("inner loop body = %+v", innerBody)
+	}
+	if direct := innerBody.Children[0]; direct != continueNodes[0] {
+		t.Fatalf("inner loop body child = %d, want the Continue %d", direct, continueNodes[0])
+	}
+	outerBody := unit.Nodes()[outer.Children[1]-1]
+	if outerBody.Kind != tir.Block || len(outerBody.Children) != 2 {
+		t.Fatalf("outer loop body = %+v, want inner loop then Print", outerBody)
+	}
+	if first := outerBody.Children[0]; first != whileNodes[1] {
+		t.Fatalf("outer body first child = %d, want inner While %d", first, whileNodes[1])
+	}
+	if second := unit.Nodes()[outerBody.Children[1]-1]; second.Kind != tir.Print {
+		t.Fatalf("outer body second child = %+v, want Print", unit.Nodes()[outerBody.Children[1]-1])
+	}
+}
+
+func TestBuildUnitG2CompoundStore(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn f() void {
+    var arr [3]i32 = [1; 3];
+    var i i32 = 0;
+    arr[i] += 1;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("compound-store fixture was not buildable")
+	}
+	compoundNodes := nodesOfKind(unit, tir.CompoundStore)
+	if len(compoundNodes) != 1 {
+		t.Fatalf("CompoundStore nodes = %d, want 1", len(compoundNodes))
+	}
+	compound := unit.Nodes()[compoundNodes[0]-1]
+	if compound.Operator != syntax.Plus || len(compound.Children) != 2 {
+		t.Fatalf("CompoundStore = %+v, want + operator and place/value children", compound)
+	}
+	place := unit.Nodes()[compound.Children[0]-1]
+	value := unit.Nodes()[compound.Children[1]-1]
+	if place.Kind != tir.CheckedIndexPlace || len(place.Children) != 2 {
+		t.Fatalf("compound place = %+v, want CheckedIndexPlace", place)
+	}
+	if value.Kind != tir.IntegerLiteral || value.Literal.IntegerNum != "1" {
+		t.Fatalf("compound value = %+v, want literal 1", value)
+	}
+	index := unit.Nodes()[place.Children[1]-1]
+	if index.Kind != tir.SymbolValue || index.Symbol == 0 {
+		t.Fatalf("compound index operand = %+v, want SymbolValue", index)
+	}
+}
+
 func TestBuildUnitG1StatementsAndFunctionBody(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `
 fn sink(value i32) void { print value; }
@@ -169,10 +465,29 @@ func TestBuildUnitG1ImplicitVoidReturn(t *testing.T) {
 	t.Fatal("function declaration not found")
 }
 
-func TestBuildUnitG1DefersControlFlowToG2(t *testing.T) {
-	_, ok := buildUnitFixture(t, `fn main(flag bool) void { if flag { print 1; } }`)
-	if ok {
-		t.Fatal("if-containing function should remain unbuildable in G1")
+func TestBuildUnitG2BuildsIfDeferredFromG1(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn main(flag bool) void { if flag { print 1; } }`)
+	if !ok || unit == nil {
+		t.Fatal("if-containing function must build now that G2 owns If")
+	}
+	ifNodes := nodesOfKind(unit, tir.If)
+	if len(ifNodes) != 1 {
+		t.Fatalf("If nodes = %d, want 1", len(ifNodes))
+	}
+	ifNode := unit.Nodes()[ifNodes[0]-1]
+	if ifNode.Region == 0 || ifNode.HasElse || len(ifNode.Children) != 2 {
+		t.Fatalf("If node = %+v, want region, no else, condition plus then arm", ifNode)
+	}
+	if child := unit.Nodes()[ifNode.Children[0]-1]; child.Kind != tir.SymbolValue {
+		t.Fatalf("If condition = %+v, want SymbolValue", child)
+	}
+	thenBlock := unit.Nodes()[ifNode.Children[1]-1]
+	if thenBlock.Kind != tir.Block || len(thenBlock.Children) != 1 {
+		t.Fatalf("If then arm = %+v, want one-statement Block", thenBlock)
+	}
+	printNode := unit.Nodes()[thenBlock.Children[0]-1]
+	if printNode.Kind != tir.Print || len(printNode.Children) != 1 {
+		t.Fatalf("If then statement = %+v, want Print of one operand", printNode)
 	}
 }
 

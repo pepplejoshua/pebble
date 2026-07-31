@@ -342,92 +342,16 @@ func (s *irBuildState) buildRegionBlock(region controlID, root bool) (tir.NodeID
 	if existing := s.blockNodes[region]; existing != 0 {
 		return existing, true, false
 	}
-	sequence := make([]*controlRecord, 0, len(s.byRegion[region]))
-	for _, ctrl := range s.byRegion[region] {
-		if ctrl != s.owner[region] && ctrl.Kind != controlFunction {
-			sequence = append(sequence, ctrl)
-		}
-	}
-	if uint64(region) <= uint64(len(s.handoff.Records.Controls())) {
-		for _, child := range s.handoff.Records.Controls()[region-1].Children {
-			if childOwner := s.owner[child]; childOwner != nil {
-				sequence = append(sequence, childOwner)
-			}
-		}
-	}
+	sequence := s.regionSequence(region)
 	children := make([]tir.NodeID, 0, len(sequence))
 	canFallthrough := true
 	for _, ctrl := range sequence {
-		var node tir.NodeID
-		var ok bool
-		switch ctrl.Kind {
-		case controlBlock:
-			node, ok, _ = s.buildRegionBlock(ctrl.Region, false)
-		case controlBinding:
-			binding := s.bindingForSyntax(ctrl.Header.Syntax)
-			if binding == nil || !binding.InitializerPresent {
-				continue
-			}
-			value, valueOK := s.buildStatementValue(binding.Initializer)
-			if !valueOK {
-				return 0, false, false
-			}
-			node, ok = s.addNode(tir.Node{Kind: tir.Initialize, Span: ctrl.Header.Span, Symbol: binding.Symbol, Children: []tir.NodeID{value}}, symbol.SyntaxRef{})
-		case controlExpression:
-			if ctrl.StatementForm == statementAssignment {
-				assignment := s.assignmentForSyntax(ctrl.Header.Syntax)
-				if assignment == nil || assignment.Kind != assignmentSimple {
-					return 0, false, true
-				}
-				place, placeOK := s.buildPlace(ctrl.Header.Syntax)
-				value, valueOK := s.buildStatementValue(assignment.Source)
-				if !placeOK || !valueOK {
-					return 0, false, false
-				}
-				node, ok = s.addNode(tir.Node{Kind: tir.Store, Span: ctrl.Header.Span, Children: []tir.NodeID{place, value}}, ctrl.Header.Syntax)
-			} else if len(ctrl.Values) == 1 {
-				value, valueOK := s.buildValue(ctrl.Values[0].Value)
-				if !valueOK {
-					return 0, false, false
-				}
-				node, ok = s.addNode(tir.Node{Kind: tir.ExpressionStatement, Span: ctrl.Header.Span, Children: []tir.NodeID{value}}, ctrl.Header.Syntax)
-			} else {
-				return 0, false, false
-			}
-		case controlPrint:
-			values := make([]tir.NodeID, 0, len(ctrl.Values))
-			for _, entry := range ctrl.Values {
-				value, valueOK := s.buildValue(entry.Value)
-				if !valueOK {
-					return 0, false, false
-				}
-				values = append(values, value)
-			}
-			node, ok = s.addNode(tir.Node{Kind: tir.Print, Span: ctrl.Header.Span, Children: values}, ctrl.Header.Syntax)
-		case controlReturn:
-			values := make([]tir.NodeID, 0, 1)
-			if len(ctrl.Values) > 1 {
-				return 0, false, false
-			}
-			if len(ctrl.Values) == 1 {
-				value, valueOK := s.buildReturnValue(ctrl.Values[0].Value)
-				if !valueOK {
-					return 0, false, false
-				}
-				values = append(values, value)
-			}
-			node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values}, ctrl.Header.Syntax)
-			canFallthrough = false
-		default:
-			return 0, false, true
-		}
+		node, ok, unsupported, diverges := s.buildControlRecord(ctrl)
 		if !ok {
-			return 0, false, false
+			return 0, false, unsupported
 		}
 		children = append(children, node)
-		if ctrl.Kind != controlReturn {
-			canFallthrough = true
-		}
+		canFallthrough = !diverges
 	}
 	if root && canFallthrough && isVoidCallable(s, s.owner[region]) {
 		implicit, ok := s.addNode(tir.Node{Kind: tir.ImplicitReturn, Origin: s.owner[region].Header.Span, SyntheticRole: "implicit-return", Function: s.functions[s.owner[region].Callable.Symbol]}, symbol.SyntaxRef{})
@@ -442,6 +366,332 @@ func (s *irBuildState) buildRegionBlock(region controlID, root bool) (tir.NodeID
 	}
 	s.blockNodes[region] = node
 	return node, true, false
+}
+
+func (s *irBuildState) regionSequence(region controlID) []*controlRecord {
+	sequence := append([]*controlRecord(nil), s.byRegion[region]...)
+	owner := s.owner[region]
+	if owner == nil || (owner.Kind != controlBlock && owner.Kind != controlFunction) {
+		return sequence
+	}
+	for i, ctrl := range sequence {
+		if ctrl == owner {
+			sequence = sequence[i+1:]
+			break
+		}
+	}
+	if uint64(region) <= uint64(len(s.handoff.Records.Controls())) {
+		for _, child := range s.handoff.Records.Controls()[region-1].Children {
+			if childOwner := s.owner[child]; childOwner != nil {
+				seen := false
+				for _, existing := range sequence {
+					seen = seen || existing == childOwner
+				}
+				if !seen {
+					sequence = append(sequence, childOwner)
+				}
+			}
+		}
+	}
+	sort.SliceStable(sequence, func(i, j int) bool {
+		return sequence[i].Header.Span.Start < sequence[j].Header.Span.Start
+	})
+	return sequence
+}
+
+// buildControlRecord dispatches one control record to its typed-IR node. It is
+// the shared construction point for sequential statements and for every
+// structural composition arm, mirroring validateControlFlow's recursive
+// region/composition walk. The third return value reports a kind this part
+// still cannot build (switches, defers, and temporaries are later 06b.7b
+// parts); the fourth reports whether the built statement always diverges —
+// its exit set has no fallthrough — which keeps root implicit-return insertion
+// accurate.
+func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
+	if ctrl == nil {
+		return 0, false, false, false
+	}
+	var node tir.NodeID
+	var ok bool
+	switch ctrl.Kind {
+	case controlBlock:
+		var unsupported bool
+		node, ok, unsupported = s.buildRegionBlock(ctrl.Region, false)
+		return node, ok, unsupported, false
+	case controlBinding:
+		binding := s.bindingForSyntax(ctrl.Header.Syntax)
+		if binding == nil || !binding.InitializerPresent {
+			return 0, false, false, false
+		}
+		value, valueOK := s.buildStatementValue(binding.Initializer)
+		if !valueOK {
+			return 0, false, false, false
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Initialize, Span: ctrl.Header.Span, Symbol: binding.Symbol, Children: []tir.NodeID{value}}, symbol.SyntaxRef{})
+	case controlExpression:
+		if ctrl.StatementForm == statementAssignment {
+			assignment := s.assignmentForSyntax(ctrl.Header.Syntax)
+			if assignment == nil {
+				return 0, false, false, false
+			}
+			place, placeOK := s.buildPlace(ctrl.Header.Syntax)
+			if !placeOK {
+				return 0, false, false, false
+			}
+			value, valueOK := s.buildStatementValue(assignment.Source)
+			if !valueOK {
+				return 0, false, false, false
+			}
+			if assignment.Kind == assignmentSimple {
+				node, ok = s.addNode(tir.Node{Kind: tir.Store, Span: ctrl.Header.Span, Children: []tir.NodeID{place, value}}, ctrl.Header.Syntax)
+			} else {
+				_, operator := compoundOperator(assignment.Operator)
+				node, ok = s.addNode(tir.Node{Kind: tir.CompoundStore, Span: ctrl.Header.Span, Operator: operator, Children: []tir.NodeID{place, value}}, ctrl.Header.Syntax)
+			}
+		} else if len(ctrl.Values) == 1 {
+			value, valueOK := s.buildValue(ctrl.Values[0].Value)
+			if !valueOK {
+				return 0, false, false, false
+			}
+			node, ok = s.addNode(tir.Node{Kind: tir.ExpressionStatement, Span: ctrl.Header.Span, Children: []tir.NodeID{value}}, ctrl.Header.Syntax)
+		} else {
+			return 0, false, false, false
+		}
+	case controlPrint:
+		values := make([]tir.NodeID, 0, len(ctrl.Values))
+		for _, entry := range ctrl.Values {
+			value, valueOK := s.buildValue(entry.Value)
+			if !valueOK {
+				return 0, false, false, false
+			}
+			values = append(values, value)
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Print, Span: ctrl.Header.Span, Children: values}, ctrl.Header.Syntax)
+	case controlReturn:
+		values := make([]tir.NodeID, 0, 1)
+		if len(ctrl.Values) > 1 {
+			return 0, false, false, false
+		}
+		if len(ctrl.Values) == 1 {
+			value, valueOK := s.buildReturnValue(ctrl.Values[0].Value)
+			if !valueOK {
+				return 0, false, false, false
+			}
+			values = append(values, value)
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values}, ctrl.Header.Syntax)
+		return node, ok, false, true
+	case controlIf:
+		return s.buildIf(ctrl)
+	case controlWhile:
+		return s.buildWhile(ctrl)
+	case controlRangeLoop:
+		return s.buildRangeLoop(ctrl)
+	case controlFor:
+		return s.buildFor(ctrl)
+	case controlBreak:
+		if ctrl.Target == 0 {
+			return 0, false, false, false
+		}
+		target, mapped := s.regions[ctrl.Target]
+		if !mapped || target == 0 {
+			return 0, false, false, false
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Break, Span: ctrl.Header.Span, Target: target}, ctrl.Header.Syntax)
+		return node, ok, false, true
+	case controlContinue:
+		if ctrl.Target == 0 {
+			return 0, false, false, false
+		}
+		target, mapped := s.regions[ctrl.Target]
+		if !mapped || target == 0 {
+			return 0, false, false, false
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Continue, Span: ctrl.Header.Span, Target: target}, ctrl.Header.Syntax)
+		return node, ok, false, true
+	default:
+		// controlSwitch, controlSwitchCase, controlDefer, and other later-part
+		// kinds are not yet buildable.
+		return 0, false, true, false
+	}
+	return node, ok, false, false
+}
+
+// buildControlArm resolves one structural composition arm and builds its
+// control record. Every arm is the owning record's own control record, exactly
+// as validateControlFlow correlates it through bySyntax.
+func (s *irBuildState) buildControlArm(child *structuralChild) (tir.NodeID, bool, bool) {
+	if child == nil {
+		return 0, false, false
+	}
+	arm := s.bySyntax[child.Arm]
+	if arm == nil {
+		return 0, false, false
+	}
+	node, ok, unsupported, _ := s.buildControlRecord(arm)
+	return node, ok, unsupported
+}
+
+func (s *irBuildState) buildIf(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
+	condition, ok := controlValueForRole(ctrl, valueCondition)
+	if !ok {
+		return 0, false, false, false
+	}
+	conditionNode, ok := s.buildValue(condition)
+	if !ok {
+		return 0, false, false, false
+	}
+	children := []tir.NodeID{conditionNode}
+	arms := 0
+	for i := range ctrl.Composition {
+		entry := &ctrl.Composition[i]
+		if entry.Role != roleThen && entry.Role != roleElse {
+			return 0, false, false, false
+		}
+		armNode, armOK, armUnsupported := s.buildControlArm(entry)
+		if !armOK {
+			return 0, false, armUnsupported, false
+		}
+		children = append(children, armNode)
+		arms++
+	}
+	expected := 1
+	if ctrl.ElsePresent {
+		expected = 2
+	}
+	if arms != expected {
+		return 0, false, false, false
+	}
+	region, ok := s.controlRegion(ctrl)
+	if !ok {
+		return 0, false, false, false
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.If, Span: ctrl.Header.Span, Region: region, HasElse: ctrl.ElsePresent, Children: children}, ctrl.Header.Syntax)
+	return node, ok, false, false
+}
+
+func (s *irBuildState) buildWhile(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
+	condition, ok := controlValueForRole(ctrl, valueCondition)
+	if !ok {
+		return 0, false, false, false
+	}
+	conditionNode, ok := s.buildValue(condition)
+	if !ok {
+		return 0, false, false, false
+	}
+	body := compositionForRole(ctrl, roleBody)
+	bodyNode, ok, unsupported := s.buildControlArm(body)
+	if !ok {
+		return 0, false, unsupported, false
+	}
+	region, ok := s.controlRegion(ctrl)
+	if !ok {
+		return 0, false, false, false
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.While, Span: ctrl.Header.Span, Region: region, Children: []tir.NodeID{conditionNode, bodyNode}}, ctrl.Header.Syntax)
+	return node, ok, false, false
+}
+
+func (s *irBuildState) buildRangeLoop(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
+	start, startOK := controlValueForRole(ctrl, valueRangeStart)
+	end, endOK := controlValueForRole(ctrl, valueRangeEnd)
+	if !startOK || !endOK {
+		return 0, false, false, false
+	}
+	startNode, ok := s.buildValue(start)
+	if !ok {
+		return 0, false, false, false
+	}
+	endNode, ok := s.buildValue(end)
+	if !ok {
+		return 0, false, false, false
+	}
+	body := compositionForRole(ctrl, roleBody)
+	bodyNode, ok, unsupported := s.buildControlArm(body)
+	if !ok {
+		return 0, false, unsupported, false
+	}
+	region, ok := s.controlRegion(ctrl)
+	if !ok {
+		return 0, false, false, false
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.RangeLoop, Span: ctrl.Header.Span, Region: region, RangeInclusive: ctrl.RangeInclusive, Children: []tir.NodeID{startNode, endNode, bodyNode}}, ctrl.Header.Syntax)
+	return node, ok, false, false
+}
+
+func (s *irBuildState) buildFor(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
+	children := make([]tir.NodeID, 0, 4)
+	if initializer := compositionForRole(ctrl, roleInitializer); initializer != nil {
+		initNode, ok, unsupported := s.buildControlArm(initializer)
+		if !ok {
+			return 0, false, unsupported, false
+		}
+		children = append(children, initNode)
+	}
+	if ctrl.ConditionPresent {
+		condition, ok := controlValueForRole(ctrl, valueCondition)
+		if !ok {
+			return 0, false, false, false
+		}
+		conditionNode, ok := s.buildValue(condition)
+		if !ok {
+			return 0, false, false, false
+		}
+		children = append(children, conditionNode)
+	}
+	if update := compositionForRole(ctrl, roleUpdate); update != nil {
+		updateNode, ok, unsupported := s.buildControlArm(update)
+		if !ok {
+			return 0, false, unsupported, false
+		}
+		children = append(children, updateNode)
+	}
+	body := compositionForRole(ctrl, roleBody)
+	bodyNode, ok, unsupported := s.buildControlArm(body)
+	if !ok {
+		return 0, false, unsupported, false
+	}
+	children = append(children, bodyNode)
+	region, ok := s.controlRegion(ctrl)
+	if !ok {
+		return 0, false, false, false
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.For, Span: ctrl.Header.Span, Region: region, Children: children}, ctrl.Header.Syntax)
+	return node, ok, false, false
+}
+
+func (s *irBuildState) controlRegion(ctrl *controlRecord) (tir.RegionID, bool) {
+	for id, owner := range s.owner {
+		if owner == ctrl {
+			region, ok := s.regions[id]
+			return region, ok && region != 0
+		}
+	}
+	return 0, false
+}
+
+func controlValueForRole(ctrl *controlRecord, role controlValueRole) (valueID, bool) {
+	if ctrl == nil {
+		return 0, false
+	}
+	for _, entry := range ctrl.Values {
+		if entry.Role == role {
+			return entry.Value, true
+		}
+	}
+	return 0, false
+}
+
+func compositionForRole(ctrl *controlRecord, role structuralRole) *structuralChild {
+	if ctrl == nil {
+		return nil
+	}
+	for i := range ctrl.Composition {
+		if ctrl.Composition[i].Role == role {
+			return &ctrl.Composition[i]
+		}
+	}
+	return nil
 }
 
 func isVoidCallable(s *irBuildState, ctrl *controlRecord) bool {
