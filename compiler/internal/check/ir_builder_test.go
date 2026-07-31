@@ -75,6 +75,26 @@ func TestBuildUnitDeclarations(t *testing.T) {
 	}
 }
 
+func TestBuildUnitExternBindingDeclarations(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `extern "C" { let external i32; var mutable i32; }`)
+	if !ok || unit == nil {
+		t.Fatal("buildUnit rejected extern bindings")
+	}
+	seen := 0
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.ExternDeclaration {
+			continue
+		}
+		seen++
+		if node.Convention != types.C {
+			t.Fatalf("extern binding convention = %v, want C", node.Convention)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("extern binding declarations = %d, want 2", seen)
+	}
+}
+
 func TestBuildUnitImport(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{
 		"main.peb":   []byte("import \"./helper\";\nfn main() void { print helper::helper_fn(); }\n"),

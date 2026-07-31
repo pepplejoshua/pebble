@@ -11,21 +11,22 @@ import (
 )
 
 type walkContext struct {
-	callable       callableRef
-	typeOwner      symbol.SymbolID
-	genericOwner   symbol.SymbolID
-	nominalOwner   symbol.SymbolID
-	unsupported    bool
-	typePosition   bool
-	typeRoot       bool
-	preparedType   bool
-	control        controlContext
-	expected       expectedType
-	suppressValue  bool
-	immediateCall  bool
-	callSite       symbol.SyntaxRef
-	deferredMember bool
-	branch         *branchFacts
+	callable         callableRef
+	typeOwner        symbol.SymbolID
+	genericOwner     symbol.SymbolID
+	nominalOwner     symbol.SymbolID
+	externConvention types.CallingConvention
+	unsupported      bool
+	typePosition     bool
+	typeRoot         bool
+	preparedType     bool
+	control          controlContext
+	expected         expectedType
+	suppressValue    bool
+	immediateCall    bool
+	callSite         symbol.SyntaxRef
+	deferredMember   bool
+	branch           *branchFacts
 }
 
 type branchRoot struct {
@@ -376,6 +377,25 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 }
 
 func (w *walker) structuralChildren(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree) []walkItem {
+	if node.Kind() == syntax.ExternDecl {
+		ctx.externConvention = types.C
+		for _, childID := range node.Children() {
+			child, ok := tree.Node(childID)
+			if !ok || child.Kind() != syntax.Literal {
+				continue
+			}
+			decoded, ok := child.DecodedLiteral()
+			if !ok || decoded.Kind != syntax.DecodedString {
+				continue
+			}
+			switch decoded.Text {
+			case "Pebble", "pebble":
+				ctx.externConvention = types.Pebble
+			case "C", "c":
+				ctx.externConvention = types.C
+			}
+		}
+	}
 	items := childItems(ref, node, ctx)
 	switch node.Kind() {
 	case syntax.ImportDecl, syntax.ExternBinding, syntax.Parameter, syntax.TypeParameter, syntax.FieldDecl, syntax.VariantDecl:

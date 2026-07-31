@@ -36,6 +36,7 @@ type bindingRecord struct {
 	Header                                recordHeader
 	Symbol                                symbol.SymbolID
 	Kind                                  bindingKind
+	Convention                            types.CallingConvention
 	Annotation, Initializer               valueID
 	AnnotationPresent, InitializerPresent bool
 	Global, Mutable                       bool
@@ -247,11 +248,19 @@ func (w *walker) handleBinding(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	}
 	header := w.header(ref, ctx.genericOwner, !published || (!annotationPresent && !initializerPresent))
 	kind, _, mutable := w.bindingKind(binding, node)
+	convention := types.CallingConvention(0)
+	if kind == bindingExternLet || kind == bindingExternVar {
+		convention = ctx.externConvention
+		if convention == 0 {
+			convention = types.C
+		}
+	}
 	w.retainBinding(bindingRecord{
 		Header: header, Symbol: binding.ID, Kind: kind,
 		Annotation: annotation.ID, Initializer: initializer.ID,
 		AnnotationPresent: annotationPresent, InitializerPresent: initializerPresent,
 		Global: global, Mutable: mutable, InitializerSyntax: initializerRef,
+		Convention: convention,
 	})
 }
 

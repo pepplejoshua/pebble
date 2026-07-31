@@ -260,7 +260,7 @@ func (s *irBuildState) buildDeclarations() bool {
 					return false
 				}
 			case bindingExternLet, bindingExternVar:
-				if _, ok := s.addNode(tir.Node{Kind: tir.ExternDeclaration, Span: sym.Span, Symbol: b.Symbol}, b.Header.Syntax); !ok {
+				if _, ok := s.addNode(tir.Node{Kind: tir.ExternDeclaration, Span: sym.Span, Symbol: b.Symbol, Convention: b.Convention}, b.Header.Syntax); !ok {
 					return false
 				}
 			}

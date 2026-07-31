@@ -176,10 +176,11 @@ func (r *resolver) resolveExternDeclaration(ctx walkContext, nodeID syntax.NodeI
 		case syntax.ExternType:
 			return
 		case syntax.ExternBinding:
-			for _, childID := range n.Children() {
-				if child, ok := ctx.module.Tree.Node(childID); ok && child.Kind() != syntax.Name {
-					r.resolveType(ctx, childID)
-				}
+			children := n.Children()
+			if len(children) > 1 {
+				// The type is the second child and may itself be a Name (for
+				// example, the builtin type i32), so do not filter by kind.
+				r.resolveType(ctx, children[1])
 			}
 			return
 		}
