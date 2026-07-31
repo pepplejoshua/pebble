@@ -810,7 +810,7 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		if err := d.cw.printf(" typearg=%d", n.TypeArg); err != nil {
 			return err
 		}
-	case PrefixValue, BinaryValue, CheckedArithmetic, CheckedShift:
+	case PrefixValue, BinaryValue, CheckedArithmetic, CheckedNegate, CheckedShift:
 		if err := d.cw.printf(" operator=%d", n.Operator); err != nil {
 			return err
 		}

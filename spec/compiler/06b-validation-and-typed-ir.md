@@ -1037,13 +1037,13 @@ carry the explicit receiver exactly once.
 IntegerCast, IntegerToFloat, FloatToInteger, FloatCast
 OptionalInject, TupleCoerce
 CheckedOptionalUnwrap, CheckedIndex, CheckedSlice
-CheckedArithmetic, CheckedShift
+CheckedArithmetic, CheckedNegate, CheckedShift
 EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum
 ```
 
 No identity coercion node exists. `TupleCoerce` owns ordered component
-coercions and evaluates its source once. `CheckedArithmetic` and
-`CheckedShift` retain the exact operator and fault category while leaving
+coercions and evaluates its source once. `CheckedArithmetic`, `CheckedNegate`,
+and `CheckedShift` retain the exact operator and fault category while leaving
 release-mode response to phase 10. Check nodes contain enough semantic metadata
 for lowering to implement the chosen rule without inspecting syntax.
 `OptionalIntegerToEnum` and `CheckedIntegerToEnum` share one range test

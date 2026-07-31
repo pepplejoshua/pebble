@@ -58,7 +58,7 @@ node 49 SymbolValue type=9 span=0[279,284) syntax=1:60 symbol=31
 node 50 CheckedSlice type=24 span=0[272,286) syntax=1:61 children=[48 49]
 node 51 Initialize type=0 span=0[254,287) syntax=0:0 symbol=35 children=[50]
 node 52 SymbolValue type=9 span=0[311,316) syntax=1:65 symbol=34
-node 53 PrefixValue type=9 span=0[310,316) syntax=1:66 operator=58 children=[52]
+node 53 CheckedNegate type=9 span=0[310,316) syntax=1:66 operator=58 children=[52]
 node 54 IntegerLiteral type=9 span=0[319,320) syntax=1:67 int=2/1
 node 55 CheckedArithmetic type=9 span=0[310,320) syntax=1:68 operator=59 children=[53 54]
 node 56 Initialize type=0 span=0[292,321) syntax=0:0 symbol=36 children=[55]

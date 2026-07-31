@@ -1039,7 +1039,7 @@ func TestBuildValueRecordConstruct(t *testing.T) {
 	}
 }
 
-func TestBuildValuePrefixNegation(t *testing.T) {
+func TestBuildValueCheckedIntegerNegation(t *testing.T) {
 	state, records := testBuildValue(t, "let neg i32 = -1;")
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionPrefix })
 	nid, ok := state.buildValue(id)
@@ -1051,8 +1051,25 @@ func TestBuildValuePrefixNegation(t *testing.T) {
 		t.Fatalf("Build failed: %v", err)
 	}
 	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.CheckedNegate || node.Operator != syntax.Minus || len(node.Children) != 1 {
+		t.Fatalf("checked negate node = %+v", node)
+	}
+}
+
+func TestBuildValueFloatNegationRemainsUnchecked(t *testing.T) {
+	state, records := testBuildValue(t, "let neg f64 = -1.0;")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionPrefix })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
 	if node.Kind != tir.PrefixValue || node.Operator != syntax.Minus || len(node.Children) != 1 {
-		t.Fatalf("prefix node = %+v", node)
+		t.Fatalf("float prefix node = %+v", node)
 	}
 }
 

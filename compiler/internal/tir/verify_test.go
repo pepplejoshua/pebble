@@ -174,6 +174,8 @@ func validNode(t *testing.T, b *Builder, kind NodeKind, refs map[NodeID]struct{}
 		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(BoolLiteral)}}
 	case CheckedArithmetic, CheckedShift:
 		return Node{Kind: kind, Type: intType, Span: span, Operator: syntax.Plus, Children: []NodeID{ensureChild(IntegerLiteral), ensureChild(IntegerLiteral)}}
+	case CheckedNegate:
+		return Node{Kind: kind, Type: intType, Span: span, Operator: syntax.Minus, Children: []NodeID{ensureChild(IntegerLiteral)}}
 	case TempBind:
 		// Always allocate a fresh temp; sharedTemp is reserved for the TempRead
 		// that references the pre-added TempBind in complete-unit tests.
@@ -254,8 +256,8 @@ func TestVerifyCompleteValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if u.NodeCount() < 81 {
-		t.Fatalf("expected at least 81 nodes (one per tag), got %d", u.NodeCount())
+	if u.NodeCount() < 82 {
+		t.Fatalf("expected at least 82 nodes (one per tag), got %d", u.NodeCount())
 	}
 }
 
@@ -478,6 +480,8 @@ func damageNode(t *testing.T, b *Builder, kind NodeKind, n Node, refs map[NodeID
 		n.Children = nil
 	case CheckedArithmetic, CheckedShift:
 		n.Operator = 0
+	case CheckedNegate:
+		n.Children = nil
 	case TempBind:
 		n.Temp = 0
 	case TempRead:

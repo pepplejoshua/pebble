@@ -14,7 +14,7 @@ import (
 // one contiguous nonzero range; maxNodeKind is the private exclusive bound.
 type NodeKind uint8
 
-// The exact 81-tag inventory, in the written order of the seven category
+// The exact 82-tag inventory, in the written order of the seven category
 // blocks from the accepted 06b specification.
 const (
 	// Declarations and nonvalue structure.
@@ -102,6 +102,7 @@ const (
 	CheckedIndex
 	CheckedSlice
 	CheckedArithmetic
+	CheckedNegate
 	CheckedShift
 	EnumToInteger
 	OptionalIntegerToEnum
@@ -492,6 +493,7 @@ var nodeMetas = [nodeKindCount]nodeMeta{
 	{CheckedIndex, "CheckedIndex", CategoryValue},
 	{CheckedSlice, "CheckedSlice", CategoryValue},
 	{CheckedArithmetic, "CheckedArithmetic", CategoryValue},
+	{CheckedNegate, "CheckedNegate", CategoryValue},
 	{CheckedShift, "CheckedShift", CategoryValue},
 	{EnumToInteger, "EnumToInteger", CategoryValue},
 	{OptionalIntegerToEnum, "OptionalIntegerToEnum", CategoryValue},

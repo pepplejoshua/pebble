@@ -8,11 +8,11 @@ import (
 )
 
 // TestNodeKindInventory mechanically asserts exact count/order/name/category
-// for all 81 tags.
+// for all 82 tags.
 func TestNodeKindInventory(t *testing.T) {
 	kinds := NodeKinds()
-	if len(kinds) != 81 {
-		t.Fatalf("expected 81 node kinds, got %d", len(kinds))
+	if len(kinds) != 82 {
+		t.Fatalf("expected 82 node kinds, got %d", len(kinds))
 	}
 	if FirstNodeKind != Module {
 		t.Fatalf("FirstNodeKind = %v, want Module", FirstNodeKind)

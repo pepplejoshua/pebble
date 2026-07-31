@@ -2158,7 +2158,11 @@ func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.No
 	}
 	switch op.Form {
 	case operatorPrefix:
-		node.Kind = tir.PrefixValue
+		if (op.Family == operatorLiteralNegate || op.Family == operatorNumericSame) && s.operatorHasIntegerOperand(op) {
+			node.Kind = tir.CheckedNegate
+		} else {
+			node.Kind = tir.PrefixValue
+		}
 	case operatorPostfix:
 		if op.Family != operatorOptionalForce || op.Token != syntax.Bang {
 			return false
@@ -2191,7 +2195,7 @@ func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.No
 		children = append(children, operandNode)
 	}
 	switch node.Kind {
-	case tir.PrefixValue, tir.BinaryValue, tir.ShortCircuitValue, tir.CheckedArithmetic, tir.CheckedShift:
+	case tir.PrefixValue, tir.BinaryValue, tir.ShortCircuitValue, tir.CheckedArithmetic, tir.CheckedNegate, tir.CheckedShift:
 		node.Operator = op.Token
 	}
 	node.Children = children

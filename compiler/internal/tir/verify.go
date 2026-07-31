@@ -717,6 +717,11 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCategory(id, n, 0, CategoryValue)
 		v.expectChildCategory(id, n, 1, CategoryValue)
 		v.requireOperator(id, n)
+	case CheckedNegate:
+		v.allowOnly(id, n, "Operator", "Children")
+		v.expectChildCount(id, n, 1, 1)
+		v.expectChildCategory(id, n, 0, CategoryValue)
+		v.requireOperator(id, n)
 
 	case TempBind:
 		v.allowOnly(id, n, "Temp", "Children")
