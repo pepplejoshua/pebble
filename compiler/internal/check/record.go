@@ -348,9 +348,10 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 	if value.Place != nil {
 		payloads++
 		v := value.Place
-		if v.Header != value.Header || len(v.Projections) == 0 || v.RootKind == symbol.SymbolError || (v.Root == 0) != (v.RootKind == 0) || (v.Root != 0) != (v.Projections[0].Kind == placeStorage) {
+		if v.Header != value.Header || v.Value == 0 || len(v.Projections) == 0 || v.RootKind == symbol.SymbolError || (v.Root == 0) != (v.RootKind == 0) || (v.Root != 0) != (v.Projections[0].Kind == placeStorage) {
 			return nil, 0, false
 		}
+		add(v.Value)
 		for _, p := range v.Projections {
 			if !validPlaceProjection(p) {
 				return nil, 0, false

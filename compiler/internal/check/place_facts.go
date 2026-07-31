@@ -41,6 +41,7 @@ func validPlaceProjection(p placeProjection) bool {
 
 type placeRecord struct {
 	Header      recordHeader
+	Value       valueID
 	Root        symbol.SymbolID
 	RootKind    symbol.SymbolKind
 	RootMutable bool
@@ -114,7 +115,7 @@ func (w *walker) retainPlaceUse(candidateRef, syntaxRef symbol.SyntaxRef, ctx wa
 	}
 	header := w.header(syntaxRef, ctx.genericOwner, false)
 	header.Alternative = p.alternative
-	record := placeRecord{Header: header, Root: p.root, RootKind: p.rootKind, RootMutable: p.mutable, Projections: append([]placeProjection(nil), p.projections...)}
+	record := placeRecord{Header: header, Value: p.value, Root: p.root, RootKind: p.rootKind, RootMutable: p.mutable, Projections: append([]placeProjection(nil), p.projections...)}
 	_, ok = w.addRecord(retainedRecord{Header: header, Place: &record})
 	return p.value, ok
 }

@@ -14,6 +14,59 @@ type Result struct {
 	records      *solvedRecords
 	requirements map[symbol.SymbolID][]Requirement
 	ir           *tir.Unit
+	expressions  map[symbol.SyntaxRef]ExpressionResult
+	places       map[symbol.SyntaxRef]PlaceResult
+	conversions  map[symbol.SyntaxRef]ConversionResult
+	calls        map[symbol.SyntaxRef]CallResult
+	members      map[symbol.SyntaxRef]MemberResult
+	controls     map[symbol.SyntaxRef]ControlResult
+}
+
+func (r *Result) Expression(ref symbol.SyntaxRef) (ExpressionResult, bool) {
+	if r == nil {
+		return ExpressionResult{}, false
+	}
+	v, ok := r.expressions[ref]
+	return v, ok
+}
+func (r *Result) Place(ref symbol.SyntaxRef) (PlaceResult, bool) {
+	if r == nil {
+		return PlaceResult{}, false
+	}
+	v, ok := r.places[ref]
+	v.Projections = append([]PlaceProjectionResult(nil), v.Projections...)
+	return v, ok
+}
+func (r *Result) Conversion(ref symbol.SyntaxRef) (ConversionResult, bool) {
+	if r == nil {
+		return ConversionResult{}, false
+	}
+	v, ok := r.conversions[ref]
+	return v, ok
+}
+func (r *Result) Call(ref symbol.SyntaxRef) (CallResult, bool) {
+	if r == nil {
+		return CallResult{}, false
+	}
+	v, ok := r.calls[ref]
+	v.Arguments = append([]ConversionResult(nil), v.Arguments...)
+	return v, ok
+}
+func (r *Result) Member(ref symbol.SyntaxRef) (MemberResult, bool) {
+	if r == nil {
+		return MemberResult{}, false
+	}
+	v, ok := r.members[ref]
+	return v, ok
+}
+func (r *Result) Control(ref symbol.SyntaxRef) (ControlResult, bool) {
+	if r == nil {
+		return ControlResult{}, false
+	}
+	v, ok := r.controls[ref]
+	v.Exits = append([]ExitResult(nil), v.Exits...)
+	v.Defers = append([]tir.NodeID(nil), v.Defers...)
+	return v, ok
 }
 
 func (r *Result) Successful() bool {
@@ -81,71 +134,71 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 
 	// Declarations, binding forms, globals, and callable declarations.
 	if !validateBindings(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateSizeof(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateCallableRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 
 	// Members, aggregates, calls, brackets, indices, slices, and context flow.
 	if !validateMemberRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateAggregateRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateCallRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateIndexRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateContextFlowRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	// Operators, casts, places, assignments, and compatibility.
 	if !validateArithmeticOperators(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateBooleanOperators(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validatePlaceRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateAssignmentRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateCompatibilityRecords(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 
 	// Generic requirements.
 	requirements, ok := validateRequirements(handoff, records, diagnostics, config)
 	if !ok {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 
 	// Per-function structural control flow, defers, returns, and reachability.
 	if !auditControlArena(handoff, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, nil, nil, false)
 	}
 	if !validateControlFlow(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, requirements, nil, false)
 	}
 	if !validateSwitches(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, requirements, nil, false)
 	}
 	if !validateDefers(handoff, records, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, requirements, nil, false)
 	}
 
 	// Configured entry point.
 	if !validateEntry(handoff, records, requirements, diagnostics, config) {
-		return &Result{successful: false}
+		return newResult(handoff, records, requirements, nil, false)
 	}
 
 	// Typed-IR construction and closed verification are the last step, gated
@@ -155,14 +208,8 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	// and no unit is published.
 	unit, ok := buildUnit(handoff, records, requirements, config)
 	if !ok || unit == nil {
-		return &Result{successful: false}
+		return newResult(handoff, records, requirements, nil, false)
 	}
 
-	return &Result{
-		successful:   true,
-		solution:     handoff.Solution,
-		records:      records,
-		requirements: requirements,
-		ir:           unit,
-	}
+	return newResult(handoff, records, requirements, unit, true)
 }
