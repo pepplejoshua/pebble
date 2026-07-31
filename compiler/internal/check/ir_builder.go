@@ -2,11 +2,14 @@ package check
 
 import (
 	"math/big"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -42,6 +45,8 @@ type irBuildState struct {
 	regions             map[controlID]tir.RegionID
 	values              map[valueID]tir.NodeID
 	expressionsByResult map[valueID]*expressionRecord
+	aggregatesByRecord  map[recordID]*aggregateRecord
+	operatorsBySyntax   map[symbol.SyntaxRef]*operatorRecord
 }
 
 func (s *irBuildState) addNode(node tir.Node, ref symbol.SyntaxRef) (tir.NodeID, bool) {
@@ -301,12 +306,20 @@ func (s *irBuildState) buildRequirements(groups map[symbol.SymbolID][]Requiremen
 
 func (s *irBuildState) indexExpressions() bool {
 	s.expressionsByResult = make(map[valueID]*expressionRecord)
+	s.aggregatesByRecord = make(map[recordID]*aggregateRecord)
+	s.operatorsBySyntax = make(map[symbol.SyntaxRef]*operatorRecord)
 	for _, retained := range s.handoff.Records.Records() {
 		if !activeOperatorRecord(s.handoff, retained.Header) {
 			continue
 		}
 		if retained.Expression != nil {
 			s.expressionsByResult[retained.Expression.Result] = retained.Expression
+		}
+		if retained.Aggregate != nil {
+			s.aggregatesByRecord[retained.Aggregate.Header.ID] = retained.Aggregate
+		}
+		if retained.Operator != nil {
+			s.operatorsBySyntax[retained.Operator.Header.Syntax] = retained.Operator
 		}
 	}
 	return true
@@ -349,6 +362,40 @@ func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
 		node.ContextAction = tir.ContextExpr
 	case expressionSizeof:
 		if !s.buildSizeof(record, &node) {
+			return 0, false
+		}
+	case expressionTuple:
+		node.Kind = tir.TupleValue
+		if !s.buildChildren(record, &node) {
+			return 0, false
+		}
+	case expressionArray:
+		node.Kind = tir.ArrayValue
+		if !s.buildChildren(record, &node) {
+			return 0, false
+		}
+	case expressionArrayRepeat:
+		node.Kind = tir.ArrayRepeat
+		if !s.buildArrayRepeat(record, &node) {
+			return 0, false
+		}
+	case expressionRecordValue:
+		if !s.buildRecordConstruct(record, &node) {
+			return 0, false
+		}
+	case expressionGrouped:
+		node.Kind = tir.SourceAlias
+		node.ExplicitCast = false
+		if !s.buildChildren(record, &node) {
+			return 0, false
+		}
+	case expressionInterpolated:
+		node.Kind = tir.InterpolatedString
+		if !s.buildInterpolated(record, &node) {
+			return 0, false
+		}
+	case expressionPrefix, expressionBinary:
+		if !s.buildOperatorValue(record, &node) {
 			return 0, false
 		}
 	default:
@@ -446,6 +493,145 @@ func (s *irBuildState) buildSizeof(record *expressionRecord, node *tir.Node) boo
 	node.Kind = tir.SizeofType
 	node.TypeArg = argType
 	return true
+}
+
+func (s *irBuildState) buildChildren(record *expressionRecord, node *tir.Node) bool {
+	children := make([]tir.NodeID, 0, len(record.Children))
+	for _, childID := range record.Children {
+		childNode, ok := s.buildValue(childID)
+		if !ok {
+			return false
+		}
+		children = append(children, childNode)
+	}
+	node.Children = children
+	return true
+}
+
+func (s *irBuildState) buildArrayRepeat(record *expressionRecord, node *tir.Node) bool {
+	if len(record.Children) != 1 {
+		return false
+	}
+	length, ok := s.arrayLength(record.Result)
+	if !ok {
+		return false
+	}
+	valueChild, ok := s.buildValue(record.Children[0])
+	if !ok {
+		return false
+	}
+	countNode, ok := s.addNode(tir.Node{
+		Kind:          tir.IntegerLiteral,
+		Type:          s.handoff.Semantics.Types().Builtins().Uint,
+		Origin:        record.Header.Span,
+		SyntheticRole: "array-repeat-count",
+		Literal:       tir.Literal{Kind: tir.LiteralInteger, IntegerNum: strconv.FormatUint(length, 10), IntegerDen: "1"},
+	}, symbol.SyntaxRef{})
+	if !ok {
+		return false
+	}
+	node.Kind = tir.ArrayRepeat
+	node.Children = []tir.NodeID{valueChild, countNode}
+	return true
+}
+
+func (s *irBuildState) arrayLength(id valueID) (uint64, bool) {
+	typ, ok := typeOfValue(s.records, id)
+	if !ok {
+		return 0, false
+	}
+	key, ok := s.handoff.Semantics.Types().Key(typ)
+	if !ok {
+		return 0, false
+	}
+	length, _, ok := key.Array()
+	return length, ok
+}
+
+func (s *irBuildState) buildRecordConstruct(record *expressionRecord, node *tir.Node) bool {
+	aggregate, ok := s.aggregatesByRecord[record.Specialized]
+	if !ok || aggregate == nil || aggregate.Kind != aggregateStruct || aggregate.Declaration == 0 {
+		return false
+	}
+	sorted := make([]fieldValue, len(aggregate.Fields))
+	copy(sorted, aggregate.Fields)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Ordinal < sorted[j].Ordinal })
+	fields := make([]tir.FieldInit, 0, len(sorted))
+	for _, fv := range sorted {
+		valueNode, ok := s.buildValue(fv.Value)
+		if !ok {
+			return false
+		}
+		fields = append(fields, tir.FieldInit{Field: fv.Member, Value: valueNode})
+	}
+	node.Kind = tir.RecordConstruct
+	node.Symbol = aggregate.Declaration
+	node.Fields = fields
+	return true
+}
+
+func (s *irBuildState) buildInterpolated(record *expressionRecord, node *tir.Node) bool {
+	children := make([]tir.NodeID, 0, len(record.Parts))
+	for _, part := range record.Parts {
+		if part.Kind != interpolationValue {
+			continue
+		}
+		valueNode, ok := s.buildValue(part.Value)
+		if !ok {
+			return false
+		}
+		children = append(children, valueNode)
+	}
+	node.Kind = tir.InterpolatedString
+	node.Children = children
+	return true
+}
+
+func (s *irBuildState) buildOperatorValue(record *expressionRecord, node *tir.Node) bool {
+	op, ok := s.operatorsBySyntax[record.Header.Syntax]
+	if !ok || op == nil {
+		return false
+	}
+	switch op.Form {
+	case operatorPrefix:
+		node.Kind = tir.PrefixValue
+	case operatorBinary:
+		if op.Family == operatorBoolean && (op.Token == syntax.LogicalAnd || op.Token == syntax.LogicalOr) {
+			node.Kind = tir.ShortCircuitValue
+		} else {
+			node.Kind = tir.BinaryValue
+		}
+	default:
+		return false
+	}
+	if !allowedOperatorFamily(op.Family, op.Form) {
+		return false
+	}
+	children := make([]tir.NodeID, 0, len(op.Operands))
+	for _, operand := range op.Operands {
+		operandNode, ok := s.buildValue(operand)
+		if !ok {
+			return false
+		}
+		children = append(children, operandNode)
+	}
+	node.Operator = op.Token
+	node.Children = children
+	return true
+}
+
+func allowedOperatorFamily(family operatorFamily, form operatorForm) bool {
+	switch family {
+	case operatorLiteralNegate:
+		return form == operatorPrefix
+	case operatorBoolean:
+		return form == operatorPrefix || form == operatorBinary
+	case operatorNumericSame, operatorIntegralSame:
+		return form == operatorPrefix || form == operatorBinary
+	case operatorAdd, operatorShift, operatorOrdering, operatorEquality:
+		return form == operatorBinary
+	}
+	return false
 }
 
 func decodeIntegerLiteral(bytes []byte) (string, string, bool) {

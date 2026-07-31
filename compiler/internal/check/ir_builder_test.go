@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 )
 
@@ -403,5 +404,236 @@ func TestBuildValueInactiveGuardedExpression(t *testing.T) {
 	state := testIRBuildState(t, handoff, records, requirements)
 	if _, ok := state.buildValue(id); ok {
 		t.Fatal("buildValue built an inactive guarded expression")
+	}
+}
+
+func testBuildValue(t *testing.T, source string) (*irBuildState, *solvedRecords) {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	state := testIRBuildState(t, handoff, records, requirements)
+	return state, records
+}
+
+func TestBuildValueTuple(t *testing.T) {
+	state, records := testBuildValue(t, "let tuple (i32, i32) = (1, 2);")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionTuple })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.TupleValue || len(node.Children) != 2 {
+		t.Fatalf("tuple node = %+v", node)
+	}
+}
+
+func TestBuildValueArray(t *testing.T) {
+	state, records := testBuildValue(t, "let inferred = [1, 2, 3];")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionArray })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.ArrayValue || len(node.Children) != 3 {
+		t.Fatalf("array node = %+v", node)
+	}
+}
+
+func TestBuildValueArrayRepeat(t *testing.T) {
+	state, records := testBuildValue(t, "let repeated [5]i32 = [1; 5];\n")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionArrayRepeat })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.ArrayRepeat || len(node.Children) != 2 {
+		t.Fatalf("array repeat node = %+v", node)
+	}
+	count := unit.Nodes()[node.Children[1]-1]
+	if count.Kind != tir.IntegerLiteral || count.Literal.IntegerNum != "5" {
+		t.Fatalf("count node = %+v", count)
+	}
+}
+
+func TestBuildValueRecordConstruct(t *testing.T) {
+	state, records := testBuildValue(t, "type Point = struct { x i32; y i32; };\nlet point Point = Point.{ x = 1, y = 2 };")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionRecordValue })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.RecordConstruct || len(node.Fields) != 2 {
+		t.Fatalf("record node = %+v", node)
+	}
+}
+
+func TestBuildValuePrefixNegation(t *testing.T) {
+	state, records := testBuildValue(t, "let neg i32 = -1;")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionPrefix })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.PrefixValue || node.Operator != syntax.Minus || len(node.Children) != 1 {
+		t.Fatalf("prefix node = %+v", node)
+	}
+}
+
+func TestBuildValueBinaryNumeric(t *testing.T) {
+	state, records := testBuildValue(t, "let sum i32 = 1 + 2;")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionBinary })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.BinaryValue || node.Operator != syntax.Plus || len(node.Children) != 2 {
+		t.Fatalf("binary node = %+v", node)
+	}
+}
+
+func TestBuildValueShortCircuit(t *testing.T) {
+	state, records := testBuildValue(t, "let both bool = true && false;")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionBinary })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.ShortCircuitValue || node.Operator != syntax.LogicalAnd || len(node.Children) != 2 {
+		t.Fatalf("short-circuit node = %+v", node)
+	}
+}
+
+func TestBuildValueSourceAlias(t *testing.T) {
+	state, records := testBuildValue(t, "let grouped i32 = (1);")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionGrouped })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.SourceAlias || node.ExplicitCast || len(node.Children) != 1 {
+		t.Fatalf("grouped node = %+v", node)
+	}
+}
+
+func TestBuildValueInterpolatedString(t *testing.T) {
+	state, records := testBuildValue(t, "let item str = \"x\";\nlet msg str = `value {item}`;")
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionInterpolated })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.InterpolatedString || len(node.Children) != 1 {
+		t.Fatalf("interpolated node = %+v", node)
+	}
+}
+
+func TestBuildValueNestedComposites(t *testing.T) {
+	state, records := testBuildValue(t, "let nested = ((1 + 2), [3, 4]);\n")
+	tupleID := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionTuple })
+	tupleNID, ok := state.buildValue(tupleID)
+	if !ok {
+		t.Fatal("buildValue failed for nested tuple")
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	tupleNode := unit.Nodes()[tupleNID-1]
+	if tupleNode.Kind != tir.TupleValue || len(tupleNode.Children) != 2 {
+		t.Fatalf("nested tuple node = %+v", tupleNode)
+	}
+	aliasNode := unit.Nodes()[tupleNode.Children[0]-1]
+	if aliasNode.Kind != tir.SourceAlias || len(aliasNode.Children) != 1 {
+		t.Fatalf("alias child = %+v", aliasNode)
+	}
+	binaryNode := unit.Nodes()[aliasNode.Children[0]-1]
+	if binaryNode.Kind != tir.BinaryValue {
+		t.Fatalf("binary child = %+v", binaryNode)
+	}
+	arrayNode := unit.Nodes()[tupleNode.Children[1]-1]
+	if arrayNode.Kind != tir.ArrayValue || len(arrayNode.Children) != 2 {
+		t.Fatalf("array child = %+v", arrayNode)
+	}
+}
+
+func TestBuildValueInactiveComposite(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("let inferred = [1, 2];\n")})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	id := requireValueID(t, handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionArray })
+	for i := range handoff.Records.values {
+		if handoff.Records.values[i].Expression != nil && handoff.Records.values[i].Expression.Result == id {
+			handoff.Records.values[i].Header.Alternative = alternativeTag{Guarded: true, Choice: 999999, Index: 1}
+		}
+	}
+	state := testIRBuildState(t, handoff, records, requirements)
+	if _, ok := state.buildValue(id); ok {
+		t.Fatal("buildValue built an inactive guarded composite")
 	}
 }
