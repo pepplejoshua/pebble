@@ -252,6 +252,7 @@ func (p *parser) parseInterpolatedString() NodeID {
 	opening := p.cursor.advance()
 	var children []NodeID
 	for !p.at(InterpolationEnd) && !p.at(EOF) {
+		before := p.cursor.index
 		switch p.current().Kind {
 		case InterpolationText:
 			token := p.cursor.advance()
@@ -267,6 +268,11 @@ func (p *parser) parseInterpolatedString() NodeID {
 			children = append(children, p.errorNode("interpolation content", codeInvalidSyntax, "invalid interpolation content"))
 		default:
 			children = append(children, p.errorNode("interpolation content", codeInvalidSyntax, "expected interpolation text or expression"))
+		}
+		if p.cursor.index == before {
+			// Recovery can leave a follower token in place; consume it so this
+			// loop cannot repeatedly retry the same malformed interpolation.
+			p.cursor.advance()
 		}
 	}
 	closing, missing := p.expect(InterpolationEnd, "after interpolated string")
