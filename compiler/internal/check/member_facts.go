@@ -49,6 +49,17 @@ func (w *walker) prepareMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		}
 		return items
 	}
+	// Only this member expression is the method selection. Its base may itself
+	// be a member expression, but that expression must remain an ordinary value
+	// selection rather than reusing the enclosing call's method site.
+	if ctx.immediateCall {
+		for i := range items {
+			if items[i].ref.Node == children[0] {
+				items[i].ctx.immediateCall = false
+				items[i].ctx.callSite = symbol.SyntaxRef{}
+			}
+		}
+	}
 	if ctx.deferredMember {
 		for i := range items {
 			items[i].ctx.deferredMember = false

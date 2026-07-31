@@ -8,6 +8,37 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 )
 
+func TestFieldAccessMethodReceiver(t *testing.T) {
+	cases := map[string]string{
+		"parameter": `
+type Inner = struct { fn value(self Inner) void {} };
+type Outer = struct { inner Inner; };
+fn use(o Outer) void { o.inner.value(); }
+`,
+		"let": `
+type Inner = struct { fn value(self Inner) void {} };
+type Outer = struct { inner Inner; };
+fn use(o Outer) void { let x = o; x.inner.value(); }
+`,
+		"pointer": `
+type Inner = struct { fn value(self Inner) void {} };
+fn use(p *Inner) void { (*p).value(); }
+`,
+	}
+	for name, source := range cases {
+		t.Run(name, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+			handoff := run06a(inputs, diagnostics, Config{})
+			if handoff == nil {
+				t.Fatal("run06a returned a nil handoff")
+			}
+			if handoff.GenerationHadErrors || diagnostics.HasErrors() || handoff.Semantics == nil || handoff.Solution == nil {
+				t.Fatalf("invalid handoff: GenerationHadErrors=%v diagnostics=%+v handoff=%+v", handoff.GenerationHadErrors, diagnostics.Items(), handoff)
+			}
+		})
+	}
+}
+
 // TestSolveHandoffCleanEndToEnd verifies a complete valid program produces
 // a fully initialized handoff with all required fields set correctly.
 func TestSolveHandoffCleanEndToEnd(t *testing.T) {
