@@ -96,6 +96,86 @@ func TestBuildUnitRejectsGenerationErrors(t *testing.T) {
 	}
 }
 
+func buildUnitFixture(t *testing.T, source string) (*tir.Unit, bool) {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid fixture: %v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	return buildUnit(handoff, records, requirements, Config{})
+}
+
+func TestBuildUnitG1StatementsAndFunctionBody(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn sink(value i32) void { print value; }
+fn main() i32 {
+    var value i32 = 1;
+    value = value + 1;
+    sink(value);
+    print value;
+    return value;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("G1 fixture was not buildable")
+	}
+	var main tir.FunctionDecl
+	for _, decl := range unit.FunctionDeclarations() {
+		for _, node := range unit.Nodes() {
+			if node.Kind == tir.FunctionDeclaration && node.Symbol == decl.Symbol && node.HasBody {
+				main = decl
+			}
+		}
+	}
+	if main.Node == 0 {
+		t.Fatal("function declaration has no body block")
+	}
+	block := unit.Nodes()[main.Node-1]
+	if block.Kind != tir.Block || len(block.Children) != 5 {
+		t.Fatalf("main block = %+v, want five ordered statements", block)
+	}
+	want := []tir.NodeKind{tir.Initialize, tir.Store, tir.ExpressionStatement, tir.Print, tir.Return}
+	for i, child := range block.Children {
+		if got := unit.Nodes()[child-1].Kind; got != want[i] {
+			t.Fatalf("statement %d = %v, want %v", i, got, want[i])
+		}
+	}
+}
+
+func TestBuildUnitG1ImplicitVoidReturn(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn main() void { print 1; }`)
+	if !ok || unit == nil {
+		t.Fatal("void fixture was not buildable")
+	}
+	for _, decl := range unit.FunctionDeclarations() {
+		if decl.Node == 0 {
+			continue
+		}
+		block := unit.Nodes()[decl.Node-1]
+		if len(block.Children) == 0 || unit.Nodes()[block.Children[len(block.Children)-1]-1].Kind != tir.ImplicitReturn {
+			t.Fatalf("void block children = %v, missing implicit return", block.Children)
+		}
+		return
+	}
+	t.Fatal("function declaration not found")
+}
+
+func TestBuildUnitG1DefersControlFlowToG2(t *testing.T) {
+	_, ok := buildUnitFixture(t, `fn main(flag bool) void { if flag { print 1; } }`)
+	if ok {
+		t.Fatal("if-containing function should remain unbuildable in G1")
+	}
+}
+
 func testIRBuildState(t *testing.T, handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement) *irBuildState {
 	t.Helper()
 	b := tir.NewBuilder(handoff.Semantics.Types(), tir.Config{
@@ -103,7 +183,7 @@ func testIRBuildState(t *testing.T, handoff *solveHandoff, records *solvedRecord
 		MaxDumpBytes: DefaultMaxDumpBytes,
 	})
 	state := &irBuildState{handoff: handoff, records: records, builder: b}
-	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.buildBlocks() || !state.buildRequirements(requirements) {
+	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.indexControls() || !state.buildBlocks() || !state.finishFunctionDeclarations() || !state.buildRequirements(requirements) {
 		t.Fatal("failed to build test IR state")
 	}
 	return state

@@ -27,7 +27,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		MaxDumpBytes: config.MaxDumpBytes,
 	})
 	state := &irBuildState{handoff: handoff, records: records, builder: b}
-	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.buildBlocks() || !state.buildRequirements(requirements) {
+	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.indexControls() || !state.buildBlocks() || !state.finishFunctionDeclarations() || !state.buildRequirements(requirements) {
 		return nil, false
 	}
 	unit, err := b.Build()
@@ -38,27 +38,45 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 }
 
 type irBuildState struct {
-	handoff               *solveHandoff
-	records               *solvedRecords
-	builder               *tir.Builder
-	functions             map[symbol.SymbolID]tir.FunctionID
-	functionNodes         map[symbol.SymbolID]tir.NodeID
-	regions               map[controlID]tir.RegionID
-	values                map[valueID]tir.NodeID
-	places                map[symbol.SyntaxRef]*placeRecord
-	placeValues           map[valueID]tir.NodeID
-	expressionsByResult   map[valueID]*expressionRecord
-	aggregatesByRecord    map[recordID]*aggregateRecord
-	castsByRecord         map[recordID]*castRecord
-	compatibilityBySource map[valueID]*compatibilityRecord
-	tuplesBySyntax        map[symbol.SyntaxRef][]*compatibilityRecord
-	operatorsBySyntax     map[symbol.SyntaxRef]*operatorRecord
-	operatorsByResult     map[valueID]*operatorRecord
-	membersByResult       map[valueID]*memberRecord
-	indexesByResult       map[valueID]*indexRecord
-	indexesBySyntax       map[symbol.SyntaxRef]*indexRecord
-	callsBySyntax         map[symbol.SyntaxRef]*callRecord
-	contextFlowsBySyntax  map[symbol.SyntaxRef]*contextFlowRecord
+	handoff                      *solveHandoff
+	records                      *solvedRecords
+	builder                      *tir.Builder
+	functions                    map[symbol.SymbolID]tir.FunctionID
+	functionNodes                map[symbol.SymbolID]tir.NodeID
+	regions                      map[controlID]tir.RegionID
+	values                       map[valueID]tir.NodeID
+	places                       map[symbol.SyntaxRef]*placeRecord
+	placeValues                  map[valueID]tir.NodeID
+	expressionsByResult          map[valueID]*expressionRecord
+	aggregatesByRecord           map[recordID]*aggregateRecord
+	castsByRecord                map[recordID]*castRecord
+	compatibilityBySource        map[valueID]*compatibilityRecord
+	tuplesBySyntax               map[symbol.SyntaxRef][]*compatibilityRecord
+	operatorsBySyntax            map[symbol.SyntaxRef]*operatorRecord
+	operatorsByResult            map[valueID]*operatorRecord
+	membersByResult              map[valueID]*memberRecord
+	indexesByResult              map[valueID]*indexRecord
+	indexesBySyntax              map[symbol.SyntaxRef]*indexRecord
+	callsBySyntax                map[symbol.SyntaxRef]*callRecord
+	contextFlowsBySyntax         map[symbol.SyntaxRef]*contextFlowRecord
+	compatibilityReturnsBySource map[valueID]*compatibilityRecord
+	byRegion                     map[controlID][]*controlRecord
+	bySyntax                     map[symbol.SyntaxRef]*controlRecord
+	owner                        map[controlID]*controlRecord
+	functionDecls                []irFunctionDecl
+	functionRegions              map[symbol.SymbolID]controlID
+	blockNodes                   map[controlID]tir.NodeID
+}
+
+type irFunctionDecl struct {
+	callable               callableRef
+	header                 symbol.SyntaxRef
+	span                   source.Span
+	params                 []tir.Parameter
+	result                 types.TypeID
+	kind                   callableKind
+	convention             types.CallingConvention
+	variadic, inline, body bool
 }
 
 func (s *irBuildState) addNode(node tir.Node, ref symbol.SyntaxRef) (tir.NodeID, bool) {
@@ -170,6 +188,9 @@ func typeOfValue(records *solvedRecords, id valueID) (types.TypeID, bool) {
 func (s *irBuildState) buildDeclarations() bool {
 	s.functions = make(map[symbol.SymbolID]tir.FunctionID)
 	s.functionNodes = make(map[symbol.SymbolID]tir.NodeID)
+	s.functionRegions = make(map[symbol.SymbolID]controlID)
+	s.functionDecls = nil
+	functionOrdinal := 0
 	for _, retained := range s.handoff.Records.Records() {
 		if retained.Callable != nil && retained.Callable.Kind != callableLiteral {
 			c := retained.Callable
@@ -196,19 +217,13 @@ func (s *irBuildState) buildDeclarations() bool {
 			if !ok {
 				return false
 			}
-			kind := tir.FunctionDeclaration
-			if c.Kind == callableExtern {
-				kind = tir.ExternDeclaration
-			}
-			fid, err := s.builder.AddFunctionDecl(tir.FunctionDecl{Symbol: c.Symbol, Span: sym.Span})
-			if err != nil {
-				return false
-			}
-			node, ok := s.addNode(tir.Node{Kind: kind, Span: sym.Span, Syntax: c.Header.Syntax, Symbol: c.Symbol, Function: fid, Parameters: params, ResultType: result, Convention: c.Convention, Variadic: c.Variadic, Inline: c.Inline, HasBody: c.BodyPresent}, c.Header.Syntax)
-			if !ok {
-				return false
-			}
-			s.functions[c.Symbol], s.functionNodes[c.Symbol] = fid, node
+			functionOrdinal++
+			s.functions[c.Symbol] = tir.FunctionID(functionOrdinal)
+			s.functionDecls = append(s.functionDecls, irFunctionDecl{
+				callable: callableRef{Symbol: c.Symbol, Syntax: c.Header.Syntax}, header: c.Header.Syntax,
+				span: sym.Span, params: params, result: result, kind: c.Kind, convention: c.Convention,
+				variadic: c.Variadic, inline: c.Inline, body: c.BodyPresent,
+			})
 		}
 		if retained.Binding != nil {
 			b := retained.Binding
@@ -246,6 +261,14 @@ func (s *irBuildState) buildDeclarations() bool {
 			}
 		}
 	}
+	for _, retained := range s.handoff.Records.Records() {
+		if retained.Control == nil || retained.Control.Kind != controlFunction {
+			continue
+		}
+		if retained.Control.Callable.Symbol != 0 {
+			s.functionRegions[retained.Control.Callable.Symbol] = retained.Control.Region
+		}
+	}
 	return true
 }
 
@@ -273,10 +296,10 @@ func (s *irBuildState) buildTypeUses() bool {
 	return true
 }
 
-// buildBlocks reserves the lexical RegionIDs needed by later statement
-// construction. It intentionally builds no Block nodes yet; the next part
-// will populate those nodes once their statement children exist.
 func (s *irBuildState) buildBlocks() bool {
+	if s.byRegion == nil && !s.indexControls() {
+		return false
+	}
 	controls := s.handoff.Records.Controls()
 	s.regions = make(map[controlID]tir.RegionID, len(controls))
 	for i := range controls {
@@ -290,6 +313,208 @@ func (s *irBuildState) buildBlocks() bool {
 		if c.ID == 0 || s.regions[c.ID] == 0 {
 			return false
 		}
+	}
+	s.blockNodes = make(map[controlID]tir.NodeID)
+	for _, decl := range s.functionDecls {
+		region := s.functionRegions[decl.callable.Symbol]
+		if region == 0 {
+			continue
+		}
+		bodyRegion := region
+		if uint64(region) <= uint64(len(s.handoff.Records.Controls())) {
+			for _, child := range s.handoff.Records.Controls()[region-1].Children {
+				if owner := s.owner[child]; owner != nil && owner.Kind == controlBlock {
+					bodyRegion = child
+					break
+				}
+			}
+		}
+		if _, buildable, unsupported := s.buildRegionBlock(bodyRegion, true); unsupported {
+			return false
+		} else if !buildable {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *irBuildState) buildRegionBlock(region controlID, root bool) (tir.NodeID, bool, bool) {
+	if existing := s.blockNodes[region]; existing != 0 {
+		return existing, true, false
+	}
+	sequence := make([]*controlRecord, 0, len(s.byRegion[region]))
+	for _, ctrl := range s.byRegion[region] {
+		if ctrl != s.owner[region] && ctrl.Kind != controlFunction {
+			sequence = append(sequence, ctrl)
+		}
+	}
+	if uint64(region) <= uint64(len(s.handoff.Records.Controls())) {
+		for _, child := range s.handoff.Records.Controls()[region-1].Children {
+			if childOwner := s.owner[child]; childOwner != nil {
+				sequence = append(sequence, childOwner)
+			}
+		}
+	}
+	children := make([]tir.NodeID, 0, len(sequence))
+	canFallthrough := true
+	for _, ctrl := range sequence {
+		var node tir.NodeID
+		var ok bool
+		switch ctrl.Kind {
+		case controlBlock:
+			node, ok, _ = s.buildRegionBlock(ctrl.Region, false)
+		case controlBinding:
+			binding := s.bindingForSyntax(ctrl.Header.Syntax)
+			if binding == nil || !binding.InitializerPresent {
+				continue
+			}
+			value, valueOK := s.buildStatementValue(binding.Initializer)
+			if !valueOK {
+				return 0, false, false
+			}
+			node, ok = s.addNode(tir.Node{Kind: tir.Initialize, Span: ctrl.Header.Span, Symbol: binding.Symbol, Children: []tir.NodeID{value}}, symbol.SyntaxRef{})
+		case controlExpression:
+			if ctrl.StatementForm == statementAssignment {
+				assignment := s.assignmentForSyntax(ctrl.Header.Syntax)
+				if assignment == nil || assignment.Kind != assignmentSimple {
+					return 0, false, true
+				}
+				place, placeOK := s.buildPlace(ctrl.Header.Syntax)
+				value, valueOK := s.buildStatementValue(assignment.Source)
+				if !placeOK || !valueOK {
+					return 0, false, false
+				}
+				node, ok = s.addNode(tir.Node{Kind: tir.Store, Span: ctrl.Header.Span, Children: []tir.NodeID{place, value}}, ctrl.Header.Syntax)
+			} else if len(ctrl.Values) == 1 {
+				value, valueOK := s.buildValue(ctrl.Values[0].Value)
+				if !valueOK {
+					return 0, false, false
+				}
+				node, ok = s.addNode(tir.Node{Kind: tir.ExpressionStatement, Span: ctrl.Header.Span, Children: []tir.NodeID{value}}, ctrl.Header.Syntax)
+			} else {
+				return 0, false, false
+			}
+		case controlPrint:
+			values := make([]tir.NodeID, 0, len(ctrl.Values))
+			for _, entry := range ctrl.Values {
+				value, valueOK := s.buildValue(entry.Value)
+				if !valueOK {
+					return 0, false, false
+				}
+				values = append(values, value)
+			}
+			node, ok = s.addNode(tir.Node{Kind: tir.Print, Span: ctrl.Header.Span, Children: values}, ctrl.Header.Syntax)
+		case controlReturn:
+			values := make([]tir.NodeID, 0, 1)
+			if len(ctrl.Values) > 1 {
+				return 0, false, false
+			}
+			if len(ctrl.Values) == 1 {
+				value, valueOK := s.buildReturnValue(ctrl.Values[0].Value)
+				if !valueOK {
+					return 0, false, false
+				}
+				values = append(values, value)
+			}
+			node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values}, ctrl.Header.Syntax)
+			canFallthrough = false
+		default:
+			return 0, false, true
+		}
+		if !ok {
+			return 0, false, false
+		}
+		children = append(children, node)
+		if ctrl.Kind != controlReturn {
+			canFallthrough = true
+		}
+	}
+	if root && canFallthrough && isVoidCallable(s, s.owner[region]) {
+		implicit, ok := s.addNode(tir.Node{Kind: tir.ImplicitReturn, Origin: s.owner[region].Header.Span, SyntheticRole: "implicit-return", Function: s.functions[s.owner[region].Callable.Symbol]}, symbol.SyntaxRef{})
+		if !ok {
+			return 0, false, false
+		}
+		children = append(children, implicit)
+	}
+	node, ok := s.addNode(tir.Node{Kind: tir.Block, Span: s.owner[region].Header.Span, Region: s.regions[region], Children: children}, symbol.SyntaxRef{})
+	if !ok {
+		return 0, false, false
+	}
+	s.blockNodes[region] = node
+	return node, true, false
+}
+
+func isVoidCallable(s *irBuildState, ctrl *controlRecord) bool {
+	if ctrl == nil || ctrl.Callable.Symbol == 0 {
+		return false
+	}
+	sig, ok := s.handoff.Semantics.Signature(ctrl.Callable.Symbol)
+	if !ok {
+		return false
+	}
+	template, ok := s.handoff.Semantics.Template(sig.Result)
+	return ok && template.Kind == infer.TemplateKnown && template.Known == s.handoff.Semantics.Types().Builtins().Void
+}
+
+func (s *irBuildState) buildStatementValue(id valueID) (tir.NodeID, bool) {
+	if compatibility := s.compatibilityBySource[id]; compatibility != nil && compatibility.Role == compatibilityAssignment {
+		return s.buildCompatibility(id, compatibility)
+	}
+	return s.buildValue(id)
+}
+
+func (s *irBuildState) buildReturnValue(id valueID) (tir.NodeID, bool) {
+	if compatibility := s.compatibilityReturnsBySource[id]; compatibility != nil {
+		return s.buildCompatibility(id, compatibility)
+	}
+	return s.buildValue(id)
+}
+
+func (s *irBuildState) bindingForSyntax(ref symbol.SyntaxRef) *bindingRecord {
+	for _, retained := range s.handoff.Records.Records() {
+		if retained.Binding != nil && retained.Header.Syntax == ref {
+			return retained.Binding
+		}
+	}
+	return nil
+}
+
+func (s *irBuildState) assignmentForSyntax(ref symbol.SyntaxRef) *assignmentRecord {
+	for _, retained := range s.handoff.Records.Records() {
+		if retained.Assignment != nil && retained.Assignment.Statement == ref {
+			return retained.Assignment
+		}
+	}
+	return nil
+}
+
+func (s *irBuildState) finishFunctionDeclarations() bool {
+	for _, decl := range s.functionDecls {
+		region := s.functionRegions[decl.callable.Symbol]
+		bodyRegion := region
+		if region != 0 && uint64(region) <= uint64(len(s.handoff.Records.Controls())) {
+			for _, child := range s.handoff.Records.Controls()[region-1].Children {
+				if owner := s.owner[child]; owner != nil && owner.Kind == controlBlock {
+					bodyRegion = child
+					break
+				}
+			}
+		}
+		node, hasBody := s.blockNodes[bodyRegion]
+		fid := s.functions[decl.callable.Symbol]
+		if _, err := s.builder.AddFunctionDecl(tir.FunctionDecl{Symbol: decl.callable.Symbol, Span: decl.span, FunctionID: fid, Node: node}); err != nil {
+			return false
+		}
+		kind := tir.FunctionDeclaration
+		if decl.kind == callableExtern {
+			kind = tir.ExternDeclaration
+		}
+		declNode, ok := s.addNode(tir.Node{Kind: kind, Span: decl.span, Syntax: decl.header, Symbol: decl.callable.Symbol, Function: fid, Parameters: decl.params, ResultType: decl.result, Convention: decl.convention, Variadic: decl.variadic, Inline: decl.inline, HasBody: decl.body}, decl.header)
+		if !ok {
+			return false
+		}
+		s.functionNodes[decl.callable.Symbol] = declNode
+		_ = hasBody
 	}
 	return true
 }
@@ -321,6 +546,7 @@ func (s *irBuildState) indexExpressions() bool {
 	s.aggregatesByRecord = make(map[recordID]*aggregateRecord)
 	s.castsByRecord = make(map[recordID]*castRecord)
 	s.compatibilityBySource = make(map[valueID]*compatibilityRecord)
+	s.compatibilityReturnsBySource = make(map[valueID]*compatibilityRecord)
 	s.tuplesBySyntax = make(map[symbol.SyntaxRef][]*compatibilityRecord)
 	s.operatorsBySyntax = make(map[symbol.SyntaxRef]*operatorRecord)
 	s.operatorsByResult = make(map[valueID]*operatorRecord)
@@ -347,6 +573,8 @@ func (s *irBuildState) indexExpressions() bool {
 			c := retained.Compatibility
 			if c.Role == compatibilityTupleComponent {
 				s.tuplesBySyntax[c.Header.Syntax] = append(s.tuplesBySyntax[c.Header.Syntax], c)
+			} else if c.Role == compatibilityReturn {
+				s.compatibilityReturnsBySource[c.Source] = c
 			} else if _, exists := s.compatibilityBySource[c.Source]; !exists {
 				s.compatibilityBySource[c.Source] = c
 			}
@@ -370,6 +598,28 @@ func (s *irBuildState) indexExpressions() bool {
 		}
 		if retained.Place != nil {
 			s.places[retained.Place.Header.Syntax] = retained.Place
+		}
+	}
+	return true
+}
+
+// indexControls mirrors validateControlFlow's indexes so construction and
+// validation walk the frozen control arena in the same authored order.
+func (s *irBuildState) indexControls() bool {
+	s.byRegion = make(map[controlID][]*controlRecord)
+	s.bySyntax = make(map[symbol.SyntaxRef]*controlRecord)
+	s.owner = make(map[controlID]*controlRecord)
+	retainedRecords := s.handoff.Records.Records()
+	for i := range retainedRecords {
+		retained := &retainedRecords[i]
+		if retained.Control == nil || !activeOperatorRecord(s.handoff, retained.Header) {
+			continue
+		}
+		ctrl := retained.Control
+		s.byRegion[ctrl.Region] = append(s.byRegion[ctrl.Region], ctrl)
+		s.bySyntax[ctrl.Header.Syntax] = ctrl
+		if regionOwningControl(ctrl.Kind) {
+			s.owner[ctrl.Region] = ctrl
 		}
 	}
 	return true
