@@ -1,14 +1,15 @@
 # 07 generics — rough implementation plan
 
-**Status:** in progress. 07.1–07.4a are implemented, committed, and
+**Status:** in progress. 07.1–07.4b are implemented, committed, and
 pushed (see "Completed slices" below). This document is being updated
 in place as each slice lands, rather than staying a pre-implementation
 sketch — treat the "Completed slices" section as authoritative fact and
-everything under "Remaining work" as still-rough planning, sharpened as
+everything under "Slice record and remaining work" as current record or
+still-rough planning, sharpened as
 each piece is actually written, the same way 06b.7b's parts each
 informed the next.
 
-**Baseline.** `main` at `6f17359` (07.4a, the last landed slice). 06a
+**Baseline.** `main` at `7142292` (07.4b, the last landed slice). 06a
 and 06b are both complete (all 06a.1–06a.8 and 06b.1–06b.8 slices
 accepted, plus the four Sol-flagged 06b defect fixes).
 
@@ -100,6 +101,17 @@ implementation.
   against the entire existing generic test corpus (07.1's own tests,
   `generic_*.peb` fixtures, requirement-publication tests) to confirm
   no regressions from turning this on.
+- **07.4b — named and generic function values** (`ir_builder.go`):
+  confirmed empirically that a bare `identity[i32]` value reference
+  publishes an instantiation at its bracket syntax reference and is retained
+  as `expressionBracket`. Named non-generic function references now emit
+  `HoistedFunctionValue` nodes. Bare generic function references now build the
+  matching specialization, add a typed-IR `Instantiation`, and emit a
+  verifier-clean `GenericFunctionValue` with concrete `TypeArgs`. Function
+  declarations now reserve their final IDs before body construction so a
+  specialization built during block traversal cannot shift normal function
+  IDs. Added block-bodied IR tests for both paths. Full tests, race tests,
+  vet, build, and diff checks pass.
 
 ## What already exists (evidence, not spec prose)
 
@@ -133,10 +145,8 @@ mechanism to validate ordinary generic code:
   `compiler/internal/tir/unit.go`'s `Builder.AddInstantiation` and
   full verifier/dumper support for both, already exist and are
   exercised by the `tir` package's own totality tests. This is exactly
-  the spec's specialization key shape. **Nothing in
-  `compiler/internal/check/ir_builder.go` references
-  `tir.GenericFunctionValue` or calls `AddInstantiation` today** — the
-  schema is ready and completely unused.
+  the spec's specialization key shape. 07.4b now consumes this schema from
+  `ir_builder.go` for bare generic function values.
 - **Explicitly out of scope, not phase 7's problem**: generic anonymous
   functions and the `_` type-argument placeholder are both deliberately
   rejected today (`C0608`) per `open-language-decisions.md` §2.2/§2.3.
@@ -148,22 +158,19 @@ Items 1–3 (call-site requirement satisfaction, the specialization
 cache, building monomorphized typed IR) are done — see "Completed
 slices" above. What remains:
 
-4. **`GenericFunctionValue` wiring at value/call sites** — see the
-   detailed "07.4b" investigation handoff below. This turned out to be
-   larger than originally scoped: it depends on a currently-broken,
-   pre-existing (not generics-specific) gap — referencing *any* named,
-   already-declared function as a bare value has no working path in
-   `ir_builder.go` today, generic or not.
-5. **Diagnostics** that name both the unmet requirement and the failing
+4. **Diagnostics** that name both the unmet requirement and the failing
    call (spec goal: "explain both the generic requirement and the call
    that failed to satisfy it") — 07.1's `C0621` already does this
    reasonably well for validation-time failures; unclear yet whether
    anything more is needed for specialization-time failures
    specifically. Not yet investigated.
 
-## Remaining work
+## Slice record and remaining work
 
-### 07.4b — `GenericFunctionValue` wiring (investigation handoff, not yet implemented)
+### 07.4b — `GenericFunctionValue` wiring (completed; investigation record)
+
+The investigation and implementation are complete. The details below record
+the evidence that closed the handoff and the exact implementation boundary.
 
 **Scope decision (already made — do not re-ask):** the user chose to
 fix this together with the underlying "named function as bare value"
@@ -217,25 +224,17 @@ re-deriving it):**
    investigation) calls `w.publishInstantiation(site, generic, terms)`
    regardless of whether the call site is an actual call or a bare
    value reference — meaning `handoff.Solution.Instantiation(ref)`
-   (07.1's accessor) should already be queryable for a bare
-   `identity[i32]` reference site, not just for a call. **Not yet
-   empirically confirmed with a real fixture** — the next step should
-   be writing a throwaway test that compiles `let f = identity[i32];`
-   and checks whether `handoff.Solution.Instantiation(ref)` for that
-   `let`'s initializer syntax ref actually returns something, before
-   writing any implementation.
+   (07.1's accessor) is queryable for a bare `identity[i32]` reference
+   site, not just for a call. A throwaway block-bodied fixture confirmed
+   this before implementation.
 3. `finishBracket` (`bracket_facts.go`, ~line 186) for `p.mode ==
    symbol.BracketTypeNames` calls
    `signature, ok := w.program.Signature(p.generic)` then
    `w.instantiateSignature(signature, p.application, origin)` then
    `w.retainBracket(ref, ctx, result, 0, alternativeTag{}, nil)`.
-   **Not yet traced**: what `retainBracket` actually retains here —
-   specifically, what `expressionRecord.Kind` results, since that's
-   what `ir_builder.go`'s `buildValueBase` switch dispatches on. This
-   is the single biggest remaining unknown before implementation can
-   start. Read `retainBracket`'s definition next (grep
-   `func (w \*walker) retainBracket` — not yet located/read in this
-   investigation).
+   `retainBracket` retains `expressionBracket` with the bracket result and no
+   children, symbol, or specialization. This is the exact record shape used
+   by the new `buildValueBase` dispatch.
 4. `bracket_facts.go`'s `prepareDeferredBracket`/`finishDeferredBracket`
    (~line 129–177, 244+) is a **different**, more specific case:
    generic *method* application with explicit brackets on a member
@@ -244,17 +243,9 @@ re-deriving it):**
    otherwise). Confirmed this does **not** apply to a plain-name base
    like `identity[i32]` — don't conflate the two paths.
 
-**Suggested next step for whoever picks this up**: before writing an
-implementation brief, spend one investigation-only pass (a throwaway
-test, no committed changes) to (a) confirm `Solution.Instantiation`
-really is populated for a bare generic-value reference site, and (b)
-read `retainBracket` and whatever `expressionRecord.Kind` it produces
-for the `BracketTypeNames`/generic-function case, so the eventual
-implementation brief can cite the exact `record.Kind` `buildValueBase`
-needs to switch on, the same level of precision every other 07.3
-sub-slice's brief had. Do not skip straight to writing the
-`buildSymbolValue`/`buildValueBase` changes without this — the
-uncertainty is real, not just unwritten-down.
+The implementation then added the named-function path and the generic
+function-value path together, with block-bodied IR tests that inspect the
+emitted nodes, instantiation table, and specialized declaration.
 
 ### 07.5 — Diagnostics
 
@@ -272,7 +263,7 @@ decision from this plan), and fuzz/race coverage extending
 `fuzz_test.go`/`race_test.go`'s existing shape. Mirrors 06b.8's own
 final slice.
 
-## What needed sharpening, resolved during 07.1–07.4a
+## What needed sharpening, resolved during 07.1–07.4b
 
 These were open questions in the original pre-implementation draft;
 kept here (rather than deleted) as a record of how they actually
@@ -291,9 +282,6 @@ resolved, since real code shape decided all of them, not spec prose:
 
 Still genuinely open (not yet resolved by real code):
 
-- The exact `record.Kind`/expression shape `retainBracket` produces
-  for a bare generic-function-value bracket reference — see 07.4b
-  above, the actual current blocker.
 - Whether 07.3's `ABI`/`Convention` handling needs anything different
   once 07.4b makes generic functions referenceable as bare values
   (today only call sites are exercised) — not yet investigated, flag
@@ -308,52 +296,37 @@ conversation's history.
 ### Where things stand
 
 Read "Completed slices" above for exactly what's built and verified.
-Read "07.4b" above for the exact next investigation step — do not
-start writing `ir_builder.go` changes for it before confirming the two
-open questions listed there (whether `Solution.Instantiation` is
-populated for a bare value reference site, and what `retainBracket`
-actually retains). Everything else in "What's actually missing" (item
-5, diagnostics) is unstarted and lower-priority than 07.4b.
+07.4b is complete. The next unfinished item is diagnostics (item 4 in
+"What's actually missing"); full generics coverage remains item 07.6.
 
 ### Using `orc` to dispatch implementation work
 
-This phase's slices (07.1–07.4a) were each implemented by dispatching
+This phase's slices (07.1–07.4b) were each implemented by dispatching
 a tightly-scoped brief to `orc`, a supervisor CLI that runs an
 OpenCode worker model against this repository and blocks until it
 finishes:
 
 ```bash
-orc run --claude --model <model> --prompt-file /tmp/orc_task_<name>.md "<short summary>"
+orc run --codex --model opencode-go/deepseek-v4-flash --prompt-file /tmp/orc_task_<name>.md "<short summary>"
 ```
 
-Always pass `--claude` (attribution for this assistant's own
+Always pass `--codex` (attribution for this assistant's own
 dispatches). Run it with a background-capable tool so you can keep
 working while it completes — `orc run` blocks until the worker exits,
 which can take several minutes for a substantial slice.
 
 **Model policy, as actually used across this phase:**
 
-- Default: `opencode-go/deepseek-v4-flash` ("flash"). The user's
-  standing instruction for this phase was explicit: *"Use Flash
-  exclusively for now. If it delivers subpar perf, then we go to
-  Luna."* Flash handled the large majority of 07.1–07.4a's slices
-  successfully.
-- Escalate to `openai/gpt-5.6-luna` ("luna") only when flash actually
-  underperforms on a dispatch (stalls, produces something structurally
-  wrong, silently does nothing) — not preemptively. Two flash dispatch
-  attempts in this phase (07.1's first attempt, 07.3f's first two
-  attempts) silently did almost no work; both were caught by checking
-  `orc result <session>`'s `metrics` field (near-zero `tool_calls`/
-  `cpu_seconds` is the tell) and simply retried with the identical
-  brief before escalating — retrying flash resolved both, so treat a
-  silent near-no-op as "retry once" before treating it as "flash
-  underperformed."
+- Default and only approved model: `opencode-go/deepseek-v4-flash`
+  ("flash"). The user's current instruction is explicit: use Flash only
+  for Orc dispatches in this phase. If a dispatch is silent or weak, retry
+  the same Flash brief once; do not escalate to another model without a new
+  explicit user instruction.
 - **`opencode-go/kimi-k2.7-code` ("kimi") is permanently banned in this
   project** — it contributed to blowing OpenCode usage limits in an
   earlier phase. Never dispatch to it here, regardless of what the
   general `dispatch-orc-task` skill's own model-tiering guidance says.
-- Do not use `openai/gpt-5.6-sol` at all, and do not use
-  `openai/gpt-5.6-terra` without the user's explicit approval first.
+- Do not use Luna, Kimi, Sol, or Terra for this phase.
 
 **Checking a dispatch's outcome:**
 
