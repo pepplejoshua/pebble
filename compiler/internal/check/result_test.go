@@ -15,7 +15,7 @@ func TestRun06bSuccess(t *testing.T) {
 		t.Fatal("run06a produced invalid handoff")
 	}
 
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if !result.Successful() {
 		t.Fatal("run06b should have succeeded")
 	}
@@ -37,7 +37,7 @@ func TestRun06bSuccess(t *testing.T) {
 func TestRun06bIRPublishedOnSuccess(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})
 	handoff := run06a(inputs, diagnostics, Config{})
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if !result.Successful() {
 		t.Fatal("expected success")
 	}
@@ -57,7 +57,7 @@ func TestRun06bAuditHandoffFailure(t *testing.T) {
 		Solution:  handoffB.Solution,
 	}
 
-	result := run06b(handoff, diagnostic.NewDiagnosticSet(), Config{})
+	result := run06b(handoff, diagnostic.NewDiagnosticSet(), Config{}, inputsA.Types)
 	if result.Successful() {
 		t.Fatal("expected auditHandoff to fail for mismatched semantics/solution")
 	}
@@ -83,7 +83,7 @@ func TestRun06bResolveRecordsFailure(t *testing.T) {
 		}},
 	}
 
-	result := run06b(handoff, diagnostic.NewDiagnosticSet(), Config{})
+	result := run06b(handoff, diagnostic.NewDiagnosticSet(), Config{}, inputs.Types)
 	if result.Successful() {
 		t.Fatal("expected resolveRecords to fail for duplicate root")
 	}

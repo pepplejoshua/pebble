@@ -56,7 +56,7 @@ func TestBuildUnitDeclarations(t *testing.T) {
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid handoff")
 	}
@@ -114,7 +114,7 @@ func TestBuildUnitImport(t *testing.T) {
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid import")
 	}
@@ -135,7 +135,7 @@ func TestBuildUnitLocalDeclaration(t *testing.T) {
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid handoff")
 	}
@@ -166,7 +166,7 @@ func TestBuildUnitLocalDeclaration(t *testing.T) {
 }
 
 func TestBuildUnitRejectsGenerationErrors(t *testing.T) {
-	unit, ok := buildUnit(&solveHandoff{GenerationHadErrors: true}, nil, nil, nil, Config{})
+	unit, ok := buildUnit(&solveHandoff{GenerationHadErrors: true}, nil, nil, nil, Config{}, nil)
 	if ok || unit != nil {
 		t.Fatal("expected failed generation handoff to be rejected")
 	}
@@ -191,7 +191,7 @@ func buildUnitFixtureWithConfig(t *testing.T, source string, config Config) (*ti
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config)
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config, inputs.Types)
 	if ok && unit != nil {
 		recordIRBuilderUnit(unit)
 	}
@@ -664,6 +664,56 @@ func requireValueID(t *testing.T, handoff *solveHandoff, records *solvedRecords,
 	}
 	t.Fatal("matching expression record not found")
 	return 0
+}
+
+func TestIRBuildStateResolveTypeSubstitution(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn identity[T](value T) T => value;`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	state := testIRBuildState(t, handoff, records, requirements)
+	state.store = inputs.Types
+
+	var parameter valueID
+	for _, retained := range handoff.Records.Records() {
+		if retained.Callable != nil && retained.Callable.Parameters != nil {
+			parameter = retained.Callable.Parameters[0]
+			break
+		}
+	}
+	if parameter == 0 {
+		t.Fatal("generic parameter value missing")
+	}
+	direct, ok := typeOfValue(records, parameter)
+	if !ok {
+		t.Fatal("generic parameter has no symbolic type")
+	}
+	resolved, ok := state.resolveType(parameter)
+	if !ok || resolved != direct {
+		t.Fatalf("nil substitution resolved type = %v, %v; want %v, true", resolved, ok, direct)
+	}
+	key, ok := inputs.Types.Key(direct)
+	if !ok {
+		t.Fatal("symbolic parameter type is not interned")
+	}
+	declaration, ok := key.TypeParameter()
+	if !ok {
+		t.Fatalf("symbolic parameter type key = %v, want type parameter", key)
+	}
+	state.activeSubstitution = map[symbol.SymbolID]types.TypeID{declaration: inputs.Types.Builtins().I32}
+	resolved, ok = state.resolveType(parameter)
+	if !ok || resolved != inputs.Types.Builtins().I32 {
+		t.Fatalf("active substitution resolved type = %v, %v; want i32, true", resolved, ok)
+	}
 }
 
 func TestBuildValueLeafLiterals(t *testing.T) {
@@ -2642,7 +2692,7 @@ func buildIRFixturePath(t *testing.T, path string, config Config) (*tir.Unit, bo
 	if !ok {
 		t.Fatalf("requirements rejected %s: %+v", path, diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config)
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config, inputs.Types)
 	if ok && unit != nil {
 		recordIRBuilderUnit(unit)
 	}
@@ -2818,7 +2868,7 @@ func TestBuildUnitRejectsMalformedHandoff(t *testing.T) {
 	if handoff == nil || handoff.GenerationHadErrors {
 		t.Fatal("valid setup was rejected")
 	}
-	if unit, ok := buildUnit(handoff, nil, nil, diagnostics, Config{}); ok || unit != nil {
+	if unit, ok := buildUnit(handoff, nil, nil, diagnostics, Config{}, inputs.Types); ok || unit != nil {
 		t.Fatal("nil records must be rejected")
 	}
 }
@@ -2844,7 +2894,7 @@ func TestBuildUnitReportsBuildVerifierFailure(t *testing.T) {
 		}
 	}
 	diagnostics = diagnostic.NewDiagnosticSet()
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
 	if ok || unit != nil {
 		t.Fatal("malformed return should fail closed-IR verification")
 	}
@@ -2935,7 +2985,7 @@ func FuzzBuildUnit(f *testing.F) {
 			if !ok {
 				return
 			}
-			_, _ = buildUnit(handoff, records, requirements, diagnostics, config)
+			_, _ = buildUnit(handoff, records, requirements, diagnostics, config, inputs.Types)
 		}()
 		select {
 		case <-done:

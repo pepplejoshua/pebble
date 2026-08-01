@@ -31,7 +31,7 @@ func TestRun06bAcceptsConfiguredVoidAndIntEntries(t *testing.T) {
 			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn entry() " + test.typeName + " {" + test.body + "}")})
 			id := entrySymbol(t, inputs, "entry")
 			handoff := run06a(inputs, diagnostics, Config{})
-			result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+			result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
 			if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
 				t.Fatalf("entry rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 			}
@@ -55,7 +55,7 @@ func TestRun06bRejectsIneligibleConfiguredEntries(t *testing.T) {
 			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(test.source)})
 			id := entrySymbol(t, inputs, "entry")
 			handoff := run06a(inputs, diagnostics, Config{})
-			result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+			result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
 			if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
 				t.Fatalf("%s: ineligible entry was accepted: result=%v diagnostics=%+v", test.name, result.Successful(), diagnostics.Items())
 			}
@@ -70,7 +70,7 @@ func TestRun06bRejectsNonRootModuleEntry(t *testing.T) {
 	})
 	id := entrySymbol(t, inputs, "entry")
 	handoff := run06a(inputs, diagnostics, Config{})
-	result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+	result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
 	if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
 		t.Fatalf("non-root entry was accepted: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 	}

@@ -19,5 +19,5 @@ func Check(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config) 
 		diagnostics = diagnostic.NewDiagnosticSet()
 	}
 	handoff := run06a(inputs, diagnostics, config)
-	return run06b(handoff, diagnostics, config)
+	return run06b(handoff, diagnostics, config, inputs.Types)
 }

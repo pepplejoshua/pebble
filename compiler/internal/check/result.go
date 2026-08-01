@@ -5,6 +5,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 // Result is the immutable result of 06b validation.
@@ -120,7 +121,7 @@ func (r *Result) IR() *tir.Unit {
 // validator in the spec's validation order, then typed-IR construction and
 // closed verification via buildUnit as the final gate. Every step fails the
 // whole result; IR is stored only on a fully successful result.
-func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config Config) *Result {
+func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config Config, store *types.Store) *Result {
 	config = normalizeConfig(config)
 
 	if !auditHandoff(handoff, diagnostics, config) {
@@ -209,7 +210,7 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	// returns ok == false for a generation that already had errors or for any
 	// IR construction/verification failure; either way the whole result fails
 	// and no unit is published.
-	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config)
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config, store)
 	if !ok || unit == nil {
 		return newResult(handoff, records, requirements, nil, false)
 	}

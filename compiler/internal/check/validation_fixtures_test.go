@@ -263,7 +263,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeUnsupportedGeneric) {
 					t.Fatalf("valid generic fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -283,7 +283,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeUnsupportedGeneric) {
 					t.Fatalf("invalid generic fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -374,7 +374,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeMissingReturn) || hasValidationDiagnostic(diagnostics, CodeInvalidTarget) || hasValidationDiagnostic(diagnostics, CodeUnreachable) || hasValidationDiagnostic(diagnostics, CodeGeneration) {
 					t.Fatalf("valid control fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -404,7 +404,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeMissingReturn) {
 					t.Fatalf("invalid C0607 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -424,7 +424,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeInvalidTarget) {
 					t.Fatalf("invalid C0611 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -444,7 +444,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if !result.Successful() || !hasValidationDiagnostic(diagnostics, CodeUnreachable) {
 					t.Fatalf("C0618 fixture expected warning: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -469,7 +469,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeInvalidDefer) {
 					t.Fatalf("valid defer fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -489,7 +489,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeInvalidDefer) {
 					t.Fatalf("invalid C0613 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -514,7 +514,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeStatementForm) {
 					t.Fatalf("valid statement fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -534,7 +534,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{})
+				result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeStatementForm) {
 					t.Fatalf("invalid C0612 fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -560,7 +560,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+				result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
 				if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
 					t.Fatalf("valid entry fixture was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}
@@ -581,7 +581,7 @@ func TestValidationFixtures(t *testing.T) {
 				if handoff == nil {
 					t.Fatalf("06a did not produce a handoff for %s", path)
 				}
-				result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}})
+				result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
 				if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
 					t.Fatalf("invalid entry fixture was not rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 				}

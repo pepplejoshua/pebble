@@ -19,7 +19,7 @@ import (
 // buildUnit constructs the declaration/nonvalue portion of typed IR. It is
 // intentionally not called by run06b yet: later 06b.7b parts add values,
 // places, calls, coercions, and statements at this orchestration point.
-func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, diagnostics *diagnostic.DiagnosticSet, config Config) (unit *tir.Unit, ok bool) {
+func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, diagnostics *diagnostic.DiagnosticSet, config Config, store *types.Store) (unit *tir.Unit, ok bool) {
 	if handoff == nil || handoff.GenerationHadErrors || handoff.Semantics == nil || handoff.Solution == nil || records == nil {
 		return nil, false
 	}
@@ -33,7 +33,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		MaxIRNodes: config.MaxIRNodes, MaxIRComponents: config.MaxIRComponents,
 		MaxDumpBytes: config.MaxDumpBytes,
 	})
-	state := &irBuildState{handoff: handoff, records: records, builder: b}
+	state := &irBuildState{handoff: handoff, records: records, builder: b, store: store}
 	steps := []struct {
 		name  string
 		build func() bool
@@ -60,6 +60,8 @@ type irBuildState struct {
 	handoff                      *solveHandoff
 	records                      *solvedRecords
 	builder                      *tir.Builder
+	store                        *types.Store
+	activeSubstitution           map[symbol.SymbolID]types.TypeID
 	functions                    map[symbol.SymbolID]tir.FunctionID
 	functionNodes                map[symbol.SymbolID]tir.NodeID
 	regions                      map[controlID]tir.RegionID
@@ -209,6 +211,20 @@ func typeOfValue(records *solvedRecords, id valueID) (types.TypeID, bool) {
 	return r.Type, ok && r.State == infer.TypeFinal && r.Type != 0
 }
 
+// resolveType resolves value's solved type and applies the active
+// specialization substitution when one is present.
+func (s *irBuildState) resolveType(id valueID) (types.TypeID, bool) {
+	typ, ok := typeOfValue(s.records, id)
+	if !ok || s.activeSubstitution == nil {
+		return typ, ok
+	}
+	substituted, err := s.store.Substitute(typ, s.activeSubstitution)
+	if err != nil {
+		return 0, false
+	}
+	return substituted, true
+}
+
 func (s *irBuildState) buildDeclarations() bool {
 	s.functions = make(map[symbol.SymbolID]tir.FunctionID)
 	s.functionNodes = make(map[symbol.SymbolID]tir.NodeID)
@@ -224,7 +240,7 @@ func (s *irBuildState) buildDeclarations() bool {
 			}
 			params := make([]tir.Parameter, len(c.Parameters))
 			for i, value := range c.Parameters {
-				typ, ok := typeOfValue(s.records, value)
+				typ, ok := s.resolveType(value)
 				if !ok {
 					return false
 				}
@@ -237,7 +253,7 @@ func (s *irBuildState) buildDeclarations() bool {
 					return false
 				}
 			}
-			result, ok := typeOfValue(s.records, c.Result)
+			result, ok := s.resolveType(c.Result)
 			if !ok {
 				return false
 			}
@@ -258,9 +274,9 @@ func (s *irBuildState) buildDeclarations() bool {
 			if !ok {
 				return false
 			}
-			typ, ok := typeOfValue(s.records, b.Annotation)
+			typ, ok := s.resolveType(b.Annotation)
 			if !ok && b.InitializerPresent {
-				typ, ok = typeOfValue(s.records, b.Initializer)
+				typ, ok = s.resolveType(b.Initializer)
 			}
 			if !ok {
 				return false
@@ -332,7 +348,7 @@ func (s *irBuildState) buildTypeUses() bool {
 		if retained.TypeUse == nil {
 			continue
 		}
-		typ, ok := typeOfValue(s.records, retained.TypeUse.Type)
+		typ, ok := s.resolveType(retained.TypeUse.Type)
 		if !ok {
 			return false
 		}
@@ -708,7 +724,7 @@ func (s *irBuildState) buildPostfixOne(op *operatorRecord) (tir.NodeID, bool) {
 	if op == nil || len(op.Operands) == 0 {
 		return 0, false
 	}
-	typ, ok := typeOfValue(s.records, op.Operands[0])
+	typ, ok := s.resolveType(op.Operands[0])
 	if !ok || typ == 0 {
 		return 0, false
 	}
@@ -1245,7 +1261,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 	if !ok {
 		return 0, false
 	}
-	typ, ok := typeOfValue(s.records, id)
+	typ, ok := s.resolveType(id)
 	if !ok {
 		return 0, false
 	}
@@ -1256,8 +1272,8 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		if cast == nil {
 			return 0, false
 		}
-		sourceType, sourceOK := typeOfValue(s.records, cast.Source)
-		destination, destinationOK := typeOfValue(s.records, cast.Destination)
+		sourceType, sourceOK := s.resolveType(cast.Source)
+		destination, destinationOK := s.resolveType(cast.Destination)
 		if !sourceOK || !destinationOK {
 			return 0, false
 		}
@@ -1341,12 +1357,12 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 			typeArgs := make([]types.TypeID, 0, len(components))
 			needsCoercion := false
 			for _, component := range components {
-				destination, ok := typeOfValue(s.records, component.Destination)
+				destination, ok := s.resolveType(component.Destination)
 				if !ok || component.Ordinal >= uint32(len(tupleChildren)) {
 					return 0, false
 				}
 				child := tupleChildren[component.Ordinal]
-				sourceType := mustType(s.records, component.Source)
+				sourceType, _ := s.resolveType(component.Source)
 				coercion := coercionFor(s.handoff.Semantics, classify(s.handoff.Semantics, sourceType, destination), sourceType, destination)
 				needsCoercion = needsCoercion || coercion != coercionNone
 				if coercion != coercionNone {
@@ -1510,11 +1526,11 @@ func mustType(records *solvedRecords, id valueID) types.TypeID {
 }
 
 func (s *irBuildState) buildCompatibility(source valueID, compatibility *compatibilityRecord) (tir.NodeID, bool) {
-	sourceType, ok := typeOfValue(s.records, source)
+	sourceType, ok := s.resolveType(source)
 	if !ok {
 		return 0, false
 	}
-	destination, ok := typeOfValue(s.records, compatibility.Destination)
+	destination, ok := s.resolveType(compatibility.Destination)
 	if !ok {
 		return s.buildValueBase(source)
 	}
@@ -1560,7 +1576,7 @@ func (s *irBuildState) buildPlace(ref symbol.SyntaxRef) (tir.NodeID, bool) {
 	}
 	finalType := rootType.Type
 	if assignment := s.assignmentPlace(record.Header.Syntax); assignment != 0 {
-		if typ, found := typeOfValue(s.records, assignment); found {
+		if typ, found := s.resolveType(assignment); found {
 			finalType = typ
 		}
 	}
@@ -1569,7 +1585,7 @@ func (s *irBuildState) buildPlace(ref symbol.SyntaxRef) (tir.NodeID, bool) {
 		typ := rootType.Type
 		if i > 0 {
 			if i+1 < len(record.Projections) {
-				typ, ok = typeOfValue(s.records, record.Projections[i+1].Base)
+				typ, ok = s.resolveType(record.Projections[i+1].Base)
 			} else {
 				typ = finalType
 				ok = typ != 0
@@ -1652,7 +1668,7 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 	if !ok {
 		return 0, false
 	}
-	typ, ok := typeOfValue(s.records, id)
+	typ, ok := s.resolveType(id)
 	if !ok {
 		return 0, false
 	}
@@ -1765,7 +1781,7 @@ func (s *irBuildState) symbolMutable(id symbol.SymbolID) bool {
 }
 
 func (s *irBuildState) memberSymbol(base valueID, name string) symbol.SymbolID {
-	typ, ok := typeOfValue(s.records, base)
+	typ, ok := s.resolveType(base)
 	if !ok {
 		return 0
 	}
@@ -1808,7 +1824,7 @@ func (s *irBuildState) placeWritableValue(id valueID) bool {
 }
 
 func (s *irBuildState) isString(id valueID) bool {
-	typ, ok := typeOfValue(s.records, id)
+	typ, ok := s.resolveType(id)
 	if !ok {
 		return false
 	}
@@ -1891,7 +1907,7 @@ func (s *irBuildState) buildVariantMember(record *expressionRecord, node *tir.No
 }
 
 func (s *irBuildState) buildSizeof(record *expressionRecord, node *tir.Node) bool {
-	argType, ok := typeOfValue(s.records, record.TypeArgument)
+	argType, ok := s.resolveType(record.TypeArgument)
 	if !ok {
 		return false
 	}
@@ -1941,7 +1957,7 @@ func (s *irBuildState) buildArrayRepeat(record *expressionRecord, node *tir.Node
 }
 
 func (s *irBuildState) arrayLength(id valueID) (uint64, bool) {
-	typ, ok := typeOfValue(s.records, id)
+	typ, ok := s.resolveType(id)
 	if !ok {
 		return 0, false
 	}
@@ -2001,7 +2017,7 @@ func (s *irBuildState) buildDirectCall(call *callRecord, flow *contextFlowRecord
 	if !call.Target.ConventionKnown || call.Target.Convention == 0 || call.Target.Symbol == 0 {
 		return false
 	}
-	functionType, ok := typeOfValue(s.records, call.Callee)
+	functionType, ok := s.resolveType(call.Callee)
 	if !ok {
 		return false
 	}
@@ -2035,7 +2051,7 @@ func (s *irBuildState) buildIndirectCall(call *callRecord, flow *contextFlowReco
 	if !ok {
 		return false
 	}
-	functionType, ok := typeOfValue(s.records, call.Callee)
+	functionType, ok := s.resolveType(call.Callee)
 	if !ok {
 		return false
 	}
@@ -2060,7 +2076,7 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	if !ok || method.Method == 0 {
 		return false
 	}
-	functionType, ok := typeOfValue(s.records, call.Callee)
+	functionType, ok := s.resolveType(call.Callee)
 	if !ok {
 		return false
 	}
@@ -2227,7 +2243,7 @@ func (s *irBuildState) operatorHasIntegerOperand(op *operatorRecord) bool {
 	if len(op.Operands) == 0 {
 		return false
 	}
-	typ, ok := typeOfValue(s.records, op.Operands[0])
+	typ, ok := s.resolveType(op.Operands[0])
 	if !ok {
 		return false
 	}

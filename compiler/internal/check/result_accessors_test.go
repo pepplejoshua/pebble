@@ -20,7 +20,7 @@ func runAccessorFixture(t *testing.T, source string) (Inputs, *solveHandoff, *Re
 	if handoff == nil || handoff.Semantics == nil || handoff.Solution == nil {
 		t.Fatalf("06a did not produce a handoff: %+v", diagnostics.Items())
 	}
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	return inputs, handoff, result
 }
 

@@ -13,7 +13,7 @@ func TestRun06bPublishesNumericRequirement(t *testing.T) {
 	if handoff == nil {
 		t.Fatal("missing handoff")
 	}
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if !result.Successful() {
 		t.Fatalf("generic numeric function rejected: %+v", diagnostics.Items())
 	}
@@ -27,7 +27,7 @@ func TestRun06bPublishesNumericRequirement(t *testing.T) {
 func TestRun06bDeduplicatesRepeatedGenericUses(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn addTwice[T](a T) T { let first T = a + a; let second T = a + a; return first + second; }`)})
 	handoff := run06a(inputs, diagnostics, Config{})
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if !result.Successful() {
 		t.Fatalf("repeated generic use rejected: %+v", diagnostics.Items())
 	}
@@ -46,7 +46,7 @@ func TestRun06bDeduplicatesRepeatedGenericUses(t *testing.T) {
 func TestRun06bPublishesEquatableRequirement(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn same[T](a T, b T) bool { return a == b; }`)})
 	handoff := run06a(inputs, diagnostics, Config{})
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if !result.Successful() {
 		t.Fatalf("generic equality function rejected: %+v", diagnostics.Items())
 	}
@@ -60,7 +60,7 @@ func TestRun06bPublishesEquatableRequirement(t *testing.T) {
 func TestRun06bRejectsUnsupportedGenericRequirement(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn field[T](value T) i32 { return value.field; }`)})
 	handoff := run06a(inputs, diagnostics, Config{})
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeUnsupportedGeneric) {
 		t.Fatalf("expected C0610, result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
 	}
@@ -69,7 +69,7 @@ func TestRun06bRejectsUnsupportedGenericRequirement(t *testing.T) {
 func TestRun06bPublishesLiteralFitRequirement(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn literal[T](value T) T { return value + 1; }`)})
 	handoff := run06a(inputs, diagnostics, Config{})
-	result := run06b(handoff, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{}, inputs.Types)
 	if !result.Successful() {
 		t.Fatalf("generic literal function rejected: %+v", diagnostics.Items())
 	}
