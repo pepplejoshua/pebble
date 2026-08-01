@@ -262,6 +262,132 @@ let b i32 = identity(2);
 	}
 }
 
+// recursiveSpecializationFixture mirrors buildUnit's real setup: store and
+// cache are live before any body is built (unlike specializationBuildFixture,
+// which installs them after testIRBuildState has already built the normal
+// bodies). It deliberately stops before buildBlocks/finishFunctionDeclarations
+// so the explicit buildSpecialization call below is the first build of the
+// recursive body and the same-key re-entry is exercised there directly.
+func recursiveSpecializationFixture(t *testing.T, source, name string) (*types.Store, *irBuildState, []infer.Instantiation) {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	if _, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{})); !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	b := tir.NewBuilder(handoff.Semantics.Types(), tir.Config{
+		MaxIRNodes: DefaultMaxIRNodes, MaxIRComponents: DefaultMaxIRComponents,
+		MaxDumpBytes: DefaultMaxDumpBytes,
+	})
+	state := &irBuildState{handoff: handoff, records: records, builder: b, store: inputs.Types, cache: newSpecializationCache(), irBuildScope: newIRBuildScope()}
+	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.indexControls() {
+		t.Fatal("failed to build recursive test IR state")
+	}
+	var generic symbol.SymbolID
+	for _, candidate := range inputs.Resolution.Symbols.All() {
+		if candidate.Name == name && candidate.Kind == symbol.SymbolFunction {
+			generic = candidate.ID
+			break
+		}
+	}
+	var instantiations []infer.Instantiation
+	for _, instantiation := range handoff.Solution.Instantiations() {
+		if instantiation.Generic == generic {
+			instantiations = append(instantiations, instantiation)
+		}
+	}
+	if generic == 0 || len(instantiations) == 0 {
+		t.Fatalf("missing generic %q or solved instantiations", name)
+	}
+	return inputs.Types, state, instantiations
+}
+
+func TestBuildSpecializationRecursiveSameKeyTerminates(t *testing.T) {
+	// A block body (expression bodies lower to an empty Block in this slice)
+	// is required so the recursive generic function-value reference is a real
+	// value node inside the specialized body. The in-body bracket selfRef[i32]
+	// requests the very specialization whose body is still being built, so
+	// buildSpecialization is re-entered under the same cache key mid-build.
+	store, state, instantiations := recursiveSpecializationFixture(t, `
+fn selfRef[T](value T) T {
+    let f fn(i32) i32 = selfRef[i32];
+    return value;
+}
+let result i32 = selfRef(1);
+`, "selfRef")
+	if len(instantiations) < 2 {
+		t.Fatalf("instantiations = %d, want the call site plus the in-body bracket", len(instantiations))
+	}
+	decl, ok := state.buildSpecialization(instantiations[0])
+	if !ok {
+		t.Fatal("recursive same-key specialization build failed")
+	}
+	again, ok := state.buildSpecialization(instantiations[0])
+	if !ok || again != decl {
+		t.Fatalf("recursive cache hit = (%d, %t), want the same (%d, true)", again, ok, decl)
+	}
+	unit, err := state.builder.Build()
+	if err != nil {
+		t.Fatalf("recursive specialization unit verification: %v", err)
+	}
+	declNode := unit.Nodes()[decl-1]
+	if declNode.Kind != tir.FunctionDeclaration || declNode.Symbol != instantiations[0].Generic {
+		t.Fatalf("recursive specialized declaration = %+v", declNode)
+	}
+	if len(declNode.TypeArgs) != 1 || declNode.TypeArgs[0] != store.Builtins().I32 {
+		t.Fatalf("recursive specialized TypeArgs = %v, want [i32 %d]", declNode.TypeArgs, store.Builtins().I32)
+	}
+	var body tir.FunctionDecl
+	for _, candidate := range unit.FunctionDeclarations() {
+		if candidate.FunctionID == declNode.Function {
+			body = candidate
+		}
+	}
+	if body.Node == 0 {
+		t.Fatal("recursive specialization body missing")
+	}
+	block := unit.Nodes()[body.Node-1]
+	if block.Kind != tir.Block {
+		t.Fatalf("recursive specialization body = %+v, want Block", block)
+	}
+	var genericValue *tir.Node
+	for _, candidate := range unit.Nodes() {
+		if candidate.Kind == tir.GenericFunctionValue {
+			genericValue = &candidate
+			break
+		}
+	}
+	if genericValue == nil {
+		t.Fatal("recursive in-body GenericFunctionValue missing")
+	}
+	if genericValue.Symbol != instantiations[0].Generic || len(genericValue.TypeArgs) != 1 || genericValue.TypeArgs[0] != store.Builtins().I32 {
+		t.Fatalf("recursive GenericFunctionValue = %+v, want selfRef[i32]", genericValue)
+	}
+	instantiationRefs := unit.Instantiations()
+	if uint64(genericValue.GenericRef) >= uint64(len(instantiationRefs)) {
+		t.Fatalf("recursive GenericFunctionValue GenericRef %d out of range", genericValue.GenericRef)
+	}
+	if referenced := instantiationRefs[genericValue.GenericRef]; referenced.Declaration != instantiations[0].Generic {
+		t.Fatalf("recursive GenericFunctionValue instantiation declaration = %d, want %d", referenced.Declaration, instantiations[0].Generic)
+	}
+	count := 0
+	for _, candidate := range unit.Nodes() {
+		if candidate.Kind == tir.FunctionDeclaration && candidate.Symbol == instantiations[0].Generic && len(candidate.TypeArgs) == 1 {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("selfRef[i32] specialization declarations = %d, want exactly one", count)
+	}
+}
+
 func TestBuildUnitNoGenericsRemainsDeterministic(t *testing.T) {
 	const source = `fn main() i32 { return 1; }`
 	first, ok := buildUnitFixture(t, source)

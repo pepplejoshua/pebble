@@ -8,13 +8,16 @@ import (
 )
 
 // buildSpecialization builds (or returns the already-built) typed IR for one
-// concrete instantiation of a generic callable. Structurally recursive
-// self-instantiation returns the in-progress entry's reserved declaration
-// reference when it is available, rather than recursing forever. If recursion
-// is encountered before the declaration node is published, this reports that
-// honestly; deep recursive-generic behavior is exercised by a later slice.
-// Anonymous function literals nested in the specialized body are not handled:
-// their HoistedFunctionValue path requires the normal function map entry.
+// concrete instantiation of a generic callable. The specialized
+// FunctionDeclaration node is published before the body is built, so a
+// structurally recursive same-key self-reference (a bare generic
+// function-value bracket in the body requesting the very instantiation being
+// built) re-enters and finds the in-progress entry's already-published
+// declaration reference: it returns that stable node instead of recursing
+// forever. Distinct keys stay independent and each builds exactly one
+// declaration. Anonymous function literals nested in the specialized body are
+// not handled: their HoistedFunctionValue path requires the normal function
+// map entry.
 func (s *irBuildState) buildSpecialization(instantiation infer.Instantiation) (tir.NodeID, bool) {
 	if s == nil || s.handoff == nil || s.records == nil || s.store == nil || s.builder == nil || s.cache == nil {
 		return 0, false
@@ -80,6 +83,21 @@ func (s *irBuildState) buildSpecialization(instantiation infer.Instantiation) (t
 		}
 	}
 
+	// Publish the declaration node before the body is built. A structurally
+	// recursive self-reference re-entering this same key during body
+	// construction must find a valid, stable declaration reference instead of
+	// failing only because the body is not finished yet.
+	declNode, ok := s.addNode(tir.Node{
+		Kind: tir.FunctionDeclaration, Span: declared.Span, Symbol: instantiation.Generic,
+		Function: fid, Parameters: params, ResultType: specialized.Result,
+		Convention: signature.Convention, Variadic: callable.Variadic, Inline: callable.Inline, HasBody: true,
+		TypeArgs: typeArgs,
+	}, symbol.SyntaxRef{})
+	if !ok {
+		return 0, false
+	}
+	entry.DeclNode = declNode
+
 	previousSubstitution := s.activeSubstitution
 	s.activeSubstitution = substitution
 	bodyNode, bodyOK := s.withFreshScope(func() (tir.NodeID, bool) {
@@ -128,16 +146,6 @@ func (s *irBuildState) buildSpecialization(instantiation infer.Instantiation) (t
 	if err := s.builder.CompleteFunctionDecl(fid, bodyNode); err != nil {
 		return 0, false
 	}
-	declNode, ok := s.addNode(tir.Node{
-		Kind: tir.FunctionDeclaration, Span: declared.Span, Symbol: instantiation.Generic,
-		Function: fid, Parameters: params, ResultType: specialized.Result,
-		Convention: signature.Convention, Variadic: callable.Variadic, Inline: callable.Inline, HasBody: true,
-		TypeArgs: typeArgs,
-	}, symbol.SyntaxRef{})
-	if !ok {
-		return 0, false
-	}
-	entry.DeclNode = declNode
 	s.cache.finish(key)
 	return declNode, true
 }
