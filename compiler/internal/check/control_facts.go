@@ -487,6 +487,47 @@ func (w *walker) prepareIf(ref symbol.SyntaxRef, node syntax.Node, ctx walkConte
 	return items
 }
 
+func (w *walker) loopConditionConstantCandidate(ref symbol.SyntaxRef) bool {
+	if w == nil || w.evaluator == nil {
+		return false
+	}
+	node, ok := w.evaluator.node(ref)
+	if !ok {
+		return false
+	}
+	switch node.Kind() {
+	case syntax.Literal:
+		return true
+	case syntax.GroupedTerm, syntax.PrefixTerm, syntax.BinaryExpr:
+		children := node.Children()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !w.loopConditionConstantCandidate(symbol.SyntaxRef{Module: ref.Module, Node: child}) {
+				return false
+			}
+		}
+		return true
+	case syntax.Name, syntax.Path, syntax.MemberExpr:
+		id, ok := w.evaluator.referenceSymbol(ref, node)
+		if !ok {
+			return false
+		}
+		if _, initialized, _ := w.evaluator.bindingInitializer(id); !initialized {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func (w *walker) evaluateLoopCondition(ref symbol.SyntaxRef) {
+	if w.loopConditionConstantCandidate(ref) {
+		w.evaluator.evaluate(ref)
+	}
+}
+
 func (w *walker) prepareWhile(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree, items []walkItem) []walkItem {
 	region := w.enterRegion(ctx)
 	if region == 0 {
@@ -498,6 +539,7 @@ func (w *walker) prepareWhile(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 		emission.conditionPresent = true
 		if entry, ok := w.reserveCondition(semantic[0], ctx, "while condition"); ok {
 			emission.values = append(emission.values, entry)
+			w.evaluateLoopCondition(semantic[0])
 		}
 	}
 	w.retainControl(ref, ctx, emission)
@@ -617,6 +659,7 @@ func (w *walker) prepareFor(ref symbol.SyntaxRef, node syntax.Node, ctx walkCont
 		emission.conditionPresent = true
 		if entry, ok := w.reserveCondition(condition, ctx, "for condition"); ok {
 			emission.values = append(emission.values, entry)
+			w.evaluateLoopCondition(condition)
 		}
 	}
 	w.retainControl(ref, ctx, emission)

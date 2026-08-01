@@ -637,6 +637,11 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 				case exit.kind == exitContinue && exit.target == ctrl.Region:
 				case exit.kind == exitBreak && exit.target == ctrl.Region:
 					breakFound = true
+				case exit.kind == exitFallthrough:
+					// body completed normally; the loop boundary consumes
+					// this and the infinite/breakFound analysis below
+					// decides whether the loop construct itself can fall
+					// through.
 				default:
 					result = addExit(result, exit)
 				}

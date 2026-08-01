@@ -891,3 +891,88 @@ fn f(flag bool) i32 {
 		t.Fatalf("false missing-return error from misordered region sequence: %+v", diagnostics.Items())
 	}
 }
+
+// TestValidateControlFlowInfiniteForNoBreakNonVoid verifies that a
+// condition-free for loop with no reachable break, in a non-void function,
+// does not report CodeMissingReturn because the loop never falls through.
+func TestValidateControlFlowInfiniteForNoBreakNonVoid(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn f() i32 {
+    for ;; {
+        print 1;
+    }
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("infinite for with no break in non-void fn should not fall through: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowWhileTrueNoBreakNonVoid verifies that a while true
+// (constant-true condition) loop with no reachable break, in a non-void
+// function, does not report CodeMissingReturn because the loop never falls
+// through.
+func TestValidateControlFlowWhileTrueNoBreakNonVoid(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn f() i32 {
+    while true {
+        print 1;
+    }
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("while true with no break in non-void fn should not fall through: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowLoopWithBreakThenReturn verifies that a loop with a
+// reachable break, in a non-void function followed by a real return, is
+// accepted — proving fallthrough after a real break still works.
+func TestValidateControlFlowLoopWithBreakThenReturn(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn f() i32 {
+    for ;; {
+        break;
+    }
+    return 1;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("loop with break then return should be accepted: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowVoidInfiniteForNoBreakAccepted verifies that a
+// void-returning function containing an infinite loop with no break is accepted
+// with no diagnostics at all — an infinite loop with no break means the
+// function never falls through, so the implicit void return does not apply.
+func TestValidateControlFlowVoidInfiniteForNoBreakAccepted(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn f() void {
+    for ;; {
+        print 1;
+    }
+}
+`)
+	if !valid {
+		t.Fatalf("void fn with infinite for should be accepted: %+v", diagnostics.Items())
+	}
+	if hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("unexpected CodeMissingReturn on void fn with infinite for: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowWhileParameterNoBreakNonVoid verifies that a
+// non-constant while condition still leaves a possible function fallthrough.
+func TestValidateControlFlowWhileParameterNoBreakNonVoid(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn f(flag bool) i32 {
+    while flag {
+        print 1;
+    }
+}
+`)
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("while with non-constant condition should report C0607: %+v", diagnostics.Items())
+	}
+}
