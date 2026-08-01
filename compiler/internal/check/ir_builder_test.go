@@ -643,11 +643,64 @@ func testIRBuildState(t *testing.T, handoff *solveHandoff, records *solvedRecord
 		MaxIRNodes: DefaultMaxIRNodes, MaxIRComponents: DefaultMaxIRComponents,
 		MaxDumpBytes: DefaultMaxDumpBytes,
 	})
-	state := &irBuildState{handoff: handoff, records: records, builder: b}
+	state := &irBuildState{handoff: handoff, records: records, builder: b, irBuildScope: newIRBuildScope()}
 	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.indexControls() || !state.buildBlocks() || !state.finishFunctionDeclarations() || !state.buildRequirements(requirements) {
 		t.Fatal("failed to build test IR state")
 	}
 	return state
+}
+
+func TestIRBuildStateWithFreshScope(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() i32 { return 1; }\n")})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	state := testIRBuildState(t, handoff, records, requirements)
+	if len(state.values) == 0 || len(state.blockNodes) == 0 {
+		t.Fatal("normal build did not populate scope memoization")
+	}
+	outer := state.irBuildScope
+	var outerValue valueID
+	for id := range outer.values {
+		outerValue = id
+		break
+	}
+	synthetic := valueID(^uint32(0))
+	sentinel := tir.NodeID(^uint32(0))
+	got, buildOK := state.withFreshScope(func() (tir.NodeID, bool) {
+		if state.irBuildScope == outer {
+			t.Fatal("fresh build reused the outer scope")
+		}
+		if len(state.values) != 0 || len(state.blockNodes) != 0 {
+			t.Fatal("fresh scope was not empty")
+		}
+		if _, exists := state.values[outerValue]; exists {
+			t.Fatal("fresh scope contains an outer value")
+		}
+		state.values[synthetic] = sentinel
+		return sentinel, true
+	})
+	if !buildOK || got != sentinel {
+		t.Fatalf("withFreshScope result = (%d, %t), want (%d, true)", got, buildOK, sentinel)
+	}
+	if state.irBuildScope != outer {
+		t.Fatal("withFreshScope did not restore the outer scope")
+	}
+	if got := state.values[outerValue]; got == 0 {
+		t.Fatal("outer value was lost after scope swap")
+	}
+	if _, exists := state.values[synthetic]; exists {
+		t.Fatal("synthetic value leaked into outer scope")
+	}
 }
 
 func requireValueID(t *testing.T, handoff *solveHandoff, records *solvedRecords, predicate func(*expressionRecord) bool) valueID {

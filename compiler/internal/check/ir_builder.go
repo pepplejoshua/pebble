@@ -33,7 +33,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		MaxIRNodes: config.MaxIRNodes, MaxIRComponents: config.MaxIRComponents,
 		MaxDumpBytes: config.MaxDumpBytes,
 	})
-	state := &irBuildState{handoff: handoff, records: records, builder: b, store: store}
+	state := &irBuildState{handoff: handoff, records: records, builder: b, store: store, irBuildScope: newIRBuildScope()}
 	steps := []struct {
 		name  string
 		build func() bool
@@ -56,18 +56,43 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 	return unit, true
 }
 
+// irBuildScope holds every piece of output memoization that must be
+// fresh and isolated per function-body build: two different builds
+// (the normal symbolic build, or two different concrete
+// specializations of the same generic) must never share these maps,
+// since they are keyed by identities (valueID, controlID,
+// symbol.SymbolID, symbol.SyntaxRef) that repeat across
+// specializations of the same generic declaration.
+type irBuildScope struct {
+	functions     map[symbol.SymbolID]tir.FunctionID
+	functionNodes map[symbol.SymbolID]tir.NodeID
+	regions       map[controlID]tir.RegionID
+	values        map[valueID]tir.NodeID
+	placeValues   map[valueID]tir.NodeID
+	blockNodes    map[controlID]tir.NodeID
+	deferNodes    map[symbol.SyntaxRef]tir.NodeID
+}
+
+func newIRBuildScope() *irBuildScope {
+	return &irBuildScope{
+		functions:     make(map[symbol.SymbolID]tir.FunctionID),
+		functionNodes: make(map[symbol.SymbolID]tir.NodeID),
+		regions:       make(map[controlID]tir.RegionID),
+		values:        make(map[valueID]tir.NodeID),
+		placeValues:   make(map[valueID]tir.NodeID),
+		blockNodes:    make(map[controlID]tir.NodeID),
+		deferNodes:    make(map[symbol.SyntaxRef]tir.NodeID),
+	}
+}
+
 type irBuildState struct {
+	*irBuildScope
 	handoff                      *solveHandoff
 	records                      *solvedRecords
 	builder                      *tir.Builder
 	store                        *types.Store
 	activeSubstitution           map[symbol.SymbolID]types.TypeID
-	functions                    map[symbol.SymbolID]tir.FunctionID
-	functionNodes                map[symbol.SymbolID]tir.NodeID
-	regions                      map[controlID]tir.RegionID
-	values                       map[valueID]tir.NodeID
 	places                       map[symbol.SyntaxRef]*placeRecord
-	placeValues                  map[valueID]tir.NodeID
 	expressionsByResult          map[valueID]*expressionRecord
 	aggregatesByRecord           map[recordID]*aggregateRecord
 	castsByRecord                map[recordID]*castRecord
@@ -87,11 +112,21 @@ type irBuildState struct {
 	defersByRegion               map[controlID][]*deferRecord
 	deferByStatement             map[symbol.SyntaxRef]*deferRecord
 	deferByHeader                map[symbol.SyntaxRef]*deferRecord
-	deferNodes                   map[symbol.SyntaxRef]tir.NodeID
 	variantBySyntax              map[symbol.SyntaxRef]symbol.SymbolID
 	functionDecls                []irFunctionDecl
 	functionRegions              map[symbol.SymbolID]controlID
-	blockNodes                   map[controlID]tir.NodeID
+}
+
+// withFreshScope runs build with a brand-new, empty irBuildScope
+// active, then restores whatever scope was active before -- so a
+// specialized function body can be built with output memoization
+// completely isolated from the normal build (or from any other
+// specialization), without permanently disturbing the state.
+func (s *irBuildState) withFreshScope(build func() (tir.NodeID, bool)) (tir.NodeID, bool) {
+	previous := s.irBuildScope
+	s.irBuildScope = newIRBuildScope()
+	defer func() { s.irBuildScope = previous }()
+	return build()
 }
 
 type irFunctionDecl struct {
@@ -226,8 +261,6 @@ func (s *irBuildState) resolveType(id valueID) (types.TypeID, bool) {
 }
 
 func (s *irBuildState) buildDeclarations() bool {
-	s.functions = make(map[symbol.SymbolID]tir.FunctionID)
-	s.functionNodes = make(map[symbol.SymbolID]tir.NodeID)
 	s.functionRegions = make(map[symbol.SymbolID]controlID)
 	s.functionDecls = nil
 	functionOrdinal := 0
@@ -364,7 +397,6 @@ func (s *irBuildState) buildBlocks() bool {
 		return false
 	}
 	controls := s.handoff.Records.Controls()
-	s.regions = make(map[controlID]tir.RegionID, len(controls))
 	for i := range controls {
 		r, err := s.builder.AddRegion()
 		if err != nil {
@@ -377,7 +409,6 @@ func (s *irBuildState) buildBlocks() bool {
 			return false
 		}
 	}
-	s.blockNodes = make(map[controlID]tir.NodeID)
 	for _, decl := range s.functionDecls {
 		region := s.functionRegions[decl.callable.Symbol]
 		if region == 0 {
@@ -1217,7 +1248,6 @@ func (s *irBuildState) indexControls() bool {
 	s.defersByRegion = make(map[controlID][]*deferRecord)
 	s.deferByStatement = make(map[symbol.SyntaxRef]*deferRecord)
 	s.deferByHeader = make(map[symbol.SyntaxRef]*deferRecord)
-	s.deferNodes = make(map[symbol.SyntaxRef]tir.NodeID)
 	retainedRecords := s.handoff.Records.Records()
 	for i := range retainedRecords {
 		retained := &retainedRecords[i]
@@ -1504,9 +1534,6 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 	if !ok {
 		return 0, false
 	}
-	if s.values == nil {
-		s.values = make(map[valueID]tir.NodeID)
-	}
 	s.values[id] = nid
 	return nid, true
 }
@@ -1658,9 +1685,6 @@ func (s *irBuildState) assignmentPlace(ref symbol.SyntaxRef) valueID {
 // buildPlaceForValue derives the same chain used by 06a for an expression
 // result. It is needed because ordinary reads do not retain a place record.
 func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
-	if s.placeValues == nil {
-		s.placeValues = make(map[valueID]tir.NodeID)
-	}
 	if existing, ok := s.placeValues[id]; ok {
 		return existing, true
 	}
