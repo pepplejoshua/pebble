@@ -1,6 +1,6 @@
 # 07 generics — rough implementation plan
 
-**Status:** in progress. 07.1–07.6d are implemented, committed, and
+**Status:** in progress. 07.1–07.6e are implemented, committed, and
 pushed (see "Completed slices" below). This document is being updated
 in place as each slice lands, rather than staying a pre-implementation
 sketch — treat the "Completed slices" section as authoritative fact and
@@ -9,7 +9,7 @@ still-rough planning, sharpened as
 each piece is actually written, the same way 06b.7b's parts each
 informed the next.
 
-**Baseline.** `main` at `6467bf5` (07.6d, the last landed slice). 06a
+**Baseline.** `main` at `5ed43ff` (07.6e, the last landed slice). 06a
 and 06b are both complete (all 06a.1–06a.8 and 06b.1–06b.8 slices
 accepted, plus the four Sol-flagged 06b defect fixes).
 
@@ -147,6 +147,11 @@ implementation.
   published generic result and specialized TIR concurrently. No fuzz harness
   or production code changed. Full tests, fuzz runs, race tests, vet, build,
   and diff checks pass.
+- **07.6e — generic method-call correlation** (`ir_builder.go`): generic
+  method calls now copy their solved concrete type arguments into
+  `tir.MethodCall`, matching the specialization key carried by direct calls
+  and declarations. Added a focused inferred-generic-method IR test. Full
+  tests, race tests, vet, build, and diff checks pass.
 
 ## What already exists (evidence, not spec prose)
 
@@ -281,13 +286,8 @@ and bare-value paths with exact source-span tests.
 
 ### 07.6 — Full test coverage
 
-07.6 is split into these small slices. 07.6a–07.6d are complete; the
-remaining slices are:
-
-- **07.6e — generic method-call correlation** (optional audit/fix):
-  `buildMethodCall` currently does not copy solved `TypeArgs` into
-  `tir.MethodCall`, although the node schema allows them. Confirm whether a
-  consumer needs this and add the smallest focused fix if required.
+07.6 is split into small slices. 07.6a–07.6e are complete. The full
+generics-coverage slice is now closed.
 
 Deferred and outside 07.6: `RequirementLiteralFits` checking remains a
 separate later concern, and expression-bodied functions still have the
@@ -326,13 +326,13 @@ conversation's history.
 ### Where things stand
 
 Read "Completed slices" above for exactly what's built and verified.
-07.4b, 07.5, and 07.6a–07.6d are complete. The next slice is 07.6e, the
-optional generic method-call correlation audit. The remaining 07.6 work is
-split into small independent slices above.
+07.4b, 07.5, and 07.6a–07.6e are complete. The full 07.6 generics-coverage
+slice is closed. Future work should start from a new phase or a separately
+approved follow-up slice.
 
 ### Using `orc` to dispatch implementation work
 
-This phase's slices (07.1–07.6d) were each implemented by dispatching
+This phase's slices (07.1–07.6e) were each implemented by dispatching
 a tightly-scoped brief to `orc`, a supervisor CLI that runs an
 OpenCode worker model against this repository and blocks until it
 finishes:
