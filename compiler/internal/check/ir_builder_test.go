@@ -2772,9 +2772,140 @@ func TestIRFixtures(t *testing.T) {
 	}
 }
 
+func TestBuildValueNamedFunctionValue(t *testing.T) {
+	// Block-bodied fixture so the value builds through the real statement
+	// pipeline instead of an expression body that can lower to an empty block.
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn add(left i32, right i32) i32 { return left + right; }
+fn main() void {
+    let f fn(i32, i32) i32 = add;
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
+	if !ok || unit == nil {
+		t.Fatal("buildUnit rejected a named function value")
+	}
+	recordIRBuilderUnit(unit)
+	var addSymbol symbol.SymbolID
+	for _, candidate := range inputs.Resolution.Symbols.All() {
+		if candidate.Name == "add" && candidate.Kind == symbol.SymbolFunction {
+			addSymbol = candidate.ID
+			break
+		}
+	}
+	if addSymbol == 0 {
+		t.Fatal("add symbol not found")
+	}
+	declarations := unit.FunctionDeclarations()
+	matched := false
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.HoistedFunctionValue || node.Symbol != addSymbol {
+			continue
+		}
+		if node.Function == 0 {
+			t.Fatalf("named function value = %+v, missing Function identity", node)
+		}
+		for _, declaration := range declarations {
+			if declaration.FunctionID == node.Function && declaration.Symbol == addSymbol && declaration.Node != 0 {
+				matched = true
+			}
+		}
+	}
+	if !matched {
+		t.Fatal("named function value did not produce a matching HoistedFunctionValue and declaration")
+	}
+}
+
+func TestBuildValueGenericFunctionValue(t *testing.T) {
+	// Block-bodied fixture so the value builds through the real statement
+	// pipeline instead of an expression body that can lower to an empty block.
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn identity[T](value T) T { return value; }
+fn main() void {
+    let f fn(i32) i32 = identity[i32];
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
+	if !ok || unit == nil {
+		t.Fatalf("buildUnit rejected a bare generic function value: %+v", diagnostics.Items())
+	}
+	recordIRBuilderUnit(unit)
+	var identitySymbol symbol.SymbolID
+	for _, candidate := range inputs.Resolution.Symbols.All() {
+		if candidate.Name == "identity" && candidate.Kind == symbol.SymbolFunction {
+			identitySymbol = candidate.ID
+			break
+		}
+	}
+	if identitySymbol == 0 {
+		t.Fatal("identity symbol not found")
+	}
+	wantI32 := inputs.Types.Builtins().I32
+	var valueNode *tir.Node
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.GenericFunctionValue {
+			valueNode = &node
+			break
+		}
+	}
+	if valueNode == nil {
+		t.Fatal("GenericFunctionValue node missing")
+	}
+	if valueNode.Symbol != identitySymbol {
+		t.Fatalf("GenericFunctionValue Symbol = %d, want %d", valueNode.Symbol, identitySymbol)
+	}
+	if len(valueNode.TypeArgs) != 1 || valueNode.TypeArgs[0] != wantI32 {
+		t.Fatalf("GenericFunctionValue TypeArgs = %v, want [i32 %d]", valueNode.TypeArgs, wantI32)
+	}
+	instantiations := unit.Instantiations()
+	if uint64(valueNode.GenericRef) >= uint64(len(instantiations)) {
+		t.Fatalf("GenericFunctionValue GenericRef %d out of range", valueNode.GenericRef)
+	}
+	instantiation := instantiations[valueNode.GenericRef]
+	if instantiation.Declaration != identitySymbol {
+		t.Fatalf("instantiation Declaration = %d, want %d", instantiation.Declaration, identitySymbol)
+	}
+	if len(instantiation.TypeArgs) != 1 || instantiation.TypeArgs[0] != wantI32 {
+		t.Fatalf("instantiation TypeArgs = %v, want [i32 %d]", instantiation.TypeArgs, wantI32)
+	}
+	built := false
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration && node.Symbol == identitySymbol && len(node.TypeArgs) == 1 && node.TypeArgs[0] == wantI32 {
+			built = true
+		}
+	}
+	if !built {
+		t.Fatal("specialized FunctionDeclaration with matching TypeArgs missing")
+	}
+}
+
 func TestIRBuilderNodeKindCoverage(t *testing.T) {
-	// HoistedFunctionValue is covered by the focused test below. Generic function
-	// references still need instantiation-reference machinery not built here.
+	// HoistedFunctionValue and GenericFunctionValue are covered by the focused
+	// tests declared above, which must therefore run before this one.
 	//
 	// TempBind, TempRead, and Sequence are permanent architectural exclusions,
 	// not an implementation gap. They are the frozen schema's general-purpose
@@ -2794,11 +2925,9 @@ func TestIRBuilderNodeKindCoverage(t *testing.T) {
 	// These kinds are therefore architecturally unneeded for this specific
 	// language's semantics, not an oversight.
 	knownUnimplementedNodeKinds := map[tir.NodeKind]bool{
-		tir.HoistedFunctionValue: true,
-		tir.GenericFunctionValue: true,
-		tir.TempBind:             true,
-		tir.TempRead:             true,
-		tir.Sequence:             true,
+		tir.TempBind: true,
+		tir.TempRead: true,
+		tir.Sequence: true,
 	}
 	for kind := tir.FirstNodeKind; kind <= tir.LastNodeKind; kind++ {
 		if knownUnimplementedNodeKinds[kind] {

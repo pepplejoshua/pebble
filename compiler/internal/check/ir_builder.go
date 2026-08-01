@@ -288,7 +288,6 @@ func (s *irBuildState) resolveType(id valueID) (types.TypeID, bool) {
 func (s *irBuildState) buildDeclarations() bool {
 	s.functionRegions = make(map[symbol.SymbolID]controlID)
 	s.functionDecls = nil
-	functionOrdinal := 0
 	for _, retained := range s.handoff.Records.Records() {
 		if retained.Callable != nil {
 			c := retained.Callable
@@ -315,8 +314,11 @@ func (s *irBuildState) buildDeclarations() bool {
 			if !ok {
 				return false
 			}
-			functionOrdinal++
-			s.functions[c.Symbol] = tir.FunctionID(functionOrdinal)
+			fid, err := s.builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: c.Symbol, Span: sym.Span})
+			if err != nil {
+				return false
+			}
+			s.functions[c.Symbol] = fid
 			s.functionDecls = append(s.functionDecls, irFunctionDecl{
 				callable: callableRef{Symbol: c.Symbol, Syntax: c.Header.Syntax}, header: c.Header.Syntax,
 				span: sym.Span, params: params, result: result, kind: c.Kind, convention: c.Convention,
@@ -1152,8 +1154,10 @@ func (s *irBuildState) finishFunctionDeclarations() bool {
 		}
 		node, hasBody := s.blockNodes[bodyRegion]
 		fid := s.functions[decl.callable.Symbol]
-		if _, err := s.builder.AddFunctionDecl(tir.FunctionDecl{Symbol: decl.callable.Symbol, Span: decl.span, FunctionID: fid, Node: node}); err != nil {
-			return false
+		if node != 0 {
+			if err := s.builder.CompleteFunctionDecl(fid, node); err != nil {
+				return false
+			}
 		}
 		kind := tir.FunctionDeclaration
 		if decl.kind == callableExtern {
@@ -1546,7 +1550,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 					node.Children = append(node.Children, end)
 				}
 			}
-		} else {
+		} else if !s.buildGenericFunctionValue(record, &node) {
 			return 0, false
 		}
 	default:
@@ -1570,6 +1574,43 @@ func (s *irBuildState) callableForSyntax(ref symbol.SyntaxRef) *callableRecord {
 		}
 	}
 	return nil
+}
+
+// buildGenericFunctionValue handles a bare generic function reference
+// (e.g. `identity[i32]` used as a value) whose bracket record has neither an
+// index nor a place. It requires the solved instantiation at the bracket site,
+// a resolved function symbol, and fully final concrete type arguments; builds
+// the specialized declaration so the unit contains runnable typed IR, records
+// the matching tir.Instantiation reference, and emits a GenericFunctionValue.
+func (s *irBuildState) buildGenericFunctionValue(record *expressionRecord, node *tir.Node) bool {
+	instantiation, found := s.handoff.Solution.Instantiation(record.Header.Syntax)
+	if !found {
+		return false
+	}
+	sym, ok := s.symbol(instantiation.Generic)
+	if !ok || (sym.Kind != symbol.SymbolFunction && sym.Kind != symbol.SymbolExternFunction) {
+		return false
+	}
+	typeArgs := make([]types.TypeID, len(instantiation.Arguments))
+	for i, argument := range instantiation.Arguments {
+		if argument.State != infer.TypeFinal || argument.Type == 0 {
+			return false
+		}
+		typeArgs[i] = argument.Type
+	}
+	if _, ok := s.buildSpecialization(instantiation); !ok {
+		return false
+	}
+	ref, err := s.builder.AddInstantiation(tir.Instantiation{
+		Site:        record.Header.Syntax,
+		Declaration: instantiation.Generic,
+		TypeArgs:    typeArgs,
+	})
+	if err != nil {
+		return false
+	}
+	node.Kind, node.Symbol, node.GenericRef, node.TypeArgs = tir.GenericFunctionValue, instantiation.Generic, ref, typeArgs
+	return true
 }
 
 func mustType(records *solvedRecords, id valueID) types.TypeID {
@@ -1932,6 +1973,15 @@ func (s *irBuildState) buildSymbolValue(record *expressionRecord, node *tir.Node
 	case symbol.SymbolVariant:
 		node.Kind = tir.EnumVariantValue
 		node.Member = record.Symbol
+	case symbol.SymbolFunction:
+		if sym.Generic {
+			return false
+		}
+		function := s.functions[record.Symbol]
+		if function == 0 {
+			return false
+		}
+		node.Kind, node.Symbol, node.Function = tir.HoistedFunctionValue, record.Symbol, function
 	default:
 		return false
 	}
