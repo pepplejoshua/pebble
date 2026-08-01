@@ -1,0 +1,11 @@
+fn identity[T](value T) T { return value; }
+
+fn main() void {
+    let a i32 = identity(1);
+    let b i32 = identity(2);
+    let c char = identity('x');
+    let f fn(i32) i32 = identity[i32];
+    print a;
+    print b;
+    print c;
+}

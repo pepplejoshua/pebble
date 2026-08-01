@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 )
 
 // concurrentResultFixture is a single-module program that validates
@@ -149,6 +150,109 @@ func TestConcurrentResultReads(t *testing.T) {
 					var dump bytes.Buffer
 					if err := unit.Dump(&dump); err != nil {
 						t.Errorf("concurrent IR Dump failed: %v", err)
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// genericRaceFixture is a single-module program that builds real generic
+// specializations while exercising the same result surface as
+// concurrentResultFixture: identity is instantiated at two type arguments (i32
+// at two call sites plus a bare generic function value, char at one call
+// site), so the typed-IR unit carries specialized FunctionDeclaration nodes
+// with concrete TypeArgs and a non-empty instantiation table.
+const genericRaceFixture = `
+fn identity[T](value T) T { return value; }
+
+fn main() void {
+    let a i32 = identity(1);
+    let b i32 = identity(2);
+    let c char = identity('x');
+    let f fn(i32) i32 = identity[i32];
+    print a;
+    print b;
+    print c;
+}
+`
+
+// TestConcurrentGenericResultReads extends the concurrent-read race coverage to
+// a program that builds a real generic specialization: one Result is built
+// once, the specialization surface is asserted to exist before any goroutine
+// starts (at least one FunctionDeclaration node carrying concrete TypeArgs and
+// at least one instantiation-table entry), and then several goroutines
+// concurrently read the immutable result and unit, including the
+// specialization declarations, the instantiation table, and the per-ref
+// accessors for an expression and a call site that published an instantiation.
+// Only -race can expose a data race in the published generic typed IR.
+func TestConcurrentGenericResultReads(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(genericRaceFixture)})
+	result := Check(inputs, diagnostics, Config{})
+	unit := result.IR()
+	if unit == nil {
+		t.Fatalf("generic race fixture was rejected: %+v", diagnostics.Items())
+	}
+	specializations := 0
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration && len(node.TypeArgs) != 0 {
+			specializations++
+		}
+	}
+	if specializations == 0 {
+		t.Fatal("generic race fixture built no specialization declarations")
+	}
+	if len(unit.Instantiations()) == 0 {
+		t.Fatal("generic race fixture built no instantiations")
+	}
+	refs := unit.SourceRefs()
+	var expressionRef, instantiationRef symbol.SyntaxRef
+	for _, ref := range refs {
+		if _, ok := result.Expression(ref); ok && expressionRef.Module == 0 {
+			expressionRef = ref
+		}
+		if _, ok := result.Instantiation(ref); ok && instantiationRef.Module == 0 {
+			instantiationRef = ref
+		}
+	}
+	if expressionRef.Module == 0 {
+		t.Fatal("generic race fixture produced no expression ref")
+	}
+	if instantiationRef.Module == 0 {
+		t.Fatal("generic race fixture published no call-site instantiation ref")
+	}
+	var fnSymbol symbol.SymbolID
+	if decls := unit.FunctionDeclarations(); len(decls) != 0 {
+		fnSymbol = decls[0].Symbol
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				_ = result.Successful()
+				_ = result.Solution()
+				_ = result.IR()
+				if _, ok := result.Expression(expressionRef); !ok {
+					t.Errorf("Expression() lost its ref during concurrent generic reads")
+				}
+				if _, ok := result.Instantiation(instantiationRef); !ok {
+					t.Errorf("Instantiation() lost the call-site instantiation during concurrent reads")
+				}
+				if fnSymbol != 0 {
+					_, _ = result.SymbolType(fnSymbol)
+					_ = result.Requirements(fnSymbol)
+				}
+				if unit := result.IR(); unit != nil {
+					_ = unit.Nodes()
+					_ = unit.FunctionDeclarations()
+					_ = unit.Instantiations()
+					_ = unit.SourceRefs()
+					var dump bytes.Buffer
+					if err := unit.Dump(&dump); err != nil {
+						t.Errorf("concurrent generic IR Dump failed: %v", err)
 					}
 				}
 			}
