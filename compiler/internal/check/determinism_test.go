@@ -1,10 +1,14 @@
 package check
 
 import (
+	"bytes"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 // TestFactDeterminismCleanProgram verifies that repeated runs of run06a on the
@@ -189,5 +193,139 @@ fn many_locals() void {
 				t.Fatalf("run %d diagnostic %d: span differs", i, j)
 			}
 		}
+	}
+}
+
+// typeArgsKey derives a collision-resistant key from one node's TypeArgs so
+// distinct specialization type-argument sets can be counted structurally.
+func typeArgsKey(typeArgs []types.TypeID) uint64 {
+	var key uint64
+	for _, ta := range typeArgs {
+		key = key*31 + uint64(ta)
+	}
+	return key
+}
+
+// genericDeterminismStats extracts the specialization surface the determinism
+// fixture is required to exercise: how many distinct TypeArgs sets appear on
+// nodes, whether any set repeats across more than one node, how many
+// specialization FunctionDeclaration nodes exist, how many GenericFunctionValue
+// nodes exist, and how many instantiation-table entries the unit publishes.
+func genericDeterminismStats(unit *tir.Unit) (distinctTypeArgs int, repeatedTypeArgs bool, specializationDecls int, genericFunctionValues int, instantiations int) {
+	occurrences := make(map[uint64]int)
+	for _, node := range unit.Nodes() {
+		if len(node.TypeArgs) == 0 {
+			continue
+		}
+		occurrences[typeArgsKey(node.TypeArgs)]++
+		if node.Kind == tir.FunctionDeclaration {
+			specializationDecls++
+		}
+		if node.Kind == tir.GenericFunctionValue {
+			genericFunctionValues++
+		}
+	}
+	distinctTypeArgs = len(occurrences)
+	for _, count := range occurrences {
+		if count > 1 {
+			repeatedTypeArgs = true
+			break
+		}
+	}
+	return distinctTypeArgs, repeatedTypeArgs, specializationDecls, genericFunctionValues, len(unit.Instantiations())
+}
+
+// TestGenericIRDeterminism verifies that repeated full-pipeline checks of the
+// same valid generic program produce byte-identical typed-IR output, covering
+// specialization declaration order, instantiation order, node IDs, TypeArgs,
+// and the source map. The fixture deliberately creates four distinct
+// specializations, repeated i32 instantiations at two call sites, and two bare
+// generic function values so the instantiation table holds more than one
+// ordered entry. i32 and char specialize eagerly through their bare generic
+// values; i64 and f64 are reached only through call sites, so they are built
+// lazily by buildSpecializations in solver-instantiation order, pinning that
+// ordering in the dump too. Block bodies are required throughout: expression
+// bodies lower to an empty Block (the pre-existing gap recorded under 07.3f),
+// which would leave the specialized bodies empty.
+func TestGenericIRDeterminism(t *testing.T) {
+	const runs = 10
+	const source = `
+fn identity[T](value T) T { return value; }
+
+fn main() void {
+    let a i32 = identity(1);
+    let b i32 = identity(2);
+    let c char = identity('x');
+    let d i64 = identity(4);
+    let e f64 = identity(5.0);
+    let f fn(i32) i32 = identity[i32];
+    let g fn(char) char = identity[char];
+    print a;
+    print b;
+    print c;
+    print d;
+    print e;
+}
+`
+
+	var firstSuccessful bool
+	var firstIRNil bool
+	var firstDiagnostics []diagnostic.Diagnostic
+	var firstDump []byte
+
+	// Structural facts from the first run: a later regression that stops
+	// building specializations must fail the test instead of silently
+	// comparing identical empty output.
+	var firstDistinctTypeArgs, firstSpecializationDecls, firstGenericFunctionValues, firstInstantiations int
+	var firstRepeatedTypeArgs bool
+
+	for run := 0; run < runs; run++ {
+		inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+		result := Check(inputs, diagnostics, Config{})
+		items := diagnostics.Items()
+		ir := result.IR()
+
+		if run == 0 {
+			firstSuccessful = result.Successful()
+			firstIRNil = ir == nil
+			firstDiagnostics = append([]diagnostic.Diagnostic(nil), items...)
+			if ir != nil {
+				firstDump = dumpValidationIR(t, ir)
+				firstDistinctTypeArgs, firstRepeatedTypeArgs, firstSpecializationDecls, firstGenericFunctionValues, firstInstantiations = genericDeterminismStats(ir)
+			}
+			continue
+		}
+
+		if result.Successful() != firstSuccessful {
+			t.Fatalf("run %d: Successful() = %v, want %v", run, result.Successful(), firstSuccessful)
+		}
+		if !reflect.DeepEqual(items, firstDiagnostics) {
+			t.Fatalf("run %d: diagnostics differ\n got: %+v\nwant: %+v", run, items, firstDiagnostics)
+		}
+		if (ir == nil) != firstIRNil {
+			t.Fatalf("run %d: IR nilness differs: got %v, want %v", run, ir == nil, firstIRNil)
+		}
+		if ir != nil && !bytes.Equal(dumpValidationIR(t, ir), firstDump) {
+			t.Fatalf("run %d: generic typed-IR dump differs from run 0", run)
+		}
+	}
+
+	if !firstSuccessful || firstIRNil {
+		t.Fatalf("generic determinism fixture was rejected: %+v", firstDiagnostics)
+	}
+	if firstDistinctTypeArgs < 2 {
+		t.Fatalf("distinct TypeArgs sets = %d, want at least two distinct specializations", firstDistinctTypeArgs)
+	}
+	if !firstRepeatedTypeArgs {
+		t.Fatal("no TypeArgs set repeats across more than one node: repeated instantiations not exercised")
+	}
+	if firstSpecializationDecls < 2 {
+		t.Fatalf("specialization FunctionDeclaration nodes = %d, want at least two", firstSpecializationDecls)
+	}
+	if firstGenericFunctionValues < 1 {
+		t.Fatalf("GenericFunctionValue nodes = %d, want at least one", firstGenericFunctionValues)
+	}
+	if firstInstantiations < 2 {
+		t.Fatalf("instantiation table entries = %d, want at least two", firstInstantiations)
 	}
 }
