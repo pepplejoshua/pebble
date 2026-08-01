@@ -253,12 +253,32 @@ and bare-value paths with exact source-span tests.
 
 ### 07.6 — Full test coverage
 
-Determinism (repeated specialization of the same key produces
-byte-identical IR — same idiom as `validation_determinism_test.go`),
-recursive-generic termination, cross-module sharing (the resolved
-decision from this plan), and fuzz/race coverage extending
-`fuzz_test.go`/`race_test.go`'s existing shape. Mirrors 06b.8's own
-final slice.
+07.6 is split into these small slices:
+
+- **07.6a — recursive specialization termination** (implementation plus
+  focused test): publish the reserved specialized declaration before building
+  the body, or otherwise make same-key re-entry return a valid declaration.
+  The current cache marks the key in progress but publishes `DeclNode` only
+  after the body completes, so recursive re-entry returns `(0, false)`.
+  This is the first slice because it is a real correctness gap.
+- **07.6b — generic determinism** (test-only): run a valid generic program
+  repeatedly and compare the complete typed-IR output, including
+  specialization declarations and instantiation ordering. Existing
+  determinism tests cover non-generic programs only.
+- **07.6c — cross-module generic sharing** (test-only): add a multi-module
+  generic fixture and confirm one shared specialization, declaring-module
+  ownership, and stable consumer references.
+- **07.6d — generic fuzz and race seeds** (test-only): add a small valid
+  generic IR fixture so the existing `FuzzCheck`/`FuzzBuildUnit` corpus and
+  race checks exercise real instantiations. Do not add a new fuzz harness.
+- **07.6e — generic method-call correlation** (optional audit/fix):
+  `buildMethodCall` currently does not copy solved `TypeArgs` into
+  `tir.MethodCall`, although the node schema allows them. Confirm whether a
+  consumer needs this and add the smallest focused fix if required.
+
+Deferred and outside 07.6: `RequirementLiteralFits` checking remains a
+separate later concern, and expression-bodied functions still have the
+pre-existing empty-block lowering bug recorded under 07.3f.
 
 ## What needed sharpening, resolved during 07.1–07.5
 
