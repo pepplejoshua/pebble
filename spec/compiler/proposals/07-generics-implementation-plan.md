@@ -1,17 +1,16 @@
 # 07 generics — rough implementation plan
 
-**Status:** planning draft, not an audit. Unlike
-`06b-implementation-plan.md`, this is written *before* any 07 slice has
-been implemented, so it is deliberately rough where 06b's plan (written
-after 06a's real gaps had already surfaced once) could afford to be exact.
-Owned files, exact dependency order, and diagnostic codes below are
-starting proposals; expect them to sharpen slice by slice as real
-implementation details surface, the same way 06b.7b's five parts each
+**Status:** in progress. 07.1–07.4a are implemented, committed, and
+pushed (see "Completed slices" below). This document is being updated
+in place as each slice lands, rather than staying a pre-implementation
+sketch — treat the "Completed slices" section as authoritative fact and
+everything under "Remaining work" as still-rough planning, sharpened as
+each piece is actually written, the same way 06b.7b's parts each
 informed the next.
 
-**Baseline.** `main` at `4e62016`. 06a and 06b are both complete (all
-06a.1–06a.8 and 06b.1–06b.8 slices accepted, plus the four
-Sol-flagged 06b defect fixes). No 07-owned file exists yet.
+**Baseline.** `main` at `6f17359` (07.4a, the last landed slice). 06a
+and 06b are both complete (all 06a.1–06a.8 and 06b.1–06b.8 slices
+accepted, plus the four Sol-flagged 06b defect fixes).
 
 **Resolved before this plan:** the two genuinely blocking language
 decisions from `spec/compiler/proposals/open-language-decisions.md`
@@ -20,6 +19,87 @@ specialization is shared and owned by the declaring module. Both are
 now recorded directly in `07-generics.md` §"Specialization". Doc
 display of inferred requirements remains open but does not block
 implementation.
+
+## Completed slices (implemented, verified, committed)
+
+- **07.1 — call-site requirement satisfaction** (`generic_validation.go`,
+  new `C0621`). Cross-checks each concrete instantiation's solved type
+  arguments against the generic owner's published `Requirements`.
+  Added `(*infer.Solution) Instantiations()` (solver had no way to
+  enumerate every instantiation before this — only a single-site
+  lookup existed).
+- **07.2 — specialization key and in-process cache**
+  (`specialization.go`): `specializationKey{Generic, TypeArgs,
+  Convention}` (TypeArgs encoded as fixed-width hex, collision-free),
+  `specializationCache.reserve/finish/lookup` with an in-progress state
+  for recursion termination.
+- **07.3a — type substitution** (`internal/types/substitute.go`):
+  `Store.Substitute(id, substitutions)` rewrites `TypeParameter`
+  occurrences through composite type structure. No freeze/lock on the
+  store, so interning novel composite shapes mid-compilation is safe.
+- **07.3b — substituted signature computation**
+  (`specialization_signature.go`): `buildSpecializedSignature` pairs a
+  generic's own `TypeParams` with one instantiation's solved arguments,
+  substitutes the callable's symbolic parameter/result types. Needs the
+  live `*types.Store`, not `handoff.Semantics.Types()` (that's the
+  read-only `*types.Snapshot`, no `Substitute` method — a real gap this
+  slice found and worked around by threading the store in explicitly).
+- **07.3c — substitution-aware type resolution** (`ir_builder.go`):
+  `irBuildState.resolveType` wraps `typeOfValue`, applying `Substitute`
+  when `activeSubstitution` is set. Every internal `typeOfValue(s.records,
+  X)` call site now goes through it. `activeSubstitution` is `nil` for
+  every normal build (today); this was verified to introduce zero
+  behavior change by re-running the entire existing
+  `ir_builder_test.go` suite unchanged.
+- **07.3d — isolated build scope** (`ir_builder.go`, `irBuildScope`):
+  extracted the seven output-memoization fields (`functions`,
+  `functionNodes`, `regions`, `values`, `placeValues`, `blockNodes`,
+  `deferNodes`) that are keyed by identities repeating across every
+  specialization of the same generic symbol. `withFreshScope` swaps in
+  an empty scope for a build closure and restores the previous one
+  after.
+- **07.3e — reserve-then-complete function declarations**
+  (`internal/tir/unit.go`): `ReserveFunctionDecl`/`CompleteFunctionDecl`
+  let a caller get a real `FunctionID` before a body exists (mirrors
+  `AddRegion`'s identity-first allocation) — needed because a body's own
+  `Return` nodes must reference their function's ID while still being
+  built, and the existing `AddFunctionDecl` only allocates one after the
+  body is done.
+- **07.3f — build one specialization end-to-end**
+  (`specialization_build.go`): `buildSpecialization` ties 07.2–07.3e
+  together to build one real, verifier-clean, substituted function for
+  one instantiation. **Found and fixed a real bug**: rebuilding a
+  generic's body reuses the existing `buildRegionBlock`/`buildValue`
+  traversal, which always maps built nodes back to their authored
+  syntax ref via `MapSource` — but the same body was already built once
+  symbolically by the normal build pass, which already claimed every
+  one of those refs. Fix: `addNode` now suppresses both the node's own
+  `Syntax` field and the `MapSource` call whenever a specialization is
+  being built (confirmed via the typed-IR verifier's own symmetric
+  invariant: a nonzero `node.Syntax` must always have a matching
+  `SourceMap` entry pointing back to it — an asymmetric fix that only
+  skipped `MapSource` was tried first and correctly rejected by the
+  verifier). **Also found a separate, pre-existing, unrelated bug**:
+  expression-bodied functions (`=> expr;`) lower to an empty `Block`
+  with no children — confirmed identical for an ordinary non-generic
+  function through the completely normal pipeline. Not fixed as part of
+  this phase; noted here so it isn't rediscovered by surprise. Test
+  fixtures in this phase use block bodies (`{ return expr; }`) to avoid
+  it.
+- **07.4a — wire specialization into the normal build**
+  (`ir_builder.go`): `buildSpecializations` is the final step in
+  `buildUnit`'s pipeline, walking every real instantiation
+  (`handoff.Solution.Instantiations()`) and triggering a build for each.
+  A specialization's own `FunctionDeclaration` node now carries its
+  `TypeArgs` (added to `tir/verify.go`'s allowed-field list for this
+  node kind), matching the `(Symbol, TypeArgs, Convention)` triple that
+  `DirectCall` nodes at generic call sites already carry — so a
+  consumer can find the one specialization matching a given call site
+  among however many `FunctionDeclaration` entries share that symbol
+  (the symbolic declaration's own `TypeArgs` stays empty). Verified
+  against the entire existing generic test corpus (07.1's own tests,
+  `generic_*.peb` fixtures, requirement-publication tests) to confirm
+  no regressions from turning this on.
 
 ## What already exists (evidence, not spec prose)
 
@@ -64,71 +144,117 @@ mechanism to validate ordinary generic code:
 
 ## What's actually missing
 
-1. Checking whether a **specific call site's concrete type
-   argument(s)** satisfy the generic owner's already-published
-   requirements (does `i32` support `Ordered`? does `MyStruct` support
-   `Equatable`?). Nothing today cross-references a call site's solved
-   type arguments against `Result.Requirements(owner)`.
-2. The **specialization cache**: an in-process (not persistent —
-   see `09-typed-ir-and-caching.md`) map keyed by
-   `(GenericSymbolID, ordered TypeIDs, ABI options)`, populated with an
-   in-progress marker before recursing so structurally recursive
-   generics terminate.
-3. **Building monomorphized typed IR** per unique specialization —
-   almost certainly by reusing `ir_builder.go`'s existing
-   `buildValue`/`buildRegionBlock`/`buildRegionBlock` traversal
-   machinery, parameterized by a concrete type substitution instead of
-   the symbolic type-parameter identity.
-4. **Wiring `GenericFunctionValue`** at the value/call sites that
-   reference a generic function, populating `Instantiation` via the
-   already-built `AddInstantiation`.
+Items 1–3 (call-site requirement satisfaction, the specialization
+cache, building monomorphized typed IR) are done — see "Completed
+slices" above. What remains:
+
+4. **`GenericFunctionValue` wiring at value/call sites** — see the
+   detailed "07.4b" investigation handoff below. This turned out to be
+   larger than originally scoped: it depends on a currently-broken,
+   pre-existing (not generics-specific) gap — referencing *any* named,
+   already-declared function as a bare value has no working path in
+   `ir_builder.go` today, generic or not.
 5. **Diagnostics** that name both the unmet requirement and the failing
    call (spec goal: "explain both the generic requirement and the call
-   that failed to satisfy it") — this needs a new diagnostic code (or
-   codes) distinct from 06b's `C0601`–`C0620` range; the exact code
-   number is a detail to settle when this slice is written, not now.
+   that failed to satisfy it") — 07.1's `C0621` already does this
+   reasonably well for validation-time failures; unclear yet whether
+   anything more is needed for specialization-time failures
+   specifically. Not yet investigated.
 
-## Rough dependency-ordered slices
+## Remaining work
 
-These names are provisional (`07.N`, matching the `06a.N`/`06b.N`
-convention) and will very likely be renumbered/resplit once the first
-one or two are actually implemented — do not treat the boundaries below
-as fixed the way 06b's final slice list was by the time it shipped.
+### 07.4b — `GenericFunctionValue` wiring (investigation handoff, not yet implemented)
 
-### 07.1 — Call-site requirement satisfaction
+**Scope decision (already made — do not re-ask):** the user chose to
+fix this together with the underlying "named function as bare value"
+gap, rather than scoping around it. Extend `buildSymbolValue`
+(`compiler/internal/check/ir_builder.go`) to handle
+`symbol.SymbolFunction`-kind symbols:
+- **Non-generic case**: build an ordinary function-value node (reusing
+  `s.functions[symbol]`, the same identity `HoistedFunctionValue`
+  already uses for anonymous literals) — this is the missing, more
+  general fix; generics build on top of it.
+- **Generic case with explicit type arguments**: trigger
+  `buildSpecialization` for the resolved instantiation and emit a real
+  `tir.GenericFunctionValue` node (`Symbol`, `GenericRef` via
+  `Builder.AddInstantiation`, `TypeArgs` — the schema has existed,
+  fully verified/dumped, since before 07 started; nothing in
+  `ir_builder.go` references it yet).
 
-Cross-check each concrete instantiation's solved type arguments against
-the generic owner's already-published `Requirements` (from
-`requirement_validation.go`). Likely owned files: a new
-`generic_validation.go` (or extends `requirement_validation.go` — TBD
-once actually written), plus its test file. This is the first checker
-gap and has no TIR dependency, so it can start immediately and
-independently verify against real `.peb` fixtures without needing any
-of the later slices.
+**Why this is bigger than originally scoped**: `buildSymbolValue`'s
+switch (`internal/check/ir_builder.go`, case list starting
+`symbol.SymbolBinding, symbol.SymbolParameter, ...`) has no case for
+`symbol.SymbolFunction` at all — falls through to `default: return
+false`. The only existing path that builds a function-*value* node is
+`case expressionFunction:` → `tir.HoistedFunctionValue`
+(`ir_builder.go`), but `expressionFunction` is retained **only** for an
+inline anonymous function literal term — confirmed directly:
+`compiler/internal/check/expression_facts.go`'s `retainExistingExpression`
+(~line 499) sets `kind = expressionFunction` only when `node.Kind() ==
+syntax.FunctionTerm`. A reference to an already-declared *named*
+function (generic or not) is a different syntax node entirely and
+never takes this path. So `let f = someOrdinaryFunction;` has no
+working IR-construction path today — a pre-existing 06b.7b-era gap,
+not something this phase introduced, but generics can't get a working
+value-reference without it since `GenericFunctionValue` needs the same
+underlying mechanism.
 
-### 07.2 — Specialization key and in-process cache
+**Investigation trail so far (real file/line evidence, to save
+re-deriving it):**
 
-The `(GenericSymbolID, TypeArgs, ABI)` → cache-entry map, in-progress
-markers for recursion termination, and the cache's own lifecycle
-(reset per compilation, not persisted). No IR construction yet — this
-slice can be built and unit-tested against synthetic keys before 07.3
-needs it.
+1. For `identity[i32]` used bare (not called), `04b`/`05b`'s resolver
+   classifies the bracket as `symbol.BracketTypeNames` mode
+   (`compiler/internal/check/bracket_facts.go`'s `prepareBracket`,
+   ~line 84). Confirmed this path is reached for a generic *function*
+   base (not just generic types): `w.genericIdentity(p.base, tree)`
+   resolves the base symbol regardless of whether it names a type or a
+   function; the `case symbol.BracketTypeNames:` branch (~line 84–99)
+   only calls `w.mirrorTypeInstantiation` when `w.program.TypeDeclaration(p.generic)`
+   succeeds (i.e. `p.generic` really is a type) — otherwise it falls to
+   `w.prepareGeneric(ref, p.generic, p.arguments, ctx)` directly, which
+   is exactly the function case.
+2. `prepareGeneric` (`generic_facts.go`, already used by 07.1's own
+   investigation) calls `w.publishInstantiation(site, generic, terms)`
+   regardless of whether the call site is an actual call or a bare
+   value reference — meaning `handoff.Solution.Instantiation(ref)`
+   (07.1's accessor) should already be queryable for a bare
+   `identity[i32]` reference site, not just for a call. **Not yet
+   empirically confirmed with a real fixture** — the next step should
+   be writing a throwaway test that compiles `let f = identity[i32];`
+   and checks whether `handoff.Solution.Instantiation(ref)` for that
+   `let`'s initializer syntax ref actually returns something, before
+   writing any implementation.
+3. `finishBracket` (`bracket_facts.go`, ~line 186) for `p.mode ==
+   symbol.BracketTypeNames` calls
+   `signature, ok := w.program.Signature(p.generic)` then
+   `w.instantiateSignature(signature, p.application, origin)` then
+   `w.retainBracket(ref, ctx, result, 0, alternativeTag{}, nil)`.
+   **Not yet traced**: what `retainBracket` actually retains here —
+   specifically, what `expressionRecord.Kind` results, since that's
+   what `ir_builder.go`'s `buildValueBase` switch dispatches on. This
+   is the single biggest remaining unknown before implementation can
+   start. Read `retainBracket`'s definition next (grep
+   `func (w \*walker) retainBracket` — not yet located/read in this
+   investigation).
+4. `bracket_facts.go`'s `prepareDeferredBracket`/`finishDeferredBracket`
+   (~line 129–177, 244+) is a **different**, more specific case:
+   generic *method* application with explicit brackets on a member
+   expression (`value.map[str](convert)` from the spec's own example,
+   `baseNode.Kind() == syntax.MemberExpr` is required, returns early
+   otherwise). Confirmed this does **not** apply to a plain-name base
+   like `identity[i32]` — don't conflate the two paths.
 
-### 07.3 — Monomorphized IR construction
-
-The actual specializer: given a cache miss, build a typed-IR function
-body for the concrete instantiation, reusing `ir_builder.go`'s existing
-traversal parameterized by a substitution map. This is almost certainly
-the largest slice in the phase, likely needing its own sub-parts the
-way 06b.7b did (06b.7b needed 8 parts once real implementation started
-— expect 07.3 to split similarly once work begins).
-
-### 07.4 — `GenericFunctionValue` wiring
-
-Connect 07.1–07.3 to real call/value sites: populate `Instantiation`
-via `Builder.AddInstantiation` and emit `GenericFunctionValue` nodes
-where a generic function is referenced, whether called immediately or
-taken as a standalone value (`let parse_int = parse[int];`).
+**Suggested next step for whoever picks this up**: before writing an
+implementation brief, spend one investigation-only pass (a throwaway
+test, no committed changes) to (a) confirm `Solution.Instantiation`
+really is populated for a bare generic-value reference site, and (b)
+read `retainBracket` and whatever `expressionRecord.Kind` it produces
+for the `BracketTypeNames`/generic-function case, so the eventual
+implementation brief can cite the exact `record.Kind` `buildValueBase`
+needs to switch on, the same level of precision every other 07.3
+sub-slice's brief had. Do not skip straight to writing the
+`buildSymbolValue`/`buildValueBase` changes without this — the
+uncertainty is real, not just unwritten-down.
 
 ### 07.5 — Diagnostics
 
@@ -146,22 +272,178 @@ decision from this plan), and fuzz/race coverage extending
 `fuzz_test.go`/`race_test.go`'s existing shape. Mirrors 06b.8's own
 final slice.
 
-## What will need sharpening once 07.1 is actually written
+## What needed sharpening, resolved during 07.1–07.4a
 
-- The exact new diagnostic code range/numbering for generic-specific
-  failures (currently 06b owns `C06xx`; 07 likely gets its own prefix
-  or continues the same range — undecided, deliberately not guessed
-  here).
-- Whether 07.1 is a wholly new validator or an extension of
-  `requirement_validation.go` — real code shape will decide this, not
-  spec prose.
-- The precise `ABI options` component of the specialization key
-  (calling-convention variance for generic functions with `extern`
-  bodies, if that combination is even legal — needs checking against
-  `types.CallingConvention`'s existing scope before 07.2 is written).
-- Whether 07.3 needs its own sub-slice breakdown (near-certain given
-  06b.7b's precedent, exact split unknown until real body-building
-  starts).
+These were open questions in the original pre-implementation draft;
+kept here (rather than deleted) as a record of how they actually
+resolved, since real code shape decided all of them, not spec prose:
+
+- Diagnostic code: 07.1 added `CodeGenericInstantiation = "C0621"` —
+  continues 06b's `C06xx` range, no new prefix needed.
+- 07.1 is a wholly new file (`generic_validation.go`), not an
+  extension of `requirement_validation.go` — it reuses predicates
+  extracted out of `operator_validation.go` instead.
+- The specialization key's third component is `Convention
+  types.CallingConvention`, not a separate "ABI options" concept —
+  `specializationKey` in `specialization.go` uses the type directly.
+- 07.3 did need its own sub-slice breakdown, same as 06b.7b: it split
+  into 07.3a–07.3f (six parts), one more than originally guessed.
+
+Still genuinely open (not yet resolved by real code):
+
+- The exact `record.Kind`/expression shape `retainBracket` produces
+  for a bare generic-function-value bracket reference — see 07.4b
+  above, the actual current blocker.
+- Whether 07.3's `ABI`/`Convention` handling needs anything different
+  once 07.4b makes generic functions referenceable as bare values
+  (today only call sites are exercised) — not yet investigated, flag
+  it if 07.4b's implementation surfaces anything unexpected here.
+
+## How to continue this work
+
+This section is for whoever (or whichever tool/session — Codex or
+otherwise) picks this up next, without the benefit of this
+conversation's history.
+
+### Where things stand
+
+Read "Completed slices" above for exactly what's built and verified.
+Read "07.4b" above for the exact next investigation step — do not
+start writing `ir_builder.go` changes for it before confirming the two
+open questions listed there (whether `Solution.Instantiation` is
+populated for a bare value reference site, and what `retainBracket`
+actually retains). Everything else in "What's actually missing" (item
+5, diagnostics) is unstarted and lower-priority than 07.4b.
+
+### Using `orc` to dispatch implementation work
+
+This phase's slices (07.1–07.4a) were each implemented by dispatching
+a tightly-scoped brief to `orc`, a supervisor CLI that runs an
+OpenCode worker model against this repository and blocks until it
+finishes:
+
+```bash
+orc run --claude --model <model> --prompt-file /tmp/orc_task_<name>.md "<short summary>"
+```
+
+Always pass `--claude` (attribution for this assistant's own
+dispatches). Run it with a background-capable tool so you can keep
+working while it completes — `orc run` blocks until the worker exits,
+which can take several minutes for a substantial slice.
+
+**Model policy, as actually used across this phase:**
+
+- Default: `opencode-go/deepseek-v4-flash` ("flash"). The user's
+  standing instruction for this phase was explicit: *"Use Flash
+  exclusively for now. If it delivers subpar perf, then we go to
+  Luna."* Flash handled the large majority of 07.1–07.4a's slices
+  successfully.
+- Escalate to `openai/gpt-5.6-luna` ("luna") only when flash actually
+  underperforms on a dispatch (stalls, produces something structurally
+  wrong, silently does nothing) — not preemptively. Two flash dispatch
+  attempts in this phase (07.1's first attempt, 07.3f's first two
+  attempts) silently did almost no work; both were caught by checking
+  `orc result <session>`'s `metrics` field (near-zero `tool_calls`/
+  `cpu_seconds` is the tell) and simply retried with the identical
+  brief before escalating — retrying flash resolved both, so treat a
+  silent near-no-op as "retry once" before treating it as "flash
+  underperformed."
+- **`opencode-go/kimi-k2.7-code` ("kimi") is permanently banned in this
+  project** — it contributed to blowing OpenCode usage limits in an
+  earlier phase. Never dispatch to it here, regardless of what the
+  general `dispatch-orc-task` skill's own model-tiering guidance says.
+- Do not use `openai/gpt-5.6-sol` at all, and do not use
+  `openai/gpt-5.6-terra` without the user's explicit approval first.
+
+**Checking a dispatch's outcome:**
+
+```bash
+orc result <session>          # JSON: status, response summary, metrics
+```
+
+then read the worklog file path it returns
+(`~/.orc/sessions/<session>/worklog.md`) for the worker's own
+running account of what it did and the verification output it ran.
+
+### Brief-writing conventions that worked well this phase
+
+Every successful brief in this phase (see `/tmp/orc_task_*.md`
+filenames referenced in worklogs, e.g.
+`07_4a_wire_specialization_pipeline.md`) followed this shape — keep it
+when writing the next one:
+
+- **State exactly what's already confirmed**, with real file/line
+  citations from direct investigation (not guesses) — e.g. "already
+  confirmed for you: the correlation gap," quoting the actual existing
+  code. This prevents the worker from re-deriving (or mis-deriving)
+  context you already have.
+- **Give an explicit "Files you may modify" allow-list**, and an
+  explicit "Do not modify" list naming specific other files/packages
+  that are off-limits. Every brief this phase used this and it
+  reliably kept dispatches from drifting into unrelated files.
+- **Require exact verification commands**, always prefixed
+  `GOCACHE=/tmp/pebble-orc-gocache` (this repo's Go module needs this
+  to avoid cache contention across concurrent workers), and demand
+  *literal pasted output*, not a summarized "tests pass" claim — e.g.
+  "actually run this yourself and paste the complete output." This
+  matters: worklog claims have twice in this phase alone been proven
+  wrong or misleadingly weak once independently re-verified (see next
+  section).
+- **"Do not commit"**: every implementation-only brief this phase
+  explicitly instructed the worker to leave changes uncommitted
+  (`Do not run git commit, git add, git push...`) — the supervisor
+  (you) reviews and commits after independent verification, never the
+  worker.
+- **Worklog-as-you-go**: instruct `orc worklog append <session> "..."`
+  during the work, not just a final summary — this is what makes a
+  stalled/confused dispatch diagnosable via `orc result`'s `last_event`
+  field instead of a black box.
+
+### Independent verification discipline — the single most important habit
+
+**A worklog's "tests pass" claim is not sufficient evidence, even when
+technically true.** This phase caught two real problems this way that
+would otherwise have shipped:
+
+1. Two dispatch attempts (07.1's first, 07.3f's first two) did
+   essentially nothing despite returning a "completed" status —
+   caught only by checking `orc result`'s `metrics.tool_calls`/
+   `metrics.cpu_seconds` for near-zero values, not by reading the
+   response text.
+2. 07.3f's delivered tests technically passed, but two of three used
+   an expression-bodied (`=>`) fixture that (confirmed by writing a
+   throwaway scratch test) lowers to an empty typed-IR `Block` with
+   zero children — meaning the tests exercised no real body content at
+   all. Rewriting the fixture to use block-body syntax exposed a
+   genuine bug (a `MapSource`/`SourceMap` symmetry violation) the weak
+   tests never caught.
+
+**Concretely, before accepting any dispatch's result:**
+
+- Rebuild and rerun the full verification suite yourself
+  (`gofmt -l .`, `go vet ./...`, `go build ./...`, `go test ./...
+  -count=1`, `go test -race -count=1 ./...`) — don't just trust the
+  worklog's pasted output, actually run it again.
+- Read the actual diff (`git diff --stat` then the real files), not
+  just the worklog's prose description of it.
+- If something feels underexercised even after tests pass — a fixture
+  that seems too simple, a code path you can't see directly tested —
+  write a throwaway scratch probe yourself: either a small `_test.go`
+  with a body-inspection assertion, or raw `fmt.Println` debug
+  instrumentation added directly into the file under investigation
+  (back it up first with `cp file.go /tmp/file.go.bak` so it's trivial
+  to cleanly restore). Delete/restore the scratch instrumentation
+  before finalizing, and confirm via `git diff` that the restored file
+  exactly matches the pre-investigation state — no debug artifacts
+  should leak into what gets committed.
+- If a dispatch's own fix attempt gets rejected by an existing
+  invariant (as happened with 07.3f's first fix attempt hitting
+  `verifySourceMap`'s symmetry check) and it reports this honestly
+  instead of forcing something through, that is a *good* sign about
+  the worker's reliability — treat the honest failure report as
+  useful signal, dispatch a corrected follow-up brief that names the
+  specific invariant that was violated, rather than treating it as a
+  wasted attempt.
 
 ## Verification (matching 06/06b's established bar)
 
