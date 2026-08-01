@@ -1750,6 +1750,89 @@ let result i32 = box.get();
 	}
 }
 
+// TestBuildValueGenericMethodCallTypeArgs verifies that a valid generic method
+// call with inferred type arguments publishes the concrete solved TypeArgs on
+// the emitted MethodCall node, matching the (Symbol, TypeArgs, Convention)
+// specialization key the declaration side of the same instantiation carries.
+func TestBuildValueGenericMethodCallTypeArgs(t *testing.T) {
+	// Block-bodied generic method fixture so the call builds through the real
+	// statement pipeline instead of a global initializer that never lowers.
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Box = struct {
+    fn echo[T](self Box, value T) T { return value; }
+};
+fn main() void {
+    let box Box = Box.{};
+    let result i32 = box.echo(1);
+    print result;
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
+	if !ok || unit == nil {
+		t.Fatal("buildUnit rejected a generic method call")
+	}
+	recordIRBuilderUnit(unit)
+
+	var methodCall *tir.Node
+	var solvedTypeArgs []types.TypeID
+	methodsSeen := 0
+	for _, retained := range handoff.Records.Records() {
+		if retained.Call == nil || retained.Call.Target.Kind != callMethod {
+			continue
+		}
+		methodsSeen++
+		method, found := handoff.Solution.Method(retained.Call.Target.Site)
+		if !found || method.Method == 0 {
+			t.Fatalf("method selection not solved for site %+v", retained.Call.Target.Site)
+		}
+		for _, argument := range method.Arguments {
+			solvedTypeArgs = append(solvedTypeArgs, argument.Type)
+		}
+		for _, node := range unit.Nodes() {
+			if node.Kind == tir.MethodCall && node.Symbol == method.Method {
+				methodCall = &node
+			}
+		}
+	}
+	if methodsSeen != 1 {
+		t.Fatalf("method calls = %d, want exactly one inferred generic method call", methodsSeen)
+	}
+	if methodCall == nil {
+		t.Fatal("generic method call produced no MethodCall node")
+	}
+	if len(solvedTypeArgs) != 1 || solvedTypeArgs[0] != inputs.Types.Builtins().Int {
+		t.Fatalf("solved type args = %+v, want [int]", solvedTypeArgs)
+	}
+	if len(methodCall.TypeArgs) != len(solvedTypeArgs) {
+		t.Fatalf("MethodCall TypeArgs = %v, want solved %v", methodCall.TypeArgs, solvedTypeArgs)
+	}
+	for i := range methodCall.TypeArgs {
+		if methodCall.TypeArgs[i] != solvedTypeArgs[i] {
+			t.Fatalf("MethodCall TypeArgs = %v, want solved %v", methodCall.TypeArgs, solvedTypeArgs)
+		}
+	}
+	// The published triple must equal the specialization key for the solved
+	// instantiation, so a consumer can correlate the call site with its
+	// specialized declaration exactly as it does for a DirectCall site.
+	methodKey := newSpecializationKey(methodCall.Symbol, methodCall.TypeArgs, methodCall.Convention)
+	solvedKey := newSpecializationKey(methodCall.Symbol, solvedTypeArgs, methodCall.Convention)
+	if methodKey != solvedKey {
+		t.Fatalf("MethodCall key = %+v, want solved key %+v", methodKey, solvedKey)
+	}
+}
+
 func TestBuildValueVariantConstruct(t *testing.T) {
 	state, records := testBuildValue(t, `
 type Choice = union enum { empty void; value i32; };

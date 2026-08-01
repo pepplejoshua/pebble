@@ -2191,6 +2191,13 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	node.Symbol = method.Method
 	node.FunctionType = functionType
 	node.Convention = convention
+	node.TypeArgs = make([]types.TypeID, 0, len(method.Arguments))
+	for _, argument := range method.Arguments {
+		if argument.State != infer.TypeFinal || argument.Type == 0 {
+			return false
+		}
+		node.TypeArgs = append(node.TypeArgs, argument.Type)
+	}
 	action, ok := callContextAction(flow, convention)
 	if !ok {
 		return false
