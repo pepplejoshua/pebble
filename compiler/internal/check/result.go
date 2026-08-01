@@ -206,7 +206,7 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	// returns ok == false for a generation that already had errors or for any
 	// IR construction/verification failure; either way the whole result fails
 	// and no unit is published.
-	unit, ok := buildUnit(handoff, records, requirements, config)
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config)
 	if !ok || unit == nil {
 		return newResult(handoff, records, requirements, nil, false)
 	}

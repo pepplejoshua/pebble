@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
@@ -18,8 +19,14 @@ import (
 // buildUnit constructs the declaration/nonvalue portion of typed IR. It is
 // intentionally not called by run06b yet: later 06b.7b parts add values,
 // places, calls, coercions, and statements at this orchestration point.
-func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, config Config) (unit *tir.Unit, ok bool) {
+func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, diagnostics *diagnostic.DiagnosticSet, config Config) (unit *tir.Unit, ok bool) {
 	if handoff == nil || handoff.GenerationHadErrors || handoff.Semantics == nil || handoff.Solution == nil || records == nil {
+		return nil, false
+	}
+	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
+	fail := func(message string) (*tir.Unit, bool) {
+		reporter.add(diagnostic.Diagnostic{Severity: diagnostic.Error, Code: CodeGeneration, Message: message})
+		reporter.flush()
 		return nil, false
 	}
 	b := tir.NewBuilder(handoff.Semantics.Types(), tir.Config{
@@ -27,12 +34,24 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		MaxDumpBytes: config.MaxDumpBytes,
 	})
 	state := &irBuildState{handoff: handoff, records: records, builder: b}
-	if !state.buildModules() || !state.buildTypes() || !state.buildDeclarations() || !state.buildTypeUses() || !state.indexExpressions() || !state.indexControls() || !state.buildBlocks() || !state.finishFunctionDeclarations() || !state.buildRequirements(requirements) {
-		return nil, false
+	steps := []struct {
+		name  string
+		build func() bool
+	}{
+		{"buildModules", state.buildModules}, {"buildTypes", state.buildTypes},
+		{"buildDeclarations", state.buildDeclarations}, {"buildTypeUses", state.buildTypeUses},
+		{"indexExpressions", state.indexExpressions}, {"indexControls", state.indexControls},
+		{"buildBlocks", state.buildBlocks}, {"finishFunctionDeclarations", state.finishFunctionDeclarations},
+		{"buildRequirements", func() bool { return state.buildRequirements(requirements) }},
+	}
+	for _, step := range steps {
+		if !step.build() {
+			return fail("typed-IR construction failed during " + step.name)
+		}
 	}
 	unit, err := b.Build()
 	if err != nil {
-		return nil, false
+		return fail("typed-IR construction failed during Build: " + err.Error())
 	}
 	return unit, true
 }

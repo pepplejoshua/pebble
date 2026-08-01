@@ -272,6 +272,18 @@ fn main() void {
 	if limited.IR() != nil {
 		t.Fatal("failed typed-IR construction must publish no IR")
 	}
+	if len(limitedDiagnostics.Items()) != 1 || limitedDiagnostics.Items()[0].Code != CodeGeneration {
+		t.Fatalf("MaxIRNodes=1 diagnostics = %+v, want exactly one C0619", limitedDiagnostics.Items())
+	}
+
+	componentInputs, componentDiagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+	componentLimited := Check(componentInputs, componentDiagnostics, Config{MaxIRComponents: 1})
+	if componentLimited.Successful() || componentLimited.IR() != nil {
+		t.Fatal("MaxIRComponents=1 should fail typed-IR construction and publish no IR")
+	}
+	if len(componentDiagnostics.Items()) != 1 || componentDiagnostics.Items()[0].Code != CodeGeneration {
+		t.Fatalf("MaxIRComponents=1 diagnostics = %+v, want exactly one C0619", componentDiagnostics.Items())
+	}
 }
 
 // TestCheckThreadsConfigIntoBothPhases confirms the public entry point passes

@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
@@ -54,7 +56,7 @@ func TestBuildUnitDeclarations(t *testing.T) {
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid handoff")
 	}
@@ -112,7 +114,7 @@ func TestBuildUnitImport(t *testing.T) {
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid import")
 	}
@@ -133,7 +135,7 @@ func TestBuildUnitLocalDeclaration(t *testing.T) {
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, Config{})
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid handoff")
 	}
@@ -164,7 +166,7 @@ func TestBuildUnitLocalDeclaration(t *testing.T) {
 }
 
 func TestBuildUnitRejectsGenerationErrors(t *testing.T) {
-	unit, ok := buildUnit(&solveHandoff{GenerationHadErrors: true}, nil, nil, Config{})
+	unit, ok := buildUnit(&solveHandoff{GenerationHadErrors: true}, nil, nil, nil, Config{})
 	if ok || unit != nil {
 		t.Fatal("expected failed generation handoff to be rejected")
 	}
@@ -189,7 +191,7 @@ func buildUnitFixtureWithConfig(t *testing.T, source string, config Config) (*ti
 	if !ok {
 		t.Fatal(diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, config)
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config)
 	if ok && unit != nil {
 		recordIRBuilderUnit(unit)
 	}
@@ -2640,7 +2642,7 @@ func buildIRFixturePath(t *testing.T, path string, config Config) (*tir.Unit, bo
 	if !ok {
 		t.Fatalf("requirements rejected %s: %+v", path, diagnostics.Items())
 	}
-	unit, ok := buildUnit(handoff, records, requirements, config)
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, config)
 	if ok && unit != nil {
 		recordIRBuilderUnit(unit)
 	}
@@ -2816,8 +2818,42 @@ func TestBuildUnitRejectsMalformedHandoff(t *testing.T) {
 	if handoff == nil || handoff.GenerationHadErrors {
 		t.Fatal("valid setup was rejected")
 	}
-	if unit, ok := buildUnit(handoff, nil, nil, Config{}); ok || unit != nil {
+	if unit, ok := buildUnit(handoff, nil, nil, diagnostics, Config{}); ok || unit != nil {
 		t.Fatal("nil records must be rejected")
+	}
+}
+
+func TestBuildUnitReportsBuildVerifierFailure(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() i32 { return 1; }")})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatal("valid setup was rejected")
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	for i := range handoff.Records.values {
+		if handoff.Records.values[i].Control != nil && handoff.Records.values[i].Control.Kind == controlReturn {
+			handoff.Records.values[i].Control.Callable.Symbol = 0
+			break
+		}
+	}
+	diagnostics = diagnostic.NewDiagnosticSet()
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{})
+	if ok || unit != nil {
+		t.Fatal("malformed return should fail closed-IR verification")
+	}
+	items := diagnostics.Items()
+	if len(items) != 1 || items[0].Code != CodeGeneration {
+		t.Fatalf("verifier failure diagnostics = %+v, want exactly one C0619", items)
+	}
+	if !strings.Contains(items[0].Message, "Build:") {
+		t.Fatalf("verifier failure diagnostic = %q, want Build error context", items[0].Message)
 	}
 }
 
@@ -2899,7 +2935,7 @@ func FuzzBuildUnit(f *testing.F) {
 			if !ok {
 				return
 			}
-			_, _ = buildUnit(handoff, records, requirements, config)
+			_, _ = buildUnit(handoff, records, requirements, diagnostics, config)
 		}()
 		select {
 		case <-done:
