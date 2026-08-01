@@ -16,6 +16,18 @@ func isSignedIntegerBuiltin(kind types.BuiltinKind) bool {
 	return false
 }
 
+func typeSatisfiesOrdered(key types.TypeKey, id types.TypeID, semantics *infer.SemanticSnapshot) bool {
+	builtin, builtinOK := key.Builtin()
+	allowed := builtinOK && (isIntegerBuiltin(builtin) || isFloatBuiltin(builtin) || builtin == types.Char || builtin == types.Str)
+	return allowed || isEnumType(semantics, id)
+}
+
+func typeSatisfiesEquatable(key types.TypeKey, id types.TypeID, semantics *infer.SemanticSnapshot) bool {
+	builtin, builtinOK := key.Builtin()
+	allowed := builtinOK && (isIntegerBuiltin(builtin) || isFloatBuiltin(builtin) || builtin == types.Bool || builtin == types.Char || builtin == types.Str)
+	return allowed || key.Kind() == types.Pointer || isEnumType(semantics, id)
+}
+
 func activeOperatorRecord(handoff *solveHandoff, header recordHeader) bool {
 	if !header.Alternative.Guarded {
 		return true
@@ -217,14 +229,10 @@ func validateBooleanOperators(handoff *solveHandoff, records *solvedRecords, dia
 					continue
 				}
 				key := keys[i]
-				builtin, builtinOK := key.Builtin()
-				allowed := builtinOK && (isIntegerBuiltin(builtin) || isFloatBuiltin(builtin))
-				if op.Family == operatorOrdering {
-					allowed = allowed || builtinOK && (builtin == types.Char || builtin == types.Str)
-				} else {
-					allowed = allowed || builtinOK && (builtin == types.Bool || builtin == types.Char || builtin == types.Str) || key.Kind() == types.Pointer
+				allowed := typeSatisfiesOrdered(key, typeIDs[i], handoff.Semantics)
+				if op.Family == operatorEquality {
+					allowed = typeSatisfiesEquatable(key, typeIDs[i], handoff.Semantics)
 				}
-				allowed = allowed || isEnumType(handoff.Semantics, typeIDs[i])
 				bad = bad || !allowed
 			}
 			if concrete(0) && concrete(1) {

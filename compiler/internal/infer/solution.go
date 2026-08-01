@@ -191,6 +191,21 @@ func (r *Solution) Instantiation(site symbol.SyntaxRef) (Instantiation, bool) {
 	v.Arguments = append([]TypeResult(nil), v.Arguments...)
 	return v, ok
 }
+func (r *Solution) Instantiations() []Instantiation {
+	if r == nil {
+		return nil
+	}
+	out := make([]Instantiation, 0, len(r.manifest.instantiations))
+	for _, site := range r.manifest.instantiations {
+		value, ok := r.instantiations[site]
+		if !ok {
+			continue
+		}
+		value.Arguments = append([]TypeResult(nil), value.Arguments...)
+		out = append(out, value)
+	}
+	return out
+}
 func (r *Solution) Method(site symbol.SyntaxRef) (MethodSelection, bool) {
 	if r == nil {
 		return MethodSelection{}, false
