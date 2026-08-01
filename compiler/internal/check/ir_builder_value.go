@@ -1,0 +1,364 @@
+package check
+
+import (
+	"sort"
+
+	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/source"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
+)
+
+// buildValue is the single shared, recursive, memoized dispatcher for typed-IR
+// value construction. It builds children before parents and memoizes every
+// valueID so a value referenced by multiple parents is only built once.
+func (s *irBuildState) buildValue(id valueID) (tir.NodeID, bool) {
+	return s.buildValueBase(id)
+}
+
+func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
+	if id == 0 {
+		return 0, false
+	}
+	if existing, ok := s.values[id]; ok {
+		return existing, true
+	}
+	record, ok := s.expressionsByResult[id]
+	if !ok {
+		return 0, false
+	}
+	typ, ok := s.resolveType(id)
+	if !ok {
+		return 0, false
+	}
+	node := tir.Node{Type: typ, Span: record.Header.Span, Syntax: record.Header.Syntax}
+	switch record.Kind {
+	case expressionCast:
+		cast := s.castsByRecord[record.Specialized]
+		if cast == nil {
+			return 0, false
+		}
+		sourceType, sourceOK := s.resolveType(cast.Source)
+		destination, destinationOK := s.resolveType(cast.Destination)
+		if !sourceOK || !destinationOK {
+			return 0, false
+		}
+		child, childOK := s.buildValue(cast.Source)
+		if !childOK {
+			return 0, false
+		}
+		if sourceType == destination {
+			node.Kind, node.ExplicitCast, node.Children = tir.SourceAlias, true, []tir.NodeID{child}
+			break
+		}
+		class := classify(s.handoff.Semantics, sourceType, destination)
+		coercion := coercionFor(s.handoff.Semantics, class, sourceType, destination)
+		coercionNode := map[coercionKind]tir.NodeKind{
+			coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
+			coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
+			coercionEnumToInteger: tir.EnumToInteger, coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum,
+			coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
+		}[coercion]
+		if coercionNode == 0 {
+			return 0, false
+		}
+		node.Kind, node.Children = coercionNode, []tir.NodeID{child}
+	case expressionLiteral:
+		if !s.buildLiteral(record, &node) {
+			return 0, false
+		}
+	case expressionName, expressionPath:
+		if !s.buildSymbolValue(record, &node) {
+			return 0, false
+		}
+	case expressionFunction:
+		callable := s.callableForSyntax(record.Header.Syntax)
+		if callable == nil || callable.Symbol == 0 || len(callable.Captures) != 0 {
+			return 0, false
+		}
+		function := s.functions[callable.Symbol]
+		if function == 0 {
+			return 0, false
+		}
+		node.Kind, node.Symbol, node.Function = tir.HoistedFunctionValue, callable.Symbol, function
+	case expressionMember:
+		if member := s.membersByResult[id]; member != nil && (member.Kind == memberField || member.Kind == memberTuple) {
+			if place, ok := s.buildPlaceForValue(id); ok {
+				node.Kind, node.Children = tir.Load, []tir.NodeID{place}
+			} else if len(record.Children) == 1 {
+				base, ok := s.buildValue(record.Children[0])
+				if !ok {
+					return 0, false
+				}
+				memberID := member.Member
+				if memberID == 0 {
+					memberID = s.memberSymbol(record.Children[0], member.Name)
+				}
+				if member.Kind == memberField {
+					node.Kind, node.Member, node.Children = tir.FieldValue, memberID, []tir.NodeID{base}
+				} else {
+					node.Kind, node.Ordinal, node.Children = tir.TupleElementValue, member.TupleOrdinal, []tir.NodeID{base}
+				}
+			} else {
+				return 0, false
+			}
+		} else if !s.buildVariantMember(record, &node) {
+			return 0, false
+		}
+	case expressionContext:
+		node.Kind = tir.ContextValue
+		node.ContextAction = tir.ContextExpr
+	case expressionSizeof:
+		if !s.buildSizeof(record, &node) {
+			return 0, false
+		}
+	case expressionTuple:
+		node.Kind = tir.TupleValue
+		if !s.buildChildren(record, &node) {
+			return 0, false
+		}
+		if components := s.tuplesBySyntax[record.Header.Syntax]; len(components) != 0 {
+			sort.Slice(components, func(i, j int) bool { return components[i].Ordinal < components[j].Ordinal })
+			tupleChildren := append([]tir.NodeID(nil), node.Children...)
+			typeArgs := make([]types.TypeID, 0, len(components))
+			needsCoercion := false
+			for _, component := range components {
+				destination, ok := s.resolveType(component.Destination)
+				if !ok || component.Ordinal >= uint32(len(tupleChildren)) {
+					return 0, false
+				}
+				child := tupleChildren[component.Ordinal]
+				sourceType, _ := s.resolveType(component.Source)
+				coercion := coercionFor(s.handoff.Semantics, classify(s.handoff.Semantics, sourceType, destination), sourceType, destination)
+				needsCoercion = needsCoercion || coercion != coercionNone
+				if coercion != coercionNone {
+					wrapped, ok := s.addCoercionNode(coercion, destination, child, record.Header.Span, symbol.SyntaxRef{})
+					if !ok {
+						return 0, false
+					}
+					child = wrapped
+				}
+				tupleChildren[component.Ordinal] = child
+				typeArgs = append(typeArgs, destination)
+			}
+			if !needsCoercion {
+				break
+			}
+			sourceTuple, ok := s.addNode(tir.Node{Kind: tir.TupleValue, Type: typ, Span: record.Header.Span, Children: append([]tir.NodeID(nil), node.Children...)}, symbol.SyntaxRef{})
+			if !ok {
+				return 0, false
+			}
+			node.Kind, node.TypeArgs, node.Children = tir.TupleCoerce, typeArgs, append([]tir.NodeID{sourceTuple}, tupleChildren...)
+		}
+	case expressionArray:
+		node.Kind = tir.ArrayValue
+		if !s.buildChildren(record, &node) {
+			return 0, false
+		}
+	case expressionArrayRepeat:
+		node.Kind = tir.ArrayRepeat
+		if !s.buildArrayRepeat(record, &node) {
+			return 0, false
+		}
+	case expressionRecordValue:
+		if !s.buildRecordConstruct(record, &node) {
+			return 0, false
+		}
+	case expressionCall:
+		if !s.buildCall(record, &node) {
+			return 0, false
+		}
+	case expressionGrouped:
+		node.Kind = tir.SourceAlias
+		node.ExplicitCast = false
+		if !s.buildChildren(record, &node) {
+			return 0, false
+		}
+	case expressionSome:
+		if len(record.Children) != 1 {
+			return 0, false
+		}
+		payload, ok := s.buildValue(record.Children[0])
+		if !ok {
+			return 0, false
+		}
+		node.Kind, node.Children = tir.SomeOptional, []tir.NodeID{payload}
+	case expressionInterpolated:
+		node.Kind = tir.InterpolatedString
+		if !s.buildInterpolated(record, &node) {
+			return 0, false
+		}
+	case expressionPrefix, expressionPostfix, expressionBinary:
+		op := s.operatorsByResult[id]
+		if op == nil {
+			op = s.operatorsBySyntax[record.Header.Syntax]
+		}
+		if op != nil && op.Family == operatorDereference {
+			if place, ok := s.buildPlaceForValue(id); ok {
+				node.Kind, node.Children = tir.Load, []tir.NodeID{place}
+			} else {
+				return 0, false
+			}
+		} else if !s.buildOperatorValue(record, &node) {
+			return 0, false
+		}
+	case expressionSlice:
+		index := s.indexForValue(id, record.Header.Syntax)
+		if index == nil {
+			return 0, false
+		}
+		base, ok := s.buildValue(index.Base)
+		if !ok {
+			return 0, false
+		}
+		node.Kind, node.Children = tir.CheckedSlice, []tir.NodeID{base}
+		if index.StartPresent {
+			start, ok := s.buildValue(index.Start)
+			if !ok {
+				return 0, false
+			}
+			node.Children = append(node.Children, start)
+		}
+		if index.EndPresent {
+			end, ok := s.buildValue(index.End)
+			if !ok {
+				return 0, false
+			}
+			node.Children = append(node.Children, end)
+		}
+	case expressionBracket:
+		if place, ok := s.buildPlaceForValue(id); ok {
+			node.Kind, node.Children = tir.Load, []tir.NodeID{place}
+		} else if index := s.indexForValue(id, record.Header.Syntax); index != nil {
+			base, ok := s.buildValue(index.Base)
+			if !ok {
+				return 0, false
+			}
+			if index.Mode == indexValue {
+				start, ok := s.buildValue(index.Start)
+				if !ok {
+					return 0, false
+				}
+				node.Kind, node.Children = tir.CheckedIndex, []tir.NodeID{base, start}
+			} else {
+				node.Kind, node.Children = tir.CheckedSlice, []tir.NodeID{base}
+				if index.StartPresent {
+					start, ok := s.buildValue(index.Start)
+					if !ok {
+						return 0, false
+					}
+					node.Children = append(node.Children, start)
+				}
+				if index.EndPresent {
+					end, ok := s.buildValue(index.End)
+					if !ok {
+						return 0, false
+					}
+					node.Children = append(node.Children, end)
+				}
+			}
+		} else if !s.buildGenericFunctionValue(record, &node) {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	if node.Kind == 0 {
+		return 0, false
+	}
+	nid, ok := s.addNode(node, record.Header.Syntax)
+	if !ok {
+		return 0, false
+	}
+	s.values[id] = nid
+	return nid, true
+}
+
+func (s *irBuildState) callableForSyntax(ref symbol.SyntaxRef) *callableRecord {
+	for _, retained := range s.handoff.Records.Records() {
+		if retained.Callable != nil && retained.Header.Syntax == ref {
+			return retained.Callable
+		}
+	}
+	return nil
+}
+
+// buildGenericFunctionValue handles a bare generic function reference
+// (e.g. `identity[i32]` used as a value) whose bracket record has neither an
+// index nor a place. It requires the solved instantiation at the bracket site,
+// a resolved function symbol, and fully final concrete type arguments; builds
+// the specialized declaration so the unit contains runnable typed IR, records
+// the matching tir.Instantiation reference, and emits a GenericFunctionValue.
+func (s *irBuildState) buildGenericFunctionValue(record *expressionRecord, node *tir.Node) bool {
+	instantiation, found := s.handoff.Solution.Instantiation(record.Header.Syntax)
+	if !found {
+		return false
+	}
+	sym, ok := s.symbol(instantiation.Generic)
+	if !ok || (sym.Kind != symbol.SymbolFunction && sym.Kind != symbol.SymbolExternFunction) {
+		return false
+	}
+	typeArgs := make([]types.TypeID, len(instantiation.Arguments))
+	for i, argument := range instantiation.Arguments {
+		if argument.State != infer.TypeFinal || argument.Type == 0 {
+			return false
+		}
+		typeArgs[i] = argument.Type
+	}
+	if _, ok := s.buildSpecialization(instantiation); !ok {
+		return false
+	}
+	ref, err := s.builder.AddInstantiation(tir.Instantiation{
+		Site:        record.Header.Syntax,
+		Declaration: instantiation.Generic,
+		TypeArgs:    typeArgs,
+	})
+	if err != nil {
+		return false
+	}
+	node.Kind, node.Symbol, node.GenericRef, node.TypeArgs = tir.GenericFunctionValue, instantiation.Generic, ref, typeArgs
+	return true
+}
+
+func mustType(records *solvedRecords, id valueID) types.TypeID {
+	typ, _ := typeOfValue(records, id)
+	return typ
+}
+
+func (s *irBuildState) buildCompatibility(source valueID, compatibility *compatibilityRecord) (tir.NodeID, bool) {
+	sourceType, ok := s.resolveType(source)
+	if !ok {
+		return 0, false
+	}
+	destination, ok := s.resolveType(compatibility.Destination)
+	if !ok {
+		return s.buildValueBase(source)
+	}
+	class := classify(s.handoff.Semantics, sourceType, destination)
+	if class != compatibleImplicit {
+		return s.buildValueBase(source)
+	}
+	coercion := coercionFor(s.handoff.Semantics, class, sourceType, destination)
+	if coercion == coercionNone {
+		return s.buildValueBase(source)
+	}
+	child, ok := s.buildValueBase(source)
+	if !ok {
+		return 0, false
+	}
+	return s.addCoercionNode(coercion, destination, child, compatibility.Header.Span, symbol.SyntaxRef{})
+}
+
+func (s *irBuildState) addCoercionNode(kind coercionKind, destination types.TypeID, child tir.NodeID, span source.Span, ref symbol.SyntaxRef) (tir.NodeID, bool) {
+	irKind := map[coercionKind]tir.NodeKind{
+		coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
+		coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
+		coercionOptionalInject: tir.OptionalInject, coercionEnumToInteger: tir.EnumToInteger,
+		coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum, coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
+	}[kind]
+	if irKind == 0 {
+		return 0, false
+	}
+	return s.addNode(tir.Node{Kind: irKind, Type: destination, Span: span, Children: []tir.NodeID{child}}, ref)
+}
