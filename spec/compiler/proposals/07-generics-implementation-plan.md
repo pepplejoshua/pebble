@@ -1,6 +1,6 @@
 # 07 generics — rough implementation plan
 
-**Status:** in progress. 07.1–07.6a are implemented, committed, and
+**Status:** in progress. 07.1–07.6b are implemented, committed, and
 pushed (see "Completed slices" below). This document is being updated
 in place as each slice lands, rather than staying a pre-implementation
 sketch — treat the "Completed slices" section as authoritative fact and
@@ -9,7 +9,7 @@ still-rough planning, sharpened as
 each piece is actually written, the same way 06b.7b's parts each
 informed the next.
 
-**Baseline.** `main` at `46febe8` (07.6a, the last landed slice). 06a
+**Baseline.** `main` at `7d802e4` (07.6b, the last landed slice). 06a
 and 06b are both complete (all 06a.1–06a.8 and 06b.1–06b.8 slices
 accepted, plus the four Sol-flagged 06b defect fixes).
 
@@ -127,6 +127,13 @@ implementation.
   function-value test that inspects the verified body, instantiation, and
   single specialization declaration. Full tests, race tests, vet, build, and
   diff checks pass.
+- **07.6b — generic typed-IR determinism** (`determinism_test.go`): repeated
+  full-pipeline checks of a valid generic program now compare the complete
+  canonical typed-IR dump, including specialization declarations,
+  instantiation ordering, node IDs, concrete `TypeArgs`, and source maps.
+  The fixture covers distinct and repeated generic instantiations, bare
+  generic function values, and multiple specialization declarations. Full
+  tests, race tests, vet, build, and diff checks pass.
 
 ## What already exists (evidence, not spec prose)
 
@@ -261,13 +268,9 @@ and bare-value paths with exact source-span tests.
 
 ### 07.6 — Full test coverage
 
-07.6 is split into these small slices. 07.6a is complete; the remaining
-slices are:
+07.6 is split into these small slices. 07.6a and 07.6b are complete; the
+remaining slices are:
 
-- **07.6b — generic determinism** (test-only): run a valid generic program
-  repeatedly and compare the complete typed-IR output, including
-  specialization declarations and instantiation ordering. Existing
-  determinism tests cover non-generic programs only.
 - **07.6c — cross-module generic sharing** (test-only): add a multi-module
   generic fixture and confirm one shared specialization, declaring-module
   ownership, and stable consumer references.
@@ -316,13 +319,13 @@ conversation's history.
 ### Where things stand
 
 Read "Completed slices" above for exactly what's built and verified.
-07.4b, 07.5, and 07.6a are complete. The next slice is 07.6b, the generic
-determinism test. The remaining 07.6 work is split into small independent
-slices above.
+07.4b, 07.5, 07.6a, and 07.6b are complete. The next slice is 07.6c, the
+cross-module generic sharing test. The remaining 07.6 work is split into
+small independent slices above.
 
 ### Using `orc` to dispatch implementation work
 
-This phase's slices (07.1–07.6a) were each implemented by dispatching
+This phase's slices (07.1–07.6b) were each implemented by dispatching
 a tightly-scoped brief to `orc`, a supervisor CLI that runs an
 OpenCode worker model against this repository and blocks until it
 finishes:
