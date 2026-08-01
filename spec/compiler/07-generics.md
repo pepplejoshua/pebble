@@ -120,9 +120,21 @@ The cache is populated with an in-progress entry before recursively checking a
 body so recursive generic functions terminate. A specialization produces typed
 IR; it never clones and rewrites the surface tree.
 
+**Resolved:** every generic instantiation is always fully monomorphized — no
+erased or runtime-dispatched form exists. A specialization is shared globally
+for the whole compilation by its key and owned by the generic's declaring
+module: two modules instantiating the same generic with the same concrete
+type arguments and ABI options share one specialization rather than each
+producing a private copy. This cache is purely in-process for one compilation
+run, matching `09-typed-ir-and-caching.md`'s note that persistent cross-build
+caching is deferred until deterministic clean builds exist — nothing here
+needs to survive across process runs yet.
+
 ## Open generic decisions
 
-- Whether every generic is monomorphized or some may use erased/runtime forms
 - Whether inferred obligations are displayed in generated documentation
-- Rules for specialization visibility and cross-module ownership
-- Code-size controls and recursion limits
+  (a docs-generation concern, not a checker/backend one; does not block
+  implementation)
+- Code-size controls and recursion limits (bounded like every other 06/07
+  resource; the exact limit constants are an implementation-config decision,
+  not a language decision)

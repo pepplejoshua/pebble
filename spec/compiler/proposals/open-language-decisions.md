@@ -197,24 +197,33 @@ lists match exactly.
 
 _(decisions tied to a phase that will need them, not yet reached)_
 
-### 2.1 Generic monomorphization vs. erasure, and cross-module specialization
+### 2.1 Generic monomorphization vs. erasure, and cross-module specialization — RESOLVED
 
-**Undecided:** whether every generic instantiation is monomorphized or some
-use an erased/runtime form; whether inferred requirements are shown in
-generated docs; and the rules for specialization visibility and cross-module
-ownership.
+**Resolved** (phase 7 planning, before implementation began): every generic
+instantiation is always fully monomorphized — no erased/runtime-dispatched
+form is supported. Cross-module specialization is shared: a specialization
+is keyed globally for the whole compilation by `(GenericSymbolID, ordered
+concrete TypeIDs, relevant ABI options)` and owned by the generic's
+declaring module, so two modules instantiating the same generic with the
+same concrete types share one specialization rather than each producing a
+private copy.
 
-**Where:** `07-generics.md` §"Open generic decisions" (the document's own
-heading, matching the README's "Open" label).
+Still genuinely open, deferred, and not blocking phase 7's core mechanism:
+whether inferred requirements are ever surfaced in generated documentation
+(a docs-generation concern, not a checker/backend one).
 
-**Blocks:** phase 7 (Generics), not yet started.
+**Where:** `07-generics.md` §"Specialization" records the resolved key
+shape and the always-monomorphize/shared-ownership decision directly (see
+that section for the authoritative statement, not this entry).
 
-**Costs you:** you can already write a generic function whose body implies a
-requirement (e.g. `fn max[T](a T, b T) T` needs `Ordered(T)`), but you don't
-yet know whether instantiating it from two different modules produces one
-shared specialization or a private one per call site — which affects binary
-size and whether the compiler will ever surface "`T` must support `Ordered`"
-in documentation rather than only at a failing call site.
+**Blocks:** nothing — this was the only real blocker for phase 7 slicing
+and is now resolved.
+
+**Costs you:** nothing beyond what's inherent to always-monomorphizing —
+widely-instantiated generics (e.g. `Vec[T]` used with many concrete `T`s)
+produce one specialization per distinct type, which is a binary-size
+tradeoff you accept in exchange for no runtime type dispatch anywhere in
+generic code.
 
 ### 2.2 Generic anonymous functions
 
