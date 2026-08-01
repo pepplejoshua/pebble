@@ -1,0 +1,6 @@
+let broken i32;
+
+fn recovered_place() void {
+    var target i32 = 1;
+    target = 2;
+}

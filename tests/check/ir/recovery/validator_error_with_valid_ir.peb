@@ -1,0 +1,6 @@
+let broken i32;
+
+fn valid_ir_portion() void {
+    var target i32 = 1;
+    target = 2;
+}

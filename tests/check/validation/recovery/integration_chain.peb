@@ -1,0 +1,18 @@
+fn broken_first() i32 {
+    let value i32 = 1;
+}
+
+fn recovered_place() void {
+    var target i32 = 1;
+    target = 2;
+}
+
+type Left = struct { value i32; };
+
+fn broken_third() i32 {
+    let value i32 = 2;
+}
+
+fn recovered_member(box Left) i32 {
+    return box.value;
+}
