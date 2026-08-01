@@ -36,6 +36,27 @@ func instantiationSpan(handoff *solveHandoff, instantiation infer.Instantiation)
 			return record.Header.Span
 		}
 	}
+	for _, record := range handoff.Records.Records() {
+		if record.Expression != nil && record.Expression.Kind == expressionBracket && record.Header.Syntax == instantiation.Site {
+			return record.Header.Span
+		}
+	}
+	return source.Span{}
+}
+
+// requirementOriginSpan resolves a normalized requirement back to the span in
+// the generic declaration/body where the requirement was retained. The origin
+// names the requirement record's syntax site, so the retained record that
+// published it carries the same span as the original source node.
+func requirementOriginSpan(handoff *solveHandoff, requirement Requirement) source.Span {
+	if handoff == nil || requirement.Origin == (symbol.SyntaxRef{}) {
+		return source.Span{}
+	}
+	for _, record := range handoff.Records.Records() {
+		if record.Requirement != nil && record.Header.Syntax == requirement.Origin {
+			return record.Header.Span
+		}
+	}
 	return source.Span{}
 }
 
@@ -74,7 +95,7 @@ func validateGenericInstantiations(handoff *solveHandoff, records *solvedRecords
 	for _, instantiation := range handoff.Solution.Instantiations() {
 		ownerRequirements := requirements[instantiation.Generic]
 		bad := false
-		var failedKind RequirementKind
+		var failedRequirement Requirement
 		for _, requirement := range ownerRequirements {
 			if requirement.Kind == RequirementLiteralFits {
 				continue
@@ -84,17 +105,22 @@ func validateGenericInstantiations(handoff *solveHandoff, records *solvedRecords
 				continue
 			}
 			if !concreteSatisfiesRequirement(requirement, instantiation.Arguments[ordinal], handoff.Semantics) {
-				bad, failedKind = true, requirement.Kind
+				bad, failedRequirement = true, requirement
 				break
 			}
 		}
 		if bad {
 			failed = true
+			name := requirementKindName(failedRequirement.Kind)
 			reporter.add(diagnostic.Diagnostic{
 				Severity: diagnostic.Error,
 				Code:     CodeGenericInstantiation,
-				Message:  fmt.Sprintf("generic %s requirement failed at this call site", requirementKindName(failedKind)),
+				Message:  fmt.Sprintf("generic %s requirement failed at this instantiation site", name),
 				Primary:  diagnostic.Label{Span: instantiationSpan(handoff, instantiation)},
+				Related: []diagnostic.Label{{
+					Span:    requirementOriginSpan(handoff, failedRequirement),
+					Message: fmt.Sprintf("generic %s requirement declared here", name),
+				}},
 			})
 		}
 	}
