@@ -2,6 +2,7 @@ package tir
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -430,6 +431,138 @@ func TestDumpTotality(t *testing.T) {
 				t.Fatalf("dump reported unhandled kind for tag %s: %v", kind, dumpErr)
 			}
 		})
+	}
+}
+
+func TestReserveFunctionDeclAssignsRealID(t *testing.T) {
+	b := newTestBuilder(t)
+	fid, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 7, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl: %v", err)
+	}
+	if fid != 1 {
+		t.Fatalf("expected first reserved FunctionID 1, got %d", fid)
+	}
+	if b.functions[0].FunctionID != fid {
+		t.Fatalf("reserved entry FunctionID = %d, want %d", b.functions[0].FunctionID, fid)
+	}
+	if b.functions[0].Node != 0 {
+		t.Fatalf("reserved entry Node = %d, want 0 until completed", b.functions[0].Node)
+	}
+	if b.functions[0].Symbol != 7 {
+		t.Fatalf("reserved entry lost caller Symbol: got %d, want 7", b.functions[0].Symbol)
+	}
+}
+
+func TestReserveFunctionDeclMonotonic(t *testing.T) {
+	b := newTestBuilder(t)
+	fid1, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl first: %v", err)
+	}
+	fid2, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 2, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl second: %v", err)
+	}
+	if fid1 != 1 || fid2 != 2 {
+		t.Fatalf("expected monotonic FunctionIDs 1, 2, got %d, %d", fid1, fid2)
+	}
+	if fid1 == fid2 {
+		t.Fatal("two reserves produced the same FunctionID")
+	}
+}
+
+func TestCompleteFunctionDeclSetsNode(t *testing.T) {
+	b := newTestBuilder(t)
+	fid, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl: %v", err)
+	}
+	r := mustRegion(t, b)
+	body := mustNode(t, b, Node{Kind: Block, Region: r, Span: span()})
+	if err := b.CompleteFunctionDecl(fid, body); err != nil {
+		t.Fatalf("CompleteFunctionDecl: %v", err)
+	}
+	u := mustBuild(t, b)
+	f := u.FunctionDeclarations()[0]
+	if f.Node != body {
+		t.Fatalf("completed FunctionDecl Node = %d, want %d", f.Node, body)
+	}
+}
+
+func TestCompleteFunctionDeclUnreserved(t *testing.T) {
+	b := newTestBuilder(t)
+	if err := b.CompleteFunctionDecl(0, 1); err == nil {
+		t.Fatal("completing FunctionID 0 should fail")
+	} else if !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("expected ErrInvalidNode, got %v", err)
+	}
+	fid, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl: %v", err)
+	}
+	if err := b.CompleteFunctionDecl(fid+1, 1); err == nil {
+		t.Fatalf("completing unreserved FunctionID %d should fail", fid+1)
+	} else if !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("expected ErrInvalidNode, got %v", err)
+	}
+}
+
+func TestCompleteFunctionDeclDoubleCompletion(t *testing.T) {
+	b := newTestBuilder(t)
+	fid, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl: %v", err)
+	}
+	r := mustRegion(t, b)
+	body := mustNode(t, b, Node{Kind: Block, Region: r, Span: span()})
+	if err := b.CompleteFunctionDecl(fid, body); err != nil {
+		t.Fatalf("first CompleteFunctionDecl: %v", err)
+	}
+	if err := b.CompleteFunctionDecl(fid, body); err == nil {
+		t.Fatal("second CompleteFunctionDecl on the same fid should fail")
+	} else if !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("expected ErrInvalidNode, got %v", err)
+	}
+}
+
+func TestCompleteFunctionDeclInvalidNode(t *testing.T) {
+	b := newTestBuilder(t)
+	fid, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl: %v", err)
+	}
+	if err := b.CompleteFunctionDecl(fid, 0); err == nil {
+		t.Fatal("completing with node 0 should fail")
+	} else if !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("expected ErrInvalidNode, got %v", err)
+	}
+	if err := b.CompleteFunctionDecl(fid, 999); err == nil {
+		t.Fatal("completing with a nonexistent node should fail")
+	} else if !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("expected ErrInvalidNode, got %v", err)
+	}
+}
+
+func TestReserveCompleteInterleaved(t *testing.T) {
+	b := newTestBuilder(t)
+	fid, err := b.ReserveFunctionDecl(FunctionDecl{Symbol: 1, Span: span()})
+	if err != nil {
+		t.Fatalf("ReserveFunctionDecl: %v", err)
+	}
+	r := mustRegion(t, b)
+	ret := mustNode(t, b, Node{Kind: Return, Span: span(), Function: fid, Children: []NodeID{boolLit(t, b)}})
+	body := mustNode(t, b, Node{Kind: Block, Region: r, Span: span(), Children: []NodeID{ret}})
+	if err := b.CompleteFunctionDecl(fid, body); err != nil {
+		t.Fatalf("CompleteFunctionDecl: %v", err)
+	}
+	u := mustBuild(t, b)
+	f := u.FunctionDeclarations()[0]
+	if f.FunctionID != fid {
+		t.Fatalf("FunctionID = %d, want %d", f.FunctionID, fid)
+	}
+	if f.Node != body {
+		t.Fatalf("completed FunctionDecl Node = %d, want %d", f.Node, body)
 	}
 }
 

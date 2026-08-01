@@ -357,6 +357,51 @@ func (b *Builder) AddFunctionDecl(f FunctionDecl) (FunctionID, error) {
 	return fid, nil
 }
 
+// ReserveFunctionDecl allocates a real, final FunctionID for a function
+// declaration before its body is built, mirroring AddRegion's identity-first
+// allocation. The declaration's Node is initially zero (matching the existing
+// meaning "no body" -- see AddFunctionDecl) and must be completed with
+// CompleteFunctionDecl once the body's node exists. Every field of f except
+// FunctionID and Node should already be set by the caller; both are
+// overwritten by this call and by the later CompleteFunctionDecl.
+func (b *Builder) ReserveFunctionDecl(f FunctionDecl) (FunctionID, error) {
+	if err := b.checkFrozen(); err != nil {
+		return 0, err
+	}
+	if !canAdd(b.components, 1, b.config.MaxIRComponents) {
+		return 0, ErrLimitExceeded
+	}
+	b.components++
+	fid := FunctionID(len(b.functions) + 1)
+	f.FunctionID = fid
+	f.Node = 0
+	b.functions = append(b.functions, f)
+	return fid, nil
+}
+
+// CompleteFunctionDecl attaches the built body node to a previously reserved
+// function declaration. Calling it with a fid that was never reserved, or
+// completing the same fid twice, is an error -- this API exists precisely
+// because nothing else (the verifier included) catches a forgotten or
+// duplicated completion.
+func (b *Builder) CompleteFunctionDecl(fid FunctionID, node NodeID) error {
+	if err := b.checkFrozen(); err != nil {
+		return err
+	}
+	if !fid.IsValid() || uint64(fid) > uint64(len(b.functions)) {
+		return fmt.Errorf("%w: FunctionID %d was never reserved", ErrInvalidNode, fid)
+	}
+	index := int(fid) - 1
+	if b.functions[index].Node != 0 {
+		return fmt.Errorf("%w: FunctionID %d was already completed", ErrInvalidNode, fid)
+	}
+	if !node.IsValid() || uint64(node) > uint64(len(b.nodes)) {
+		return fmt.Errorf("%w: node %d is not a valid built node", ErrInvalidNode, node)
+	}
+	b.functions[index].Node = node
+	return nil
+}
+
 // AddRegion allocates a new lexical RegionID.
 func (b *Builder) AddRegion() (RegionID, error) {
 	if err := b.checkFrozen(); err != nil {
