@@ -1,0 +1,5 @@
+import "./shared";
+
+fn right_value() i32 {
+    return shared::shared_value();
+}

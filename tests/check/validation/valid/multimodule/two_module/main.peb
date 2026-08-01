@@ -1,0 +1,5 @@
+import "./helper";
+
+fn main() void {
+    print helper::helper_fn();
+}

@@ -1,0 +1,6 @@
+import "./left";
+import "./right";
+
+fn main() void {
+    print left::left_value() + right::right_value();
+}
