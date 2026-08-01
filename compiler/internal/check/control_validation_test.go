@@ -865,3 +865,29 @@ fn classify(flag bool) i32 {
 		t.Fatalf("exhaustive bool switch without else was rejected: %+v", diagnostics.Items())
 	}
 }
+
+// TestValidateControlFlowRegionSequenceSourceOrder verifies that region-owning
+// siblings (if/for/switch/nested blocks) are interleaved into a region's
+// statement sequence by source position rather than appended after all
+// non-owning statements. Before the ordering fix, `return 2;` was evaluated
+// before the `if` record, making the trailing return look unreachable and
+// emitting a false CodeUnreachable warning (and corrupting the exit set).
+func TestValidateControlFlowRegionSequenceSourceOrder(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn f(flag bool) i32 {
+    if flag {
+        return 1;
+    }
+    return 2;
+}
+`)
+	if !valid {
+		t.Fatalf("valid function rejected: %+v", diagnostics.Items())
+	}
+	if hasControlDiagnostic(diagnostics, CodeUnreachable) {
+		t.Fatalf("false unreachable warning from misordered region sequence: %+v", diagnostics.Items())
+	}
+	if hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("false missing-return error from misordered region sequence: %+v", diagnostics.Items())
+	}
+}

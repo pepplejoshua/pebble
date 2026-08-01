@@ -1,6 +1,8 @@
 package check
 
 import (
+	"sort"
+
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -725,32 +727,35 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	}
 
 	evalRegion = func(region controlID, reachable bool) []controlExit {
-		sequence := byRegion[region]
-		if first := owner[region]; first != nil && first.Kind == controlFunction && uint64(region) <= uint64(len(controls)) {
-			for _, child := range controls[region-1].Children {
-				if childOwner := owner[child]; childOwner != nil {
-					sequence = append(sequence, childOwner)
-				}
-			}
-			return evalSequence(sequence, reachable)
-		}
-		if len(sequence) == 0 {
-			return []controlExit{{kind: exitFallthrough}}
-		}
+		sequence := append([]*controlRecord(nil), byRegion[region]...)
 		if first := owner[region]; first != nil && (first.Kind == controlBlock || first.Kind == controlFunction) {
-			for i, ctrl := range sequence {
-				if ctrl == first {
-					sequence = sequence[i+1:]
-					break
+			if first.Kind == controlBlock {
+				for i, ctrl := range sequence {
+					if ctrl == first {
+						sequence = sequence[i+1:]
+						break
+					}
 				}
 			}
 			if uint64(region) <= uint64(len(controls)) {
 				for _, child := range controls[region-1].Children {
 					if childOwner := owner[child]; childOwner != nil {
-						sequence = append(sequence, childOwner)
+						seen := false
+						for _, existing := range sequence {
+							seen = seen || existing == childOwner
+						}
+						if !seen {
+							sequence = append(sequence, childOwner)
+						}
 					}
 				}
 			}
+			sort.SliceStable(sequence, func(i, j int) bool {
+				return sequence[i].Header.Span.Start < sequence[j].Header.Span.Start
+			})
+		}
+		if len(sequence) == 0 {
+			return []controlExit{{kind: exitFallthrough}}
 		}
 		return evalSequence(sequence, reachable)
 	}

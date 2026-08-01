@@ -74,3 +74,24 @@ fn f(flag bool) void {
 		t.Fatalf("defer edge budget was not enforced: valid=%v diagnostics=%+v", valid, diagnostics.Items())
 	}
 }
+
+// TestValidateDefersRegionSequenceSourceOrder verifies that defer edges from a
+// return inside a later `if` are still accounted for when a leading defer
+// statement precedes the control-flow sibling in source order. Before the
+// ordering fix the trailing `return;` was evaluated before the `if` record,
+// which dropped the if-body's return exit and undercounted defer edges, so the
+// budget below was (wrongly) not exhausted.
+func TestValidateDefersRegionSequenceSourceOrder(t *testing.T) {
+	diagnostics, valid := validateDeferFixture(t, `
+fn f(flag bool) void {
+    defer print 1;
+    if flag {
+        return;
+    }
+    return;
+}
+`, Config{MaxDeferEdges: 1})
+	if valid || !hasControlDiagnostic(diagnostics, CodeGeneration) {
+		t.Fatalf("defer edge budget was not enforced with source-ordered sequence: valid=%v diagnostics=%+v", valid, diagnostics.Items())
+	}
+}
