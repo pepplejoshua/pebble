@@ -2,6 +2,7 @@ package check
 
 import (
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -54,9 +55,9 @@ const (
 )
 
 type specializationEntry struct {
-	State specializationState
-	// Built IR (a *tir.NodeID, function declaration index, etc.) is added by
-	// a later slice once actual monomorphized IR construction exists.
+	State      specializationState
+	FunctionID tir.FunctionID
+	DeclNode   tir.NodeID
 }
 
 type specializationCache struct {

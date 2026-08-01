@@ -33,7 +33,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		MaxIRNodes: config.MaxIRNodes, MaxIRComponents: config.MaxIRComponents,
 		MaxDumpBytes: config.MaxDumpBytes,
 	})
-	state := &irBuildState{handoff: handoff, records: records, builder: b, store: store, irBuildScope: newIRBuildScope()}
+	state := &irBuildState{handoff: handoff, records: records, builder: b, store: store, cache: newSpecializationCache(), irBuildScope: newIRBuildScope()}
 	steps := []struct {
 		name  string
 		build func() bool
@@ -91,6 +91,7 @@ type irBuildState struct {
 	records                      *solvedRecords
 	builder                      *tir.Builder
 	store                        *types.Store
+	cache                        *specializationCache
 	activeSubstitution           map[symbol.SymbolID]types.TypeID
 	places                       map[symbol.SyntaxRef]*placeRecord
 	expressionsByResult          map[valueID]*expressionRecord
@@ -141,6 +142,10 @@ type irFunctionDecl struct {
 }
 
 func (s *irBuildState) addNode(node tir.Node, ref symbol.SyntaxRef) (tir.NodeID, bool) {
+	if s.activeSubstitution != nil {
+		ref = symbol.SyntaxRef{}
+		node.Syntax = symbol.SyntaxRef{}
+	}
 	if node.Syntax == (symbol.SyntaxRef{}) {
 		node.Syntax = ref
 	}
