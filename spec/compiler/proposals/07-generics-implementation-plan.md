@@ -1,6 +1,6 @@
 # 07 generics — rough implementation plan
 
-**Status:** in progress. 07.1–07.4b are implemented, committed, and
+**Status:** in progress. 07.1–07.5 are implemented, committed, and
 pushed (see "Completed slices" below). This document is being updated
 in place as each slice lands, rather than staying a pre-implementation
 sketch — treat the "Completed slices" section as authoritative fact and
@@ -9,7 +9,7 @@ still-rough planning, sharpened as
 each piece is actually written, the same way 06b.7b's parts each
 informed the next.
 
-**Baseline.** `main` at `7142292` (07.4b, the last landed slice). 06a
+**Baseline.** `main` at `6534113` (07.5, the last landed slice). 06a
 and 06b are both complete (all 06a.1–06a.8 and 06b.1–06b.8 slices
 accepted, plus the four Sol-flagged 06b defect fixes).
 
@@ -112,6 +112,13 @@ implementation.
   specialization built during block traversal cannot shift normal function
   IDs. Added block-bodied IR tests for both paths. Full tests, race tests,
   vet, build, and diff checks pass.
+- **07.5 — generic instantiation diagnostics** (`generic_validation.go`):
+  kept `C0621` as one deterministic diagnostic per failed instantiation,
+  retained the concrete call or bare generic-value site as the primary span,
+  and added a related label for the generic-body requirement origin. Bare
+  generic function values now receive a real bracket-site span. Added exact
+  call-site and bare-value diagnostics tests. Full tests, race tests, vet,
+  build, and diff checks pass.
 
 ## What already exists (evidence, not spec prose)
 
@@ -154,16 +161,9 @@ mechanism to validate ordinary generic code:
 
 ## What's actually missing
 
-Items 1–3 (call-site requirement satisfaction, the specialization
-cache, building monomorphized typed IR) are done — see "Completed
-slices" above. What remains:
-
-4. **Diagnostics** that name both the unmet requirement and the failing
-   call (spec goal: "explain both the generic requirement and the call
-   that failed to satisfy it") — 07.1's `C0621` already does this
-   reasonably well for validation-time failures; unclear yet whether
-   anything more is needed for specialization-time failures
-   specifically. Not yet investigated.
+Items 1–4 (call-site requirement satisfaction, the specialization
+cache, building monomorphized typed IR, and generic diagnostics) are done —
+see "Completed slices" above. What remains is full generics coverage.
 
 ## Slice record and remaining work
 
@@ -185,26 +185,22 @@ gap, rather than scoping around it. Extend `buildSymbolValue`
   `buildSpecialization` for the resolved instantiation and emit a real
   `tir.GenericFunctionValue` node (`Symbol`, `GenericRef` via
   `Builder.AddInstantiation`, `TypeArgs` — the schema has existed,
-  fully verified/dumped, since before 07 started; nothing in
-  `ir_builder.go` references it yet).
+  fully verified/dumped, since before 07 started; 07.4b now consumes it).
 
 **Why this is bigger than originally scoped**: `buildSymbolValue`'s
 switch (`internal/check/ir_builder.go`, case list starting
-`symbol.SymbolBinding, symbol.SymbolParameter, ...`) has no case for
-`symbol.SymbolFunction` at all — falls through to `default: return
-false`. The only existing path that builds a function-*value* node is
+`symbol.SymbolBinding, symbol.SymbolParameter, ...`) had no case for
+`symbol.SymbolFunction` — it fell through to `default: return false`. The
+07.4b implementation now adds this path. The only older path that builds a
+function-*value* node is
 `case expressionFunction:` → `tir.HoistedFunctionValue`
 (`ir_builder.go`), but `expressionFunction` is retained **only** for an
 inline anonymous function literal term — confirmed directly:
 `compiler/internal/check/expression_facts.go`'s `retainExistingExpression`
 (~line 499) sets `kind = expressionFunction` only when `node.Kind() ==
 syntax.FunctionTerm`. A reference to an already-declared *named*
-function (generic or not) is a different syntax node entirely and
-never takes this path. So `let f = someOrdinaryFunction;` has no
-working IR-construction path today — a pre-existing 06b.7b-era gap,
-not something this phase introduced, but generics can't get a working
-value-reference without it since `GenericFunctionValue` needs the same
-underlying mechanism.
+function (generic or not) is a different syntax node entirely and never
+took this path. This was the pre-existing 06b.7b-era gap closed by 07.4b.
 
 **Investigation trail so far (real file/line evidence, to save
 re-deriving it):**
@@ -247,12 +243,13 @@ The implementation then added the named-function path and the generic
 function-value path together, with block-bodied IR tests that inspect the
 emitted nodes, instantiation table, and specialized declaration.
 
-### 07.5 — Diagnostics
+### 07.5 — Diagnostics (completed; implementation record)
 
-The dual-context diagnostic(s) tying a failed requirement to both its
-origin (the generic body) and the failing call site. Depends on 07.1
-existing; does not depend on 07.3/07.4 being done first, so it could
-plausibly be pulled earlier if 07.1 lands cleanly.
+`C0621` now ties a failed requirement to both contexts: the concrete call or
+bare generic-value site is the primary label, and the normalized requirement's
+retained generic-body origin is a related label. The implementation keeps
+deterministic one-diagnostic-per-instantiation behavior and covers both call
+and bare-value paths with exact source-span tests.
 
 ### 07.6 — Full test coverage
 
@@ -263,7 +260,7 @@ decision from this plan), and fuzz/race coverage extending
 `fuzz_test.go`/`race_test.go`'s existing shape. Mirrors 06b.8's own
 final slice.
 
-## What needed sharpening, resolved during 07.1–07.4b
+## What needed sharpening, resolved during 07.1–07.5
 
 These were open questions in the original pre-implementation draft;
 kept here (rather than deleted) as a record of how they actually
@@ -296,12 +293,13 @@ conversation's history.
 ### Where things stand
 
 Read "Completed slices" above for exactly what's built and verified.
-07.4b is complete. The next unfinished item is diagnostics (item 4 in
-"What's actually missing"); full generics coverage remains item 07.6.
+07.4b and 07.5 are complete. The next unfinished item is full generics
+coverage in 07.6. It should be split into small independent slices before
+implementation begins.
 
 ### Using `orc` to dispatch implementation work
 
-This phase's slices (07.1–07.4b) were each implemented by dispatching
+This phase's slices (07.1–07.5) were each implemented by dispatching
 a tightly-scoped brief to `orc`, a supervisor CLI that runs an
 OpenCode worker model against this repository and blocks until it
 finishes:
