@@ -125,7 +125,7 @@ func validNode(t *testing.T, b *Builder, kind NodeKind, refs map[NodeID]struct{}
 	case ContextValue:
 		return Node{Kind: kind, Type: intType, Span: span, ContextAction: ContextExpr}
 	case InterpolatedString:
-		return Node{Kind: kind, Type: builtinType(snap, types.Str), Span: span, Children: []NodeID{ensureChild(BoolLiteral)}}
+		return Node{Kind: kind, Type: builtinType(snap, types.Str), Span: span, Parts: []InterpolationPart{{Kind: InterpolationTextPart, Text: "x"}, {Kind: InterpolationValuePart, Value: ensureChild(BoolLiteral)}}}
 	case SizeofType:
 		return Node{Kind: kind, Type: builtinType(snap, types.Uint), Span: span, TypeArg: intType}
 	case PrefixValue:
@@ -428,7 +428,7 @@ func damageNode(t *testing.T, b *Builder, kind NodeKind, n Node, refs map[NodeID
 		if err != nil {
 			t.Fatalf("damage: %v", err)
 		}
-		n.Children = append(n.Children, pid)
+		n.Parts = append(n.Parts, InterpolationPart{Kind: InterpolationValuePart, Value: pid})
 	case SizeofType:
 		n.TypeArg = 0
 	case PrefixValue:

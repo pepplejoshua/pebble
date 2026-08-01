@@ -1174,7 +1174,7 @@ func TestBuildValueSourceAlias(t *testing.T) {
 }
 
 func TestBuildValueInterpolatedString(t *testing.T) {
-	state, records := testBuildValue(t, "let item str = \"x\";\nlet msg str = `value {item}`;")
+	state, records := testBuildValue(t, "let name str = \"Ada\";\nlet count i32 = 2;\nlet msg str = `hello {name}, you have {count} items!`;")
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionInterpolated })
 	nid, ok := state.buildValue(id)
 	if !ok {
@@ -1185,8 +1185,28 @@ func TestBuildValueInterpolatedString(t *testing.T) {
 		t.Fatalf("Build failed: %v", err)
 	}
 	node := unit.Nodes()[nid-1]
-	if node.Kind != tir.InterpolatedString || len(node.Children) != 1 {
+	if node.Kind != tir.InterpolatedString || len(node.Parts) != 5 || len(node.Children) != 0 {
 		t.Fatalf("interpolated node = %+v", node)
+	}
+	wantText := []struct {
+		index int
+		text  string
+	}{{0, "hello "}, {2, ", you have "}, {4, " items!"}}
+	for _, want := range wantText {
+		part := node.Parts[want.index]
+		if part.Kind != tir.InterpolationTextPart || part.Text != want.text || part.Value != 0 {
+			t.Fatalf("interpolated text part[%d] = %+v", want.index, part)
+		}
+	}
+	for _, index := range []int{1, 3} {
+		part := node.Parts[index]
+		if part.Kind != tir.InterpolationValuePart || part.Value == 0 || int(part.Value) > len(unit.Nodes()) {
+			t.Fatalf("interpolated value part[%d] = %+v", index, part)
+		}
+		value := unit.Nodes()[part.Value-1]
+		if value.Kind != tir.SymbolValue || value.Symbol == 0 {
+			t.Fatalf("interpolated value node[%d] = %+v", index, value)
+		}
 	}
 }
 
@@ -2739,6 +2759,24 @@ func TestIRFixtureGolden(t *testing.T) {
 	}
 	if !bytes.Equal(got.Bytes(), want) {
 		t.Fatalf("typed-IR dump mismatch: want %d bytes, got %d bytes", len(want), got.Len())
+	}
+}
+
+func TestIRInterpolationFixtureGolden(t *testing.T) {
+	unit, ok := buildIRFixturePath(t, "../../../tests/check/ir/valid/interpolation_parts.peb", Config{})
+	if !ok || unit == nil {
+		t.Fatal("interpolation golden fixture was rejected")
+	}
+	var got bytes.Buffer
+	if err := unit.Dump(&got); err != nil {
+		t.Fatalf("Dump failed: %v", err)
+	}
+	want, err := os.ReadFile("../../../tests/check/ir/interpolation_parts.tir.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("typed-IR interpolation dump mismatch: want %d bytes, got %d bytes", len(want), got.Len())
 	}
 }
 

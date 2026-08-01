@@ -1,0 +1,3 @@
+fn f(name str, count i32) str {
+    return `hello {name}, you have {count} items!`;
+}

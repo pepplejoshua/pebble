@@ -245,6 +245,7 @@ func cloneNode(n Node) Node {
 	n.Children = append([]NodeID(nil), n.Children...)
 	n.Parameters = append([]Parameter(nil), n.Parameters...)
 	n.Fields = append([]FieldInit(nil), n.Fields...)
+	n.Parts = append([]InterpolationPart(nil), n.Parts...)
 	n.TypeArgs = append([]types.TypeID(nil), n.TypeArgs...)
 	n.DeferChain = append([]NodeID(nil), n.DeferChain...)
 	n.Requirements = append([]Requirement(nil), n.Requirements...)
@@ -451,6 +452,7 @@ func (b *Builder) AddNode(n Node) (NodeID, error) {
 		uint64(len(n.Children)) +
 		uint64(len(n.Parameters)) +
 		uint64(len(n.Fields)) +
+		uint64(len(n.Parts)) +
 		uint64(len(n.TypeArgs)) +
 		uint64(len(n.DeferChain)) +
 		uint64(len(n.Requirements))
@@ -805,7 +807,15 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 			return err
 		}
 	case InterpolatedString:
-		// payload printed via children
+		if err := d.printSlice("parts", len(n.Parts), func(i int) string {
+			part := n.Parts[i]
+			if part.Kind == InterpolationTextPart {
+				return fmt.Sprintf("text=%q", part.Text)
+			}
+			return fmt.Sprintf("value=%d", part.Value)
+		}); err != nil {
+			return err
+		}
 	case SizeofType:
 		if err := d.cw.printf(" typearg=%d", n.TypeArg); err != nil {
 			return err
@@ -959,6 +969,7 @@ func componentsInUnit(u *Unit) uint64 {
 			uint64(len(n.Children)) +
 			uint64(len(n.Parameters)) +
 			uint64(len(n.Fields)) +
+			uint64(len(n.Parts)) +
 			uint64(len(n.TypeArgs)) +
 			uint64(len(n.DeferChain)) +
 			uint64(len(n.Requirements))

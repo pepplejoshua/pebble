@@ -2135,19 +2135,21 @@ func callContextAction(flow *contextFlowRecord, convention types.CallingConventi
 }
 
 func (s *irBuildState) buildInterpolated(record *expressionRecord, node *tir.Node) bool {
-	children := make([]tir.NodeID, 0, len(record.Parts))
+	parts := make([]tir.InterpolationPart, 0, len(record.Parts))
 	for _, part := range record.Parts {
-		if part.Kind != interpolationValue {
-			continue
+		switch part.Kind {
+		case interpolationText:
+			parts = append(parts, tir.InterpolationPart{Kind: tir.InterpolationTextPart, Text: part.Text})
+		case interpolationValue:
+			valueNode, ok := s.buildValue(part.Value)
+			if !ok {
+				return false
+			}
+			parts = append(parts, tir.InterpolationPart{Kind: tir.InterpolationValuePart, Value: valueNode})
 		}
-		valueNode, ok := s.buildValue(part.Value)
-		if !ok {
-			return false
-		}
-		children = append(children, valueNode)
 	}
 	node.Kind = tir.InterpolatedString
-	node.Children = children
+	node.Parts = parts
 	return true
 }
 

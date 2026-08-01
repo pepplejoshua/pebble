@@ -242,6 +242,21 @@ type FieldInit struct {
 	Value NodeID
 }
 
+type InterpolationPartKind uint8
+
+const (
+	InterpolationTextPart InterpolationPartKind = iota + 1
+	InterpolationValuePart
+)
+
+// InterpolationPart is one ordered segment of an interpolated string: a
+// literal text run, or an evaluated value. Parts are stored left to right.
+type InterpolationPart struct {
+	Kind  InterpolationPartKind
+	Text  string
+	Value NodeID
+}
+
 // Literal is the canonical decoded payload for a literal node.
 type Literal struct {
 	Kind       LiteralKind
@@ -368,6 +383,7 @@ type Node struct {
 
 	// Aggregate construction.
 	Fields []FieldInit
+	Parts  []InterpolationPart
 
 	// Generic reference.
 	GenericRef uint32

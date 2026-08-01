@@ -140,6 +140,11 @@ func (v *verifier) markNodeFunction(rootID NodeID, fid FunctionID, visited map[N
 		for _, f := range n.Fields {
 			stack = append(stack, f.Value)
 		}
+		for _, p := range n.Parts {
+			if p.Kind == InterpolationValuePart {
+				stack = append(stack, p.Value)
+			}
+		}
 	}
 }
 
@@ -545,9 +550,28 @@ func (v *verifier) verifyNode(id NodeID) {
 			v.errorf("node %d ContextValue must use ContextExpr", id)
 		}
 	case InterpolatedString:
-		v.allowOnly(id, n, "Children")
-		for i := range n.Children {
-			v.expectChildCategory(id, n, i, CategoryValue)
+		v.allowOnly(id, n, "Parts")
+		if len(n.Parts) == 0 {
+			v.errorf("node %d InterpolatedString requires at least one part", id)
+		}
+		for i, p := range n.Parts {
+			switch p.Kind {
+			case InterpolationTextPart:
+				if p.Value != 0 {
+					v.errorf("node %d InterpolatedString part[%d] text has value %d", id, i, p.Value)
+				}
+			case InterpolationValuePart:
+				if !p.Value.IsValid() || uint64(p.Value) > uint64(len(v.u.nodes)) {
+					v.errorf("node %d InterpolatedString part[%d] value %d out of range", id, i, p.Value)
+					continue
+				}
+				cat, _ := CategoryOf(v.u.nodes[p.Value-1].Kind)
+				if cat != CategoryValue {
+					v.errorf("node %d InterpolatedString part[%d]=%d has category %s, want value", id, i, p.Value, cat)
+				}
+			default:
+				v.errorf("node %d InterpolatedString part[%d] has invalid kind %d", id, i, p.Kind)
+			}
 		}
 	case SizeofType:
 		v.allowOnly(id, n, "TypeArg")
@@ -797,6 +821,7 @@ func (v *verifier) allowOnly(id NodeID, n Node, fields ...string) {
 	check("Children", len(n.Children) > 0)
 	check("Parameters", len(n.Parameters) > 0)
 	check("Fields", len(n.Fields) > 0)
+	check("Parts", len(n.Parts) > 0)
 	check("TypeArgs", len(n.TypeArgs) > 0)
 	check("DeferChain", len(n.DeferChain) > 0)
 	check("Requirements", len(n.Requirements) > 0)
@@ -1079,6 +1104,12 @@ func (v *verifier) checkTempDominance(rootID NodeID, fid FunctionID, visited map
 		for i := len(n.Fields) - 1; i >= 0; i-- {
 			val := n.Fields[i].Value
 			push(func() { visit(val) })
+		}
+		for i := len(n.Parts) - 1; i >= 0; i-- {
+			if n.Parts[i].Kind == InterpolationValuePart {
+				val := n.Parts[i].Value
+				push(func() { visit(val) })
+			}
 		}
 		for i := len(n.Children) - 1; i >= 0; i-- {
 			child := n.Children[i]
