@@ -132,6 +132,7 @@ func (s *irBuildState) buildSpecialization(instantiation infer.Instantiation) (t
 		Kind: tir.FunctionDeclaration, Span: declared.Span, Symbol: instantiation.Generic,
 		Function: fid, Parameters: params, ResultType: specialized.Result,
 		Convention: signature.Convention, Variadic: callable.Variadic, Inline: callable.Inline, HasBody: true,
+		TypeArgs: typeArgs,
 	}, symbol.SyntaxRef{})
 	if !ok {
 		return 0, false

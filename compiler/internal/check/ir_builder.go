@@ -43,6 +43,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		{"indexExpressions", state.indexExpressions}, {"indexControls", state.indexControls},
 		{"buildBlocks", state.buildBlocks}, {"finishFunctionDeclarations", state.finishFunctionDeclarations},
 		{"buildRequirements", func() bool { return state.buildRequirements(requirements) }},
+		{"buildSpecializations", state.buildSpecializations},
 	}
 	for _, step := range steps {
 		if !step.build() {
@@ -54,6 +55,25 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		return fail("typed-IR construction failed during Build: " + err.Error())
 	}
 	return unit, true
+}
+
+// buildSpecializations triggers a real, built specialization for every
+// generic instantiation the program actually uses, so the published
+// unit contains runnable typed IR for each one instead of only the
+// never-runnable symbolic declaration. Structurally recursive
+// instantiations are handled by buildSpecialization's own cache
+// (07.2/07.3f); this just ensures every top-level instantiation is
+// reached at least once.
+func (s *irBuildState) buildSpecializations() bool {
+	if s.handoff.Solution == nil {
+		return true
+	}
+	for _, instantiation := range s.handoff.Solution.Instantiations() {
+		if _, ok := s.buildSpecialization(instantiation); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // irBuildScope holds every piece of output memoization that must be

@@ -1,6 +1,7 @@
 package check
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
@@ -143,5 +144,142 @@ let result i32 = first(values);
 	loadNode := unit.Nodes()[returnNode.Children[0]-1]
 	if loadNode.Type != store.Builtins().I32 {
 		t.Fatalf("specialized body's returned value type = %v, want the substituted i32 %v (not the symbolic type parameter)", loadNode.Type, store.Builtins().I32)
+	}
+}
+
+func fullPipelineFunctionNodes(unit *tir.Unit, symbolID symbol.SymbolID) []tir.Node {
+	var declarations []tir.Node
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration && node.Symbol == symbolID {
+			declarations = append(declarations, node)
+		}
+	}
+	return declarations
+}
+
+func TestBuildUnitBuildsSpecialization(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn identity[T](value T) T { return value; }
+let result i32 = identity(1);
+`)
+	if !ok {
+		t.Fatal("full build rejected generic instantiation")
+	}
+	var symbolID symbol.SymbolID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration {
+			symbolID = node.Symbol
+			break
+		}
+	}
+	declarations := fullPipelineFunctionNodes(unit, symbolID)
+	if len(declarations) != 2 {
+		t.Fatalf("function declarations = %d, want symbolic plus specialization", len(declarations))
+	}
+	var specialization tir.Node
+	for _, declaration := range declarations {
+		if len(declaration.TypeArgs) == 1 {
+			specialization = declaration
+		}
+	}
+	if specialization.Function == 0 || len(specialization.Parameters) != 1 || specialization.Parameters[0].Type != specialization.ResultType {
+		t.Fatalf("specialization declaration = %+v", specialization)
+	}
+	var body tir.FunctionDecl
+	for _, candidate := range unit.FunctionDeclarations() {
+		if candidate.FunctionID == specialization.Function {
+			body = candidate
+		}
+	}
+	if body.Node == 0 {
+		t.Fatal("specialization body missing")
+	}
+	block := unit.Nodes()[body.Node-1]
+	if len(block.Children) != 1 {
+		t.Fatalf("specialization body = %+v, want one return", block.Children)
+	}
+	returnNode := unit.Nodes()[block.Children[0]-1]
+	value := unit.Nodes()[returnNode.Children[0]-1]
+	if value.Type != specialization.Parameters[0].Type {
+		t.Fatalf("specialized return type = %v, want %v", value.Type, specialization.Parameters[0].Type)
+	}
+}
+
+func TestBuildUnitBuildsDistinctSpecializations(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn identity[T](value T) T { return value; }
+let a i32 = identity(1);
+let b char = identity('x');
+`)
+	if !ok {
+		t.Fatal("full build rejected generic instantiations")
+	}
+	var symbolID symbol.SymbolID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration {
+			symbolID = node.Symbol
+			break
+		}
+	}
+	declarations := fullPipelineFunctionNodes(unit, symbolID)
+	if len(declarations) != 3 {
+		t.Fatalf("function declarations = %d, want symbolic plus two specializations", len(declarations))
+	}
+	seen := make(map[types.TypeID]bool)
+	for _, declaration := range declarations {
+		if len(declaration.TypeArgs) == 0 {
+			continue
+		}
+		if len(declaration.TypeArgs) != 1 || len(declaration.Parameters) != 1 || declaration.Parameters[0].Type != declaration.TypeArgs[0] || declaration.ResultType != declaration.TypeArgs[0] {
+			t.Fatalf("specialization declaration = %+v", declaration)
+		}
+		seen[declaration.TypeArgs[0]] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("specialization type arguments = %v, want two distinct types", seen)
+	}
+}
+
+func TestBuildUnitDeduplicatesSpecialization(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn identity[T](value T) T { return value; }
+let a i32 = identity(1);
+let b i32 = identity(2);
+`)
+	if !ok {
+		t.Fatal("full build rejected repeated generic instantiation")
+	}
+	var symbolID symbol.SymbolID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration {
+			symbolID = node.Symbol
+			break
+		}
+	}
+	declarations := fullPipelineFunctionNodes(unit, symbolID)
+	if len(declarations) != 2 {
+		t.Fatalf("function declarations = %d, want symbolic plus one specialization", len(declarations))
+	}
+}
+
+func TestBuildUnitNoGenericsRemainsDeterministic(t *testing.T) {
+	const source = `fn main() i32 { return 1; }`
+	first, ok := buildUnitFixture(t, source)
+	if !ok {
+		t.Fatal("first non-generic build failed")
+	}
+	second, ok := buildUnitFixture(t, source)
+	if !ok {
+		t.Fatal("second non-generic build failed")
+	}
+	var firstDump, secondDump bytes.Buffer
+	if err := first.Dump(&firstDump); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Dump(&secondDump); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstDump.Bytes(), secondDump.Bytes()) {
+		t.Fatal("non-generic build output is not byte-identical")
 	}
 }

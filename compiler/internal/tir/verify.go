@@ -270,7 +270,7 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.allowOnly(id, n, "Symbol")
 		v.requireSymbol(id, n)
 	case FunctionDeclaration:
-		v.allowOnly(id, n, "Symbol", "Function", "Parameters", "ResultType", "Convention", "Variadic", "Inline", "HasBody", "Children")
+		v.allowOnly(id, n, "Symbol", "Function", "Parameters", "ResultType", "Convention", "Variadic", "Inline", "HasBody", "TypeArgs", "Children")
 		v.requireSymbol(id, n)
 		v.requireFunction(id, n)
 		v.requireConvention(id, n)
