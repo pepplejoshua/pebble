@@ -143,6 +143,115 @@ func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
 	t.Logf("compiled program exited 0")
 }
 
+func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"pebble_rt.h", "pebble_rt_default_context", "return 0;", "static int pebble_user_main(PebbleContext *ctx)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "static void pebble_user_main") {
+		t.Errorf("emitted C still declares pebble_user_main returning void, want int:\n%s", out)
+	}
+}
+
+func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
+	}
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 42; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+
+	dir := t.TempDir()
+	program := filepath.Join(dir, "program.c")
+	if err := os.WriteFile(program, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write emitted C: %v", err)
+	}
+	binary := filepath.Join(dir, "program")
+	runtimeRoot := runtimeSourceRoot(t)
+
+	compile := exec.Command(cc,
+		"-std=c11",
+		"-DPEBBLE_RT_MODE_SAFE",
+		"-I", filepath.Join(runtimeRoot, "include"),
+		program,
+		filepath.Join(runtimeRoot, "src", "context.c"),
+		filepath.Join(runtimeRoot, "src", "panic.c"),
+		filepath.Join(runtimeRoot, "src", "platform_host.c"),
+		"-o", binary,
+	)
+	if output, err := compile.CombinedOutput(); err != nil {
+		t.Fatalf("cc compilation failed: %v\n%s", err, output)
+	}
+
+	run := exec.Command(binary)
+	output, err := run.CombinedOutput()
+	if run.ProcessState == nil {
+		t.Fatalf("compiled program did not start: %v\n%s", err, output)
+	}
+	code := run.ProcessState.ExitCode()
+	if code != 42 {
+		t.Fatalf("compiled program exited %d, want 42\n%s", code, output)
+	}
+	t.Logf("compiled program exited %d, want 42", code)
+}
+
+// buildI32EmptyBodyUnit hand-builds a unit whose entry has an i32 result type
+// and a completely empty body block. The checker refuses to produce this shape
+// itself (a non-void function must not fall through without returning), so it
+// is constructed directly through the IR builder to exercise Emit's own body
+// validation. The type snapshot is borrowed from a checker-built fixture so
+// every TypeID the hand-built nodes reference is owned by the snapshot.
+func buildI32EmptyBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:   tir.Block,
+		Region: region,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: snapshot.Builtins().I32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
 // runtimeSourceRoot locates the runtime directory relative to this test file,
 // independent of the process working directory.
 func runtimeSourceRoot(t *testing.T) string {
@@ -171,13 +280,33 @@ func TestEmitRejectsNonEmptyBody(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
+func TestEmitRejectsUnaryNegationReturn(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return -1; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsNonLiteralReturn(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 1 + 2; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsI32EmptyBody(t *testing.T) {
+	unit, snapshot, entryID := buildI32EmptyBodyUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsStatementBeforeReturn(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i32 = 1; return x; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
 func TestEmitRejectsParameters(t *testing.T) {
 	unit, snapshot, entryID := buildFixture(t, "fn main(args []str) void {}", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsNonVoidResult(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+func TestEmitRejectsUnsupportedResultType(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() u32 { return 0; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
