@@ -176,6 +176,17 @@ incrementally as work proceeds.
   10`) compiles and runs correctly, confirmed both by the dispatched
   test and by compiling and running the emitted C independently
   outside any harness.
+- **10.11 — `if` and nested `while` inside a loop body**
+  (`compiler/internal/backend`): closes 10.10's deferred gap. A loop
+  body may now contain `if` (else optional — a loop-body `if` doesn't
+  need to guarantee a return, unlike `if`-as-tail) and nested `while`
+  loops. `buildLoopIf` is a separate function from `buildIf` since the
+  grammar genuinely differs (arms are loop bodies with no required
+  tail); nested `while` reuses `buildWhile` unchanged since it already
+  recurses into `buildLoopBody`. Each arm/nested loop gets its own
+  cloned locals scope. A real nested double-loop (3×3) and a loop-body
+  `if`/`else` both compile and run correctly, confirmed by the
+  dispatched tests and independently outside the harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
