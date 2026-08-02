@@ -289,8 +289,17 @@ and bare-value paths with exact source-span tests.
 07.6 is split into small slices. 07.6a–07.6e are complete. The full
 generics-coverage slice is now closed.
 
-Deferred and outside 07.6: `RequirementLiteralFits` checking remains a
-separate later concern, and expression-bodied functions still have the
+- **07.7 — `RequirementLiteralFits` checking** (`generic_validation.go`,
+  `infer/literal.go`, `infer/capability.go`, `infer/semantic_snapshot.go`):
+  a generic call whose literal argument doesn't fit the resolved
+  concrete type now fails `C0621` instead of silently passing. Reuses
+  the existing exact-literal bounds math (`integerFits`/`floatFits`)
+  via a new session-free `infer.LiteralFitsBuiltin`, exposed through a
+  new `LiteralTarget()` accessor on `SemanticSnapshot`. Covers both
+  call sites and bare generic-value sites, with span/related-label
+  tests matching 07.5's shape.
+
+Deferred and outside 07.6: expression-bodied functions still have the
 pre-existing empty-block lowering bug recorded under 07.3f.
 
 ## What needed sharpening, resolved during 07.1–07.5
