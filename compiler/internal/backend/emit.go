@@ -3,13 +3,15 @@
 // current slice emits exactly two entry shapes — an empty-bodied Pebble-
 // convention void entry function, and a zero-parameter i32 entry whose body
 // matches a single recursive block grammar: a block is zero or more
-// `let <name> i32 = <i32 expression>;` local declarations followed by a tail
-// that is either one `return <i32 expression>;` or a two-armed
-// `if <comparison> { <block> } else { <block> }` whose condition is a direct
-// i32 comparison; the two arms are themselves blocks under the same rule, so
-// an arm may contain its own locals and nested if/else. Locals declared in an
-// enclosing block are visible in a nested block; locals declared inside an
-// arm are visible only within that arm. Everything else is rejected with a
+// `let <name> i32 = <i32 expression>;` / `var <name> i32 = <i32 expression>;`
+// local declarations, plus `x = <i32 expression>;` reassignments of an
+// already-declared local, followed by a tail that is either one
+// `return <i32 expression>;` or a two-armed `if <comparison> { <block> } else
+// { <block> }` whose condition is a direct i32 comparison; the two arms are
+// themselves blocks under the same rule, so an arm may contain its own
+// locals, reassignments, and nested if/else. Locals declared in an enclosing
+// block are visible in a nested block; locals declared inside an arm are
+// visible only within that arm. Everything else is rejected with a
 // descriptive error instead of guessed.
 package backend
 
@@ -29,22 +31,24 @@ import (
 // parameters. Its result must be either void with a completely empty body (no
 // statements — only ever an ImplicitReturn, i.e. exactly what `fn main() void
 // {}` produces) or i32 with a body matching the recursive block grammar: a
-// block is zero or more `let <name> i32 = <i32 expression>;` local
-// declarations followed by a tail that is either one `return <i32 expression>;`
-// or a two-armed `if <comparison> { <block> } else { <block> }` whose condition
-// is a direct i32 comparison (<, <=, >, >=, ==, !=); each arm is itself a block
+// block is zero or more `let <name> i32 = <i32 expression>;` / `var <name> i32
+// = <i32 expression>;` local declarations, plus `x = <i32 expression>;`
+// reassignments of an already-declared local (a tir.Store; see buildBlock),
+// followed by a tail that is either one `return <i32 expression>;` or a
+// two-armed `if <comparison> { <block> } else { <block> }` whose condition is
+// a direct i32 comparison (<, <=, >, >=, ==, !=); each arm is itself a block
 // under the same grammar, so an arm may contain its own locals and nested
-// if/else. Every expression — a local's initializer, a return value, or an
-// if/else arm's return value — may be a plain non-negative integer literal, a
-// tree of checked negation and checked +, -, *, /, % arithmetic (see
-// buildExpr), or a reference to a local declared earlier in the same or an
-// enclosing block. A comparison's operands are additionally allowed to be
-// int-typed integer literals (see buildComparisonOperand). Checked operations
-// emit pebble_rt_checked_*_i32 calls so the language's overflow and
-// divide-by-zero semantics survive into the emitted program; comparisons emit
-// the plain C operator, which cannot overflow. Any other shape returns a
-// descriptive error and writes nothing to w; this package does not yet lower
-// arbitrary expressions or statements.
+// if/else. Every expression — a local's initializer, a reassignment's new
+// value, a return value, or an if/else arm's return value — may be a plain
+// non-negative integer literal, a tree of checked negation and checked +, -,
+// *, /, % arithmetic (see buildExpr), or a reference to a local declared
+// earlier in the same or an enclosing block. A comparison's operands are
+// additionally allowed to be int-typed integer literals (see
+// buildComparisonOperand). Checked operations emit pebble_rt_checked_*_i32
+// calls so the language's overflow and divide-by-zero semantics survive into
+// the emitted program; comparisons emit the plain C operator, which cannot
+// overflow. Any other shape returns a descriptive error and writes nothing to
+// w; this package does not yet lower arbitrary expressions or statements.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -159,22 +163,23 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 }
 
 // buildBlock validates one block under the entry body's recursive grammar and
-// builds its C statement sequence. A block is zero or more `const int32_t
+// builds its C statement sequence. A block is zero or more `int32_t
 // pebble_local_<id>` declarations (one per Initialize, in declaration order)
-// followed by a tail that is either the single `return <i32 expression>;` or
-// a two-armed if/else built by buildIf; each if arm is itself a block under
-// the same grammar, so buildBlock recurses into both arms. locals is the set
-// of symbols visible at the block's entry (the enclosing scopes' declarations)
-// and is copied at entry: every addition this block makes — its own locals,
-// and anything an arm's subtree declares — stays in that copy and never
-// mutates the map the caller or a sibling arm sees. That copy-per-scope
-// discipline is what makes a local declared inside one arm invisible to the
-// sibling arm and to any scope outside the arm, while locals declared in an
-// enclosing block remain visible inside. depth is the nesting level of this
-// block below the function body (0 for the entry body itself); statements and
-// the if/else braces are indented one level per depth so nested output stays
-// well-formed C. Any other shape is rejected with a descriptive error, not
-// best-effort lowered.
+// and zero or more `pebble_local_<id> = <built value>;` reassignments (one per
+// Store, targeting a local already in scope) followed by a tail that is either
+// the single `return <i32 expression>;` or a two-armed if/else built by
+// buildIf; each if arm is itself a block under the same grammar, so buildBlock
+// recurses into both arms. locals is the set of symbols visible at the block's
+// entry (the enclosing scopes' declarations) and is copied at entry: every
+// addition this block makes — its own declarations, and anything an arm's
+// subtree declares — stays in that copy and never mutates the map the caller
+// or a sibling arm sees. That copy-per-scope discipline is what makes a local
+// declared inside one arm invisible to the sibling arm and to any scope
+// outside the arm, while locals declared in an enclosing block remain visible
+// inside. depth is the nesting level of this block below the function body (0
+// for the entry body itself); statements and the if/else braces are indented
+// one level per depth so nested output stays well-formed C. Any other shape is
+// rejected with a descriptive error, not best-effort lowered.
 func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
@@ -184,31 +189,67 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		return "", fmt.Errorf("entry function body block is a %s, want a Block", block.Kind)
 	}
 	if len(block.Children) == 0 {
-		return "", fmt.Errorf("entry function body block is empty, want zero or more local declarations followed by exactly one return or a two-armed if/else")
+		return "", fmt.Errorf("entry function body block is empty, want zero or more local declarations or reassignments followed by exactly one return or a two-armed if/else")
 	}
 	scope := cloneLocals(locals)
 	indent := strings.Repeat("    ", depth+1)
 	var statements []string
 	for i := 0; i < len(block.Children)-1; i++ {
-		init, ok := unit.Node(block.Children[i])
+		statement, ok := unit.Node(block.Children[i])
 		if !ok {
 			return "", fmt.Errorf("entry function body block references invalid statement node %d", block.Children[i])
 		}
-		if init.Kind != tir.Initialize {
-			return "", fmt.Errorf("entry function body block statement is a %s, want a local declaration (Initialize) before the final return or if/else", init.Kind)
+		switch statement.Kind {
+		case tir.Initialize:
+			if len(statement.Children) != 1 {
+				return "", fmt.Errorf("entry function body block local declaration initializes %d value(s), want exactly one i32 expression", len(statement.Children))
+			}
+			if scope[statement.Symbol] {
+				return "", fmt.Errorf("entry function body block declares local %d more than once", statement.Symbol)
+			}
+			initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope)
+			if err != nil {
+				return "", err
+			}
+			scope[statement.Symbol] = true
+			// Every local is emitted as a plain (non-const) int32_t even
+			// though a `let` is conceptually immutable. The Initialize node
+			// does not carry whether the declaration was `let` or `var`, and
+			// the checker guarantees any Store this backend sees targets a
+			// writable `var` (see buildBlock's Store case), so the const
+			// qualifier would only be defense-in-depth — catching an emitter
+			// bug via a C compile error on assignment to const — at the cost
+			// of tracking which locals are ever reassigned. That trade-off is
+			// accepted: every local is a plain int32_t.
+			statements = append(statements, fmt.Sprintf("%sint32_t pebble_local_%d = %s;", indent, statement.Symbol, initExpr))
+		case tir.Store:
+			// A Store reassigns a local declared earlier in this block or an
+			// enclosing one; it does not declare a new symbol, so it never
+			// touches scope. The checker refuses to emit a Store targeting a
+			// `let` (C0606: the assignment place is not writable), so any
+			// Store this backend sees, from real source, necessarily targets
+			// a `var`.
+			if len(statement.Children) != 2 {
+				return "", fmt.Errorf("entry function body block reassignment has %d child(ren), want exactly two: the place being reassigned and the new i32 value", len(statement.Children))
+			}
+			place, ok := unit.Node(statement.Children[0])
+			if !ok {
+				return "", fmt.Errorf("entry function body block reassignment references invalid place node %d", statement.Children[0])
+			}
+			if place.Kind != tir.StoragePlace {
+				return "", fmt.Errorf("entry function body block reassignment targets a %s, want a plain StoragePlace naming a local declared earlier in the entry body", place.Kind)
+			}
+			if !scope[place.Symbol] {
+				return "", fmt.Errorf("entry function body block reassigns symbol %d, which is not a local declared earlier in the entry body", place.Symbol)
+			}
+			storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope)
+			if err != nil {
+				return "", err
+			}
+			statements = append(statements, fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue))
+		default:
+			return "", fmt.Errorf("entry function body block statement is a %s, want a local declaration (Initialize) or a reassignment (Store) before the final return or if/else", statement.Kind)
 		}
-		if len(init.Children) != 1 {
-			return "", fmt.Errorf("entry function body block local declaration initializes %d value(s), want exactly one i32 expression", len(init.Children))
-		}
-		if scope[init.Symbol] {
-			return "", fmt.Errorf("entry function body block declares local %d more than once", init.Symbol)
-		}
-		initExpr, err := buildExpr(unit, snapshot, init.Children[0], scope)
-		if err != nil {
-			return "", err
-		}
-		scope[init.Symbol] = true
-		statements = append(statements, fmt.Sprintf("%sconst int32_t pebble_local_%d = %s;", indent, init.Symbol, initExpr))
 	}
 	last, ok := unit.Node(block.Children[len(block.Children)-1])
 	if !ok {
@@ -509,8 +550,9 @@ const voidEntryMainBody = `pebble_user_main(&ctx);
 
 // integerEntryUserMain is a format string; %s is the statement sequence for
 // pebble_user_main's body — the top-level block built by buildBlock: zero or
-// more `const int32_t pebble_local_<id> = <built init expression>;`
-// declarations in declaration order, then the block's tail, which is either a
+// more `int32_t pebble_local_<id> = <built init expression>;` declarations and
+// zero or more `pebble_local_<id> = <built value>;` reassignments, in
+// declaration order, then the block's tail, which is either a
 // `return <built return expression>;` or a two-armed if/else (whose arms may
 // nest further blocks). The tail's value becomes pebble_user_main's return
 // value and, through the hosted main's own return, the process exit code. With
