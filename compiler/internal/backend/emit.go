@@ -136,15 +136,29 @@
 // Load(TuplePlace)/Load(FieldPlace) machinery unchanged; the C parameter is
 // declared with the aggregate's own typedef name
 // (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t) and gets the same
-// (void) cast every other parameter does. A call site passes an already-
-// declared tuple/struct-typed local for such a parameter: the argument must be
-// a plain SymbolValue naming a local whose declared type matches the
-// parameter's type, emitted as the local's own pebble_local_<symbol> C name
-// (the typedef makes passing the whole aggregate by value trivially valid C).
-// Constructing a fresh aggregate inline at a call site — f((1, 2)) or
-// f(Point.{ x = 1, y = 2 }), both reachable from real source — is a clean
-// rejection naming what was found, never built (building one requires a
-// general build-an-aggregate-value expression saved for a later slice).
+// (void) cast every other parameter does.
+//
+// Since 10.25, a call site may pass for such a parameter either an already-
+// declared tuple/struct-typed local in scope (a plain SymbolValue naming a
+// local whose declared type matches the parameter's type, emitted as the
+// local's own pebble_local_<symbol> C name — the typedef makes passing the
+// whole aggregate by value trivially valid C) or a freshly-constructed
+// aggregate built inline at the call site — a TupleValue (f((1, 2))) or a
+// RecordConstruct (f(Point.{ x = 1, y = 2 })), both reachable from real
+// source — emitted as a C99 compound-literal expression,
+// (pebble_tuple_<typeID>_t){ <e0>, <e1>, ... } for a tuple and
+// (pebble_struct_<typeID>_t){ .pebble_field_<m0> = <e0>, ... } for a struct
+// (the designated-initializer form reuses the same field-resolution logic a
+// struct local's declaration uses, so a construction site's field order still
+// need not match the declared order). Both inline forms are built by
+// buildTupleValueExpr / buildStructValueExpr, which share their brace-list
+// construction (buildTupleBraceList / buildStructBraceList) with
+// buildTupleLocalDeclaration / buildStructLocalDeclaration; the local
+// declaration paths are unchanged and still emit a bare initializer brace
+// list. An argument that is neither a local reference nor an inline aggregate
+// construct — including a SourceAlias-wrapped argument from extra parens
+// (f(((1, 2)))), rejected consistently with every other SourceAlias-wrapped
+// argument in this backend — is a clean rejection naming what was found.
 // Tuple/struct-typed function *return* types remain out of scope: a helper's
 // C return type stays the entry's scalar width, and a helper declaring a
 // tuple/struct result type (reachable from real source) is rejected cleanly by
@@ -1568,38 +1582,85 @@ func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	if initValue.Kind != tir.TupleValue {
 		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal); initializing a tuple local from another value is not supported yet", context, tupleTypeName(initValue.Type), initValue.Kind)
 	}
-	key, ok := snapshot.Key(initValue.Type)
+	braceList, err := buildTupleBraceList(unit, snapshot, initValue, scope, context, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{tuple: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, braceList, indent, statement.Symbol), nil
+}
+
+// buildTupleBraceList validates one TupleValue node's element list and builds
+// its brace-list content, `{ <e0>, <e1>, ... }`, with each element expression
+// built by the grammar its own element type selects — buildExpr for an element
+// of the entry's width, buildBoolExpr for a bool element. Every element type
+// must be exactly the entry's width or bool; anything else (a str element, a
+// nested tuple element) is a clean rejection naming the element position,
+// since this backend emits exactly those two C field types. context names the
+// enclosing construct in error messages. The function is shared by the two
+// places a TupleValue's elements are built (10.25): a tuple-typed local's
+// declaration initializer (buildTupleLocalDeclaration embeds the returned
+// brace list in the declaration statement) and a freshly-constructed tuple
+// built inline as a call argument (buildTupleValueExpr wraps the same brace
+// list in a compound-literal cast), so element-type validation and the
+// buildExpr/buildBoolExpr dispatch live in exactly one place.
+func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(node.Type)
 	if !ok {
-		return "", fmt.Errorf("%s declares a tuple-typed local whose type %d is not in the type snapshot", context, initValue.Type)
+		return "", fmt.Errorf("%s contains a tuple value whose type %d is not in the type snapshot", context, node.Type)
 	}
 	elements, ok := key.Elements()
 	if !ok {
-		return "", fmt.Errorf("%s declares a tuple-typed local of type %s, which has no element list", context, tupleTypeName(initValue.Type))
+		return "", fmt.Errorf("%s contains a tuple value of type %s, which has no element list", context, tupleTypeName(node.Type))
 	}
-	if len(initValue.Children) != len(elements) {
-		return "", fmt.Errorf("%s declares a tuple-typed local of type %s with %d element expression(s), want %d (one per declared element)", context, tupleTypeName(initValue.Type), len(initValue.Children), len(elements))
+	if len(node.Children) != len(elements) {
+		return "", fmt.Errorf("%s contains a tuple value of type %s with %d element expression(s), want %d (one per declared element)", context, tupleTypeName(node.Type), len(node.Children), len(elements))
 	}
 	exprs := make([]string, len(elements))
 	for i, elementType := range elements {
 		switch {
 		case isWidth(snapshot, width, elementType):
-			elementExpr, err := buildExpr(unit, snapshot, initValue.Children[i], scope, width)
+			elementExpr, err := buildExpr(unit, snapshot, node.Children[i], scope, width)
 			if err != nil {
 				return "", err
 			}
 			exprs[i] = elementExpr
 		case isBool(snapshot, elementType):
-			elementExpr, err := buildBoolExpr(unit, snapshot, initValue.Children[i], scope, width)
+			elementExpr, err := buildBoolExpr(unit, snapshot, node.Children[i], scope, width)
 			if err != nil {
 				return "", err
 			}
 			exprs[i] = elementExpr
 		default:
-			return "", fmt.Errorf("%s declares a tuple-typed local of type %s whose element %d is %s, want %s or bool", context, tupleTypeName(initValue.Type), i, describeType(snapshot, elementType), wantName(width))
+			return "", fmt.Errorf("%s contains a tuple value of type %s whose element %d is %s, want %s or bool", context, tupleTypeName(node.Type), i, describeType(snapshot, elementType), wantName(width))
 		}
 	}
-	scope[statement.Symbol] = localInfo{tuple: initValue.Type}
-	return fmt.Sprintf("%spebble_tuple_%d_t pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, initValue.Type, statement.Symbol, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+	return "{ " + strings.Join(exprs, ", ") + " }", nil
+}
+
+// buildTupleValueExpr builds a freshly-constructed tuple value as an ordinary
+// C expression (10.25): a TupleValue node lowered to a positional C99 compound
+// literal, `(pebble_tuple_<typeID>_t){ <e0>, <e1>, ... }`, whose element
+// expressions are the TupleValue's children in order — the tuple typedef's
+// field order is already the construction order, so a positional compound
+// literal is a direct, correct lowering. The element list is built and
+// validated by buildTupleBraceList (the same logic a tuple-typed local's
+// declaration initializer uses), so an element of any type other than the
+// entry's width or bool is rejected exactly the same way it would be in a
+// declaration. The cast makes the compound literal a value usable anywhere a
+// tuple-typed value is needed — in this slice, only as a call argument for a
+// tuple-typed parameter (buildAggregateArgument). The node must be a
+// TupleValue; the caller already guarantees this, so the kind check is defense
+// for hand-built IR.
+func buildTupleValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if node.Kind != tir.TupleValue {
+		return "", fmt.Errorf("%s contains a %s, want a TupleValue (a tuple literal)", context, node.Kind)
+	}
+	braceList, err := buildTupleBraceList(unit, snapshot, node, scope, context, width)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s)%s", tupleTypeName(node.Type), braceList), nil
 }
 
 // buildArrayLocalDeclaration builds a fixed-length C array from an ArrayValue
@@ -1741,24 +1802,52 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, state
 	if initValue.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal); initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
 	}
-	key, ok := snapshot.Key(initValue.Type)
+	braceList, err := buildStructBraceList(unit, snapshot, initValue, scope, context, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{structType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, braceList, indent, statement.Symbol), nil
+}
+
+// buildStructBraceList validates one RecordConstruct node's field list and
+// builds its brace-list content, `{ .pebble_field_<m0> = <e0>, ... }`, a C99
+// designated-initializer brace list with one designated initializer per
+// constructed field. Each field's value is built by the grammar its own type
+// selects — buildExpr for a field of the entry's width, buildBoolExpr for a
+// bool field. The designated form places each value under exactly the C field
+// its member symbol names, so the construction-site field order a
+// RecordConstruct's Fields carry (which need not match the struct's declared
+// order — a site may write Point.{ y = 2, x = 1 }) needs no reordering.
+// Every field type must be exactly the entry's width or bool; anything else
+// (a str field, a nested struct field) is a clean rejection naming the field
+// position, since this backend emits exactly those two C field types. context
+// names the enclosing construct in error messages. The function is shared by
+// the two places a RecordConstruct's fields are built (10.25): a struct-typed
+// local's declaration initializer (buildStructLocalDeclaration embeds the
+// returned brace list in the declaration statement) and a freshly-constructed
+// struct built inline as a call argument (buildStructValueExpr wraps the same
+// brace list in a compound-literal cast), so field-type validation and the
+// buildExpr/buildBoolExpr dispatch live in exactly one place.
+func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(node.Type)
 	if !ok {
-		return "", fmt.Errorf("%s declares a struct-typed local whose type %d is not in the type snapshot", context, initValue.Type)
+		return "", fmt.Errorf("%s contains a struct value whose type %d is not in the type snapshot", context, node.Type)
 	}
 	decl, _, ok := key.Nominal()
 	if !ok {
-		return "", fmt.Errorf("%s declares a struct-typed local of type %s, which has no nominal declaration", context, structTypeName(initValue.Type))
+		return "", fmt.Errorf("%s contains a struct value of type %s, which has no nominal declaration", context, structTypeName(node.Type))
 	}
 	typeDecl, ok := findTypeDeclaration(unit, decl)
 	if !ok {
-		return "", fmt.Errorf("%s declares a struct-typed local of type %s whose declaration symbol %d has no TypeDeclaration in the unit", context, structTypeName(initValue.Type), decl)
+		return "", fmt.Errorf("%s contains a struct value of type %s whose declaration symbol %d has no TypeDeclaration in the unit", context, structTypeName(node.Type), decl)
 	}
 	members := typeDecl.Members
-	if len(initValue.Fields) != len(members) {
-		return "", fmt.Errorf("%s declares a struct-typed local of type %s with %d field initializer(s), want %d (one per declared field)", context, structTypeName(initValue.Type), len(initValue.Fields), len(members))
+	if len(node.Fields) != len(members) {
+		return "", fmt.Errorf("%s contains a struct value of type %s with %d field initializer(s), want %d (one per declared field)", context, structTypeName(node.Type), len(node.Fields), len(members))
 	}
-	inits := make([]string, len(initValue.Fields))
-	for i, field := range initValue.Fields {
+	inits := make([]string, len(node.Fields))
+	for i, field := range node.Fields {
 		declared := false
 		for _, member := range members {
 			if member == field.Field {
@@ -1767,11 +1856,11 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, state
 			}
 		}
 		if !declared {
-			return "", fmt.Errorf("%s declares a struct-typed local of type %s with an initializer for symbol %d, which is not one of its declared fields", context, structTypeName(initValue.Type), field.Field)
+			return "", fmt.Errorf("%s contains a struct value of type %s with an initializer for symbol %d, which is not one of its declared fields", context, structTypeName(node.Type), field.Field)
 		}
 		valueNode, ok := unit.Node(field.Value)
 		if !ok {
-			return "", fmt.Errorf("%s declares a struct-typed local of type %s referencing invalid field value node %d", context, structTypeName(initValue.Type), field.Value)
+			return "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
 		}
 		var expr string
 		switch {
@@ -1788,12 +1877,37 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, state
 			}
 			expr = built
 		default:
-			return "", fmt.Errorf("%s declares a struct-typed local of type %s whose field %d is %s, want %s or bool", context, structTypeName(initValue.Type), field.Field, describeType(snapshot, valueNode.Type), wantName(width))
+			return "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, valueNode.Type), wantName(width))
 		}
 		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
 	}
-	scope[statement.Symbol] = localInfo{structType: initValue.Type}
-	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, strings.Join(inits, ", "), indent, statement.Symbol), nil
+	return "{ " + strings.Join(inits, ", ") + " }", nil
+}
+
+// buildStructValueExpr builds a freshly-constructed struct value as an
+// ordinary C expression (10.25): a RecordConstruct node lowered to a
+// designated-initializer C99 compound literal,
+// `(pebble_struct_<typeID>_t){ .pebble_field_<m0> = <e0>, ... }`. The field
+// list is built and validated by buildStructBraceList (the same logic a
+// struct-typed local's declaration initializer uses), so a construction
+// site's field order still need not match the struct's declared order — the
+// designated-initializer form handles the ordering in this position exactly
+// as it does in a declaration — and a field of any type other than the entry's
+// width or bool is rejected the same way it would be in a declaration. The
+// cast makes the compound literal a value usable anywhere a struct-typed
+// value is needed — in this slice, only as a call argument for a
+// struct-typed parameter (buildAggregateArgument). The node must be a
+// RecordConstruct; the caller already guarantees this, so the kind check is
+// defense for hand-built IR.
+func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if node.Kind != tir.RecordConstruct {
+		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (a struct literal)", context, node.Kind)
+	}
+	braceList, err := buildStructBraceList(unit, snapshot, node, scope, context, width)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s)%s", structTypeName(node.Type), braceList), nil
 }
 
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
@@ -2509,9 +2623,11 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 // DirectCall's children, one expression per child in order. Each child's
 // grammar is decided by the callee's corresponding parameter's resolved type
 // — the entry's width parameters take buildExpr, bool parameters take
-// buildBoolExpr, and tuple/struct parameters take buildAggregateArgument (the
-// argument must be an already-declared aggregate-typed local, emitted as its
-// own C name) — so the same value grammars this backend already builds lower
+// buildBoolExpr, and tuple/struct parameters take buildAggregateArgument (an
+// already-declared aggregate-typed local emitted as its own C name, or a
+// freshly-constructed aggregate built inline as a compound-literal expression,
+// see buildAggregateArgument) — so the same value grammars this backend
+// already builds lower
 // the arguments; the checker has already coerced each argument to its
 // parameter's type, so a mismatch here is hand-built IR. The argument count
 // must equal the callee's declared parameter count. Returns the joined
@@ -2538,13 +2654,13 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 			}
 			args[i] = arg
 		case isTuple(snapshot, param.Type):
-			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, true, call.Symbol, i)
+			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, true, call.Symbol, i, width)
 			if err != nil {
 				return "", err
 			}
 			args[i] = arg
 		case isStruct(snapshot, param.Type):
-			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, false, call.Symbol, i)
+			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, false, call.Symbol, i, width)
 			if err != nil {
 				return "", err
 			}
@@ -2560,31 +2676,54 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 }
 
 // buildAggregateArgument builds one call-site argument for a tuple- or
-// struct-typed parameter. Only one argument shape is supported: a plain
-// SymbolValue naming an already-declared aggregate-typed local in scope whose
-// declared type is exactly the parameter's tuple/struct type (wantTuple selects
-// which), emitted as the local's own pebble_local_<symbol> C name — the
-// aggregate's own struct typedef makes passing the whole value by value
-// trivially valid C, so no construction is needed at the call site. Any other
-// shape is a clean rejection naming what was found: an inline construction
-// (a TupleValue/RecordConstruct child — e.g. f((1, 2)) or
-// f(Point.{ x = 1, y = 2 }), both confirmed reachable from real source), a
-// reference to a symbol that is not a local in scope, or a reference to a
-// non-aggregate or differently-typed aggregate local. Inline construction is
-// deliberately rejected rather than built: emitting a fresh aggregate value
-// inline requires a general build-an-aggregate-value expression, which is
-// saved for a later slice.
-func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, wantTuple bool, calleeSymbol symbol.SymbolID, position int) (string, error) {
+// struct-typed parameter. Two argument shapes are supported (10.25):
+//
+//   - a plain SymbolValue naming an already-declared aggregate-typed local in
+//     scope whose declared type is exactly the parameter's tuple/struct type
+//     (wantTuple selects which), emitted as the local's own pebble_local_<symbol>
+//     C name — the aggregate's own struct typedef makes passing the whole value
+//     by value trivially valid C, so no construction is needed at the call site
+//     (this is 10.24's existing supported shape, unchanged);
+//   - a freshly-constructed aggregate built inline at the call site — a
+//     TupleValue for a tuple parameter (f((1, 2))) or a RecordConstruct for a
+//     struct parameter (f(Point.{ x = 1, y = 2 })), both confirmed reachable
+//     from real source and both carrying the same Children/Fields/Type shape
+//     they have as a local's declaration initializer — emitted as a C99
+//     compound-literal expression by buildTupleValueExpr / buildStructValueExpr,
+//     which share their brace-list construction with the local-declaration
+//     builders. An inline construct whose own Type is not exactly the
+//     parameter's type (defense for hand-built IR — the checker coerces every
+//     argument to its parameter's type and rejects a mismatch itself) is a clean
+//     rejection, so the emitted C never passes a value of the wrong aggregate
+//     type to a parameter. Any other argument shape is a clean rejection naming
+//     what was found: a SourceAlias-wrapped argument (extra parens, e.g.
+//     f(((1, 2)))), a nested aggregate whose element/field types are outside the
+//     two supported grammars, or any other node kind. width is the entry's
+//     resolved integer width, threaded through to the inline builders so each
+//     element/field is built at the width the parameter's own typedef uses.
+func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, wantTuple bool, calleeSymbol symbol.SymbolID, position int, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(argID)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references invalid node %d", calleeSymbol, position, argID)
 	}
 	if node.Kind != tir.SymbolValue {
-		what := "struct"
+		context := fmt.Sprintf("entry function body expression contains a call to symbol %d whose argument %d", calleeSymbol, position)
 		if wantTuple {
-			what = "tuple"
+			if node.Kind == tir.TupleValue {
+				if node.Type != wantType {
+					return "", fmt.Errorf("%s is a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(wantType))
+				}
+				return buildTupleValueExpr(unit, snapshot, node, locals, context, width)
+			}
+			return "", fmt.Errorf("%s is a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only passing an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
 		}
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d is a %s; inline %s construction as a call argument is not supported yet (pass an already-declared %s-typed local in scope)", calleeSymbol, position, node.Kind, what, what)
+		if node.Kind == tir.RecordConstruct {
+			if node.Type != wantType {
+				return "", fmt.Errorf("%s is a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
+			}
+			return buildStructValueExpr(unit, snapshot, node, locals, context, width)
+		}
+		return "", fmt.Errorf("%s is a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only passing an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
 	}
 	info, declared := locals[node.Symbol]
 	if !declared {

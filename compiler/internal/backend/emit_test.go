@@ -3485,15 +3485,27 @@ func TestEmitRejectsWholeTupleStore(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole tuple is not supported")
 }
 
-func TestEmitRejectsTupleParameter(t *testing.T) {
-	// A tuple-typed parameter is now supported (10.24), but constructing a
-	// fresh tuple inline at the call site — f((1, 2)) — is not: the DirectCall
-	// argument is a TupleValue (confirmed against a real fixture dump), and
-	// this slice only passes an already-declared tuple-typed local (a plain
-	// SymbolValue). buildCallArguments rejects the inline construction with a
-	// clear error naming what was found, never building it.
-	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f((1, 2)); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline tuple construction as a call argument is not supported yet")
+func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {
+	// The one shape in the inline-construction space that is still genuinely
+	// rejected (10.25): an aggregate constructed inline but wrapped in an extra
+	// set of parens — f(((1, 2))) or f((Point.{ x = 1, y = 2 })) — arrives at
+	// the call site as a SourceAlias wrapping the TupleValue/RecordConstruct
+	// (confirmed against a real fixture dump). This backend does not unwrap a
+	// SourceAlias-wrapped argument for ANY argument type — the scalar analog
+	// f((1)) is likewise rejected as "a SourceAlias of type int, want i32" —
+	// so the aggregate forms stay a clean rejection naming what was found,
+	// never a guessed lowering. (10.24's two rejection tests, which rejected
+	// ALL inline construction as a call argument, became stale when inline
+	// construction was added — the fixtures f((1, 2)) and
+	// f(Point.{ x = 1, y = 2 }) are now the positive cases
+	// TestEmitInlineTupleArgumentCompilesAndRuns /
+	// TestEmitInlineStructArgumentCompilesAndRuns — and this test is their
+	// replacement.)
+	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f(((1, 2))); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a reference to a tuple-typed local in scope or a tuple literal")
+
+	unit, snapshot, entryID = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f((Point.{ x = 1, y = 2 })); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a reference to a struct-typed local in scope or a struct literal")
 }
 
 func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
@@ -4018,16 +4030,76 @@ func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "is not supported, want i32 or bool")
 }
 
-func TestEmitRejectsStructTypedParameter(t *testing.T) {
-	// A struct-typed parameter is now supported (10.24), but constructing a
-	// fresh struct inline at the call site — f(Point.{ x = 1, y = 2 }) — is
-	// not: the DirectCall argument is a RecordConstruct (confirmed against a
-	// real fixture dump), and this slice only passes an already-declared
-	// struct-typed local (a plain SymbolValue). buildCallArguments rejects the
-	// inline construction with a clear error naming what was found, never
-	// building it.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f(Point.{ x = 1, y = 2 }); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline struct construction as a call argument is not supported yet")
+// 10.25 — aggregate values as compound-literal expressions (inline
+// construction as call arguments)
+
+func TestEmitInlineTupleArgumentCompilesAndRuns(t *testing.T) {
+	// The flagship 10.25 tuple fixture (10.24's TestEmitRejectsTupleParameter
+	// fixture, now the positive case): a freshly-constructed tuple built inline
+	// at the call site — f((20, 22)) — rather than passed as an already-
+	// declared local. The DirectCall argument is a TupleValue carrying the
+	// same Children/Type shape it has as a local's declaration initializer
+	// (confirmed against a real fixture dump), built by buildTupleValueExpr as
+	// the positional C99 compound literal (pebble_tuple_<typeID>_t){ 20, 22 }.
+	// 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f((20, 22)); }", false, 42, false)
+}
+
+func TestEmitInlineStructArgumentCompilesAndRuns(t *testing.T) {
+	// The flagship 10.25 struct fixture (10.24's
+	// TestEmitRejectsStructTypedParameter fixture, now the positive case): a
+	// freshly-constructed struct built inline at the call site —
+	// f(Point.{ x = 20, y = 22 }) — rather than passed as an already-declared
+	// local. The DirectCall argument is a RecordConstruct carrying the same
+	// Fields/Type shape it has as a local's declaration initializer (confirmed
+	// against a real fixture dump), built by buildStructValueExpr as the
+	// designated-initializer C99 compound literal
+	// (pebble_struct_<typeID>_t){ .pebble_field_<x> = 20,
+	// .pebble_field_<y> = 22 }. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(Point.{ x = 20, y = 22 }); }", false, 42, false)
+}
+
+func TestEmitInlineStructArgumentOutOfOrderCompilesAndRuns(t *testing.T) {
+	// The designated-initializer reuse, verified in the inline-argument
+	// position too: Point.{ y = 22, x = 20 } writes the fields in the opposite
+	// order from the struct's declared order, and the compound literal still
+	// places each value under the C field its member symbol names, so x reads
+	// 20 and y reads 22 and the sum is 42. This is the argument-position analog
+	// of TestEmitStructFieldsWrittenOutOfDeclaredOrderCompilesAndRuns — the
+	// reordering problem is solved by the designated-initializer form in the
+	// inline position exactly as it is in a local declaration, not just by a
+	// fixture that happens to write fields in order.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(Point.{ y = 22, x = 20 }); }", false, 42, false)
+}
+
+func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
+	// The emitted C for inline construction at a call site: each argument must
+	// be the C99 compound-literal expression — not a local reference and not a
+	// bare brace list — with the cast naming the aggregate's own typedef. The
+	// tuple form is the positional (pebble_tuple_23_t){ 20, 22 }; the struct
+	// form written out of declared order is
+	// (pebble_struct_23_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 }.
+	// Symbols and type IDs come from the real fixture dumps (tuple: f=24,
+	// tuple type 23; struct: Point=24, x=25, y=26, f=27, struct type 23).
+	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f((20, 22)); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "return pebble_fn_24(ctx, (pebble_tuple_23_t){ 20, 22 });") {
+		t.Errorf("emitted C missing the tuple compound-literal argument:\n%s", out)
+	}
+
+	unit, snapshot, entryID = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(Point.{ y = 22, x = 20 }); }", "main", false)
+	buf.Reset()
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out = buf.String()
+	if !strings.Contains(out, "return pebble_fn_27(ctx, (pebble_struct_23_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 });") {
+		t.Errorf("emitted C missing the struct compound-literal argument:\n%s", out)
+	}
 }
 
 // 10.24 — struct-typed function parameters
