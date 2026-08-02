@@ -215,7 +215,17 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 		if !chainOK {
 			return 0, false, false, false
 		}
-		node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values, DeferChain: chain}, ctrl.Header.Syntax)
+		ref := ctrl.Header.Syntax
+		if ctrl.SyntheticSyntax {
+			// The synthesized expression-body return has no syntax node of its
+			// own distinct from the body expression whose value it returns; that
+			// expression already claimed its own ref via MapSource, so building
+			// this node against the same ref would hit a duplicate source-map
+			// entry. An empty ref (as ImplicitReturn uses) avoids the collision;
+			// the span still comes from ctrl.Header.Span.
+			ref = symbol.SyntaxRef{}
+		}
+		node, ok = s.addNode(tir.Node{Kind: tir.Return, Span: ctrl.Header.Span, Function: s.functions[ctrl.Callable.Symbol], Children: values, DeferChain: chain}, ref)
 		return node, ok, false, true
 	case controlIf:
 		return s.buildIf(ctrl)

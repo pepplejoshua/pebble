@@ -27,6 +27,7 @@ type controlEmission struct {
 	conditionPresent bool
 	elsePresent      bool
 	rangeInclusive   bool
+	syntheticSyntax  bool
 }
 
 // retainControl appends one control record. Region-owning statements retain
@@ -53,7 +54,7 @@ func (w *walker) retainControl(ref symbol.SyntaxRef, ctx walkContext, emission c
 		Callable: callable, StatementForm: emission.form, Values: emission.values,
 		Composition:      emission.composition,
 		ConditionPresent: emission.conditionPresent, ElsePresent: emission.elsePresent,
-		RangeInclusive: emission.rangeInclusive,
+		RangeInclusive: emission.rangeInclusive, SyntheticSyntax: emission.syntheticSyntax,
 	}
 	controls := []controlID{emission.region}
 	if emission.target != 0 {

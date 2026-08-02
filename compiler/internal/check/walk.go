@@ -11,22 +11,24 @@ import (
 )
 
 type walkContext struct {
-	callable         callableRef
-	typeOwner        symbol.SymbolID
-	genericOwner     symbol.SymbolID
-	nominalOwner     symbol.SymbolID
-	externConvention types.CallingConvention
-	unsupported      bool
-	typePosition     bool
-	typeRoot         bool
-	preparedType     bool
-	control          controlContext
-	expected         expectedType
-	suppressValue    bool
-	immediateCall    bool
-	callSite         symbol.SyntaxRef
-	deferredMember   bool
-	branch           *branchFacts
+	callable             callableRef
+	typeOwner            symbol.SymbolID
+	genericOwner         symbol.SymbolID
+	nominalOwner         symbol.SymbolID
+	externConvention     types.CallingConvention
+	unsupported          bool
+	typePosition         bool
+	typeRoot             bool
+	preparedType         bool
+	control              controlContext
+	expected             expectedType
+	suppressValue        bool
+	expressionBodyReturn bool
+	expressionBodyRef    symbol.SyntaxRef
+	immediateCall        bool
+	callSite             symbol.SyntaxRef
+	deferredMember       bool
+	branch               *branchFacts
 }
 
 type branchRoot struct {
@@ -196,6 +198,9 @@ func (w *walker) walkTree(item module.Module) {
 						w.finishSlice(current.ref, node, current.ctx)
 					default:
 						w.finishExpression(current.ref, node, current.ctx, item.Tree)
+					}
+					if current.ctx.expressionBodyReturn && current.ref == current.ctx.expressionBodyRef {
+						w.finishExpressionBodyReturn(current.ref, current.ctx)
 					}
 				}
 			}
@@ -491,6 +496,31 @@ func (w *walker) callableChildren(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 	}
 	bodyPresent := node.Kind() != syntax.ExternFunction && node.Data()&syntax.FunctionBodyPresent != 0
 	w.beginCallableRegion(ref, items, callableRef{Symbol: callable.ID, Syntax: ref}, bodyPresent)
+	if node.Data()&syntax.FunctionExpressionBody != 0 {
+		for index := range items {
+			if items[index].ref.Node != bodyNode {
+				continue
+			}
+			items[index].ctx.expressionBodyReturn = true
+			items[index].ctx.expressionBodyRef = items[index].ref
+			itemCtx := items[index].ctx
+			bodyRef := items[index].ref
+			origin := w.originForRef(bodyRef, "return value", itemCtx.callable.Symbol, itemCtx.genericOwner)
+			term, known, ok := w.callableResult(itemCtx, origin)
+			if !ok {
+				continue
+			}
+			destination, published := w.newSlotValue(term, origin)
+			if !published {
+				continue
+			}
+			if known != 0 {
+				destination.Known = known
+				w.knownValues[destination.ID] = known
+			}
+			w.expectations[bodyRef] = w.expectationFor(bodyRef, destination.ID, compatibilityReturn)
+		}
+	}
 	return items
 }
 

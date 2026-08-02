@@ -193,3 +193,23 @@ func (w *walker) finishReturn(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 	}
 	w.retainControl(ref, ctx, emission)
 }
+
+// finishExpressionBodyReturn retains the implicit return record for a named
+// function's expression body (`fn f() T => expr;`). The body expression node is
+// not a statement, so it never produces a ReturnStmt control record of its own;
+// this synthesizes exactly the controlReturn shape finishReturn's success path
+// retains for a real `return expr;`, including the return compatibility wiring,
+// so 06b's IR builder produces the same populated body it builds for the
+// block-bodied equivalent.
+func (w *walker) finishExpressionBodyReturn(ref symbol.SyntaxRef, ctx walkContext) {
+	emission := controlEmission{kind: controlReturn, form: statementOther, region: ctx.control.region, syntheticSyntax: true}
+	value, found := w.valuesBySyntax[ref]
+	if found && value.ID != 0 && w.successfulExpressions[ref] {
+		emission.values = append(emission.values, controlValue{Role: valueReturn, Value: value.ID})
+		if expected, ok := w.expectations[ref]; ok && expected.Destination != 0 && expected.Role == compatibilityReturn {
+			w.retainCompatibility(ref, ctx.genericOwner, value.ID, expected.Destination, compatibilityReturn, 0,
+				ctx.callable.Symbol, spanForRef(w.generation.inputs, ref), false)
+		}
+	}
+	w.retainControl(ref, ctx, emission)
+}

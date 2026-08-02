@@ -83,6 +83,7 @@ type controlRecord struct {
 	Values                                        []controlValue
 	Composition                                   []structuralChild
 	ConditionPresent, ElsePresent, RangeInclusive bool
+	SyntheticSyntax                               bool
 }
 
 type deferRecord struct {
