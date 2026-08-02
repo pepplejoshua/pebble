@@ -203,6 +203,28 @@ incrementally as work proceeds.
   `break` inside a nested loop correctly targets only the inner loop —
   confirmed by compiling and running the emitted C independently
   outside the harness.
+- **10.13 — widen the backend to i64** (`runtime/`,
+  `compiler/internal/backend`): proves the checked-integer pattern
+  built for i32 (10.3–10.12) actually generalizes rather than having
+  been accidentally i32-specific. `runtime/src/arith.c` gains the six
+  i64 checked-arithmetic functions mirroring the i32 ones exactly at
+  the wider width. The backend resolves the entry's integer width once
+  (i32 or i64, from its own result type) and threads it through every
+  builder instead of hardcoding i32; a body never mixes widths — an
+  i32 local inside an i64 entry (or vice versa) is a clean rejection,
+  since there's no cast/coercion lowering to fall back on. The i32
+  path is untouched (`pebble_user_main` keeps the legacy `static int`
+  return type byte-for-byte, confirmed against every existing i32
+  test); i64 uses `static int64_t` so a 64-bit value isn't truncated
+  before the hosted `main` narrows it to the process exit code.
+  Verified end-to-end, including independently outside the harness:
+  a real i64 accumulation loop, and `INT64_MAX + 1` aborting with the
+  i64-specific overflow message. (One dispatch note: the first attempt
+  at this slice terminated prematurely mid-investigation with an
+  incomplete worklog; the supervisor found the actual diff was
+  substantial and correct despite that, and completed full independent
+  verification — runtime SAFE/RELEASE builds, the full Go suite and
+  race, and manual reproduction — before accepting it.)
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
