@@ -270,6 +270,41 @@ incrementally as work proceeds.
   real source (checker rejects that shape as C0603 before typed IR
   exists), so it's defense for hand-built IR, not a real gap. Verified
   end-to-end and independently outside the harness.
+- **10.17 — a second function, callable from the entry**
+  (`compiler/internal/backend`): the first genuinely new architectural
+  piece — `Emit` no longer emits exactly one function. It discovers
+  every function actually reachable by a call from the entry (a DFS
+  over `DirectCall` edges), validates each against the same
+  constraints the entry satisfies (Pebble convention, zero parameters,
+  result exactly the entry's resolved width), and emits each as its
+  own `static pebble_fn_<symbolID>(PebbleContext *ctx)` function,
+  reusing `buildBlock` unchanged for the body. Emitting exactly the
+  reachable set guarantees by construction that every emitted helper
+  has at least one call site, so the mandated `-Wall -Wextra -Werror`
+  build never warns about an unused static function — confirmed with a
+  real unreachable-function test. Emission order is the walk's
+  post-order (callees before callers), since there's no
+  forward-declaration mechanism yet; a cycle (self- or
+  mutual-recursion) is a clean rejection naming the call chain, not
+  attempted. Context threading is not an explicit IR child — confirmed
+  against a real `DirectCall` node, `ContextAction` records
+  `ContextForward`, and this backend prepends `ctx` as the first C
+  argument itself, mirroring `pebble_user_main`'s own signature.
+  Real, independently-confirmed finding along the way: the shared
+  end-to-end test harness never actually compiled under `-Wall -Wextra
+  -Werror` before this slice. Retrofitting it surfaced a genuine
+  `-Wunused-variable` case (a declared-but-unread `bool` local from
+  10.14); fixed at the root — every emitted local now gets a `(void)`
+  cast immediately after its declaration, the same pattern already
+  used for `ctx`, so the emitter is immune to the warning regardless
+  of whether a program reads the local. The harness now compiles
+  every end-to-end test under strict flags uniformly. First dispatch
+  attempt at this slice was a genuine silent no-op (near-empty
+  worklog, only a leftover investigation probe, no real diff) — caught
+  and resolved by retrying with the identical brief. Verified a
+  two-level call chain compiles in the correct forward-definition
+  order and exits correctly, confirmed independently outside the
+  harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
