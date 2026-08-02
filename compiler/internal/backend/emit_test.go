@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -515,30 +516,7 @@ func emitAndRunBounded(t *testing.T, sourceText string, requireEntry bool, wantC
 func compileAndRun(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) {
 	t.Helper()
 	binary := compileEmittedC(t, emitted)
-
-	run := exec.Command(binary)
-	output, err := run.CombinedOutput()
-	if run.ProcessState == nil {
-		t.Fatalf("compiled program did not start: %v\n%s", err, output)
-	}
-	code := run.ProcessState.ExitCode()
-	if wantAbnormal {
-		// CombinedOutput returns a non-nil error for any non-zero exit or
-		// signal; a clean exit 0 would mean the overflow check never fired.
-		if err == nil {
-			t.Fatalf("compiled program exited 0, want abnormal termination\n%s", output)
-		}
-		t.Logf("compiled program terminated abnormally (err=%v, exit code %d): %s", err, code, output)
-		return
-	}
-	// A non-zero exit is expected behavior for some programs (the exit code
-	// IS the program's output), so the run error is not itself a failure —
-	// only a mismatch with the wanted code is. A signaled process would
-	// report exit code -1 and fail the comparison.
-	if code != wantCode {
-		t.Fatalf("compiled program exited %d, want %d\n%s", code, wantCode, output)
-	}
-	t.Logf("compiled program exited %d, want %d", code, wantCode)
+	runCompiledBinary(t, binary, wantCode, wantAbnormal, false)
 }
 
 // loopExecutionTimeout bounds the execution of a compiled program whose
@@ -549,7 +527,11 @@ const loopExecutionTimeout = 5 * time.Second
 
 // compileEmittedC cc's already-emitted C against the runtime in
 // PEBBLE_RT_MODE_SAFE (the same configuration every end-to-end test here uses)
-// and returns the path to the compiled binary.
+// under -Wall -Wextra -Werror, and returns the path to the compiled binary.
+// Every emitted local is followed by a (void) cast (see buildLeadingStatement)
+// specifically so this backend's own output is immune to -Wunused-variable
+// regardless of whether a test fixture happens to read the local afterward, so
+// the strict flags apply uniformly — there is no lenient path to opt into.
 func compileEmittedC(t *testing.T, emitted []byte) string {
 	t.Helper()
 	cc, err := exec.LookPath("cc")
@@ -565,8 +547,9 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 	binary := filepath.Join(dir, "program")
 	runtimeRoot := runtimeSourceRoot(t)
 
-	compile := exec.Command(cc,
+	compileArgs := []string{
 		"-std=c11",
+		"-Wall", "-Wextra", "-Werror",
 		"-DPEBBLE_RT_MODE_SAFE",
 		"-I", filepath.Join(runtimeRoot, "include"),
 		program,
@@ -575,7 +558,8 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 		filepath.Join(runtimeRoot, "src", "platform_host.c"),
 		filepath.Join(runtimeRoot, "src", "arith.c"),
 		"-o", binary,
-	)
+	}
+	compile := exec.Command(cc, compileArgs...)
 	if output, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc compilation failed: %v\n%s", err, output)
 	}
@@ -596,29 +580,51 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 func compileAndRunBounded(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) {
 	t.Helper()
 	binary := compileEmittedC(t, emitted)
+	runCompiledBinary(t, binary, wantCode, wantAbnormal, true)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), loopExecutionTimeout)
-	defer cancel()
-	run := exec.CommandContext(ctx, binary)
+// runCompiledBinary runs one already-compiled binary and asserts its exit
+// behavior. With bounded set, execution is wrapped in the loopExecutionTimeout
+// context so a genuinely non-terminating program (a miscompiled while loop)
+// fails the test loudly and quickly instead of hanging the run; a program that
+// terminates promptly — normally, or abnormally via a panic such as the
+// overflow abort — finishes well before the deadline. With wantAbnormal, the
+// process must terminate abnormally (a non-zero exit or a signal, as abort()
+// produces); otherwise its exit code must equal wantCode.
+func runCompiledBinary(t *testing.T, binary string, wantCode int, wantAbnormal, bounded bool) {
+	t.Helper()
+	var run *exec.Cmd
+	if bounded {
+		ctx, cancel := context.WithTimeout(context.Background(), loopExecutionTimeout)
+		defer cancel()
+		run = exec.CommandContext(ctx, binary)
+	} else {
+		run = exec.Command(binary)
+	}
 	output, err := run.CombinedOutput()
 	if run.ProcessState == nil {
 		t.Fatalf("compiled program did not start: %v\n%s", err, output)
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("compiled program timed out after %s (a non-terminating loop?), err=%v\n%s", loopExecutionTimeout, err, output)
 	}
 	code := run.ProcessState.ExitCode()
 	if wantAbnormal {
 		// CombinedOutput returns a non-nil error for any non-zero exit or
 		// signal; a clean exit 0 would mean the overflow check never fired.
-		// This branch runs only after the deadline check above, so reaching it
-		// proves the abnormal termination is a genuine panic, not a timeout.
+		// In bounded execution this branch runs only after the deadline check
+		// above, so reaching it proves the abnormal termination is a genuine
+		// panic, not a timeout.
 		if err == nil {
 			t.Fatalf("compiled program exited 0, want abnormal termination\n%s", output)
 		}
 		t.Logf("compiled program terminated abnormally (err=%v, exit code %d): %s", err, code, output)
 		return
 	}
+	// A non-zero exit is expected behavior for some programs (the exit code
+	// IS the program's output), so the run error is not itself a failure —
+	// only a mismatch with the wanted code is. A signaled process would
+	// report exit code -1 and fail the comparison.
 	if code != wantCode {
 		t.Fatalf("compiled program exited %d, want %d\n%s", code, wantCode, output)
 	}
@@ -2713,4 +2719,238 @@ func TestEmitI32RejectsI64Local(t *testing.T) {
 	// for this backend.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i64 = 1; return 2; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+}
+
+func TestEmitHelperPlusHelperCompilesAndRuns(t *testing.T) {
+	// The flagship 10.17 fixture: a second, callable function. main calls
+	// helper() twice and adds the results, so the process exit code is
+	// 21 + 21 = 42. The helper is emitted as its own static function before
+	// pebble_user_main, and each call site lowers to pebble_fn_<callee>(ctx)
+	// with the context prepended by the backend (the IR threads context via
+	// ContextAction, not an explicit argument child).
+	emitAndRun(t, "fn helper() i32 { return 21; } fn main() i32 { return helper() + helper(); }", false, 42, false)
+}
+
+func TestEmitHelperPlusHelperWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture: the helper must be its own
+	// `static int32_t pebble_fn_24(PebbleContext *ctx)` block (named
+	// deterministically from symbol ID 24, the helper), defined before
+	// pebble_user_main (definition-before-use, since there's no forward-
+	// declaration mechanism), and each call site must lower to
+	// pebble_fn_24(ctx) inside the entry's checked add. Symbols 24 (helper)
+	// and 25 (main) come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return 21; } fn main() i32 { return helper() + helper(); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
+		"    return 21;",
+		"static int pebble_user_main(PebbleContext *ctx)",
+		"return pebble_rt_checked_add_i32(pebble_fn_24(ctx), pebble_fn_24(ctx));",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !(strings.Index(out, "static int32_t pebble_fn_24") < strings.Index(out, "static int pebble_user_main")) {
+		t.Errorf("helper definition does not precede pebble_user_main:\n%s", out)
+	}
+}
+
+func TestEmitHelperWithFullGrammarBodyCompilesAndRuns(t *testing.T) {
+	// A helper whose body uses the full recursive block grammar buildBlock
+	// implements — bool and integer locals, a while loop, a loop-body if, and a
+	// two-armed if/else as the tail — proving buildBlock is genuinely reused
+	// for a non-entry function, not just a bare return. done gates the loop, i
+	// counts 0..4, sum accumulates i, so sum = 0+1+2+3+4 = 10 and the tail's
+	// sum > 3 arm returns it. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn helper() i32 { var done bool = false; var sum i32 = 0; var i i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } if sum > 3 { return sum; } else { return sum + 1; } } fn main() i32 { return helper(); }", false, 10, false)
+}
+
+func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
+	// The emitted C for the full-grammar helper must carry the helper's own
+	// locals, loop, and tail if/else at their own 4-space top level inside the
+	// helper's braces, distinct from the entry's body — proving the helper's
+	// body is built as its own block with its own fresh scope, not interleaved
+	// into pebble_user_main. Symbols 24 (helper) and 25 (main) come from the
+	// real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { var done bool = false; var sum i32 = 0; var i i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } if sum > 3 { return sum; } else { return sum + 1; } } fn main() i32 { return helper(); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
+		"    bool pebble_local_26 = false;",
+		"    while (!(pebble_local_26)) {\n",
+		"    if (pebble_local_27 > 3) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !(strings.Index(out, "static int32_t pebble_fn_24") < strings.Index(out, "return pebble_fn_24(ctx);")) {
+		t.Errorf("helper definition does not precede its call site in the entry:\n%s", out)
+	}
+}
+
+func TestEmitTwoLevelCallChainCompilesAndRuns(t *testing.T) {
+	// Two levels of calls: main calls helper1, helper1 calls helper2. The
+	// reachability walk must follow calls transitively (not one level deep),
+	// and the emission order must place helper2 before helper1 before
+	// pebble_user_main even though helper1 is declared before helper2 in the
+	// source — proving the post-order walk, not declaration order, drives the
+	// C ordering (a called function's definition must precede its use). Exit
+	// code 20.
+	emitAndRun(t, "fn helper1() i32 { return helper2(); } fn helper2() i32 { return 20; } fn main() i32 { return helper1(); }", false, 20, false)
+}
+
+func TestEmitTwoLevelCallChainWritesC(t *testing.T) {
+	// The emitted C for the two-level chain must define helper2 (symbol 25,
+	// called first in the post-order walk) before helper1 (symbol 24) before
+	// pebble_user_main, despite the source declaring helper1 first — the
+	// forward-definition requirement. Symbols come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn helper1() i32 { return helper2(); } fn helper2() i32 { return 20; } fn main() i32 { return helper1(); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	index25 := strings.Index(out, "static int32_t pebble_fn_25")
+	index24 := strings.Index(out, "static int32_t pebble_fn_24")
+	indexMain := strings.Index(out, "static int pebble_user_main")
+	for name, index := range map[string]int{"pebble_fn_25 (helper2)": index25, "pebble_fn_24 (helper1)": index24, "pebble_user_main": indexMain} {
+		if index < 0 {
+			t.Errorf("emitted C missing %q:\n%s", name, out)
+		}
+	}
+	if !(index25 < index24 && index24 < indexMain) {
+		t.Errorf("emission order is not callee-before-caller (helper2, helper1, main):\n%s", out)
+	}
+}
+
+func TestEmitI64HelperCompilesAndRuns(t *testing.T) {
+	// The width discipline extends to called functions: an i64 entry calls an
+	// i64 helper, the helper's C return type is int64_t, and the checked add
+	// uses the i64 helper family. Exit code 42.
+	emitAndRun(t, "fn helper() i64 { return 21; } fn main() i64 { return helper() + helper(); }", false, 42, false)
+}
+
+func TestEmitI64HelperWritesC(t *testing.T) {
+	// The emitted C for an i64 helper must declare it int64_t and call it with
+	// the i64 checked helper, mirroring the entry-width threading.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i64 { return 21; } fn main() i64 { return helper() + helper(); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int64_t pebble_fn_24(PebbleContext *ctx) {",
+		"pebble_rt_checked_add_i64(pebble_fn_24(ctx), pebble_fn_24(ctx));",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "int32_t pebble_fn") {
+		t.Errorf("emitted C declared an i32 helper for an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitRejectsI64MainCallsI32Helper(t *testing.T) {
+	// A called function must resolve to the entry's own integer width — there
+	// is no cast/coercion lowering, the same reasoning 10.13 established for
+	// locals. An i64 entry calling an i32 helper is a legal, checker-accepted
+	// program, so this is a genuine backend-scope rejection naming the width
+	// mismatch.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return 21; } fn main() i64 { return helper(); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i64")
+}
+
+func TestEmitRejectsI32MainCallsI64Helper(t *testing.T) {
+	// The reverse direction: an i32 entry calling an i64 helper is likewise a
+	// clean width-mismatch rejection.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i64 { return 21; } fn main() i32 { return helper(); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+}
+
+func TestEmitRejectsSelfRecursion(t *testing.T) {
+	// Recursion is legal, checker-accepted Pebble (confirmed against a real
+	// fixture), so this is a genuine backend-scope boundary: the reachability
+	// walk follows helper's call back to helper and must reject the cycle
+	// cleanly, naming the chain, rather than emit a C definition that calls
+	// itself before it is defined (there's no forward-declaration mechanism).
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return helper(); } fn main() i32 { return helper(); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
+}
+
+func TestEmitRejectsMutualRecursion(t *testing.T) {
+	// Two functions that call each other: a calls b and b calls a, so a can
+	// reach itself through b. The walk must reject the cycle naming the chain
+	// (symbol 24 -> symbol 25 -> symbol 24), not emit either function.
+	unit, snapshot, entryID := buildFixture(t, "fn a() i32 { return b(); } fn b() i32 { return a(); } fn main() i32 { return a(); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
+}
+
+func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
+	// The cycle can close through the entry itself: main calls helper, helper
+	// calls main back. main is on the walk's DFS path, so the walk must reject
+	// the cycle rather than re-emit the entry as a helper.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return main(); } fn main() i32 { return helper(); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
+}
+
+func TestEmitRejectsVoidHelperCall(t *testing.T) {
+	// A void-result helper is deliberately out of scope this slice: its only
+	// use is a bare statement call (helper();), which needs an
+	// expression-statement construct the block grammar does not have, and its
+	// body (statement-only, ending in ImplicitReturn) does not fit the
+	// return/if-tail grammar buildBlock implements. The reachability walk must
+	// reject it cleanly, naming the void result, not emit it. (A void helper
+	// the entry never calls is simply unreachable and not emitted at all.)
+	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns void")
+}
+
+func TestEmitUnreachableFunctionNotEmitted(t *testing.T) {
+	// A declared function the entry never calls, directly or transitively, must
+	// not be emitted at all — the generated C has no trace of it (symbol 25,
+	// the unused function), so the -Wall -Wextra -Werror build cannot warn
+	// about an unused static function. Only the reachable helper (symbol 24)
+	// is emitted, and the program runs to exit 21.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return 21; } fn unused() i32 { return 99; } fn main() i32 { return helper(); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_fn_24") {
+		t.Errorf("emitted C missing the reachable helper:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_fn_25") {
+		t.Errorf("emitted C contains the unreachable function (symbol 25), which would trigger -Wunused-function:\n%s", out)
+	}
+	binary := compileEmittedC(t, buf.Bytes())
+	runCompiledBinary(t, binary, 21, false, false)
+}
+
+func TestEmitCallInConditionCompilesAndRuns(t *testing.T) {
+	// A helper call is an ordinary expression of the entry's width, so it can
+	// appear inside a comparison condition, not just a return value: the
+	// reachability walk follows it there and buildComparison's operand path
+	// (via buildExpr) lowers it. helper returns 3, 3 < 5 is true, so the
+	// then-arm runs and the process exits 1.
+	emitAndRun(t, "fn helper() i32 { return 3; } fn main() i32 { if helper() < 5 { return 1; } else { return 2; } }", false, 1, false)
+}
+
+func TestEmitHelperCallInLocalInitializerCompilesAndRuns(t *testing.T) {
+	// A helper call in a local's initializer: x is declared as the helper's
+	// result, and the return reads it — the locals scope threads through the
+	// call expression like any other expression of the entry's width.
+	emitAndRun(t, "fn helper() i32 { return 7; } fn main() i32 { let x i32 = helper(); return x + 1; }", false, 8, false)
 }

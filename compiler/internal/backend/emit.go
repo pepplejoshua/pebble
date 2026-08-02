@@ -26,6 +26,24 @@
 // vice versa) is a clean width-mismatch rejection, never a coercion, since
 // this backend has no cast/coercion lowering yet. Everything else is rejected
 // with a descriptive error instead of guessed.
+//
+// Since 10.17, an integer entry's body may also call other Pebble-convention
+// zero-parameter functions declared in the same unit. Only functions actually
+// reachable from the entry by a tir.DirectCall are emitted (discoverReachableHelpers
+// does a post-order worklist walk starting from the entry's body, following
+// every call), each as its own `static <width> pebble_fn_<symbolID>(PebbleContext
+// *ctx)` block emitted before pebble_user_main so a called function's C
+// definition precedes its use. Every called function must resolve to the
+// entry's own integer width — there is no cast/coercion lowering, and
+// void-result helpers are deliberately out of scope this slice (a void call
+// has no expression-statement construct in the block grammar). Recursion
+// (self- or mutual) is rejected cleanly at discovery time, since this backend
+// has no forward-declaration mechanism yet. Each called function's body is
+// built by the exact same buildBlock, with its own fresh, empty locals scope.
+// A call expression emits `pebble_fn_<calleeSymbolID>(ctx)`: the typed IR's
+// DirectCall records context forwarding via ContextAction (ContextForward for a
+// Pebble-convention call) but carries no explicit context argument, so the
+// backend prepends ctx itself, exactly as pebble_user_main receives it.
 package backend
 
 import (
@@ -57,8 +75,10 @@ import (
 // own locals and nested if/else. Every expression — a local's initializer, a
 // reassignment's new value, a return value, or an if/else arm's return value —
 // may be a plain non-negative integer literal, a tree of checked negation and
-// checked +, -, *, /, % arithmetic (see buildExpr), or a reference to a local
-// declared earlier in the same or an enclosing block. A comparison's operands
+// checked +, -, *, /, % arithmetic (see buildExpr), a reference to a local
+// declared earlier in the same or an enclosing block, or a call to another
+// Pebble-convention zero-parameter function whose result is the entry's own
+// width (a tir.DirectCall, see buildExpr). A comparison's operands
 // are additionally allowed to be int-typed integer literals (see
 // buildComparisonOperand), or — for ==/!= — two bool values built under the
 // bool grammar (see buildComparison). Checked operations emit
@@ -71,6 +91,20 @@ import (
 // rejected, never coerced. Any other shape returns a descriptive error and
 // writes nothing to w; this package does not yet lower arbitrary expressions
 // or statements.
+//
+// An integer entry may additionally call other functions. Every function
+// actually reachable from the entry by a call (transitively — the reachability
+// walk follows into each called function's own body) is validated and emitted
+// as its own static helper function before pebble_user_main, with each called
+// function's body built by the same buildBlock with its own fresh locals scope
+// (see discoverReachableHelpers and buildHelperFunctions). A called function
+// must be Pebble-convention, take zero parameters, and return exactly the
+// entry's resolved width; a width mismatch at a call site, a void-result
+// helper (deliberately out of scope this slice), or a call that is part of a
+// cycle (a function that can reach itself, directly or through others — the
+// recursion boundary) is a clean rejection naming what was found, since this
+// backend has no forward-declaration mechanism to order recursive or
+// out-of-definition-order calls yet.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -98,26 +132,44 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		if err := validateEmptyBody(unit, block); err != nil {
 			return err
 		}
-		return emitEntryC(w, voidEntryUserMain, voidEntryMainBody)
+		return emitEntryC(w, "", voidEntryUserMain, voidEntryMainBody)
+	}
+	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
+	if err != nil {
+		return err
+	}
+	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result)
+	if err != nil {
+		return err
 	}
 	statements, err := buildBlock(unit, snapshot, blockID, nil, 0, result)
 	if err != nil {
 		return err
 	}
-	return emitEntryC(w, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
+	return emitEntryC(w, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
 }
 
 // findEntryDeclaration locates the FunctionDeclaration node for entrySymbol.
 // A specialization would carry non-empty TypeArgs; the entry cannot be
 // generic, so those are deliberately excluded rather than assumed absent.
 func findEntryDeclaration(unit *tir.Unit, entrySymbol symbol.SymbolID) (tir.Node, error) {
+	return findFunctionDeclaration(unit, entrySymbol, "entry function")
+}
+
+// findFunctionDeclaration locates the non-generic FunctionDeclaration node
+// for the given function symbol, generalizing findEntryDeclaration to any
+// function the reachability walk resolves. Every typed-IR function this
+// backend emits — the entry and every called helper — has exactly one such
+// declaration; a generic instance would carry non-empty TypeArgs and is
+// excluded, since generic calls are not lowered here.
+func findFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, what string) (tir.Node, error) {
 	for _, node := range unit.Nodes() {
-		if node.Kind != tir.FunctionDeclaration || node.Symbol != entrySymbol || len(node.TypeArgs) != 0 {
+		if node.Kind != tir.FunctionDeclaration || node.Symbol != symbolID || len(node.TypeArgs) != 0 {
 			continue
 		}
 		return node, nil
 	}
-	return tir.Node{}, fmt.Errorf("entry function not found in unit: no non-generic FunctionDeclaration for symbol %d", entrySymbol)
+	return tir.Node{}, fmt.Errorf("%s not found in unit: no non-generic FunctionDeclaration for symbol %d", what, symbolID)
 }
 
 // validateEntrySignature checks the entry's calling convention, parameter
@@ -152,20 +204,225 @@ func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.Buil
 // found by findEntryDeclaration. It returns both the resolved Block node and
 // its NodeID, so the caller can pass the ID into the recursive buildBlock.
 func findEntryBody(unit *tir.Unit, decl tir.Node) (tir.Node, tir.NodeID, error) {
+	return findFunctionBody(unit, decl, "entry function")
+}
+
+// findFunctionBody resolves the body Block for any function declaration,
+// generalizing findEntryBody to a called helper: it follows the declaration's
+// FunctionID to its FunctionDecl container and resolves that container's body
+// node, returning both the Block node and its NodeID.
+func findFunctionBody(unit *tir.Unit, decl tir.Node, what string) (tir.Node, tir.NodeID, error) {
 	for _, fd := range unit.FunctionDeclarations() {
 		if fd.FunctionID != decl.Function {
 			continue
 		}
 		block, ok := unit.Node(fd.Node)
 		if !ok {
-			return tir.Node{}, 0, fmt.Errorf("entry function body not found in unit: FunctionDecl %d has invalid body node %d", fd.FunctionID, fd.Node)
+			return tir.Node{}, 0, fmt.Errorf("%s body not found in unit: FunctionDecl %d has invalid body node %d", what, fd.FunctionID, fd.Node)
 		}
 		if block.Kind != tir.Block {
-			return tir.Node{}, 0, fmt.Errorf("entry function body is a %s, want a Block", block.Kind)
+			return tir.Node{}, 0, fmt.Errorf("%s body is a %s, want a Block", what, block.Kind)
 		}
 		return block, fd.Node, nil
 	}
-	return tir.Node{}, 0, fmt.Errorf("entry function body declaration not found in unit: no FunctionDecl for FunctionID %d", decl.Function)
+	return tir.Node{}, 0, fmt.Errorf("%s body declaration not found in unit: no FunctionDecl for FunctionID %d", what, decl.Function)
+}
+
+// helperInfo is one reachable non-entry function discovered by
+// discoverReachableHelpers: its FunctionDeclaration node (for validation and
+// for the deterministic pebble_fn_<symbolID> C name) and the NodeID of its
+// body Block (for buildBlock). The emission order of the returned slice is a
+// post-order of the reachability walk — every callee precedes its caller — so
+// a called function's C definition always precedes its use in the generated
+// file.
+type helperInfo struct {
+	decl  tir.Node
+	block tir.NodeID
+}
+
+// reachabilityWalk carries the mutable state of the recursive reachability
+// discovery in discoverReachableHelpers: the functions already fully walked
+// (done), the functions on the current DFS path (stack — a callee found on
+// the path is a cycle), and the post-order emission list (order).
+type reachabilityWalk struct {
+	unit     *tir.Unit
+	snapshot *types.Snapshot
+	width    types.BuiltinKind
+	entry    symbol.SymbolID
+	done     map[symbol.SymbolID]bool
+	stack    []symbol.SymbolID
+	order    []helperInfo
+}
+
+// discoverReachableHelpers finds exactly the set of non-entry functions the
+// entry actually calls, transitively, by walking the entry's body for
+// tir.DirectCall nodes and recursing into each newly-discovered callee's own
+// body — a worklist/DFS over the direct-call edges starting from the entry,
+// following into every function reached. Emitting exactly this reachable set
+// (and nothing else) guarantees by construction that every emitted helper has
+// at least one call site, so the mandated -Wall -Wextra -Werror build never
+// warns about an unused static function. Each reached callee is validated
+// (Pebble-convention, zero parameters, result exactly the entry's width —
+// validateHelperSignature) and its body located (findFunctionBody) before
+// recursing. The returned slice is a post-order of the walk — callees before
+// callers — which is the emission order that keeps every call in the emitted
+// C text forward (definition before use), since this backend has no
+// forward-declaration mechanism. A cycle (a function that can reach itself,
+// directly or through others) is a clean rejection naming the cycle, not
+// attempted.
+func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDecl tir.Node, entryBlockID tir.NodeID, width types.BuiltinKind) ([]helperInfo, error) {
+	walk := &reachabilityWalk{
+		unit:     unit,
+		snapshot: snapshot,
+		width:    width,
+		entry:    entryDecl.Symbol,
+		done:     make(map[symbol.SymbolID]bool),
+	}
+	if err := walk.visit(entryDecl, entryBlockID); err != nil {
+		return nil, err
+	}
+	return walk.order, nil
+}
+
+// visit walks one function's body for DirectCall nodes, recursing into every
+// discovered callee's own body. The entry is the root of the walk; the entry
+// itself is never added to the emission order (its C definition,
+// pebble_user_main, is emitted separately after the helpers). A callee
+// already fully walked (done) is a shared subgraph — a diamond, where two
+// callers reach one callee — and is skipped, not re-walked, so each helper is
+// emitted exactly once. A callee already on the current DFS path (stack) is a
+// cycle and is rejected, naming the call chain that closes on itself.
+func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
+	if w.done[decl.Symbol] {
+		return nil
+	}
+	if inStack := indexOfSymbol(w.stack, decl.Symbol); inStack >= 0 {
+		// The function is already on the current DFS path, so the call edge
+		// just followed closes a cycle: decl can reach itself through
+		// stack[inStack:] -> decl. Forward-declaration ordering for recursive
+		// calls is real future work, not this slice's problem.
+		cycle := append(append([]symbol.SymbolID(nil), w.stack[inStack:]...), decl.Symbol)
+		parts := make([]string, len(cycle))
+		for i, id := range cycle {
+			parts[i] = fmt.Sprintf("symbol %d", id)
+		}
+		return fmt.Errorf("recursion is not supported yet: the call chain %s is a cycle (a function that can reach itself, directly or through others), and this backend has no forward-declaration mechanism to order recursive calls yet", strings.Join(parts, " -> "))
+	}
+	w.stack = append(w.stack, decl.Symbol)
+	var calls []tir.Node
+	if err := collectDirectCalls(w.unit, blockID, &calls); err != nil {
+		return err
+	}
+	for _, call := range calls {
+		if len(call.TypeArgs) != 0 {
+			return fmt.Errorf("called function symbol %d is a generic call with %d type argument(s), which this backend does not lower (generics are not supported yet)", call.Symbol, len(call.TypeArgs))
+		}
+		calleeDecl, err := findFunctionDeclaration(w.unit, call.Symbol, "called function")
+		if err != nil {
+			return err
+		}
+		if err := validateHelperSignature(calleeDecl, w.snapshot, w.width); err != nil {
+			return err
+		}
+		_, calleeBlock, err := findFunctionBody(w.unit, calleeDecl, "called function")
+		if err != nil {
+			return err
+		}
+		if err := w.visit(calleeDecl, calleeBlock); err != nil {
+			return err
+		}
+	}
+	w.stack = w.stack[:len(w.stack)-1]
+	w.done[decl.Symbol] = true
+	if decl.Symbol != w.entry {
+		w.order = append(w.order, helperInfo{decl: decl, block: blockID})
+	}
+	return nil
+}
+
+// collectDirectCalls appends every tir.DirectCall node in the tree rooted at
+// nodeID, following Children and DeferChain. The typed-IR node graph is
+// single-parented, so this walk terminates and each node is visited at most
+// once per path. DeferChain is followed for completeness even though defer is
+// rejected by the block builders anyway — following it only affects which
+// callees are validated, never whether the program is accepted (a deferring
+// body is rejected on its own merits).
+func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("reachability walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.DirectCall {
+		*out = append(*out, node)
+	}
+	for _, childID := range node.Children {
+		if err := collectDirectCalls(unit, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectDirectCalls(unit, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// indexOfSymbol returns the position of id in ids, or -1 if absent.
+func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
+	for i, candidate := range ids {
+		if candidate == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// validateHelperSignature checks one called function against the constraints
+// every reachable helper must satisfy: Pebble-convention, zero parameters,
+// and a result of exactly the entry's resolved width. The width rule is the
+// same reasoning 10.13 established for locals — a called function of the
+// other width (an i32 helper called from an i64 entry, or vice versa) is a
+// clean width-mismatch rejection, never a coercion, since there is no
+// cast/coercion lowering to fall back on. A void-result helper is also a
+// clean rejection: this slice only supports integer-result calls used as
+// expression values, deliberately leaving bare void calls (which would need an
+// expression-statement construct in the block grammar) out of scope.
+func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width types.BuiltinKind) error {
+	if decl.Convention != types.Pebble {
+		return fmt.Errorf("called function symbol %d uses %s calling convention, want Pebble", decl.Symbol, callingConventionName(decl.Convention))
+	}
+	if len(decl.Parameters) != 0 {
+		return fmt.Errorf("called function symbol %d has %d parameter(s), want 0 (function parameters are not supported yet)", decl.Symbol, len(decl.Parameters))
+	}
+	if !isWidth(snapshot, width, decl.ResultType) {
+		if builtin, ok := resolvedBuiltin(snapshot, decl.ResultType); ok && builtin == types.Void {
+			return fmt.Errorf("called function symbol %d returns void; void-result helper calls are not supported yet (only %s-result calls used as expression values are)", decl.Symbol, wantName(width))
+		}
+		return fmt.Errorf("called function symbol %d has result type %s, want %s (a called function must resolve to the entry's integer width)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	}
+	return nil
+}
+
+// buildHelperFunctions builds the C text for every reachable helper, in the
+// post-order discovery gives (callees before callers), each as its own
+// `static <width> pebble_fn_<symbolID>(PebbleContext *ctx) { ... }` block with
+// its body built by the exact same buildBlock the entry's body uses — no
+// parallel body-builder. Each helper gets its own fresh, empty locals scope
+// (buildBlock is called with a nil locals map, so a helper's locals are
+// invisible to the entry and to sibling helpers, exactly as two blocks at the
+// same nesting level are isolated), and the `(void)ctx;` suppresses
+// -Wunused-parameter for a leaf helper that never calls another.
+func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []helperInfo, width types.BuiltinKind) (string, error) {
+	texts := make([]string, 0, len(helpers))
+	for _, helper := range helpers {
+		statements, err := buildBlock(unit, snapshot, helper.block, nil, 0, width)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, fmt.Sprintf(helperFunction, cType(width), helper.decl.Symbol, statements))
+	}
+	return strings.Join(texts, "\n"), nil
 }
 
 // validateEmptyBody accepts only a block with no statements, or the single
@@ -550,7 +807,12 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 				return "", err
 			}
 			scope[statement.Symbol] = width
-			return fmt.Sprintf("%s%s pebble_local_%d = %s;", indent, cType(width), statement.Symbol, initExpr), nil
+			// A local that a later statement never reads would otherwise
+			// trigger -Wunused-variable under the mandated -Wall -Wextra
+			// -Werror; a redundant (void) cast is a no-op when the local IS
+			// read later, so it is emitted unconditionally rather than
+			// tracking whether a use actually follows.
+			return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, cType(width), statement.Symbol, initExpr, indent, statement.Symbol), nil
 		case types.Bool:
 			// A bool local: emitted as a C bool. The bool value grammar is
 			// genuinely different from the integer one (no checked
@@ -565,8 +827,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// not carry let-vs-var, and the checker guarantees any Store
 			// this backend sees targets a writable `var`, so const would
 			// only be defense-in-depth at the cost of tracking which locals
-			// are ever reassigned.
-			return fmt.Sprintf("%sbool pebble_local_%d = %s;", indent, statement.Symbol, initExpr), nil
+			// are ever reassigned. The (void) cast guards against
+			// -Wunused-variable exactly as the integer case above does.
+			return fmt.Sprintf("%sbool pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, initExpr, indent, statement.Symbol), nil
 		default:
 			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
 		}
@@ -797,13 +1060,18 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 //     pebble_rt_checked_div_<suffix> / pebble_rt_checked_mod_<suffix>.
 //   - SymbolValue whose Symbol is in locals — pebble_local_<symbol ID>, the C
 //     name buildBlock gave that local's declaration.
+//   - DirectCall — a call to another Pebble-convention zero-parameter
+//     function whose result is the entry's width (validated by the reachability
+//     walk in discoverReachableHelpers): pebble_fn_<calleeSymbolID>(ctx), the
+//     ctx argument prepended by this backend since the typed IR threads context
+//     via ContextAction rather than as an explicit child.
 //
 // CheckedArithmetic with any other operator (the integral operators that build
 // this node but are not yet lowered) is rejected, not guessed. A SymbolValue
 // referencing anything not in locals (a global, a parameter, a symbol from an
 // outer/different scope — none of which are reachable from this narrow body
 // shape, but checked defensively rather than assumed) is a clean rejection.
-// Any other node kind at any position — a function call, a non-integer
+// Any other node kind at any position — a non-integer
 // operand, CheckedShift, and so on — is a clean rejection naming what was
 // found.
 // Emitting the checked runtime helpers (rather than raw C operators) is what
@@ -859,8 +1127,34 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.DirectCall:
+		// A call to another Pebble-convention zero-parameter function whose
+		// result is the entry's own width. The width gate above already
+		// checked node.Type (the call's result type, which is the callee's
+		// resolved result type) is the entry's width. Context threading is
+		// not an explicit IR child — the DirectCall records it as
+		// ContextAction (ContextForward for a Pebble-convention call) — so,
+		// exactly as the old backend textually injected `context`, this
+		// backend prepends ctx as the first C argument itself, the same way
+		// pebble_user_main receives it. The callee is a reachable helper
+		// emitted as pebble_fn_<calleeSymbolID>; the reachability walk has
+		// already validated the callee's signature, so the checks below are
+		// defense against hand-built IR, matching the file's style.
+		if node.Convention != types.Pebble {
+			return "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
+		}
+		if node.ContextAction != tir.ContextForward {
+			return "", fmt.Errorf("entry function body expression contains a call that records ContextAction %s, want ForwardCurrentContext (this backend only lowers Pebble-convention calls that thread the context)", node.ContextAction)
+		}
+		if len(node.Children) != 0 {
+			return "", fmt.Errorf("entry function body expression contains a call passing %d argument(s), want 0 (zero-parameter functions only)", len(node.Children))
+		}
+		if len(node.TypeArgs) != 0 {
+			return "", fmt.Errorf("entry function body expression contains a call to a generic function with %d type argument(s), which this backend does not lower (generics are not supported yet)", len(node.TypeArgs))
+		}
+		return fmt.Sprintf("pebble_fn_%d(ctx)", node.Symbol), nil
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, or checked +, -, *, /, %% arithmetic", node.Kind)
+		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, or a call to another zero-parameter function", node.Kind)
 	}
 }
 
@@ -913,6 +1207,13 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 //     shape (confirmed against a real fixture: flag && (1 < 2) has the
 //     comparison wrapped in a SourceAlias, while the unparenthesized
 //     1 < 2 && 3 < 4 wraps nothing).
+//
+// A bool-returning call needs no DirectCall case here and has none: a called
+// function may only resolve to the entry's integer width or void (see
+// validateHelperSignature), and void-result calls are deliberately out of
+// scope this slice, so no reachable DirectCall can carry the bool builtin and
+// no bool call can reach this builder — confirmed by construction, not
+// assumed.
 //
 // A SymbolValue referencing anything else — an integer local, a global, a
 // parameter — and any other node kind at any position is a clean rejection
@@ -1128,6 +1429,20 @@ func isNonNegativeDecimal(s string) bool {
 	return true
 }
 
+// helperFunction is the C text of one reachable helper function: a static
+// function named deterministically pebble_fn_<symbolID> from the callee's
+// stable IR identity (mirroring the pebble_local_<symbolID> naming
+// discipline — never a counter), taking the Pebble context the same way
+// pebble_user_main does. %s is the C return type for the entry's resolved
+// width (cType), %d the callee's symbol ID, and %s the helper's body
+// statements built by buildBlock at depth 0 (4-space indent, exactly like the
+// entry's own body). The (void)ctx; suppresses -Wunused-parameter for a leaf
+// helper that never calls another function.
+const helperFunction = `static %s pebble_fn_%d(PebbleContext *ctx) {
+    (void)ctx;
+%s
+}`
+
 // The supported entry shapes share one adapter skeleton: the pebble_rt.h
 // include, the Pebble-convention pebble_user_main taking the context, and a
 // hosted C main that builds a default context and drives it. Only the
@@ -1179,14 +1494,27 @@ func entryReturnType(width types.BuiltinKind) string {
 }
 
 // emitEntryC writes the shared adapter skeleton once the typed IR has been
-// confirmed to describe one of the two supported program shapes. <stdbool.h>
-// is included unconditionally: it provides the C bool keyword and the true /
-// false literals the moment any bool local or literal is emitted, and adding
-// it for programs with no bool at all is harmless.
-func emitEntryC(w io.Writer, userMain, mainBody string) error {
-	_, err := fmt.Fprintf(w, `#include "pebble_rt.h"
+// confirmed to describe one of the supported program shapes. helpers is the
+// C text of every reachable helper function (each a static
+// pebble_fn_<symbolID> definition), written before pebble_user_main so a
+// called function's definition precedes its use; it is empty when the program
+// has no helpers, in which case the emitted text is byte-identical to the
+// pre-10.17 skeleton. <stdbool.h> is included unconditionally: it provides
+// the C bool keyword and the true / false literals the moment any bool local
+// or literal is emitted, and adding it for programs with no bool at all is
+// harmless.
+func emitEntryC(w io.Writer, helpers, userMain, mainBody string) error {
+	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
-
+`); err != nil {
+		return err
+	}
+	if helpers != "" {
+		if _, err := fmt.Fprint(w, "\n"+helpers+"\n"); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(w, `
 %s
 
 int main(int argc, const char **argv) {
