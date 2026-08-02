@@ -187,6 +187,22 @@ incrementally as work proceeds.
   cloned locals scope. A real nested double-loop (3×3) and a loop-body
   `if`/`else` both compile and run correctly, confirmed by the
   dispatched tests and independently outside the harness.
+- **10.12 — `break` and `continue` inside a loop body**
+  (`compiler/internal/backend`): adds `tir.Break`/`tir.Continue` as
+  loop-body statements. The language has no labeled break/continue (no
+  label syntax exists at all — confirmed by grep, not assumed), so a
+  jump's `Target` always names the nearest enclosing loop, and plain C
+  `break;`/`continue;` (which already target the nearest enclosing
+  loop by C's own scoping) is a direct, correct translation — no need
+  to consult `Target`'s value at all, confirmed against a real
+  nested-loop fixture rather than assumed. A non-empty `DeferChain` is
+  rejected cleanly rather than silently dropped, since this backend
+  doesn't lower `defer` yet and the checker does accept `defer` inside
+  a loop body. Verified end-to-end: a `break` exits a sum-until-5 loop
+  at exit code 10, `continue` skips one term for exit code 12, and a
+  `break` inside a nested loop correctly targets only the inner loop —
+  confirmed by compiling and running the emitted C independently
+  outside the harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
