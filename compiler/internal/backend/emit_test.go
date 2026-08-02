@@ -557,6 +557,7 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 		filepath.Join(runtimeRoot, "src", "panic.c"),
 		filepath.Join(runtimeRoot, "src", "platform_host.c"),
 		filepath.Join(runtimeRoot, "src", "arith.c"),
+		filepath.Join(runtimeRoot, "src", "bounds.c"),
 		"-o", binary,
 	}
 	compile := exec.Command(cc, compileArgs...)
@@ -3403,6 +3404,52 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 	if strings.Contains(out, "int32_t _0") {
 		t.Errorf("emitted C declared an i32 tuple field for an i64 entry:\n%s", out)
 	}
+}
+
+func TestEmitArrayElementReadCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", false, 20, false)
+}
+
+func TestEmitArrayBoolElementDrivesIf(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { let a [2]bool = [false, true]; if a[1] { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitArrayExpressionIndexCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; let i i32 = 1; return a[i + 1]; }", false, 30, false)
+}
+
+func TestEmitArrayOutOfBoundsAborts(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { let a [2]i32 = [10, 20]; let i i32 = 2; return a[i]; }", false, 0, true)
+}
+
+func TestEmitArrayElementAsCallArgument(t *testing.T) {
+	emitAndRun(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let a [2]i32 = [20, 22]; return add(a[0], a[1]); }", false, 42, false)
+}
+
+func TestEmitI64ArrayCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() i64 { let a [2]i64 = [20, 22]; return a[1]; }", false, 22, false)
+}
+
+func TestEmitArrayWritesC(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_local_25[3] = { 10, 20, 30 };",
+		"return pebble_local_25[pebble_rt_checked_index_i32(1, 3)];",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRejectsArrayRepeatInitializer(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a [3]i32 = [1; 3]; return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "ArrayRepeat")
 }
 
 func TestEmitRejectsTupleWithUnsupportedElementType(t *testing.T) {

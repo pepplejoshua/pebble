@@ -964,6 +964,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// rejection.
 			return buildTupleLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
+		if isArray(snapshot, initValue.Type) {
+			return buildArrayLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
+		}
 		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 		if !ok {
 			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
@@ -1053,6 +1056,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 				// assignment into or reassignment of one).
 				return "", fmt.Errorf("%s reassigns symbol %d, a tuple-typed local of type %s; reassigning a whole tuple is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.tuple))
 			}
+			if targetInfo.array != 0 {
+				return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
+			}
 			return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 		}
 	default:
@@ -1073,6 +1079,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 type localInfo struct {
 	kind  types.BuiltinKind
 	tuple types.TypeID
+	array types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -1139,6 +1146,60 @@ func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	}
 	scope[statement.Symbol] = localInfo{tuple: initValue.Type}
 	return fmt.Sprintf("%spebble_tuple_%d_t pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, initValue.Type, statement.Symbol, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+}
+
+// buildArrayLocalDeclaration builds a fixed-length C array from an ArrayValue
+// literal. Array elements use the same integer/bool builders as scalar locals;
+// nested arrays, repeats, and all other element types remain out of scope.
+func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind != tir.ArrayValue {
+		if initValue.Kind == tir.ArrayRepeat {
+			return "", fmt.Errorf("%s declares an array-typed local initialized from ArrayRepeat; array repeat initializers are not supported yet", context)
+		}
+		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal); initializing an array local from another value is not supported yet", context, describeType(snapshot, initValue.Type), initValue.Kind)
+	}
+	key, ok := snapshot.Key(initValue.Type)
+	if !ok {
+		return "", fmt.Errorf("%s declares an array-typed local whose type %d is not in the type snapshot", context, initValue.Type)
+	}
+	length, elementType, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s, which has no array length and element type", context, describeType(snapshot, initValue.Type))
+	}
+	if len(initValue.Children) != int(length) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	exprs := make([]string, len(initValue.Children))
+	for i, child := range initValue.Children {
+		switch {
+		case isWidth(snapshot, width, elementType):
+			expr, err := buildExpr(unit, snapshot, child, scope, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = expr
+		case isBool(snapshot, elementType):
+			expr, err := buildBoolExpr(unit, snapshot, child, scope, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = expr
+		default:
+			return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want %s or bool", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType), wantName(width))
+		}
+	}
+	scope[statement.Symbol] = localInfo{array: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d[%d] = { %s };\n%s(void)pebble_local_%d;", indent, arrayElementCType(snapshot, width, elementType), statement.Symbol, length, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+}
+
+func arrayElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) string {
+	if isBool(snapshot, id) {
+		return "bool"
+	}
+	return cType(width)
 }
 
 // buildCondition builds the C text for one if/while condition. It dispatches
@@ -1397,7 +1458,10 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
 		}
 		if place.Kind != tir.TuplePlace {
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace (only tuple element loads are supported)", place.Kind)
+			if place.Kind == tir.CheckedIndexPlace {
+				return buildArrayPlaceRead(unit, snapshot, place, locals, width, false)
+			}
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace or CheckedIndexPlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, place, locals, width, false)
 	case tir.TupleElementValue:
@@ -1488,6 +1552,64 @@ func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Nod
 		return "", fmt.Errorf("entry function body expression contains a TuplePlace whose child is a %s, want a StoragePlace naming a tuple-typed local", base.Kind)
 	}
 	return buildTupleElement(unit, snapshot, base.Symbol, place.Ordinal, locals, width, wantBool)
+}
+
+// buildArrayPlaceRead lowers Load(CheckedIndexPlace) for an array local. The
+// index is built as an integer expression and checked with the runtime helper
+// selected by the entry width before it is used as the C subscript.
+func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+	if len(place.Children) != 2 {
+		return "", fmt.Errorf("entry function body expression contains a CheckedIndexPlace with %d child(ren), want exactly two (the array local's place and index)", len(place.Children))
+	}
+	base, ok := unit.Node(place.Children[0])
+	if !ok || base.Kind != tir.StoragePlace {
+		kind := "invalid"
+		if ok {
+			kind = string(base.Kind)
+		}
+		return "", fmt.Errorf("entry function body expression contains a CheckedIndexPlace whose base is a %s, want a StoragePlace naming an array-typed local", kind)
+	}
+	info, declared := locals[base.Symbol]
+	if !declared || info.array == 0 {
+		return "", fmt.Errorf("entry function body expression indexes symbol %d, which is not an array-typed local declared earlier in the entry body", base.Symbol)
+	}
+	key, ok := snapshot.Key(info.array)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression indexes an array local whose type %d is not in the type snapshot", info.array)
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("entry function body expression indexes local %d whose type is not an array", base.Symbol)
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", err
+	}
+	if wantBool {
+		if !isBool(snapshot, element) {
+			return "", fmt.Errorf("entry function body expression indexes array local %d, whose element type is %s, want bool", base.Symbol, describeType(snapshot, element))
+		}
+	} else if !isWidth(snapshot, width, element) {
+		return "", fmt.Errorf("entry function body expression indexes array local %d, whose element type is %s, want %s", base.Symbol, describeType(snapshot, element), wantName(width))
+	}
+	indexNode, ok := unit.Node(place.Children[1])
+	if !ok {
+		return "", fmt.Errorf("array index references invalid node %d", place.Children[1])
+	}
+	var index string
+	if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
+		if !isNonNegativeDecimal(indexNode.Literal.IntegerNum) {
+			return "", fmt.Errorf("array index contains an integer literal with malformed text %q", indexNode.Literal.IntegerNum)
+		}
+		index = indexNode.Literal.IntegerNum
+	} else {
+		var err error
+		index, err = buildExpr(unit, snapshot, place.Children[1], locals, width)
+		if err != nil {
+			return "", fmt.Errorf("array index: %v", err)
+		}
+	}
+	literal, _ := arrayLengthLiteral(length, width)
+	return fmt.Sprintf("pebble_local_%d[pebble_rt_checked_index_%s(%s, %s)]", base.Symbol, checkedSuffix(width), index, literal), nil
 }
 
 // buildTupleElement builds the C text for reading one element of a tuple local
@@ -1661,7 +1783,10 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
 		}
 		if place.Kind != tir.TuplePlace {
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace (only tuple element loads are supported)", place.Kind)
+			if place.Kind == tir.CheckedIndexPlace {
+				return buildArrayPlaceRead(unit, snapshot, place, locals, width, true)
+			}
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace or CheckedIndexPlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, place, locals, width, true)
 	case tir.TupleElementValue:
@@ -1822,6 +1947,28 @@ func isTuple(snapshot *types.Snapshot, id types.TypeID) bool {
 		return false
 	}
 	return key.Kind() == types.Tuple
+}
+
+// isArray reports whether id resolves to a fixed-length array type.
+func isArray(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.Array
+}
+
+// arrayLengthLiteral validates that the compile-time length can be passed to
+// the width-specific checked-index helper without a narrowing conversion.
+func arrayLengthLiteral(length uint64, width types.BuiltinKind) (string, error) {
+	max := uint64(^uint32(0) >> 1)
+	if width == types.I64 {
+		max = uint64(^uint64(0) >> 1)
+	}
+	if length > max {
+		return "", fmt.Errorf("array length %d does not fit the %s checked-index helper", length, wantName(width))
+	}
+	return fmt.Sprintf("%d", length), nil
 }
 
 // tupleTypeName is the deterministic C name of one distinct tuple type's
