@@ -621,6 +621,37 @@ incrementally as work proceeds.
   emitted C for `fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn
   main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }` with
   `-Wall -Wextra -Werror`, confirming exit code 42.
+- **10.25 — aggregate values as compound-literal expressions**
+  (`compiler/internal/backend`): closes 10.24's "inline aggregate
+  construction as a call argument is not supported yet" gap. 10.19/10.22
+  built tuple/struct construction only as a local's declaration
+  initializer; this slice adds the general primitive — building a
+  `TupleValue`/`RecordConstruct` as an ordinary C expression, not just
+  a full declaration statement. `buildTupleBraceList`/
+  `buildStructBraceList` are extracted from the existing
+  local-declaration builders (same element/field validation and
+  `buildExpr`/`buildBoolExpr` dispatch, returning just the brace-list
+  text — verified to emit byte-identical output to before for every
+  pre-existing test); `buildTupleValueExpr`/`buildStructValueExpr`
+  wrap the same brace list in a C99 compound-literal cast
+  (`(pebble_tuple_<id>_t){ 20, 22 }`, positional; `(pebble_struct_<id>_t){
+  .pebble_field_<m> = e, ... }`, designated, so out-of-declared-order
+  construction still needs no reordering). `buildAggregateArgument`
+  (10.24) now accepts either an existing aggregate-typed local or a
+  bare inline construct of matching type. **Real,
+  confirmed-not-guessed finding**: a paren-wrapped aggregate argument
+  (`f(((1, 2)))`) arrives as a `SourceAlias`, which this backend
+  already rejects consistently for every type (the scalar analog
+  `f((1))` was already rejected before this slice) — kept as-is, not
+  specially handled. The two 10.24 rejection tests whose fixtures are
+  now the positive case were removed and replaced with a rejection
+  test covering the genuinely-still-rejected paren-wrapped shape.
+  Verified end-to-end (inline tuple argument, inline struct argument,
+  an inline struct argument with fields out of declared order) and
+  independently outside the harness — manually compiled and ran the
+  emitted C for `fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn
+  main() i32 { return f((20, 22)); }` with `-Wall -Wextra -Werror`,
+  confirming exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
