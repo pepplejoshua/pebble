@@ -39,6 +39,22 @@ incrementally as work proceeds.
   The emitted C compiles clean under `-Wall -Wextra -Werror` against
   the 10.1 runtime and runs to exit 0 — this is the first program the
   Go rewrite has ever produced and run end-to-end.
+- **10.3 — an integer literal as the process exit code**
+  (`compiler/internal/backend`): additive second shape, `fn main()
+  i32 { return <non-negative integer literal>; }` — the literal
+  propagates through `pebble_user_main`'s return value and the hosted
+  `main`'s own `return` to become the process's actual exit code.
+  10.2's void/empty-body shape is untouched and still separately
+  verified. Rejects unary negation (`return -1;` is a `CheckedNegate`
+  node wrapping a positive literal, not a signed literal — confirmed
+  by inspecting the real node graph), non-literal return values, extra
+  statements, and an i32 entry with an empty body (a shape the checker
+  itself never produces from source — the checker rejects non-void
+  fall-through — so the test constructs it directly via `tir.Builder`
+  to exercise the backend's own validation independent of the
+  checker). End-to-end verified both by a `cc`-invoking test and by
+  the supervisor manually compiling and running the emitted C outside
+  any test harness, observing exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
