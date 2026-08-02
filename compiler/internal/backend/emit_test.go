@@ -2210,3 +2210,125 @@ func buildTopLevelBreakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sy
 	}
 	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{init, brk, ret})
 }
+
+func TestEmitI64ReturnEntryWritesC(t *testing.T) {
+	// Mirror of TestEmitIntegerReturnEntryWritesC at the wider width: the
+	// pebble_user_main adapter must be declared with the 64-bit return type so
+	// a wide return value is not truncated, not the i32 entry's "int".
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { return 42; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"pebble_rt.h", "pebble_rt_default_context", "return 42;", "static int64_t pebble_user_main(PebbleContext *ctx)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "static int pebble_user_main") {
+		t.Errorf("emitted C declares pebble_user_main returning plain int, want int64_t for an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitI64ReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
+	emitAndRun(t, "fn main() i64 { return 42; }", false, 42, false)
+}
+
+func TestEmitI64CheckedAddCompilesAndRuns(t *testing.T) {
+	// The checked helpers must be the i64 family at the wider width, producing
+	// the right result end to end.
+	emitAndRun(t, "fn main() i64 { return 1 + 2; }", false, 3, false)
+}
+
+func TestEmitI64CheckedAddWritesC(t *testing.T) {
+	// Assert the exact helper name: an i64 entry's CheckedArithmetic must lower
+	// to pebble_rt_checked_add_i64, proving the resolved width really reaches
+	// the runtime function-name selection rather than staying hardcoded _i32.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { return 1 + 2; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"pebble_rt_checked_add_i64(1, 2)",
+		"static int64_t pebble_user_main(PebbleContext *ctx)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_rt_checked_add_i32") {
+		t.Errorf("emitted C uses the i32 checked helper for an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitI64OverflowAborts(t *testing.T) {
+	// 9223372036854775807 + 1 overflows i64. Compiled in PEBBLE_RT_MODE_SAFE
+	// (the same mode every end-to-end test here uses), the emitted
+	// pebble_rt_checked_add_i64 call must panic through pebble_rt_panic, so the
+	// process must terminate abnormally — proving the i64 overflow story is
+	// real end to end, not merely that an i64 entry compiles.
+	emitAndRun(t, "fn main() i64 { return 9223372036854775807 + 1; }", false, 0, true)
+}
+
+func TestEmitI64DivideByZeroAborts(t *testing.T) {
+	// 1 / 0 at i64 width: the emitted pebble_rt_checked_div_i64 call must
+	// panic through pebble_rt_panic (divide-by-zero is a fault in every
+	// configuration), so the process terminates abnormally.
+	emitAndRun(t, "fn main() i64 { return 1 / 0; }", false, 0, true)
+}
+
+func TestEmitI64WhileAccumulationCompilesAndRuns(t *testing.T) {
+	// The full control-flow story at i64: locals, mutation, a while loop, and
+	// checked arithmetic all at the wider width. i counts 0..4 and sum
+	// accumulates i each pass, so sum = 0+1+2+3+4 = 10, returned as the
+	// process exit code. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i64 { var i i64 = 0; var sum i64 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", false, 10, false)
+}
+
+func TestEmitI64WhileWritesC(t *testing.T) {
+	// The emitted C for the i64 accumulation loop must declare its locals at
+	// int64_t and use the i64 checked helpers, proving the width threads
+	// through declarations, loop conditions, and arithmetic together. The
+	// symbol IDs 25 (i) and 26 (sum) are the same ones the i32 fixture dump
+	// established, so the assertions are exact.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { var i i64 = 0; var sum i64 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int64_t pebble_local_25 = 0;",
+		"int64_t pebble_local_26 = 0;",
+		"    while (pebble_local_25 < 5) {\n",
+		"        pebble_local_26 = pebble_rt_checked_add_i64(pebble_local_26, pebble_local_25);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "int32_t") {
+		t.Errorf("emitted C declares an i32 local in an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitI64RejectsI32Local(t *testing.T) {
+	// An i32 local inside an i64 entry is a legal, well-typed Pebble program
+	// the checker builds (the local is simply never returned), but this backend
+	// emits exactly one width per entry and has no cast/coercion lowering, so
+	// it must be rejected with a clear width-mismatch error naming the wanted
+	// width — never crashed on, and never silently emitted as an i64 local.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let x i32 = 1; return 2; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i64")
+}
+
+func TestEmitI32RejectsI64Local(t *testing.T) {
+	// The reverse direction: an i64 local inside an i32 entry is likewise a
+	// legal program the checker builds and a clean width-mismatch rejection
+	// for this backend.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i64 = 1; return 2; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+}

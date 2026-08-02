@@ -1,24 +1,29 @@
 // Package backend lowers typed IR to C source emitted against the versioned
 // runtime ABI (runtime/include/pebble_rt.h). It is deliberately narrow: the
 // current slice emits exactly two entry shapes — an empty-bodied Pebble-
-// convention void entry function, and a zero-parameter i32 entry whose body
-// matches a single recursive block grammar: a block is zero or more
-// `let <name> i32 = <i32 expression>;` / `var <name> i32 = <i32 expression>;`
-// local declarations, plus `x = <i32 expression>;` reassignments of an
-// already-declared local, and a `while <comparison> { <loop body> }` loop
-// statement, followed by a tail that is either one `return <i32 expression>;`
-// or a two-armed `if <comparison> { <block> } else { <block> }` whose
-// condition is a direct i32 comparison; the two arms are themselves blocks
-// under the same rule, so an arm may contain its own locals, reassignments,
-// nested if/else, and loops. A while loop's body is a block of local
-// declarations, reassignments, if statements (a loop-body if is built by
-// buildLoopIf and has an optional else), nested while loops (built by
-// buildWhile), and break/continue statements (built by buildLoopJump), with no
-// required tail (see buildLoopBody); a while can only be a leading statement,
-// never the block's tail. Locals
-// declared in an enclosing block are visible in a nested block; locals
-// declared inside an arm or loop body are visible only within that scope.
-// Everything else is rejected with a descriptive error instead of guessed.
+// convention void entry function, and a zero-parameter integer entry whose
+// width (i32 or i64) is decided once by the entry's own result type and never
+// mixed within a body. The body matches a single recursive block grammar: a
+// block is zero or more `let <name> <width> = <expression>;` /
+// `var <name> <width> = <expression>;` local declarations, plus
+// `x = <expression>;` reassignments of an already-declared local, and a
+// `while <comparison> { <loop body> }` loop statement, followed by a tail that
+// is either one `return <expression>;` or a two-armed
+// `if <comparison> { <block> } else { <block> }` whose condition is a direct
+// comparison; the two arms are themselves blocks under the same rule, so an
+// arm may contain its own locals, reassignments, nested if/else, and loops. A
+// while loop's body is a block of local declarations, reassignments, if
+// statements (a loop-body if is built by buildLoopIf and has an optional
+// else), nested while loops (built by buildWhile), and break/continue
+// statements (built by buildLoopJump), with no required tail (see
+// buildLoopBody); a while can only be a leading statement, never the block's
+// tail. Locals declared in an enclosing block are visible in a nested block;
+// locals declared inside an arm or loop body are visible only within that
+// scope. Every expression in an accepted body must carry the entry's own
+// width — a local of the other width (an i32 local inside an i64 entry, or
+// vice versa) is a clean width-mismatch rejection, never a coercion, since
+// this backend has no cast/coercion lowering yet. Everything else is rejected
+// with a descriptive error instead of guessed.
 package backend
 
 import (
@@ -36,26 +41,30 @@ import (
 // function (identified by entrySymbol) must be Pebble-convention and take zero
 // parameters. Its result must be either void with a completely empty body (no
 // statements — only ever an ImplicitReturn, i.e. exactly what `fn main() void
-// {}` produces) or i32 with a body matching the recursive block grammar: a
-// block is zero or more `let <name> i32 = <i32 expression>;` / `var <name> i32
-// = <i32 expression>;` local declarations, plus `x = <i32 expression>;`
-// reassignments of an already-declared local (a tir.Store; see buildBlock) and
-// `while <comparison> { <loop body> }` loop statements (a tir.While; see
-// buildWhile), followed by a tail that is either one `return <i32 expression>;`
-// or a two-armed `if <comparison> { <block> } else { <block> }` whose condition
-// is a direct i32 comparison (<, <=, >, >=, ==, !=); each arm is itself a block
-// under the same grammar, so an arm may contain its own locals and nested
-// if/else. Every expression — a local's initializer, a reassignment's new
-// value, a return value, or an if/else arm's return value — may be a plain
-// non-negative integer literal, a tree of checked negation and checked +, -,
-// *, /, % arithmetic (see buildExpr), or a reference to a local declared
-// earlier in the same or an enclosing block. A comparison's operands are
-// additionally allowed to be int-typed integer literals (see
-// buildComparisonOperand). Checked operations emit pebble_rt_checked_*_i32
-// calls so the language's overflow and divide-by-zero semantics survive into
-// the emitted program; comparisons emit the plain C operator, which cannot
-// overflow. Any other shape returns a descriptive error and writes nothing to
-// w; this package does not yet lower arbitrary expressions or statements.
+// {}` produces) or i32/i64 with a body matching the recursive block grammar: a
+// block is zero or more `let <name> <width> = <expression>;` /
+// `var <name> <width> = <expression>;` local declarations, plus
+// `x = <expression>;` reassignments of an already-declared local (a tir.Store;
+// see buildBlock) and `while <comparison> { <loop body> }` loop statements (a
+// tir.While; see buildWhile), followed by a tail that is either one
+// `return <expression>;` or a two-armed `if <comparison> { <block> } else {
+// <block> }` whose condition is a direct comparison (<, <=, >, >=, ==, !=);
+// each arm is itself a block under the same grammar, so an arm may contain its
+// own locals and nested if/else. Every expression — a local's initializer, a
+// reassignment's new value, a return value, or an if/else arm's return value —
+// may be a plain non-negative integer literal, a tree of checked negation and
+// checked +, -, *, /, % arithmetic (see buildExpr), or a reference to a local
+// declared earlier in the same or an enclosing block. A comparison's operands
+// are additionally allowed to be int-typed integer literals (see
+// buildComparisonOperand). Checked operations emit pebble_rt_checked_*_i32 /
+// pebble_rt_checked_*_i64 calls, chosen by the entry's resolved width, so the
+// language's overflow and divide-by-zero semantics survive into the emitted
+// program; comparisons emit the plain C operator, which cannot overflow. The
+// entry's width — i32 or i64, from its own result type — is resolved once here
+// and threaded through every builder below; a body that mixes widths is
+// rejected, never coerced. Any other shape returns a descriptive error and
+// writes nothing to w; this package does not yet lower arbitrary expressions
+// or statements.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -85,11 +94,11 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		}
 		return emitEntryC(w, voidEntryUserMain, voidEntryMainBody)
 	}
-	statements, err := buildBlock(unit, snapshot, blockID, nil, 0)
+	statements, err := buildBlock(unit, snapshot, blockID, nil, 0, result)
 	if err != nil {
 		return err
 	}
-	return emitEntryC(w, fmt.Sprintf(integerEntryUserMain, statements), integerEntryMainBody)
+	return emitEntryC(w, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
 }
 
 // findEntryDeclaration locates the FunctionDeclaration node for entrySymbol.
@@ -106,11 +115,13 @@ func findEntryDeclaration(unit *tir.Unit, entrySymbol symbol.SymbolID) (tir.Node
 }
 
 // validateEntrySignature checks the entry's calling convention, parameter
-// count, and result type against the two supported shapes: a void result
-// (empty body) or an i32 result (single literal return). On success it returns
-// the resolved result builtin (types.Void or types.I32); whether the body
-// actually matches the result's shape is decided by the body-validation step
-// the caller dispatches on.
+// count, and result type against the supported shapes: a void result (empty
+// body) or an i32/i64 result (body under the recursive block grammar). On
+// success it returns the resolved result builtin (types.Void, types.I32, or
+// types.I64) — for an integer entry that returned builtin IS the width every
+// builder downstream emits at, threaded through Emit rather than re-derived.
+// Whether the body actually matches the result's shape is decided by the
+// body-validation step the caller dispatches on.
 func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.BuiltinKind, error) {
 	if decl.Convention != types.Pebble {
 		return 0, fmt.Errorf("entry function uses %s calling convention, want Pebble", callingConventionName(decl.Convention))
@@ -123,8 +134,8 @@ func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.Buil
 		return 0, fmt.Errorf("entry function result type %d is not in the type snapshot", decl.ResultType)
 	}
 	builtin, ok := key.Builtin()
-	if !ok || (builtin != types.Void && builtin != types.I32) {
-		return 0, fmt.Errorf("entry function result type is %s, want void or i32", describeType(snapshot, decl.ResultType))
+	if !ok || (builtin != types.Void && builtin != types.I32 && builtin != types.I64) {
+		return 0, fmt.Errorf("entry function result type is %s, want void, i32, or i64", describeType(snapshot, decl.ResultType))
 	}
 	return builtin, nil
 }
@@ -170,15 +181,18 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 }
 
 // buildBlock validates one block under the entry body's recursive grammar and
-// builds its C statement sequence. A block is zero or more `int32_t
+// builds its C statement sequence. A block is zero or more `<cType> <width>
 // pebble_local_<id>` declarations (one per Initialize, in declaration order),
 // zero or more `pebble_local_<id> = <built value>;` reassignments (one per
 // Store, targeting a local already in scope), and zero or more `while (...)
 // { <loop body> }` loop statements (one per While, built by buildWhile — a
 // loop is only ever a leading statement here, never the block's tail),
-// followed by a tail that is either the single `return <i32 expression>;` or a
+// followed by a tail that is either the single `return <expression>;` or a
 // two-armed if/else built by buildIf; each if arm is itself a block under the
-// same grammar, so buildBlock recurses into both arms. locals is the set of
+// same grammar, so buildBlock recurses into both arms. width is the entry's
+// resolved integer width (types.I32 or types.I64), threaded through to every
+// expression and declaration built here so the emitted C type names and
+// runtime helper names follow the width. locals is the set of
 // symbols visible at the block's entry (the enclosing scopes' declarations)
 // and is copied at entry: every addition this block makes — its own
 // declarations, and anything an arm's or a loop body's subtree declares —
@@ -190,7 +204,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
-func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
@@ -217,14 +231,14 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			// body is its own scope (buildWhile clones, exactly as buildIf's
 			// arms do), so nothing the loop declares leaks into this block's
 			// scope map.
-			whileText, err := buildWhile(unit, snapshot, statement, scope, depth)
+			whileText, err := buildWhile(unit, snapshot, statement, scope, depth, width)
 			if err != nil {
 				return "", err
 			}
 			statements = append(statements, whileText)
 			continue
 		}
-		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block")
+		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block", width)
 		if err != nil {
 			return "", err
 		}
@@ -239,13 +253,13 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		if len(last.Children) != 1 {
 			return "", fmt.Errorf("entry function body return statement has %d argument(s), want exactly one integer expression", len(last.Children))
 		}
-		returnExpr, err := buildExpr(unit, snapshot, last.Children[0], scope)
+		returnExpr, err := buildExpr(unit, snapshot, last.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
 		statements = append(statements, indent+"return "+returnExpr+";")
 	case tir.If:
-		ifText, err := buildIf(unit, snapshot, last, scope, depth)
+		ifText, err := buildIf(unit, snapshot, last, scope, depth, width)
 		if err != nil {
 			return "", err
 		}
@@ -273,22 +287,22 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // Any other shape — an If without an else, an arm that is not a Block, or a
 // block with the wrong child count — is a clean rejection naming what was
 // found.
-func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
 	if len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body ends with an if with %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
-	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals)
+	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1)
+	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1, width)
 	if err != nil {
 		return "", err
 	}
-	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1)
+	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1, width)
 	if err != nil {
 		return "", err
 	}
@@ -313,15 +327,15 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 //
 // Any other shape — a wrong child count, or a body that is not a Block — is a
 // clean rejection naming what was found.
-func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
 	if len(whileNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
 	}
-	condition, err := buildComparison(unit, snapshot, whileNode.Children[0], locals)
+	condition, err := buildComparison(unit, snapshot, whileNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, whileNode.Children[1], locals, depth+1)
+	bodyText, err := buildLoopBody(unit, snapshot, whileNode.Children[1], locals, depth+1, width)
 	if err != nil {
 		return "", err
 	}
@@ -349,7 +363,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 // statement kind (a Return, a Print, anything else) is a clean rejection
 // naming what was found. An empty loop body (zero children) is legal — `while
 // cond {}` is a real, if useless, program — and emits no statements at all.
-func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("entry function body block while loop body references invalid node %d", bodyID)
@@ -375,20 +389,20 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// A nested while inside a loop body reuses buildWhile unchanged: it
 			// already recurses into buildLoopBody for its own body, so nested
 			// loops compose without any change to buildWhile itself.
-			text, err = buildWhile(unit, snapshot, statement, scope, depth)
+			text, err = buildWhile(unit, snapshot, statement, scope, depth, width)
 		case tir.If:
 			// A conditional statement inside a loop body is built by buildLoopIf:
 			// its arms are themselves loop bodies (no required tail, optional
 			// else), genuinely different from the tail-requiring buildIf. Because
 			// buildLoopIf recurses into buildLoopBody for each arm, a break or
 			// continue inside an arm is handled by this same switch, unchanged.
-			text, err = buildLoopIf(unit, snapshot, statement, scope, depth)
+			text, err = buildLoopIf(unit, snapshot, statement, scope, depth, width)
 		case tir.Break:
 			text, err = buildLoopJump(statement, "break", indent, "entry function body block while loop body")
 		case tir.Continue:
 			text, err = buildLoopJump(statement, "continue", indent, "entry function body block while loop body")
 		default:
-			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body")
+			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width)
 		}
 		if err != nil {
 			return "", err
@@ -427,18 +441,18 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 //
 // Any other shape — a child count inconsistent with HasElse, or an arm that is
 // not a Block — is a clean rejection naming what was found.
-func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
 	if !ifNode.HasElse && len(ifNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop body if has no else arm but %d child(ren), want exactly 2 (condition, then-arm)", len(ifNode.Children))
 	}
-	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals)
+	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildLoopBody(unit, snapshot, ifNode.Children[1], locals, depth+1)
+	thenText, err := buildLoopBody(unit, snapshot, ifNode.Children[1], locals, depth+1, width)
 	if err != nil {
 		return "", err
 	}
@@ -446,7 +460,7 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 	if !ifNode.HasElse {
 		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
 	}
-	elseText, err := buildLoopBody(unit, snapshot, ifNode.Children[2], locals, depth+1)
+	elseText, err := buildLoopBody(unit, snapshot, ifNode.Children[2], locals, depth+1, width)
 	if err != nil {
 		return "", err
 	}
@@ -483,11 +497,16 @@ func buildLoopJump(statement tir.Node, keyword string, indent, context string) (
 // declaration) or a Store (a reassignment of a local already in scope).
 // context names the enclosing construct in error messages; indent is the
 // statement's C indentation. scope is the set of in-scope locals: an
-// Initialize adds its symbol to it once validated, a Store reads it. The
+// Initialize adds its symbol to it once validated, a Store reads it. width is
+// the entry's resolved integer width; a local declaration's C type name
+// follows it (int32_t for an i32 entry, int64_t for an i64 entry), and a
+// local whose value carries the other width is rejected by buildExpr, so an
+// i32 local inside an i64 entry (or vice versa) is a clean width-mismatch
+// error, not an attempted coercion. The
 // caller is responsible for having already cloned scope if the statements must
 // not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
 // do). Any other statement kind is a clean rejection naming what was found.
-func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]bool, indent, context string) (string, error) {
+func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]bool, indent, context string, width types.BuiltinKind) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
@@ -495,17 +514,18 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 	switch statement.Kind {
 	case tir.Initialize:
 		if len(statement.Children) != 1 {
-			return "", fmt.Errorf("%s local declaration initializes %d value(s), want exactly one i32 expression", context, len(statement.Children))
+			return "", fmt.Errorf("%s local declaration initializes %d value(s), want exactly one integer expression", context, len(statement.Children))
 		}
 		if scope[statement.Symbol] {
 			return "", fmt.Errorf("%s declares local %d more than once", context, statement.Symbol)
 		}
-		initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope)
+		initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
 		scope[statement.Symbol] = true
-		// Every local is emitted as a plain (non-const) int32_t even
+		// Every local is emitted as a plain (non-const) int32_t/int64_t
+		// (per the entry's width) even
 		// though a `let` is conceptually immutable. The Initialize node
 		// does not carry whether the declaration was `let` or `var`, and
 		// the checker guarantees any Store this backend sees targets a
@@ -513,8 +533,8 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		// qualifier would only be defense-in-depth — catching an emitter
 		// bug via a C compile error on assignment to const — at the cost
 		// of tracking which locals are ever reassigned. That trade-off is
-		// accepted: every local is a plain int32_t.
-		return fmt.Sprintf("%sint32_t pebble_local_%d = %s;", indent, statement.Symbol, initExpr), nil
+		// accepted: every local is a plain <width> integer.
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;", indent, cType(width), statement.Symbol, initExpr), nil
 	case tir.Store:
 		// A Store reassigns a local declared earlier in this block or an
 		// enclosing one; it does not declare a new symbol, so it never
@@ -523,7 +543,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		// Store this backend sees, from real source, necessarily targets
 		// a `var`.
 		if len(statement.Children) != 2 {
-			return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new i32 value", context, len(statement.Children))
+			return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new integer value", context, len(statement.Children))
 		}
 		place, ok := unit.Node(statement.Children[0])
 		if !ok {
@@ -535,7 +555,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		if !scope[place.Symbol] {
 			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
 		}
-		storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope)
+		storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -566,7 +586,7 @@ func cloneLocals(locals map[symbol.SymbolID]bool) map[symbol.SymbolID]bool {
 // expression buildExpr accepts). Any other node kind, or any other operator on
 // a BinaryValue (bitwise, and the && / || that lower to ShortCircuitValue
 // nodes rather than BinaryValue comparisons), is a clean rejection.
-func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
+func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid node %d", id)
@@ -581,11 +601,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition uses operator %s, want one of <, <=, >, >=, ==, or !=", node.Operator)
 	}
-	left, err := buildComparisonOperand(unit, snapshot, node.Children[0], locals)
+	left, err := buildComparisonOperand(unit, snapshot, node.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	right, err := buildComparisonOperand(unit, snapshot, node.Children[1], locals)
+	right, err := buildComparisonOperand(unit, snapshot, node.Children[1], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -594,13 +614,15 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 
 // buildComparisonOperand builds one comparison operand. A bare comparison
 // between two untyped integer literals defaults both operands to the
-// snapshot's int builtin (confirmed against a real fixture), so an
+// snapshot's int builtin (confirmed against a real fixture — the same for an
+// i64 entry as for an i32 one, since a bare comparison has no anchor), so an
 // IntegerLiteral of type int is lowered directly as its decimal text. Every
-// other operand must be an i32 expression buildExpr accepts — a literal, a
+// other operand must be an expression of the entry's width that buildExpr
+// accepts — a literal, a
 // reference to a local declared earlier in the entry body, or checked negation
 // and checked +, -, *, /, % arithmetic — and is delegated to buildExpr, whose
-// own i32 gate and kind switch do the rejecting.
-func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
+// own width gate and kind switch do the rejecting.
+func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", id)
@@ -612,12 +634,13 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.Nod
 		}
 		return text, nil
 	}
-	return buildExpr(unit, snapshot, id, locals)
+	return buildExpr(unit, snapshot, id, locals, width)
 }
 
 // comparisonOperator maps the six comparison token kinds this backend lowers
 // to their plain C spellings. These map 1:1 to C syntax — no runtime helper is
-// involved, since comparing two i32 (or int) values cannot overflow. Any other
+// involved, since comparing two integer values (the entry's width, or the
+// int-typed literal case) cannot overflow. Any other
 // operator is deliberately not mapped and rejected by the caller.
 func comparisonOperator(op syntax.TokenKind) (string, bool) {
 	switch op {
@@ -638,19 +661,25 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 	}
 }
 
-// buildExpr builds the C expression text for an i32 value node, recursing into
-// its operands. locals is the set of symbols in scope at this point in the
+// buildExpr builds the C expression text for an integer value node of the
+// entry's resolved width, recursing into its operands. width (types.I32 or
+// types.I64) is the width resolved once in Emit; every node in an accepted
+// tree must carry exactly that width's builtin — a node carrying the other
+// width (an i32 local referenced inside an i64 entry, or vice versa) is a
+// clean width-mismatch rejection, never a coercion. locals is the set of
+// symbols in scope at this point in the
 // entry body (a map is deliberately used, not a slice, so membership is a
 // constant-time check); it is read-only for a SymbolValue reference and is
 // otherwise threaded through unchanged. It accepts exactly four node kinds:
 //
 //   - IntegerLiteral — its decimal text (defensively validated, exactly as
 //     10.3 validated a bare literal return).
-//   - CheckedNegate with exactly one i32 operand — pebble_rt_checked_neg_i32.
-//   - CheckedArithmetic with exactly two i32 operands and operator +, -, *, /,
-//     or % — pebble_rt_checked_add_i32 / pebble_rt_checked_sub_i32 /
-//     pebble_rt_checked_mul_i32 / pebble_rt_checked_div_i32 /
-//     pebble_rt_checked_mod_i32.
+//   - CheckedNegate with exactly one operand of the entry's width —
+//     pebble_rt_checked_neg_<suffix>.
+//   - CheckedArithmetic with exactly two operands of the entry's width and
+//     operator +, -, *, /, or % — pebble_rt_checked_add_<suffix> /
+//     pebble_rt_checked_sub_<suffix> / pebble_rt_checked_mul_<suffix> /
+//     pebble_rt_checked_div_<suffix> / pebble_rt_checked_mod_<suffix>.
 //   - SymbolValue whose Symbol is in locals — pebble_local_<symbol ID>, the C
 //     name buildBlock gave that local's declaration.
 //
@@ -659,18 +688,20 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 // referencing anything not in locals (a global, a parameter, a symbol from an
 // outer/different scope — none of which are reachable from this narrow body
 // shape, but checked defensively rather than assumed) is a clean rejection.
-// Any other node kind at any position — a function call, a non-i32 operand,
-// CheckedShift, and so on — is a clean rejection naming what was found.
+// Any other node kind at any position — a function call, a non-integer
+// operand, CheckedShift, and so on — is a clean rejection naming what was
+// found.
 // Emitting the checked runtime helpers (rather than raw C operators) is what
 // keeps the IR nodes' real overflow and divide-by-zero semantics from silently
 // disappearing in the emitted program.
-func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
+func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
 	}
-	if !isI32(snapshot, node.Type) {
-		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want i32", node.Kind, describeType(snapshot, node.Type))
+	if !isWidth(snapshot, width, node.Type) {
+		wantName, _ := builtinName(width)
+		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
 	}
 	switch node.Kind {
 	case tir.IntegerLiteral:
@@ -686,24 +717,24 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		if node.Operator != syntax.Minus {
 			return "", fmt.Errorf("entry function body expression contains a CheckedNegate with operator %s, want -", node.Operator)
 		}
-		child, err := buildExpr(unit, snapshot, node.Children[0], locals)
+		child, err := buildExpr(unit, snapshot, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		return "pebble_rt_checked_neg_i32(" + child + ")", nil
+		return "pebble_rt_checked_neg_" + checkedSuffix(width) + "(" + child + ")", nil
 	case tir.CheckedArithmetic:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with %d operand(s), want exactly two", len(node.Children))
 		}
-		helper, ok := checkedArithmeticHelper(node.Operator)
+		helper, ok := checkedArithmeticHelper(node.Operator, width)
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %%", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, node.Children[0], locals)
+		left, err := buildExpr(unit, snapshot, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildExpr(unit, snapshot, node.Children[1], locals)
+		right, err := buildExpr(unit, snapshot, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -719,33 +750,82 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 }
 
 // checkedArithmeticHelper maps the +, -, *, /, % operators a CheckedArithmetic
-// node may carry to the runtime helper that implements their checked semantics.
-// Division and modulo map to pebble_rt_checked_div_i32 / pebble_rt_checked_mod_i32,
-// which handle both the divide-by-zero fault (in every mode) and the one
-// division overflow input, INT32_MIN / -1. Any other operator (bitwise, etc.)
+// node may carry to the runtime helper that implements their checked semantics,
+// at the entry's resolved width (width's checkedSuffix picks the _i32 or _i64
+// function-name suffix).
+// Division and modulo map to pebble_rt_checked_div_i32 / pebble_rt_checked_mod_i32
+// (or their _i64 twins), which handle both the divide-by-zero fault (in every
+// mode) and the one
+// division overflow input, INT32_MIN / -1 (INT64_MIN / -1 at the wider
+// width). Any other operator (bitwise, etc.)
 // is deliberately not mapped and rejected by the caller.
-func checkedArithmeticHelper(op syntax.TokenKind) (string, bool) {
+func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (string, bool) {
+	var base string
 	switch op {
 	case syntax.Plus:
-		return "pebble_rt_checked_add_i32", true
+		base = "pebble_rt_checked_add"
 	case syntax.Minus:
-		return "pebble_rt_checked_sub_i32", true
+		base = "pebble_rt_checked_sub"
 	case syntax.Star:
-		return "pebble_rt_checked_mul_i32", true
+		base = "pebble_rt_checked_mul"
 	case syntax.Slash:
-		return "pebble_rt_checked_div_i32", true
+		base = "pebble_rt_checked_div"
 	case syntax.Percent:
-		return "pebble_rt_checked_mod_i32", true
+		base = "pebble_rt_checked_mod"
 	default:
 		return "", false
 	}
+	return base + "_" + checkedSuffix(width), true
 }
 
-// isI32 reports whether id is the snapshot's i32 builtin identity. The
-// checked helpers this backend emits operate on i32 only, so every node in an
-// accepted expression tree must carry exactly this type.
-func isI32(snapshot *types.Snapshot, id types.TypeID) bool {
-	return snapshot != nil && id == snapshot.Builtins().I32
+// isWidth reports whether id is the snapshot's builtin for the entry's
+// resolved integer width (types.I32 or types.I64). The checked helpers this
+// backend emits operate on exactly one width per entry, so every node in an
+// accepted expression tree must carry exactly this type — a node carrying the
+// other width is a clean rejection, never a coercion, since there is no
+// cast/coercion lowering yet.
+func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	var want types.TypeID
+	switch width {
+	case types.I32:
+		want = snapshot.Builtins().I32
+	case types.I64:
+		want = snapshot.Builtins().I64
+	default:
+		return false
+	}
+	return id == want
+}
+
+// cType returns the C type name an integer local of the given width is
+// declared with: int32_t for an i32 entry, int64_t for an i64 entry. Only the
+// two widths this backend emits are mapped; anything else returns "" and the
+// caller's own width validation has already ruled it out.
+func cType(width types.BuiltinKind) string {
+	switch width {
+	case types.I32:
+		return "int32_t"
+	case types.I64:
+		return "int64_t"
+	}
+	return ""
+}
+
+// checkedSuffix returns the pebble_rt_checked_* function-name suffix for the
+// given width: "i32" for an i32 entry, "i64" for an i64 entry. It is exactly
+// the type's name, but named for what it selects — the width-specific runtime
+// helper family — so the two lookups stay distinct.
+func checkedSuffix(width types.BuiltinKind) string {
+	switch width {
+	case types.I32:
+		return "i32"
+	case types.I64:
+		return "i64"
+	}
+	return ""
 }
 
 // isNonNegativeDecimal reports whether s is a non-empty run of ASCII decimal
@@ -776,22 +856,42 @@ const voidEntryUserMain = `static void pebble_user_main(PebbleContext *ctx) {
 const voidEntryMainBody = `pebble_user_main(&ctx);
     return 0;`
 
-// integerEntryUserMain is a format string; %s is the statement sequence for
+// integerEntryUserMain is a format string; the first %s is the pebble_user_main
+// return type for the entry's resolved width (entryReturnType) and the second
+// %s is the statement sequence for
 // pebble_user_main's body — the top-level block built by buildBlock: zero or
-// more `int32_t pebble_local_<id> = <built init expression>;` declarations and
+// more `<width> pebble_local_<id> = <built init expression>;` declarations and
 // zero or more `pebble_local_<id> = <built value>;` reassignments, in
 // declaration order, then the block's tail, which is either a
 // `return <built return expression>;` or a two-armed if/else (whose arms may
 // nest further blocks). The tail's value becomes pebble_user_main's return
 // value and, through the hosted main's own return, the process exit code. With
 // no locals the sequence is exactly the single return statement, so the
-// zero-locals shape emits byte-identically to before.
-const integerEntryUserMain = `static int pebble_user_main(PebbleContext *ctx) {
+// zero-locals shape emits byte-identically to before for an i32 entry (whose
+// return type is the legacy "int").
+const integerEntryUserMain = `static %s pebble_user_main(PebbleContext *ctx) {
     (void)ctx;
 %s
 }`
 
 const integerEntryMainBody = `return pebble_user_main(&ctx);`
+
+// entryReturnType is the C return type pebble_user_main is declared with for
+// a supported integer width. An i32 entry keeps the legacy "int" spelling —
+// byte-identical to the pre-i64 shape, and C int is the 32-bit type that entry
+// already relied on. An i64 entry must be the exact-width int64_t, not int, so
+// a 64-bit return value is not truncated to 32 bits before the hosted main
+// narrows it to the process exit code. (The hosted int main's own
+// return pebble_user_main(&ctx); then narrows int64_t to int — the POSIX exit
+// code is only the low byte of what main returns — which a -Wall -Wextra
+// -Werror build without -Wconversion does not warn about; verified by building
+// an i64-entry program.)
+func entryReturnType(width types.BuiltinKind) string {
+	if width == types.I64 {
+		return "int64_t"
+	}
+	return "int"
+}
 
 // emitEntryC writes the shared adapter skeleton once the typed IR has been
 // confirmed to describe one of the two supported program shapes.

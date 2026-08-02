@@ -2,9 +2,11 @@
 
 #include <stdint.h>
 
-/* Checked i32 arithmetic, the runtime home of the typed IR's
+/* Checked i32 and i64 arithmetic, the runtime home of the typed IR's
  * CheckedArithmetic/CheckedNegate nodes (spec 06b leaves "release-mode
- * response to phase 10"; this file is that decision).
+ * response to phase 10"; this file is that decision). Each public function
+ * exists twice, at i32 and i64 width (matching the header's declarations);
+ * the i64 variants are the exact same contract at the wider width.
  *
  * Two modes, selected by the same macro the header guards on:
  *
@@ -15,14 +17,15 @@
  *                           unsigned arithmetic. Signed overflow is
  *                           undefined behavior in C, so the release path
  *                           never uses plain signed + - * ; it casts to
- *                           uint32_t, does the operation unsigned (defined
- *                           wraparound), and casts back.
+ *                           uint32_t/uint64_t, does the operation unsigned
+ *                           (defined wraparound), and casts back.
  *
  * The SAFE path detects overflow with the compiler's own overflow-checking
  * builtins (__builtin_*_overflow), which report overflow without the code
- * itself invoking UB while computing it. They are available in both GCC and
- * Clang, which this runtime already assumes (PEBBLE_RT_NORETURN's
- * __GNUC__ || __clang__ guard in the header is the precedent).
+ * itself invoking UB while computing it. They work generically across
+ * integer widths and are available in both GCC and Clang, which this
+ * runtime already assumes (PEBBLE_RT_NORETURN's __GNUC__ || __clang__
+ * guard in the header is the precedent).
  *
  * Division and modulo are a separate fault category (see pebble_rt.h):
  * b == 0 panics in every configuration, not just SAFE, because there is no
@@ -78,6 +81,49 @@ int32_t pebble_rt_checked_neg_i32(int32_t a) {
     return result;
 }
 
+/* The i64 twins of the four helpers above: the exact same contract at the
+ * wider width. __builtin_*_overflow works generically across integer widths
+ * in both GCC and Clang, so the SAFE path is the identical pattern with
+ * int64_t/INT64_MIN substituting for int32_t/INT32_MIN, and the RELEASE
+ * path wraps via uint64_t arithmetic the same way the i32 path wraps via
+ * uint32_t.
+ */
+int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i64 addition overflow");
+    }
+    return result;
+}
+
+int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i64 subtraction overflow");
+    }
+    return result;
+}
+
+int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i64 multiplication overflow");
+    }
+    return result;
+}
+
+/* Negation overflows only at the one boundary value: -INT64_MIN is not
+ * representable in i64. __builtin_sub_overflow(0, a, ...) reports exactly
+ * that case.
+ */
+int64_t pebble_rt_checked_neg_i64(int64_t a) {
+    int64_t result;
+    if (__builtin_sub_overflow(0, a, &result)) {
+        pebble_rt_overflow_panic("i64 negation overflow");
+    }
+    return result;
+}
+
 #else /* PEBBLE_RT_MODE_RELEASE */
 
 int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b) {
@@ -94,6 +140,22 @@ int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b) {
 
 int32_t pebble_rt_checked_neg_i32(int32_t a) {
     return (int32_t)(0u - (uint32_t)a);
+}
+
+int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b) {
+    return (int64_t)((uint64_t)a + (uint64_t)b);
+}
+
+int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b) {
+    return (int64_t)((uint64_t)a - (uint64_t)b);
+}
+
+int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b) {
+    return (int64_t)((uint64_t)a * (uint64_t)b);
+}
+
+int64_t pebble_rt_checked_neg_i64(int64_t a) {
+    return (int64_t)(0u - (uint64_t)a);
 }
 
 #endif /* PEBBLE_RT_MODE_SAFE / PEBBLE_RT_MODE_RELEASE */
@@ -125,42 +187,66 @@ int32_t pebble_rt_checked_neg_i32(int32_t a) {
  * no invented division algorithm.
  */
 
-static void pebble_rt_div_by_zero_panic(void) {
+static void pebble_rt_div_by_zero_panic(const char *message) {
     PebblePanicInfo info;
     info.kind = PEBBLE_PANIC_DIVIDE_BY_ZERO;
-    info.message = "i32 division by zero";
+    info.message = message;
     info.file = NULL;
     info.line = 0;
     pebble_rt_panic(&info);
 }
 
-/* The INT32_MIN / -1 division boundary, in which mode's response applies.
- * SAFE: overflow panic, same convention as the +, -, * helpers. RELEASE:
- * the wrapped result, INT32_MIN (this is the two's-complement bit pattern of
- * the un-representable quotient, matching how release handles +, -, *).
+/* The INT32_MIN / -1 and INT64_MIN / -1 division boundaries, in which mode's
+ * response applies. SAFE: overflow panic, same convention as the +, -, *
+ * helpers. RELEASE: the wrapped result, the width's MIN (this is the
+ * two's-complement bit pattern of the un-representable quotient, matching how
+ * release handles +, -, *). Shared by both widths, which differ only in the
+ * boundary value and the panic message.
  */
-static int32_t pebble_rt_min_div_minus_one(void) {
+static int64_t pebble_rt_min_div_minus_one(int64_t min, const char *message) {
 #if defined(PEBBLE_RT_MODE_SAFE)
-    pebble_rt_overflow_panic("i32 division overflow");
+    pebble_rt_overflow_panic(message);
+#else
+    (void)message;
 #endif
-    return INT32_MIN;
+    return min;
 }
 
 int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b) {
     if (b == 0) {
-        pebble_rt_div_by_zero_panic();
+        pebble_rt_div_by_zero_panic("i32 division by zero");
     }
     if (a == INT32_MIN && b == -1) {
-        return pebble_rt_min_div_minus_one();
+        return (int32_t)pebble_rt_min_div_minus_one(INT32_MIN, "i32 division overflow");
     }
     return a / b;
 }
 
 int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b) {
     if (b == 0) {
-        pebble_rt_div_by_zero_panic();
+        pebble_rt_div_by_zero_panic("i32 division by zero");
     }
     if (a == INT32_MIN && b == -1) {
+        return 0;
+    }
+    return a % b;
+}
+
+int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("i64 division by zero");
+    }
+    if (a == INT64_MIN && b == -1) {
+        return pebble_rt_min_div_minus_one(INT64_MIN, "i64 division overflow");
+    }
+    return a / b;
+}
+
+int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("i64 division by zero");
+    }
+    if (a == INT64_MIN && b == -1) {
         return 0;
     }
     return a % b;

@@ -131,13 +131,20 @@ PEBBLE_RT_NORETURN void pebble_rt_panic(const PebblePanicInfo *info);
  * arithmetic, so this is defined behavior, never a signed-overflow UB trap) —
  * release mode trades the panic for speed, not for undefined behavior.
  *
- * i32 only for now; other integer widths arrive with the lowering slices that
- * need them.
+ * i32 and i64 for now; other integer widths arrive with the lowering slices
+ * that need them. The i64 variants are the exact same contract at the wider
+ * width — same overflow-panic-in-SAFE / wrap-in-RELEASE split, same
+ * two's-complement wraparound computed via unsigned arithmetic.
  */
 int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_neg_i32(int32_t a);
+
+int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b);
+int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b);
+int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b);
+int64_t pebble_rt_checked_neg_i64(int64_t a);
 
 /* ---- checked division and modulo -------------------------------------------
  * Division and modulo have a fault case wraparound cannot fix: b == 0 has no
@@ -159,9 +166,17 @@ int32_t pebble_rt_checked_neg_i32(int32_t a);
  * in terms of division, so this case must also be special-cased (returning 0
  * directly) rather than evaluated, but it is not a fault: no panic, in either
  * mode.
+ *
+ * The i64 variants are the exact same contract at the wider width: b == 0
+ * panics in every mode, INT64_MIN / -1 follows the SAFE-panics /
+ * RELEASE-wraps-to-INT64_MIN convention, and INT64_MIN % -1 is 0 in both
+ * modes, never evaluated directly.
  */
 int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b);
+
+int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b);
+int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend
