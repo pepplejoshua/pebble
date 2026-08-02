@@ -609,12 +609,13 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCategory(id, n, 0, CategoryValue)
 		v.requireMember(id, n)
 	case TupleElementValue:
+		// Ordinal is the zero-based tuple element index, so 0 is a legitimate
+		// value (the tuple's first element) and cannot be used as a
+		// "was Ordinal set" sentinel; there is no required-nonzero check here,
+		// unlike Member/Symbol/etc. above, which are never legitimately zero.
 		v.allowOnly(id, n, "Ordinal", "Children")
 		v.expectChildCount(id, n, 1, 1)
 		v.expectChildCategory(id, n, 0, CategoryValue)
-		if n.Ordinal == 0 {
-			v.errorf("node %d TupleElementValue requires Ordinal", id)
-		}
 	case GenericFunctionValue:
 		v.allowOnly(id, n, "Symbol", "GenericRef", "TypeArgs")
 		v.requireSymbol(id, n)
@@ -641,12 +642,12 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCategory(id, n, 0, CategoryPlace)
 		v.requireMember(id, n)
 	case TuplePlace:
+		// Ordinal is the zero-based tuple element index (see the identical
+		// note on TupleElementValue above); 0 is the tuple's first element,
+		// not an absent-field sentinel, so there is no required-nonzero check.
 		v.allowOnly(id, n, "Ordinal", "Writable", "Children")
 		v.expectChildCount(id, n, 1, 1)
 		v.expectChildCategory(id, n, 0, CategoryPlace)
-		if n.Ordinal == 0 {
-			v.errorf("node %d TuplePlace requires Ordinal", id)
-		}
 	case CheckedIndexPlace:
 		v.allowOnly(id, n, "Writable", "Children")
 		v.expectChildCount(id, n, 2, 2)

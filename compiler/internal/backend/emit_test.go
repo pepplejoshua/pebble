@@ -3230,16 +3230,24 @@ func TestEmitTupleTwoElementReadBackCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleElementsReadBackAndAddedCompilesAndRuns(t *testing.T) {
-	// The "elements read back and added" fixture. Note it reads a three-element
-	// tuple's elements 1 and 2, not a two-element tuple's 0 and 1: reading
-	// element 0 (t.0) is impossible from any source — the typed-IR verifier
-	// rejects a TuplePlace/TupleElementValue with Ordinal 0 (confirmed against
-	// a real fixture: check fails with "TuplePlace requires Ordinal"), because
-	// the checker's tuple ordinals are 0-based while Node.Ordinal uses 0 as
-	// its unset sentinel. So the two readable elements of a three-element
-	// tuple (ordinals 1 and 2) are the fullest real-source expression of
-	// "both elements read back and added": t.1 + t.2 = 20 + 30 = 50.
+	// The "elements read back and added" fixture: a three-element tuple's
+	// elements 1 and 2 are read back and added: t.1 + t.2 = 20 + 30 = 50.
 	emitAndRun(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", false, 50, false)
+}
+
+func TestEmitTupleElementZeroReadCompilesAndRuns(t *testing.T) {
+	// Regression test: reading a tuple's element 0 (t.0) used to be impossible
+	// from any source — the tir verifier rejected a TuplePlace/TupleElementValue
+	// with Ordinal 0, because Node.Ordinal is a zero-based element index (0 is
+	// the tuple's first element, a legitimate value) but the verifier treated
+	// Ordinal == 0 as an absent-field sentinel. Fixed directly in
+	// compiler/internal/tir/verify.go (not this package): the erroneous
+	// "requires Ordinal" checks for TupleElementValue/TuplePlace were removed,
+	// since 0 is not damage and there is no way to distinguish a genuinely
+	// unset Ordinal from a legitimate element-0 index without a type-level
+	// cross-check the structural verifier doesn't otherwise do. t.0 now reads
+	// the tuple's first element: pebble_local_<id>._0 = 20.
+	emitAndRun(t, "fn main() i32 { let t (i32, i32) = (20, 22); return t.0; }", false, 20, false)
 }
 
 func TestEmitTupleThreeElementWritesC(t *testing.T) {

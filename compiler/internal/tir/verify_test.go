@@ -440,7 +440,9 @@ func damageNode(t *testing.T, b *Builder, kind NodeKind, n Node, refs map[NodeID
 	case FieldValue:
 		n.Member = 0
 	case TupleElementValue:
-		n.Ordinal = 0
+		// Ordinal 0 is a legitimate tuple-element index (the first element),
+		// not damage; break the exact-one-child invariant instead.
+		n.Children = append(n.Children, 1)
 	case GenericFunctionValue:
 		n.GenericRef = 999
 	case SourceAlias:
@@ -452,7 +454,9 @@ func damageNode(t *testing.T, b *Builder, kind NodeKind, n Node, refs map[NodeID
 	case FieldPlace:
 		n.Member = 0
 	case TuplePlace:
-		n.Ordinal = 0
+		// Ordinal 0 is a legitimate tuple-element index (the first element),
+		// not damage; break the exact-one-child invariant instead.
+		n.Children = append(n.Children, 1)
 	case CheckedIndexPlace:
 		n.Children = n.Children[:1]
 	case Load:

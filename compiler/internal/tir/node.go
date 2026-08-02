@@ -415,7 +415,10 @@ type Node struct {
 	ContextAction ContextAction
 
 	// Ordinal records tuple/field positions or other small indices without
-	// reusing the TempID identity.
+	// reusing the TempID identity. It is a zero-based index (TupleElementValue
+	// and TuplePlace use it as a tuple's element index), so 0 is a legitimate
+	// value, not an absent-field sentinel — the verifier must not reject a
+	// node for having Ordinal == 0.
 	Ordinal uint32
 }
 
