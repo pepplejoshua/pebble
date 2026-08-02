@@ -3218,3 +3218,234 @@ func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
 	unit, snapshot, entryID := buildCallArgumentCountMismatchUnit(t)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want 2")
 }
+
+func TestEmitTupleTwoElementReadBackCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture for tuple construction and an element read: a
+	// two-element (i32, i32) tuple is declared from a tuple literal and its
+	// second element is read back into the return value. The tuple type emits
+	// one struct typedef with fields _0/_1 and the local is initialized with
+	// the struct literal { 20, 22 }, and the element read lowers to
+	// pebble_local_<id>._1, so the process exit code is 22.
+	emitAndRun(t, "fn main() i32 { let t (i32, i32) = (20, 22); return t.1; }", false, 22, false)
+}
+
+func TestEmitTupleElementsReadBackAndAddedCompilesAndRuns(t *testing.T) {
+	// The "elements read back and added" fixture. Note it reads a three-element
+	// tuple's elements 1 and 2, not a two-element tuple's 0 and 1: reading
+	// element 0 (t.0) is impossible from any source — the typed-IR verifier
+	// rejects a TuplePlace/TupleElementValue with Ordinal 0 (confirmed against
+	// a real fixture: check fails with "TuplePlace requires Ordinal"), because
+	// the checker's tuple ordinals are 0-based while Node.Ordinal uses 0 as
+	// its unset sentinel. So the two readable elements of a three-element
+	// tuple (ordinals 1 and 2) are the fullest real-source expression of
+	// "both elements read back and added": t.1 + t.2 = 20 + 30 = 50.
+	emitAndRun(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", false, 50, false)
+}
+
+func TestEmitTupleThreeElementWritesC(t *testing.T) {
+	// The emitted C for the three-element tuple: one struct typedef with three
+	// positional fields written before pebble_user_main (definition before
+	// use), the local declared as the typedef type and initialized with the
+	// brace literal { 10, 20, 30 }, and both element reads lowering to
+	// pebble_local_<id>._1 / ._2 inside the checked add. Symbol 25 is the t
+	// local and tuple type 23 its (i32, i32, i32) type, confirmed against the
+	// real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n    int32_t _2;\n} pebble_tuple_23_t;",
+		"pebble_tuple_23_t pebble_local_25 = { 10, 20, 30 };",
+		"    (void)pebble_local_25;",
+		"return pebble_rt_checked_add_i32(pebble_local_25._1, pebble_local_25._2);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	mainIndex := strings.Index(out, "static int pebble_user_main")
+	if typedefIndex < 0 || mainIndex < 0 || typedefIndex > mainIndex {
+		t.Errorf("tuple typedef does not precede pebble_user_main (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitTupleBoolElementDrivesIfCompilesAndRuns(t *testing.T) {
+	// A tuple with a bool element mixed beside an integer element: the bool
+	// element read (t.1) drives an if condition. t.1 = true runs the then-arm
+	// (exit 10); with the bool element false the else-arm runs (exit 20). The
+	// read is a bool value, so it must route through the bool grammar
+	// (buildBoolExpr's Load case), not the integer one.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"bool true", "fn main() i32 { let t (i32, bool) = (1, true); if t.1 { return 10; } else { return 20; } }", 10},
+		{"bool false", "fn main() i32 { let t (i32, bool) = (1, false); if t.1 { return 10; } else { return 20; } }", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitTupleBoolElementDrivesIfWritesC(t *testing.T) {
+	// The emitted C for the bool-element-if fixture: the typedef's second field
+	// must be the C bool, the local's initializer carries the integer and bool
+	// literals in order, and the if condition is the raw field read
+	// pebble_local_<id>._1 (a C bool needs no comparison). Symbol 25 is the t
+	// local, confirmed against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let t (i32, bool) = (1, true); if t.1 { return 10; } else { return 20; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t _0;\n    bool _1;\n} pebble_tuple_23_t;",
+		"pebble_tuple_23_t pebble_local_25 = { 1, true };",
+		"    if (pebble_local_25._1) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "return 10;") || !strings.Contains(out, "return 20;") {
+		t.Errorf("emitted C missing the if/else arms:\n%s", out)
+	}
+}
+
+func TestEmitTupleElementAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// A tuple element read composes with 10.18's call-argument building: each
+	// argument of add is a read of the tuple local's element 1. buildCallArguments
+	// builds each argument with buildExpr, which lowers the Load(TuplePlace) read
+	// to pebble_local_<id>._1, so add(22, 22) = 44 is the process exit code.
+	// The tuple typedef must still be emitted before the helper's definition.
+	emitAndRun(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let t (i32, i32) = (20, 22); return add(t.1, t.1); }", false, 44, false)
+}
+
+func TestEmitTupleElementAsCallArgumentWritesC(t *testing.T) {
+	// The emitted C for the call-argument fixture: the tuple typedef precedes
+	// both the helper and the entry, the local initializes to { 20, 22 }, and
+	// the call site passes the two element reads after ctx. Symbols 24 (add),
+	// 25/26 (its parameters), and 28 (t) come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let t (i32, i32) = (20, 22); return add(t.1, t.1); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
+		"pebble_tuple_23_t pebble_local_28 = { 20, 22 };",
+		"return pebble_fn_24(ctx, pebble_local_28._1, pebble_local_28._1);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static int32_t pebble_fn_24")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("tuple typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitTupleLocalInsideHelperCompilesAndRuns(t *testing.T) {
+	// A tuple-typed local declared inside a reachable helper's body, not the
+	// entry's: the typedef-collection pass must walk helper bodies too, so the
+	// tuple typedef is emitted before the helper's definition (which is before
+	// pebble_user_main). helper declares t, reads its element 1, and returns
+	// it; the entry just calls helper, so exit code 22 proves the helper's
+	// tuple local was built and the typedef emitted correctly.
+	emitAndRun(t, "fn helper() i32 { let t (i32, i32) = (20, 22); return t.1; } fn main() i32 { return helper(); }", false, 22, false)
+}
+
+func TestEmitI64TupleCompilesAndRuns(t *testing.T) {
+	// The width discipline extends to tuple element types: an i64 entry's
+	// (i64, i64) tuple's typedef fields are int64_t, the local is int64_t
+	// backed, and the element read feeds the i64 entry's return. Exit code 22.
+	emitAndRun(t, "fn main() i64 { let t (i64, i64) = (20, 22); return t.1; }", false, 22, false)
+}
+
+func TestEmitI64TupleWritesC(t *testing.T) {
+	// The emitted C for the i64 tuple must use int64_t for both typedef fields
+	// and for the pebble_user_main return type, proving the entry's width
+	// threads into the tuple layout, not just the scalar declarations.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let t (i64, i64) = (20, 22); return t.1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int64_t _0;\n    int64_t _1;\n} pebble_tuple_23_t;",
+		"pebble_tuple_23_t pebble_local_25 = { 20, 22 };",
+		"return pebble_local_25._1;",
+		"static int64_t pebble_user_main(PebbleContext *ctx)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "int32_t _0") {
+		t.Errorf("emitted C declared an i32 tuple field for an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitRejectsTupleWithUnsupportedElementType(t *testing.T) {
+	// A tuple whose element type is neither the entry's width nor bool — here
+	// a str element — is reachable from real source (the checker builds the
+	// declaration fine), so this is a genuine backend-scope rejection. The
+	// tuple typedef pass inspects the element types first and rejects the str
+	// field with a clear error naming the wanted types, so no C is written.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsNestedTupleElement(t *testing.T) {
+	// A tuple whose element is itself a tuple (tuple-of-tuple) is reachable
+	// from real source, so this is a genuine backend-scope rejection: the
+	// outer tuple's element 0 type is the inner (i32, i32) tuple, which is
+	// neither the entry's width nor bool, and must be rejected by the tuple
+	// typedef pass, not mis-emitted as a struct field of a struct.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let inner (i32, i32) = (1, 2); let outer ((i32, i32), bool) = (inner, true); return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsWholeTupleStore(t *testing.T) {
+	// Reassigning a whole tuple-typed local (t = (3, 4)) is reachable from
+	// real source (the checker builds the Store fine) but is out of scope this
+	// slice: only element reads of a tuple local are supported, never
+	// assignment into or reassignment of one. The Store's place names a
+	// tuple-typed local, so buildLeadingStatement rejects it with a clear
+	// error naming the reassignment, not a guessed lowering.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var t (i32, i32) = (1, 2); t = (3, 4); return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole tuple is not supported")
+}
+
+func TestEmitRejectsTupleParameter(t *testing.T) {
+	// A function taking a tuple parameter is reachable from real source (the
+	// checker builds the helper and call fine), so this is a genuine
+	// backend-scope rejection: validateHelperSignature requires every
+	// parameter to be the entry's width or bool, and a tuple parameter is
+	// neither, exactly like the str-parameter rejection from 10.18.
+	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f((1, 2)); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
+	// Indexing a tuple literal directly — (1, 2).1 — is out of scope: the
+	// checker lowers it to a TupleElementValue whose child is the TupleValue
+	// being indexed (not a tuple-typed local) and whose element type comes out
+	// as the unanchored `int` builtin (confirmed against a real fixture). The
+	// tuple's int element is not the entry's width, so the tuple typedef pass
+	// rejects it cleanly; this keeps the only supported element read exactly
+	// the tuple-local Load(TuplePlace) shape.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i32 = (1, 2).1; return x; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}

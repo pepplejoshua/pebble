@@ -52,6 +52,22 @@
 // Pebble-convention call) but carries no explicit context argument, so the
 // backend prepends ctx itself, exactly as pebble_user_main receives it, and
 // each argument is built by the grammar its callee parameter resolves to.
+//
+// Since 10.19, a local may also be declared as a tuple whose element types are
+// exactly the entry's resolved width and/or bool, initialized from a tuple
+// literal (a tir.TupleValue), with individual elements read back as ordinary
+// values (a tir.Load of a tir.TuplePlace — the only shape real source produces
+// for reading a tuple-typed local's element; see buildExpr's Load case). A
+// tuple type is emitted as one C struct typedef, named pebble_tuple_<typeID>_t
+// from the tuple type's own stable types.TypeID and written once per distinct
+// tuple type before any function that references it (C requires definition
+// before use); each typedef's fields are the positional `_0`, `_1`, ... in
+// element order. Tuple element types are restricted to the entry's width and
+// bool, reads route through buildExpr/buildBoolExpr by the element's own type,
+// and every other tuple shape — a nested tuple element, a str element, a whole
+// tuple copied from another value, assigning into or reassigning a tuple
+// local, a tuple parameter or result, a TupleElementValue indexing a tuple
+// literal, or a TupleCoerce — is a clean rejection, never a guessed lowering.
 package backend
 
 import (
@@ -143,9 +159,17 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		if err := validateEmptyBody(unit, block); err != nil {
 			return err
 		}
-		return emitEntryC(w, "", voidEntryUserMain, voidEntryMainBody)
+		return emitEntryC(w, "", "", voidEntryUserMain, voidEntryMainBody)
 	}
 	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
+	if err != nil {
+		return err
+	}
+	tupleTypes, err := collectTupleTypes(unit, snapshot, blockID, helpers)
+	if err != nil {
+		return err
+	}
+	typedefs, err := buildTupleTypedefs(snapshot, result, tupleTypes)
 	if err != nil {
 		return err
 	}
@@ -157,7 +181,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	return emitEntryC(w, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
+	return emitEntryC(w, typedefs, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
 }
 
 // findEntryDeclaration locates the FunctionDeclaration node for entrySymbol.
@@ -380,6 +404,78 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 	return nil
 }
 
+// collectTupleTypes appends, in first-encountered order, the tuple TypeID of
+// every tuple type the emitted program actually references: the entry body
+// (root) followed by every reachable helper's body, each walked by the same
+// Children + DeferChain traversal collectDirectCalls uses. A tuple type is
+// referenced in exactly two places in the emitted C — a tuple-typed local's
+// declaration (an Initialize whose initializer value carries the tuple type)
+// and a tuple construction (a TupleValue, whose Type is the tuple type) — so
+// collecting exactly those two node shapes guarantees every typedef the
+// program needs is discovered. The caller deduplicates (see Emit) so each
+// distinct tuple type yields exactly one typedef, emitted before any function
+// definition in the final output.
+func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]types.TypeID, error) {
+	var collected []types.TypeID
+	if err := collectTupleTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectTupleTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var deduplicated []types.TypeID
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		deduplicated = append(deduplicated, id)
+	}
+	return deduplicated, nil
+}
+
+// collectTupleTypesWalk appends every tuple type encountered in the tree rooted
+// at nodeID to out, in first-encountered order, following Children and
+// DeferChain exactly like collectDirectCalls so it visits the same reachable
+// region of the node graph the body builders consume. Two node shapes carry a
+// tuple type: a TupleValue node's own Type, and an Initialize whose initializer
+// value carries a tuple type (a tuple-typed local declaration — the local's
+// type is recorded on the initializer value node, not on the Initialize node
+// itself, confirmed against a real fixture). A tuple initializer that is not a
+// TupleValue (a whole-tuple copy of another local) is still a tuple-typed
+// local and still needs its typedef; it is collected here by the Initialize
+// rule even though buildLeadingStatement rejects that initializer shape.
+func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("tuple-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.TupleValue {
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.Initialize {
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isTuple(snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectTupleTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectTupleTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // indexOfSymbol returns the position of id in ids, or -1 if absent.
 func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 	for i, candidate := range ids {
@@ -449,7 +545,7 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []helperInfo, width types.BuiltinKind) (string, error) {
 	texts := make([]string, 0, len(helpers))
 	for _, helper := range helpers {
-		scope := make(map[symbol.SymbolID]types.BuiltinKind, len(helper.decl.Parameters))
+		scope := make(map[symbol.SymbolID]localInfo, len(helper.decl.Parameters))
 		params := make([]string, 0, len(helper.decl.Parameters))
 		casts := make([]string, 0, len(helper.decl.Parameters))
 		for _, param := range helper.decl.Parameters {
@@ -468,7 +564,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 				// this branch is defense for hand-built IR only.
 				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s or bool", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
-			scope[param.Symbol] = kind
+			scope[param.Symbol] = localInfo{kind: kind}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
 		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width)
@@ -530,7 +626,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
-func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
+func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
@@ -613,7 +709,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // Any other shape — an If without an else, an arm that is not a Block, or a
 // block with the wrong child count — is a clean rejection naming what was
 // found.
-func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
+func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
@@ -653,7 +749,7 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 //
 // Any other shape — a wrong child count, or a body that is not a Block — is a
 // clean rejection naming what was found.
-func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
+func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
 	if len(whileNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
 	}
@@ -689,7 +785,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 // statement kind (a Return, a Print, anything else) is a clean rejection
 // naming what was found. An empty loop body (zero children) is legal — `while
 // cond {}` is a real, if useless, program — and emits no statements at all.
-func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
+func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("entry function body block while loop body references invalid node %d", bodyID)
@@ -767,7 +863,7 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 //
 // Any other shape — a child count inconsistent with HasElse, or an arm that is
 // not a Block — is a clean rejection naming what was found.
-func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
+func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
@@ -823,9 +919,10 @@ func buildLoopJump(statement tir.Node, keyword string, indent, context string) (
 // declaration) or a Store (a reassignment of a local already in scope).
 // context names the enclosing construct in error messages; indent is the
 // statement's C indentation. scope is the set of in-scope locals, each mapped
-// to the resolved builtin type it was declared with (the entry's integer width
-// or bool): an Initialize adds its symbol to it once validated, a Store reads
-// it. width is
+// to a localInfo recording the resolved type it was declared with: the entry's
+// integer width or bool for a scalar local, the tuple type's TypeID for a
+// tuple local. An Initialize adds its symbol to it once validated, a Store
+// reads it. width is
 // the entry's resolved integer width; an integer local's C type name
 // follows it (int32_t for an i32 entry, int64_t for an i64 entry), and a
 // local whose value carries the other width is rejected by buildExpr, so an
@@ -833,11 +930,16 @@ func buildLoopJump(statement tir.Node, keyword string, indent, context string) (
 // error, not an attempted coercion. A local whose value carries the bool
 // builtin is a bool local, declared as C `bool` and built by buildBoolExpr;
 // its scope entry records types.Bool so a later reference or reassignment is
-// emitted and validated against the same type. The
+// emitted and validated against the same type. A local whose value carries a
+// tuple type is a tuple local: it is declared as C `pebble_tuple_<typeID>_t`,
+// initialized from a tuple literal whose element expressions are each built by
+// the grammar their own element type selects, and its scope entry records the
+// tuple type so a later element read resolves the element being indexed (see
+// buildExpr's Load case). The
 // caller is responsible for having already cloned scope if the statements must
 // not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
 // do). Any other statement kind is a clean rejection naming what was found.
-func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]types.BuiltinKind, indent, context string, width types.BuiltinKind) (string, error) {
+func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
@@ -854,6 +956,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		if !ok {
 			return "", fmt.Errorf("%s local declaration references invalid value node %d", context, statement.Children[0])
 		}
+		if isTuple(snapshot, initValue.Type) {
+			// A tuple-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself — confirmed against
+			// a real fixture). The supported initializer is a tuple literal
+			// (TupleValue); every other tuple initializer shape is a clean
+			// rejection.
+			return buildTupleLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
+		}
 		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 		if !ok {
 			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
@@ -869,7 +979,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			if err != nil {
 				return "", err
 			}
-			scope[statement.Symbol] = width
+			scope[statement.Symbol] = localInfo{kind: width}
 			// A local that a later statement never reads would otherwise
 			// trigger -Wunused-variable under the mandated -Wall -Wextra
 			// -Werror; a redundant (void) cast is a no-op when the local IS
@@ -884,7 +994,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			if err != nil {
 				return "", err
 			}
-			scope[statement.Symbol] = types.Bool
+			scope[statement.Symbol] = localInfo{kind: types.Bool}
 			// Like integer locals (see the width case), a bool local is
 			// emitted as a plain (non-const) bool: the Initialize node does
 			// not carry let-vs-var, and the checker guarantees any Store
@@ -913,7 +1023,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		if place.Kind != tir.StoragePlace {
 			return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope", context, place.Kind)
 		}
-		targetKind, declared := scope[place.Symbol]
+		targetInfo, declared := scope[place.Symbol]
 		if !declared {
 			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
 		}
@@ -922,7 +1032,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		// the bool grammar for a bool local (buildBoolExpr). A value of the
 		// wrong type — a bool assigned to an integer local, or an integer
 		// assigned to a bool local — is rejected by the appropriate builder.
-		switch targetKind {
+		switch targetInfo.kind {
 		case width:
 			storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
 			if err != nil {
@@ -936,6 +1046,13 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			}
 			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
 		default:
+			if targetInfo.tuple != 0 {
+				// A Store whose place names a tuple-typed local is a
+				// whole-tuple reassignment, which is out of scope this slice
+				// (only element reads of a tuple local are supported, never
+				// assignment into or reassignment of one).
+				return "", fmt.Errorf("%s reassigns symbol %d, a tuple-typed local of type %s; reassigning a whole tuple is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.tuple))
+			}
 			return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 		}
 	default:
@@ -943,17 +1060,85 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 	}
 }
 
+// localInfo records what a declared local holds: an ordinary scalar — the
+// entry's resolved integer width or bool, in kind — or a tuple, in tuple (its
+// tuple types.TypeID, stable within one Emit call). The two fields are
+// mutually exclusive: kind is zero for a tuple local (a tuple is not a
+// types.BuiltinKind), and tuple is zero for a scalar local. A struct value
+// rather than a parallel map keeps the scope a single map threaded through
+// every builder unchanged in shape — the existing
+// `map[symbol.SymbolID]types.BuiltinKind` value type was widened to this struct
+// so no call site needed a second argument, the option that changes the fewest
+// existing call sites correctly.
+type localInfo struct {
+	kind  types.BuiltinKind
+	tuple types.TypeID
+}
+
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
 // recursive scope entry in buildBlock copies before extending, so a block's
 // own declarations never leak into the map the caller or a sibling scope
 // sees — a local declared inside one if arm is invisible to the sibling arm
 // and to anything outside the arm.
-func cloneLocals(locals map[symbol.SymbolID]types.BuiltinKind) map[symbol.SymbolID]types.BuiltinKind {
-	cloned := make(map[symbol.SymbolID]types.BuiltinKind, len(locals))
+func cloneLocals(locals map[symbol.SymbolID]localInfo) map[symbol.SymbolID]localInfo {
+	cloned := make(map[symbol.SymbolID]localInfo, len(locals))
 	for id, kind := range locals {
 		cloned[id] = kind
 	}
 	return cloned
+}
+
+// buildTupleLocalDeclaration builds one tuple-typed local's declaration: a
+// `pebble_tuple_<typeID>_t pebble_local_<symbol> = { <element>, ... };` whose
+// element expressions are the TupleValue initializer's children in order, each
+// built by the grammar its own element type selects — buildExpr for an element
+// of the entry's width, buildBoolExpr for a bool element. Every element type
+// must be exactly the entry's width or bool; anything else (a str element, a
+// nested tuple element) is a clean rejection naming the element position, since
+// this backend emits exactly those two C field types. The local's scope entry
+// records its tuple type (a localInfo with tuple set), so a later element read
+// resolves the tuple type being indexed. The initializer must be a TupleValue
+// (a tuple literal): initializing a tuple local from any other value — a
+// whole-tuple copy of another local, a call, anything else — is a clean
+// rejection, keeping this slice's supported initializer exactly the tuple
+// literal. Like every scalar local, the declaration is followed by a (void)
+// cast against -Wunused-variable.
+func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind != tir.TupleValue {
+		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal); initializing a tuple local from another value is not supported yet", context, tupleTypeName(initValue.Type), initValue.Kind)
+	}
+	key, ok := snapshot.Key(initValue.Type)
+	if !ok {
+		return "", fmt.Errorf("%s declares a tuple-typed local whose type %d is not in the type snapshot", context, initValue.Type)
+	}
+	elements, ok := key.Elements()
+	if !ok {
+		return "", fmt.Errorf("%s declares a tuple-typed local of type %s, which has no element list", context, tupleTypeName(initValue.Type))
+	}
+	if len(initValue.Children) != len(elements) {
+		return "", fmt.Errorf("%s declares a tuple-typed local of type %s with %d element expression(s), want %d (one per declared element)", context, tupleTypeName(initValue.Type), len(initValue.Children), len(elements))
+	}
+	exprs := make([]string, len(elements))
+	for i, elementType := range elements {
+		switch {
+		case isWidth(snapshot, width, elementType):
+			elementExpr, err := buildExpr(unit, snapshot, initValue.Children[i], scope, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isBool(snapshot, elementType):
+			elementExpr, err := buildBoolExpr(unit, snapshot, initValue.Children[i], scope, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		default:
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s whose element %d is %s, want %s or bool", context, tupleTypeName(initValue.Type), i, describeType(snapshot, elementType), wantName(width))
+		}
+	}
+	scope[statement.Symbol] = localInfo{tuple: initValue.Type}
+	return fmt.Sprintf("%spebble_tuple_%d_t pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, initValue.Type, statement.Symbol, strings.Join(exprs, ", "), indent, statement.Symbol), nil
 }
 
 // buildCondition builds the C text for one if/while condition. It dispatches
@@ -964,7 +1149,7 @@ func cloneLocals(locals map[symbol.SymbolID]types.BuiltinKind) map[symbol.Symbol
 // a bool operand, or a && / || combination of any of these (a
 // tir.ShortCircuitValue) — is routed through buildBoolExpr. Anything else is
 // rejected by whichever builder it reaches.
-func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body condition references invalid node %d", id)
@@ -997,7 +1182,7 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 // BinaryValue (bitwise), is a clean rejection. The && / || that lower to
 // ShortCircuitValue nodes are not this function's concern — buildCondition
 // routes them to buildBoolExpr.
-func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid node %d", id)
@@ -1063,7 +1248,7 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 // reference to a local declared earlier in the entry body, or checked negation
 // and checked +, -, *, /, % arithmetic — and is delegated to buildExpr, whose
 // own width gate and kind switch do the rejecting.
-func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", id)
@@ -1144,7 +1329,7 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 // Emitting the checked runtime helpers (rather than raw C operators) is what
 // keeps the IR nodes' real overflow and divide-by-zero semantics from silently
 // disappearing in the emitted program.
-func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -1194,6 +1379,50 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.Load:
+		// A tuple element read. Reading one element of a tuple-typed local
+		// (`t.1`) is lowered by the checker to a Load of a TuplePlace whose
+		// single child is the StoragePlace naming the tuple local — confirmed
+		// against a real fixture; this is the only shape real source produces
+		// for reading an element of a tuple local (a plain local read is a
+		// SymbolValue, not a Load). The Load's Type is the element's own type,
+		// already gated to the entry's width above, so the element must resolve
+		// to the entry's width here. The emitted C is
+		// pebble_local_<symbol>._<ordinal>.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
+		}
+		if place.Kind != tir.TuplePlace {
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace (only tuple element loads are supported)", place.Kind)
+		}
+		return buildTuplePlaceRead(unit, snapshot, place, locals, width, false)
+	case tir.TupleElementValue:
+		// The checker produces a TupleElementValue only when a tuple literal is
+		// indexed directly — (1, 2).1 — whose child is the TupleValue being
+		// indexed and whose element type comes out as the unanchored `int`
+		// builtin (confirmed against a real fixture); that shape is out of
+		// scope, and its int-typed element fails the width gate above before
+		// reaching this case. The only in-scope element read of a tuple local
+		// is Load(TuplePlace). This case is therefore defense for hand-built
+		// IR matching the local-read shape: a TupleElementValue whose single
+		// child is a SymbolValue naming a tuple-typed local is emitted exactly
+		// like the Load(TuplePlace) read, and any other base is a clean
+		// rejection.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a TupleElementValue with %d child(ren), want exactly one (the tuple value being indexed)", len(node.Children))
+		}
+		base, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a TupleElementValue referencing invalid node %d", node.Children[0])
+		}
+		if base.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("entry function body expression reads element %d of a %s, want a SymbolValue naming a tuple-typed local (indexing a tuple literal is not supported)", node.Ordinal, base.Kind)
+		}
+		return buildTupleElement(unit, snapshot, base.Symbol, node.Ordinal, locals, width, false)
 	case tir.DirectCall:
 		// A call to another Pebble-convention function whose result is the
 		// entry's own width. The width gate above already
@@ -1239,6 +1468,63 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 	}
 }
 
+// buildTuplePlaceRead builds the C text for reading one element of a tuple
+// local through the Load(TuplePlace) shape the checker actually produces for
+// `t.<ordinal>` (confirmed against a real fixture): the TuplePlace carries the
+// element Ordinal and its single child is the StoragePlace naming the tuple
+// local. wantBool selects which grammar the element must satisfy — bool (the
+// buildBoolExpr path) or the entry's width (the buildExpr path) — matching how
+// the Load's own Type was already gated by the caller's builder. The emitted C
+// is pebble_local_<symbol>._<ordinal>.
+func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+	if len(place.Children) != 1 {
+		return "", fmt.Errorf("entry function body expression contains a TuplePlace with %d child(ren), want exactly one (the tuple local's place)", len(place.Children))
+	}
+	base, ok := unit.Node(place.Children[0])
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a TuplePlace referencing invalid node %d", place.Children[0])
+	}
+	if base.Kind != tir.StoragePlace {
+		return "", fmt.Errorf("entry function body expression contains a TuplePlace whose child is a %s, want a StoragePlace naming a tuple-typed local", base.Kind)
+	}
+	return buildTupleElement(unit, snapshot, base.Symbol, place.Ordinal, locals, width, wantBool)
+}
+
+// buildTupleElement builds the C text for reading one element of a tuple local
+// by symbol and ordinal: pebble_local_<symbol>._<ordinal>. The symbol must be a
+// local the scope records as tuple-typed (its localInfo.tuple), the ordinal
+// must be in range for that tuple type's element list, and the element's own
+// type must satisfy the grammar wantBool selects — bool for the buildBoolExpr
+// path, the entry's width for the buildExpr path. The tuple type comes from the
+// scope record, not from any node field, so a read always resolves against the
+// type the local was actually declared with.
+func buildTupleElement(unit *tir.Unit, snapshot *types.Snapshot, symbolID symbol.SymbolID, ordinal uint32, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+	info, declared := locals[symbolID]
+	if !declared || info.tuple == 0 {
+		return "", fmt.Errorf("entry function body expression reads an element of symbol %d, which is not a tuple-typed local declared earlier in the entry body", symbolID)
+	}
+	key, ok := snapshot.Key(info.tuple)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression reads an element of a tuple local whose type %d is not in the type snapshot", info.tuple)
+	}
+	elements, ok := key.Elements()
+	if !ok {
+		return "", fmt.Errorf("entry function body expression reads an element of tuple type %s, which has no element list", tupleTypeName(info.tuple))
+	}
+	if ordinal >= uint32(len(elements)) {
+		return "", fmt.Errorf("entry function body expression reads tuple element %d of %s, which has only %d element(s)", ordinal, tupleTypeName(info.tuple), len(elements))
+	}
+	element := elements[ordinal]
+	if wantBool {
+		if !isBool(snapshot, element) {
+			return "", fmt.Errorf("entry function body expression reads tuple element %d, whose type is %s, want bool", ordinal, describeType(snapshot, element))
+		}
+	} else if !isWidth(snapshot, width, element) {
+		return "", fmt.Errorf("entry function body expression reads tuple element %d, whose type is %s, want %s", ordinal, describeType(snapshot, element), wantName(width))
+	}
+	return fmt.Sprintf("pebble_local_%d._%d", symbolID, ordinal), nil
+}
+
 // buildCallArguments builds the comma-separated C argument list for a
 // DirectCall's children, one expression per child in order. Each child's
 // grammar is decided by the callee's corresponding parameter's resolved type
@@ -1249,7 +1535,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 // must equal the callee's declared parameter count. Returns the joined
 // argument text, empty when the callee takes no parameters (the caller then
 // emits pebble_fn_<id>(ctx) with no argument list).
-func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	if len(call.Children) != len(callee.Parameters) {
 		return "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want %d (the callee declares %d parameter(s))", call.Symbol, len(call.Children), len(callee.Parameters), len(callee.Parameters))
 	}
@@ -1328,6 +1614,11 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 //     shape (confirmed against a real fixture: flag && (1 < 2) has the
 //     comparison wrapped in a SourceAlias, while the unparenthesized
 //     1 < 2 && 3 < 4 wraps nothing).
+//   - Load of a TuplePlace — a tuple-typed local's bool element read (`t.1`
+//     in a bool position), the same Load(TuplePlace) shape buildExpr's Load
+//     case handles but with the element's own type gated to bool here, so the
+//     read emits pebble_local_<symbol>._<ordinal> via buildTupleElement. (A
+//     plain bool local read is a SymbolValue, not a Load.)
 //
 // A bool-returning call needs no DirectCall case here and has none: a called
 // function may only resolve to the entry's integer width or void (see
@@ -1339,7 +1630,7 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 // A SymbolValue referencing anything else — an integer local, a global, a
 // parameter — and any other node kind at any position is a clean rejection
 // naming what was found.
-func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -1354,10 +1645,42 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 		}
 		return "false", nil
 	case tir.SymbolValue:
-		if locals[node.Symbol] != types.Bool {
+		if locals[node.Symbol].kind != types.Bool {
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.Load:
+		// A tuple-typed local's bool element read (see buildExpr's Load case
+		// for the shape confirmation; here the Load's Type is the element's
+		// bool type, already gated above).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
+		}
+		if place.Kind != tir.TuplePlace {
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace (only tuple element loads are supported)", place.Kind)
+		}
+		return buildTuplePlaceRead(unit, snapshot, place, locals, width, true)
+	case tir.TupleElementValue:
+		// Defense for hand-built IR, exactly like buildExpr's TupleElementValue
+		// case: the checker never produces this shape for a bool element read of
+		// a tuple local (that is a Load of a TuplePlace); a TupleElementValue
+		// whose single child is a SymbolValue naming a tuple-typed local is
+		// accepted here, anything else is a clean rejection.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a TupleElementValue with %d child(ren), want exactly one (the tuple value being indexed)", len(node.Children))
+		}
+		base, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a TupleElementValue referencing invalid node %d", node.Children[0])
+		}
+		if base.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("entry function body expression reads element %d of a %s, want a SymbolValue naming a tuple-typed local (indexing a tuple literal is not supported)", node.Ordinal, base.Kind)
+		}
+		return buildTupleElement(unit, snapshot, base.Symbol, node.Ordinal, locals, width, true)
 	case tir.PrefixValue:
 		if node.Operator != syntax.Bang {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want !", node.Operator)
@@ -1483,6 +1806,103 @@ func isBool(snapshot *types.Snapshot, id types.TypeID) bool {
 		return false
 	}
 	return id == snapshot.Builtins().Bool
+}
+
+// isTuple reports whether id resolves to a tuple type in the snapshot. It is
+// how the emitter recognizes a tuple-typed local's declaration without
+// consulting the builtin table: a tuple is not a types.BuiltinKind, so
+// resolvedBuiltin returns no kind for it and the caller must ask whether the
+// type is a tuple instead.
+func isTuple(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return false
+	}
+	return key.Kind() == types.Tuple
+}
+
+// tupleTypeName is the deterministic C name of one distinct tuple type's
+// struct typedef: pebble_tuple_<typeID>_t, derived from the tuple type's own
+// stable types.TypeID (stable within one Emit call), mirroring the
+// pebble_fn_<symbolID> / pebble_local_<symbolID> naming discipline of reusing
+// a stable IR identity rather than a counter.
+func tupleTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_tuple_%d_t", id)
+}
+
+// tupleElementCType is the C field type a tuple element of the given type is
+// declared with in its tuple's struct typedef: int32_t / int64_t for an
+// element of the entry's resolved width, bool for a bool element. Any other
+// element type is a clean rejection naming what was found, since this backend
+// emits exactly those two C types as tuple fields.
+func tupleElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if isWidth(snapshot, width, id) {
+		return cType(width), nil
+	}
+	if isBool(snapshot, id) {
+		return "bool", nil
+	}
+	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
+		if name, ok := builtinName(builtin); ok {
+			return "", fmt.Errorf("element type %s is not supported, want %s or bool", name, wantName(width))
+		}
+	}
+	return "", fmt.Errorf("element type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+}
+
+// buildTupleTypedefs builds the C text of one struct typedef per tuple type in
+// ids, in order, each joined by a newline. The caller (Emit) supplies ids in
+// first-encountered order from the tuple-type collection pass, so every tuple
+// type the emitted program references has exactly one typedef here, written
+// before any function definition in the final output.
+func buildTupleTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+	texts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		text, err := buildTupleTypedef(snapshot, width, id)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildTupleTypedef builds the C text of one tuple type's struct typedef, with
+// positional fields `_0`, `_1`, ... in element order (mirroring the old
+// backend's own tuple-field naming convention, without the old 9-field cap):
+//
+//	typedef struct {
+//	    int32_t _0;
+//	    bool _1;
+//	} pebble_tuple_<typeID>_t;
+//
+// Each field's C type comes from tupleElementCType, which validates the
+// element is the entry's width or bool. A TypeID that is not a tuple type in
+// the snapshot is a clean rejection, not a guessed layout.
+func buildTupleTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return "", fmt.Errorf("tuple type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Tuple {
+		return "", fmt.Errorf("type %s is a %v, want a tuple type", tupleTypeName(id), key.Kind())
+	}
+	elements, ok := key.Elements()
+	if !ok {
+		return "", fmt.Errorf("tuple type %s has no element list", tupleTypeName(id))
+	}
+	fields := make([]string, len(elements))
+	for i, element := range elements {
+		ctype, err := tupleElementCType(snapshot, width, element)
+		if err != nil {
+			return "", fmt.Errorf("tuple type %s: %v", tupleTypeName(id), err)
+		}
+		fields[i] = "    " + ctype + fmt.Sprintf(" _%d;", i)
+	}
+	return fmt.Sprintf("typedef struct {\n%s\n} %s;", strings.Join(fields, "\n"), tupleTypeName(id)), nil
 }
 
 // resolvedBuiltin resolves a TypeID to the builtin kind it names, if it names
@@ -1620,7 +2040,11 @@ func entryReturnType(width types.BuiltinKind) string {
 }
 
 // emitEntryC writes the shared adapter skeleton once the typed IR has been
-// confirmed to describe one of the supported program shapes. helpers is the
+// confirmed to describe one of the supported program shapes. typedefs is the C
+// text of one struct typedef per distinct tuple type the program references,
+// written before every function definition (helpers and pebble_user_main) since
+// C requires a type to be defined before any function's body can use it; it is
+// empty when the program has no tuples. helpers is the
 // C text of every reachable helper function (each a static
 // pebble_fn_<symbolID> definition), written before pebble_user_main so a
 // called function's definition precedes its use; it is empty when the program
@@ -1629,11 +2053,16 @@ func entryReturnType(width types.BuiltinKind) string {
 // the C bool keyword and the true / false literals the moment any bool local
 // or literal is emitted, and adding it for programs with no bool at all is
 // harmless.
-func emitEntryC(w io.Writer, helpers, userMain, mainBody string) error {
+func emitEntryC(w io.Writer, typedefs, helpers, userMain, mainBody string) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
 `); err != nil {
 		return err
+	}
+	if typedefs != "" {
+		if _, err := fmt.Fprint(w, "\n"+typedefs+"\n"); err != nil {
+			return err
+		}
 	}
 	if helpers != "" {
 		if _, err := fmt.Fprint(w, "\n"+helpers+"\n"); err != nil {
