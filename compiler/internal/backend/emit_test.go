@@ -185,6 +185,31 @@ func TestEmitCheckedDivideByZeroAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { return 1 / 0; }", false, 0, true)
 }
 
+func TestEmitLocalDeclarationsCompilesAndRuns(t *testing.T) {
+	// Two locals feeding the return: x = 1, y = 2, return x + y = 3. Each
+	// local emits one `const int32_t pebble_local_<id> = ...;` declaration in
+	// declaration order, and the return expression references them by name.
+	emitAndRun(t, "fn main() i32 { let x i32 = 1; let y i32 = 2; return x + y; }", false, 3, false)
+}
+
+func TestEmitLocalReferencingEarlierLocalCompilesAndRuns(t *testing.T) {
+	// A local's initializer references an earlier local (y = x + x = 20) and
+	// the final return references a later one (y - x = 10), confirming the
+	// locals-so-far set is threaded through both the initializer and return
+	// expression builds.
+	emitAndRun(t, "fn main() i32 { let x i32 = 10; let y i32 = x + x; return y - x; }", false, 10, false)
+}
+
+func TestEmitLocalOverflowStillAborts(t *testing.T) {
+	// 2147483647 + 1 overflows i32. The overflow must survive through a local
+	// reference, not just literal operands: x holds the max literal and the
+	// return's x + 1 lowers to pebble_rt_checked_add_i32(pebble_local_<x>, 1),
+	// which must panic through pebble_rt_panic in PEBBLE_RT_MODE_SAFE — the
+	// process must terminate abnormally, not exit 0 and not return any
+	// specific arithmetic value.
+	emitAndRun(t, "fn main() i32 { let x i32 = 2147483647; return x + 1; }", false, 0, true)
+}
+
 // emitAndRun drives one .peb entry source through buildFixture, Emit, and the
 // end-to-end cc compile + run. wantCode is the expected process exit code;
 // with wantAbnormal set, the process must instead terminate abnormally (a
@@ -462,6 +487,211 @@ func buildUnsupportedArithmeticOperatorUnit(t *testing.T) (*tir.Unit, *types.Sna
 	return unit, snapshot, entryID
 }
 
+// buildUndeclaredLocalReferenceUnit hand-builds a unit whose i32 entry
+// declares one local (Initialize for symbol 25) but whose Return references a
+// different, never-declared symbol (a SymbolValue for symbol 26). The checker
+// would never produce this from valid source — the reference would fail name
+// resolution first — so it is constructed directly through the IR builder to
+// exercise Emit's own requirement that a SymbolValue reference only symbols
+// declared earlier in the entry body. The type snapshot is borrowed from a
+// checker-built fixture so every TypeID the hand-built nodes reference is
+// owned by the snapshot.
+func buildUndeclaredLocalReferenceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	init, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{initValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Symbol 26 is never declared by any Initialize in the body, so the
+	// return's reference to it must be a clean Emit rejection.
+	undeclared, err := builder.AddNode(tir.Node{
+		Kind:   tir.SymbolValue,
+		Type:   i32,
+		Symbol: 26,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{undeclared},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{init, ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
+// buildAssignmentInBodyUnit hand-builds a unit whose i32 entry body is an
+// Initialize (symbol 25 bound to 1), a Store that reassigns symbol 25 to 2,
+// and the final Return of 1. `x = 2;` is legal source syntax but the checker
+// rejects it for an unrelated reason (C0606: the assignment's result is not
+// used legally), so this shape is constructed directly through the IR builder,
+// the same pattern buildI32EmptyBodyUnit uses, to exercise Emit's own
+// rejection of any statement that is not a local declaration or the final
+// return. The type snapshot is borrowed from a checker-built fixture so every
+// TypeID the hand-built nodes reference is owned by the snapshot.
+func buildAssignmentInBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	init, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{initValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	place, err := builder.AddNode(tir.Node{
+		Kind:     tir.StoragePlace,
+		Type:     i32,
+		Symbol:   25,
+		Writable: true,
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := builder.AddNode(tir.Node{
+		Kind:     tir.Store,
+		Children: []tir.NodeID{place, storeValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{retValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{init, store, ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
 // runtimeSourceRoot locates the runtime directory relative to this test file,
 // independent of the process working directory.
 func runtimeSourceRoot(t *testing.T) string {
@@ -501,6 +731,35 @@ func TestEmitRejectsUnsupportedArithmeticOperator(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
+func TestEmitRejectsUndeclaredLocalReference(t *testing.T) {
+	// A local is declared in the body but the return references a name that
+	// was never declared. The checker would never build this from valid
+	// source (resolution fails first), so it is hand-built through the IR
+	// builder to exercise Emit's own requirement that a SymbolValue reference
+	// only symbols declared earlier in the entry body.
+	unit, snapshot, entryID := buildUndeclaredLocalReferenceUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsAssignmentInBody(t *testing.T) {
+	// Reassignment is not supported by this slice. `x = 2;` is legal syntax
+	// but the checker rejects it for an unrelated reason (C0606: the
+	// assignment's result is not used legally), so the shape — an Initialize,
+	// a Store, then the Return — is hand-built through the IR builder, the
+	// same pattern buildI32EmptyBodyUnit uses.
+	unit, snapshot, entryID := buildAssignmentInBodyUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsNonI32Local(t *testing.T) {
+	// A local of a non-i32 type. The checker produces this shape from valid
+	// source (the bool local is legal on its own); Emit must reject it
+	// because the local's initializer value is a bool literal, not an i32
+	// expression.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let flag bool = true; return 1; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
 func TestEmitRejectsVariableReturn(t *testing.T) {
 	// A variable reference lowers to a SymbolValue, which is not a supported
 	// expression node for the i32 entry's return value.
@@ -522,7 +781,11 @@ func TestEmitRejectsI32EmptyBody(t *testing.T) {
 }
 
 func TestEmitRejectsStatementBeforeReturn(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i32 = 1; return x; }", "main", false)
+	// 10.6 makes a local declaration before the return a supported shape, so
+	// the fixture here is a statement kind that is still rejected: a Print
+	// before the final Return. Only Initialize statements (followed by one
+	// Return) are accepted in the i32 entry body.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { print(\"hi\"); return 1; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
