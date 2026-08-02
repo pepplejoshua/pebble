@@ -12,6 +12,7 @@
 #ifndef PEBBLE_RT_H
 #define PEBBLE_RT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -194,6 +195,21 @@ int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b);
  */
 int32_t pebble_rt_checked_index_i32(int32_t index, int32_t length);
 int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length);
+
+/* ---- checked optional unwrap -----------------------------------------------
+ * An optional's force-unwrap (`value!`) panics with PEBBLE_PANIC_UNWRAP_FAILED
+ * when the optional holds no value. Like array bounds and division by zero,
+ * this is not gated by PEBBLE_RT_MODE_SAFE/RELEASE — there is no defined
+ * payload to return for an absent optional in either mode. has_value is the
+ * optional's own tag; value is its payload, read unconditionally by the
+ * caller's emitted C (unwrapping the C struct) whether or not it is
+ * meaningful — this function only turns "was the tag true" into "panic or
+ * return the payload unchanged", one function per payload width/type this
+ * backend supports.
+ */
+int32_t pebble_rt_checked_unwrap_i32(bool has_value, int32_t value);
+int64_t pebble_rt_checked_unwrap_i64(bool has_value, int64_t value);
+bool pebble_rt_checked_unwrap_bool(bool has_value, bool value);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend
