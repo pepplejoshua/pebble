@@ -92,6 +92,19 @@ incrementally as work proceeds.
   backend maps `/` and `%` to the new helpers alongside `+`/`-`/`*`;
   all five source-level arithmetic operators are now supported for an
   i32 entry's return expression.
+- **10.6 — local i32 variables in the entry body**
+  (`compiler/internal/backend`): an i32 entry's body may now be zero
+  or more `let <name> i32 = <expr>;` declarations followed by the
+  final return, where any expression may reference a local declared
+  earlier in the same body. Each local emits one `const int32_t
+  pebble_local_<symbolID>` declaration, named deterministically from
+  stable IR identity rather than an emission-time counter — the exact
+  naming discipline the phase-10 inventory (§L2) flagged the old
+  backend for getting wrong. Reassignment, non-i32 locals, and any
+  statement other than a local declaration or the final return are
+  rejected cleanly. Confirmed overflow checking survives through a
+  local reference, not just literal operands, both by the dispatched
+  test and by inspecting the emitted C directly.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
