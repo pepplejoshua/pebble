@@ -68,6 +68,19 @@
 // tuple copied from another value, assigning into or reassigning a tuple
 // local, a tuple parameter or result, a TupleElementValue indexing a tuple
 // literal, or a TupleCoerce — is a clean rejection, never a guessed lowering.
+//
+// Since 10.21, a local may also be declared as an optional whose payload type
+// is exactly the entry's resolved width (i32 or i64) or bool, initialized from
+// a `some <expr>` expression (a tir.SomeOptional), and force-unwrapped with
+// the postfix `!` operator (a tir.CheckedOptionalUnwrap). An optional type is
+// emitted as one C struct typedef, named pebble_optional_<typeID>_t from the
+// optional type's own stable types.TypeID, with two fields: `bool has_value`
+// and `value` (the payload's C type). Force-unwrap is bounds-checked via the
+// runtime helper pebble_rt_checked_unwrap_i32/i64/bool. `none` literals
+// (a tir.NoneOptional) construct an absent optional the same way; reassigning
+// an optional local is rejected cleanly. Optional-typed
+// function parameters, return types, and payload types other than the entry's
+// width or bool are out of scope and rejected cleanly.
 package backend
 
 import (
@@ -169,10 +182,19 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs, err := buildTupleTypedefs(snapshot, result, tupleTypes)
+	optionalTypes, err := collectOptionalTypes(unit, snapshot, blockID, helpers)
 	if err != nil {
 		return err
 	}
+	tupleTypedefs, err := buildTupleTypedefs(snapshot, result, tupleTypes)
+	if err != nil {
+		return err
+	}
+	optionalTypedefs, err := buildOptionalTypedefs(snapshot, result, optionalTypes)
+	if err != nil {
+		return err
+	}
+	typedefs := joinTypedefs(tupleTypedefs, optionalTypedefs)
 	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result)
 	if err != nil {
 		return err
@@ -470,6 +492,80 @@ func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 	}
 	for _, deferID := range node.DeferChain {
 		if err := collectTupleTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectOptionalTypes appends, in first-encountered order, the optional
+// TypeID of every optional type the emitted program actually references: the
+// entry body (root) followed by every reachable helper's body, each walked
+// by the same Children + DeferChain traversal collectDirectCalls uses. An
+// optional type is referenced in exactly two places in the emitted C — an
+// optional-typed local's declaration (an Initialize whose initializer value
+// carries the optional type) and a SomeOptional node (whose Type is the
+// optional type) — so collecting exactly those two node shapes guarantees
+// every typedef the program needs is discovered. The caller deduplicates so
+// each distinct optional type yields exactly one typedef, emitted before any
+// function definition in the final output.
+func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]types.TypeID, error) {
+	var collected []types.TypeID
+	if err := collectOptionalTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectOptionalTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var deduplicated []types.TypeID
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		deduplicated = append(deduplicated, id)
+	}
+	return deduplicated, nil
+}
+
+// collectOptionalTypesWalk appends every optional type encountered in the tree
+// rooted at nodeID to out, in first-encountered order, following Children and
+// DeferChain exactly like collectDirectCalls so it visits the same reachable
+// region of the node graph the body builders consume. Two node shapes carry an
+// optional type: a SomeOptional node's own Type, and an Initialize whose
+// initializer value carries an optional type (an optional-typed local
+// declaration — confirmed against a real fixture: the local's type is recorded
+// on the initializer value node, not on the Initialize node itself). The
+// Initialize rule alone covers a `none`-initialized local too (a NoneOptional
+// node carries its own optional Type exactly like SomeOptional does), so no
+// separate NoneOptional case is needed here.
+func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("optional-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.SomeOptional {
+		if isOptional(snapshot, node.Type) {
+			*out = append(*out, node.Type)
+		}
+	}
+	if node.Kind == tir.Initialize {
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isOptional(snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectOptionalTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectOptionalTypesWalk(unit, snapshot, deferID, out); err != nil {
 			return err
 		}
 	}
@@ -967,6 +1063,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		if isArray(snapshot, initValue.Type) {
 			return buildArrayLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
+		if isOptional(snapshot, initValue.Type) {
+			// An optional-typed local: its type is the initializer value's
+			// Type (the Initialize node carries no Type itself, confirmed
+			// against a real fixture — same as tuple/array locals). The
+			// supported initializer is SomeOptional (some <expr>); every
+			// other optional initializer shape is a clean rejection.
+			return buildOptionalLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
+		}
 		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 		if !ok {
 			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
@@ -1059,6 +1163,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			if targetInfo.array != 0 {
 				return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
 			}
+			if targetInfo.optional != 0 {
+				return "", fmt.Errorf("%s reassigns symbol %d, an optional-typed local of type %s; reassigning an optional is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.optional))
+			}
 			return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 		}
 	default:
@@ -1067,19 +1174,21 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 }
 
 // localInfo records what a declared local holds: an ordinary scalar — the
-// entry's resolved integer width or bool, in kind — or a tuple, in tuple (its
-// tuple types.TypeID, stable within one Emit call). The two fields are
-// mutually exclusive: kind is zero for a tuple local (a tuple is not a
-// types.BuiltinKind), and tuple is zero for a scalar local. A struct value
+// entry's resolved integer width or bool, in kind — a tuple, in tuple (its
+// tuple types.TypeID, stable within one Emit call), an array, in array, or an
+// optional, in optional. The four fields are mutually exclusive: kind is zero
+// for a compound local (a tuple/array/optional is not a types.BuiltinKind),
+// and tuple/array/optional are zero for a scalar local. A struct value
 // rather than a parallel map keeps the scope a single map threaded through
 // every builder unchanged in shape — the existing
 // `map[symbol.SymbolID]types.BuiltinKind` value type was widened to this struct
 // so no call site needed a second argument, the option that changes the fewest
 // existing call sites correctly.
 type localInfo struct {
-	kind  types.BuiltinKind
-	tuple types.TypeID
-	array types.TypeID
+	kind     types.BuiltinKind
+	tuple    types.TypeID
+	array    types.TypeID
+	optional types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -1200,6 +1309,64 @@ func arrayElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 		return "bool"
 	}
 	return cType(width)
+}
+
+// buildOptionalLocalDeclaration builds one optional-typed local's declaration:
+// a `pebble_optional_<typeID>_t pebble_local_<symbol> = { .has_value = true,
+// .value = <expr> };` for a SomeOptional initializer, or
+// `{ .has_value = false, .value = 0 }` for a NoneOptional (`none` — the
+// payload value is irrelevant when absent, so zero is fine).
+// The payload expression is built by the grammar its own type selects —
+// buildExpr for an integer payload, buildBoolExpr for a bool payload — exactly
+// like the tuple and array element builders. The local's scope entry records
+// its optional type (a localInfo with optional set), so a later force-unwrap
+// resolves the optional type being unwrapped. Every payload type must be exactly
+// the entry's width or bool; anything else is a clean rejection naming the
+// payload type, since this backend emits exactly those two C types as the value
+// field. Like every scalar local, the declaration is followed by a (void) cast
+// against -Wunused-variable.
+func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(initValue.Type)
+	if !ok {
+		return "", fmt.Errorf("%s declares an optional-typed local whose type %d is not in the type snapshot", context, initValue.Type)
+	}
+	payloadType, ok := key.Child()
+	if !ok {
+		return "", fmt.Errorf("%s declares an optional-typed local of type %s, which has no payload type", context, optionalTypeName(initValue.Type))
+	}
+	switch initValue.Kind {
+	case tir.SomeOptional:
+		// SomeOptional has exactly one child: the payload expression.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares an optional-typed local from SomeOptional with %d child(ren), want exactly one payload expression", context, len(initValue.Children))
+		}
+		var valueExpr string
+		switch {
+		case isWidth(snapshot, width, payloadType):
+			expr, err := buildExpr(unit, snapshot, initValue.Children[0], scope, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
+		case isBool(snapshot, payloadType):
+			expr, err := buildBoolExpr(unit, snapshot, initValue.Children[0], scope, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
+		default:
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s whose payload is %s, want %s or bool", context, optionalTypeName(initValue.Type), describeType(snapshot, payloadType), wantName(width))
+		}
+		scope[statement.Symbol] = localInfo{optional: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = true, .value = %s };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, valueExpr, indent, statement.Symbol), nil
+	case tir.NoneOptional:
+		// NoneOptional has zero children and the payload value is irrelevant
+		// when absent; zero is fine.
+		scope[statement.Symbol] = localInfo{optional: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = false, .value = 0 };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, indent, statement.Symbol), nil
+	default:
+		return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a %s, want some <expr> or none", context, optionalTypeName(initValue.Type), initValue.Kind)
+	}
 }
 
 // buildCondition builds the C text for one if/while condition. It dispatches
@@ -1440,6 +1607,30 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an optional-typed local (x!). The child is a
+		// SymbolValue naming the optional local, and this node's Type is the
+		// unwrapped result type (the entry's width, already gated above). The
+		// unwrap is bounds-checked via the runtime helper, passing the
+		// optional local's has_value and value fields.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+		}
+		if child.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
+		}
+		info, declared := locals[child.Symbol]
+		if !declared {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing symbol %d, which is not a local declared earlier in the entry body", child.Symbol)
+		}
+		if info.optional == 0 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value)", checkedSuffix(width), child.Symbol, child.Symbol), nil
 	case tir.Load:
 		// A tuple element read. Reading one element of a tuple-typed local
 		// (`t.1`) is lowered by the checker to a Load of a TuplePlace whose
@@ -1771,6 +1962,30 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an optional-typed local with a bool payload (x!).
+		// The child is a SymbolValue naming the optional local, and this
+		// node's Type is bool (already gated above). The unwrap is
+		// bounds-checked via the runtime helper, passing the optional local's
+		// has_value and value fields.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+		}
+		if child.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
+		}
+		info, declared := locals[child.Symbol]
+		if !declared {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing symbol %d, which is not a local declared earlier in the entry body", child.Symbol)
+		}
+		if info.optional == 0 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		return fmt.Sprintf("pebble_rt_checked_unwrap_bool(pebble_local_%d.has_value, pebble_local_%d.value)", child.Symbol, child.Symbol), nil
 	case tir.Load:
 		// A tuple-typed local's bool element read (see buildExpr's Load case
 		// for the shape confirmation; here the Load's Type is the element's
@@ -1958,6 +2173,15 @@ func isArray(snapshot *types.Snapshot, id types.TypeID) bool {
 	return ok && key.Kind() == types.Array
 }
 
+// isOptional reports whether id resolves to an optional type in the snapshot.
+func isOptional(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.Optional
+}
+
 // arrayLengthLiteral validates that the compile-time length can be passed to
 // the width-specific checked-index helper without a narrowing conversion.
 func arrayLengthLiteral(length uint64, width types.BuiltinKind) (string, error) {
@@ -1978,6 +2202,13 @@ func arrayLengthLiteral(length uint64, width types.BuiltinKind) (string, error) 
 // a stable IR identity rather than a counter.
 func tupleTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_tuple_%d_t", id)
+}
+
+// optionalTypeName is the deterministic C name of one distinct optional type's
+// struct typedef: pebble_optional_<typeID>_t, derived from the optional
+// type's own stable types.TypeID, mirroring the tuple naming discipline.
+func optionalTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_optional_%d_t", id)
 }
 
 // tupleElementCType is the C field type a tuple element of the given type is
@@ -2050,6 +2281,85 @@ func buildTupleTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 		fields[i] = "    " + ctype + fmt.Sprintf(" _%d;", i)
 	}
 	return fmt.Sprintf("typedef struct {\n%s\n} %s;", strings.Join(fields, "\n"), tupleTypeName(id)), nil
+}
+
+// buildOptionalTypedefs builds the C text of one struct typedef per optional
+// type in ids, in order, each joined by a newline. The caller (Emit) supplies
+// ids in first-encountered order from the optional-type collection pass, so
+// every optional type the emitted program references has exactly one typedef
+// here, written before any function definition in the final output.
+func buildOptionalTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+	texts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		text, err := buildOptionalTypedef(snapshot, width, id)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildOptionalTypedef builds the C text of one optional type's struct typedef:
+//
+//	typedef struct {
+//	    bool has_value;
+//	    int32_t value;
+//	} pebble_optional_<typeID>_t;
+//
+// The value field's C type is the payload's own type (int32_t/int64_t for the
+// entry's width, bool for a bool payload). A TypeID that is not an optional
+// type in the snapshot is a clean rejection, not a guessed layout.
+func buildOptionalTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return "", fmt.Errorf("optional type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Optional {
+		return "", fmt.Errorf("type %s is a %v, want an optional type", optionalTypeName(id), key.Kind())
+	}
+	payloadType, ok := key.Child()
+	if !ok {
+		return "", fmt.Errorf("optional type %s has no payload type", optionalTypeName(id))
+	}
+	valueCType, err := optionalPayloadCType(snapshot, width, payloadType)
+	if err != nil {
+		return "", fmt.Errorf("optional type %s: %v", optionalTypeName(id), err)
+	}
+	return fmt.Sprintf("typedef struct {\n    bool has_value;\n    %s value;\n} %s;", valueCType, optionalTypeName(id)), nil
+}
+
+// optionalPayloadCType is the C field type an optional payload of the given
+// type is declared with in its optional's struct typedef: int32_t / int64_t
+// for a payload of the entry's resolved width, bool for a bool payload. Any
+// other payload type is a clean rejection naming what was found, since this
+// backend emits exactly those two C types as optional value fields.
+func optionalPayloadCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if isWidth(snapshot, width, id) {
+		return cType(width), nil
+	}
+	if isBool(snapshot, id) {
+		return "bool", nil
+	}
+	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
+		if name, ok := builtinName(builtin); ok {
+			return "", fmt.Errorf("payload type %s is not supported, want %s or bool", name, wantName(width))
+		}
+	}
+	return "", fmt.Errorf("payload type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+}
+
+// joinTypedefs joins two typedef text blocks (tuple and optional) into a
+// single block, with a blank line between them when both are non-empty.
+// Either may be empty; the result is empty when both are empty.
+func joinTypedefs(tupleTypedefs, optionalTypedefs string) string {
+	if tupleTypedefs == "" {
+		return optionalTypedefs
+	}
+	if optionalTypedefs == "" {
+		return tupleTypedefs
+	}
+	return tupleTypedefs + "\n" + optionalTypedefs
 }
 
 // resolvedBuiltin resolves a TypeID to the builtin kind it names, if it names

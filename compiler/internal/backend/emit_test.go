@@ -558,6 +558,7 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 		filepath.Join(runtimeRoot, "src", "platform_host.c"),
 		filepath.Join(runtimeRoot, "src", "arith.c"),
 		filepath.Join(runtimeRoot, "src", "bounds.c"),
+		filepath.Join(runtimeRoot, "src", "optional.c"),
 		"-o", binary,
 	}
 	compile := exec.Command(cc, compileArgs...)
@@ -3503,4 +3504,163 @@ func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
 	// the tuple-local Load(TuplePlace) shape.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i32 = (1, 2).1; return x; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+// 10.21 — optional values
+
+func TestEmitOptionalNoneNeverUnwrappedCompilesClean(t *testing.T) {
+	// Regression coverage: `none` was initially thought unreachable from real
+	// source (a since-fixed checker bug, compiler/internal/check's
+	// shapeLeaf, made `let x ?i32 = none;` fail to type-check). It is
+	// reachable — this proves a none-initialized local, never unwrapped,
+	// compiles clean under -Wall -Wextra -Werror.
+	emitAndRun(t, "fn main() i32 { let x ?i32 = none; return 1; }", false, 1, false)
+}
+
+func TestEmitOptionalUnwrapNoneAborts(t *testing.T) {
+	// Force-unwrapping a none-initialized local panics via
+	// pebble_rt_checked_unwrap_i32, aborting the process.
+	emitAndRun(t, "fn main() i32 { let x ?i32 = none; return x!; }", false, 0, true)
+}
+
+func TestEmitOptionalSomeUnwrapCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture for optional construction and force-unwrap: a
+	// some <expr> local is declared and force-unwrapped as the return value.
+	// The optional type emits one struct typedef with has_value/value fields,
+	// the local is initialized with { .has_value = true, .value = 42 }, and
+	// the force-unwrap lowers to pebble_rt_checked_unwrap_i32, so the process
+	// exit code is 42.
+	emitAndRun(t, "fn main() i32 { let x ?i32 = some 42; return x!; }", false, 42, false)
+}
+
+func TestEmitOptionalSomeUnwrapI64CompilesAndRuns(t *testing.T) {
+	// The i64 width discipline extends to optional payload types: an i64
+	// entry's ?i64 optional's typedef value field is int64_t, the local is
+	// initialized with the i64 payload, and the force-unwrap lowers to
+	// pebble_rt_checked_unwrap_i64. Exit code 22.
+	emitAndRun(t, "fn main() i64 { let x ?i64 = some 22; return x!; }", false, 22, false)
+}
+
+func TestEmitOptionalBoolPayloadDrivesIfCompilesAndRuns(t *testing.T) {
+	// A bool-payload optional, force-unwrapped to drive an if condition. The
+	// unwrap lowers to pebble_rt_checked_unwrap_bool, whose result drives the
+	// if condition directly. With the bool payload true the then-arm runs
+	// (exit 10); with false the else-arm runs (exit 20).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"bool true", "fn main() i32 { let x ?bool = some true; if x! { return 10; } else { return 20; } }", 10},
+		{"bool false", "fn main() i32 { let x ?bool = some false; if x! { return 10; } else { return 20; } }", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitOptionalUnwrapAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// An unwrapped optional element used as a call argument: the force-unwrap
+	// produces an ordinary i32 value that is passed to a helper function.
+	// add(x!, y!) = 10 + 20 = 30 is the process exit code.
+	emitAndRun(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let x ?i32 = some 10; let y ?i32 = some 20; return add(x!, y!); }", false, 30, false)
+}
+
+func TestEmitOptionalSomeUnwrapWritesC(t *testing.T) {
+	// The emitted C for the some-unwrap fixture: the optional typedef with
+	// has_value/value fields, the local initialized with the struct literal
+	// initializer, and the unwrap call site using pebble_rt_checked_unwrap_i32.
+	// Symbol IDs come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?i32 = some 42; return x!; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    int32_t value;\n} pebble_optional_",
+		".has_value = true, .value = 42",
+		"pebble_rt_checked_unwrap_i32(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	mainIndex := strings.Index(out, "static int pebble_user_main")
+	if typedefIndex < 0 || mainIndex < 0 || typedefIndex > mainIndex {
+		t.Errorf("optional typedef does not precede pebble_user_main (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitOptionalI64WritesC(t *testing.T) {
+	// The emitted C for the i64 optional must use int64_t for the typedef
+	// value field and int64_t for pebble_user_main's return type, proving the
+	// entry's width threads into the optional layout.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let x ?i64 = some 22; return x!; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    int64_t value;\n} pebble_optional_",
+		"static int64_t pebble_user_main(PebbleContext *ctx)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "int32_t value;") {
+		t.Errorf("emitted C declared an i32 optional value field for an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitOptionalBoolWritesC(t *testing.T) {
+	// The emitted C for the bool optional must use bool for the typedef value
+	// field and the unwrap must use pebble_rt_checked_unwrap_bool.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?bool = some true; if x! { return 10; } else { return 20; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    bool value;\n} pebble_optional_",
+		"pebble_rt_checked_unwrap_bool(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitOptionalLocalInsideHelperCompilesAndRuns(t *testing.T) {
+	// An optional-typed local declared inside a reachable helper's body, not
+	// the entry's: the typedef-collection pass must walk helper bodies too, so
+	// the optional typedef is emitted before the helper's definition (which is
+	// before pebble_user_main). helper declares x, force-unwraps it, and
+	// returns it; the entry just calls helper, so exit code 42 proves the
+	// helper's optional local was built and the typedef emitted correctly.
+	emitAndRun(t, "fn helper() i32 { let x ?i32 = some 42; return x!; } fn main() i32 { return helper(); }", false, 42, false)
+}
+
+func TestEmitRejectsOptionalLocalStore(t *testing.T) {
+	// Reassigning an optional-typed local (x = some 5) is out of scope this
+	// slice. The Store's place names an optional-typed local, so
+	// buildLeadingStatement rejects it with a clear error naming the
+	// reassignment, not a guessed lowering.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x ?i32 = some 1; x = some 2; return x!; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning an optional is not supported")
+}
+
+func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
+	// An optional whose payload type is neither the entry's width nor bool —
+	// here a str payload — is reachable from real source (the checker builds
+	// the declaration fine), so this is a genuine backend-scope rejection. The
+	// optional typedef pass inspects the payload type first and rejects the
+	// str field with a clear error naming the wanted types, so no C is written.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?str = some \"hi\"; return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
