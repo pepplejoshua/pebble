@@ -299,8 +299,31 @@ generics-coverage slice is now closed.
   call sites and bare generic-value sites, with span/related-label
   tests matching 07.5's shape.
 
-Deferred and outside 07.6: expression-bodied functions still have the
-pre-existing empty-block lowering bug recorded under 07.3f.
+- **07.8 — fix expression-bodied function empty-block lowering**
+  (`walk.go`, `statement_facts.go`, `control_facts.go`,
+  `control_predicates.go`, `ir_builder_control.go`): closes the
+  pre-existing (not generics-specific) bug noted under 07.3f. `fn f()
+  T => expr;` now synthesizes the same `controlReturn` control record
+  a real `return expr;` produces, gated to fire exactly once on the
+  body node itself (an earlier attempt let the gating flag leak to
+  every descendant expression, producing multiple `Return` records
+  instead of one). The synthesized `Return` has no syntax node of its
+  own distinct from the body expression, so building it against that
+  expression's already-claimed ref hit a duplicate `MapSource` entry —
+  the same class of bug 07.3f found in the specialization path, fixed
+  the same way `ImplicitReturn` already avoids it: an empty ref, gated
+  behind a new `SyntheticSyntax` field so real return statements are
+  unaffected. Regenerated the `operations_and_calls` golden IR dump,
+  which had baked in the old buggy empty-block shape. Also confirmed,
+  not fixed (out of scope, unrelated, pre-existing): a string literal
+  used as an expression body (`fn f() str => "hello";`) is
+  misinterpreted as a calling-convention annotation by
+  `infer/declaration.go`'s `convention()` scan, reporting `T0501`
+  instead of building — `infer` is off-limits to this fix and this is
+  a separate, narrower defect worth its own slice later.
+
+Deferred and outside 07.6, not yet scoped: the `T0501`
+string-literal-expression-body misclassification noted above.
 
 ## What needed sharpening, resolved during 07.1–07.5
 
