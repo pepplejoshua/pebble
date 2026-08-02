@@ -536,6 +536,45 @@ incrementally as work proceeds.
   compiled and ran the emitted C for a struct constructed with fields
   out of declared order (`Point.{ y = 22, x = 20 }; return point.x +
   point.y;`) with `-Wall -Wextra -Werror`, confirming exit code 42.
+- **10.23 — str values, literal locals and equality**
+  (`compiler/internal/backend`, plus `runtime/`): the first
+  backend-supported type not represented by a C primitive or a
+  program-specific typedef — `str` is the runtime's own `PebbleStr`
+  (data pointer + length, already declared in `pebble_rt.h`).
+  Deliberately narrow, unlike the aggregate slices before it: only a
+  `str` local declared from a string literal, and `==`/`!=` between
+  two `str` values (a local, a literal, or either). Indexing,
+  concatenation, interpolation, length access, `str`
+  parameters/results, and `str` fields inside another aggregate are
+  each their own real design question, deferred. Equality routes
+  through the runtime helper added ahead of this slice
+  (`pebble_rt_str_eq`, new `runtime/src/str.c`): `==` emits the call
+  directly, `!=` its negation; false immediately on a length mismatch,
+  never NUL-termination-dependent. Ordering comparisons between `str`
+  operands are confirmed reachable from real source and rejected
+  cleanly (not assumed unreachable). **The one real correctness trap
+  in this slice**: embedding a decoded literal's bytes as a C string
+  literal safely. A naive `\xHH` hex escape is unsafe — C's escape
+  rules greedily consume following hex/octal digit characters
+  ("maximal munch"), so escaping a non-printable byte immediately
+  followed by a literal hex digit can silently produce the wrong
+  bytes. Fixed by always emitting a fixed-width 3-digit octal escape
+  (`\NNN`) for every byte outside printable ASCII, which C can never
+  over-consume — verified for real, not just compiled: a dedicated
+  test compares two differently-spelled Pebble string literals that
+  decode to the same nine bytes (one spelled with `\n`/`\t`/`\"`/`\\`,
+  the other with `\xHH` byte escapes, including a control byte
+  immediately followed by a digit) and confirms they compare equal
+  after the C round-trip, plus an independent standalone C program
+  confirming the exact byte sequence. `str` indexing (`s[i]`) is
+  confirmed reachable, lowers to a separate `CheckedIndex` mechanism
+  this backend doesn't build for `str`, and is rejected cleanly. No
+  checker/tir bug found this time. Verified end-to-end (equal/unequal
+  literals, a local compared against a literal, `!=`, equality as a
+  bool value/logical operand/`while` condition, and the escape
+  round-trip) and independently outside the harness — manually
+  compiled and ran the emitted C for the escape-round-trip fixture
+  with `-Wall -Wextra -Werror`, confirming exit code 7.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
