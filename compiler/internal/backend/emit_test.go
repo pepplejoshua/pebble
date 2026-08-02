@@ -1812,6 +1812,123 @@ func buildLoopIfArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symb
 	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{whileNode, ret})
 }
 
+// buildCallArgumentCountMismatchUnit hand-builds a unit whose i32 entry calls
+// a two-parameter helper with only one argument. The checker itself rejects a
+// wrong argument count from real source, so this shape is constructed directly
+// through the IR builder to exercise Emit's own requirement that a DirectCall's
+// child count matches the callee's declared parameter count. The helper
+// (symbol 24) declares parameters 25 and 26, both i32, and its body is a bare
+// `return 0;` (valid, so the rejection is specifically the call-site count,
+// not the helper's own shape). The entry's DirectCall to it carries a single
+// IntegerLiteral child; its FunctionType is borrowed from a checker-built
+// add-shaped fixture, since the snapshot is read-only and cannot intern a
+// fresh function type.
+func buildCallArgumentCountMismatchUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	realUnit, snapshot, entryID := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
+	var fnType types.TypeID
+	for _, n := range realUnit.Nodes() {
+		if n.Kind == tir.DirectCall {
+			fnType = n.FunctionType
+			break
+		}
+	}
+	if fnType == 0 {
+		t.Fatal("checker-built fixture has no DirectCall to borrow FunctionType from")
+	}
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperFid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperRet, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: helperFid,
+		Children: []tir.NodeID{zero},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{helperRet},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     24,
+		Function:   helperFid,
+		Parameters: []tir.Parameter{{Symbol: 25, Type: i32}, {Symbol: 26, Type: i32}},
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(helperFid, helperBlock); err != nil {
+		t.Fatal(err)
+	}
+
+	// The entry: Return of a DirectCall to symbol 24 with only ONE child,
+	// while the callee declares two parameters.
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := builder.AddNode(tir.Node{
+		Kind:          tir.DirectCall,
+		Type:          i32,
+		FunctionType:  fnType,
+		Symbol:        24,
+		Convention:    types.Pebble,
+		ContextAction: tir.ContextForward,
+		Children:      []tir.NodeID{one},
+		Span:          source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{call},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{ret})
+}
+
 // runtimeSourceRoot locates the runtime directory relative to this test file,
 // independent of the process working directory.
 func runtimeSourceRoot(t *testing.T) string {
@@ -2953,4 +3070,151 @@ func TestEmitHelperCallInLocalInitializerCompilesAndRuns(t *testing.T) {
 	// result, and the return reads it — the locals scope threads through the
 	// call expression like any other expression of the entry's width.
 	emitAndRun(t, "fn helper() i32 { return 7; } fn main() i32 { let x i32 = helper(); return x + 1; }", false, 8, false)
+}
+
+func TestEmitAddParametersCompilesAndRuns(t *testing.T) {
+	// The flagship 10.18 fixture: a two-parameter function called from the
+	// entry with two arguments. Each parameter seeds the callee's locals scope
+	// before its body is built, so the body's a + b reads them exactly like
+	// declared locals, and the call site emits pebble_fn_<id>(ctx, 20, 22).
+	// 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { return add(20, 22); }", false, 42, false)
+}
+
+func TestEmitAddParametersWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture: the helper's signature declares
+	// each parameter with the same pebble_local_<symbolID> naming a local uses
+	// (symbols 25 and 26, the a and b parameters from the real fixture dump),
+	// each parameter gets a (void) cast against -Wunused-parameter, and the
+	// call site passes the argument expressions after ctx. Symbol 24 is the
+	// helper, 25 is main, matching the other 10.17/10.18 fixtures.
+	unit, snapshot, entryID := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { return add(20, 22); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx, int32_t pebble_local_25, int32_t pebble_local_26) {",
+		"    (void)pebble_local_25;",
+		"    (void)pebble_local_26;",
+		"    return pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26);",
+		"return pebble_fn_24(ctx, 20, 22);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !(strings.Index(out, "static int32_t pebble_fn_24") < strings.Index(out, "static int pebble_user_main")) {
+		t.Errorf("helper definition does not precede pebble_user_main:\n%s", out)
+	}
+}
+
+func TestEmitBoolParameterCompilesAndRuns(t *testing.T) {
+	// The bool-parameter fixture: choose takes a bool flag and two integer
+	// values and returns one of the integers, so the flag's grammar is the
+	// bool one (buildBoolExpr) while the other two parameters are the entry's
+	// width. choose(true, 10, 20) takes the then-arm and returns x = 10, the
+	// process exit code.
+	emitAndRun(t, "fn choose(flag bool, x i32, y i32) i32 { if flag { return x; } else { return y; } } fn main() i32 { return choose(true, 10, 20); }", false, 10, false)
+}
+
+func TestEmitBoolParameterWritesC(t *testing.T) {
+	// The emitted C for the bool-parameter fixture: the flag parameter (symbol
+	// 25) is declared `bool pebble_local_25` in the signature while x and y
+	// (symbols 26 and 27) are int32_t, and the call site passes the bool
+	// literal and the two integer literals after ctx. Symbols come from the
+	// real fixture dump (choose=24, flag=25, x=26, y=27, main=28).
+	unit, snapshot, entryID := buildFixture(t, "fn choose(flag bool, x i32, y i32) i32 { if flag { return x; } else { return y; } } fn main() i32 { return choose(true, 10, 20); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx, bool pebble_local_25, int32_t pebble_local_26, int32_t pebble_local_27) {",
+		"    (void)pebble_local_25;",
+		"    (void)pebble_local_26;",
+		"    (void)pebble_local_27;",
+		"    if (pebble_local_25) {\n",
+		"        return pebble_local_26;",
+		"        return pebble_local_27;",
+		"return pebble_fn_24(ctx, true, 10, 20);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitParameterInLoopAndIfCompilesAndRuns(t *testing.T) {
+	// A parameter seeding the callee's scope must resolve for the full block
+	// grammar, not just a bare return: n is read in the while condition and in
+	// a loop-body if condition, while the loop accumulates and reassigns
+	// locals. sum_to(5) accumulates 0+1+2+3+4 = 10, the process exit code.
+	// Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn sum_to(n i32) i32 { var i i32 = 0; var total i32 = 0; while i < n { if i < n { total = total + i; } i = i + 1; } return total; } fn main() i32 { return sum_to(5); }", false, 10, false)
+}
+
+func TestEmitParameterForwardedToHelperCallCompilesAndRuns(t *testing.T) {
+	// A parameter used as an argument to another call inside its own callee:
+	// add forwards its own a parameter to double, whose result is added to the
+	// other parameter b. This proves a parameter resolves at a nested call
+	// site's argument position (buildCallArguments sees the seeded scope).
+	// double(5) = 10, + b(2) = 12, the process exit code.
+	emitAndRun(t, "fn double(x i32) i32 { return x + x; } fn add(a i32, b i32) i32 { return double(a) + b; } fn main() i32 { return add(5, 2); }", false, 12, false)
+}
+
+func TestEmitNestedCallArgumentCompilesAndRuns(t *testing.T) {
+	// A call whose argument is itself a call: add(helper(), 5) passes the
+	// result of helper() as the first argument. The checker coerces the nested
+	// call to the i32 parameter, and buildCallArguments builds it with
+	// buildExpr, so the emitted C is pebble_fn_<add>(ctx, pebble_fn_<helper>
+	// (ctx), 5). helper() = 5, so add returns 5 + 5 = 10, the exit code.
+	emitAndRun(t, "fn helper() i32 { return 5; } fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { return add(helper(), 5); }", false, 10, false)
+}
+
+func TestEmitUnusedParameterCompilesClean(t *testing.T) {
+	// A genuinely-unused parameter (declared, never read in the callee's body)
+	// must still compile under the shared harness's strict -Wall -Wextra
+	// -Werror build. -Wunused-parameter genuinely fires for a named parameter
+	// the body never reads (confirmed), so the per-parameter
+	// (void)pebble_local_<id>; cast emitted right after the opening brace is
+	// what keeps this compiling. Exit code 5.
+	emitAndRun(t, "fn helper(unused i32) i32 { return 5; } fn main() i32 { return helper(5); }", false, 5, false)
+}
+
+func TestEmitI64ParameterizedHelperCompilesAndRuns(t *testing.T) {
+	// The width discipline extends to parameters: an i64 entry calls an i64
+	// helper whose i64 parameters seed its scope, and the checked add uses the
+	// i64 helper family. Exit code 42.
+	emitAndRun(t, "fn add(a i64, b i64) i64 { return a + b; } fn main() i64 { return add(20, 22); }", false, 42, false)
+}
+
+func TestEmitRejectsUnsupportedParameterType(t *testing.T) {
+	// A str parameter is reachable from real source (the checker accepts it),
+	// so this is a genuine backend-scope rejection, not hand-built IR:
+	// validateHelperSignature must reject the parameter because its type is
+	// neither the entry's width nor bool, naming the parameter position.
+	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { return 1; } fn main() i32 { return f(\"hi\"); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
+	// A parameter of the other integer width follows the same width-consistency
+	// rule 10.13 established for locals: an i64 parameter in an i32 entry (and
+	// its result, here also i64) must be a clean rejection naming the width,
+	// never a coercion. The parameter check fires before the result check.
+	unit, snapshot, entryID := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
+	// A call site passing fewer (or more) arguments than the callee declares
+	// parameters is unreachable from real source — the checker rejects a wrong
+	// argument count itself — so it is hand-built through the IR builder to
+	// exercise Emit's own requirement that a DirectCall's child count matches
+	// the callee's declared parameter count.
+	unit, snapshot, entryID := buildCallArgumentCountMismatchUnit(t)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want 2")
 }

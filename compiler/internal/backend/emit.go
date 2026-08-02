@@ -28,22 +28,30 @@
 // with a descriptive error instead of guessed.
 //
 // Since 10.17, an integer entry's body may also call other Pebble-convention
-// zero-parameter functions declared in the same unit. Only functions actually
+// functions declared in the same unit. Only functions actually
 // reachable from the entry by a tir.DirectCall are emitted (discoverReachableHelpers
 // does a post-order worklist walk starting from the entry's body, following
 // every call), each as its own `static <width> pebble_fn_<symbolID>(PebbleContext
-// *ctx)` block emitted before pebble_user_main so a called function's C
-// definition precedes its use. Every called function must resolve to the
+// *ctx, <params>...)` block emitted before pebble_user_main so a called
+// function's C definition precedes its use. A called function's parameters
+// (each of the entry's resolved width or bool) seed its own locals scope
+// before its body is built and are declared in the C signature with the same
+// pebble_local_<symbolID> naming locals use, so a reference to a parameter
+// inside the body is read exactly like a reference to a declared local.
+// Every called function must resolve to the
 // entry's own integer width — there is no cast/coercion lowering, and
 // void-result helpers are deliberately out of scope this slice (a void call
 // has no expression-statement construct in the block grammar). Recursion
 // (self- or mutual) is rejected cleanly at discovery time, since this backend
 // has no forward-declaration mechanism yet. Each called function's body is
-// built by the exact same buildBlock, with its own fresh, empty locals scope.
-// A call expression emits `pebble_fn_<calleeSymbolID>(ctx)`: the typed IR's
+// built by the exact same buildBlock, with its own fresh locals scope seeded
+// with the function's own parameters.
+// A call expression emits `pebble_fn_<calleeSymbolID>(ctx, <arg0>, <arg1>,
+// ...)`: the typed IR's
 // DirectCall records context forwarding via ContextAction (ContextForward for a
 // Pebble-convention call) but carries no explicit context argument, so the
-// backend prepends ctx itself, exactly as pebble_user_main receives it.
+// backend prepends ctx itself, exactly as pebble_user_main receives it, and
+// each argument is built by the grammar its callee parameter resolves to.
 package backend
 
 import (
@@ -96,10 +104,13 @@ import (
 // actually reachable from the entry by a call (transitively — the reachability
 // walk follows into each called function's own body) is validated and emitted
 // as its own static helper function before pebble_user_main, with each called
-// function's body built by the same buildBlock with its own fresh locals scope
+// function's body built by the same buildBlock against a fresh locals scope
+// seeded with that function's own parameters
 // (see discoverReachableHelpers and buildHelperFunctions). A called function
-// must be Pebble-convention, take zero parameters, and return exactly the
-// entry's resolved width; a width mismatch at a call site, a void-result
+// must be Pebble-convention, take parameters of only the entry's resolved
+// width or bool, and return exactly the
+// entry's resolved width; a width mismatch at a call site, a parameter of any
+// other type, a void-result
 // helper (deliberately out of scope this slice), or a call that is part of a
 // cycle (a function that can reach itself, directly or through others — the
 // recursion boundary) is a clean rejection naming what was found, since this
@@ -262,7 +273,8 @@ type reachabilityWalk struct {
 // (and nothing else) guarantees by construction that every emitted helper has
 // at least one call site, so the mandated -Wall -Wextra -Werror build never
 // warns about an unused static function. Each reached callee is validated
-// (Pebble-convention, zero parameters, result exactly the entry's width —
+// (Pebble-convention, parameters each of the entry's width or bool, result
+// exactly the entry's width —
 // validateHelperSignature) and its body located (findFunctionBody) before
 // recursing. The returned slice is a post-order of the walk — callees before
 // callers — which is the emission order that keeps every call in the emitted
@@ -379,12 +391,16 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 }
 
 // validateHelperSignature checks one called function against the constraints
-// every reachable helper must satisfy: Pebble-convention, zero parameters,
-// and a result of exactly the entry's resolved width. The width rule is the
-// same reasoning 10.13 established for locals — a called function of the
-// other width (an i32 helper called from an i64 entry, or vice versa) is a
-// clean width-mismatch rejection, never a coercion, since there is no
-// cast/coercion lowering to fall back on. A void-result helper is also a
+// every reachable helper must satisfy: Pebble-convention, parameters whose
+// types are exactly the entry's resolved width or bool, and a result of
+// exactly the entry's resolved width. The width rule is the same reasoning
+// 10.13 established for locals — a called function of the other width (an i32
+// helper called from an i64 entry, or vice versa) is a clean width-mismatch
+// rejection, never a coercion, since there is no cast/coercion lowering to
+// fall back on. A parameter's own type has the same two options a local has:
+// the entry's width, or bool — anything else (str, a pointer, an array, a
+// helper of the other integer width) is a clean rejection naming the position.
+// A void-result helper is also a
 // clean rejection: this slice only supports integer-result calls used as
 // expression values, deliberately leaving bare void calls (which would need an
 // expression-statement construct in the block grammar) out of scope.
@@ -392,8 +408,14 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 	if decl.Convention != types.Pebble {
 		return fmt.Errorf("called function symbol %d uses %s calling convention, want Pebble", decl.Symbol, callingConventionName(decl.Convention))
 	}
-	if len(decl.Parameters) != 0 {
-		return fmt.Errorf("called function symbol %d has %d parameter(s), want 0 (function parameters are not supported yet)", decl.Symbol, len(decl.Parameters))
+	for i, param := range decl.Parameters {
+		// A parameter's type is resolved the same way a local's initializer's
+		// is: the entry's resolved width (built by buildExpr) or bool (built by
+		// buildBoolExpr), nothing else. This is exactly the width-consistency
+		// rule 10.13 established for locals, applied to parameters.
+		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s or bool (a parameter may only be the entry's integer width or bool)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		}
 	}
 	if !isWidth(snapshot, width, decl.ResultType) {
 		if builtin, ok := resolvedBuiltin(snapshot, decl.ResultType); ok && builtin == types.Void {
@@ -406,21 +428,62 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 
 // buildHelperFunctions builds the C text for every reachable helper, in the
 // post-order discovery gives (callees before callers), each as its own
-// `static <width> pebble_fn_<symbolID>(PebbleContext *ctx) { ... }` block with
-// its body built by the exact same buildBlock the entry's body uses — no
-// parallel body-builder. Each helper gets its own fresh, empty locals scope
-// (buildBlock is called with a nil locals map, so a helper's locals are
+// `static <width> pebble_fn_<symbolID>(PebbleContext *ctx, <params>...) { ... }`
+// block with its body built by the exact same buildBlock the entry's body
+// uses — no parallel body-builder. Before the body is built, the helper's own
+// parameters seed its locals scope exactly as if each had been Initialize'd:
+// every parameter maps to its resolved type (the entry's width or bool), so a
+// SymbolValue reference or a Store targeting a parameter inside the body
+// resolves through the existing machinery unchanged. The C signature declares
+// each parameter with the same pebble_local_<symbolID> naming every local
+// uses, so a parameter and a local are textually identical inside the body
+// (which is correct: they behave identically once inside the function). Each
+// parameter also gets a `(void)pebble_local_<symbolID>;` immediately after
+// the opening brace, the same -Wunused-parameter defense the `(void)ctx;`
+// already provides for the context (confirmed: -Wunused-parameter genuinely
+// fires under -Wall -Wextra -Werror for a declared-but-never-read parameter).
+// Each helper gets its own fresh scope for anything its body declares (the
+// seeded parameters plus whatever buildBlock adds), so a helper's locals are
 // invisible to the entry and to sibling helpers, exactly as two blocks at the
-// same nesting level are isolated), and the `(void)ctx;` suppresses
-// -Wunused-parameter for a leaf helper that never calls another.
+// same nesting level are isolated.
 func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []helperInfo, width types.BuiltinKind) (string, error) {
 	texts := make([]string, 0, len(helpers))
 	for _, helper := range helpers {
-		statements, err := buildBlock(unit, snapshot, helper.block, nil, 0, width)
+		scope := make(map[symbol.SymbolID]types.BuiltinKind, len(helper.decl.Parameters))
+		params := make([]string, 0, len(helper.decl.Parameters))
+		casts := make([]string, 0, len(helper.decl.Parameters))
+		for _, param := range helper.decl.Parameters {
+			kind, ok := resolvedBuiltin(snapshot, param.Type)
+			if !ok {
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has unresolvable type %s", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type))
+			}
+			switch kind {
+			case width:
+				params = append(params, cType(width)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			case types.Bool:
+				params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
+			default:
+				// validateHelperSignature rules any non-width, non-bool
+				// parameter out before a reachable helper is ever built, so
+				// this branch is defense for hand-built IR only.
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s or bool", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			}
+			scope[param.Symbol] = kind
+			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
+		}
+		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width)
 		if err != nil {
 			return "", err
 		}
-		texts = append(texts, fmt.Sprintf(helperFunction, cType(width), helper.decl.Symbol, statements))
+		paramList := ""
+		if len(params) > 0 {
+			paramList = ", " + strings.Join(params, ", ")
+		}
+		castText := ""
+		if len(casts) > 0 {
+			castText = strings.Join(casts, "\n") + "\n"
+		}
+		texts = append(texts, fmt.Sprintf(helperFunction, cType(width), helper.decl.Symbol, paramList, castText, statements))
 	}
 	return strings.Join(texts, "\n"), nil
 }
@@ -1060,15 +1123,19 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 //     pebble_rt_checked_div_<suffix> / pebble_rt_checked_mod_<suffix>.
 //   - SymbolValue whose Symbol is in locals — pebble_local_<symbol ID>, the C
 //     name buildBlock gave that local's declaration.
-//   - DirectCall — a call to another Pebble-convention zero-parameter
-//     function whose result is the entry's width (validated by the reachability
-//     walk in discoverReachableHelpers): pebble_fn_<calleeSymbolID>(ctx), the
-//     ctx argument prepended by this backend since the typed IR threads context
-//     via ContextAction rather than as an explicit child.
+//   - DirectCall — a call to another Pebble-convention function whose result
+//     is the entry's width (validated by the reachability walk in
+//     discoverReachableHelpers). Each call-site argument is built by the
+//     grammar its callee parameter resolves to — the entry's width for an
+//     integer parameter (this builder), bool for a bool parameter
+//     (buildBoolExpr) — so the call emits pebble_fn_<calleeSymbolID>(ctx,
+//     <arg0>, <arg1>, ...), with the ctx argument prepended by this backend
+//     since the typed IR threads context via ContextAction rather than as an
+//     explicit child.
 //
 // CheckedArithmetic with any other operator (the integral operators that build
 // this node but are not yet lowered) is rejected, not guessed. A SymbolValue
-// referencing anything not in locals (a global, a parameter, a symbol from an
+// referencing anything not in locals (a global, a symbol from an
 // outer/different scope — none of which are reachable from this narrow body
 // shape, but checked defensively rather than assumed) is a clean rejection.
 // Any other node kind at any position — a non-integer
@@ -1128,8 +1195,8 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	case tir.DirectCall:
-		// A call to another Pebble-convention zero-parameter function whose
-		// result is the entry's own width. The width gate above already
+		// A call to another Pebble-convention function whose result is the
+		// entry's own width. The width gate above already
 		// checked node.Type (the call's result type, which is the callee's
 		// resolved result type) is the entry's width. Context threading is
 		// not an explicit IR child — the DirectCall records it as
@@ -1138,7 +1205,8 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		// backend prepends ctx as the first C argument itself, the same way
 		// pebble_user_main receives it. The callee is a reachable helper
 		// emitted as pebble_fn_<calleeSymbolID>; the reachability walk has
-		// already validated the callee's signature, so the checks below are
+		// already validated the callee's signature (including its parameters'
+		// types, each the entry's width or bool), so the checks below are
 		// defense against hand-built IR, matching the file's style.
 		if node.Convention != types.Pebble {
 			return "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
@@ -1146,16 +1214,69 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		if node.ContextAction != tir.ContextForward {
 			return "", fmt.Errorf("entry function body expression contains a call that records ContextAction %s, want ForwardCurrentContext (this backend only lowers Pebble-convention calls that thread the context)", node.ContextAction)
 		}
-		if len(node.Children) != 0 {
-			return "", fmt.Errorf("entry function body expression contains a call passing %d argument(s), want 0 (zero-parameter functions only)", len(node.Children))
+		// The callee's own declaration supplies the parameter list that decides
+		// each argument's grammar below (the reachability walk in
+		// discoverReachableHelpers has already resolved and validated this
+		// callee, so the checks here are defense against hand-built IR,
+		// matching the file's style).
+		calleeDecl, err := findFunctionDeclaration(unit, node.Symbol, "called function")
+		if err != nil {
+			return "", err
+		}
+		callArgs, err := buildCallArguments(unit, snapshot, node, calleeDecl, locals, width)
+		if err != nil {
+			return "", err
 		}
 		if len(node.TypeArgs) != 0 {
 			return "", fmt.Errorf("entry function body expression contains a call to a generic function with %d type argument(s), which this backend does not lower (generics are not supported yet)", len(node.TypeArgs))
 		}
-		return fmt.Sprintf("pebble_fn_%d(ctx)", node.Symbol), nil
+		if callArgs == "" {
+			return fmt.Sprintf("pebble_fn_%d(ctx)", node.Symbol), nil
+		}
+		return fmt.Sprintf("pebble_fn_%d(ctx, %s)", node.Symbol, callArgs), nil
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, or a call to another zero-parameter function", node.Kind)
+		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, or a call to another function", node.Kind)
 	}
+}
+
+// buildCallArguments builds the comma-separated C argument list for a
+// DirectCall's children, one expression per child in order. Each child's
+// grammar is decided by the callee's corresponding parameter's resolved type
+// — the entry's width parameters take buildExpr, bool parameters take
+// buildBoolExpr — so the same two value grammars this backend already builds
+// lower the arguments; the checker has already coerced each argument to its
+// parameter's type, so a mismatch here is hand-built IR. The argument count
+// must equal the callee's declared parameter count. Returns the joined
+// argument text, empty when the callee takes no parameters (the caller then
+// emits pebble_fn_<id>(ctx) with no argument list).
+func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+	if len(call.Children) != len(callee.Parameters) {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want %d (the callee declares %d parameter(s))", call.Symbol, len(call.Children), len(callee.Parameters), len(callee.Parameters))
+	}
+	args := make([]string, len(call.Children))
+	for i, argID := range call.Children {
+		param := callee.Parameters[i]
+		switch {
+		case isWidth(snapshot, width, param.Type):
+			arg, err := buildExpr(unit, snapshot, argID, locals, width)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
+		case isBool(snapshot, param.Type):
+			arg, err := buildBoolExpr(unit, snapshot, argID, locals, width)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
+		default:
+			// validateHelperSignature rules any non-width, non-bool parameter
+			// out before a reachable helper is ever built, so this branch is
+			// defense for hand-built IR only.
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s or bool", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		}
+	}
+	return strings.Join(args, ", "), nil
 }
 
 // buildBoolExpr builds the C text for a bool value node, used both for a bool
@@ -1433,14 +1554,19 @@ func isNonNegativeDecimal(s string) bool {
 // function named deterministically pebble_fn_<symbolID> from the callee's
 // stable IR identity (mirroring the pebble_local_<symbolID> naming
 // discipline — never a counter), taking the Pebble context the same way
-// pebble_user_main does. %s is the C return type for the entry's resolved
-// width (cType), %d the callee's symbol ID, and %s the helper's body
-// statements built by buildBlock at depth 0 (4-space indent, exactly like the
-// entry's own body). The (void)ctx; suppresses -Wunused-parameter for a leaf
-// helper that never calls another function.
-const helperFunction = `static %s pebble_fn_%d(PebbleContext *ctx) {
+// pebble_user_main does plus one parameter declaration per callee parameter,
+// each named pebble_local_<paramSymbol>. %s is the C return type for the
+// entry's resolved width (cType), %d the callee's symbol ID, the third %s the
+// comma-separated parameter declaration list (", <cType> pebble_local_<id>",
+// empty for a zero-parameter callee), the fourth %s one
+// `    (void)pebble_local_<id>;` per parameter (suppressing the confirmed
+// -Wunused-parameter warning for a parameter the body never reads, the same
+// discipline the (void)ctx; below applies to the context), and the last %s the
+// helper's body statements built by buildBlock at depth 0 (4-space indent,
+// exactly like the entry's own body).
+const helperFunction = `static %s pebble_fn_%d(PebbleContext *ctx%s) {
     (void)ctx;
-%s
+%s%s
 }`
 
 // The supported entry shapes share one adapter skeleton: the pebble_rt.h
