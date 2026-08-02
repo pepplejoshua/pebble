@@ -2198,18 +2198,104 @@ func TestEmitRejectsBoolLocalInIntegerPosition(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
 }
 
-func TestEmitRejectsBoolComparisonCondition(t *testing.T) {
-	// The genuine remaining gap this slice's investigation found: comparing
-	// two bool values with a comparison operator. (1 < 2) == (3 < 4) is legal
-	// source — the checker builds a BinaryValue(==) whose operands are the two
-	// bool comparisons, wrapped in SourceAliases — but buildComparison's
-	// operands are integer expressions, so a bool-typed comparison operand
-	// fails buildExpr's width gate. A bitwise alternative like
-	// (1 < 2) & (3 < 4) never reaches the backend at all (the checker rejects
-	// it as a non-integral operand, T0507), so this ==-between-bools shape is
-	// the real unsupported case. Emit must reject it cleanly, not guess.
+func TestEmitBoolEqualityComparisonCompilesAndRuns(t *testing.T) {
+	// ==/!= between two bool values: (1 < 2) == (3 < 4) is the genuine gap
+	// 10.15 left as a confirmed remaining rejection — the outer BinaryValue's
+	// two operands are bool-typed SourceAlias-wrapped comparisons (confirmed
+	// against the real fixture dump), which used to fail buildExpr's width
+	// gate. Both bool operands are now built under the bool grammar, so the
+	// equality composes. Each row's expected exit code hand-verifies the
+	// comparison: (1 < 2) is true and (3 < 4) is true, so true == true is true
+	// (exit 1) and true != true is false (the != twin, exit 2); and true ==
+	// false / true != false take the other arms.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal true", "fn main() i32 { if (1 < 2) == (3 < 4) { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() i32 { if (1 < 2) == (2 < 1) { return 1; } else { return 2; } }", 2},
+		{"notEqual false twin", "fn main() i32 { if (1 < 2) != (3 < 4) { return 1; } else { return 2; } }", 2},
+		{"notEqual true", "fn main() i32 { if (1 < 2) != (2 < 1) { return 1; } else { return 2; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitBoolEqualityLocalCompilesAndRuns(t *testing.T) {
+	// The bare bool-local version: a == b compares two declared bool locals
+	// directly, the same BinaryValue(Equal) shape with SymbolValue operands
+	// instead of wrapped comparisons (confirmed against the real fixture dump).
+	// a = true, b = false, so a == b is false and the else arm runs (exit 2);
+	// with b = true the equality holds and the then arm runs (exit 1).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal false", "fn main() i32 { var a bool = true; var b bool = false; if a == b { return 1; } else { return 2; } }", 2},
+		{"equal true", "fn main() i32 { var a bool = true; var b bool = true; if a == b { return 1; } else { return 2; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitBoolEqualityWithShortCircuitCompilesAndRuns(t *testing.T) {
+	// Bool equality composes with 10.15's && / ||: (a == b) && (1 < 2) is a
+	// ShortCircuitValue whose left operand is the bool-equality BinaryValue,
+	// built through buildBoolExpr's BinaryValue case into buildComparison's
+	// bool branch. a = true, b = true makes the equality true and the && with
+	// the true comparison true (exit 1); a = true, b = false makes the equality
+	// false, so the && short-circuits to false and the else arm runs (exit 2).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"and true", "fn main() i32 { var a bool = true; var b bool = true; if (a == b) && (1 < 2) { return 1; } else { return 2; } }", 1},
+		{"and false", "fn main() i32 { var a bool = true; var b bool = false; if (a == b) && (1 < 2) { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitBoolEqualityWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture: (1 < 2) == (3 < 4) must lower to
+	// the parenthesized bool equality ((1 < 2) == (3 < 4)) in the if condition
+	// — each bool operand parenthesized so a comparison operand cannot chain
+	// associatively with the outer operator — with the arms' returns indented
+	// one level. Symbol-level operands emit parenthesized too, as
+	// (pebble_local_<id>), matching the same rule.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if (1 < 2) == (3 < 4) { return 1; } else { return 2; } }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    if ((1 < 2) == (3 < 4)) {\n",
+		"        return 1;",
+		"        return 2;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	unit, snapshot, entryID = buildFixture(t, "fn main() i32 { var a bool = true; var b bool = false; if a == b { return 1; } else { return 2; } }", "main", false)
+	buf.Reset()
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out = buf.String()
+	if !strings.Contains(out, "    if ((pebble_local_25) == (pebble_local_26)) {\n") {
+		t.Errorf("emitted C missing the parenthesized bool-local equality:\n%s", out)
+	}
 }
 
 func TestEmitNegatedComparisonWhileCompilesAndRuns(t *testing.T) {

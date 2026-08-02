@@ -10,9 +10,9 @@
 // `while <condition> { <loop body> }` loop statement, followed by a tail that
 // is either one `return <expression>;` or a two-armed
 // `if <condition> { <block> } else { <block> }`; a condition is an integer
-// comparison, a bare bool value, or a && / || combination of those, built by
-// buildCondition, and the two arms are themselves blocks under the same rule,
-// so an
+// comparison, a ==/!= equality between two bool values, a bare bool value, or
+// a && / || combination of those, built by buildCondition, and the two arms
+// are themselves blocks under the same rule, so an
 // arm may contain its own locals, reassignments, nested if/else, and loops. A
 // while loop's body is a block of local declarations, reassignments, if
 // statements (a loop-body if is built by buildLoopIf and has an optional
@@ -51,7 +51,8 @@ import (
 // tir.While; see buildWhile), followed by a tail that is either one
 // `return <expression>;` or a two-armed `if <condition> { <block> } else {
 // <block> }` whose condition is an integer comparison (<, <=, >, >=, ==, !=), a
-// bare bool value, or a && / || combination of those (see buildCondition);
+// ==/!= equality between two bool values, a bare bool value, or a && / ||
+// combination of those (see buildCondition);
 // each arm is itself a block under the same grammar, so an arm may contain its
 // own locals and nested if/else. Every expression — a local's initializer, a
 // reassignment's new value, a return value, or an if/else arm's return value —
@@ -59,7 +60,9 @@ import (
 // checked +, -, *, /, % arithmetic (see buildExpr), or a reference to a local
 // declared earlier in the same or an enclosing block. A comparison's operands
 // are additionally allowed to be int-typed integer literals (see
-// buildComparisonOperand). Checked operations emit pebble_rt_checked_*_i32 /
+// buildComparisonOperand), or — for ==/!= — two bool values built under the
+// bool grammar (see buildComparison). Checked operations emit
+// pebble_rt_checked_*_i32 /
 // pebble_rt_checked_*_i64 calls, chosen by the entry's resolved width, so the
 // language's overflow and divide-by-zero semantics survive into the emitted
 // program; comparisons emit the plain C operator, which cannot overflow. The
@@ -649,27 +652,69 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 // buildComparison builds the C text for an if condition. It accepts exactly a
 // tir.BinaryValue with two operands and one of the six comparison operators
 // (<, <=, >, >=, ==, !=), and emits the plain C operator directly — comparing
-// two integers cannot overflow, so no runtime helper is needed. Each operand
-// is built by buildComparisonOperand (an int-typed integer literal, or any i32
-// expression buildExpr accepts). Any other node kind, or any other operator on
-// a BinaryValue (bitwise, and the bool-operand comparisons like
-// (1 < 2) == (3 < 4), whose bool-typed operands fail buildExpr's width gate),
-// is a clean rejection. The && / || that lower to ShortCircuitValue nodes are
-// not this function's concern — buildCondition routes them to buildBoolExpr.
+// two integers, or two bools with ==/!=, cannot overflow, so no runtime helper
+// is needed. The operand grammar is decided from the operands' own resolved
+// types, not assumed to be integers: when both operands carry the snapshot's
+// bool builtin, they are built by buildBoolExpr (a bool comparison result, a
+// bool local, a bool literal, a ! negation, or a && / || combination — the
+// wrapped-comparison shape (1 < 2) == (3 < 4) is exactly this, its two
+// SourceAlias-wrapped comparison operands being bool values), and only the
+// ==/!= operators are legal for bool operands — the checker itself rejects an
+// ordering comparison between bools (C0603, confirmed against a real fixture),
+// so that ordering guard is defense for hand-built IR, not a reachable source
+// shape. Both bool operands are parenthesized in the emitted C so a bool
+// operand that is itself a comparison cannot chain associatively with the
+// outer operator (e.g. (a == b) == (c == d) must not collapse to a left-to-
+// right a == b == c == d). Otherwise each operand is built by
+// buildComparisonOperand (an int-typed integer literal, or any i32 expression
+// buildExpr accepts). Any other node kind, or any other operator on a
+// BinaryValue (bitwise), is a clean rejection. The && / || that lower to
+// ShortCircuitValue nodes are not this function's concern — buildCondition
+// routes them to buildBoolExpr.
 func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid node %d", id)
 	}
 	if node.Kind != tir.BinaryValue {
-		return "", fmt.Errorf("entry function body if condition is a %s, want a direct integer comparison (<, <=, >, >=, ==, or !=)", node.Kind)
+		return "", fmt.Errorf("entry function body if condition is a %s, want a direct integer comparison or a ==/!= between two bool values (<, <=, >, >=, ==, or !=)", node.Kind)
 	}
 	if len(node.Children) != 2 {
-		return "", fmt.Errorf("entry function body if condition has %d operand(s), want exactly two integer operands", len(node.Children))
+		return "", fmt.Errorf("entry function body if condition has %d operand(s), want exactly two operands", len(node.Children))
 	}
 	op, ok := comparisonOperator(node.Operator)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition uses operator %s, want one of <, <=, >, >=, ==, or !=", node.Operator)
+	}
+	leftOperand, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", node.Children[0])
+	}
+	rightOperand, ok := unit.Node(node.Children[1])
+	if !ok {
+		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", node.Children[1])
+	}
+	if isBool(snapshot, leftOperand.Type) && isBool(snapshot, rightOperand.Type) {
+		// Both operands are bool values, so this is an equality between bools
+		// — (1 < 2) == (3 < 4), a == b, true == a, and so on. Only ==/!= make
+		// sense for bool operands; an ordering comparison here is impossible
+		// from real source (the checker rejects it as C0603 before typed IR
+		// exists), but is rejected cleanly rather than guessed for hand-built
+		// IR. The operands are built under the bool grammar by buildBoolExpr,
+		// each parenthesized so a comparison operand cannot chain associatively
+		// with the outer operator in the emitted C.
+		if node.Operator != syntax.Equal && node.Operator != syntax.NotEqual {
+			return "", fmt.Errorf("entry function body if condition compares two bool operands with operator %s, want == or !=", node.Operator)
+		}
+		left, err := buildBoolExpr(unit, snapshot, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildBoolExpr(unit, snapshot, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "(" + left + ") " + op + " (" + right + ")", nil
 	}
 	left, err := buildComparisonOperand(unit, snapshot, node.Children[0], locals, width)
 	if err != nil {
@@ -844,9 +889,12 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 //   - BinaryValue with one of the six comparison operators — delegated to
 //     buildComparison, the same path a top-level if/while condition uses, so
 //     a comparison can serve as an operand of && / || as well as stand alone.
-//     (A BinaryValue with any other operator, or a comparison whose own
-//     operands are not integers — e.g. (1 < 2) == (3 < 4) — is rejected by
-//     buildComparison's operator check or its operand width gate.)
+//     buildComparison decides the operand grammar from the operands' resolved
+//     types: integer operands take the integer comparison path, and two bool
+//     operands — e.g. (1 < 2) == (3 < 4), whose SourceAlias-wrapped
+//     comparison operands are bool values — take the bool-equality path.
+//     (A BinaryValue with any other operator is rejected by buildComparison's
+//     operator check.)
 //   - ShortCircuitValue with operator && (syntax.LogicalAnd) or ||
 //     (syntax.LogicalOr) — <(left) && (right)> / <(left) || (right)>,
 //     parenthesized so nested combinations produce unambiguous C regardless of
