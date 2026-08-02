@@ -159,6 +159,23 @@ incrementally as work proceeds.
   worth adding. Overflow checking confirmed to survive through a
   reassignment, both by the dispatched test and independently outside
   the test harness.
+- **10.10 — `while` loops** (`compiler/internal/backend`): adds `while
+  <comparison> { <loop body> }` as a block statement (never the tail).
+  The loop body has its own grammar — `Initialize`/`Store` only, no
+  required tail, no nested `if`/`while` yet, since a loop body just
+  runs statements — scoped and cloned exactly like an if arm.
+  `Initialize`/`Store` handling was refactored into a shared
+  `buildLeadingStatement` so `buildBlock` and the new `buildLoopBody`
+  don't duplicate it. First construct where a bug could hang the
+  compiled program itself rather than just misbehave or cleanly
+  reject: every end-to-end loop test runs the binary under a context
+  timeout that distinguishes a real abort from a genuine
+  non-termination, verified directly by an overflow-inside-a-loop test
+  that proves the harness identifies the abort correctly rather than
+  mistaking it for a timeout. A real accumulation loop (`sum of 0..4 =
+  10`) compiles and runs correctly, confirmed both by the dispatched
+  test and by compiling and running the emitted C independently
+  outside any harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
