@@ -3664,3 +3664,265 @@ func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?str = some \"hi\"; return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
+
+func TestEmitStructTwoFieldReadBackCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture for struct construction and a field read: a
+	// two-field Point { x i32; y i32; } is declared from a struct literal and
+	// its x field is read back into the return value. The struct type emits
+	// one struct typedef pebble_struct_<typeID>_t with one field per declared
+	// struct field (named from each field's symbol ID), the local is
+	// initialized with a designated-initializer struct literal, and the field
+	// read lowers to pebble_local_<id>.pebble_field_<x>, so the process exit
+	// code is x's value (1).
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ x = 1, y = 2 }; return point.x; }", false, 1, false)
+}
+
+func TestEmitStructFieldsWrittenOutOfDeclaredOrderCompilesAndRuns(t *testing.T) {
+	// The out-of-declaration-order construction fixture: Point.{ y = ..., x =
+	// ... } writes the fields in the opposite order from the struct's declared
+	// order, so the RecordConstruct's Fields list is [y, x], not [x, y]
+	// (confirmed against a real fixture dump). The designated-initializer
+	// struct literal places each value under the C field its member symbol
+	// names, so x still reads 22 and y still reads 20 regardless of the
+	// construction order — proving the designated-initializer approach solves
+	// the ordering problem rather than accidentally working because the test
+	// happens to write fields in order.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"x read back", "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 20, x = 22 }; return point.x; }", 22},
+		{"y read back", "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 20, x = 22 }; return point.y; }", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStructBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
+	// A struct with a bool field beside an integer field: the bool field read
+	// (p.b) drives an if condition. b = true runs the then-arm (exit 10);
+	// with the bool field false the else-arm runs (exit 20). The read is a
+	// bool value, so it must route through the bool grammar (buildBoolExpr's
+	// Load case), not the integer one.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"bool true", "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = true }; if p.b { return 10; } else { return 20; } }", 10},
+		{"bool false", "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = false }; if p.b { return 10; } else { return 20; } }", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStructFieldAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// A struct field read composes with 10.18's call-argument building: each
+	// argument of add is a read of the struct local's field. buildCallArguments
+	// builds each argument with buildExpr, which lowers the Load(FieldPlace)
+	// read to pebble_local_<id>.pebble_field_<member>, so add(20, 22) = 42 is
+	// the process exit code. The struct typedef must still be emitted before
+	// the helper's definition.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return add(p.x, p.y); }", false, 42, false)
+}
+
+func TestEmitStructThreeFieldTwoReadsAddedCompilesAndRuns(t *testing.T) {
+	// The "two fields read and added" fixture: a three-field struct's a and c
+	// fields are read back and added: t.a + t.c = 10 + 30 = 40. The typedef's
+	// fields follow the declared order (a, b, c), and the two reads resolve
+	// their own fields by member symbol.
+	emitAndRun(t, "type T = struct { a i32; b i32; c i32; };\nfn main() i32 { let t T = T.{ a = 10, b = 20, c = 30 }; return t.a + t.c; }", false, 40, false)
+}
+
+func TestEmitI64StructCompilesAndRuns(t *testing.T) {
+	// The width discipline extends to struct field types: an i64 entry's
+	// (i64, i64) struct's typedef fields are int64_t, and the field read feeds
+	// the i64 entry's return. Exit code 22.
+	emitAndRun(t, "type T = struct { a i64; b i64; };\nfn main() i64 { let t T = T.{ a = 20, b = 22 }; return t.b; }", false, 22, false)
+}
+
+func TestEmitStructLocalInsideHelperCompilesAndRuns(t *testing.T) {
+	// A struct-typed local declared inside a reachable helper's body, not the
+	// entry's: the typedef-collection pass must walk helper bodies too, so the
+	// struct typedef is emitted before the helper's definition (which is
+	// before pebble_user_main). helper declares point, reads its y field, and
+	// returns it; the entry just calls helper, so exit code 22 proves the
+	// helper's struct local was built and the typedef emitted correctly.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn helper() i32 { let point Point = Point.{ x = 20, y = 22 }; return point.y; } fn main() i32 { return helper(); }", false, 22, false)
+}
+
+func TestEmitStructOutOfOrderWritesC(t *testing.T) {
+	// The emitted C for the out-of-declaration-order construction fixture.
+	// The typedef's fields must be in the struct's *declared* order (x = 25
+	// then y = 26, from TypeDecl.Members), NOT the construction order the
+	// RecordConstruct's Fields carry ([y, x] — confirmed against a real
+	// fixture dump). The local initializer is a C99 designated-initializer
+	// brace list placing each value under its own member's C field, and the
+	// field read lowers to pebble_local_<id>.pebble_field_<member>. Symbols
+	// 24 (Point), 25 (x), 26 (y), 28 (point), and struct type 23 come from the
+	// real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 2, x = 1 }; return point.x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
+		"pebble_struct_23_t pebble_local_28 = { .pebble_field_26 = 2, .pebble_field_25 = 1 };",
+		"    (void)pebble_local_28;",
+		"return pebble_local_28.pebble_field_25;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	mainIndex := strings.Index(out, "static int pebble_user_main")
+	if typedefIndex < 0 || mainIndex < 0 || typedefIndex > mainIndex {
+		t.Errorf("struct typedef does not precede pebble_user_main (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitStructBoolFieldWritesC(t *testing.T) {
+	// The emitted C for the bool-field-if fixture: the typedef's second field
+	// must be the C bool, the local's initializer carries the integer and bool
+	// field values under their designated fields, and the if condition is the
+	// raw field read pebble_local_<id>.pebble_field_<b> (a C bool needs no
+	// comparison). Symbols 25 (a), 26 (b), 28 (p), and struct type 23 come
+	// from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = true }; if p.b { return 10; } else { return 20; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_25;\n    bool pebble_field_26;\n} pebble_struct_23_t;",
+		"pebble_struct_23_t pebble_local_28 = { .pebble_field_25 = 1, .pebble_field_26 = true };",
+		"    if (pebble_local_28.pebble_field_26) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
+	// The emitted C for the call-argument fixture: the struct typedef precedes
+	// both the helper and the entry, the local initializes to a designated
+	// struct literal, and the call site passes the two field reads after ctx.
+	// Symbols 24 (Point), 25/26 (x/y), 27 (add), 28/29 (its parameters), and
+	// 31 (p) come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return add(p.x, p.y); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
+		"pebble_struct_23_t pebble_local_31 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"return pebble_fn_27(ctx, pebble_local_31.pebble_field_25, pebble_local_31.pebble_field_26);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static int32_t pebble_fn_27")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("struct typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitI64StructWritesC(t *testing.T) {
+	// The emitted C for the i64 struct must use int64_t for both typedef
+	// fields and for the pebble_user_main return type, proving the entry's
+	// width threads into the struct layout, not just the scalar declarations.
+	unit, snapshot, entryID := buildFixture(t, "type T = struct { a i64; b i64; };\nfn main() i64 { let t T = T.{ a = 20, b = 22 }; return t.b; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int64_t pebble_field_25;\n    int64_t pebble_field_26;\n} pebble_struct_23_t;",
+		"pebble_struct_23_t pebble_local_28 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"return pebble_local_28.pebble_field_26;",
+		"static int64_t pebble_user_main(PebbleContext *ctx)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "int32_t pebble_field_") {
+		t.Errorf("emitted C declared an i32 struct field for an i64 entry:\n%s", out)
+	}
+}
+
+func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {
+	// A struct whose field type is neither the entry's width nor bool — here a
+	// str field — is reachable from real source (the checker builds the
+	// declaration and construction fine), so this is a genuine backend-scope
+	// rejection. The struct typedef pass inspects each field's resolved type
+	// first and rejects the str field with a clear error naming the wanted
+	// types, so no C is written.
+	unit, snapshot, entryID := buildFixture(t, "type S = struct { s str; };\nfn main() i32 { let x S = S.{ s = \"hi\" }; return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsStructWholeReassignment(t *testing.T) {
+	// Reassigning a whole struct-typed local (p = Point.{ ... }) is out of
+	// scope this slice. The Store's place names a struct-typed local, so
+	// buildLeadingStatement rejects it with a clear error naming the
+	// reassignment, not a guessed lowering.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var p Point = Point.{ x = 1, y = 2 }; p = Point.{ x = 3, y = 4 }; return p.x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole struct is not supported")
+}
+
+func TestEmitRejectsStructFieldAssignment(t *testing.T) {
+	// Assigning into a struct field after construction (point.x = 5) is out of
+	// scope this slice. The Store's place is a FieldPlace (confirmed against a
+	// real fixture), which the existing Store handling rejects as not being a
+	// plain StoragePlace — a clear error, not a guessed lowering.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a plain StoragePlace")
+}
+
+func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
+	// Reading a field directly off a struct literal (Point.{ x = 1, y = 2 }.x)
+	// is reachable from real source but lowers to a FieldValue whose base is
+	// the RecordConstruct itself, not a StoragePlace naming a struct local — a
+	// value-category shape out of scope this slice (only Load(FieldPlace) of a
+	// struct local is supported). The integer expression builder rejects the
+	// FieldValue cleanly rather than guessing.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { return Point.{ x = 1, y = 2 }.x; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
+	// Nested field access (o.inner.x, where inner is itself a struct-typed
+	// field) is reachable from real source but out of scope twice over: the
+	// struct-of-struct field type is itself rejected by the typedef pass first
+	// (a struct field must be the entry's width or bool), so the program is a
+	// clean rejection naming the unsupported field type before the nested read
+	// (a FieldPlace whose base is another FieldPlace) is even reached.
+	unit, snapshot, entryID := buildFixture(t, "type Inner = struct { x i32; };\ntype Outer = struct { inner Inner; y i32; };\nfn main() i32 { let o Outer = Outer.{ inner = Inner.{ x = 7 }, y = 8 }; return o.inner.x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "is not supported, want i32 or bool")
+}
+
+func TestEmitRejectsStructTypedParameter(t *testing.T) {
+	// A struct-typed function parameter is reachable from real source but out
+	// of scope this slice: the reachability walk validates the callee's
+	// signature before any code is built, and validateHelperSignature rejects a
+	// parameter whose type is neither the entry's width nor bool — here the
+	// Point struct — with a clear error.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f(Point.{ x = 1, y = 2 }); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}

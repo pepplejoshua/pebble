@@ -81,6 +81,29 @@
 // an optional local is rejected cleanly. Optional-typed
 // function parameters, return types, and payload types other than the entry's
 // width or bool are out of scope and rejected cleanly.
+//
+// Since 10.22, a local may also be declared as a struct whose every field's
+// type is exactly the entry's resolved width or bool, initialized from a
+// struct literal (a tir.RecordConstruct, e.g. Point.{ x = 1, y = 2 }), with
+// individual fields read back as ordinary values (a tir.Load of a
+// tir.FieldPlace — the only shape real source produces for reading a
+// struct-typed local's field; see buildExpr's Load case). A struct type is
+// emitted as one C struct typedef, named pebble_struct_<typeID>_t from the
+// struct type's own stable types.TypeID and written once per distinct struct
+// type before any function that references it; each typedef's fields are
+// named pebble_field_<memberSymbolID> from each field's own stable
+// symbol.SymbolID, in the struct's declared field order (from its
+// TypeDeclaration's member list — a construction site may list fields in any
+// order, so the declared order is resolved by the collection pass, not taken
+// from any RecordConstruct). A struct local's initializer is a C99
+// designated-initializer brace list ({ .pebble_field_25 = 1, ... }), which
+// sidesteps the construction-vs-declared field ordering problem entirely.
+// Field reads route through buildExpr/buildBoolExpr by the field's own type,
+// and every other struct shape — a struct field of any type other than the
+// entry's width or bool, a whole struct copied from another value, assigning
+// into or reassigning a struct local, a struct parameter or result, a
+// FieldValue reading a field off a struct literal directly, or nested field
+// access — is a clean rejection, never a guessed lowering.
 package backend
 
 import (
@@ -186,6 +209,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	structInfos, err := collectStructTypes(unit, snapshot, blockID, helpers)
+	if err != nil {
+		return err
+	}
 	tupleTypedefs, err := buildTupleTypedefs(snapshot, result, tupleTypes)
 	if err != nil {
 		return err
@@ -194,7 +221,11 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs := joinTypedefs(tupleTypedefs, optionalTypedefs)
+	structTypedefs, err := buildStructTypedefs(snapshot, result, structInfos)
+	if err != nil {
+		return err
+	}
+	typedefs := joinTypedefs(tupleTypedefs, joinTypedefs(optionalTypedefs, structTypedefs))
 	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result)
 	if err != nil {
 		return err
@@ -570,6 +601,175 @@ func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 		}
 	}
 	return nil
+}
+
+// structFieldInfo is one field of a distinct struct type the emitted program
+// references, resolved from the struct's own declaration: its member symbol
+// (the field's stable symbol.SymbolID, the basis of the C field name
+// pebble_field_<member>) and the field's resolved types.TypeID.
+type structFieldInfo struct {
+	member symbol.SymbolID
+	typ    types.TypeID
+}
+
+// structInfo is one distinct struct type the emitted program references,
+// carrying everything buildStructTypedef needs: the struct's own types.TypeID
+// (the basis of the C typedef name pebble_struct_<typeID>_t), its declaration
+// symbol, and its fields in the struct's *declared* order (from the struct's
+// own TypeDecl.Members — a RecordConstruct's Fields may list the fields in
+// any construction-site order, confirmed against a real fixture, so the
+// declared order is resolved here once rather than at emit time).
+type structInfo struct {
+	typ    types.TypeID
+	decl   symbol.SymbolID
+	fields []structFieldInfo
+}
+
+// collectStructTypes resolves, in first-encountered order, every struct type
+// the emitted program actually references: the entry body (root) followed by
+// every reachable helper's body, each walked by the same Children + DeferChain
+// traversal collectDirectCalls uses. A struct type is referenced in exactly
+// two places in the emitted C — a struct-typed local's declaration (an
+// Initialize whose initializer value carries the struct type) and a struct
+// construction (a RecordConstruct, whose Type is the struct type) — so
+// collecting exactly those two node shapes guarantees every typedef the
+// program needs is discovered. The walk also accumulates each field's resolved
+// type from the same nodes (a RecordConstruct field value's own type, and a
+// FieldPlace's Type), since the FieldDeclaration nodes in the unit carry only
+// the field's symbol, never its type (confirmed against a real fixture — a
+// further lookup is required, the same kind of confirmation 10.18 did for
+// FunctionDeclaration.Parameters). The returned structInfos are deduplicated
+// by struct TypeID and each resolved to its declared field order, so every
+// distinct struct type yields exactly one typedef, emitted before any function
+// definition in the final output.
+func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]structInfo, error) {
+	fieldTypes := make(map[symbol.SymbolID]types.TypeID)
+	var collected []types.TypeID
+	if err := collectStructTypesWalk(unit, snapshot, entryBlockID, &collected, fieldTypes); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectStructTypesWalk(unit, snapshot, helper.block, &collected, fieldTypes); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var infos []structInfo
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		info, err := resolveStructInfo(unit, snapshot, id, fieldTypes)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// collectStructTypesWalk appends every struct type encountered in the tree
+// rooted at nodeID to out, in first-encountered order, following Children and
+// DeferChain exactly like collectDirectCalls so it visits the same reachable
+// region of the node graph the body builders consume. Two node shapes carry a
+// struct type: a RecordConstruct node's own Type, and an Initialize whose
+// initializer value carries a struct type (a struct-typed local declaration —
+// the local's type is recorded on the initializer value node, not on the
+// Initialize node itself, confirmed against a real fixture, the same finding
+// tuple/array/optional collection made). The same walk also records, in
+// fieldTypes, every field symbol's resolved type from exactly the two nodes
+// that carry it: a RecordConstruct field value node's own Type, and a
+// FieldPlace node's Type — the only in-unit sources of a field's type, since
+// the FieldDeclaration node carries no type.
+func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID, fieldTypes map[symbol.SymbolID]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("struct-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.RecordConstruct {
+		*out = append(*out, node.Type)
+		for _, field := range node.Fields {
+			if value, ok := unit.Node(field.Value); ok && value.Type != 0 {
+				fieldTypes[field.Field] = value.Type
+			}
+		}
+	}
+	if node.Kind == tir.FieldPlace {
+		if node.Member != 0 && node.Type != 0 {
+			fieldTypes[node.Member] = node.Type
+		}
+	}
+	if node.Kind == tir.Initialize {
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectStructTypesWalk(unit, snapshot, childID, out, fieldTypes); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectStructTypesWalk(unit, snapshot, deferID, out, fieldTypes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveStructInfo turns one collected struct TypeID into a structInfo with
+// its fields in declared order. The declaration symbol comes from the type's
+// own Nominal key (TypeKey.Nominal); the declared field order comes from the
+// corresponding TypeDecl's Members (unit.TypeDeclarations), which lists the
+// field symbols in the struct's source declaration order — NOT the
+// construction-site order a RecordConstruct's Fields carry, which is why the
+// order is resolved here rather than from any construction node. Each field's
+// type comes from the fieldTypes map accumulated by the walk; a member with no
+// recorded type is a clean rejection, not a guessed layout.
+func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID, fieldTypes map[symbol.SymbolID]types.TypeID) (structInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return structInfo{}, fmt.Errorf("struct type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return structInfo{}, fmt.Errorf("type %s is a %v, want a struct type", structTypeName(id), key.Kind())
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return structInfo{}, fmt.Errorf("type %s has no nominal declaration", structTypeName(id))
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return structInfo{}, fmt.Errorf("struct type %s has no TypeDeclaration for symbol %d in the unit", structTypeName(id), decl)
+	}
+	fields := make([]structFieldInfo, len(typeDecl.Members))
+	for i, member := range typeDecl.Members {
+		fieldType, ok := fieldTypes[member]
+		if !ok {
+			return structInfo{}, fmt.Errorf("struct type %s field symbol %d has no resolvable type in the unit", structTypeName(id), member)
+		}
+		fields[i] = structFieldInfo{member: member, typ: fieldType}
+	}
+	return structInfo{typ: id, decl: decl, fields: fields}, nil
+}
+
+// findTypeDeclaration locates the TypeDecl container (its ordered Members list
+// names the struct's declared fields) for a type declaration symbol. The
+// TypeDeclaration *node* in the unit carries only the Symbol — its field list
+// is on the TypeDecl container the builder published alongside it (the same
+// division the unit makes between FunctionDeclaration nodes and FunctionDecl
+// containers), so the container is the authoritative declared-field-order
+// source.
+func findTypeDeclaration(unit *tir.Unit, symbolID symbol.SymbolID) (tir.TypeDecl, bool) {
+	for _, td := range unit.TypeDeclarations() {
+		if td.Symbol == symbolID {
+			return td, true
+		}
+	}
+	return tir.TypeDecl{}, false
 }
 
 // indexOfSymbol returns the position of id in ids, or -1 if absent.
@@ -1017,7 +1217,9 @@ func buildLoopJump(statement tir.Node, keyword string, indent, context string) (
 // statement's C indentation. scope is the set of in-scope locals, each mapped
 // to a localInfo recording the resolved type it was declared with: the entry's
 // integer width or bool for a scalar local, the tuple type's TypeID for a
-// tuple local. An Initialize adds its symbol to it once validated, a Store
+// tuple local, the array type's TypeID for an array local, the optional
+// type's TypeID for an optional local, or the struct type's TypeID for a
+// struct local. An Initialize adds its symbol to it once validated, a Store
 // reads it. width is
 // the entry's resolved integer width; an integer local's C type name
 // follows it (int32_t for an i32 entry, int64_t for an i64 entry), and a
@@ -1027,6 +1229,11 @@ func buildLoopJump(statement tir.Node, keyword string, indent, context string) (
 // builtin is a bool local, declared as C `bool` and built by buildBoolExpr;
 // its scope entry records types.Bool so a later reference or reassignment is
 // emitted and validated against the same type. A local whose value carries a
+// struct type is a struct local: it is declared as C `pebble_struct_<typeID>_t`
+// and initialized from a struct literal (see buildStructLocalDeclaration), and
+// its scope entry records the struct type so a later field read resolves the
+// struct type being projected (see buildExpr's Load case). A local whose value
+// carries a
 // tuple type is a tuple local: it is declared as C `pebble_tuple_<typeID>_t`,
 // initialized from a tuple literal whose element expressions are each built by
 // the grammar their own element type selects, and its scope entry records the
@@ -1070,6 +1277,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// supported initializer is SomeOptional (some <expr>); every
 			// other optional initializer shape is a clean rejection.
 			return buildOptionalLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
+		}
+		if isStruct(snapshot, initValue.Type) {
+			// A struct-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself, confirmed against
+			// a real fixture — same as tuple/array/optional locals). The
+			// supported initializer is a RecordConstruct (a struct literal);
+			// every other struct initializer shape is a clean rejection.
+			return buildStructLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
 		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 		if !ok {
@@ -1166,6 +1381,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			if targetInfo.optional != 0 {
 				return "", fmt.Errorf("%s reassigns symbol %d, an optional-typed local of type %s; reassigning an optional is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.optional))
 			}
+			if targetInfo.structType != 0 {
+				return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
+			}
 			return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 		}
 	default:
@@ -1175,20 +1393,23 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 
 // localInfo records what a declared local holds: an ordinary scalar — the
 // entry's resolved integer width or bool, in kind — a tuple, in tuple (its
-// tuple types.TypeID, stable within one Emit call), an array, in array, or an
-// optional, in optional. The four fields are mutually exclusive: kind is zero
-// for a compound local (a tuple/array/optional is not a types.BuiltinKind),
-// and tuple/array/optional are zero for a scalar local. A struct value
+// tuple types.TypeID, stable within one Emit call), an array, in array, an
+// optional, in optional, or a struct, in structType. The five fields are
+// mutually exclusive: kind is zero
+// for a compound local (a tuple/array/optional/struct is not a
+// types.BuiltinKind), and tuple/array/optional/structType are zero for a
+// scalar local. A struct value
 // rather than a parallel map keeps the scope a single map threaded through
 // every builder unchanged in shape — the existing
 // `map[symbol.SymbolID]types.BuiltinKind` value type was widened to this struct
 // so no call site needed a second argument, the option that changes the fewest
 // existing call sites correctly.
 type localInfo struct {
-	kind     types.BuiltinKind
-	tuple    types.TypeID
-	array    types.TypeID
-	optional types.TypeID
+	kind       types.BuiltinKind
+	tuple      types.TypeID
+	array      types.TypeID
+	optional   types.TypeID
+	structType types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -1367,6 +1588,88 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, sta
 	default:
 		return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a %s, want some <expr> or none", context, optionalTypeName(initValue.Type), initValue.Kind)
 	}
+}
+
+// buildStructLocalDeclaration builds one struct-typed local's declaration: a
+// `pebble_struct_<typeID>_t pebble_local_<symbol> = { .pebble_field_<m0> =
+// <e0>, .pebble_field_<m1> = <e1> };` whose field initializers are the
+// RecordConstruct's Fields, each value built by the grammar its own type
+// selects — buildExpr for a field of the entry's width, buildBoolExpr for a
+// bool field. The initializer is a C99 designated-initializer brace list
+// (`.pebble_field_<member> = <expr>`), not a positional brace list, so the
+// construction-site field order a RecordConstruct's Fields carry (which need
+// not match the struct's declared order — a site may write Point.{ y = 2, x =
+// 1 }) needs no reordering: each designated initializer places its value
+// under exactly the C field its member symbol names, regardless of either
+// order. Designated initializers are standard C99 and compile clean under
+// -Wall -Wextra -Werror (confirmed by a real cc compile through this test
+// suite's own harness). Every field type must be exactly the entry's width or
+// bool; anything else (a str field, a nested struct field) is a clean
+// rejection naming the field position, since this backend emits exactly those
+// two C field types. The initializer must be a RecordConstruct (a struct
+// literal): initializing a struct local from any other value — a whole-struct
+// copy of another local, a call, anything else — is a clean rejection. The
+// local's scope entry records its struct type (a localInfo with structType
+// set), so a later field read resolves the struct type being projected. Like
+// every scalar local, the declaration is followed by a (void) cast against
+// -Wunused-variable.
+func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind != tir.RecordConstruct {
+		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal); initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
+	}
+	key, ok := snapshot.Key(initValue.Type)
+	if !ok {
+		return "", fmt.Errorf("%s declares a struct-typed local whose type %d is not in the type snapshot", context, initValue.Type)
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return "", fmt.Errorf("%s declares a struct-typed local of type %s, which has no nominal declaration", context, structTypeName(initValue.Type))
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return "", fmt.Errorf("%s declares a struct-typed local of type %s whose declaration symbol %d has no TypeDeclaration in the unit", context, structTypeName(initValue.Type), decl)
+	}
+	members := typeDecl.Members
+	if len(initValue.Fields) != len(members) {
+		return "", fmt.Errorf("%s declares a struct-typed local of type %s with %d field initializer(s), want %d (one per declared field)", context, structTypeName(initValue.Type), len(initValue.Fields), len(members))
+	}
+	inits := make([]string, len(initValue.Fields))
+	for i, field := range initValue.Fields {
+		declared := false
+		for _, member := range members {
+			if member == field.Field {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s with an initializer for symbol %d, which is not one of its declared fields", context, structTypeName(initValue.Type), field.Field)
+		}
+		valueNode, ok := unit.Node(field.Value)
+		if !ok {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s referencing invalid field value node %d", context, structTypeName(initValue.Type), field.Value)
+		}
+		var expr string
+		switch {
+		case isWidth(snapshot, width, valueNode.Type):
+			built, err := buildExpr(unit, snapshot, field.Value, scope, width)
+			if err != nil {
+				return "", err
+			}
+			expr = built
+		case isBool(snapshot, valueNode.Type):
+			built, err := buildBoolExpr(unit, snapshot, field.Value, scope, width)
+			if err != nil {
+				return "", err
+			}
+			expr = built
+		default:
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s whose field %d is %s, want %s or bool", context, structTypeName(initValue.Type), field.Field, describeType(snapshot, valueNode.Type), wantName(width))
+		}
+		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
+	}
+	scope[statement.Symbol] = localInfo{structType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, strings.Join(inits, ", "), indent, statement.Symbol), nil
 }
 
 // buildCondition builds the C text for one if/while condition. It dispatches
@@ -1632,15 +1935,19 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		}
 		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value)", checkedSuffix(width), child.Symbol, child.Symbol), nil
 	case tir.Load:
-		// A tuple element read. Reading one element of a tuple-typed local
-		// (`t.1`) is lowered by the checker to a Load of a TuplePlace whose
-		// single child is the StoragePlace naming the tuple local — confirmed
-		// against a real fixture; this is the only shape real source produces
-		// for reading an element of a tuple local (a plain local read is a
-		// SymbolValue, not a Load). The Load's Type is the element's own type,
-		// already gated to the entry's width above, so the element must resolve
-		// to the entry's width here. The emitted C is
-		// pebble_local_<symbol>._<ordinal>.
+		// A tuple element or struct field read. Reading one element of a
+		// tuple-typed local (`t.1`) is lowered by the checker to a Load of a
+		// TuplePlace whose single child is the StoragePlace naming the tuple
+		// local, and reading one field of a struct-typed local (`point.x`) to
+		// a Load of a FieldPlace whose single child is the StoragePlace naming
+		// the struct local (both confirmed against real fixtures); these are
+		// the only shapes real source produces for reading an element/field of
+		// a compound local (a plain local read is a SymbolValue, not a Load).
+		// The Load's Type is the element/field's own type, already gated to
+		// the entry's width above, so the element/field must resolve to the
+		// entry's width here. The emitted C is
+		// pebble_local_<symbol>._<ordinal> for a tuple and
+		// pebble_local_<symbol>.pebble_field_<member> for a struct.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
 		}
@@ -1652,7 +1959,10 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 			if place.Kind == tir.CheckedIndexPlace {
 				return buildArrayPlaceRead(unit, snapshot, place, locals, width, false)
 			}
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace or CheckedIndexPlace", place.Kind)
+			if place.Kind == tir.FieldPlace {
+				return buildStructFieldRead(unit, snapshot, place, locals, width, false)
+			}
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, or FieldPlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, place, locals, width, false)
 	case tir.TupleElementValue:
@@ -1838,6 +2148,101 @@ func buildTupleElement(unit *tir.Unit, snapshot *types.Snapshot, symbolID symbol
 	return fmt.Sprintf("pebble_local_%d._%d", symbolID, ordinal), nil
 }
 
+// buildStructFieldRead builds the C text for reading one field of a struct
+// local through the Load(FieldPlace) shape the checker actually produces for
+// `point.x` (confirmed against a real fixture): the FieldPlace carries the
+// field's own member symbol in Member and its single child is the StoragePlace
+// naming the struct local. wantBool selects which grammar the field must
+// satisfy — bool (the buildBoolExpr path) or the entry's width (the buildExpr
+// path). The field's own type is resolved from the struct's declared fields by
+// matching FieldPlace.Member (see declaredFieldType), not assumed from the
+// place's own Type. The emitted C is
+// pebble_local_<symbol>.pebble_field_<member>.
+func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+	if len(place.Children) != 1 {
+		return "", fmt.Errorf("entry function body expression contains a FieldPlace with %d child(ren), want exactly one (the struct local's place)", len(place.Children))
+	}
+	base, ok := unit.Node(place.Children[0])
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a FieldPlace referencing invalid node %d", place.Children[0])
+	}
+	if base.Kind != tir.StoragePlace {
+		// A FieldPlace whose base is not a plain StoragePlace is a nested
+		// field access (o.inner.x, whose outer FieldPlace's base is another
+		// FieldPlace) or a field read off a non-local value — both confirmed
+		// reachable from real source but out of scope this slice, so a clean
+		// rejection naming what was found.
+		return "", fmt.Errorf("entry function body expression contains a FieldPlace whose base is a %s, want a StoragePlace naming a struct-typed local (nested field access and reading a field off a struct literal are not supported)", base.Kind)
+	}
+	info, declared := locals[base.Symbol]
+	if !declared || info.structType == 0 {
+		return "", fmt.Errorf("entry function body expression reads a field of symbol %d, which is not a struct-typed local declared earlier in the entry body", base.Symbol)
+	}
+	fieldType, ok := declaredFieldType(unit, snapshot, info.structType, place.Member)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression reads field %d of symbol %d, which is not a declared field of struct type %s", place.Member, base.Symbol, describeType(snapshot, info.structType))
+	}
+	if wantBool {
+		if !isBool(snapshot, fieldType) {
+			return "", fmt.Errorf("entry function body expression reads field %d of symbol %d, whose type is %s, want bool", place.Member, base.Symbol, describeType(snapshot, fieldType))
+		}
+	} else if !isWidth(snapshot, width, fieldType) {
+		return "", fmt.Errorf("entry function body expression reads field %d of symbol %d, whose type is %s, want %s", place.Member, base.Symbol, describeType(snapshot, fieldType), wantName(width))
+	}
+	return fmt.Sprintf("pebble_local_%d.pebble_field_%d", base.Symbol, place.Member), nil
+}
+
+// declaredFieldType resolves one field's own type from a struct type's
+// declared fields, matching the field's member symbol against the struct's
+// TypeDecl.Members list (the declared field order). The FieldDeclaration nodes
+// in the unit carry only the field's symbol, never its type, so the type is
+// resolved from the unit's own node graph: any FieldPlace node carrying the
+// member (its Type is the field's resolved type), or any RecordConstruct of
+// the same declaration whose Fields contain the member (the value node's Type
+// is the field's resolved type) — both are guaranteed consistent for a real
+// fixture, since a struct field has exactly one type. A member that is not in
+// the struct's declared member list, or whose type cannot be resolved from the
+// unit, reports false.
+func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType types.TypeID, member symbol.SymbolID) (types.TypeID, bool) {
+	key, ok := snapshot.Key(structType)
+	if !ok {
+		return 0, false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return 0, false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return 0, false
+	}
+	declared := false
+	for _, m := range typeDecl.Members {
+		if m == member {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return 0, false
+	}
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FieldPlace && node.Member == member && node.Type != 0 {
+			return node.Type, true
+		}
+		if node.Kind == tir.RecordConstruct && node.Symbol == decl {
+			for _, field := range node.Fields {
+				if field.Field == member {
+					if value, ok := unit.Node(field.Value); ok && value.Type != 0 {
+						return value.Type, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 // buildCallArguments builds the comma-separated C argument list for a
 // DirectCall's children, one expression per child in order. Each child's
 // grammar is decided by the callee's corresponding parameter's resolved type
@@ -1987,9 +2392,10 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 		}
 		return fmt.Sprintf("pebble_rt_checked_unwrap_bool(pebble_local_%d.has_value, pebble_local_%d.value)", child.Symbol, child.Symbol), nil
 	case tir.Load:
-		// A tuple-typed local's bool element read (see buildExpr's Load case
-		// for the shape confirmation; here the Load's Type is the element's
-		// bool type, already gated above).
+		// A tuple-typed local's bool element read or a struct-typed local's
+		// bool field read (see buildExpr's Load case for the shape
+		// confirmation; here the Load's Type is the element/field's bool type,
+		// already gated above).
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
 		}
@@ -2001,7 +2407,10 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 			if place.Kind == tir.CheckedIndexPlace {
 				return buildArrayPlaceRead(unit, snapshot, place, locals, width, true)
 			}
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace or CheckedIndexPlace", place.Kind)
+			if place.Kind == tir.FieldPlace {
+				return buildStructFieldRead(unit, snapshot, place, locals, width, true)
+			}
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, or FieldPlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, place, locals, width, true)
 	case tir.TupleElementValue:
@@ -2182,6 +2591,23 @@ func isOptional(snapshot *types.Snapshot, id types.TypeID) bool {
 	return ok && key.Kind() == types.Optional
 }
 
+// isStruct reports whether id resolves to a struct type in the snapshot. It is
+// how the emitter recognizes a struct-typed local's declaration without
+// consulting the builtin table: a struct is a Nominal type, not a
+// types.BuiltinKind, so resolvedBuiltin returns no kind for it and the caller
+// must ask whether the type is a struct instead. A generic struct's
+// monomorphized instance is also Nominal (its Nominal arguments are the
+// concrete type arguments), so it is recognized the same way; this backend
+// never inspects the argument list, so a generic instance is emitted exactly
+// like a non-generic struct of the same shape.
+func isStruct(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.Nominal
+}
+
 // arrayLengthLiteral validates that the compile-time length can be passed to
 // the width-specific checked-index helper without a narrowing conversion.
 func arrayLengthLiteral(length uint64, width types.BuiltinKind) (string, error) {
@@ -2209,6 +2635,13 @@ func tupleTypeName(id types.TypeID) string {
 // type's own stable types.TypeID, mirroring the tuple naming discipline.
 func optionalTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_optional_%d_t", id)
+}
+
+// structTypeName is the deterministic C name of one distinct struct type's
+// struct typedef: pebble_struct_<typeID>_t, derived from the struct type's own
+// stable types.TypeID, mirroring the tuple naming discipline.
+func structTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_struct_%d_t", id)
 }
 
 // tupleElementCType is the C field type a tuple element of the given type is
@@ -2329,6 +2762,82 @@ func buildOptionalTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id 
 	return fmt.Sprintf("typedef struct {\n    bool has_value;\n    %s value;\n} %s;", valueCType, optionalTypeName(id)), nil
 }
 
+// buildStructTypedefs builds the C text of one struct typedef per struct type
+// in infos, in order, each joined by a newline. The caller (Emit) supplies
+// infos in first-encountered order from the struct-type collection pass, so
+// every struct type the emitted program references has exactly one typedef
+// here, written before any function definition in the final output.
+func buildStructTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, infos []structInfo) (string, error) {
+	texts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		text, err := buildStructTypedef(snapshot, width, info)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildStructTypedef builds the C text of one struct type's struct typedef,
+// with one field per declared struct field, in the struct's *declared* order
+// (from the TypeDecl's Members list, resolved by collectStructTypes — never
+// the construction-site order a RecordConstruct's Fields carry), each named
+// deterministically from the field's own stable symbol.SymbolID:
+//
+//	typedef struct {
+//	    int32_t pebble_field_25;
+//	    bool pebble_field_26;
+//	} pebble_struct_<typeID>_t;
+//
+// Naming each C field from the field's symbol ID (mirroring the
+// pebble_local_<symbolID> / pebble_fn_<symbolID> discipline) makes a C-field
+// name collision impossible even if a source field name were a C keyword or
+// duplicated another identifier. Each field's C type comes from
+// structFieldCType, which validates the field is the entry's width or bool.
+// A structInfo whose TypeID is not a Nominal type in the snapshot is a clean
+// rejection, not a guessed layout (defense for hand-built IR; collectStructTypes
+// has already resolved every collected TypeID through resolveStructInfo).
+func buildStructTypedef(snapshot *types.Snapshot, width types.BuiltinKind, info structInfo) (string, error) {
+	key, ok := snapshot.Key(info.typ)
+	if !ok {
+		return "", fmt.Errorf("struct type %d is not in the type snapshot", info.typ)
+	}
+	if key.Kind() != types.Nominal {
+		return "", fmt.Errorf("type %s is a %v, want a struct type", structTypeName(info.typ), key.Kind())
+	}
+	fields := make([]string, len(info.fields))
+	for i, field := range info.fields {
+		ctype, err := structFieldCType(snapshot, width, field.typ)
+		if err != nil {
+			return "", fmt.Errorf("struct type %s: %v", structTypeName(info.typ), err)
+		}
+		fields[i] = "    " + ctype + fmt.Sprintf(" pebble_field_%d;", field.member)
+	}
+	return fmt.Sprintf("typedef struct {\n%s\n} %s;", strings.Join(fields, "\n"), structTypeName(info.typ)), nil
+}
+
+// structFieldCType is the C field type a struct field of the given type is
+// declared with in its struct's typedef: int32_t / int64_t for a field of the
+// entry's resolved width, bool for a bool field. Any other field type — a str
+// field, a nested struct field, a tuple/array/optional field — is a clean
+// rejection naming what was found, since this backend emits exactly those two
+// C types as struct fields.
+func structFieldCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if isWidth(snapshot, width, id) {
+		return cType(width), nil
+	}
+	if isBool(snapshot, id) {
+		return "bool", nil
+	}
+	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
+		if name, ok := builtinName(builtin); ok {
+			return "", fmt.Errorf("field type %s is not supported, want %s or bool", name, wantName(width))
+		}
+	}
+	return "", fmt.Errorf("field type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+}
+
 // optionalPayloadCType is the C field type an optional payload of the given
 // type is declared with in its optional's struct typedef: int32_t / int64_t
 // for a payload of the entry's resolved width, bool for a bool payload. Any
@@ -2349,9 +2858,11 @@ func optionalPayloadCType(snapshot *types.Snapshot, width types.BuiltinKind, id 
 	return "", fmt.Errorf("payload type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
 }
 
-// joinTypedefs joins two typedef text blocks (tuple and optional) into a
-// single block, with a blank line between them when both are non-empty.
-// Either may be empty; the result is empty when both are empty.
+// joinTypedefs joins two typedef text blocks into a single block, with a blank
+// line between them when both are non-empty. Either may be empty; the result is
+// empty when both are empty. Emit chains it twice (tuple joined with optional,
+// then the result joined with struct) so the three typedef families form one
+// block in a fixed order.
 func joinTypedefs(tupleTypedefs, optionalTypedefs string) string {
 	if tupleTypedefs == "" {
 		return optionalTypedefs
@@ -2498,10 +3009,11 @@ func entryReturnType(width types.BuiltinKind) string {
 
 // emitEntryC writes the shared adapter skeleton once the typed IR has been
 // confirmed to describe one of the supported program shapes. typedefs is the C
-// text of one struct typedef per distinct tuple type the program references,
-// written before every function definition (helpers and pebble_user_main) since
+// text of one struct typedef per distinct tuple/optional/struct type the
+// program references, written before every function definition (helpers and
+// pebble_user_main) since
 // C requires a type to be defined before any function's body can use it; it is
-// empty when the program has no tuples. helpers is the
+// empty when the program has no tuples, optionals, or structs. helpers is the
 // C text of every reachable helper function (each a static
 // pebble_fn_<symbolID> definition), written before pebble_user_main so a
 // called function's definition precedes its use; it is empty when the program
