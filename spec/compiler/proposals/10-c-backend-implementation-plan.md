@@ -125,6 +125,23 @@ incrementally as work proceeds.
   independently that the emitted if/else compiles clean under `-Wall
   -Wextra -Werror` with no "control reaches end of non-void function"
   warning — no defensive fallback needed.
+- **10.8 — generalize entry bodies to a recursive block grammar**
+  (`compiler/internal/backend`): collapses 10.7's three ad hoc
+  validators into one recursive rule — a block is zero or more locals
+  followed by a tail that's either a return or a two-armed if/else
+  whose arms are themselves blocks under the same grammar. An if arm
+  can now contain its own local declarations and nested if/else,
+  removing 10.7's "exactly one return per arm" restriction. Local
+  scope isolation is real: every recursive block entry clones the
+  locals set before extending it, verified two ways — an end-to-end
+  test where both arms declare a same-named source local (distinct
+  symbol IDs) proving the arms' C names don't collide, and a
+  hand-built unit where one arm's return deliberately references the
+  sibling arm's local, confirmed rejected. Nested indentation
+  confirmed by eye on a three-level-deep fixture and independently
+  compiled and run outside the dispatched tests. Every 10.2–10.7 test
+  still passes unmodified except the two whose now-supported shape
+  became the new positive cases.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
