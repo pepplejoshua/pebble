@@ -16,6 +16,8 @@ static const char *panic_kind_label(PebblePanicKind kind) {
         return "unwrap of empty optional";
     case PEBBLE_PANIC_TAG_MISMATCH:
         return "tagged union tag mismatch";
+    case PEBBLE_PANIC_ARITHMETIC_OVERFLOW:
+        return "arithmetic overflow";
     case PEBBLE_PANIC_GENERIC:
         return "panic";
     }

@@ -14,7 +14,7 @@ MODE    ?= SAFE
 CPPFLAGS := -Iinclude -DPEBBLE_RT_MODE_$(MODE)
 WARNFLAGS := -Wall -Wextra -Werror -std=c11
 
-SOURCES := src/context.c src/panic.c src/platform_host.c
+SOURCES := src/context.c src/panic.c src/platform_host.c src/arith.c
 TEST_SRC := test/smoke_test.c
 TEST_BIN := build/smoke_test
 

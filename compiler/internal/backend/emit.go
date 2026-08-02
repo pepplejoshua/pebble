@@ -2,8 +2,9 @@
 // runtime ABI (runtime/include/pebble_rt.h). It is deliberately narrow: the
 // current slice emits exactly two program shapes — an empty-bodied Pebble-
 // convention void entry function, and a zero-parameter i32 entry whose body
-// is exactly one `return <non-negative integer literal>;` — and rejects
-// everything else with a descriptive error instead of guessing.
+// is exactly one `return <i32 expression>;` where the expression is a small
+// tree of integer literals, checked negation, and checked +, -, * arithmetic —
+// and rejects everything else with a descriptive error instead of guessing.
 package backend
 
 import (
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -20,10 +22,14 @@ import (
 // function (identified by entrySymbol) must be Pebble-convention and take zero
 // parameters. Its result must be either void with a completely empty body (no
 // statements — only ever an ImplicitReturn, i.e. exactly what `fn main() void
-// {}` produces) or i32 with a body of exactly one `return <non-negative
-// integer literal>;` statement, in which case the literal is propagated as the
-// process's exit code. Any other shape returns a descriptive error and writes
-// nothing to w; this package does not yet lower expressions or statements.
+// {}` produces) or i32 with a body of exactly one `return <i32 expression>;`
+// statement, in which case the expression's value is propagated as the
+// process's exit code. The expression may be a plain non-negative integer
+// literal, or a tree of checked negation and checked +, -, * arithmetic (see
+// buildExpr) — checked operations emit pebble_rt_checked_*_i32 calls so the
+// language's overflow semantics survive into the emitted program. Any other
+// shape returns a descriptive error and writes nothing to w; this package does
+// not yet lower arbitrary expressions or statements.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -53,11 +59,11 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		}
 		return emitEntryC(w, voidEntryUserMain, voidEntryMainBody)
 	}
-	literal, err := validateLiteralReturnBody(unit, block)
+	expr, err := buildReturnExpression(unit, snapshot, block)
 	if err != nil {
 		return err
 	}
-	return emitEntryC(w, fmt.Sprintf(integerEntryUserMain, literal), integerEntryMainBody)
+	return emitEntryC(w, fmt.Sprintf(integerEntryUserMain, expr), integerEntryMainBody)
 }
 
 // findEntryDeclaration locates the FunctionDeclaration node for entrySymbol.
@@ -136,37 +142,119 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 	return fmt.Errorf("entry function body is not empty: %d statement(s) found; this backend only emits an empty-bodied void entry", len(block.Children))
 }
 
-// validateLiteralReturnBody accepts only the i32 entry's supported body: a
-// block with exactly one statement, a Return carrying exactly one argument, a
-// plain non-negative IntegerLiteral. On success it returns the literal's
-// decimal text for direct pasting into C. Any other shape is rejected with a
-// descriptive error, not best-effort lowered.
-func validateLiteralReturnBody(unit *tir.Unit, block tir.Node) (string, error) {
+// buildReturnExpression validates the i32 entry's supported body and builds the
+// C text for its return value. The accepted body: a block with exactly one
+// statement, a Return carrying exactly one argument, and a value node that
+// buildExpr can lower (a plain non-negative integer literal, or a tree of
+// checked negation and checked +, -, * arithmetic). Any other shape is
+// rejected with a descriptive error, not best-effort lowered.
+func buildReturnExpression(unit *tir.Unit, snapshot *types.Snapshot, block tir.Node) (string, error) {
 	if len(block.Children) != 1 {
-		return "", fmt.Errorf("entry function body has %d statement(s), want exactly one return of a non-negative integer literal", len(block.Children))
+		return "", fmt.Errorf("entry function body has %d statement(s), want exactly one return of an integer expression", len(block.Children))
 	}
 	ret, ok := unit.Node(block.Children[0])
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid statement node %d", block.Children[0])
 	}
 	if ret.Kind != tir.Return {
-		return "", fmt.Errorf("entry function body statement is a %s, want a Return of a non-negative integer literal", ret.Kind)
+		return "", fmt.Errorf("entry function body statement is a %s, want a Return of an integer expression", ret.Kind)
 	}
 	if len(ret.Children) != 1 {
-		return "", fmt.Errorf("entry function return statement has %d argument(s), want exactly one non-negative integer literal", len(ret.Children))
+		return "", fmt.Errorf("entry function return statement has %d argument(s), want exactly one integer expression", len(ret.Children))
 	}
-	value, ok := unit.Node(ret.Children[0])
+	return buildExpr(unit, snapshot, ret.Children[0])
+}
+
+// buildExpr builds the C expression text for an i32 value node, recursing into
+// its operands. It accepts exactly three node kinds:
+//
+//   - IntegerLiteral — its decimal text (defensively validated, exactly as
+//     10.3 validated a bare literal return).
+//   - CheckedNegate with exactly one i32 operand — pebble_rt_checked_neg_i32.
+//   - CheckedArithmetic with exactly two i32 operands and operator +, -, or *
+//     — pebble_rt_checked_add_i32 / pebble_rt_checked_sub_i32 /
+//     pebble_rt_checked_mul_i32.
+//
+// CheckedArithmetic with any other operator (division, modulo, and the other
+// integral operators that build this node) is rejected, not guessed: division
+// and modulo need a different fault category (divide-by-zero), which is out of
+// scope for this slice. Any other node kind at any position — a variable
+// reference (SymbolValue), a function call, a non-i32 operand, CheckedShift,
+// and so on — is a clean rejection naming what was found. Emitting the checked
+// runtime helpers (rather than raw C + - *) is what keeps the IR nodes' real
+// overflow semantics from silently disappearing in the emitted program.
+func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID) (string, error) {
+	node, ok := unit.Node(id)
 	if !ok {
-		return "", fmt.Errorf("entry function return value node %d not found in unit", ret.Children[0])
+		return "", fmt.Errorf("entry function return expression references invalid node %d", id)
 	}
-	if value.Kind != tir.IntegerLiteral {
-		return "", fmt.Errorf("entry function returns a %s, want a plain non-negative integer literal", value.Kind)
+	if !isI32(snapshot, node.Type) {
+		return "", fmt.Errorf("entry function return expression contains a %s of type %s, want i32", node.Kind, describeType(snapshot, node.Type))
 	}
-	text := value.Literal.IntegerNum
-	if !isNonNegativeDecimal(text) {
-		return "", fmt.Errorf("entry function return value %q is not a plain non-negative integer literal", text)
+	switch node.Kind {
+	case tir.IntegerLiteral:
+		text := node.Literal.IntegerNum
+		if !isNonNegativeDecimal(text) {
+			return "", fmt.Errorf("entry function return expression contains an integer literal with malformed text %q", text)
+		}
+		return text, nil
+	case tir.CheckedNegate:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function return expression contains a CheckedNegate with %d operand(s), want exactly one", len(node.Children))
+		}
+		if node.Operator != syntax.Minus {
+			return "", fmt.Errorf("entry function return expression contains a CheckedNegate with operator %s, want -", node.Operator)
+		}
+		child, err := buildExpr(unit, snapshot, node.Children[0])
+		if err != nil {
+			return "", err
+		}
+		return "pebble_rt_checked_neg_i32(" + child + ")", nil
+	case tir.CheckedArithmetic:
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("entry function return expression contains a CheckedArithmetic with %d operand(s), want exactly two", len(node.Children))
+		}
+		helper, ok := checkedArithmeticHelper(node.Operator)
+		if !ok {
+			return "", fmt.Errorf("entry function return expression contains a CheckedArithmetic with operator %s, want +, -, or * (division and modulo need a different fault category, not supported yet)", node.Operator)
+		}
+		left, err := buildExpr(unit, snapshot, node.Children[0])
+		if err != nil {
+			return "", err
+		}
+		right, err := buildExpr(unit, snapshot, node.Children[1])
+		if err != nil {
+			return "", err
+		}
+		return helper + "(" + left + ", " + right + ")", nil
+	default:
+		return "", fmt.Errorf("entry function return expression contains a %s, want an integer literal or checked +, -, * arithmetic", node.Kind)
 	}
-	return text, nil
+}
+
+// checkedArithmeticHelper maps the +, -, * operators a CheckedArithmetic node
+// may carry to the runtime helper that implements their checked overflow
+// semantics. Any other operator (division, modulo, bitwise) is deliberately
+// not mapped: division and modulo fault on divide-by-zero, a different
+// category this slice does not yet emit.
+func checkedArithmeticHelper(op syntax.TokenKind) (string, bool) {
+	switch op {
+	case syntax.Plus:
+		return "pebble_rt_checked_add_i32", true
+	case syntax.Minus:
+		return "pebble_rt_checked_sub_i32", true
+	case syntax.Star:
+		return "pebble_rt_checked_mul_i32", true
+	default:
+		return "", false
+	}
+}
+
+// isI32 reports whether id is the snapshot's i32 builtin identity. The
+// checked helpers this backend emits operate on i32 only, so every node in an
+// accepted expression tree must carry exactly this type.
+func isI32(snapshot *types.Snapshot, id types.TypeID) bool {
+	return snapshot != nil && id == snapshot.Builtins().I32
 }
 
 // isNonNegativeDecimal reports whether s is a non-empty run of ASCII decimal
@@ -197,9 +285,10 @@ const voidEntryUserMain = `static void pebble_user_main(PebbleContext *ctx) {
 const voidEntryMainBody = `pebble_user_main(&ctx);
     return 0;`
 
-// integerEntryUserMain is a format string; %s is the validated non-negative
-// integer literal text, which becomes pebble_user_main's return value and,
-// through the hosted main's own return, the process exit code.
+// integerEntryUserMain is a format string; %s is the built return expression
+// text (a plain integer literal, or a chain of pebble_rt_checked_*_i32 calls),
+// which becomes pebble_user_main's return value and, through the hosted main's
+// own return, the process exit code.
 const integerEntryUserMain = `static int pebble_user_main(PebbleContext *ctx) {
     (void)ctx;
     return %s;

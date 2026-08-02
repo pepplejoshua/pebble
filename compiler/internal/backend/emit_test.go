@@ -100,47 +100,12 @@ func TestEmitEmptyEntryWritesC(t *testing.T) {
 }
 
 func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
-	}
 	unit, snapshot, entryID := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
-
-	dir := t.TempDir()
-	program := filepath.Join(dir, "program.c")
-	if err := os.WriteFile(program, buf.Bytes(), 0o644); err != nil {
-		t.Fatalf("write emitted C: %v", err)
-	}
-	binary := filepath.Join(dir, "program")
-	runtimeRoot := runtimeSourceRoot(t)
-
-	compile := exec.Command(cc,
-		"-std=c11",
-		"-DPEBBLE_RT_MODE_SAFE",
-		"-I", filepath.Join(runtimeRoot, "include"),
-		program,
-		filepath.Join(runtimeRoot, "src", "context.c"),
-		filepath.Join(runtimeRoot, "src", "panic.c"),
-		filepath.Join(runtimeRoot, "src", "platform_host.c"),
-		"-o", binary,
-	)
-	if output, err := compile.CombinedOutput(); err != nil {
-		t.Fatalf("cc compilation failed: %v\n%s", err, output)
-	}
-
-	run := exec.Command(binary)
-	output, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("compiled program failed to run: %v\n%s", err, output)
-	}
-	if code := run.ProcessState.ExitCode(); code != 0 {
-		t.Fatalf("compiled program exited %d, want 0\n%s", code, output)
-	}
-	t.Logf("compiled program exited 0")
+	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
 func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
@@ -161,19 +126,74 @@ func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
 }
 
 func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
-	}
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 42; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitCheckedAddReturnCompilesAndRuns(t *testing.T) {
+	// `return 1 + 2;` was rejected by 10.3; the checked arithmetic expression
+	// tree is now accepted and lowered to pebble_rt_checked_add_i32(1, 2),
+	// which must produce exit code 3 end to end.
+	emitAndRun(t, "fn main() i32 { return 1 + 2; }", false, 3, false)
+}
+
+func TestEmitCheckedArithmeticPrecedenceCompilesAndRuns(t *testing.T) {
+	// 1 + 2 * 3 must compute as 1 + (2 * 3) = 7. Precedence is already
+	// resolved in the typed IR the checker built (the * node is a child of
+	// the + node); the emitter only walks the tree, it does not re-implement
+	// precedence.
+	emitAndRun(t, "fn main() i32 { return 1 + 2 * 3; }", false, 7, false)
+}
+
+func TestEmitCheckedNegateFeedsArithmeticCompilesAndRuns(t *testing.T) {
+	// A CheckedNegate feeding into a CheckedArithmetic: -5 + 10 = 5. This
+	// exercises pebble_rt_checked_neg_i32(5) inside the add's left operand.
+	emitAndRun(t, "fn main() i32 { return -5 + 10; }", false, 5, false)
+}
+
+func TestEmitCheckedArithmeticOverflowAborts(t *testing.T) {
+	// 2147483647 + 1 overflows i32. Compiled in PEBBLE_RT_MODE_SAFE (the
+	// same mode the other end-to-end tests use), the emitted
+	// pebble_rt_checked_add_i32 call must panic through pebble_rt_panic, so
+	// the process must terminate abnormally — not exit 0 and not return any
+	// specific arithmetic value.
+	emitAndRun(t, "fn main() i32 { return 2147483647 + 1; }", false, 0, true)
+}
+
+// emitAndRun drives one .peb entry source through buildFixture, Emit, and the
+// end-to-end cc compile + run. wantCode is the expected process exit code;
+// with wantAbnormal set, the process must instead terminate abnormally (a
+// non-zero exit or a signal, as abort() produces) rather than exiting with
+// any specific code.
+func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) {
+	t.Helper()
+	unit, snapshot, entryID := buildFixture(t, sourceText, "main", requireEntry)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), wantCode, wantAbnormal)
+}
+
+// compileAndRun cc's already-emitted C against the runtime in
+// PEBBLE_RT_MODE_SAFE (the same configuration every end-to-end test here
+// uses), runs the binary, and asserts the exit behavior. With wantAbnormal,
+// the process must terminate abnormally; otherwise its exit code must equal
+// wantCode.
+func compileAndRun(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) {
+	t.Helper()
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
+	}
 
 	dir := t.TempDir()
 	program := filepath.Join(dir, "program.c")
-	if err := os.WriteFile(program, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(program, emitted, 0o644); err != nil {
 		t.Fatalf("write emitted C: %v", err)
 	}
 	binary := filepath.Join(dir, "program")
@@ -187,6 +207,7 @@ func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
 		filepath.Join(runtimeRoot, "src", "context.c"),
 		filepath.Join(runtimeRoot, "src", "panic.c"),
 		filepath.Join(runtimeRoot, "src", "platform_host.c"),
+		filepath.Join(runtimeRoot, "src", "arith.c"),
 		"-o", binary,
 	)
 	if output, err := compile.CombinedOutput(); err != nil {
@@ -199,10 +220,23 @@ func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
 		t.Fatalf("compiled program did not start: %v\n%s", err, output)
 	}
 	code := run.ProcessState.ExitCode()
-	if code != 42 {
-		t.Fatalf("compiled program exited %d, want 42\n%s", code, output)
+	if wantAbnormal {
+		// CombinedOutput returns a non-nil error for any non-zero exit or
+		// signal; a clean exit 0 would mean the overflow check never fired.
+		if err == nil {
+			t.Fatalf("compiled program exited 0, want abnormal termination\n%s", output)
+		}
+		t.Logf("compiled program terminated abnormally (err=%v, exit code %d): %s", err, code, output)
+		return
 	}
-	t.Logf("compiled program exited %d, want 42", code)
+	// A non-zero exit is expected behavior for some programs (the exit code
+	// IS the program's output), so the run error is not itself a failure —
+	// only a mismatch with the wanted code is. A signaled process would
+	// report exit code -1 and fail the comparison.
+	if code != wantCode {
+		t.Fatalf("compiled program exited %d, want %d\n%s", code, wantCode, output)
+	}
+	t.Logf("compiled program exited %d, want %d", code, wantCode)
 }
 
 // buildI32EmptyBodyUnit hand-builds a unit whose entry has an i32 result type
@@ -229,6 +263,71 @@ func buildI32EmptyBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sym
 		t.Fatal(err)
 	}
 	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: snapshot.Builtins().I32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
+// buildNonI32ReturnUnit hand-builds a unit whose i32 entry returns a bool
+// literal. The checker would reject this shape itself (a bool does not unify
+// with an i32 result), so it is constructed directly through the IR builder to
+// exercise Emit's own requirement that every value in an accepted expression
+// tree is typed i32.
+func buildNonI32ReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal, err := builder.AddNode(tir.Node{
+		Kind:    tir.BoolLiteral,
+		Type:    snapshot.Builtins().Bool,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralBool, Bool: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{literal},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,13 +379,27 @@ func TestEmitRejectsNonEmptyBody(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsUnaryNegationReturn(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return -1; }", "main", false)
+func TestEmitRejectsDivisionReturn(t *testing.T) {
+	// Division builds a CheckedArithmetic node with operator Slash. It needs a
+	// different fault category (divide-by-zero), which is explicitly out of
+	// scope for this slice, so it must be a clean Emit rejection — not a
+	// guessed lowering and not a panic in the Go test itself.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 1 / 2; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsNonLiteralReturn(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 1 + 2; }", "main", false)
+func TestEmitRejectsVariableReturn(t *testing.T) {
+	// A variable reference lowers to a SymbolValue, which is not a supported
+	// expression node for the i32 entry's return value.
+	unit, snapshot, entryID := buildFixture(t, "let x i32 = 1; fn main() i32 { return x; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsNonI32ReturnValue(t *testing.T) {
+	// A bool literal is not an i32 expression. The checker would never build
+	// this shape itself, so it is hand-built through the IR builder to
+	// exercise Emit's own non-i32 rejection.
+	unit, snapshot, entryID := buildNonI32ReturnUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

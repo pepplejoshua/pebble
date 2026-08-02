@@ -100,6 +100,7 @@ typedef enum PebblePanicKind {
     PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS,
     PEBBLE_PANIC_UNWRAP_FAILED,
     PEBBLE_PANIC_TAG_MISMATCH,
+    PEBBLE_PANIC_ARITHMETIC_OVERFLOW,
     PEBBLE_PANIC_GENERIC
 } PebblePanicKind;
 
@@ -117,6 +118,25 @@ typedef struct PebblePanicInfo {
 #endif
 
 PEBBLE_RT_NORETURN void pebble_rt_panic(const PebblePanicInfo *info);
+
+/* ---- checked arithmetic ----------------------------------------------------
+ * The compiler's typed IR retains CheckedArithmetic/CheckedNegate nodes with
+ * "release-mode response left to phase 10" (spec 06b) — the language defines
+ * checked-overflow semantics; this runtime is where that gets decided.
+ *
+ * PEBBLE_RT_MODE_SAFE: overflow calls pebble_rt_panic with
+ * PEBBLE_PANIC_ARITHMETIC_OVERFLOW. PEBBLE_RT_MODE_RELEASE: overflow wraps
+ * using the operation's two's-complement bit pattern (computed via unsigned
+ * arithmetic, so this is defined behavior, never a signed-overflow UB trap) —
+ * release mode trades the panic for speed, not for undefined behavior.
+ *
+ * i32 only for now; other integer widths arrive with the lowering slices that
+ * need them.
+ */
+int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b);
+int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b);
+int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b);
+int32_t pebble_rt_checked_neg_i32(int32_t a);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend
