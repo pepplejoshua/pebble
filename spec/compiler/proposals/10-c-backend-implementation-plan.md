@@ -493,6 +493,49 @@ incrementally as work proceeds.
   outside the harness — manually compiled and ran the emitted C for
   `let x ?i32 = some 42; return x!;` with `-Wall -Wextra -Werror`,
   confirming exit code 42.
+- **10.22 — struct (record) values** (`compiler/internal/backend`):
+  the fourth backend-supported aggregate type after tuples (10.19),
+  arrays (10.20), and optionals (10.21). A struct type is emitted as
+  one C struct typedef per distinct struct type,
+  `pebble_struct_<typeID>_t`, with each C field named
+  `pebble_field_<memberSymbolID>` from the field's own stable symbol
+  ID (mirroring the `pebble_local_<symbolID>` naming discipline), in
+  the struct's *declared* field order. Field types restricted to the
+  entry's width or `bool`. Construction only supports a
+  `RecordConstruct` literal (`Point.{ x = 1, y = 2 }`); since a
+  construction site's field order need not match the struct's
+  declared order, the local's initializer is emitted as a C99
+  designated-initializer brace list
+  (`{ .pebble_field_25 = ..., .pebble_field_26 = ... }`), which
+  sidesteps the ordering problem entirely regardless of either order —
+  verified with a dedicated test that writes fields out of declared
+  order and confirms each still lands in the right place, not just a
+  test that happens to write them in order. Reading a field
+  (`point.x`) lowers, per a real fixture, to `Load(FieldPlace)` — the
+  struct analog of 10.19/10.20's `Load(TuplePlace)`/
+  `Load(CheckedIndexPlace)` findings. `localInfo` gained a sixth
+  mutually-exclusive field (`structType`). A struct's declared field
+  order comes from the `TypeDeclaration`'s container (`TypeDecl.Members`),
+  not the `TypeDeclaration` node itself (which carries no
+  children/type) — the same "the node isn't the whole story" finding
+  10.18 made for `FunctionDeclaration.Parameters`. Reassigning a
+  struct local, struct-typed parameters/results, `FieldValue` (reading
+  a field off a struct literal directly), nested field access, and
+  unsupported field types are all clean rejections. Bonus finding, no
+  special-casing needed: a generic struct's monomorphized instance is
+  `Nominal` exactly like a non-generic struct (the concrete type
+  arguments live in a part of the type key this backend never
+  inspects), so it works automatically. No checker/tir bug found this
+  time — the brief explicitly instructed stopping and reporting rather
+  than routing around one, given two were found in the previous two
+  slices (4a479e8, 6c08b8b); none turned up here. Verified end-to-end
+  (two-field read, out-of-declared-order construction, a bool field
+  driving an `if`, a field as a call argument, a three-field struct
+  with two fields read and added, an i64 field, and a struct local
+  inside a helper) and independently outside the harness — manually
+  compiled and ran the emitted C for a struct constructed with fields
+  out of declared order (`Point.{ y = 22, x = 20 }; return point.x +
+  point.y;`) with `-Wall -Wextra -Werror`, confirming exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
