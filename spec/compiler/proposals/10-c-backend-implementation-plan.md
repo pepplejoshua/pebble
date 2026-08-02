@@ -142,6 +142,23 @@ incrementally as work proceeds.
   compiled and run outside the dispatched tests. Every 10.2–10.7 test
   still passes unmodified except the two whose now-supported shape
   became the new positive cases.
+- **10.9 — mutable `var` locals and reassignment**
+  (`compiler/internal/backend`): extends the block grammar's leading
+  statements with `tir.Store` (reassignment) alongside `Initialize` — a
+  `var x i32 = ...;` declared local can now be reassigned via `x =
+  <expr>;` anywhere it's in scope. The checker already refuses a
+  `Store` targeting a `let` (C0606) before typed IR exists, confirmed
+  directly, so any `Store` this backend sees necessarily targets a
+  `var`. Deliberate simplification: every local now emits as plain
+  `int32_t` rather than 10.6's `const int32_t`, since the `Initialize`
+  node doesn't carry let-vs-var and the checker's own guarantee makes
+  `const` pure defense-in-depth here — documented in place, not
+  dropped silently. This is the prerequisite for `while` loops: a loop
+  that can only declare fresh immutable locals each iteration can't
+  accumulate anything, so mutation had to land before iteration is
+  worth adding. Overflow checking confirmed to survive through a
+  reassignment, both by the dispatched test and independently outside
+  the test harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
