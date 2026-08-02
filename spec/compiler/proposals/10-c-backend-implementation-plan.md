@@ -105,6 +105,26 @@ incrementally as work proceeds.
   rejected cleanly. Confirmed overflow checking survives through a
   local reference, not just literal operands, both by the dispatched
   test and by inspecting the emitted C directly.
+- **10.7 — comparisons and if/else as the entry body's tail**
+  (`compiler/internal/backend`): the final statement may now be a
+  two-armed `if <comparison> { return <expr>; } else { return <expr>;
+  }` instead of only a bare return. All six comparisons (`<`, `<=`,
+  `>`, `>=`, `==`, `!=`) are supported and emit the plain C operator
+  directly (comparing two integers cannot overflow); locals declared
+  earlier in the body are visible in the condition and both arms.
+  Deliberately narrow: only the two-armed, both-branches-return shape,
+  each arm exactly one return (no locals or nested `if` inside a
+  branch) — everything else is a clean rejection. Real finding along
+  the way: a bare comparison between untyped integer literals (`if 1 <
+  2`) types both operands as the platform `int` builtin, not `i32` —
+  `return`/`let x i32 = ...` positions anchor literals to `i32` via
+  the checker's expectation mechanism, but a comparison condition has
+  no such anchor unless one side is already an i32 value. Handled by
+  lowering an `int`-typed literal operand directly rather than
+  loosening the emitter's i32-only discipline anywhere else. Confirmed
+  independently that the emitted if/else compiles clean under `-Wall
+  -Wextra -Werror` with no "control reaches end of non-void function"
+  warning — no defensive fallback needed.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
