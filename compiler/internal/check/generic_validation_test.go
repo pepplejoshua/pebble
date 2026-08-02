@@ -97,6 +97,27 @@ func TestGenericInstantiationIntegral(t *testing.T) {
 	}
 }
 
+func TestGenericInstantiationLiteralFits(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		valid  bool
+	}{
+		{"integer fits", `fn overflow[T](value T) T { return value + 1; } fn check() void { let result i8 = overflow[i8](127); }`, true},
+		{"integer does not fit i8", `fn overflow[T](value T) T { return value + 200; } fn check() void { let result i8 = overflow[i8](1); }`, false},
+		{"integer fits i32", `fn overflow[T](value T) T { return value + 200; } fn check() void { let result i32 = overflow[i32](1); }`, true},
+		{"float fits f32", `fn overflow[T](value T) T { return value + 1.5; } fn check() void { let result f32 = overflow[f32](0.5); }`, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, diagnostics := checkGenericFixture(t, test.source)
+			if result.Successful() != test.valid || hasValidationDiagnostic(diagnostics, CodeGenericInstantiation) == test.valid {
+				t.Fatalf("literal-fits instantiation mismatch: valid=%v result=%v diagnostics=%+v", test.valid, result.Successful(), diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestGenericInstantiationChecksEachCallSite(t *testing.T) {
 	result, diagnostics := checkGenericFixture(t, `
 type Pair = struct { value i32; };
@@ -200,4 +221,67 @@ fn check() void {
 	let f fn(Pair, Pair) Pair = max[Pair];
 }
 `, "max[Pair]", "a > b")
+}
+
+// requireGenericLiteralInstantiation asserts the single C0621 diagnostic for a
+// failing literal-fits instantiation carries the LiteralFits message, a
+// primary span at the concrete failing site, and a related label at the
+// generic-body literal origin.
+func requireGenericLiteralInstantiation(t *testing.T, sourceText, primaryNeedle, relatedNeedle string) {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(sourceText)})
+	result := Check(inputs, diagnostics, Config{})
+	if result.Successful() {
+		t.Fatalf("failing literal-fits instantiation was accepted: %+v", diagnostics.Items())
+	}
+	var found *diagnostic.Diagnostic
+	for index := range diagnostics.Items() {
+		item := diagnostics.Items()[index]
+		if item.Code != CodeGenericInstantiation {
+			continue
+		}
+		if found != nil {
+			t.Fatalf("expected one generic instantiation diagnostic: %+v", diagnostics.Items())
+		}
+		found = &item
+	}
+	if found == nil {
+		t.Fatalf("missing generic instantiation diagnostic: %+v", diagnostics.Items())
+	}
+	if want := "generic LiteralFits requirement failed at this instantiation site"; found.Message != want {
+		t.Fatalf("message = %q, want %q", found.Message, want)
+	}
+	wantPrimary := expectedSourceSpan(t, inputs, sourceText, primaryNeedle)
+	if found.Primary.Span != wantPrimary {
+		t.Fatalf("primary span = %+v, want %+v covering %q", found.Primary.Span, wantPrimary, primaryNeedle)
+	}
+	if len(found.Related) != 1 {
+		t.Fatalf("related labels = %d, want 1: %+v", len(found.Related), found.Related)
+	}
+	related := found.Related[0]
+	if want := "generic LiteralFits requirement declared here"; related.Message != want {
+		t.Fatalf("related message = %q, want %q", related.Message, want)
+	}
+	wantRelated := expectedSourceSpan(t, inputs, sourceText, relatedNeedle)
+	if related.Span != wantRelated {
+		t.Fatalf("related span = %+v, want %+v covering %q", related.Span, wantRelated, relatedNeedle)
+	}
+}
+
+func TestGenericInstantiationLiteralFitsCallSiteSpanAndRelated(t *testing.T) {
+	requireGenericLiteralInstantiation(t, `
+fn overflow[T](value T) T { return value + 200; }
+fn check() void {
+	let result i8 = overflow[i8](1);
+}
+`, "overflow[i8](1)", "value + 200")
+}
+
+func TestGenericInstantiationLiteralFitsBareValueSpanAndRelated(t *testing.T) {
+	requireGenericLiteralInstantiation(t, `
+fn overflow[T](value T) T { return value + 200; }
+fn check() void {
+	let f fn(i8) i8 = overflow[i8];
+}
+`, "overflow[i8]", "value + 200")
 }

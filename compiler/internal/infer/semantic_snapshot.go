@@ -23,6 +23,7 @@ type SemanticSnapshot struct {
 	programIdentity *programToken
 	solveIdentity   *sessionToken
 	storeLength     uint32
+	literalTarget   LiteralTarget
 	templates       []TypeTemplate
 	declarations    map[symbol.SymbolID]TypeDeclaration
 	declarationIDs  []symbol.SymbolID
@@ -93,6 +94,13 @@ func (s *SemanticSnapshot) Types() *types.Snapshot {
 		return nil
 	}
 	return s.types
+}
+
+func (s *SemanticSnapshot) LiteralTarget() LiteralTarget {
+	if s == nil {
+		return LiteralTarget{}
+	}
+	return s.literalTarget
 }
 
 func (s *SemanticSnapshot) Resolution() *symbol.Result {
@@ -361,7 +369,7 @@ func (b *semanticSnapshotBuilder) build() (*SemanticSnapshot, error) {
 	result := &SemanticSnapshot{
 		types: b.typeSnapshot, resolution: b.program.inputs.Resolution,
 		programIdentity: b.solution.programIdentity, solveIdentity: b.solution.solveIdentity,
-		storeLength:  b.solution.storeLength,
+		storeLength: b.solution.storeLength, literalTarget: b.program.inputs.LiteralTarget,
 		declarations: make(map[symbol.SymbolID]TypeDeclaration, len(b.program.declarations)),
 		signatures:   make(map[symbol.SymbolID]Signature, len(b.program.signatures)),
 		typeParams:   make(map[symbol.SymbolID]types.TypeID, len(b.program.typeParams)),

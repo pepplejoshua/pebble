@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func parseIntegerLiteral(text []byte, config Config) (*big.Int, error) {
@@ -285,4 +287,36 @@ func floatFits(value *big.Rat, precision int) bool {
 		max.Quo(max, new(big.Rat).SetInt(new(big.Int).Lsh(big.NewInt(1), uint(-shift))))
 	}
 	return abs.Cmp(max) <= 0
+}
+
+// LiteralFitsBuiltin reports whether the exact literal serialized as
+// numerator/denominator fits the given builtin kind under the target word
+// width. It mirrors the Session's own literal-fitting math without requiring a
+// live Session, so validation can re-check a recorded exact-literal obligation
+// against a resolved concrete argument. Any parse failure, unrecognized
+// literal kind, or non-numeric builtin reports false; it never panics.
+func LiteralFitsBuiltin(builtin types.BuiltinKind, kind ExactLiteralKind, numerator, denominator string, wordBits uint8) bool {
+	class := builtinClassKind(builtin)
+	if kind == ExactInteger {
+		value, ok := new(big.Int).SetString(numerator, 10)
+		if !ok {
+			return false
+		}
+		return integerFits(value, class, wordBits)
+	}
+	if kind == ExactFloat {
+		value, ok := new(big.Rat).SetString(numerator + "/" + denominator)
+		if !ok {
+			return false
+		}
+		switch class {
+		case builtinF32:
+			return floatFits(value, 32)
+		case builtinF64:
+			return floatFits(value, 64)
+		default:
+			return false
+		}
+	}
+	return false
 }

@@ -14,6 +14,13 @@ func (s *Session) builtinClass(id types.TypeID) typesBuiltin {
 	if !ok {
 		return builtinOther
 	}
+	return builtinClassKind(kind)
+}
+
+// builtinClassKind classifies a builtin kind into the local typesBuiltin enum
+// without any live Session, so the exact-literal fit math can be reused by
+// validation consumers that only hold a semantic snapshot.
+func builtinClassKind(kind types.BuiltinKind) typesBuiltin {
 	switch kind {
 	case types.Int:
 		return builtinInt

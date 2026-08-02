@@ -80,8 +80,11 @@ func concreteSatisfiesRequirement(requirement Requirement, argument infer.TypeRe
 	case RequirementEquatable:
 		return typeSatisfiesEquatable(key, argument.Type, semantics)
 	case RequirementLiteralFits:
-		// Literal range checking is intentionally deferred to a later slice.
-		return true
+		builtin, ok := key.Builtin()
+		if !ok {
+			return false
+		}
+		return infer.LiteralFitsBuiltin(builtin, requirement.LiteralKind, requirement.Numerator, requirement.Denominator, semantics.LiteralTarget().WordBits)
 	}
 	return true
 }
@@ -97,9 +100,6 @@ func validateGenericInstantiations(handoff *solveHandoff, records *solvedRecords
 		bad := false
 		var failedRequirement Requirement
 		for _, requirement := range ownerRequirements {
-			if requirement.Kind == RequirementLiteralFits {
-				continue
-			}
 			ordinal := parameterOrdinal(handoff, instantiation.Generic, requirement.Parameter)
 			if ordinal < 0 || ordinal >= len(instantiation.Arguments) {
 				continue
