@@ -3486,13 +3486,14 @@ func TestEmitRejectsWholeTupleStore(t *testing.T) {
 }
 
 func TestEmitRejectsTupleParameter(t *testing.T) {
-	// A function taking a tuple parameter is reachable from real source (the
-	// checker builds the helper and call fine), so this is a genuine
-	// backend-scope rejection: validateHelperSignature requires every
-	// parameter to be the entry's width or bool, and a tuple parameter is
-	// neither, exactly like the str-parameter rejection from 10.18.
+	// A tuple-typed parameter is now supported (10.24), but constructing a
+	// fresh tuple inline at the call site — f((1, 2)) — is not: the DirectCall
+	// argument is a TupleValue (confirmed against a real fixture dump), and
+	// this slice only passes an already-declared tuple-typed local (a plain
+	// SymbolValue). buildCallArguments rejects the inline construction with a
+	// clear error naming what was found, never building it.
 	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f((1, 2)); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline tuple construction as a call argument is not supported yet")
 }
 
 func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
@@ -3505,6 +3506,105 @@ func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
 	// the tuple-local Load(TuplePlace) shape.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i32 = (1, 2).1; return x; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+// 10.24 — tuple- and struct-typed function parameters
+
+func TestEmitTupleParameterCompilesAndRuns(t *testing.T) {
+	// The flagship tuple-parameter fixture: sumT takes a whole (i32, i32)
+	// tuple as its parameter and reads both elements back inside the callee,
+	// including element 0 (confirming 10.19's tir-ordinal fix still holds in
+	// the parameter path). The entry declares a tuple local and passes it by
+	// value; the callee's parameter seeds its own scope as a tuple local, so
+	// the reads resolve through the same Load(TuplePlace) machinery a tuple
+	// local uses. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }", false, 42, false)
+}
+
+func TestEmitTupleParameterWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture: the tuple typedef must precede
+	// the helper, the helper's signature declares the parameter as
+	// pebble_tuple_<typeID>_t pebble_local_<paramSymbol> (symbol 25, the t
+	// parameter), the parameter gets the same (void) cast, the body reads
+	// pebble_local_25._0 / ._1, and the call site passes the entry's tuple
+	// local pebble_local_27 directly (no construction at the call site).
+	// Symbols 24 (sumT), 25 (t param), 26 (main), 27 (t local), and tuple type
+	// 23 come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
+		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_tuple_23_t pebble_local_25) {",
+		"    (void)pebble_local_25;",
+		"    return pebble_rt_checked_add_i32(pebble_local_25._0, pebble_local_25._1);",
+		"pebble_tuple_23_t pebble_local_27 = { 20, 22 };",
+		"return pebble_fn_24(ctx, pebble_local_27);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static int32_t pebble_fn_24")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("tuple typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitTupleParameterUsedInBoolElementAndSecondCall(t *testing.T) {
+	// A tuple parameter whose element types are mixed width/bool: the callee
+	// reads the bool element to drive an if and the i32 element as a value.
+	// This proves the parameter's element reads route through buildBoolExpr
+	// (the Load(TuplePlace) bool path) exactly as a tuple local's do.
+	// choose((10, true)) takes the then-arm and returns the i32 element 10.
+	emitAndRun(t, "fn choose(t (i32, bool)) i32 { if t.1 { return t.0; } else { return 99; } } fn main() i32 { let t (i32, bool) = (10, true); return choose(t); }", false, 10, false)
+}
+
+func TestEmitTupleParameterParamOnlyTypeGetsTypedef(t *testing.T) {
+	// The typedef-discovery extension: the (i32, i32) tuple type appears ONLY
+	// as sumT's parameter type — sumT is never called (so no reachable body
+	// constructs a tuple of that type) and main constructs no tuple at all —
+	// yet the typedef must still be discovered, because the emitted helper's C
+	// signature names pebble_tuple_<typeID>_t. Before 10.24's Parameters scan
+	// in collectTupleTypes this returned nothing; the test drives
+	// collectTupleTypes directly with a hand-built reachable-helper slice, so
+	// it fails if the discovery stops being tied to a construction site. (The
+	// concrete type ID 23 is confirmed from the fixture dump.)
+	unit, snapshot, entryID := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return 0; }", "main", false)
+	entryDecl, err := findFunctionDeclaration(unit, entryID, "entry function")
+	if err != nil {
+		t.Fatalf("entry declaration: %v", err)
+	}
+	_, entryBlock, err := findFunctionBody(unit, entryDecl, "entry function")
+	if err != nil {
+		t.Fatalf("entry body: %v", err)
+	}
+	sumTDecl, err := findFunctionDeclaration(unit, 24, "called function")
+	if err != nil {
+		t.Fatalf("sumT declaration: %v", err)
+	}
+	_, sumTBody, err := findFunctionBody(unit, sumTDecl, "called function")
+	if err != nil {
+		t.Fatalf("sumT body: %v", err)
+	}
+	helpers := []helperInfo{{decl: sumTDecl, block: sumTBody}}
+	ids, err := collectTupleTypes(unit, snapshot, entryBlock, helpers)
+	if err != nil {
+		t.Fatalf("collectTupleTypes failed: %v", err)
+	}
+	found := false
+	for _, id := range ids {
+		if id == 23 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tuple type 23 used only as a parameter type was not discovered, got %v", ids)
+	}
 }
 
 // 10.21 — optional values
@@ -3919,13 +4019,115 @@ func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
 }
 
 func TestEmitRejectsStructTypedParameter(t *testing.T) {
-	// A struct-typed function parameter is reachable from real source but out
-	// of scope this slice: the reachability walk validates the callee's
-	// signature before any code is built, and validateHelperSignature rejects a
-	// parameter whose type is neither the entry's width nor bool — here the
-	// Point struct — with a clear error.
+	// A struct-typed parameter is now supported (10.24), but constructing a
+	// fresh struct inline at the call site — f(Point.{ x = 1, y = 2 }) — is
+	// not: the DirectCall argument is a RecordConstruct (confirmed against a
+	// real fixture dump), and this slice only passes an already-declared
+	// struct-typed local (a plain SymbolValue). buildCallArguments rejects the
+	// inline construction with a clear error naming what was found, never
+	// building it.
 	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f(Point.{ x = 1, y = 2 }); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline struct construction as a call argument is not supported yet")
+}
+
+// 10.24 — struct-typed function parameters
+
+func TestEmitStructParameterCompilesAndRuns(t *testing.T) {
+	// The flagship struct-parameter fixture: f takes a whole Point struct as
+	// its parameter and reads both fields back inside the callee. The entry
+	// declares a struct local and passes it by value; the callee's parameter
+	// seeds its own scope as a struct local, so the reads resolve through the
+	// same Load(FieldPlace) machinery a struct local uses. 20 + 22 = 42 is the
+	// process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", false, 42, false)
+}
+
+func TestEmitStructParameterWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture: the struct typedef must precede
+	// the helper, the helper's signature declares the parameter as
+	// pebble_struct_<typeID>_t pebble_local_<paramSymbol> (symbol 28, the p
+	// parameter), the parameter gets the same (void) cast, the body reads
+	// pebble_local_28.pebble_field_25 / .pebble_field_26, and the call site
+	// passes the entry's struct local pebble_local_30 directly (no construction
+	// at the call site). Symbols 24 (Point), 25 (x), 26 (y), 27 (f), 28 (p
+	// param), 29 (main), 30 (p local), and struct type 23 come from the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
+		"static int32_t pebble_fn_27(PebbleContext *ctx, pebble_struct_23_t pebble_local_28) {",
+		"    (void)pebble_local_28;",
+		"    return pebble_rt_checked_add_i32(pebble_local_28.pebble_field_25, pebble_local_28.pebble_field_26);",
+		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"return pebble_fn_27(ctx, pebble_local_30);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static int32_t pebble_fn_27")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("struct typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitStructParameterBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
+	// A struct parameter whose fields are mixed width/bool: the callee reads
+	// the bool field to drive an if and an integer field as a value. This
+	// proves the parameter's field reads route through buildBoolExpr (the
+	// Load(FieldPlace) bool path) exactly as a struct local's do. With b true
+	// the then-arm runs and returns the x field 10.
+	emitAndRun(t, "type Pair = struct { x i32; b bool; };\nfn f(p Pair) i32 { if p.b { return p.x; } else { return 99; } } fn main() i32 { let p Pair = Pair.{ x = 10, b = true }; return f(p); }", false, 10, false)
+}
+
+func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
+	// The typedef-discovery extension, struct side: the Point type appears ONLY
+	// as f's parameter type — f is never called (so no reachable body
+	// constructs a Point of that type) and main constructs no struct at all —
+	// yet the typedef must still be discovered, because the emitted helper's C
+	// signature names pebble_struct_<typeID>_t. Before 10.24's Parameters scan
+	// in collectStructTypes this returned nothing; the test drives
+	// collectStructTypes directly with a hand-built reachable-helper slice, so
+	// it fails if the discovery stops being tied to a construction site. (The
+	// concrete type ID 23 is confirmed from the fixture dump; the callee reads
+	// both fields, so resolveStructInfo has every field's type available.)
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return 0; }", "main", false)
+	entryDecl, err := findFunctionDeclaration(unit, entryID, "entry function")
+	if err != nil {
+		t.Fatalf("entry declaration: %v", err)
+	}
+	_, entryBlock, err := findFunctionBody(unit, entryDecl, "entry function")
+	if err != nil {
+		t.Fatalf("entry body: %v", err)
+	}
+	fDecl, err := findFunctionDeclaration(unit, 27, "called function")
+	if err != nil {
+		t.Fatalf("f declaration: %v", err)
+	}
+	_, fBody, err := findFunctionBody(unit, fDecl, "called function")
+	if err != nil {
+		t.Fatalf("f body: %v", err)
+	}
+	helpers := []helperInfo{{decl: fDecl, block: fBody}}
+	infos, err := collectStructTypes(unit, snapshot, entryBlock, helpers)
+	if err != nil {
+		t.Fatalf("collectStructTypes failed: %v", err)
+	}
+	found := false
+	for _, info := range infos {
+		if info.typ == 23 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("struct type 23 used only as a parameter type was not discovered, got %+v", infos)
+	}
 }
 
 // 10.23 — str values (literal locals + equality)

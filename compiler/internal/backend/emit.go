@@ -126,6 +126,32 @@
 // and str indexing (a tir.CheckedIndex, reachable from real source via e.g.
 // `let c char = s[0];` — a separate mechanism this backend does not build for
 // str, rejected because its char result is not a supported local type).
+//
+// Since 10.24, a helper function may declare a parameter of tuple type (one
+// of the shapes 10.19 supports) or struct type (one of the shapes 10.22
+// supports) alongside the width/bool parameters 10.18 already allowed. Such a
+// parameter seeds the callee's own locals scope with localInfo{tuple: ...} /
+// localInfo{structType: ...} exactly as an Initialize of a tuple/struct local
+// does, so element/field reads inside the body resolve through the same
+// Load(TuplePlace)/Load(FieldPlace) machinery unchanged; the C parameter is
+// declared with the aggregate's own typedef name
+// (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t) and gets the same
+// (void) cast every other parameter does. A call site passes an already-
+// declared tuple/struct-typed local for such a parameter: the argument must be
+// a plain SymbolValue naming a local whose declared type matches the
+// parameter's type, emitted as the local's own pebble_local_<symbol> C name
+// (the typedef makes passing the whole aggregate by value trivially valid C).
+// Constructing a fresh aggregate inline at a call site — f((1, 2)) or
+// f(Point.{ x = 1, y = 2 }), both reachable from real source — is a clean
+// rejection naming what was found, never built (building one requires a
+// general build-an-aggregate-value expression saved for a later slice).
+// Tuple/struct-typed function *return* types remain out of scope: a helper's
+// C return type stays the entry's scalar width, and a helper declaring a
+// tuple/struct result type (reachable from real source) is rejected cleanly by
+// validateHelperSignature's result check. collectTupleTypes/collectStructTypes
+// discover a tuple/struct type used only as a parameter type from each
+// reachable helper's Parameters list, so such a typedef is still emitted even
+// when no reachable body ever constructs one.
 package backend
 
 import (
@@ -483,12 +509,17 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 // every tuple type the emitted program actually references: the entry body
 // (root) followed by every reachable helper's body, each walked by the same
 // Children + DeferChain traversal collectDirectCalls uses. A tuple type is
-// referenced in exactly two places in the emitted C — a tuple-typed local's
-// declaration (an Initialize whose initializer value carries the tuple type)
-// and a tuple construction (a TupleValue, whose Type is the tuple type) — so
-// collecting exactly those two node shapes guarantees every typedef the
-// program needs is discovered. The caller deduplicates (see Emit) so each
-// distinct tuple type yields exactly one typedef, emitted before any function
+// referenced in exactly three places in the emitted C — a tuple-typed local's
+// declaration (an Initialize whose initializer value carries the tuple type), a
+// tuple construction (a TupleValue, whose Type is the tuple type), and a
+// tuple-typed parameter of a reachable helper (a FunctionDeclaration.Parameters
+// entry's Type) — so collecting exactly those node shapes and each reachable
+// helper's Parameters list guarantees every typedef the program needs is
+// discovered. The Parameters coverage closes a real gap: a tuple type used
+// only as a parameter type (never constructed in any reachable body) still
+// needs its typedef emitted, since the helper's C signature names
+// pebble_tuple_<typeID>_t. The caller deduplicates (see Emit) so each distinct
+// tuple type yields exactly one typedef, emitted before any function
 // definition in the final output.
 func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]types.TypeID, error) {
 	var collected []types.TypeID
@@ -498,6 +529,15 @@ func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 	for _, helper := range helpers {
 		if err := collectTupleTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
 			return nil, err
+		}
+		// A reachable helper's own parameter list is a source of tuple types
+		// the body walk cannot see: a tuple-typed parameter is referenced by
+		// the helper's C signature even if no reachable body ever constructs a
+		// tuple of that type, so its typedef must be discovered here too.
+		for _, param := range helper.decl.Parameters {
+			if isTuple(snapshot, param.Type) {
+				collected = append(collected, param.Type)
+			}
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -651,11 +691,16 @@ type structInfo struct {
 // the emitted program actually references: the entry body (root) followed by
 // every reachable helper's body, each walked by the same Children + DeferChain
 // traversal collectDirectCalls uses. A struct type is referenced in exactly
-// two places in the emitted C — a struct-typed local's declaration (an
-// Initialize whose initializer value carries the struct type) and a struct
-// construction (a RecordConstruct, whose Type is the struct type) — so
-// collecting exactly those two node shapes guarantees every typedef the
-// program needs is discovered. The walk also accumulates each field's resolved
+// three places in the emitted C — a struct-typed local's declaration (an
+// Initialize whose initializer value carries the struct type), a struct
+// construction (a RecordConstruct, whose Type is the struct type), and a
+// struct-typed parameter of a reachable helper (a FunctionDeclaration.Parameters
+// entry's Type) — so collecting exactly those node shapes and each reachable
+// helper's Parameters list guarantees every typedef the program needs is
+// discovered. The Parameters coverage closes a real gap: a struct type used
+// only as a parameter type (never constructed in any reachable body) still
+// needs its typedef emitted, since the helper's C signature names
+// pebble_struct_<typeID>_t. The walk also accumulates each field's resolved
 // type from the same nodes (a RecordConstruct field value's own type, and a
 // FieldPlace's Type), since the FieldDeclaration nodes in the unit carry only
 // the field's symbol, never its type (confirmed against a real fixture — a
@@ -673,6 +718,15 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 	for _, helper := range helpers {
 		if err := collectStructTypesWalk(unit, snapshot, helper.block, &collected, fieldTypes); err != nil {
 			return nil, err
+		}
+		// A reachable helper's own parameter list is a source of struct types
+		// the body walk cannot see: a struct-typed parameter is referenced by
+		// the helper's C signature even if no reachable body ever constructs a
+		// struct of that type, so its typedef must be discovered here too.
+		for _, param := range helper.decl.Parameters {
+			if isStruct(snapshot, param.Type) {
+				collected = append(collected, param.Type)
+			}
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -806,15 +860,20 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 
 // validateHelperSignature checks one called function against the constraints
 // every reachable helper must satisfy: Pebble-convention, parameters whose
-// types are exactly the entry's resolved width or bool, and a result of
-// exactly the entry's resolved width. The width rule is the same reasoning
-// 10.13 established for locals — a called function of the other width (an i32
-// helper called from an i64 entry, or vice versa) is a clean width-mismatch
-// rejection, never a coercion, since there is no cast/coercion lowering to
-// fall back on. A parameter's own type has the same two options a local has:
-// the entry's width, or bool — anything else (str, a pointer, an array, a
-// helper of the other integer width) is a clean rejection naming the position.
-// A void-result helper is also a
+// types are exactly the entry's resolved width, bool, a tuple type, or a
+// struct type, and a result of exactly the entry's resolved width. The width
+// rule is the same reasoning 10.13 established for locals — a called function
+// of the other width (an i32 helper called from an i64 entry, or vice versa) is
+// a clean width-mismatch rejection, never a coercion, since there is no
+// cast/coercion lowering to fall back on. A parameter's own type has the same
+// options a local has: the entry's width, bool, a tuple type (one of the
+// shapes 10.19 supports — element types the entry's width or bool), or a
+// struct type (one of the shapes 10.22 supports — field types the entry's
+// width or bool); the tuple/struct's own internal shape is validated wherever
+// its typedef gets built (buildTupleTypedef / buildStructTypedef), not here.
+// Anything else (str, a pointer, an array, an optional, a helper of the other
+// integer width) is a clean rejection naming the position. A void-result
+// helper is also a
 // clean rejection: this slice only supports integer-result calls used as
 // expression values, deliberately leaving bare void calls (which would need an
 // expression-statement construct in the block grammar) out of scope.
@@ -824,11 +883,14 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 	}
 	for i, param := range decl.Parameters {
 		// A parameter's type is resolved the same way a local's initializer's
-		// is: the entry's resolved width (built by buildExpr) or bool (built by
-		// buildBoolExpr), nothing else. This is exactly the width-consistency
-		// rule 10.13 established for locals, applied to parameters.
-		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s or bool (a parameter may only be the entry's integer width or bool)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		// is: the entry's resolved width (built by buildExpr), bool (built by
+		// buildBoolExpr), or a tuple/struct type (read back through the
+		// Load(TuplePlace)/Load(FieldPlace) machinery), nothing else. This is
+		// exactly the width-consistency rule 10.13 established for locals,
+		// applied to parameters and extended to the aggregate local grammars
+		// 10.19/10.22 already build.
+		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s or bool, or a tuple/struct type (a parameter may be the entry's integer width, bool, or a tuple/struct type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	if !isWidth(snapshot, width, decl.ResultType) {
@@ -846,12 +908,17 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // block with its body built by the exact same buildBlock the entry's body
 // uses — no parallel body-builder. Before the body is built, the helper's own
 // parameters seed its locals scope exactly as if each had been Initialize'd:
-// every parameter maps to its resolved type (the entry's width or bool), so a
+// every parameter maps to its resolved type — the entry's width, bool, a tuple
+// type (localInfo{tuple}), or a struct type (localInfo{structType}) — so a
 // SymbolValue reference or a Store targeting a parameter inside the body
-// resolves through the existing machinery unchanged. The C signature declares
-// each parameter with the same pebble_local_<symbolID> naming every local
-// uses, so a parameter and a local are textually identical inside the body
-// (which is correct: they behave identically once inside the function). Each
+// resolves through the existing machinery unchanged, and a tuple/struct
+// parameter's element/field reads resolve through the same
+// Load(TuplePlace)/Load(FieldPlace) machinery a tuple/struct local uses. The
+// C signature declares each parameter with the same pebble_local_<symbolID>
+// naming every local uses, so a parameter and a local are textually identical
+// inside the body (which is correct: they behave identically once inside the
+// function), a tuple/struct parameter's C type being its aggregate's own
+// typedef name (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t). Each
 // parameter also gets a `(void)pebble_local_<symbolID>;` immediately after
 // the opening brace, the same -Wunused-parameter defense the `(void)ctx;`
 // already provides for the context (confirmed: -Wunused-parameter genuinely
@@ -867,22 +934,37 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 		params := make([]string, 0, len(helper.decl.Parameters))
 		casts := make([]string, 0, len(helper.decl.Parameters))
 		for _, param := range helper.decl.Parameters {
-			kind, ok := resolvedBuiltin(snapshot, param.Type)
-			if !ok {
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has unresolvable type %s", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type))
-			}
-			switch kind {
-			case width:
+			switch {
+			case isWidth(snapshot, width, param.Type):
 				params = append(params, cType(width)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-			case types.Bool:
+				scope[param.Symbol] = localInfo{kind: width}
+			case isBool(snapshot, param.Type):
 				params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{kind: types.Bool}
+			case isTuple(snapshot, param.Type):
+				// A tuple-typed parameter seeds the callee's locals scope as a
+				// tuple local (localInfo.tuple), exactly as a tuple local's
+				// Initialize does, so element reads inside the body resolve
+				// through the existing Load(TuplePlace) machinery unchanged.
+				// The C parameter is declared with the tuple's own struct
+				// typedef name, so passing the whole tuple by value is trivially
+				// valid C (a call site passes a tuple-typed local's own name).
+				params = append(params, tupleTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{tuple: param.Type}
+			case isStruct(snapshot, param.Type):
+				// A struct-typed parameter seeds the callee's locals scope as a
+				// struct local (localInfo.structType), exactly as a struct
+				// local's Initialize does, so field reads inside the body
+				// resolve through the existing Load(FieldPlace) machinery
+				// unchanged, declared with the struct's own struct typedef name.
+				params = append(params, structTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{structType: param.Type}
 			default:
-				// validateHelperSignature rules any non-width, non-bool
-				// parameter out before a reachable helper is ever built, so
-				// this branch is defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s or bool", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+				// validateHelperSignature rules any unsupported parameter out
+				// before a reachable helper is ever built, so this branch is
+				// defense for hand-built IR only.
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s or bool, or a tuple/struct type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
-			scope[param.Symbol] = localInfo{kind: kind}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
 		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width)
@@ -2427,8 +2509,10 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 // DirectCall's children, one expression per child in order. Each child's
 // grammar is decided by the callee's corresponding parameter's resolved type
 // — the entry's width parameters take buildExpr, bool parameters take
-// buildBoolExpr — so the same two value grammars this backend already builds
-// lower the arguments; the checker has already coerced each argument to its
+// buildBoolExpr, and tuple/struct parameters take buildAggregateArgument (the
+// argument must be an already-declared aggregate-typed local, emitted as its
+// own C name) — so the same value grammars this backend already builds lower
+// the arguments; the checker has already coerced each argument to its
 // parameter's type, so a mismatch here is hand-built IR. The argument count
 // must equal the callee's declared parameter count. Returns the joined
 // argument text, empty when the callee takes no parameters (the caller then
@@ -2453,14 +2537,69 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 				return "", err
 			}
 			args[i] = arg
+		case isTuple(snapshot, param.Type):
+			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, true, call.Symbol, i)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
+		case isStruct(snapshot, param.Type):
+			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, false, call.Symbol, i)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
 		default:
-			// validateHelperSignature rules any non-width, non-bool parameter
-			// out before a reachable helper is ever built, so this branch is
+			// validateHelperSignature rules any unsupported parameter out
+			// before a reachable helper is ever built, so this branch is
 			// defense for hand-built IR only.
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s or bool", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s or bool, or a tuple/struct type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	return strings.Join(args, ", "), nil
+}
+
+// buildAggregateArgument builds one call-site argument for a tuple- or
+// struct-typed parameter. Only one argument shape is supported: a plain
+// SymbolValue naming an already-declared aggregate-typed local in scope whose
+// declared type is exactly the parameter's tuple/struct type (wantTuple selects
+// which), emitted as the local's own pebble_local_<symbol> C name — the
+// aggregate's own struct typedef makes passing the whole value by value
+// trivially valid C, so no construction is needed at the call site. Any other
+// shape is a clean rejection naming what was found: an inline construction
+// (a TupleValue/RecordConstruct child — e.g. f((1, 2)) or
+// f(Point.{ x = 1, y = 2 }), both confirmed reachable from real source), a
+// reference to a symbol that is not a local in scope, or a reference to a
+// non-aggregate or differently-typed aggregate local. Inline construction is
+// deliberately rejected rather than built: emitting a fresh aggregate value
+// inline requires a general build-an-aggregate-value expression, which is
+// saved for a later slice.
+func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, wantTuple bool, calleeSymbol symbol.SymbolID, position int) (string, error) {
+	node, ok := unit.Node(argID)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references invalid node %d", calleeSymbol, position, argID)
+	}
+	if node.Kind != tir.SymbolValue {
+		what := "struct"
+		if wantTuple {
+			what = "tuple"
+		}
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d is a %s; inline %s construction as a call argument is not supported yet (pass an already-declared %s-typed local in scope)", calleeSymbol, position, node.Kind, what, what)
+	}
+	info, declared := locals[node.Symbol]
+	if !declared {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references symbol %d, which is not a local in scope", calleeSymbol, position, node.Symbol)
+	}
+	if wantTuple {
+		if info.tuple != wantType {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d passes symbol %d, which is a local of type %s, not a tuple-typed local of type %s", calleeSymbol, position, node.Symbol, describeType(snapshot, node.Type), tupleTypeName(wantType))
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	if info.structType != wantType {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d passes symbol %d, which is a local of type %s, not a struct-typed local of type %s", calleeSymbol, position, node.Symbol, describeType(snapshot, node.Type), structTypeName(wantType))
+	}
+	return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 }
 
 // buildBoolExpr builds the C text for a bool value node, used both for a bool
