@@ -1106,6 +1106,38 @@ func TestBuildValueArray(t *testing.T) {
 	}
 }
 
+// TestBuildValueArrayLiteralAgainstKnownDestination is a regression test for a
+// bug in prepareArray (aggregate_facts.go): the function used to
+// unconditionally call session.Variable — which registers a real solver cell
+// that must later be resolved — and then, only when a known destination
+// element type existed, discard that cell in favor of session.Known instead.
+// The abandoned Variable cell was never bound to anything, so it was reported
+// as a spurious T0510 "inference variable has no unique semantic type" for
+// every array literal checked against an explicitly known destination type
+// (an explicit `[N]T` local annotation, a function return type, etc) — the
+// unannotated case (`let a = [1, 2, 3]`) never hit this path and always
+// worked, which is why it went unnoticed. Every one of these must build
+// successfully.
+func TestBuildValueArrayLiteralAgainstKnownDestination(t *testing.T) {
+	sources := []string{
+		"let a [2]i32 = [10, 20];",
+		"let a [3]bool = [true, false, true];",
+		"var a [2]i32 = [10, 20];",
+	}
+	for _, source := range sources {
+		t.Run(source, func(t *testing.T) {
+			state, records := testBuildValue(t, source)
+			id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionArray })
+			if _, ok := state.buildValue(id); !ok {
+				t.Fatal("buildValue failed")
+			}
+			if _, err := buildTestIRUnit(state); err != nil {
+				t.Fatalf("Build failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildValueArrayRepeat(t *testing.T) {
 	state, records := testBuildValue(t, "let repeated [5]i32 = [1; 5];\n")
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionArrayRepeat })

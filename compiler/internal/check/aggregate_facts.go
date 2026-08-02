@@ -103,22 +103,35 @@ func (w *walker) finishTuple(ref symbol.SyntaxRef, node syntax.Node, ctx walkCon
 
 func (w *walker) prepareArray(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree, items []walkItem, plan *expressionPlan) {
 	origin := w.origin(ref, node, "array element destination", ctx.typeOwner, ctx.genericOwner)
-	elementTerm := w.session.Variable(origin)
+	var knownElement types.TypeID
+	hasKnownElement := false
 	if id, ok := w.knownDestination(ctx.expected); ok {
 		if key, found := w.generation.inputs.Types.Key(id); found {
 			if _, element, array := key.Array(); array {
-				elementTerm = w.session.Known(element)
+				knownElement, hasKnownElement = element, true
 			}
 		}
 	}
+	// Create exactly one term for the element slot, and only that one:
+	// session.Known and session.Variable both have real session-mutating
+	// side effects (Variable registers a solver cell that must later be
+	// resolved or it is reported as a spurious unresolved-variable error;
+	// Known runs its own mutability/resource-limit bookkeeping), so calling
+	// either of them "just in case" and then discarding the result in favor
+	// of the other — as this function used to do unconditionally for
+	// Variable, and as an earlier attempt at this fix did unconditionally
+	// for Known — leaves unwanted session state behind. prepareTuple never
+	// had this bug because it never creates a term it doesn't use.
+	var elementTerm infer.Term
+	if hasKnownElement {
+		elementTerm = w.session.Known(knownElement)
+	} else {
+		elementTerm = w.session.Variable(origin)
+	}
 	plan.arrayElement, _ = w.newSlotValue(elementTerm, origin)
-	if id, ok := w.knownDestination(ctx.expected); ok {
-		if key, found := w.generation.inputs.Types.Key(id); found {
-			if _, element, array := key.Array(); array {
-				plan.arrayElement.Known = element
-				w.knownValues[plan.arrayElement.ID] = element
-			}
-		}
+	if hasKnownElement {
+		plan.arrayElement.Known = knownElement
+		w.knownValues[plan.arrayElement.ID] = knownElement
 	}
 	for i := range items {
 		child, _ := tree.Node(items[i].ref.Node)
