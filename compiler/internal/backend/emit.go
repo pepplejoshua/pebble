@@ -7,10 +7,12 @@
 // block is zero or more `let <name> <width> = <expression>;` /
 // `var <name> <width> = <expression>;` local declarations, plus
 // `x = <expression>;` reassignments of an already-declared local, and a
-// `while <comparison> { <loop body> }` loop statement, followed by a tail that
+// `while <condition> { <loop body> }` loop statement, followed by a tail that
 // is either one `return <expression>;` or a two-armed
-// `if <comparison> { <block> } else { <block> }` whose condition is a direct
-// comparison; the two arms are themselves blocks under the same rule, so an
+// `if <condition> { <block> } else { <block> }`; a condition is an integer
+// comparison, a bare bool value, or a && / || combination of those, built by
+// buildCondition, and the two arms are themselves blocks under the same rule,
+// so an
 // arm may contain its own locals, reassignments, nested if/else, and loops. A
 // while loop's body is a block of local declarations, reassignments, if
 // statements (a loop-body if is built by buildLoopIf and has an optional
@@ -47,8 +49,9 @@ import (
 // `x = <expression>;` reassignments of an already-declared local (a tir.Store;
 // see buildBlock) and `while <comparison> { <loop body> }` loop statements (a
 // tir.While; see buildWhile), followed by a tail that is either one
-// `return <expression>;` or a two-armed `if <comparison> { <block> } else {
-// <block> }` whose condition is a direct comparison (<, <=, >, >=, ==, !=);
+// `return <expression>;` or a two-armed `if <condition> { <block> } else {
+// <block> }` whose condition is an integer comparison (<, <=, >, >=, ==, !=), a
+// bare bool value, or a && / || combination of those (see buildCondition);
 // each arm is itself a block under the same grammar, so an arm may contain its
 // own locals and nested if/else. Every expression — a local's initializer, a
 // reassignment's new value, a return value, or an if/else arm's return value —
@@ -549,7 +552,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// A bool local: emitted as a C bool. The bool value grammar is
 			// genuinely different from the integer one (no checked
 			// arithmetic), so it is built by buildBoolExpr, not buildExpr.
-			initExpr, err := buildBoolExpr(unit, snapshot, statement.Children[0], scope)
+			initExpr, err := buildBoolExpr(unit, snapshot, statement.Children[0], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -598,7 +601,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			}
 			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
 		case types.Bool:
-			storeValue, err := buildBoolExpr(unit, snapshot, statement.Children[1], scope)
+			storeValue, err := buildBoolExpr(unit, snapshot, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -627,11 +630,11 @@ func cloneLocals(locals map[symbol.SymbolID]types.BuiltinKind) map[symbol.Symbol
 // buildCondition builds the C text for one if/while condition. It dispatches
 // on the condition node's shape: a direct integer comparison (tir.BinaryValue)
 // keeps the existing buildComparison path unchanged, while a bare bool value —
-// a bool literal, a reference to an in-scope bool local, or a unary ! negation
-// of one of those (tir.PrefixValue with the Bang operator) — is routed through
-// buildBoolExpr. Anything else (notably a && / || combining bool values, which
-// lowers to a tir.ShortCircuitValue node) is rejected by whichever builder it
-// reaches, exactly as before.
+// a bool literal, a reference to an in-scope bool local, a unary ! negation of
+// one of those (tir.PrefixValue with the Bang operator), a comparison used as
+// a bool operand, or a && / || combination of any of these (a
+// tir.ShortCircuitValue) — is routed through buildBoolExpr. Anything else is
+// rejected by whichever builder it reaches.
 func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
@@ -640,7 +643,7 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 	if node.Kind == tir.BinaryValue {
 		return buildComparison(unit, snapshot, id, locals, width)
 	}
-	return buildBoolExpr(unit, snapshot, id, locals)
+	return buildBoolExpr(unit, snapshot, id, locals, width)
 }
 
 // buildComparison builds the C text for an if condition. It accepts exactly a
@@ -649,8 +652,10 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 // two integers cannot overflow, so no runtime helper is needed. Each operand
 // is built by buildComparisonOperand (an int-typed integer literal, or any i32
 // expression buildExpr accepts). Any other node kind, or any other operator on
-// a BinaryValue (bitwise, and the && / || that lower to ShortCircuitValue
-// nodes rather than BinaryValue comparisons), is a clean rejection.
+// a BinaryValue (bitwise, and the bool-operand comparisons like
+// (1 < 2) == (3 < 4), whose bool-typed operands fail buildExpr's width gate),
+// is a clean rejection. The && / || that lower to ShortCircuitValue nodes are
+// not this function's concern — buildCondition routes them to buildBoolExpr.
 func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
@@ -818,9 +823,12 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 // local's initializer/reassignment value and for a bare bool if/while
 // condition (via buildCondition). The bool grammar is genuinely different from
 // the integer one buildExpr handles: there is no checked arithmetic — bools
-// are compared and negated with plain C, which cannot fault — so it is a
-// separate builder rather than a mode on buildExpr. It accepts exactly three
-// node kinds, each carrying the snapshot's bool builtin:
+// are combined, compared, and negated with plain C, which cannot fault — so it
+// is a separate builder rather than a mode on buildExpr. width is the entry's
+// resolved integer width, threaded through to the comparison path so a
+// comparison used as a bool value's operand builds its own integer operands at
+// the entry's width. It accepts exactly seven node kinds, each carrying the
+// snapshot's bool builtin:
 //
 //   - BoolLiteral — the C literal true/false (requires #include <stdbool.h>).
 //   - SymbolValue whose Symbol is a bool local in scope (the locals map
@@ -829,16 +837,39 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 //   - PrefixValue with operator ! (syntax.Bang, confirmed against a real
 //     fixture — a bool `!` is a PrefixValue, not the CheckedNegate integer
 //     negation uses) and exactly one operand that is itself a bool value in
-//     this grammar — !(<operand>), plain C negation.
+//     this grammar — !(<operand>), plain C negation. The operand is built by
+//     recursing into this same builder, so a negated comparison (e.g.
+//     !(i < 5)) is now accepted: its operand is a SourceAlias wrapping a
+//     BinaryValue, both handled below.
+//   - BinaryValue with one of the six comparison operators — delegated to
+//     buildComparison, the same path a top-level if/while condition uses, so
+//     a comparison can serve as an operand of && / || as well as stand alone.
+//     (A BinaryValue with any other operator, or a comparison whose own
+//     operands are not integers — e.g. (1 < 2) == (3 < 4) — is rejected by
+//     buildComparison's operator check or its operand width gate.)
+//   - ShortCircuitValue with operator && (syntax.LogicalAnd) or ||
+//     (syntax.LogicalOr) — <(left) && (right)> / <(left) || (right)>,
+//     parenthesized so nested combinations produce unambiguous C regardless of
+//     depth. Both operands are built by recursing into this same builder, so
+//     && and || combine literals, bool locals, ! negations, comparisons, and
+//     nested && / || freely. Plain C && and || are the correct lowering: both
+//     languages short-circuit, and every operand this builder produces is
+//     side-effect-free (no calls, no mutation inside an expression), so
+//     nothing observable changes whether or not the right operand is
+//     evaluated. The operand tree already encodes the language's &&-vs-||
+//     precedence (confirmed: Pebble's grammar gives || precedence 1 and &&
+//     precedence 2), so this builder never re-derives precedence.
+//   - SourceAlias — a transparent wrapper (the grouped-expression parens), so
+//     it is unwrapped and its single child built by recursing into this same
+//     builder. A parenthesized comparison operand of && / || is exactly this
+//     shape (confirmed against a real fixture: flag && (1 < 2) has the
+//     comparison wrapped in a SourceAlias, while the unparenthesized
+//     1 < 2 && 3 < 4 wraps nothing).
 //
 // A SymbolValue referencing anything else — an integer local, a global, a
-// parameter — and any other node kind at any position (a ShortCircuitValue
-// &&/||, a SourceAlias-wrapped comparison, a comparison reused as a bare bool
-// value, and so on) is a clean rejection naming what was found. In particular
-// a `!` of a comparison (e.g. !(i < 5)) is rejected: its operand is a
-// SourceAlias wrapping a BinaryValue, not a bare bool value, and negating a
-// comparison is outside this slice's grammar.
-func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind) (string, error) {
+// parameter — and any other node kind at any position is a clean rejection
+// naming what was found.
+func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -864,13 +895,61 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with %d operand(s), want exactly one", len(node.Children))
 		}
-		child, err := buildBoolExpr(unit, snapshot, node.Children[0], locals)
+		child, err := buildBoolExpr(unit, snapshot, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
 		return "!(" + child + ")", nil
+	case tir.BinaryValue:
+		// A comparison used as a bool value (an operand of && / ||, or the
+		// condition routed here by buildCondition) is the same BinaryValue
+		// shape buildComparison already lowers for a top-level condition, so it
+		// is delegated unchanged. Non-comparison operators and non-integer
+		// operands are rejected by buildComparison itself.
+		return buildComparison(unit, snapshot, id, locals, width)
+	case tir.ShortCircuitValue:
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("entry function body expression contains a ShortCircuitValue with %d operand(s), want exactly two", len(node.Children))
+		}
+		op, ok := shortCircuitOperator(node.Operator)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a ShortCircuitValue with operator %s, want && or ||", node.Operator)
+		}
+		left, err := buildBoolExpr(unit, snapshot, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildBoolExpr(unit, snapshot, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "(" + left + " " + op + " " + right + ")", nil
+	case tir.SourceAlias:
+		// A SourceAlias is transparent — it records grouped-expression parens
+		// and nothing else — so it is unwrapped and its single child built.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
+		}
+		return buildBoolExpr(unit, snapshot, node.Children[0], locals, width)
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want a bool literal, a reference to a bool local declared earlier in the body, or a ! negation", node.Kind)
+		return "", fmt.Errorf("entry function body expression contains a %s, want a bool literal, a reference to a bool local declared earlier in the body, a comparison, a && / || combination, or a ! negation", node.Kind)
+	}
+}
+
+// shortCircuitOperator maps the two logical-combination token kinds a
+// ShortCircuitValue may carry to their plain C spellings. Both C and Pebble
+// && and || short-circuit their right operand, and both sides of the operator
+// are side-effect-free in this backend's grammar, so the plain C operator is a
+// direct, correct lowering. Any other operator is deliberately not mapped and
+// rejected by the caller.
+func shortCircuitOperator(op syntax.TokenKind) (string, bool) {
+	switch op {
+	case syntax.LogicalAnd:
+		return "&&", true
+	case syntax.LogicalOr:
+		return "||", true
+	default:
+		return "", false
 	}
 }
 

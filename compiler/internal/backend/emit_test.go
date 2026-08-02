@@ -275,18 +275,114 @@ func TestEmitRejectsIfWithoutElse(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsLogicalAndCondition(t *testing.T) {
-	// && is legal source but lowers to a ShortCircuitValue node, a different
-	// kind than the BinaryValue comparison buildComparison accepts, so the
-	// fixture must be rejected, not best-effort lowered.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 && 3 < 4 { return 1; } else { return 2; } }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitLogicalIfElseCompilesAndRuns(t *testing.T) {
+	// && and || as an if condition are now supported: both lower to a
+	// tir.ShortCircuitValue node (a different kind than the BinaryValue
+	// comparison 10.7 handled), whose operands are themselves built through
+	// buildBoolExpr. This table covers both operators with a true and a false
+	// outcome each, so both directions are exercised. The `and true` row is
+	// exactly the fixture 10.7/10.11 rejected — now the new positive case.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"and true", "fn main() i32 { if 1 < 2 && 3 < 4 { return 1; } else { return 2; } }", 1},
+		{"and false", "fn main() i32 { if 1 < 2 && 5 < 4 { return 1; } else { return 2; } }", 2},
+		{"or true", "fn main() i32 { if 1 < 2 || 3 < 4 { return 1; } else { return 2; } }", 1},
+		{"or false", "fn main() i32 { if 5 < 4 || 1 > 2 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
 }
 
-func TestEmitRejectsLogicalOrCondition(t *testing.T) {
-	// Same ShortCircuitValue rejection as &&, for the || operator.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 || 3 < 4 { return 1; } else { return 2; } }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitLogicalBoolLiteralAndCompilesAndRuns(t *testing.T) {
+	// The bool-literal combination shape: && of two plain bool literals, no
+	// comparison involved. This is exactly the fixture 10.14 rejected as a
+	// ShortCircuitValue (if true && false), now accepted — true && false is
+	// false, so the else arm runs and the process exits 0.
+	emitAndRun(t, "fn main() i32 { if true && false { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitLogicalBoolLiteralOrCompilesAndRuns(t *testing.T) {
+	// Same bool-literal combination for ||: true || false is true, so the
+	// then-arm runs and the process exits 1.
+	emitAndRun(t, "fn main() i32 { if true || false { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitLogicalBoolLocalCombinationCompilesAndRuns(t *testing.T) {
+	// The bool-local combination fixture: a && !b combines a bare bool local, a
+	// negation of another bool local, and the && operator — three different
+	// operand shapes in one ShortCircuitValue. a = true and !b = !false = true,
+	// so the then-arm runs and the process exits 1.
+	emitAndRun(t, "fn main() i32 { var a bool = true; var b bool = false; if a && !b { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitLogicalNestedPrecedenceCompilesAndRuns(t *testing.T) {
+	// A three-way nested combination. Precedence is already resolved in the
+	// typed IR tree (confirmed against a real fixture dump: the && node is a
+	// child of the || node for `false && false || true`), and Pebble's grammar
+	// gives || precedence 1 and && precedence 2, so && binds tighter — the same
+	// as C. Each row would evaluate to the *opposite* result under the wrong
+	// grouping, so the expected exit code proves the tree is walked, not
+	// re-derived: `false && false || true` is (false && false) || true = true
+	// (a wrong `false && (false || true)` grouping would be false), and
+	// `true || false && false` is true || (false && false) = true (a wrong
+	// `(true || false) && false` grouping would be false).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"and then or", "fn main() i32 { if false && false || true { return 1; } else { return 0; } }", 1},
+		{"or then and", "fn main() i32 { if true || false && false { return 1; } else { return 0; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitLogicalAndWritesC(t *testing.T) {
+	// The emitted C for a && condition combining a local-typed comparison and
+	// an unanchored literal comparison: x < 10 && 1 < 2 must lower to the
+	// parenthesized (pebble_local_25 < 10 && 1 < 2), the local reference
+	// resolved to its pebble_local name. Symbol 25 is the x local, confirmed
+	// against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 7; if x < 10 && 1 < 2 { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_local_25 = 7;",
+		"    if ((pebble_local_25 < 10 && 1 < 2)) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
+	// A parenthesized comparison operand (flag && (1 < 2)) arrives wrapped in a
+	// SourceAlias (confirmed against a real fixture dump), which buildBoolExpr
+	// must unwrap before lowering the comparison. The emitted C must therefore
+	// carry the comparison directly inside the parenthesized &&, with the bool
+	// local referenced by name: (pebble_local_25 && 1 < 2). Symbol 25 is the
+	// flag local.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var flag bool = true; if flag && (1 < 2) { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "if ((pebble_local_25 && 1 < 2)) {") {
+		t.Errorf("emitted C missing the unwrapped parenthesized comparison &&:\n%s", out)
+	}
 }
 
 func TestEmitLocalInArmCompilesAndRuns(t *testing.T) {
@@ -1983,19 +2079,19 @@ func TestEmitRejectsLocalLeakingBetweenLoopIfArms(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsLogicalAndWhileCondition(t *testing.T) {
-	// && is legal source but lowers to a ShortCircuitValue node, a different
-	// kind than the BinaryValue comparison buildComparison accepts, so a while
-	// condition using it must be rejected, not best-effort lowered — the same
-	// rejection 10.7 established for if conditions.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 5 && i > 0 { i = i + 1; } return i; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitLogicalAndWhileCompilesAndRuns(t *testing.T) {
+	// && as a while condition, the shape 10.11 rejected: i counts 1..4 while
+	// both sides hold (i < 5 && i > 0), then at i = 5 the left side fails and
+	// the loop exits with i = 5 as the exit code. Bounded execution in case of
+	// a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 1; while i < 5 && i > 0 { i = i + 1; } return i; }", false, 5, false)
 }
 
-func TestEmitRejectsLogicalOrWhileCondition(t *testing.T) {
-	// Same ShortCircuitValue rejection as &&, for the || operator.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 5 || i > 0 { i = i + 1; } return i; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitLogicalOrWhileCompilesAndRuns(t *testing.T) {
+	// || as a while condition: i counts 0..4 through the left side (i < 5),
+	// then at i = 5 both sides are false (i < 5 || i == 10) and the loop
+	// exits with i = 5. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; while i < 5 || i == 10 { i = i + 1; } return i; }", false, 5, false)
 }
 
 func TestEmitBoolLocalDeclarationCompilesAndRuns(t *testing.T) {
@@ -2102,37 +2198,50 @@ func TestEmitRejectsBoolLocalInIntegerPosition(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
 }
 
-func TestEmitRejectsLogicalAndBoolCondition(t *testing.T) {
-	// && combining two bool values as an if condition is legal source but
-	// lowers to a ShortCircuitValue node (the operatorBoolean family), not a
-	// bare bool value buildBoolExpr accepts, so it must be rejected, not
-	// best-effort lowered — the same rejection 10.7 established, adapted from
-	// comparisons to bare bool operands.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if true && false { return 1; } else { return 0; } }", "main", false)
+func TestEmitRejectsBoolComparisonCondition(t *testing.T) {
+	// The genuine remaining gap this slice's investigation found: comparing
+	// two bool values with a comparison operator. (1 < 2) == (3 < 4) is legal
+	// source — the checker builds a BinaryValue(==) whose operands are the two
+	// bool comparisons, wrapped in SourceAliases — but buildComparison's
+	// operands are integer expressions, so a bool-typed comparison operand
+	// fails buildExpr's width gate. A bitwise alternative like
+	// (1 < 2) & (3 < 4) never reaches the backend at all (the checker rejects
+	// it as a non-integral operand, T0507), so this ==-between-bools shape is
+	// the real unsupported case. Emit must reject it cleanly, not guess.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if (1 < 2) == (3 < 4) { return 1; } else { return 2; } }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsLogicalOrBoolCondition(t *testing.T) {
-	// Same ShortCircuitValue rejection as &&, for || combining two bool values.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if true || false { return 1; } else { return 0; } }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitNegatedComparisonWhileCompilesAndRuns(t *testing.T) {
+	// The negation-of-a-comparison fixture 10.14 rejected: its PrefixValue(Bang)
+	// wraps a SourceAlias around the comparison, and buildBoolExpr now unwraps
+	// SourceAlias and lowers the comparison through buildComparison, so
+	// !(i >= 5) compiles to !((pebble_local_<i> >= 5)) and drives the loop:
+	// i counts 0..4 while !(i >= 5) holds, then i = 5 makes the negation false
+	// and the loop exits with i = 5. Bounded execution in case of a
+	// miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; while !(i >= 5) { i = i + 1; } return i; }", false, 5, false)
 }
 
-func TestEmitRejectsLogicalAndBoolWhileCondition(t *testing.T) {
-	// Same ShortCircuitValue rejection as the if-condition && test, for a
-	// while condition combining two bool values.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var done bool = false; while done && !done { done = true; } return 0; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
-}
-
-func TestEmitRejectsNegatedComparisonCondition(t *testing.T) {
-	// !(i < 5) is legal source but its negation operand is a comparison, not a
-	// bare bool value: the real fixture dump shows the PrefixValue(Bang) wraps
-	// a SourceAlias around the BinaryValue, a shape buildBoolExpr does not
-	// accept (negating a comparison is outside this slice's grammar). Emit must
-	// reject it cleanly rather than guess.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while !(i < 5) { i = i + 1; } return i; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
+	// The emitted C for the negated-comparison loop must carry the negation
+	// and the comparison in the while condition, with the SourceAlias unwrapped
+	// into a plain C comparison: while (!(pebble_local_25 >= 5)). Symbol 25 is
+	// the i local, confirmed against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while !(i >= 5) { i = i + 1; } return i; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    while (!(pebble_local_25 >= 5)) {\n",
+		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, 1);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestEmitRejectsVariableReturn(t *testing.T) {
