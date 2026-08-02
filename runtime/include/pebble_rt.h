@@ -178,6 +178,23 @@ int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b);
 int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b);
 int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b);
 
+/* ---- checked array indexing -------------------------------------------------
+ * A fixed-length array's element access is bounds-checked: an index outside
+ * [0, length) panics with PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS. Unlike checked
+ * arithmetic overflow, this is not gated by PEBBLE_RT_MODE_SAFE/RELEASE — an
+ * out-of-bounds C array access is undefined behavior with no defined "wrapped"
+ * result to fall back to (unlike arithmetic overflow's well-defined
+ * two's-complement wraparound), so the check runs in every configuration, the
+ * same reasoning already applied to division by zero above. length is the
+ * array type's own compile-time element count, passed through at each call
+ * site rather than baked into the check itself, so one pair of functions
+ * serves every array length and width. Returns index unchanged when in
+ * bounds, so a call site can be used directly as the emitted array subscript:
+ * arr[pebble_rt_checked_index_i32(idx, N)].
+ */
+int32_t pebble_rt_checked_index_i32(int32_t index, int32_t length);
+int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length);
+
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend
  * represented `str` as a bare `const char *` and bounds-checked with

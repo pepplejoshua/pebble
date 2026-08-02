@@ -27,6 +27,10 @@
  *      % -1 cases return 0 in both modes (mathematically 0, representable,
  *      not a fault); and MIN / -1 follows the overflow convention (SAFE
  *      panics with overflow, RELEASE wraps to the width's MIN).
+ *   9. Checked array indexing: in-bounds indices return unchanged at both
+ *      widths; an index too high or negative panics in EVERY configuration
+ *      (RELEASE included) — like division by zero, there is no defined
+ *      fallback for an out-of-bounds access.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -171,6 +175,34 @@ static void trigger_div_by_zero(void) {
 
 static void trigger_div_by_zero_i64(void) {
     (void)pebble_rt_checked_div_i64(1, 0);
+}
+
+/* Checked array indexing: in-bounds returns the index unchanged at both
+ * widths, and negative or >= length indices panic in EVERY configuration —
+ * like division by zero, there is no defined "wrapped" result for an
+ * out-of-bounds access, so this is not mode-gated either.
+ */
+static void test_checked_index_normal(void) {
+    assert(pebble_rt_checked_index_i32(0, 3) == 0);
+    assert(pebble_rt_checked_index_i32(2, 3) == 2);
+    assert(pebble_rt_checked_index_i64(0, 3) == 0);
+    assert(pebble_rt_checked_index_i64(2, 3) == 2);
+}
+
+static void trigger_index_too_high(void) {
+    (void)pebble_rt_checked_index_i32(3, 3);
+}
+
+static void trigger_index_negative(void) {
+    (void)pebble_rt_checked_index_i32(-1, 3);
+}
+
+static void trigger_index_too_high_i64(void) {
+    (void)pebble_rt_checked_index_i64(3, 3);
+}
+
+static void trigger_index_negative_i64(void) {
+    (void)pebble_rt_checked_index_i64(-1, 3);
 }
 
 /* The overflow-panic fork checks are SAFE-mode-only: in RELEASE mode the
@@ -395,6 +427,31 @@ int main(void) {
         return 1;
     }
     printf("ok: division by zero panics in subprocess\n");
+
+    test_checked_index_normal();
+    printf("ok: checked index normal results\n");
+
+    /* Out-of-bounds indexing panics in EVERY configuration, both widths, both
+     * directions (too high and negative) — same reasoning as division by
+     * zero above.
+     */
+    if (verify_checked_overflow_panics("i32 index too high", trigger_index_too_high) != 0) {
+        fprintf(stderr, "smoke_test: checked index too-high subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i32 index negative", trigger_index_negative) != 0) {
+        fprintf(stderr, "smoke_test: checked index negative subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i64 index too high", trigger_index_too_high_i64) != 0) {
+        fprintf(stderr, "smoke_test: checked i64 index too-high subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i64 index negative", trigger_index_negative_i64) != 0) {
+        fprintf(stderr, "smoke_test: checked i64 index negative subprocess check FAILED\n");
+        return 1;
+    }
+    printf("ok: out-of-bounds indexing panics in subprocess\n");
 
 #if defined(PEBBLE_RT_MODE_SAFE)
     /* Overflow must panic through pebble_rt_panic, verified in a forked
