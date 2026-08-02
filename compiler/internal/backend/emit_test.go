@@ -559,6 +559,7 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 		filepath.Join(runtimeRoot, "src", "arith.c"),
 		filepath.Join(runtimeRoot, "src", "bounds.c"),
 		filepath.Join(runtimeRoot, "src", "optional.c"),
+		filepath.Join(runtimeRoot, "src", "str.c"),
 		"-o", binary,
 	}
 	compile := exec.Command(cc, compileArgs...)
@@ -3924,5 +3925,238 @@ func TestEmitRejectsStructTypedParameter(t *testing.T) {
 	// parameter whose type is neither the entry's width nor bool — here the
 	// Point struct — with a clear error.
 	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f(Point.{ x = 1, y = 2 }); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+// 10.23 — str values (literal locals + equality)
+
+func TestEmitStrLocalUnusedCompilesClean(t *testing.T) {
+	// A str-typed local declared and never referenced beyond its own
+	// declaration must still compile clean under -Wall -Wextra -Werror: the
+	// emitted PebbleStr declaration carries the escaped bytes and compile-time
+	// length, and the (void) cast immediately after suppresses the
+	// -Wunused-variable warning exactly as every other local's does.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; return 1; }", false, 1, false)
+}
+
+func TestEmitStrLocalEscapedUnusedCompilesClean(t *testing.T) {
+	// Same unused-local shape but with a decoded content that forces C escapes
+	// (newline, tab, quote, backslash, and a control byte), so the escaped
+	// C literal itself is exercised under -Wall -Wextra -Werror (a malformed
+	// escape would not compile, and a silently-wrong one would still compile
+	// here — the byte-correctness is asserted by the round-trip test below).
+	emitAndRun(t, "fn main() i32 { let s str = \"a\\n1\\t\\\"\\\\\\0\"; return 1; }", false, 1, false)
+}
+
+func TestEmitStrEqualLiteralsCompilesAndRuns(t *testing.T) {
+	// Two identical string literals compared equal, driving an if: the
+	// comparison is between two StringLiteral operands (no local involved),
+	// each embedded as a PebbleStr compound literal, so the then-arm runs and
+	// the process exits 10.
+	emitAndRun(t, "fn main() i32 { if \"hi\" == \"hi\" { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrDifferentLiteralsCompilesAndRuns(t *testing.T) {
+	// Two different string literals compared equal (false): the lengths are
+	// equal but the bytes differ, so pebble_rt_str_eq returns false and the
+	// else-arm runs, exiting 20.
+	emitAndRun(t, "fn main() i32 { if \"hi\" == \"ho\" { return 10; } else { return 20; } }", false, 20, false)
+}
+
+func TestEmitStrLocalAndLiteralEqualCompilesAndRuns(t *testing.T) {
+	// A str local compared against a string literal — the mixed-operand shape:
+	// one SymbolValue (a str local) and one StringLiteral. The local was
+	// declared from the same decoded bytes as the literal, so equality holds
+	// and the then-arm runs, exiting 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; if s == \"hi\" { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrNotEqualCompilesAndRuns(t *testing.T) {
+	// != between two str locals, both directions: different strings are not
+	// equal (then-arm, exit 10) and identical strings are not-not-equal
+	// (else-arm, exit 20), so the negation of pebble_rt_str_eq is exercised
+	// for both a true and a false outcome.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"different not equal", "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s != t { return 10; } else { return 20; } }", 10},
+		{"identical not equal false", "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s != t { return 10; } else { return 20; } }", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStrEqualityAsBoolValueCompilesAndRuns(t *testing.T) {
+	// A str comparison used as a plain bool value (not just as an if/while
+	// condition): the equality result is stored in a bool local and that local
+	// drives the if. The comparison lowers to pebble_rt_str_eq, whose bool
+	// result is the bool local's initializer, so the then-arm runs, exiting 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; let b bool = s == t; if b { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrEqualityAsLogicalOperandCompilesAndRuns(t *testing.T) {
+	// A str comparison combined with && — the equality as a logical operand of
+	// a larger bool expression. Both comparisons hold, so the conjunction is
+	// true and the then-arm runs, exiting 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s == \"hi\" && t == \"ho\" { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrEqualityInWhileCompilesAndRuns(t *testing.T) {
+	// A str == comparison as a bare while loop condition: the loop runs while
+	// the sentinel string is "go" (it never changes — str locals are not
+	// reassignable this slice), accumulating a counter until an in-loop
+	// integer comparison breaks it. This exercises pebble_rt_str_eq through
+	// buildCondition on a while (whose condition grammar routes BinaryValue to
+	// buildComparison), not just an if, and runs under the bounded harness so
+	// a miscompiled non-terminating loop fails loudly instead of hanging.
+	emitAndRunBounded(t, "fn main() i32 { let s str = \"go\"; var n i32 = 0; while s == \"go\" { n = n + 1; if n == 2 { break; } } return n; }", false, 2, false)
+}
+
+func TestEmitStrEscapeRoundTripCompilesAndRuns(t *testing.T) {
+	// The escaping-correctness fixture: a decoded literal containing a control
+	// byte immediately followed by a digit character, plus an escaped quote
+	// and backslash, compared against a differently-spelled literal that
+	// decodes to the same bytes. The Pebble source spells the first with \\n,
+	// \\t, \\", and \\\\ (the escapes that decode to newline, tab, quote, and
+	// backslash) and the second with \\xHH byte escapes for the same four
+	// bytes. If the emitter escaped either decoded string naively — e.g. a C
+	// \\xHH hex escape, where C's maximal-munch rule would absorb the
+	// following hex digit ('1' after newline, 'b' after tab — 0x0a1/0x09b are
+	// a single wrong byte, not two) — the two C strings would not round-trip
+	// to the same bytes and the equality would fail, exiting 3. The fixed-
+	// width octal escapes (\\012 then '1', \\011 then 'b', \\042 for the
+	// quote, \\134 for the backslash) make each escape self-delimiting, so
+	// both sides reconstruct exactly the same 9 bytes and the then-arm runs,
+	// exiting 7. Two sub-cases: both operands are literals directly, and one
+	// operand is a local holding the same decoded content.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"two literals", "fn main() i32 { if \"a\\n1\\tb\\\"c\\\\d\" == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }"},
+		{"local vs literal", "fn main() i32 { let s str = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, 7, false)
+		})
+	}
+}
+
+func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
+	// The literal escaped C text the round-trip fixture produces: the tab and
+	// newline bytes must be emitted as fixed-width octal escapes, never as C
+	// \\x hex escapes (which would absorb the following '1'/'b'), the quote as
+	// \\", and the backslash as \\\\, so the emitted C string-literal body is
+	// exactly a\\0121\\011b\\"c\\\\d. The .len field must carry the decoded
+	// byte length 9. Symbol 25 is the s local, confirmed against the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 };",
+		"    (void)pebble_local_25;",
+		"if (pebble_rt_str_eq(pebble_local_25, (PebbleStr){ .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 })) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrWritesC(t *testing.T) {
+	// The emitted C for a str local compared against a string literal: the
+	// local is declared directly as the runtime's PebbleStr (no typedef) with
+	// the escaped bytes and compile-time length, and the equality lowers to
+	// pebble_rt_str_eq(<local>, <literal-as-compound-literal>) — the literal
+	// operand needs no declared local, so it is built inline as a PebbleStr
+	// compound literal. Symbol 25 is the s local, confirmed against the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; if s == \"hi\" { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"    (void)pebble_local_25;",
+		"if (pebble_rt_str_eq(pebble_local_25, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrNotEqualWritesC(t *testing.T) {
+	// The != lowering must negate the runtime helper: s != t emits
+	// !pebble_rt_str_eq(pebble_local_25, pebble_local_26), not a comparison of
+	// the two strings some other way. Symbols 25/26 are the s and t locals,
+	// confirmed against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s != t { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"PebbleStr pebble_local_26 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"if (!pebble_rt_str_eq(pebble_local_25, pebble_local_26)) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRejectsStrOrderingComparison(t *testing.T) {
+	// An ordering comparison between two str values (s < "ho") is reachable
+	// from real source — the checker does not reject it, confirmed against a
+	// real fixture dump (a BinaryValue with operator Less and two str
+	// operands) — so it is a genuine backend-scope rejection, not a
+	// hand-built-IR shape. buildComparison's str path rejects any operator
+	// other than ==/!= with a clear error.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; if s < \"ho\" { return 1; } else { return 0; } }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "compares two str operands")
+}
+
+func TestEmitRejectsStrReassignment(t *testing.T) {
+	// Reassigning a str-typed local (s = "ho") is reachable from real source
+	// but out of scope this slice: a str local is only ever initialized from
+	// a string literal and then compared. The Store's place names a str-typed
+	// local, so buildLeadingStatement rejects it with a clear error naming the
+	// reassignment.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a str is not supported")
+}
+
+func TestEmitRejectsStrIndexing(t *testing.T) {
+	// String indexing (s[0]) is reachable from real source — confirmed
+	// against a real fixture dump: `let c char = s[0];` lowers the read to a
+	// tir.CheckedIndex node whose result type is char, a separate mechanism
+	// this backend does not build for str (and a char-typed value is not a
+	// supported local type). The declaration is therefore a clean rejection
+	// naming the found type, never a guessed lowering. (The exact shape
+	// `s[0] as i32` is rejected by the checker itself before typed IR — typed
+	// IR construction failed — so the reachable form here is the char-typed
+	// read.)
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+}
+
+func TestEmitRejectsStrParameter(t *testing.T) {
+	// A function taking a str parameter is reachable from real source but out
+	// of scope this slice: validateHelperSignature requires every parameter to
+	// be the entry's width or bool, and str is neither.
+	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { return 1; } fn main() i32 { return f(\"hi\"); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }

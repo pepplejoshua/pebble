@@ -104,6 +104,28 @@
 // into or reassigning a struct local, a struct parameter or result, a
 // FieldValue reading a field off a struct literal directly, or nested field
 // access — is a clean rejection, never a guessed lowering.
+//
+// Since 10.23, a local may also be declared as a str value, initialized from a
+// string literal (a tir.StringLiteral) only. A str local is declared directly
+// as the runtime ABI's PebbleStr (runtime/include/pebble_rt.h) — a fixed
+// runtime type, not a program-specific shape — initialized from the literal's
+// decoded bytes re-escaped into a safe C string literal (escapeCString emits a
+// fixed-width octal escape for every non-printable byte, so C's maximal-munch
+// escape rules can never swallow a following digit) and its compile-time
+// decoded byte length, so no runtime strlen is involved. Two str values may be
+// compared with ==/!= — each operand either a str-typed local (a SymbolValue,
+// built by buildStrOperand) or another string literal directly — emitting the
+// runtime helper pebble_rt_str_eq(<a>, <b>) (==) or its negation (!=); a str
+// comparison lowers to a plain tir.BinaryValue with two un-wrapped operand
+// nodes (confirmed against a real fixture), handled in buildComparison
+// alongside the integer and bool comparison paths. Everything else str-shaped
+// is out of scope and a clean rejection: reassigning a str local, str-typed
+// function parameters/results, str fields/elements inside a tuple, array,
+// optional, or struct, ordering comparisons between strs (reachable from real
+// source but rejected), concatenation and interpolation (InterpolatedString),
+// and str indexing (a tir.CheckedIndex, reachable from real source via e.g.
+// `let c char = s[0];` — a separate mechanism this backend does not build for
+// str, rejected because its char result is not a supported local type).
 package backend
 
 import (
@@ -1286,6 +1308,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// every other struct initializer shape is a clean rejection.
 			return buildStructLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
+		if isStr(snapshot, initValue.Type) {
+			// A str-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself, confirmed against
+			// a real fixture — same as the compound locals above). The
+			// supported initializer is a StringLiteral (a string literal);
+			// every other str initializer shape is a clean rejection.
+			return buildStrLocalDeclaration(unit, statement, initValue, scope, indent, context)
+		}
 		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 		if !ok {
 			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
@@ -1368,6 +1398,13 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			}
 			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
 		default:
+			if targetInfo.isStr {
+				// A Store whose place names a str-typed local is a whole-str
+				// reassignment, which is out of scope this slice (a str local
+				// is only ever initialized from a string literal and then
+				// compared, never reassigned).
+				return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local; reassigning a str is not supported yet", context, place.Symbol)
+			}
 			if targetInfo.tuple != 0 {
 				// A Store whose place names a tuple-typed local is a
 				// whole-tuple reassignment, which is out of scope this slice
@@ -1392,12 +1429,16 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 }
 
 // localInfo records what a declared local holds: an ordinary scalar — the
-// entry's resolved integer width or bool, in kind — a tuple, in tuple (its
+// entry's resolved integer width or bool, in kind — a str value, in isStr, a
+// tuple, in tuple (its
 // tuple types.TypeID, stable within one Emit call), an array, in array, an
-// optional, in optional, or a struct, in structType. The five fields are
+// optional, in optional, or a struct, in structType. The fields are
 // mutually exclusive: kind is zero
 // for a compound local (a tuple/array/optional/struct is not a
-// types.BuiltinKind), and tuple/array/optional/structType are zero for a
+// types.BuiltinKind), isStr is true only for a str local (a str is a
+// types.BuiltinKind but has no width or bool grammar this backend builds —
+// it is initialized from a string literal and only ever compared, never
+// arithmetically combined), and tuple/array/optional/structType are zero for a
 // scalar local. A struct value
 // rather than a parallel map keeps the scope a single map threaded through
 // every builder unchanged in shape — the existing
@@ -1406,6 +1447,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 // existing call sites correctly.
 type localInfo struct {
 	kind       types.BuiltinKind
+	isStr      bool
 	tuple      types.TypeID
 	array      types.TypeID
 	optional   types.TypeID
@@ -1672,6 +1714,76 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, state
 	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, strings.Join(inits, ", "), indent, statement.Symbol), nil
 }
 
+// buildStrLocalDeclaration builds one str-typed local's declaration: a
+// `PebbleStr pebble_local_<symbol> = { .data = (const uint8_t *)"<escaped>",
+// .len = <N> };` whose initializer is a StringLiteral (a string literal) —
+// the only supported str initializer this slice builds. PebbleStr is the
+// runtime ABI's length-prefixed string type (runtime/include/pebble_rt.h), a
+// fixed runtime type rather than a program-specific shape, so the local is
+// declared directly as PebbleStr with no typedef. .data points at the
+// literal's bytes re-escaped into a safe C string literal by escapeCString
+// (the decoded content is not assumed simple — a control character, a quote,
+// or a backslash anywhere in it is escaped correctly, with every non-
+// printable byte emitted as a fixed-width octal escape so a following digit
+// can never be swallowed by C's maximal-munch escape rules); .len is the
+// decoded byte length, a compile-time constant known from the literal itself,
+// so no runtime strlen is involved. The initializer must be a StringLiteral:
+// initializing a str local from any other value — a copy of another str
+// local, a call, anything else — is a clean rejection, keeping this slice's
+// supported initializer exactly the string literal. The local's scope entry
+// records isStr, so a later str ==/!= comparison resolves the operand as a
+// str local. Like every scalar local, the declaration is followed by a (void)
+// cast against -Wunused-variable.
+func buildStrLocalDeclaration(unit *tir.Unit, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string) (string, error) {
+	if initValue.Kind != tir.StringLiteral {
+		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal); initializing a str local from another value is not supported yet", context, initValue.Kind)
+	}
+	if initValue.Literal.Kind != tir.LiteralString {
+		return "", fmt.Errorf("%s declares a str-typed local from a StringLiteral with literal kind %s, want a decoded string", context, initValue.Literal.Kind)
+	}
+	text := initValue.Literal.String
+	scope[statement.Symbol] = localInfo{isStr: true}
+	return fmt.Sprintf("%sPebbleStr pebble_local_%d = { .data = (const uint8_t *)\"%s\", .len = %d };\n%s(void)pebble_local_%d;", indent, statement.Symbol, escapeCString(text), len(text), indent, statement.Symbol), nil
+}
+
+// escapeCString re-escapes a string literal's already-decoded byte content
+// into the body of a C string literal, producing a C literal that is
+// byte-for-byte the original decoded content. The decoded bytes are not
+// assumed simple: a literal may contain a control character (\\n, \\t, \\0,
+// or any \\xHH byte escape the lexer accepts), a quote, a backslash, or non-
+// ASCII UTF-8. A double-quote and a backslash are escaped as the complete C
+// escapes \\" and \\\\ (complete escapes cannot absorb a following character).
+// Every byte outside printable ASCII (0x20-0x7E) — control characters, NUL,
+// and all non-ASCII bytes — is emitted as a fixed-width octal escape \\NNN
+// zero-padded to exactly three digits (e.g. \\012 for newline, \\007 for the
+// bell byte). Fixed-width octal is the safe choice specifically because C's
+// octal escape consumes at most three octal digits, so a \\NNN escape can
+// never accidentally absorb a following digit character the way C's \\xHH
+// hex escape can (\\x09A is one out-of-range or wrong escape, whereas
+// \\011A is the byte 0x09 followed by 'A'). Everything in printable ASCII
+// other than the two escaped characters is emitted verbatim. The result is a
+// valid C string-literal body (never containing a raw double-quote or
+// backslash), so the caller embeds it between two double-quote characters.
+func escapeCString(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch c {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		default:
+			if c >= 0x20 && c <= 0x7e {
+				b.WriteByte(c)
+			} else {
+				fmt.Fprintf(&b, `\%03o`, c)
+			}
+		}
+	}
+	return b.String()
+}
+
 // buildCondition builds the C text for one if/while condition. It dispatches
 // on the condition node's shape: a direct integer comparison (tir.BinaryValue)
 // keeps the existing buildComparison path unchanged, while a bare bool value —
@@ -1697,6 +1809,12 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 // two integers, or two bools with ==/!=, cannot overflow, so no runtime helper
 // is needed. The operand grammar is decided from the operands' own resolved
 // types, not assumed to be integers: when both operands carry the snapshot's
+// str builtin, they are an equality between two str values built by
+// buildStrOperand and lowered to the runtime helper
+// pebble_rt_str_eq(<left>, <right>) (==) or its negation (!=) — ordering
+// comparisons between strs are rejected cleanly, since the checker does not
+// reject them from source (confirmed against a real fixture). When both
+// operands carry the snapshot's
 // bool builtin, they are built by buildBoolExpr (a bool comparison result, a
 // bool local, a bool literal, a ! negation, or a && / || combination — the
 // wrapped-comparison shape (1 < 2) == (3 < 4) is exactly this, its two
@@ -1735,6 +1853,36 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 	rightOperand, ok := unit.Node(node.Children[1])
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", node.Children[1])
+	}
+	if isStr(snapshot, leftOperand.Type) && isStr(snapshot, rightOperand.Type) {
+		// An equality between two str values — s == t, s == "hi",
+		// "hi" == "ho", and so on. Only ==/!= make sense for str operands;
+		// an ordering comparison between strs (s < t) is reachable from real
+		// source (confirmed against a real fixture — the checker does not
+		// reject it), so it is rejected cleanly here, never guessed. The
+		// comparison is built via the runtime helper
+		// pebble_rt_str_eq(<left>, <right>), which is byte-for-byte and
+		// length-prefixed (no strlen, no NUL-termination dependence): ==
+		// emits the call directly and != emits its negation. Each operand is
+		// built by buildStrOperand — a reference to an in-scope str local, or
+		// a string literal embedded as a PebbleStr compound literal — so a
+		// literal operand participates in a comparison without needing a
+		// declared local.
+		if node.Operator != syntax.Equal && node.Operator != syntax.NotEqual {
+			return "", fmt.Errorf("entry function body if condition compares two str operands with operator %s, want == or !=", node.Operator)
+		}
+		left, err := buildStrOperand(unit, snapshot, node.Children[0], locals)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildStrOperand(unit, snapshot, node.Children[1], locals)
+		if err != nil {
+			return "", err
+		}
+		if node.Operator == syntax.Equal {
+			return "pebble_rt_str_eq(" + left + ", " + right + ")", nil
+		}
+		return "!pebble_rt_str_eq(" + left + ", " + right + ")", nil
 	}
 	if isBool(snapshot, leftOperand.Type) && isBool(snapshot, rightOperand.Type) {
 		// Both operands are bool values, so this is an equality between bools
@@ -1792,6 +1940,38 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.Nod
 		return text, nil
 	}
 	return buildExpr(unit, snapshot, id, locals, width)
+}
+
+// buildStrOperand builds one operand of a str ==/!= comparison, which is
+// exactly two shapes (both confirmed against a real fixture): a SymbolValue
+// naming an in-scope str-typed local (emitted as its pebble_local_<symbolID>
+// C name — a PebbleStr lvalue), or a StringLiteral (a str value with no
+// local behind it, emitted as a PebbleStr compound literal carrying the
+// escaped bytes and their compile-time length, the same construction a
+// str-typed local's declaration embeds). Anything else — a reference to a
+// non-str local, a call, any other node — is a clean rejection, never a
+// guessed lowering.
+func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
+	}
+	switch node.Kind {
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || !info.isStr {
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a str-typed local declared earlier in the entry body", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.StringLiteral:
+		if node.Literal.Kind != tir.LiteralString {
+			return "", fmt.Errorf("entry function body expression contains a StringLiteral with literal kind %s, want a decoded string", node.Literal.Kind)
+		}
+		text := node.Literal.String
+		return fmt.Sprintf("(PebbleStr){ .data = (const uint8_t *)\"%s\", .len = %d }", escapeCString(text), len(text)), nil
+	default:
+		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference or a string literal", node.Kind)
+	}
 }
 
 // comparisonOperator maps the six comparison token kinds this backend lowers
@@ -2555,6 +2735,19 @@ func isBool(snapshot *types.Snapshot, id types.TypeID) bool {
 		return false
 	}
 	return id == snapshot.Builtins().Bool
+}
+
+// isStr reports whether id is the snapshot's str builtin. A str value is a
+// builtin like bool, but unlike bool (or the entry's integer width) it has no
+// arithmetic grammar this backend builds — a str local is initialized only
+// from a string literal and a str value is only ever an operand of a ==/!=
+// comparison — so it is recognized by this distinct predicate rather than by
+// a shared scalar-builder switch.
+func isStr(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	return id == snapshot.Builtins().Str
 }
 
 // isTuple reports whether id resolves to a tuple type in the snapshot. It is
