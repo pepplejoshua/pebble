@@ -1,9 +1,29 @@
 # 10 C backend and runtime ABI — inventory of the old C backend and first-slice proposal
 
-**Status:** inventory and proposal only — nothing implemented, no code
-written. This is the pre-implementation record for phase 10, written the
-way 07's plan was: real file/line citations against the old backend, a
-verdict per item, and one narrowly-scoped first slice.
+**Status:** 10.1 is implemented, committed, and pushed (see "Completed
+slices" below). This is the pre-implementation record for the rest of
+phase 10, written the way 07's plan was: real file/line citations
+against the old backend, a verdict per item, and slices scoped
+incrementally as work proceeds.
+
+## Completed slices
+
+- **10.1 — versioned runtime ABI skeleton** (`runtime/`): pure C,
+  independent of the Go compiler, per section 4 below.
+  `runtime/include/pebble_rt.h` pins the interface — `PebbleContext`/
+  `PebbleAllocator` passed by pointer (not the old backend's
+  recursive-by-value shape), a documented zeroing contract on the
+  default allocator, a single `pebble_rt_panic` entry every safety
+  check will funnel through, a length-prefixed `PebbleStr`, and
+  explicit `PEBBLE_RT_MODE_SAFE`/`PEBBLE_RT_MODE_RELEASE`/
+  `PEBBLE_RT_FREESTANDING` config macros. `context.c`/`panic.c`/
+  `platform_host.c` implement it for the hosted configuration. A
+  hand-written smoke test (`runtime/test/smoke_test.c`) exercises the
+  zeroing allocator, argv adaptation, and proves `pebble_rt_panic`
+  actually aborts via a fork+pipe+waitpid check. Builds clean under
+  `-Wall -Wextra -Werror` in both SAFE and RELEASE modes, and under
+  `-DPEBBLE_RT_FREESTANDING`. No file under `compiler/` or `src/` was
+  touched.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
