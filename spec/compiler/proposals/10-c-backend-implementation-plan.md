@@ -332,6 +332,50 @@ incrementally as work proceeds.
   loop/if, and a nested-call argument) and independently outside the
   harness — manually compiled and ran the emitted C for `add(20, 22)`
   with `-Wall -Wextra -Werror`, confirming exit code 42.
+- **10.19 — tuple values, the first aggregate type**
+  (`compiler/internal/backend`): tuples chosen over structs/records
+  because `compiler/internal/types` already models `Tuple` as a real
+  `Kind` with `TypeKey.Elements()`, and `compiler/internal/tir` already
+  has real node kinds for it — structs have no type-system
+  representation at all yet. Each distinct tuple type is emitted as
+  one C struct typedef, named `pebble_tuple_<typeID>_t` from the
+  tuple's own stable `types.TypeID`, with positional fields `_0`, `_1`,
+  ... in element order (the old backend's own convention, without its
+  9-field cap). A new `collectTupleTypes` pass walks the entry body
+  and every reachable helper's body (reusing the same traversal
+  `discoverReachableHelpers` already uses) to discover every tuple
+  type referenced, so every typedef is written before any function
+  that uses it. A tuple-typed local is declared from a tuple literal
+  (`let t (i32, i32) = (20, 22);`), each element built by the grammar
+  its own type selects, emitted as a C struct initializer. Element
+  types are restricted to the entry's resolved width or `bool` — the
+  same two grammars a scalar local already supports; nested tuple
+  elements, `str` elements, whole-tuple reassignment, tuple
+  parameters/results, and indexing a tuple literal directly are all
+  clean rejections. The existing `locals` map was widened to a small
+  `localInfo{kind, tuple}` struct rather than adding a parallel map, so
+  no builder call site needed a second argument. Real,
+  independently-confirmed finding: reading one element of a tuple
+  local (`t.1`) lowers to `Load(TuplePlace)`, not a bare
+  `TupleElementValue` (that shape is only produced for indexing a
+  tuple literal directly, out of scope here) — confirmed against a
+  real fixture before assuming the node shape, exactly the discipline
+  this phase has followed throughout. Also confirmed: `TupleCoerce` is
+  unreachable in this slice's scope (in-scope literals anchor directly
+  to their element type) and was left unimplemented. Real limitation
+  surfaced, not fixed (out of this slice's scope, since it lives in
+  `compiler/internal/tir`): tuple element 0 (`t.0`) cannot be read from
+  any source in this compiler today, because `tir.Node.Ordinal` uses 0
+  as its zero-sentinel and the typed-IR verifier rejects an Ordinal of
+  0 on a `TuplePlace`/`TupleElementValue`; every test in this slice
+  uses ordinals ≥ 1. Verified end-to-end (two- and three-element
+  tuples, a bool element driving an `if`, a tuple element as a call
+  argument, a tuple local inside a helper, an i64 tuple, and the
+  element-type/whole-tuple-store/tuple-parameter/tuple-literal-index
+  rejections) and independently outside the harness — manually
+  compiled and ran the emitted C for
+  `let t (i32, i32) = (20, 22); return t.1;` with
+  `-Wall -Wextra -Werror`, confirming exit code 22.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
