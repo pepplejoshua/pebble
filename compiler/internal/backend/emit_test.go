@@ -16,6 +16,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -155,6 +156,18 @@ func TestEmitCheckedNegateFeedsArithmeticCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { return -5 + 10; }", false, 5, false)
 }
 
+func TestEmitCheckedDivisionCompilesAndRuns(t *testing.T) {
+	// 7 / 2 = 3 (plain C division truncates toward zero, which is also the
+	// language's semantics): the CheckedArithmetic node with operator Slash is
+	// now lowered to pebble_rt_checked_div_i32(7, 2), exit code 3.
+	emitAndRun(t, "fn main() i32 { return 7 / 2; }", false, 3, false)
+}
+
+func TestEmitCheckedModuloCompilesAndRuns(t *testing.T) {
+	// 7 % 2 = 1, lowered to pebble_rt_checked_mod_i32(7, 2), exit code 1.
+	emitAndRun(t, "fn main() i32 { return 7 % 2; }", false, 1, false)
+}
+
 func TestEmitCheckedArithmeticOverflowAborts(t *testing.T) {
 	// 2147483647 + 1 overflows i32. Compiled in PEBBLE_RT_MODE_SAFE (the
 	// same mode the other end-to-end tests use), the emitted
@@ -162,6 +175,14 @@ func TestEmitCheckedArithmeticOverflowAborts(t *testing.T) {
 	// the process must terminate abnormally — not exit 0 and not return any
 	// specific arithmetic value.
 	emitAndRun(t, "fn main() i32 { return 2147483647 + 1; }", false, 0, true)
+}
+
+func TestEmitCheckedDivideByZeroAborts(t *testing.T) {
+	// 1 / 0 divides by zero. The emitted pebble_rt_checked_div_i32 call must
+	// panic through pebble_rt_panic (divide-by-zero is a fault in every
+	// configuration, not just SAFE), so the process must terminate abnormally
+	// — not exit 0 and not return any specific numeric value.
+	emitAndRun(t, "fn main() i32 { return 1 / 0; }", false, 0, true)
 }
 
 // emitAndRun drives one .peb entry source through buildFixture, Emit, and the
@@ -351,6 +372,96 @@ func buildNonI32ReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sym
 	return unit, snapshot, entryID
 }
 
+// buildUnsupportedArithmeticOperatorUnit hand-builds a unit whose i32 entry
+// returns a CheckedArithmetic node carrying an operator the backend does not
+// map to a helper (division/modulo are now mapped, so no source-level
+// CheckedArithmetic carries an unmapped operator — this shape is constructed
+// directly through the IR builder to exercise Emit's own rejection of that
+// branch). The type snapshot is borrowed from a checker-built fixture so every
+// TypeID the hand-built nodes reference is owned by the snapshot.
+func buildUnsupportedArithmeticOperatorUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A bitwise operator is integral but is not one the backend lowers to a
+	// checked runtime helper; a CheckedArithmetic node carrying it must be a
+	// clean rejection.
+	value, err := builder.AddNode(tir.Node{
+		Kind:     tir.CheckedArithmetic,
+		Type:     i32,
+		Operator: syntax.Ampersand,
+		Children: []tir.NodeID{left, right},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{value},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
 // runtimeSourceRoot locates the runtime directory relative to this test file,
 // independent of the process working directory.
 func runtimeSourceRoot(t *testing.T) string {
@@ -379,12 +490,14 @@ func TestEmitRejectsNonEmptyBody(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsDivisionReturn(t *testing.T) {
-	// Division builds a CheckedArithmetic node with operator Slash. It needs a
-	// different fault category (divide-by-zero), which is explicitly out of
-	// scope for this slice, so it must be a clean Emit rejection — not a
-	// guessed lowering and not a panic in the Go test itself.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 1 / 2; }", "main", false)
+func TestEmitRejectsUnsupportedArithmeticOperator(t *testing.T) {
+	// Division and modulo are now lowered to pebble_rt_checked_div_i32 /
+	// pebble_rt_checked_mod_i32, so no source-level CheckedArithmetic is
+	// rejected for its operator anymore. This hand-built node carries a
+	// bitwise operator (&), which the backend deliberately does not map to a
+	// checked helper, so it must be a clean Emit rejection — not a guessed
+	// lowering and not a panic in the Go test itself.
+	unit, snapshot, entryID := buildUnsupportedArithmeticOperatorUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

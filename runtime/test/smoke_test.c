@@ -12,12 +12,19 @@
  *      child, because a direct call would abort this very process
  *      before it could report success on the checks above.
  *   6. The checked i32 helpers produce arithmetically correct results
- *      for non-overflowing operands.
+ *      for non-overflowing operands, including division/modulo with
+ *      negative operands (plain C / and % truncate toward zero).
  *   7. Overflow behavior is mode-dependent and both modes are asserted:
  *      SAFE — pebble_rt_checked_add_i32(INT32_MAX, 1) and
  *      pebble_rt_checked_neg_i32(INT32_MIN) panic through pebble_rt_panic,
  *      verified in forked children like check 5; RELEASE — the same
  *      operations wrap to INT32_MIN instead of panicking.
+ *   8. Division and modulo's distinct fault cases: division by zero panics
+ *      in EVERY configuration (RELEASE included) — there is no defined
+ *      quotient, so this fork check is not mode-gated; INT32_MIN % -1
+ *      returns 0 in both modes (mathematically 0, representable, not a
+ *      fault); and INT32_MIN / -1 follows the overflow convention (SAFE
+ *      panics with overflow, RELEASE wraps to INT32_MIN).
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -111,6 +118,34 @@ static void test_checked_arithmetic_normal(void) {
     assert(pebble_rt_checked_mul_i32(6, 7) == 42);
     assert(pebble_rt_checked_neg_i32(5) == -5);
     assert(pebble_rt_checked_neg_i32(INT32_MIN + 1) == INT32_MAX);
+
+    /* Division and modulo use plain C / and %, which truncate toward zero
+     * on this platform — (-7) / 2 == -3 and (-7) % 2 == -1 (the sign of %
+     * follows the dividend). The asserted values are the observed plain-C
+     * results, not assumptions about a different rounding rule.
+     */
+    assert(pebble_rt_checked_div_i32(7, 2) == 3);
+    assert(pebble_rt_checked_mod_i32(7, 2) == 1);
+    assert(pebble_rt_checked_div_i32(-7, 2) == -3);
+    assert(pebble_rt_checked_mod_i32(-7, 2) == -1);
+    assert(pebble_rt_checked_div_i32(7, -2) == -3);
+    assert(pebble_rt_checked_mod_i32(7, -2) == 1);
+    assert(pebble_rt_checked_div_i32(-7, -2) == 3);
+    assert(pebble_rt_checked_mod_i32(-7, -2) == -1);
+
+    /* INT32_MIN % -1 is mathematically 0 and representable — not a fault in
+     * either mode, so this must hold unconditionally. INT32_MIN / -1 is
+     * exercised per-mode below (SAFE: panics with overflow, RELEASE: wraps).
+     */
+    assert(pebble_rt_checked_mod_i32(INT32_MIN, -1) == 0);
+}
+
+/* Division by zero is one case that must abort in EVERY configuration — there
+ * is no release-mode answer for it (see pebble_rt.h), so its fork check runs
+ * in both modes and its trigger lives outside the SAFE gate below.
+ */
+static int32_t trigger_div_by_zero(void) {
+    return pebble_rt_checked_div_i32(1, 0);
 }
 
 /* The overflow-panic fork checks are SAFE-mode-only: in RELEASE mode the
@@ -131,10 +166,16 @@ static int32_t trigger_neg_overflow(void) {
     return pebble_rt_checked_neg_i32(INT32_MIN);
 }
 
+static int32_t trigger_div_overflow(void) {
+    return pebble_rt_checked_div_i32(INT32_MIN, -1);
+}
+
+#endif /* PEBBLE_RT_MODE_SAFE */
+
 /* Same shape as verify_panic_aborts: fork a child, capture its stderr
  * through a pipe, and confirm it terminated abnormally (abort() raises
  * SIGABRT; a non-zero exit is also accepted). The child runs the given
- * trigger; in SAFE mode the overflow must call pebble_rt_panic, which never
+ * trigger; the operation it performs must call pebble_rt_panic, which never
  * returns, so the child must never reach its own _exit(2).
  */
 static int verify_checked_overflow_panics(const char *what, int32_t (*trigger)(void)) {
@@ -156,15 +197,15 @@ static int verify_checked_overflow_panics(const char *what, int32_t (*trigger)(v
     }
 
     if (pid == 0) {
-        /* Child: send stderr to the pipe, then overflow. Never reaches the
-         * _exit(2) below in SAFE mode.
+        /* Child: send stderr to the pipe, then trigger the fault. Never
+         * reaches the _exit(2) below: the operation must have panicked.
          */
         close(fds[0]);
         dup2(fds[1], STDERR_FILENO);
         close(fds[1]);
 
         (void)trigger();
-        /* Unreachable in SAFE mode: the overflow must have panicked. */
+        /* Unreachable: the fault must have panicked. */
         _exit(2);
     }
 
@@ -208,8 +249,6 @@ static int verify_checked_overflow_panics(const char *what, int32_t (*trigger)(v
 
     return 0;
 }
-
-#endif /* PEBBLE_RT_MODE_SAFE */
 
 /* Returns 0 if the forked child provably panicked (aborted), non-zero on
  * failure. The child's stderr is captured through a pipe so we can also
@@ -306,6 +345,16 @@ int main(void) {
     test_checked_arithmetic_normal();
     printf("ok: checked arithmetic normal results\n");
 
+    /* Division by zero panics in EVERY configuration — including RELEASE —
+     * because there is no defined quotient to return. This check is outside
+     * the mode gate so both builds exercise it.
+     */
+    if (verify_checked_overflow_panics("i32 division by zero", trigger_div_by_zero) != 0) {
+        fprintf(stderr, "smoke_test: checked div by zero subprocess check FAILED\n");
+        return 1;
+    }
+    printf("ok: division by zero panics in subprocess\n");
+
 #if defined(PEBBLE_RT_MODE_SAFE)
     /* Overflow must panic through pebble_rt_panic, verified in a forked
      * child the same way the direct-panic check above is.
@@ -316,6 +365,10 @@ int main(void) {
     }
     if (verify_checked_overflow_panics("i32 negation overflow", trigger_neg_overflow) != 0) {
         fprintf(stderr, "smoke_test: checked neg overflow subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i32 division overflow", trigger_div_overflow) != 0) {
+        fprintf(stderr, "smoke_test: checked div overflow subprocess check FAILED\n");
         return 1;
     }
     printf("ok: checked arithmetic overflow panics in subprocess\n");
@@ -330,6 +383,10 @@ int main(void) {
     }
     if (pebble_rt_checked_neg_i32(INT32_MIN) != INT32_MIN) {
         fprintf(stderr, "smoke_test: checked neg did not wrap to INT32_MIN in RELEASE\n");
+        return 1;
+    }
+    if (pebble_rt_checked_div_i32(INT32_MIN, -1) != INT32_MIN) {
+        fprintf(stderr, "smoke_test: checked div did not wrap to INT32_MIN in RELEASE\n");
         return 1;
     }
     printf("ok: checked arithmetic wraps in RELEASE\n");

@@ -3,8 +3,9 @@
 // current slice emits exactly two program shapes — an empty-bodied Pebble-
 // convention void entry function, and a zero-parameter i32 entry whose body
 // is exactly one `return <i32 expression>;` where the expression is a small
-// tree of integer literals, checked negation, and checked +, -, * arithmetic —
-// and rejects everything else with a descriptive error instead of guessing.
+// tree of integer literals, checked negation, and checked +, -, *, /, %
+// arithmetic — and rejects everything else with a descriptive error instead
+// of guessing.
 package backend
 
 import (
@@ -25,11 +26,12 @@ import (
 // {}` produces) or i32 with a body of exactly one `return <i32 expression>;`
 // statement, in which case the expression's value is propagated as the
 // process's exit code. The expression may be a plain non-negative integer
-// literal, or a tree of checked negation and checked +, -, * arithmetic (see
-// buildExpr) — checked operations emit pebble_rt_checked_*_i32 calls so the
-// language's overflow semantics survive into the emitted program. Any other
-// shape returns a descriptive error and writes nothing to w; this package does
-// not yet lower arbitrary expressions or statements.
+// literal, or a tree of checked negation and checked +, -, *, /, % arithmetic
+// (see buildExpr) — checked operations emit pebble_rt_checked_*_i32 calls so
+// the language's overflow and divide-by-zero semantics survive into the
+// emitted program. Any other shape returns a descriptive error and writes
+// nothing to w; this package does not yet lower arbitrary expressions or
+// statements.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -146,7 +148,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // C text for its return value. The accepted body: a block with exactly one
 // statement, a Return carrying exactly one argument, and a value node that
 // buildExpr can lower (a plain non-negative integer literal, or a tree of
-// checked negation and checked +, -, * arithmetic). Any other shape is
+// checked negation and checked +, -, *, /, % arithmetic). Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
 func buildReturnExpression(unit *tir.Unit, snapshot *types.Snapshot, block tir.Node) (string, error) {
 	if len(block.Children) != 1 {
@@ -171,18 +173,18 @@ func buildReturnExpression(unit *tir.Unit, snapshot *types.Snapshot, block tir.N
 //   - IntegerLiteral — its decimal text (defensively validated, exactly as
 //     10.3 validated a bare literal return).
 //   - CheckedNegate with exactly one i32 operand — pebble_rt_checked_neg_i32.
-//   - CheckedArithmetic with exactly two i32 operands and operator +, -, or *
-//     — pebble_rt_checked_add_i32 / pebble_rt_checked_sub_i32 /
-//     pebble_rt_checked_mul_i32.
+//   - CheckedArithmetic with exactly two i32 operands and operator +, -, *, /,
+//     or % — pebble_rt_checked_add_i32 / pebble_rt_checked_sub_i32 /
+//     pebble_rt_checked_mul_i32 / pebble_rt_checked_div_i32 /
+//     pebble_rt_checked_mod_i32.
 //
-// CheckedArithmetic with any other operator (division, modulo, and the other
-// integral operators that build this node) is rejected, not guessed: division
-// and modulo need a different fault category (divide-by-zero), which is out of
-// scope for this slice. Any other node kind at any position — a variable
-// reference (SymbolValue), a function call, a non-i32 operand, CheckedShift,
-// and so on — is a clean rejection naming what was found. Emitting the checked
-// runtime helpers (rather than raw C + - *) is what keeps the IR nodes' real
-// overflow semantics from silently disappearing in the emitted program.
+// CheckedArithmetic with any other operator (the integral operators that build
+// this node but are not yet lowered) is rejected, not guessed. Any other node
+// kind at any position — a variable reference (SymbolValue), a function call,
+// a non-i32 operand, CheckedShift, and so on — is a clean rejection naming
+// what was found. Emitting the checked runtime helpers (rather than raw C
+// operators) is what keeps the IR nodes' real overflow and divide-by-zero
+// semantics from silently disappearing in the emitted program.
 func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
@@ -216,7 +218,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID) (string,
 		}
 		helper, ok := checkedArithmeticHelper(node.Operator)
 		if !ok {
-			return "", fmt.Errorf("entry function return expression contains a CheckedArithmetic with operator %s, want +, -, or * (division and modulo need a different fault category, not supported yet)", node.Operator)
+			return "", fmt.Errorf("entry function return expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %%", node.Operator)
 		}
 		left, err := buildExpr(unit, snapshot, node.Children[0])
 		if err != nil {
@@ -228,15 +230,16 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID) (string,
 		}
 		return helper + "(" + left + ", " + right + ")", nil
 	default:
-		return "", fmt.Errorf("entry function return expression contains a %s, want an integer literal or checked +, -, * arithmetic", node.Kind)
+		return "", fmt.Errorf("entry function return expression contains a %s, want an integer literal or checked +, -, *, /, %% arithmetic", node.Kind)
 	}
 }
 
-// checkedArithmeticHelper maps the +, -, * operators a CheckedArithmetic node
-// may carry to the runtime helper that implements their checked overflow
-// semantics. Any other operator (division, modulo, bitwise) is deliberately
-// not mapped: division and modulo fault on divide-by-zero, a different
-// category this slice does not yet emit.
+// checkedArithmeticHelper maps the +, -, *, /, % operators a CheckedArithmetic
+// node may carry to the runtime helper that implements their checked semantics.
+// Division and modulo map to pebble_rt_checked_div_i32 / pebble_rt_checked_mod_i32,
+// which handle both the divide-by-zero fault (in every mode) and the one
+// division overflow input, INT32_MIN / -1. Any other operator (bitwise, etc.)
+// is deliberately not mapped and rejected by the caller.
 func checkedArithmeticHelper(op syntax.TokenKind) (string, bool) {
 	switch op {
 	case syntax.Plus:
@@ -245,6 +248,10 @@ func checkedArithmeticHelper(op syntax.TokenKind) (string, bool) {
 		return "pebble_rt_checked_sub_i32", true
 	case syntax.Star:
 		return "pebble_rt_checked_mul_i32", true
+	case syntax.Slash:
+		return "pebble_rt_checked_div_i32", true
+	case syntax.Percent:
+		return "pebble_rt_checked_mod_i32", true
 	default:
 		return "", false
 	}

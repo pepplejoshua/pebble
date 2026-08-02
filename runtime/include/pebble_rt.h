@@ -101,6 +101,7 @@ typedef enum PebblePanicKind {
     PEBBLE_PANIC_UNWRAP_FAILED,
     PEBBLE_PANIC_TAG_MISMATCH,
     PEBBLE_PANIC_ARITHMETIC_OVERFLOW,
+    PEBBLE_PANIC_DIVIDE_BY_ZERO,
     PEBBLE_PANIC_GENERIC
 } PebblePanicKind;
 
@@ -137,6 +138,30 @@ int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b);
 int32_t pebble_rt_checked_neg_i32(int32_t a);
+
+/* ---- checked division and modulo -------------------------------------------
+ * Division and modulo have a fault case wraparound cannot fix: b == 0 has no
+ * defined quotient at all, in either mode — unlike +, -, *, there is no
+ * "release mode returns some defined bit pattern" answer, so divide-by-zero
+ * panics with PEBBLE_PANIC_DIVIDE_BY_ZERO in every configuration, not just
+ * PEBBLE_RT_MODE_SAFE.
+ *
+ * The one arithmetic-overflow case division has (INT32_MIN / -1, not
+ * representable in i32) follows the same convention as +, -, * above:
+ * PEBBLE_RT_MODE_SAFE panics with PEBBLE_PANIC_ARITHMETIC_OVERFLOW,
+ * PEBBLE_RT_MODE_RELEASE returns the wrapped result (INT32_MIN). Both
+ * implementations must special-case this input rather than ever evaluating
+ * C's `a / b` for it — INT32_MIN / -1 is undefined behavior in C itself, not
+ * just a value to detect after the fact.
+ *
+ * INT32_MIN % -1 is mathematically 0 and IS representable — C still treats
+ * evaluating `%` for this input as undefined behavior because it is defined
+ * in terms of division, so this case must also be special-cased (returning 0
+ * directly) rather than evaluated, but it is not a fault: no panic, in either
+ * mode.
+ */
+int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b);
+int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend

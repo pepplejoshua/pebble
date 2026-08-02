@@ -18,6 +18,8 @@ static const char *panic_kind_label(PebblePanicKind kind) {
         return "tagged union tag mismatch";
     case PEBBLE_PANIC_ARITHMETIC_OVERFLOW:
         return "arithmetic overflow";
+    case PEBBLE_PANIC_DIVIDE_BY_ZERO:
+        return "division by zero";
     case PEBBLE_PANIC_GENERIC:
         return "panic";
     }
