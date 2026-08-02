@@ -575,6 +575,52 @@ incrementally as work proceeds.
   round-trip) and independently outside the harness — manually
   compiled and ran the emitted C for the escape-round-trip fixture
   with `-Wall -Wextra -Werror`, confirming exit code 7.
+- **10.24 — tuple- and struct-typed function parameters**
+  (`compiler/internal/backend`): 10.18 gave helper functions
+  parameters, restricted to the entry's width or `bool`; 10.19-10.23
+  then added five more types as locals but none could cross a
+  function boundary. This slice lifts that restriction for tuple and
+  struct parameters specifically — the two aggregate types whose
+  internal shape this backend already fully understands.
+  `validateHelperSignature` accepts a tuple/struct parameter type
+  alongside width/bool; `buildHelperFunctions` seeds the parameter's
+  locals-scope entry exactly as an `Initialize` of that type already
+  does, so element/field reads inside the callee's body resolve
+  through the existing `Load(TuplePlace)`/`Load(FieldPlace)` machinery
+  unchanged, with the C parameter declared using the aggregate's own
+  typedef name. `buildCallArguments` routes these through a new
+  `buildAggregateArgument`, which requires the call-site argument be a
+  plain `SymbolValue` naming an already-declared aggregate-typed local
+  of matching type — passing the whole value by value is trivially
+  valid C once the typedef exists. **Real, confirmed-not-guessed
+  finding**: constructing a fresh tuple/struct value inline at a call
+  site (`f((1, 2))`, `f(Point.{ x = 1, y = 2 })`) is reachable from
+  real source, so it's a clean rejection naming what was found, not an
+  assumed-unreachable case — building one requires a general
+  build-an-aggregate-value expression, saved for later. Two prior
+  rejection tests (10.19's `TestEmitRejectsTupleParameter`, 10.22's
+  `TestEmitRejectsStructTypedParameter`) were updated to this new,
+  narrower rejection reason. **Real gap closed**:
+  `collectTupleTypes`/`collectStructTypes` previously only discovered
+  a type from local construction/declaration, missing a type used
+  *only* as a parameter type (never constructed in any reachable
+  body); both now also scan each reachable helper's own `Parameters`
+  list, verified with a dedicated test where the type appears nowhere
+  else. Tuple/struct-typed function *return* types remain explicitly
+  out of scope — confirmed reachable from real source, still rejected
+  cleanly by the existing result-type check; changing a helper's C
+  return type to an aggregate typedef touches enough distinct pieces
+  (signature formatting, typedef-before-definition ordering for the
+  helper's own signature, building a full aggregate return value) to
+  deserve its own future slice. No checker/tir bug found this time.
+  Verified end-to-end (a tuple parameter reading both elements
+  including element 0, a mixed `(i32, bool)` tuple parameter driving
+  an `if`, a struct parameter, a struct parameter's bool field driving
+  an `if`, and a parameter-only type still getting its typedef) and
+  independently outside the harness — manually compiled and ran the
+  emitted C for `fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn
+  main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }` with
+  `-Wall -Wextra -Werror`, confirming exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
