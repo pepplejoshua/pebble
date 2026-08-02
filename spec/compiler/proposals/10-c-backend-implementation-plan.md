@@ -55,6 +55,26 @@ incrementally as work proceeds.
   checker). End-to-end verified both by a `cc`-invoking test and by
   the supervisor manually compiling and running the emitted C outside
   any test harness, observing exit code 42.
+- **10.4 — real checked i32 arithmetic** (`runtime/`,
+  `compiler/internal/backend`): the typed IR's `CheckedArithmetic`/
+  `CheckedNegate` nodes retain fault-category semantics with
+  "release-mode response left to phase 10" (spec 06b) — this closes
+  that, rather than silently emitting raw C `+`/`-`/`*` and dropping
+  the language's defined overflow behavior. `pebble_rt.h` gains
+  `PEBBLE_PANIC_ARITHMETIC_OVERFLOW` and four `pebble_rt_checked_*_i32`
+  helpers; `runtime/src/arith.c` implements SAFE-mode overflow panics
+  (via the compiler's own `__builtin_*_overflow`) and RELEASE-mode
+  defined wraparound (via unsigned arithmetic, never signed-overflow
+  UB) — including negation's one overflowing boundary, `-INT32_MIN`.
+  The backend now accepts a small recursive i32 expression tree for an
+  entry's return value (literals, checked negation, checked
+  `+`/`-`/`*`) instead of only a bare literal, emitting the runtime
+  helpers rather than raw operators; division/modulo are cleanly
+  rejected as needing a separate divide-by-zero fault category. Both
+  runtime configurations and the end-to-end Pebble-source-to-exit-code
+  path (including a real overflow abort with the correct panic
+  message) were independently re-verified outside the dispatched
+  tests.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
