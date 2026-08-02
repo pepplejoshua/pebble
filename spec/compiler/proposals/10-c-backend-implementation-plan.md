@@ -305,6 +305,33 @@ incrementally as work proceeds.
   two-level call chain compiles in the correct forward-definition
   order and exits correctly, confirmed independently outside the
   harness.
+- **10.18 — parameters for called functions**
+  (`compiler/internal/backend`): lifts 10.17's zero-parameter
+  restriction. `validateHelperSignature` now walks
+  `decl.Parameters`, resolving and requiring each one to be the
+  entry's resolved width or `bool` — the same two grammars a local
+  already supports — rejecting anything else with an error naming the
+  offending parameter position. `buildHelperFunctions` seeds each
+  helper's own locals scope with its parameters before building its
+  body, so a parameter reference inside the body resolves through the
+  existing `SymbolValue`/locals machinery unchanged — a parameter
+  behaves exactly like a pre-declared local once inside the function.
+  The `DirectCall` case in `buildExpr` now builds each call-site
+  argument (via `buildExpr` or `buildBoolExpr`, chosen by the callee's
+  declared parameter type) through a new `buildCallArguments` helper,
+  validating the argument count against the callee's declared
+  parameter count. Each emitted helper's C signature declares its
+  parameters using the same `pebble_local_<symbolID>` naming a local
+  already uses, so a parameter and a local are textually identical
+  inside the body. Real, independently-confirmed finding: a genuine
+  `cc` compile (not assumed) confirms `-Wunused-parameter` fires under
+  `-Wall -Wextra -Werror` for a declared-but-unread C parameter, so
+  every parameter gets the same `(void)pebble_local_<id>;` cast a
+  local already gets. Verified end-to-end (including a two-parameter
+  `add(a, b)` call, a `bool` parameter, a parameter used inside a
+  loop/if, and a nested-call argument) and independently outside the
+  harness — manually compiled and ran the emitted C for `add(20, 22)`
+  with `-Wall -Wextra -Werror`, confirming exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
