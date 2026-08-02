@@ -390,6 +390,60 @@ incrementally as work proceeds.
   compiled and ran the emitted C for
   `let t (i32, i32) = (20, 22); return t.1;` (exit 22) and, after the
   fix, `return t.0;` (exit 20), both with `-Wall -Wextra -Werror`.
+- **10.20 — fixed-length array values** (`compiler/internal/backend`,
+  plus `runtime/` and `compiler/internal/check`): the second
+  backend-supported aggregate type. Unlike a tuple, an array needs no
+  C struct typedef — C's own array declaration syntax is
+  self-contained — so an array-typed local is declared directly as
+  `<ctype> pebble_local_<sym>[N] = { e0, ... };`. Element types are
+  restricted to the entry's width or `bool`, matching every prior
+  aggregate slice. Only an `ArrayValue` literal (`[10, 20, 30]`) is a
+  supported initializer; `ArrayRepeat` (`[v; N]`) is explicitly
+  rejected — safely evaluating a repeat value exactly once while
+  filling N slots is a real design question deferred to a later
+  slice. Reading an element (`a[i]`) lowers, confirmed against a real
+  fixture, to `Load(CheckedIndexPlace)` — the array analog of 10.19's
+  `Load(TuplePlace)` finding — and is bounds-checked at every read.
+  Ahead of the backend slice, added the runtime bounds-check helper it
+  needs (`pebble_rt_checked_index_i32`/`i64`, new
+  `runtime/src/bounds.c`, declared in `pebble_rt.h`): an out-of-bounds
+  access panics with `PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS` in *every*
+  configuration (SAFE and RELEASE), the same reasoning already applied
+  to division by zero, since there is no defined "wrapped" result for
+  an out-of-bounds access; verified via the runtime's own Makefile
+  smoke test in both modes before the backend slice was dispatched.
+  `localInfo` (from 10.19) gained a mutually-exclusive `array
+  types.TypeID` field alongside `tuple`. Whole-array reassignment,
+  array-of-tuple/nested-array elements, array parameters/results, and
+  bare `CheckedIndex` (string/non-place indexing) are all clean
+  rejections. **Real, significant finding along the way**: while
+  investigating this slice, two independent dispatch attempts stalled
+  trying to build the exact fixture the brief required
+  (`let a [2]i32 = [10, 20];`) — tracing it down personally found a
+  real checker bug in `compiler/internal/check/aggregate_facts.go`'s
+  `prepareArray`: it unconditionally created an inference-solver
+  variable cell and then, only when a known destination array type
+  existed, discarded it in favor of a known-type term instead — the
+  abandoned cell was never bound to anything and was reported as a
+  spurious `T0510` for *every* array literal checked against an
+  explicit destination type, blocking real Pebble programs regardless
+  of phase 10. Fixed and landed separately (`4a479e8`) before resuming
+  this slice — including catching a second version of the same class
+  of bug in the first fix attempt itself (unconditionally calling the
+  *other* term constructor instead) by re-running the full probe
+  matrix, not just the originally-failing cases, before trusting the
+  fix. This slice needed three dispatch attempts after that: two more
+  flash attempts (one hit the checker bug before it was fixed; one
+  stalled on investigation-tooling friction, writing a probe dump to
+  `/tmp` it then couldn't read back), escalated to
+  `openai/gpt-5.6-luna` per the established escalation policy, which
+  completed the slice cleanly. Verified end-to-end (element read, bool
+  element driving an `if`, an expression-built index, an out-of-bounds
+  panic, an array element as a call argument, an i64 array, and the
+  `ArrayRepeat`-rejection) and independently outside the harness —
+  manually compiled and ran the emitted C for
+  `let a [3]i32 = [10, 20, 30]; return a[1];` with
+  `-Wall -Wextra -Werror`, confirming exit code 20.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
