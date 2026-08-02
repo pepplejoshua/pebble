@@ -444,6 +444,55 @@ incrementally as work proceeds.
   manually compiled and ran the emitted C for
   `let a [3]i32 = [10, 20, 30]; return a[1];` with
   `-Wall -Wextra -Werror`, confirming exit code 20.
+- **10.21 — optional values** (`compiler/internal/backend`, plus
+  `runtime/` and `compiler/internal/check`): the third
+  backend-supported aggregate type after tuples (10.19) and arrays
+  (10.20). An optional type is emitted as one C struct typedef per
+  distinct optional type, `pebble_optional_<typeID>_t`, with `bool
+  has_value` and a `value` field typed as the payload's own C type.
+  Payload types restricted to the entry's width or `bool`. Both `some
+  <expr>` (`SomeOptional`) and `none` (`NoneOptional`) are supported
+  local initializers; force-unwrap (`x!`, `CheckedOptionalUnwrap`) is
+  bounds-checked via the runtime helper added ahead of this slice
+  (`pebble_rt_checked_unwrap_i32`/`i64`/`bool`, new
+  `runtime/src/optional.c`, declared in `pebble_rt.h`, which also
+  gained a `<stdbool.h>` include it didn't need before): an absent
+  optional panics with `PEBBLE_PANIC_UNWRAP_FAILED` in *every*
+  configuration, the same reasoning already applied to array bounds
+  and division by zero; verified via the runtime's own Makefile smoke
+  test in both modes before the backend slice was dispatched.
+  `localInfo` gained a fourth mutually-exclusive field (`optional
+  types.TypeID`) alongside `kind`/`tuple`/`array`. Reassigning an
+  optional local, optional-typed parameters/results, and unsupported
+  payload types are clean rejections. **Real finding, caught during
+  independent verification, not left as-is**: the dispatched worklog
+  (`opencode-go/mimo-v2.5`, which completed the slice cleanly on its
+  first attempt) claimed `none` was "unreachable from real source
+  today (the checker rejects it with T0510)" and documented
+  `NoneOptional` as defensive-only code for hand-built IR. That claim
+  did not survive reproduction: building the exact `let x ?i32 =
+  none;` fixture reproduced a real T0510 failure, but tracing it found
+  a genuine checker bug — fixed separately (`6c08b8b`,
+  `compiler/internal/check/expression_facts.go`'s `shapeLeaf`) — the
+  same root-cause class as 10.20's `prepareArray` fix (`4a479e8`): an
+  inference-solver `Variable` cell created unconditionally, then
+  discarded (never bound to anything) whenever a known destination
+  shape existed instead. This time the bug lived in a *shared* helper
+  used by both the `nil` literal (against a known pointer destination)
+  and the `none` literal (against a known optional destination), so
+  the fix closed a broader, genuinely language-level gap, not a
+  backend-only one. With that fixed, `none` compiles and runs
+  correctly through the exact code this slice had already written for
+  it — `buildOptionalLocalDeclaration`'s `NoneOptional` case was
+  implemented correctly, just mislabeled as unreachable defense;
+  added the missing end-to-end test coverage and corrected four stale
+  comments. Verified end-to-end (`some`+unwrap at both integer widths,
+  a bool payload driving an `if`, an unwrapped value as a call
+  argument, an optional local inside a helper, `none` never unwrapped,
+  and force-unwrapping `none` aborting the process) and independently
+  outside the harness — manually compiled and ran the emitted C for
+  `let x ?i32 = some 42; return x!;` with `-Wall -Wextra -Werror`,
+  confirming exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
