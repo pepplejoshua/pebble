@@ -287,18 +287,95 @@ func TestEmitRejectsLogicalOrCondition(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsLocalDeclaredInArm(t *testing.T) {
-	// A local inside an arm makes the arm's block have two children (the
-	// Initialize and the Return); this slice only supports an arm that is
-	// exactly one Return, so it must be rejected, not best-effort supported.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { let y i32 = 1; return y; } else { return 2; } }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitLocalInArmCompilesAndRuns(t *testing.T) {
+	// A local declared inside an arm is now a supported block under the
+	// recursive grammar: the then-arm's block is one Initialize followed by
+	// its Return, and the local is visible to that same arm's return. This is
+	// exactly the shape 10.7 rejected as "local declared in an arm", now
+	// accepted end to end (exit code 5).
+	emitAndRun(t, "fn main() i32 { if 1 < 2 { let y i32 = 5; return y; } else { return 0; } }", false, 5, false)
 }
 
-func TestEmitRejectsNestedIfInArm(t *testing.T) {
-	// An arm's block may hold exactly one Return; an arm whose single child is
-	// another if (nested if) is rejected, not recursively lowered.
+func TestEmitNestedIfDiamondCompilesAndRuns(t *testing.T) {
+	// A nested if inside an arm (a "diamond"): the then-arm's block is itself
+	// a two-armed if/else under the same recursive grammar, so buildBlock
+	// recurses a second level. Three variants cover the inner-true (exit 1),
+	// inner-false (exit 2), and outer-false (exit 3) paths. This is exactly
+	// the shape 10.7 rejected as "nested if in an arm", now accepted.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"inner true", "fn main() i32 { if 1 < 2 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", 1},
+		{"inner false", "fn main() i32 { if 1 < 2 { if 5 < 4 { return 1; } else { return 2; } } else { return 3; } }", 2},
+		{"outer false", "fn main() i32 { if 2 < 1 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitNestedIfEntryWritesC(t *testing.T) {
+	// The emitted C for a nested if must indent each level correctly so the
+	// output is well-formed, readable C: the outer if is at the top level
+	// (4 spaces), the nested if inside the then-arm one level deeper (8
+	// spaces), and its returns two levels deep (12 spaces). Asserting the
+	// literal indentation is what stops the recursive build from quietly
+	// collapsing all levels onto one.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    if (1 < 2) {\n",
+		"        if (3 < 4) {\n",
+		"            return 1;",
+		"        } else {",
+		"            return 2;",
+		"        }",
+		"    } else {",
+		"        return 3;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitScopeIsolationCompilesAndRuns(t *testing.T) {
+	// Both arms declare a source-level local named `a` with a different value,
+	// and each arm references only its own `a`. The checker assigns the two
+	// declarations distinct symbol IDs (confirmed against a real fixture
+	// dump — 25 and 26), so each arm's `a` emits a distinct pebble_local_<id>
+	// declared in its own C block; the true branch's 100 must win. This
+	// exercises that the two arms' declarations don't collide with each
+	// other's C names or scopes.
+	emitAndRun(t, "fn main() i32 { if 1 < 2 { let a i32 = 100; return a; } else { let a i32 = 200; return a; } }", false, 100, false)
+}
+
+func TestEmitLocalsBeforeIfAndInArmCompilesAndRuns(t *testing.T) {
+	// A local declared before the if is visible inside an arm, and the arm's
+	// own local builds on top of it: x = 1, then-arm declares y = x + 1 and
+	// returns it (2), while the else-arm returns the outer x (1). This proves
+	// the outer local's declaration survives into the arm's scope while the
+	// arm's own local is scoped to the arm.
+	emitAndRun(t, "fn main() i32 { let x i32 = 1; if x < 10 { let y i32 = x + 1; return y; } else { return x; } }", false, 2, false)
+}
+
+func TestEmitRejectsLocalLeakingBetweenArms(t *testing.T) {
+	// A local declared inside one arm must not be visible in the sibling arm.
+	// This hand-built unit makes the else-arm's return reference the
+	// then-arm's local (symbol 25); real source can't produce this shape (the
+	// reference would fail name resolution first), so it is constructed
+	// directly through the IR builder. Emit must reject it cleanly — if the
+	// locals map were shared across arms instead of copied per scope, the
+	// else-arm would silently see symbol 25 and emit a reference to a
+	// pebble_local_25 declared only inside the then-arm's C block.
+	unit, snapshot, entryID := buildSiblingArmLocalLeakUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
@@ -868,6 +945,175 @@ func buildIfWithoutElseUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sy
 		Region:   region,
 		HasElse:  false,
 		Children: []tir.NodeID{condition, thenBlock},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{ifNode},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
+// buildSiblingArmLocalLeakUnit hand-builds a unit whose i32 entry is a
+// two-armed if/else where the then-arm declares a local (symbol 25, bound to
+// 100) but the else-arm's return references that same symbol 25. Real source
+// can never produce this shape — a reference to a name that only exists in
+// the other arm fails name resolution first — so it is constructed directly
+// through the IR builder, the same pattern buildIfWithoutElseUnit uses, to
+// exercise Emit's own per-scope copy discipline: the else-arm must not see the
+// then-arm's local. If the locals map were threaded through without copying,
+// the else-arm would accept symbol 25 and emit a reference to a
+// pebble_local_25 declared only inside the then-arm's C block. The type
+// snapshot is borrowed from a checker-built fixture so every TypeID the
+// hand-built nodes reference is owned by the snapshot.
+func buildSiblingArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+	boolT := snapshot.Builtins().Bool
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	condition, err := builder.AddNode(tir.Node{
+		Kind:     tir.BinaryValue,
+		Type:     boolT,
+		Operator: syntax.Less,
+		Children: []tir.NodeID{left, right},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The then-arm declares symbol 25 and returns it.
+	thenValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "100"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenInit, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{thenValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenRef, err := builder.AddNode(tir.Node{
+		Kind:   tir.SymbolValue,
+		Type:   i32,
+		Symbol: 25,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenReturn, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{thenRef},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{thenInit, thenReturn},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The else-arm returns the same symbol 25 — the then-arm's local, which
+	// must not be in scope here.
+	elseRef, err := builder.AddNode(tir.Node{
+		Kind:   tir.SymbolValue,
+		Type:   i32,
+		Symbol: 25,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elseReturn, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{elseRef},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elseBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{elseReturn},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.If,
+		Region:   region,
+		HasElse:  true,
+		Children: []tir.NodeID{condition, thenBlock, elseBlock},
 		Span:     source.NewSpan(0, 0, 1),
 	})
 	if err != nil {

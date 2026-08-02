@@ -1,17 +1,16 @@
 // Package backend lowers typed IR to C source emitted against the versioned
 // runtime ABI (runtime/include/pebble_rt.h). It is deliberately narrow: the
-// current slice emits exactly four program shapes — an empty-bodied Pebble-
-// convention void entry function; a zero-parameter i32 entry whose body is
-// exactly one `return <i32 expression>;` where the expression is a small tree
-// of integer literals, checked negation, and checked +, -, *, /, %
-// arithmetic; a zero-parameter i32 entry whose body is zero or more
-// `let <name> i32 = <i32 expression>;` local declarations followed by exactly
-// one `return <i32 expression>;`, where any expression may reference a local
-// declared earlier in the same body; and the same body shapes where the final
-// statement is instead a two-armed `if <comparison> { return <expr>; } else {
-// return <expr>; }` whose condition is a direct i32 comparison and whose arms
-// each hold exactly one return — and rejects everything else with a
-// descriptive error instead of guessing.
+// current slice emits exactly two entry shapes — an empty-bodied Pebble-
+// convention void entry function, and a zero-parameter i32 entry whose body
+// matches a single recursive block grammar: a block is zero or more
+// `let <name> i32 = <i32 expression>;` local declarations followed by a tail
+// that is either one `return <i32 expression>;` or a two-armed
+// `if <comparison> { <block> } else { <block> }` whose condition is a direct
+// i32 comparison; the two arms are themselves blocks under the same rule, so
+// an arm may contain its own locals and nested if/else. Locals declared in an
+// enclosing block are visible in a nested block; locals declared inside an
+// arm are visible only within that arm. Everything else is rejected with a
+// descriptive error instead of guessed.
 package backend
 
 import (
@@ -29,23 +28,23 @@ import (
 // function (identified by entrySymbol) must be Pebble-convention and take zero
 // parameters. Its result must be either void with a completely empty body (no
 // statements — only ever an ImplicitReturn, i.e. exactly what `fn main() void
-// {}` produces) or i32 with a body of zero or more `let <name> i32 =
-// <i32 expression>;` local declarations followed by a final statement that is
-// either exactly one `return <i32 expression>;` statement or a two-armed
-// `if <comparison> { return <expr>; } else { return <expr>; }` where the
-// condition is a direct i32 comparison (<, <=, >, >=, ==, !=) and each arm is
-// exactly one return; in every case the final expression's value is propagated
-// as the process's exit code. Each expression — a local's initializer, a
-// return value, or an if/else arm's return value — may be a plain non-negative
-// integer literal, a tree of checked negation and checked +, -, *, /, %
-// arithmetic (see buildExpr), or a reference to any local declared earlier in
-// the same body, visible in the condition and both arms alike. A comparison's
-// operands are additionally allowed to be int-typed integer literals (see
-// buildComparisonOperand). Checked operations emit pebble_rt_checked_*_i32
-// calls so the language's overflow and divide-by-zero semantics survive into
-// the emitted program; comparisons emit the plain C operator, which cannot
-// overflow. Any other shape returns a descriptive error and writes nothing to
-// w; this package does not yet lower arbitrary expressions or statements.
+// {}` produces) or i32 with a body matching the recursive block grammar: a
+// block is zero or more `let <name> i32 = <i32 expression>;` local
+// declarations followed by a tail that is either one `return <i32 expression>;`
+// or a two-armed `if <comparison> { <block> } else { <block> }` whose condition
+// is a direct i32 comparison (<, <=, >, >=, ==, !=); each arm is itself a block
+// under the same grammar, so an arm may contain its own locals and nested
+// if/else. Every expression — a local's initializer, a return value, or an
+// if/else arm's return value — may be a plain non-negative integer literal, a
+// tree of checked negation and checked +, -, *, /, % arithmetic (see
+// buildExpr), or a reference to a local declared earlier in the same or an
+// enclosing block. A comparison's operands are additionally allowed to be
+// int-typed integer literals (see buildComparisonOperand). Checked operations
+// emit pebble_rt_checked_*_i32 calls so the language's overflow and
+// divide-by-zero semantics survive into the emitted program; comparisons emit
+// the plain C operator, which cannot overflow. Any other shape returns a
+// descriptive error and writes nothing to w; this package does not yet lower
+// arbitrary expressions or statements.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -65,7 +64,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	block, err := findEntryBody(unit, decl)
+	block, blockID, err := findEntryBody(unit, decl)
 	if err != nil {
 		return err
 	}
@@ -75,7 +74,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		}
 		return emitEntryC(w, voidEntryUserMain, voidEntryMainBody)
 	}
-	statements, err := buildIntegerEntryStatements(unit, snapshot, block)
+	statements, err := buildBlock(unit, snapshot, blockID, nil, 0)
 	if err != nil {
 		return err
 	}
@@ -122,22 +121,23 @@ func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.Buil
 // findEntryBody follows the entry declaration's FunctionID to its FunctionDecl
 // and resolves that declaration's body node. The body node is a distinct
 // Block entry in unit.Nodes(), separate from the FunctionDeclaration node
-// found by findEntryDeclaration.
-func findEntryBody(unit *tir.Unit, decl tir.Node) (tir.Node, error) {
+// found by findEntryDeclaration. It returns both the resolved Block node and
+// its NodeID, so the caller can pass the ID into the recursive buildBlock.
+func findEntryBody(unit *tir.Unit, decl tir.Node) (tir.Node, tir.NodeID, error) {
 	for _, fd := range unit.FunctionDeclarations() {
 		if fd.FunctionID != decl.Function {
 			continue
 		}
 		block, ok := unit.Node(fd.Node)
 		if !ok {
-			return tir.Node{}, fmt.Errorf("entry function body not found in unit: FunctionDecl %d has invalid body node %d", fd.FunctionID, fd.Node)
+			return tir.Node{}, 0, fmt.Errorf("entry function body not found in unit: FunctionDecl %d has invalid body node %d", fd.FunctionID, fd.Node)
 		}
 		if block.Kind != tir.Block {
-			return tir.Node{}, fmt.Errorf("entry function body is a %s, want a Block", block.Kind)
+			return tir.Node{}, 0, fmt.Errorf("entry function body is a %s, want a Block", block.Kind)
 		}
-		return block, nil
+		return block, fd.Node, nil
 	}
-	return tir.Node{}, fmt.Errorf("entry function body declaration not found in unit: no FunctionDecl for FunctionID %d", decl.Function)
+	return tir.Node{}, 0, fmt.Errorf("entry function body declaration not found in unit: no FunctionDecl for FunctionID %d", decl.Function)
 }
 
 // validateEmptyBody accepts only a block with no statements, or the single
@@ -158,92 +158,102 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 	return fmt.Errorf("entry function body is not empty: %d statement(s) found; this backend only emits an empty-bodied void entry", len(block.Children))
 }
 
-// buildIntegerEntryStatements validates the i32 entry's supported body and
-// builds the C statement sequence for it: zero or more `const int32_t
-// pebble_local_<id>` declarations (one per local, in declaration order)
-// followed by a final statement that is either the single `return <i32
-// expression>;` or a two-armed if/else built by buildIfElseTail. The accepted
-// body: a block whose children are zero or more Initialize statements followed
-// by exactly one final statement. A local's initializer, the return's value,
-// and each arm's return value are all built by buildExpr, so each is a plain
-// non-negative integer literal, a tree of checked negation and checked +, -, *,
-// /, % arithmetic, or a reference to a local declared earlier in the same body.
-// Each local's symbol ID names its C declaration directly, so the emitted name
-// is deterministic and derived from stable IR identity rather than an
-// emission-time counter. Any other shape is rejected with a descriptive error,
-// not best-effort lowered.
-func buildIntegerEntryStatements(unit *tir.Unit, snapshot *types.Snapshot, block tir.Node) (string, error) {
-	if len(block.Children) == 0 {
-		return "", fmt.Errorf("entry function body is empty, want zero or more local declarations followed by exactly one return of an integer expression or an if/else whose arms each return one")
+// buildBlock validates one block under the entry body's recursive grammar and
+// builds its C statement sequence. A block is zero or more `const int32_t
+// pebble_local_<id>` declarations (one per Initialize, in declaration order)
+// followed by a tail that is either the single `return <i32 expression>;` or
+// a two-armed if/else built by buildIf; each if arm is itself a block under
+// the same grammar, so buildBlock recurses into both arms. locals is the set
+// of symbols visible at the block's entry (the enclosing scopes' declarations)
+// and is copied at entry: every addition this block makes — its own locals,
+// and anything an arm's subtree declares — stays in that copy and never
+// mutates the map the caller or a sibling arm sees. That copy-per-scope
+// discipline is what makes a local declared inside one arm invisible to the
+// sibling arm and to any scope outside the arm, while locals declared in an
+// enclosing block remain visible inside. depth is the nesting level of this
+// block below the function body (0 for the entry body itself); statements and
+// the if/else braces are indented one level per depth so nested output stays
+// well-formed C. Any other shape is rejected with a descriptive error, not
+// best-effort lowered.
+func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+	block, ok := unit.Node(blockID)
+	if !ok {
+		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
 	}
-	locals := make(map[symbol.SymbolID]bool)
+	if block.Kind != tir.Block {
+		return "", fmt.Errorf("entry function body block is a %s, want a Block", block.Kind)
+	}
+	if len(block.Children) == 0 {
+		return "", fmt.Errorf("entry function body block is empty, want zero or more local declarations followed by exactly one return or a two-armed if/else")
+	}
+	scope := cloneLocals(locals)
+	indent := strings.Repeat("    ", depth+1)
 	var statements []string
 	for i := 0; i < len(block.Children)-1; i++ {
 		init, ok := unit.Node(block.Children[i])
 		if !ok {
-			return "", fmt.Errorf("entry function body references invalid statement node %d", block.Children[i])
+			return "", fmt.Errorf("entry function body block references invalid statement node %d", block.Children[i])
 		}
 		if init.Kind != tir.Initialize {
-			return "", fmt.Errorf("entry function body statement is a %s, want a local declaration (Initialize) before the final return or if/else", init.Kind)
+			return "", fmt.Errorf("entry function body block statement is a %s, want a local declaration (Initialize) before the final return or if/else", init.Kind)
 		}
 		if len(init.Children) != 1 {
-			return "", fmt.Errorf("entry function body local declaration initializes %d value(s), want exactly one i32 expression", len(init.Children))
+			return "", fmt.Errorf("entry function body block local declaration initializes %d value(s), want exactly one i32 expression", len(init.Children))
 		}
-		if locals[init.Symbol] {
-			return "", fmt.Errorf("entry function body declares local %d more than once", init.Symbol)
+		if scope[init.Symbol] {
+			return "", fmt.Errorf("entry function body block declares local %d more than once", init.Symbol)
 		}
-		initExpr, err := buildExpr(unit, snapshot, init.Children[0], locals)
+		initExpr, err := buildExpr(unit, snapshot, init.Children[0], scope)
 		if err != nil {
 			return "", err
 		}
-		locals[init.Symbol] = true
-		statements = append(statements, fmt.Sprintf("    const int32_t pebble_local_%d = %s;", init.Symbol, initExpr))
+		scope[init.Symbol] = true
+		statements = append(statements, fmt.Sprintf("%sconst int32_t pebble_local_%d = %s;", indent, init.Symbol, initExpr))
 	}
 	last, ok := unit.Node(block.Children[len(block.Children)-1])
 	if !ok {
-		return "", fmt.Errorf("entry function body references invalid statement node %d", block.Children[len(block.Children)-1])
+		return "", fmt.Errorf("entry function body block references invalid statement node %d", block.Children[len(block.Children)-1])
 	}
 	switch last.Kind {
 	case tir.Return:
 		if len(last.Children) != 1 {
-			return "", fmt.Errorf("entry function return statement has %d argument(s), want exactly one integer expression", len(last.Children))
+			return "", fmt.Errorf("entry function body return statement has %d argument(s), want exactly one integer expression", len(last.Children))
 		}
-		returnExpr, err := buildExpr(unit, snapshot, last.Children[0], locals)
+		returnExpr, err := buildExpr(unit, snapshot, last.Children[0], scope)
 		if err != nil {
 			return "", err
 		}
-		statements = append(statements, "    return "+returnExpr+";")
+		statements = append(statements, indent+"return "+returnExpr+";")
 	case tir.If:
-		tail, err := buildIfElseTail(unit, snapshot, last, locals)
+		ifText, err := buildIf(unit, snapshot, last, scope, depth)
 		if err != nil {
 			return "", err
 		}
-		statements = append(statements, tail)
+		statements = append(statements, ifText)
 	default:
-		return "", fmt.Errorf("entry function body statement is a %s, want a Return of an integer expression or an if/else whose arms each return one", last.Kind)
+		return "", fmt.Errorf("entry function body block statement is a %s, want a Return of an integer expression or a two-armed if/else", last.Kind)
 	}
 	return strings.Join(statements, "\n"), nil
 }
 
-// buildIfElseTail validates and builds the C text for the two-armed if/else
-// this slice supports as an i32 entry's final statement: a tir.If with HasElse
-// set, whose condition is a direct integer comparison (buildComparison) and
-// whose two arms are Blocks each containing exactly one Return of one i32
-// expression built via buildExpr with the same locals set the top-level body
-// threads through. Locals declared earlier in the body are therefore visible
-// in the condition and in both arms. The emitted text is the final if/else of
-// pebble_user_main's body:
+// buildIf validates and builds the C text for a two-armed if/else block: a
+// tir.If with HasElse set, whose condition is a direct integer comparison
+// (buildComparison) and whose two arms are Blocks built by recursing into
+// buildBlock at the next nesting depth, each receiving the same locals set the
+// enclosing block threads in (buildBlock copies it per arm, so the two arms
+// never see each other's declarations). The emitted text is indented at this
+// block's depth:
 //
-//	if (<condition>) {
-//	    return <then expression>;
-//	} else {
-//	    return <else expression>;
-//	}
+//	<indent>if (<condition>) {
+//	<arm body, one level deeper>
+//	<indent>} else {
+//	<arm body, one level deeper>
+//	<indent>}
 //
-// Any other shape — an If without an else, an arm that is not a Block with
-// exactly one Return, an arm whose return has more than one argument — is a
-// clean rejection naming what was found.
-func buildIfElseTail(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool) (string, error) {
+// Any other shape — an If without an else, an arm that is not a Block, or a
+// block with the wrong child count — is a clean rejection naming what was
+// found.
+func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
@@ -254,46 +264,29 @@ func buildIfElseTail(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, 
 	if err != nil {
 		return "", err
 	}
-	thenExpr, err := buildArmReturn(unit, snapshot, ifNode.Children[1], locals)
+	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1)
 	if err != nil {
 		return "", err
 	}
-	elseExpr, err := buildArmReturn(unit, snapshot, ifNode.Children[2], locals)
+	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("    if (%s) {\n        return %s;\n    } else {\n        return %s;\n    }", condition, thenExpr, elseExpr), nil
+	indent := strings.Repeat("    ", depth+1)
+	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
 }
 
-// buildArmReturn validates one if/else arm and builds the C text of its single
-// return. An arm must be a Block whose only child is a Return carrying exactly
-// one i32 expression built via buildExpr; anything else is rejected. This is
-// deliberately the same discipline buildIntegerEntryStatements applies to a
-// body ending in one Return, narrowed to a single statement: locals declared
-// inside an arm are not supported, and an arm's return must be a plain
-// expression, not another if.
-func buildArmReturn(unit *tir.Unit, snapshot *types.Snapshot, armID tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
-	arm, ok := unit.Node(armID)
-	if !ok {
-		return "", fmt.Errorf("entry function body if/else arm references invalid block node %d", armID)
+// cloneLocals returns a fresh copy of the given set of in-scope locals. Every
+// recursive scope entry in buildBlock copies before extending, so a block's
+// own declarations never leak into the map the caller or a sibling scope
+// sees — a local declared inside one if arm is invisible to the sibling arm
+// and to anything outside the arm.
+func cloneLocals(locals map[symbol.SymbolID]bool) map[symbol.SymbolID]bool {
+	cloned := make(map[symbol.SymbolID]bool, len(locals))
+	for id, present := range locals {
+		cloned[id] = present
 	}
-	if arm.Kind != tir.Block {
-		return "", fmt.Errorf("entry function body if/else arm is a %s, want a Block containing exactly one Return of an integer expression", arm.Kind)
-	}
-	if len(arm.Children) != 1 {
-		return "", fmt.Errorf("entry function body if/else arm contains %d statement(s), want exactly one Return of an integer expression", len(arm.Children))
-	}
-	ret, ok := unit.Node(arm.Children[0])
-	if !ok {
-		return "", fmt.Errorf("entry function body if/else arm references invalid statement node %d", arm.Children[0])
-	}
-	if ret.Kind != tir.Return {
-		return "", fmt.Errorf("entry function body if/else arm contains a %s, want a Return of an integer expression", ret.Kind)
-	}
-	if len(ret.Children) != 1 {
-		return "", fmt.Errorf("entry function body if/else arm return has %d argument(s), want exactly one integer expression", len(ret.Children))
-	}
-	return buildExpr(unit, snapshot, ret.Children[0], locals)
+	return cloned
 }
 
 // buildComparison builds the C text for an if condition. It accepts exactly a
@@ -377,10 +370,10 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 }
 
 // buildExpr builds the C expression text for an i32 value node, recursing into
-// its operands. locals is the set of symbols declared earlier in the entry
-// body (a map is deliberately used, not a slice, so membership is a constant-
-// time check); it is read-only for a SymbolValue reference and is otherwise
-// threaded through unchanged. It accepts exactly four node kinds:
+// its operands. locals is the set of symbols in scope at this point in the
+// entry body (a map is deliberately used, not a slice, so membership is a
+// constant-time check); it is read-only for a SymbolValue reference and is
+// otherwise threaded through unchanged. It accepts exactly four node kinds:
 //
 //   - IntegerLiteral — its decimal text (defensively validated, exactly as
 //     10.3 validated a bare literal return).
@@ -390,7 +383,7 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 //     pebble_rt_checked_mul_i32 / pebble_rt_checked_div_i32 /
 //     pebble_rt_checked_mod_i32.
 //   - SymbolValue whose Symbol is in locals — pebble_local_<symbol ID>, the C
-//     name buildIntegerEntryStatements gave that local's declaration.
+//     name buildBlock gave that local's declaration.
 //
 // CheckedArithmetic with any other operator (the integral operators that build
 // this node but are not yet lowered) is rejected, not guessed. A SymbolValue
@@ -514,13 +507,15 @@ const voidEntryUserMain = `static void pebble_user_main(PebbleContext *ctx) {
 const voidEntryMainBody = `pebble_user_main(&ctx);
     return 0;`
 
-// integerEntryUserMain is a format string; %s is the pre-indented statement
-// sequence for pebble_user_main's body — zero or more `const int32_t
-// pebble_local_<id> = <built init expression>;` declarations in declaration
-// order, then the final `return <built return expression>;` — which becomes
-// pebble_user_main's return value and, through the hosted main's own return,
-// the process exit code. With no locals the sequence is exactly the single
-// return statement, so the zero-locals shape emits byte-identically to before.
+// integerEntryUserMain is a format string; %s is the statement sequence for
+// pebble_user_main's body — the top-level block built by buildBlock: zero or
+// more `const int32_t pebble_local_<id> = <built init expression>;`
+// declarations in declaration order, then the block's tail, which is either a
+// `return <built return expression>;` or a two-armed if/else (whose arms may
+// nest further blocks). The tail's value becomes pebble_user_main's return
+// value and, through the hosted main's own return, the process exit code. With
+// no locals the sequence is exactly the single return statement, so the
+// zero-locals shape emits byte-identically to before.
 const integerEntryUserMain = `static int pebble_user_main(PebbleContext *ctx) {
     (void)ctx;
 %s
