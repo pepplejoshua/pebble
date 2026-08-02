@@ -363,19 +363,33 @@ incrementally as work proceeds.
   this phase has followed throughout. Also confirmed: `TupleCoerce` is
   unreachable in this slice's scope (in-scope literals anchor directly
   to their element type) and was left unimplemented. Real limitation
-  surfaced, not fixed (out of this slice's scope, since it lives in
-  `compiler/internal/tir`): tuple element 0 (`t.0`) cannot be read from
-  any source in this compiler today, because `tir.Node.Ordinal` uses 0
-  as its zero-sentinel and the typed-IR verifier rejects an Ordinal of
-  0 on a `TuplePlace`/`TupleElementValue`; every test in this slice
-  uses ordinals ≥ 1. Verified end-to-end (two- and three-element
+  surfaced, not fixed in this slice (out of scope, since it lives in
+  `compiler/internal/tir`): tuple element 0 (`t.0`) could not be read
+  from any source in this compiler at the time, because
+  `tir.Node.Ordinal` uses 0 as its zero-sentinel and the typed-IR
+  verifier rejected an Ordinal of 0 on a `TuplePlace`/
+  `TupleElementValue`; every test in this slice used ordinals ≥ 1.
+  **Fixed immediately after** (same day, `compiler/internal/tir`):
+  `Ordinal` is a zero-based element index, so 0 is a legitimate value,
+  not an absent-field sentinel — the checker itself was already
+  correct (`internal/check/place_facts.go`'s `validPlaceProjection`
+  deliberately omits a `TupleOrdinal == 0` check for the tuple case),
+  so this was purely a structural-verifier bug. The two erroneous
+  `Ordinal == 0` checks in `verify.go` were removed and the contract
+  documented directly on the `Node.Ordinal` field comment; the
+  per-tag damage test table was updated to damage these two node
+  kinds by breaking the child-count invariant instead, since Ordinal
+  0 is no longer damage. A permanent regression test
+  (`TestEmitTupleElementZeroReadCompilesAndRuns`) now proves `t.0`
+  compiles end-to-end. Verified end-to-end (two- and three-element
   tuples, a bool element driving an `if`, a tuple element as a call
-  argument, a tuple local inside a helper, an i64 tuple, and the
+  argument, a tuple local inside a helper, an i64 tuple, element 0 of
+  a tuple, and the
   element-type/whole-tuple-store/tuple-parameter/tuple-literal-index
   rejections) and independently outside the harness — manually
   compiled and ran the emitted C for
-  `let t (i32, i32) = (20, 22); return t.1;` with
-  `-Wall -Wextra -Werror`, confirming exit code 22.
+  `let t (i32, i32) = (20, 22); return t.1;` (exit 22) and, after the
+  fix, `return t.0;` (exit 20), both with `-Wall -Wextra -Werror`.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
