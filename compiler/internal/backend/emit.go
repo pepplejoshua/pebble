@@ -1,13 +1,16 @@
 // Package backend lowers typed IR to C source emitted against the versioned
 // runtime ABI (runtime/include/pebble_rt.h). It is deliberately narrow: the
-// current slice emits exactly three program shapes — an empty-bodied Pebble-
+// current slice emits exactly four program shapes — an empty-bodied Pebble-
 // convention void entry function; a zero-parameter i32 entry whose body is
 // exactly one `return <i32 expression>;` where the expression is a small tree
 // of integer literals, checked negation, and checked +, -, *, /, %
-// arithmetic; and a zero-parameter i32 entry whose body is zero or more
+// arithmetic; a zero-parameter i32 entry whose body is zero or more
 // `let <name> i32 = <i32 expression>;` local declarations followed by exactly
 // one `return <i32 expression>;`, where any expression may reference a local
-// declared earlier in the same body — and rejects everything else with a
+// declared earlier in the same body; and the same body shapes where the final
+// statement is instead a two-armed `if <comparison> { return <expr>; } else {
+// return <expr>; }` whose condition is a direct i32 comparison and whose arms
+// each hold exactly one return — and rejects everything else with a
 // descriptive error instead of guessing.
 package backend
 
@@ -27,15 +30,21 @@ import (
 // parameters. Its result must be either void with a completely empty body (no
 // statements — only ever an ImplicitReturn, i.e. exactly what `fn main() void
 // {}` produces) or i32 with a body of zero or more `let <name> i32 =
-// <i32 expression>;` local declarations followed by exactly one
-// `return <i32 expression>;` statement, in which case the final expression's
-// value is propagated as the process's exit code. Each expression — a local's
-// initializer or the final return value — may be a plain non-negative integer
-// literal, a tree of checked negation and checked +, -, *, /, % arithmetic
-// (see buildExpr), or a reference to any local declared earlier in the same
-// body. Checked operations emit pebble_rt_checked_*_i32 calls so the
-// language's overflow and divide-by-zero semantics survive into the emitted
-// program. Any other shape returns a descriptive error and writes nothing to
+// <i32 expression>;` local declarations followed by a final statement that is
+// either exactly one `return <i32 expression>;` statement or a two-armed
+// `if <comparison> { return <expr>; } else { return <expr>; }` where the
+// condition is a direct i32 comparison (<, <=, >, >=, ==, !=) and each arm is
+// exactly one return; in every case the final expression's value is propagated
+// as the process's exit code. Each expression — a local's initializer, a
+// return value, or an if/else arm's return value — may be a plain non-negative
+// integer literal, a tree of checked negation and checked +, -, *, /, %
+// arithmetic (see buildExpr), or a reference to any local declared earlier in
+// the same body, visible in the condition and both arms alike. A comparison's
+// operands are additionally allowed to be int-typed integer literals (see
+// buildComparisonOperand). Checked operations emit pebble_rt_checked_*_i32
+// calls so the language's overflow and divide-by-zero semantics survive into
+// the emitted program; comparisons emit the plain C operator, which cannot
+// overflow. Any other shape returns a descriptive error and writes nothing to
 // w; this package does not yet lower arbitrary expressions or statements.
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, w io.Writer) error {
 	if unit == nil {
@@ -152,18 +161,20 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // buildIntegerEntryStatements validates the i32 entry's supported body and
 // builds the C statement sequence for it: zero or more `const int32_t
 // pebble_local_<id>` declarations (one per local, in declaration order)
-// followed by the final `return <i32 expression>;`. The accepted body: a block
-// whose children are zero or more Initialize statements followed by exactly one
-// Return carrying exactly one argument whose value node buildExpr can lower
-// (a plain non-negative integer literal, a tree of checked negation and checked
-// +, -, *, /, % arithmetic, or a reference to a local declared earlier in the
-// same body). Each local's symbol ID names its C declaration directly, so the
-// emitted name is deterministic and derived from stable IR identity rather than
-// an emission-time counter. Any other shape is rejected with a descriptive
-// error, not best-effort lowered.
+// followed by a final statement that is either the single `return <i32
+// expression>;` or a two-armed if/else built by buildIfElseTail. The accepted
+// body: a block whose children are zero or more Initialize statements followed
+// by exactly one final statement. A local's initializer, the return's value,
+// and each arm's return value are all built by buildExpr, so each is a plain
+// non-negative integer literal, a tree of checked negation and checked +, -, *,
+// /, % arithmetic, or a reference to a local declared earlier in the same body.
+// Each local's symbol ID names its C declaration directly, so the emitted name
+// is deterministic and derived from stable IR identity rather than an
+// emission-time counter. Any other shape is rejected with a descriptive error,
+// not best-effort lowered.
 func buildIntegerEntryStatements(unit *tir.Unit, snapshot *types.Snapshot, block tir.Node) (string, error) {
 	if len(block.Children) == 0 {
-		return "", fmt.Errorf("entry function body is empty, want zero or more local declarations followed by exactly one return of an integer expression")
+		return "", fmt.Errorf("entry function body is empty, want zero or more local declarations followed by exactly one return of an integer expression or an if/else whose arms each return one")
 	}
 	locals := make(map[symbol.SymbolID]bool)
 	var statements []string
@@ -173,7 +184,7 @@ func buildIntegerEntryStatements(unit *tir.Unit, snapshot *types.Snapshot, block
 			return "", fmt.Errorf("entry function body references invalid statement node %d", block.Children[i])
 		}
 		if init.Kind != tir.Initialize {
-			return "", fmt.Errorf("entry function body statement is a %s, want a local declaration (Initialize) before the final return", init.Kind)
+			return "", fmt.Errorf("entry function body statement is a %s, want a local declaration (Initialize) before the final return or if/else", init.Kind)
 		}
 		if len(init.Children) != 1 {
 			return "", fmt.Errorf("entry function body local declaration initializes %d value(s), want exactly one i32 expression", len(init.Children))
@@ -188,22 +199,181 @@ func buildIntegerEntryStatements(unit *tir.Unit, snapshot *types.Snapshot, block
 		locals[init.Symbol] = true
 		statements = append(statements, fmt.Sprintf("    const int32_t pebble_local_%d = %s;", init.Symbol, initExpr))
 	}
-	ret, ok := unit.Node(block.Children[len(block.Children)-1])
+	last, ok := unit.Node(block.Children[len(block.Children)-1])
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid statement node %d", block.Children[len(block.Children)-1])
 	}
-	if ret.Kind != tir.Return {
-		return "", fmt.Errorf("entry function body statement is a %s, want a Return of an integer expression", ret.Kind)
+	switch last.Kind {
+	case tir.Return:
+		if len(last.Children) != 1 {
+			return "", fmt.Errorf("entry function return statement has %d argument(s), want exactly one integer expression", len(last.Children))
+		}
+		returnExpr, err := buildExpr(unit, snapshot, last.Children[0], locals)
+		if err != nil {
+			return "", err
+		}
+		statements = append(statements, "    return "+returnExpr+";")
+	case tir.If:
+		tail, err := buildIfElseTail(unit, snapshot, last, locals)
+		if err != nil {
+			return "", err
+		}
+		statements = append(statements, tail)
+	default:
+		return "", fmt.Errorf("entry function body statement is a %s, want a Return of an integer expression or an if/else whose arms each return one", last.Kind)
 	}
-	if len(ret.Children) != 1 {
-		return "", fmt.Errorf("entry function return statement has %d argument(s), want exactly one integer expression", len(ret.Children))
+	return strings.Join(statements, "\n"), nil
+}
+
+// buildIfElseTail validates and builds the C text for the two-armed if/else
+// this slice supports as an i32 entry's final statement: a tir.If with HasElse
+// set, whose condition is a direct integer comparison (buildComparison) and
+// whose two arms are Blocks each containing exactly one Return of one i32
+// expression built via buildExpr with the same locals set the top-level body
+// threads through. Locals declared earlier in the body are therefore visible
+// in the condition and in both arms. The emitted text is the final if/else of
+// pebble_user_main's body:
+//
+//	if (<condition>) {
+//	    return <then expression>;
+//	} else {
+//	    return <else expression>;
+//	}
+//
+// Any other shape — an If without an else, an arm that is not a Block with
+// exactly one Return, an arm whose return has more than one argument — is a
+// clean rejection naming what was found.
+func buildIfElseTail(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool) (string, error) {
+	if !ifNode.HasElse {
+		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
-	returnExpr, err := buildExpr(unit, snapshot, ret.Children[0], locals)
+	if len(ifNode.Children) != 3 {
+		return "", fmt.Errorf("entry function body ends with an if with %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
+	}
+	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals)
 	if err != nil {
 		return "", err
 	}
-	statements = append(statements, "    return "+returnExpr+";")
-	return strings.Join(statements, "\n"), nil
+	thenExpr, err := buildArmReturn(unit, snapshot, ifNode.Children[1], locals)
+	if err != nil {
+		return "", err
+	}
+	elseExpr, err := buildArmReturn(unit, snapshot, ifNode.Children[2], locals)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("    if (%s) {\n        return %s;\n    } else {\n        return %s;\n    }", condition, thenExpr, elseExpr), nil
+}
+
+// buildArmReturn validates one if/else arm and builds the C text of its single
+// return. An arm must be a Block whose only child is a Return carrying exactly
+// one i32 expression built via buildExpr; anything else is rejected. This is
+// deliberately the same discipline buildIntegerEntryStatements applies to a
+// body ending in one Return, narrowed to a single statement: locals declared
+// inside an arm are not supported, and an arm's return must be a plain
+// expression, not another if.
+func buildArmReturn(unit *tir.Unit, snapshot *types.Snapshot, armID tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
+	arm, ok := unit.Node(armID)
+	if !ok {
+		return "", fmt.Errorf("entry function body if/else arm references invalid block node %d", armID)
+	}
+	if arm.Kind != tir.Block {
+		return "", fmt.Errorf("entry function body if/else arm is a %s, want a Block containing exactly one Return of an integer expression", arm.Kind)
+	}
+	if len(arm.Children) != 1 {
+		return "", fmt.Errorf("entry function body if/else arm contains %d statement(s), want exactly one Return of an integer expression", len(arm.Children))
+	}
+	ret, ok := unit.Node(arm.Children[0])
+	if !ok {
+		return "", fmt.Errorf("entry function body if/else arm references invalid statement node %d", arm.Children[0])
+	}
+	if ret.Kind != tir.Return {
+		return "", fmt.Errorf("entry function body if/else arm contains a %s, want a Return of an integer expression", ret.Kind)
+	}
+	if len(ret.Children) != 1 {
+		return "", fmt.Errorf("entry function body if/else arm return has %d argument(s), want exactly one integer expression", len(ret.Children))
+	}
+	return buildExpr(unit, snapshot, ret.Children[0], locals)
+}
+
+// buildComparison builds the C text for an if condition. It accepts exactly a
+// tir.BinaryValue with two operands and one of the six comparison operators
+// (<, <=, >, >=, ==, !=), and emits the plain C operator directly — comparing
+// two integers cannot overflow, so no runtime helper is needed. Each operand
+// is built by buildComparisonOperand (an int-typed integer literal, or any i32
+// expression buildExpr accepts). Any other node kind, or any other operator on
+// a BinaryValue (bitwise, and the && / || that lower to ShortCircuitValue
+// nodes rather than BinaryValue comparisons), is a clean rejection.
+func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body if condition references invalid node %d", id)
+	}
+	if node.Kind != tir.BinaryValue {
+		return "", fmt.Errorf("entry function body if condition is a %s, want a direct integer comparison (<, <=, >, >=, ==, or !=)", node.Kind)
+	}
+	if len(node.Children) != 2 {
+		return "", fmt.Errorf("entry function body if condition has %d operand(s), want exactly two integer operands", len(node.Children))
+	}
+	op, ok := comparisonOperator(node.Operator)
+	if !ok {
+		return "", fmt.Errorf("entry function body if condition uses operator %s, want one of <, <=, >, >=, ==, or !=", node.Operator)
+	}
+	left, err := buildComparisonOperand(unit, snapshot, node.Children[0], locals)
+	if err != nil {
+		return "", err
+	}
+	right, err := buildComparisonOperand(unit, snapshot, node.Children[1], locals)
+	if err != nil {
+		return "", err
+	}
+	return left + " " + op + " " + right, nil
+}
+
+// buildComparisonOperand builds one comparison operand. A bare comparison
+// between two untyped integer literals defaults both operands to the
+// snapshot's int builtin (confirmed against a real fixture), so an
+// IntegerLiteral of type int is lowered directly as its decimal text. Every
+// other operand must be an i32 expression buildExpr accepts — a literal, a
+// reference to a local declared earlier in the entry body, or checked negation
+// and checked +, -, *, /, % arithmetic — and is delegated to buildExpr, whose
+// own i32 gate and kind switch do the rejecting.
+func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", id)
+	}
+	if node.Kind == tir.IntegerLiteral && node.Type == snapshot.Builtins().Int {
+		text := node.Literal.IntegerNum
+		if !isNonNegativeDecimal(text) {
+			return "", fmt.Errorf("entry function body if condition contains an integer literal with malformed text %q", text)
+		}
+		return text, nil
+	}
+	return buildExpr(unit, snapshot, id, locals)
+}
+
+// comparisonOperator maps the six comparison token kinds this backend lowers
+// to their plain C spellings. These map 1:1 to C syntax — no runtime helper is
+// involved, since comparing two i32 (or int) values cannot overflow. Any other
+// operator is deliberately not mapped and rejected by the caller.
+func comparisonOperator(op syntax.TokenKind) (string, bool) {
+	switch op {
+	case syntax.Less:
+		return "<", true
+	case syntax.LessEqual:
+		return "<=", true
+	case syntax.Greater:
+		return ">", true
+	case syntax.GreaterEqual:
+		return ">=", true
+	case syntax.Equal:
+		return "==", true
+	case syntax.NotEqual:
+		return "!=", true
+	default:
+		return "", false
+	}
 }
 
 // buildExpr builds the C expression text for an i32 value node, recursing into

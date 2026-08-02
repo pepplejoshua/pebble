@@ -210,6 +210,98 @@ func TestEmitLocalOverflowStillAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let x i32 = 2147483647; return x + 1; }", false, 0, true)
 }
 
+func TestEmitIfElseEntryWritesC(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { return 10; } else { return 20; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"pebble_rt.h",
+		"static int pebble_user_main(PebbleContext *ctx)",
+		"if (1 < 2) {",
+		"        return 10;",
+		"    } else {",
+		"        return 20;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitIfElseLocalConditionAndArm(t *testing.T) {
+	// A local declared before the if is visible in both the condition (x >= 10
+	// is false for x = 7, so the else arm runs) and the else arm's return value
+	// (x itself), proving the same locals set threads through the condition and
+	// both arms.
+	emitAndRun(t, "fn main() i32 { let x i32 = 7; if x >= 10 { return 1; } else { return x; } }", false, 7, false)
+}
+
+func TestEmitIfElseComparisonOperators(t *testing.T) {
+	// All six comparison operators, each taking the branch matching its value;
+	// both true and false outcomes are covered across the set so the emitter is
+	// not silently only ever emitting one branch. The required shapes `1 < 2`
+	// (true, exit 10) and `5 == 6` (false, exit 20) are in this table.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"less true", "fn main() i32 { if 1 < 2 { return 10; } else { return 20; } }", 10},
+		{"equal false", "fn main() i32 { if 5 == 6 { return 10; } else { return 20; } }", 20},
+		{"lessEqual true", "fn main() i32 { if 2 <= 2 { return 30; } else { return 40; } }", 30},
+		{"lessEqual false", "fn main() i32 { if 3 <= 2 { return 30; } else { return 40; } }", 40},
+		{"greater true", "fn main() i32 { if 3 > 2 { return 50; } else { return 60; } }", 50},
+		{"greater false", "fn main() i32 { if 1 > 2 { return 50; } else { return 60; } }", 60},
+		{"notEqual true", "fn main() i32 { if 1 != 2 { return 70; } else { return 80; } }", 70},
+		{"notEqual false", "fn main() i32 { if 1 != 1 { return 70; } else { return 80; } }", 80},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitRejectsIfWithoutElse(t *testing.T) {
+	// The checker itself refuses an if-only tail (C0607: non-void function can
+	// fall through without returning), so this shape is hand-built through the
+	// IR builder to exercise Emit's own requirement that the final if has an
+	// else.
+	unit, snapshot, entryID := buildIfWithoutElseUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLogicalAndCondition(t *testing.T) {
+	// && is legal source but lowers to a ShortCircuitValue node, a different
+	// kind than the BinaryValue comparison buildComparison accepts, so the
+	// fixture must be rejected, not best-effort lowered.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 && 3 < 4 { return 1; } else { return 2; } }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLogicalOrCondition(t *testing.T) {
+	// Same ShortCircuitValue rejection as &&, for the || operator.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 || 3 < 4 { return 1; } else { return 2; } }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLocalDeclaredInArm(t *testing.T) {
+	// A local inside an arm makes the arm's block have two children (the
+	// Initialize and the Return); this slice only supports an arm that is
+	// exactly one Return, so it must be rejected, not best-effort supported.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { let y i32 = 1; return y; } else { return 2; } }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsNestedIfInArm(t *testing.T) {
+	// An arm's block may hold exactly one Return; an arm whose single child is
+	// another if (nested if) is rejected, not recursively lowered.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
 // emitAndRun drives one .peb entry source through buildFixture, Emit, and the
 // end-to-end cc compile + run. wantCode is the expected process exit code;
 // with wantAbnormal set, the process must instead terminate abnormally (a
@@ -667,6 +759,124 @@ func buildAssignmentInBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol
 		Kind:     tir.Block,
 		Region:   region,
 		Children: []tir.NodeID{init, store, ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
+// buildIfWithoutElseUnit hand-builds a unit whose i32 entry ends with a tir.If
+// that has no else arm (HasElse unset, two children: a bool comparison and the
+// then-arm block). The checker refuses to produce this shape from source (a
+// non-void function must not fall through without returning — C0607), so it is
+// constructed directly through the IR builder to exercise Emit's own
+// requirement that the final if has an else. The type snapshot is borrowed
+// from a checker-built fixture so every TypeID the hand-built nodes reference
+// is owned by the snapshot.
+func buildIfWithoutElseUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	condition, err := builder.AddNode(tir.Node{
+		Kind:     tir.BinaryValue,
+		Type:     snapshot.Builtins().Bool,
+		Operator: syntax.Less,
+		Children: []tir.NodeID{left, right},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "10"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenReturn, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{thenValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{thenReturn},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// HasElse deliberately left false: the final if must have an else arm for
+	// this backend to accept it.
+	ifNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.If,
+		Region:   region,
+		HasElse:  false,
+		Children: []tir.NodeID{condition, thenBlock},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{ifNode},
 		Span:     source.NewSpan(0, 0, 1),
 	})
 	if err != nil {
