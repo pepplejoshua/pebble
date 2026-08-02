@@ -576,6 +576,65 @@ func buildI32EmptyBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sym
 	return unit, snapshot, entryID
 }
 
+// buildBoolLocalReturnUnit hand-builds a unit whose i32 entry body is an
+// Initialize declaring a bool local (symbol 25, bound to a true BoolLiteral)
+// and a Return whose value is a bool-typed SymbolValue referencing that same
+// symbol. The checker rejects this exact shape from source itself (C0601:
+// cannot convert a bool for an i32 return value, confirmed against a real
+// fixture), so it is constructed directly through the IR builder to exercise
+// Emit's own requirement that every value in an accepted expression tree is
+// typed to the entry's integer width — buildExpr's width gate must reject the
+// bool-typed reference in the integer return position.
+func buildBoolLocalReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+
+	initValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.BoolLiteral,
+		Type:    snapshot.Builtins().Bool,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralBool, Bool: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	init, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{initValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The return references symbol 25, the bool local declared above, as a
+	// bool-typed value: Emit's integer-return path must reject it.
+	value, err := builder.AddNode(tir.Node{
+		Kind:   tir.SymbolValue,
+		Type:   snapshot.Builtins().Bool,
+		Symbol: 25,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{value},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{init, ret})
+}
+
 // buildNonI32ReturnUnit hand-builds a unit whose i32 entry returns a bool
 // literal. The checker would reject this shape itself (a bool does not unify
 // with an i32 result), so it is constructed directly through the IR builder to
@@ -1939,12 +1998,140 @@ func TestEmitRejectsLogicalOrWhileCondition(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsNonI32Local(t *testing.T) {
-	// A local of a non-i32 type. The checker produces this shape from valid
-	// source (the bool local is legal on its own); Emit must reject it
-	// because the local's initializer value is a bool literal, not an i32
-	// expression.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let flag bool = true; return 1; }", "main", false)
+func TestEmitBoolLocalDeclarationCompilesAndRuns(t *testing.T) {
+	// 10.14 makes a bool local with a bool literal initializer a supported
+	// shape: the local emits `bool pebble_local_<id> = true;` and the i32
+	// entry body continues to the return. This is exactly the fixture 10.13
+	// rejected as a non-i32 local (the initializer is a bool literal, not an
+	// i32 expression), now the new positive case. The unused bool local does
+	// not disturb the i32 return value, exit code 1.
+	emitAndRun(t, "fn main() i32 { let flag bool = true; return 1; }", false, 1, false)
+}
+
+func TestEmitBoolLocalIfCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture: a bare bool local as an if condition. flag is
+	// declared true and used directly (no comparison), so the then-arm runs
+	// and the process exits 1 — proving a condition can be a bare reference to
+	// an in-scope bool local, skipping the BinaryValue comparison path
+	// entirely.
+	emitAndRun(t, "fn main() i32 { var flag bool = true; if flag { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitBoolLocalIfWritesC(t *testing.T) {
+	// The emitted C for the bare-bool if: the bool local must be declared with
+	// the C bool keyword (backed by #include <stdbool.h>) and referenced
+	// directly in the if condition, with the arms' returns indented one level.
+	// Symbol 25 is the flag local, confirmed against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var flag bool = true; if flag { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"#include <stdbool.h>",
+		"bool pebble_local_25 = true;",
+		"    if (pebble_local_25) {\n",
+		"        return 1;",
+		"        return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "int32_t pebble_local_25") {
+		t.Errorf("emitted C declared the bool local as an integer:\n%s", out)
+	}
+}
+
+func TestEmitBoolWhileNegationLoopCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture: a bool accumulator flag driving a while loop.
+	// done starts false, so while !done runs; each pass sums i and increments
+	// it, and when i == 5 the if sets done = true, exiting the loop with sum =
+	// 0+1+2+3+4 = 10 as the exit code. This exercises a bare !-negated bool
+	// local as a while condition (a tir.PrefixValue with the Bang operator)
+	// and a Store reassigning a bool local inside a loop-body if. Bounded
+	// execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var done bool = false; var i i32 = 0; var sum i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } return sum; }", false, 10, false)
+}
+
+func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
+	// The emitted C for the !done loop must declare the bool flag, negate it
+	// with plain C ! in the while condition, and reassign it with a plain bool
+	// literal inside the loop-body if. Symbols 25 (done), 26 (i), and 27 (sum)
+	// come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var done bool = false; var i i32 = 0; var sum i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"bool pebble_local_25 = false;",
+		"    while (!(pebble_local_25)) {\n",
+		"        if (pebble_local_26 == 5) {\n",
+		"            pebble_local_25 = true;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_rt_checked_neg_i32") {
+		t.Errorf("emitted C used the integer checked-negate helper for a bool !:\n%s", out)
+	}
+}
+
+func TestEmitBoolLocalReassignCompilesAndRuns(t *testing.T) {
+	// A bool local reassigned: flag is declared false, then a Store reassigns
+	// it to true before the bare-bool if, so the then-arm runs and the process
+	// exits 1. This proves a Store into a bool local is emitted and validated
+	// against the bool grammar, mirroring how integer reassignment works.
+	emitAndRun(t, "fn main() i32 { var flag bool = false; flag = true; if flag { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitRejectsBoolLocalInIntegerPosition(t *testing.T) {
+	// A bool local referenced where an integer is expected must be rejected by
+	// this backend. Real source `var flag bool = true; return flag;` never
+	// reaches Emit — the checker itself rejects it (C0601: cannot convert a
+	// bool for an i32 return value, confirmed against a fixture) — so the shape
+	// is hand-built through the IR builder: the i32 entry declares a bool local
+	// (Initialize for symbol 25 with a bool literal) and its Return references
+	// that same symbol as a bool-typed SymbolValue. buildExpr's width gate must
+	// reject the bool-typed value in the integer return position.
+	unit, snapshot, entryID := buildBoolLocalReturnUnit(t)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+}
+
+func TestEmitRejectsLogicalAndBoolCondition(t *testing.T) {
+	// && combining two bool values as an if condition is legal source but
+	// lowers to a ShortCircuitValue node (the operatorBoolean family), not a
+	// bare bool value buildBoolExpr accepts, so it must be rejected, not
+	// best-effort lowered — the same rejection 10.7 established, adapted from
+	// comparisons to bare bool operands.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if true && false { return 1; } else { return 0; } }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLogicalOrBoolCondition(t *testing.T) {
+	// Same ShortCircuitValue rejection as &&, for || combining two bool values.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if true || false { return 1; } else { return 0; } }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLogicalAndBoolWhileCondition(t *testing.T) {
+	// Same ShortCircuitValue rejection as the if-condition && test, for a
+	// while condition combining two bool values.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var done bool = false; while done && !done { done = true; } return 0; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsNegatedComparisonCondition(t *testing.T) {
+	// !(i < 5) is legal source but its negation operand is a comparison, not a
+	// bare bool value: the real fixture dump shows the PrefixValue(Bang) wraps
+	// a SourceAlias around the BinaryValue, a shape buildBoolExpr does not
+	// accept (negating a comparison is outside this slice's grammar). Emit must
+	// reject it cleanly rather than guess.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while !(i < 5) { i = i + 1; } return i; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

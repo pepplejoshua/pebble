@@ -204,7 +204,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
-func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
+func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
@@ -287,14 +287,14 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // Any other shape — an If without an else, an arm that is not a Block, or a
 // block with the wrong child count — is a clean rejection naming what was
 // found.
-func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
+func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
 	if len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body ends with an if with %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
-	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals, width)
+	condition, err := buildCondition(unit, snapshot, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -327,11 +327,11 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 //
 // Any other shape — a wrong child count, or a body that is not a Block — is a
 // clean rejection naming what was found.
-func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
+func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
 	if len(whileNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
 	}
-	condition, err := buildComparison(unit, snapshot, whileNode.Children[0], locals, width)
+	condition, err := buildCondition(unit, snapshot, whileNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -363,7 +363,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 // statement kind (a Return, a Print, anything else) is a clean rejection
 // naming what was found. An empty loop body (zero children) is legal — `while
 // cond {}` is a real, if useless, program — and emits no statements at all.
-func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
+func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("entry function body block while loop body references invalid node %d", bodyID)
@@ -441,14 +441,14 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 //
 // Any other shape — a child count inconsistent with HasElse, or an arm that is
 // not a Block — is a clean rejection naming what was found.
-func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int, width types.BuiltinKind) (string, error) {
+func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]types.BuiltinKind, depth int, width types.BuiltinKind) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
 	if !ifNode.HasElse && len(ifNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop body if has no else arm but %d child(ren), want exactly 2 (condition, then-arm)", len(ifNode.Children))
 	}
-	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals, width)
+	condition, err := buildCondition(unit, snapshot, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -496,17 +496,22 @@ func buildLoopJump(statement tir.Node, keyword string, indent, context string) (
 // block grammar shared by buildBlock and buildLoopBody: an Initialize (a local
 // declaration) or a Store (a reassignment of a local already in scope).
 // context names the enclosing construct in error messages; indent is the
-// statement's C indentation. scope is the set of in-scope locals: an
-// Initialize adds its symbol to it once validated, a Store reads it. width is
-// the entry's resolved integer width; a local declaration's C type name
+// statement's C indentation. scope is the set of in-scope locals, each mapped
+// to the resolved builtin type it was declared with (the entry's integer width
+// or bool): an Initialize adds its symbol to it once validated, a Store reads
+// it. width is
+// the entry's resolved integer width; an integer local's C type name
 // follows it (int32_t for an i32 entry, int64_t for an i64 entry), and a
 // local whose value carries the other width is rejected by buildExpr, so an
 // i32 local inside an i64 entry (or vice versa) is a clean width-mismatch
-// error, not an attempted coercion. The
+// error, not an attempted coercion. A local whose value carries the bool
+// builtin is a bool local, declared as C `bool` and built by buildBoolExpr;
+// its scope entry records types.Bool so a later reference or reassignment is
+// emitted and validated against the same type. The
 // caller is responsible for having already cloned scope if the statements must
 // not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
 // do). Any other statement kind is a clean rejection naming what was found.
-func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]bool, indent, context string, width types.BuiltinKind) (string, error) {
+func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]types.BuiltinKind, indent, context string, width types.BuiltinKind) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
@@ -514,27 +519,51 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 	switch statement.Kind {
 	case tir.Initialize:
 		if len(statement.Children) != 1 {
-			return "", fmt.Errorf("%s local declaration initializes %d value(s), want exactly one integer expression", context, len(statement.Children))
+			return "", fmt.Errorf("%s local declaration initializes %d value(s), want exactly one expression", context, len(statement.Children))
 		}
-		if scope[statement.Symbol] {
+		if _, declared := scope[statement.Symbol]; declared {
 			return "", fmt.Errorf("%s declares local %d more than once", context, statement.Symbol)
 		}
-		initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope, width)
-		if err != nil {
-			return "", err
+		initValue, ok := unit.Node(statement.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s local declaration references invalid value node %d", context, statement.Children[0])
 		}
-		scope[statement.Symbol] = true
-		// Every local is emitted as a plain (non-const) int32_t/int64_t
-		// (per the entry's width) even
-		// though a `let` is conceptually immutable. The Initialize node
-		// does not carry whether the declaration was `let` or `var`, and
-		// the checker guarantees any Store this backend sees targets a
-		// writable `var` (see the Store case below), so the const
-		// qualifier would only be defense-in-depth — catching an emitter
-		// bug via a C compile error on assignment to const — at the cost
-		// of tracking which locals are ever reassigned. That trade-off is
-		// accepted: every local is a plain <width> integer.
-		return fmt.Sprintf("%s%s pebble_local_%d = %s;", indent, cType(width), statement.Symbol, initExpr), nil
+		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
+		if !ok {
+			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+		}
+		switch kind {
+		case width:
+			// An integer local: emitted at the entry's width, exactly as
+			// before (buildExpr re-checks every node in the initializer is
+			// that width). The scope entry records the width so a later
+			// reference or reassignment is validated and emitted as an
+			// integer.
+			initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope, width)
+			if err != nil {
+				return "", err
+			}
+			scope[statement.Symbol] = width
+			return fmt.Sprintf("%s%s pebble_local_%d = %s;", indent, cType(width), statement.Symbol, initExpr), nil
+		case types.Bool:
+			// A bool local: emitted as a C bool. The bool value grammar is
+			// genuinely different from the integer one (no checked
+			// arithmetic), so it is built by buildBoolExpr, not buildExpr.
+			initExpr, err := buildBoolExpr(unit, snapshot, statement.Children[0], scope)
+			if err != nil {
+				return "", err
+			}
+			scope[statement.Symbol] = types.Bool
+			// Like integer locals (see the width case), a bool local is
+			// emitted as a plain (non-const) bool: the Initialize node does
+			// not carry let-vs-var, and the checker guarantees any Store
+			// this backend sees targets a writable `var`, so const would
+			// only be defense-in-depth at the cost of tracking which locals
+			// are ever reassigned.
+			return fmt.Sprintf("%sbool pebble_local_%d = %s;", indent, statement.Symbol, initExpr), nil
+		default:
+			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+		}
 	case tir.Store:
 		// A Store reassigns a local declared earlier in this block or an
 		// enclosing one; it does not declare a new symbol, so it never
@@ -543,7 +572,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		// Store this backend sees, from real source, necessarily targets
 		// a `var`.
 		if len(statement.Children) != 2 {
-			return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new integer value", context, len(statement.Children))
+			return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
 		}
 		place, ok := unit.Node(statement.Children[0])
 		if !ok {
@@ -552,14 +581,31 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		if place.Kind != tir.StoragePlace {
 			return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope", context, place.Kind)
 		}
-		if !scope[place.Symbol] {
+		targetKind, declared := scope[place.Symbol]
+		if !declared {
 			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
 		}
-		storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
-		if err != nil {
-			return "", err
+		// The new value is validated and emitted against the local's own
+		// declared type: the entry's width for an integer local (buildExpr),
+		// the bool grammar for a bool local (buildBoolExpr). A value of the
+		// wrong type — a bool assigned to an integer local, or an integer
+		// assigned to a bool local — is rejected by the appropriate builder.
+		switch targetKind {
+		case width:
+			storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
+		case types.Bool:
+			storeValue, err := buildBoolExpr(unit, snapshot, statement.Children[1], scope)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
+		default:
+			return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 		}
-		return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
 	default:
 		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize) or a reassignment (Store)", context, statement.Kind)
 	}
@@ -570,12 +616,31 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 // own declarations never leak into the map the caller or a sibling scope
 // sees — a local declared inside one if arm is invisible to the sibling arm
 // and to anything outside the arm.
-func cloneLocals(locals map[symbol.SymbolID]bool) map[symbol.SymbolID]bool {
-	cloned := make(map[symbol.SymbolID]bool, len(locals))
-	for id, present := range locals {
-		cloned[id] = present
+func cloneLocals(locals map[symbol.SymbolID]types.BuiltinKind) map[symbol.SymbolID]types.BuiltinKind {
+	cloned := make(map[symbol.SymbolID]types.BuiltinKind, len(locals))
+	for id, kind := range locals {
+		cloned[id] = kind
 	}
 	return cloned
+}
+
+// buildCondition builds the C text for one if/while condition. It dispatches
+// on the condition node's shape: a direct integer comparison (tir.BinaryValue)
+// keeps the existing buildComparison path unchanged, while a bare bool value —
+// a bool literal, a reference to an in-scope bool local, or a unary ! negation
+// of one of those (tir.PrefixValue with the Bang operator) — is routed through
+// buildBoolExpr. Anything else (notably a && / || combining bool values, which
+// lowers to a tir.ShortCircuitValue node) is rejected by whichever builder it
+// reaches, exactly as before.
+func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body condition references invalid node %d", id)
+	}
+	if node.Kind == tir.BinaryValue {
+		return buildComparison(unit, snapshot, id, locals, width)
+	}
+	return buildBoolExpr(unit, snapshot, id, locals)
 }
 
 // buildComparison builds the C text for an if condition. It accepts exactly a
@@ -586,7 +651,7 @@ func cloneLocals(locals map[symbol.SymbolID]bool) map[symbol.SymbolID]bool {
 // expression buildExpr accepts). Any other node kind, or any other operator on
 // a BinaryValue (bitwise, and the && / || that lower to ShortCircuitValue
 // nodes rather than BinaryValue comparisons), is a clean rejection.
-func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool, width types.BuiltinKind) (string, error) {
+func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid node %d", id)
@@ -622,7 +687,7 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 // reference to a local declared earlier in the entry body, or checked negation
 // and checked +, -, *, /, % arithmetic — and is delegated to buildExpr, whose
 // own width gate and kind switch do the rejecting.
-func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool, width types.BuiltinKind) (string, error) {
+func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", id)
@@ -694,7 +759,7 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 // Emitting the checked runtime helpers (rather than raw C operators) is what
 // keeps the IR nodes' real overflow and divide-by-zero semantics from silently
 // disappearing in the emitted program.
-func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]bool, width types.BuiltinKind) (string, error) {
+func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -740,12 +805,72 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		}
 		return helper + "(" + left + ", " + right + ")", nil
 	case tir.SymbolValue:
-		if !locals[node.Symbol] {
+		if _, declared := locals[node.Symbol]; !declared {
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, or checked +, -, *, /, %% arithmetic", node.Kind)
+	}
+}
+
+// buildBoolExpr builds the C text for a bool value node, used both for a bool
+// local's initializer/reassignment value and for a bare bool if/while
+// condition (via buildCondition). The bool grammar is genuinely different from
+// the integer one buildExpr handles: there is no checked arithmetic — bools
+// are compared and negated with plain C, which cannot fault — so it is a
+// separate builder rather than a mode on buildExpr. It accepts exactly three
+// node kinds, each carrying the snapshot's bool builtin:
+//
+//   - BoolLiteral — the C literal true/false (requires #include <stdbool.h>).
+//   - SymbolValue whose Symbol is a bool local in scope (the locals map
+//     records types.Bool for it) — pebble_local_<symbol ID>, the same C name
+//     buildLeadingStatement gave that local's declaration.
+//   - PrefixValue with operator ! (syntax.Bang, confirmed against a real
+//     fixture — a bool `!` is a PrefixValue, not the CheckedNegate integer
+//     negation uses) and exactly one operand that is itself a bool value in
+//     this grammar — !(<operand>), plain C negation.
+//
+// A SymbolValue referencing anything else — an integer local, a global, a
+// parameter — and any other node kind at any position (a ShortCircuitValue
+// &&/||, a SourceAlias-wrapped comparison, a comparison reused as a bare bool
+// value, and so on) is a clean rejection naming what was found. In particular
+// a `!` of a comparison (e.g. !(i < 5)) is rejected: its operand is a
+// SourceAlias wrapping a BinaryValue, not a bare bool value, and negating a
+// comparison is outside this slice's grammar.
+func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
+	}
+	if !isBool(snapshot, node.Type) {
+		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want bool", node.Kind, describeType(snapshot, node.Type))
+	}
+	switch node.Kind {
+	case tir.BoolLiteral:
+		if node.Literal.Bool {
+			return "true", nil
+		}
+		return "false", nil
+	case tir.SymbolValue:
+		if locals[node.Symbol] != types.Bool {
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.PrefixValue:
+		if node.Operator != syntax.Bang {
+			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want !", node.Operator)
+		}
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a PrefixValue with %d operand(s), want exactly one", len(node.Children))
+		}
+		child, err := buildBoolExpr(unit, snapshot, node.Children[0], locals)
+		if err != nil {
+			return "", err
+		}
+		return "!(" + child + ")", nil
+	default:
+		return "", fmt.Errorf("entry function body expression contains a %s, want a bool literal, a reference to a bool local declared earlier in the body, or a ! negation", node.Kind)
 	}
 }
 
@@ -798,6 +923,39 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 		return false
 	}
 	return id == want
+}
+
+// isBool reports whether id is the snapshot's bool builtin. It is the bool
+// twin of isWidth: every node in an accepted bool expression tree must carry
+// exactly the bool builtin, since this backend has no cast/coercion lowering
+// between bool and anything else.
+func isBool(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	return id == snapshot.Builtins().Bool
+}
+
+// resolvedBuiltin resolves a TypeID to the builtin kind it names, if it names
+// one. It is how the emitter decides what a value node's type means — the
+// entry's integer width for an integer local's initializer, or bool for a bool
+// local's — without re-deriving anything.
+func resolvedBuiltin(snapshot *types.Snapshot, id types.TypeID) (types.BuiltinKind, bool) {
+	if snapshot == nil {
+		return 0, false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return 0, false
+	}
+	return key.Builtin()
+}
+
+// wantName returns the human-readable name of the entry's resolved integer
+// width ("i32" or "i64") for error messages that name the wanted type.
+func wantName(width types.BuiltinKind) string {
+	name, _ := builtinName(width)
+	return name
 }
 
 // cType returns the C type name an integer local of the given width is
@@ -894,9 +1052,13 @@ func entryReturnType(width types.BuiltinKind) string {
 }
 
 // emitEntryC writes the shared adapter skeleton once the typed IR has been
-// confirmed to describe one of the two supported program shapes.
+// confirmed to describe one of the two supported program shapes. <stdbool.h>
+// is included unconditionally: it provides the C bool keyword and the true /
+// false literals the moment any bool local or literal is emitted, and adding
+// it for programs with no bool at all is harmless.
 func emitEntryC(w io.Writer, userMain, mainBody string) error {
 	_, err := fmt.Fprintf(w, `#include "pebble_rt.h"
+#include <stdbool.h>
 
 %s
 
