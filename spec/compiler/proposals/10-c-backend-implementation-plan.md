@@ -225,6 +225,25 @@ incrementally as work proceeds.
   substantial and correct despite that, and completed full independent
   verification — runtime SAFE/RELEASE builds, the full Go suite and
   race, and manual reproduction — before accepting it.)
+- **10.14 — `bool` locals and bare-bool conditions**
+  (`compiler/internal/backend`): `bool` no longer exists only
+  transiently as a comparison result — a local may now be declared
+  `bool` alongside the entry's integer width, reassigned, and used
+  directly as an `if`/`while` condition (a literal, a bool local
+  reference, or a `!` negation of one). `buildCondition` dispatches on
+  the condition node's shape (a `BinaryValue` comparison keeps the
+  existing path; anything else routes through the new
+  `buildBoolExpr`), so a body may mix `bool` and integer locals side
+  by side. The locals scope map now records each local's own resolved
+  type rather than just presence, so a reference validates and emits
+  against the right grammar. Real edge case found and correctly
+  rejected rather than mishandled: `!(i < 5)` wraps a `SourceAlias`
+  around the comparison rather than being a bare bool value, so
+  negating a comparison directly stays outside this slice's grammar —
+  confirmed against a real fixture. Verified end-to-end: a mixed
+  bool+integer accumulation loop compiles and runs to exit code 10,
+  confirmed both by the dispatched tests and independently outside the
+  harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
