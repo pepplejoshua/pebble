@@ -221,6 +221,13 @@ typedef struct PebbleStr {
     size_t len;
 } PebbleStr;
 
+/* Byte-for-byte equality: false immediately on a length mismatch (so a and b
+ * are never memcmp'd past the shorter length), otherwise a memcmp over the
+ * shared length. Not NUL-terminated-dependent, per this type's own contract
+ * above.
+ */
+bool pebble_rt_str_eq(PebbleStr a, PebbleStr b);
+
 #ifndef PEBBLE_RT_FREESTANDING
 /* ---- hosted argument adaptation --------------------------------------------
  * Adapts host argc/argv into a slice of PebbleStr. The returned slice's

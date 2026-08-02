@@ -34,6 +34,9 @@
  *  10. Checked optional unwrap: a present optional's payload returns
  *      unchanged at every payload type (i32, i64, bool); unwrapping an
  *      absent optional panics in EVERY configuration (RELEASE included).
+ *  11. Str equality: identical bytes compare equal, differing bytes compare
+ *      unequal, a length mismatch compares unequal without reading past the
+ *      shorter operand, and two empty strs compare equal.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -185,6 +188,19 @@ static void trigger_div_by_zero_i64(void) {
  * like division by zero, there is no defined "wrapped" result for an
  * out-of-bounds access, so this is not mode-gated either.
  */
+static void test_str_eq(void) {
+    PebbleStr a = {(const uint8_t *)"hi", 2};
+    PebbleStr b = {(const uint8_t *)"hi", 2};
+    PebbleStr c = {(const uint8_t *)"ho", 2};
+    PebbleStr shorter = {(const uint8_t *)"h", 1};
+    PebbleStr empty1 = {(const uint8_t *)"", 0};
+    PebbleStr empty2 = {(const uint8_t *)"", 0};
+    assert(pebble_rt_str_eq(a, b) == true);
+    assert(pebble_rt_str_eq(a, c) == false);
+    assert(pebble_rt_str_eq(a, shorter) == false);
+    assert(pebble_rt_str_eq(empty1, empty2) == true);
+}
+
 static void test_checked_index_normal(void) {
     assert(pebble_rt_checked_index_i32(0, 3) == 0);
     assert(pebble_rt_checked_index_i32(2, 3) == 2);
@@ -430,6 +446,9 @@ int main(void) {
 
     test_args_from_argv();
     printf("ok: args_from_argv\n");
+
+    test_str_eq();
+    printf("ok: str equality\n");
 
     if (verify_panic_aborts() != 0) {
         fprintf(stderr, "smoke_test: panic subprocess check FAILED\n");
