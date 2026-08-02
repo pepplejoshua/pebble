@@ -244,6 +244,21 @@ incrementally as work proceeds.
   bool+integer accumulation loop compiles and runs to exit code 10,
   confirmed both by the dispatched tests and independently outside the
   harness.
+- **10.15 — `&&` and `||` combining bool values**
+  (`compiler/internal/backend`): closes the gap 10.7/10.11/10.14 all
+  deliberately left rejected. `buildBoolExpr` gains
+  `ShortCircuitValue` (`&&`/`||`), a `BinaryValue` case (a comparison
+  can serve as an operand), and a `SourceAlias` unwrap case (needed to
+  reach a parenthesized comparison operand). Plain C `&&`/`||` are the
+  correct lowering — both languages short-circuit, and every operand
+  in this backend's grammar is side-effect-free — and precedence
+  needed no work, confirmed against the parser's own grammar (AND
+  binds tighter than OR) that the typed IR tree already encodes it;
+  the emitter parenthesizes every combination explicitly so nesting
+  stays unambiguous. Incidentally supersedes 10.14's `!(i < 5)`
+  rejection (the `SourceAlias` unwrap makes it reachable). Verified a
+  three-way precedence fixture compiles to the correctly-grouped C and
+  exits as expected — confirmed independently outside the harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
