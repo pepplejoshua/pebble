@@ -24,6 +24,21 @@ incrementally as work proceeds.
   `-Wall -Wextra -Werror` in both SAFE and RELEASE modes, and under
   `-DPEBBLE_RT_FREESTANDING`. No file under `compiler/` or `src/` was
   touched.
+- **10.2 — the first Go-emitted C** (`compiler/internal/backend`): a
+  new `Emit(unit, snapshot, entrySymbol, w) error` supporting exactly
+  one program shape — `fn main() void {}`, a Pebble-convention,
+  zero-parameter, void-result entry with a completely empty body.
+  Validates the entry's `FunctionDeclaration` node (convention,
+  parameter count, void result via the type snapshot), resolves the
+  body to its distinct `Block` node, and accepts only zero children or
+  the single synthesized `ImplicitReturn` an empty void body produces
+  — anything else is rejected with a descriptive error, not
+  best-effort lowered. Only after validation passes does it write the
+  fixed adapter shape (a `pebble_user_main` taking `PebbleContext*`,
+  and a hosted `main()` that builds a default context and calls it).
+  The emitted C compiles clean under `-Wall -Wextra -Werror` against
+  the 10.1 runtime and runs to exit 0 — this is the first program the
+  Go rewrite has ever produced and run end-to-end.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
