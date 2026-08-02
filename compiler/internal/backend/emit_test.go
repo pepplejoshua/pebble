@@ -1475,6 +1475,182 @@ func buildSiblingArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 	return unit, snapshot, entryID
 }
 
+// buildLoopIfArmLocalLeakUnit hand-builds a unit whose i32 entry is a while
+// loop whose body contains a two-armed if where the then-arm declares a local
+// (symbol 25, bound to 1) but the else-arm's Store targets that same symbol
+// 25. Real source can never produce this shape — a reference to a name that
+// only exists in the other arm fails name resolution first — so it is
+// constructed directly through the IR builder, the same pattern
+// buildSiblingArmLocalLeakUnit uses, to exercise Emit's own per-scope copy
+// discipline inside a loop-body if: each arm is built by buildLoopBody, which
+// clones the incoming locals, so the else-arm must not see the then-arm's
+// local. If the locals map were threaded through without copying, the else-arm
+// would accept symbol 25 and emit a reference to a pebble_local_25 declared
+// only inside the then-arm's C block. The type snapshot is borrowed from a
+// checker-built fixture so every TypeID the hand-built nodes reference is owned
+// by the snapshot.
+func buildLoopIfArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+	boolT := snapshot.Builtins().Bool
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addCompare := func(leftNum, rightNum string) tir.NodeID {
+		t.Helper()
+		left, err := builder.AddNode(tir.Node{
+			Kind:    tir.IntegerLiteral,
+			Type:    i32,
+			Span:    source.NewSpan(0, 0, 1),
+			Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: leftNum},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		right, err := builder.AddNode(tir.Node{
+			Kind:    tir.IntegerLiteral,
+			Type:    i32,
+			Span:    source.NewSpan(0, 0, 1),
+			Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: rightNum},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		condition, err := builder.AddNode(tir.Node{
+			Kind:     tir.BinaryValue,
+			Type:     boolT,
+			Operator: syntax.Less,
+			Children: []tir.NodeID{left, right},
+			Span:     source.NewSpan(0, 0, 1),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return condition
+	}
+
+	// The while and if conditions are both 1 < 2 (always true), built as
+	// separate nodes since each can have only one parent.
+	whileCond := addCompare("1", "2")
+	ifCond := addCompare("1", "2")
+
+	// The then-arm declares symbol 25 and does nothing else.
+	thenValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenInit, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{thenValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thenBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{thenInit},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The else-arm Stores to symbol 25 — the then-arm's local, which must not
+	// be in scope here.
+	elseValue, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	place, err := builder.AddNode(tir.Node{
+		Kind:     tir.StoragePlace,
+		Type:     i32,
+		Symbol:   25,
+		Writable: true,
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elseStore, err := builder.AddNode(tir.Node{
+		Kind:     tir.Store,
+		Children: []tir.NodeID{place, elseValue},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elseBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{elseStore},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ifNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.If,
+		Region:   region,
+		HasElse:  true,
+		Children: []tir.NodeID{ifCond, thenBlock, elseBlock},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopBody, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{ifNode},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	whileNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.While,
+		Region:   region,
+		Children: []tir.NodeID{whileCond, loopBody},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "1")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{whileNode, ret})
+}
+
 // runtimeSourceRoot locates the runtime directory relative to this test file,
 // independent of the process working directory.
 func runtimeSourceRoot(t *testing.T) string {
@@ -1642,12 +1818,109 @@ func TestEmitRejectsWhileAsTail(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsIfInsideWhileBody(t *testing.T) {
-	// The loop-body grammar in this slice accepts only Initialize and Store;
-	// an If inside the body (legal source — the checker happily builds the
-	// nested if/else, confirmed against a real fixture dump) must be a clean
-	// Emit rejection naming what was found, not a guessed lowering.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 5 { if i == 2 { i = 10; } else { i = i + 1; } } return i; }", "main", false)
+func TestEmitIfElseInsideLoopBodyCompilesAndRuns(t *testing.T) {
+	// The fixture 10.10 used to prove an if inside a while body was rejected
+	// is now a supported shape (10.11 widens the loop-body grammar to include
+	// if/else, following the same 10.8 precedent of a now-supported shape
+	// becoming the new positive case). It is also the "break out early" pattern
+	// 10.11 exists for: i reaches 2, the if short-circuits the loop by jumping
+	// i to 10, and the loop exits — return 10 as the exit code. Bounded
+	// execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; while i < 5 { if i == 2 { i = 10; } else { i = i + 1; } } return i; }", false, 10, false)
+}
+
+func TestEmitRejectsPrintInsideWhileBody(t *testing.T) {
+	// The loop-body grammar still accepts only Initialize, Store, If, and
+	// While; a Print inside the body (legal source) must be a clean Emit
+	// rejection naming what was found, not a guessed lowering. This keeps
+	// rejection coverage for a genuinely-unsupported statement kind after the
+	// if-in-loop-body shape became a positive case above.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { print(\"hi\"); i = i + 1; } return i; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitNoElseIfInLoopBodyCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture: an if with no else inside a loop body. i counts
+	// 0..9 but sum accumulates only while i < 5, so sum = 0+1+2+3+4 = 10,
+	// returned as the process exit code. The no-else If is exactly the
+	// two-child shape confirmed against a real fixture dump (condition,
+	// then-arm, no third child), and the emitter must produce an if block with
+	// no else. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i < 5 { sum = sum + i; } i = i + 1; } return sum; }", false, 10, false)
+}
+
+func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
+	// The emitted C for a no-else if inside a loop body must mirror buildIf's
+	// indentation style: the while at the top level (4 spaces), the if one
+	// level deeper (8 spaces), its store two levels deep (12 spaces), and the
+	// if closed with no `else`. Asserting the literal indentation is what stops
+	// the recursive build from quietly collapsing all levels onto one.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i < 5 { sum = sum + i; } i = i + 1; } return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    while (pebble_local_25 < 10) {\n",
+		"        if (pebble_local_25 < 5) {\n",
+		"            pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, pebble_local_25);",
+		"        }",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "        } else {") {
+		t.Errorf("emitted C contains an else for a no-else if:\n%s", out)
+	}
+}
+
+func TestEmitIfElseInLoopBodyEvenOddCompilesAndRuns(t *testing.T) {
+	// A loop-body if with an else, both arms accumulating into distinct
+	// enclosing locals: i counts 0..5, the then-arm counts evens (0, 2, 4) and
+	// the else-arm counts odds (1, 3, 5), so even = 3 returned as the exit
+	// code. The condition uses a checked modulo (`i % 2 == 0`), confirming
+	// overflow-checked arithmetic is valid inside a loop-body if condition.
+	// Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var even i32 = 0; var odd i32 = 0; while i < 6 { if i % 2 == 0 { even = even + 1; } else { odd = odd + 1; } i = i + 1; } return even; }", false, 3, false)
+}
+
+func TestEmitNestedWhileInLoopBodyCompilesAndRuns(t *testing.T) {
+	// The nested double-loop confirmation fixture: i and j each count 0..2, so
+	// the inner body runs 3 x 3 = 9 times and total = 9, returned as the exit
+	// code. The inner While is a plain statement inside the outer loop's body
+	// Block (the shape confirmed against a real fixture dump), and buildWhile
+	// recurses into buildLoopBody for its own body unchanged. Bounded
+	// execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 3 { var j i32 = 0; while j < 3 { total = total + 1; j = j + 1; } i = i + 1; } return total; }", false, 9, false)
+}
+
+func TestEmitOverflowInsideNestedLoopIfAborts(t *testing.T) {
+	// Overflow must still be checked deep inside nested control flow, not just
+	// in straight-line loop bodies: x starts at 2147483640 and is incremented
+	// inside a loop-body if nested inside the inner of two loops. Each of the
+	// 3x3 = 9 iterations increments x (the if's condition 1 < 2 is always
+	// true), overflowing on the eighth (2147483647 + 1). The emitted
+	// pebble_rt_checked_add_i32 call must panic through pebble_rt_panic
+	// partway through the nested loop, so the process terminates abnormally —
+	// not exit 0, not return a silently wrapped value, and not a hang. Because
+	// the program runs in bounded execution, reaching this assert proves the
+	// abnormal termination is the genuine overflow abort and not the bounded
+	// harness confusing it with a timeout.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 2147483640; var i i32 = 0; while i < 3 { var j i32 = 0; while j < 3 { if 1 < 2 { x = x + 1; } j = j + 1; } i = i + 1; } return x; }", false, 0, true)
+}
+
+func TestEmitRejectsLocalLeakingBetweenLoopIfArms(t *testing.T) {
+	// A local declared inside one arm of a loop-body if must not be visible in
+	// the sibling arm. This hand-built unit makes the else-arm's Store target
+	// the then-arm's local (symbol 25); real source can't produce this shape
+	// (the reference would fail name resolution first), so it is constructed
+	// directly through the IR builder. Emit must reject it cleanly — if the
+	// locals map were shared across arms instead of copied per scope, the
+	// else-arm would silently accept symbol 25 and emit a reference to a
+	// pebble_local_25 declared only inside the then-arm's C block.
+	unit, snapshot, entryID := buildLoopIfArmLocalLeakUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

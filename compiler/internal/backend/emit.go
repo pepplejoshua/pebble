@@ -10,9 +10,11 @@
 // or a two-armed `if <comparison> { <block> } else { <block> }` whose
 // condition is a direct i32 comparison; the two arms are themselves blocks
 // under the same rule, so an arm may contain its own locals, reassignments,
-// nested if/else, and loops. A while loop's body is a block of only local
-// declarations and reassignments with no required tail (see buildLoopBody); a
-// while can only be a leading statement, never the block's tail. Locals
+// nested if/else, and loops. A while loop's body is a block of local
+// declarations, reassignments, if statements (a loop-body if is built by
+// buildLoopIf and has an optional else), and nested while loops (built by
+// buildWhile), with no required tail (see buildLoopBody); a while can only be
+// a leading statement, never the block's tail. Locals
 // declared in an enclosing block are visible in a nested block; locals
 // declared inside an arm or loop body are visible only within that scope.
 // Everything else is rejected with a descriptive error instead of guessed.
@@ -327,18 +329,22 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 }
 
 // buildLoopBody validates and builds the C statement sequence for a while
-// loop's body: a Block whose children are only local declarations (Initialize)
-// and reassignments (Store), built one level deeper than the enclosing block.
-// A loop body has no required tail — it just runs statements and does not need
-// to end in a return or if — so buildBlock is deliberately not reused here; the
-// grammar is genuinely different. The body is its own scope: locals are cloned
-// from the enclosing set (the same cloneLocals discipline buildIf's arms use)
-// before any declaration is added, so a local declared inside the loop is
-// invisible outside it and re-initializes on every C iteration, which is the
-// correct C block-scope behavior for a `while cond { let x i32 = ...; }` shape.
-// Every child must be an Initialize or a Store, validated by the shared
-// buildLeadingStatement; any other statement kind (an If, a nested While, a
-// Return, anything else) is a clean rejection naming what was found. An empty
+// loop's body: a Block whose children are local declarations (Initialize),
+// reassignments (Store), conditional if statements (a tir.If built by
+// buildLoopIf — the else is optional in a loop body), and nested while loops (a
+// tir.While built by buildWhile), built one level deeper than the enclosing
+// block. A loop body has no required tail — it just runs statements and does
+// not need to end in a return or if — so buildBlock is deliberately not reused
+// here; the grammar is genuinely different. The body is its own scope: locals
+// are cloned from the enclosing set (the same cloneLocals discipline buildIf's
+// arms use) before any declaration is added, so a local declared inside the
+// loop is invisible outside it and re-initializes on every C iteration, which
+// is the correct C block-scope behavior for a `while cond { let x i32 = ...; }`
+// shape. A nested while's body and each loop-body if arm are their own scopes
+// in turn (buildWhile and buildLoopIf both recurse into buildLoopBody, which
+// clones per entry), so a local declared inside one of them is invisible to its
+// siblings and to anything outside it. Any other statement kind (a Return, a
+// Print, anything else) is a clean rejection naming what was found. An empty
 // loop body (zero children) is legal — `while cond {}` is a real, if useless,
 // program — and emits no statements at all.
 func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
@@ -356,13 +362,87 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 	indent := strings.Repeat("    ", depth+1)
 	var statements []string
 	for _, childID := range body.Children {
-		text, err := buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body")
+		statement, ok := unit.Node(childID)
+		if !ok {
+			return "", fmt.Errorf("entry function body block while loop body references invalid statement node %d", childID)
+		}
+		var text string
+		var err error
+		switch statement.Kind {
+		case tir.While:
+			// A nested while inside a loop body reuses buildWhile unchanged: it
+			// already recurses into buildLoopBody for its own body, so nested
+			// loops compose without any change to buildWhile itself.
+			text, err = buildWhile(unit, snapshot, statement, scope, depth)
+		case tir.If:
+			// A conditional statement inside a loop body is built by buildLoopIf:
+			// its arms are themselves loop bodies (no required tail, optional
+			// else), genuinely different from the tail-requiring buildIf.
+			text, err = buildLoopIf(unit, snapshot, statement, scope, depth)
+		default:
+			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body")
+		}
 		if err != nil {
 			return "", err
 		}
 		statements = append(statements, text)
 	}
 	return strings.Join(statements, "\n"), nil
+}
+
+// buildLoopIf validates and builds the C text for a conditional statement
+// (tir.If) inside a while loop body. Unlike buildIf — which handles the
+// two-armed, both-arms-return if/else a block must end with — a loop-body if
+// is just a conditional statement: its arms are loop bodies (see buildLoopBody)
+// with no required tail, and the else is optional. The child count is derived
+// from HasElse (confirmed against a real fixture dump): a no-else If has
+// exactly two children — the condition and the then-arm — and a HasElse If has
+// exactly three — the condition, then-arm, and else-arm. The condition is a
+// direct integer comparison built by buildComparison, exactly as buildIf and
+// buildWhile use. Each arm is built by buildLoopBody at the next nesting depth,
+// which clones the incoming locals per arm, so a local declared inside one arm
+// is invisible to the sibling arm and to anything outside the if, while locals
+// declared in the enclosing loop body remain visible inside both arms. The
+// emitted text is indented at this statement's depth, mirroring buildIf:
+//
+//	<indent>if (<condition>) {
+//	<then statements, one level deeper>
+//	<indent>}
+//
+// or, with an else:
+//
+//	<indent>if (<condition>) {
+//	<then statements, one level deeper>
+//	<indent>} else {
+//	<else statements, one level deeper>
+//	<indent>}
+//
+// Any other shape — a child count inconsistent with HasElse, or an arm that is
+// not a Block — is a clean rejection naming what was found.
+func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+	if ifNode.HasElse && len(ifNode.Children) != 3 {
+		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
+	}
+	if !ifNode.HasElse && len(ifNode.Children) != 2 {
+		return "", fmt.Errorf("entry function body block while loop body if has no else arm but %d child(ren), want exactly 2 (condition, then-arm)", len(ifNode.Children))
+	}
+	condition, err := buildComparison(unit, snapshot, ifNode.Children[0], locals)
+	if err != nil {
+		return "", err
+	}
+	thenText, err := buildLoopBody(unit, snapshot, ifNode.Children[1], locals, depth+1)
+	if err != nil {
+		return "", err
+	}
+	indent := strings.Repeat("    ", depth+1)
+	if !ifNode.HasElse {
+		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
+	}
+	elseText, err := buildLoopBody(unit, snapshot, ifNode.Children[2], locals, depth+1)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
 }
 
 // buildLeadingStatement validates and builds one leading statement in the
