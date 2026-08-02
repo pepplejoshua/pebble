@@ -75,6 +75,23 @@ incrementally as work proceeds.
   path (including a real overflow abort with the correct panic
   message) were independently re-verified outside the dispatched
   tests.
+- **10.5 — checked i32 division and modulo** (`runtime/`,
+  `compiler/internal/backend`): closes the divide-by-zero fault
+  category 10.4 deferred. Unlike overflow, division by zero has no
+  defined release-mode answer — no bit pattern to wrap to — so
+  `pebble_rt_checked_div_i32`/`mod_i32` panic with
+  `PEBBLE_PANIC_DIVIDE_BY_ZERO` in **every** configuration, not just
+  `PEBBLE_RT_MODE_SAFE` (independently confirmed: divide-by-zero
+  aborts in both a SAFE and a RELEASE runtime build). `INT32_MIN / -1`
+  follows the overflow convention (SAFE panics, RELEASE wraps to
+  `INT32_MIN`); `INT32_MIN % -1` is mathematically `0` and
+  representable, not a fault in either mode. Both cases are
+  special-cased before ever evaluating C's `a/b` or `a%b` for that
+  pair, since the language itself calls that evaluation undefined
+  behavior for this input, not just an out-of-range result. The
+  backend maps `/` and `%` to the new helpers alongside `+`/`-`/`*`;
+  all five source-level arithmetic operators are now supported for an
+  i32 entry's return expression.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
