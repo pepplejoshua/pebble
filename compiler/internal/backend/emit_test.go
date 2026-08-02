@@ -2006,3 +2006,207 @@ func TestEmitNilArguments(t *testing.T) {
 		t.Fatal("Emit accepted nil writer")
 	}
 }
+
+func TestEmitBreakInsideLoopIfCompilesAndRuns(t *testing.T) {
+	// The break-inside-a-loop-body-if fixture: i counts 0..9 but the loop
+	// breaks when i == 5, so sum accumulates 0+1+2+3+4 = 10, returned as the
+	// process exit code. The Break is a leaf node (no children, confirmed
+	// against a fixture dump) in the then-arm of a no-else loop-body if and
+	// must emit exactly `break;` at the arm's indentation. Bounded execution in
+	// case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i == 5 { break; } sum = sum + i; i = i + 1; } return sum; }", false, 10, false)
+}
+
+func TestEmitContinueInsideLoopIfCompilesAndRuns(t *testing.T) {
+	// The continue-inside-a-loop-body-if fixture: i counts 1..5, skipping the
+	// accumulation when i == 3, so sum = 1+2+4+5 = 12, returned as the process
+	// exit code. The Continue is a leaf node in the then-arm of a no-else
+	// loop-body if and must emit exactly `continue;`. Bounded execution in case
+	// of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { i = i + 1; if i == 3 { continue; } sum = sum + i; } return sum; }", false, 12, false)
+}
+
+func TestEmitNestedLoopBreakTargetsInnerLoopCompilesAndRuns(t *testing.T) {
+	// The nested-loop break fixture: the inner loop breaks when j == 1, so each
+	// of the 3 outer iterations runs the inner body once (for j == 0) and
+	// total = 3, returned as the exit code. Confirmed against a real fixture
+	// dump that this Break's Target names the inner loop's region (the inner
+	// While), not the outer one — so plain C break (innermost-loop semantics)
+	// is a correct translation and the backend never needs to consult or
+	// compare Target's value. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 3 { var j i32 = 0; while j < 3 { if j == 1 { break; } total = total + 1; j = j + 1; } i = i + 1; } return total; }", false, 3, false)
+}
+
+func TestEmitBreakDirectInLoopBodyCompilesAndRuns(t *testing.T) {
+	// A bare break directly in the loop body (not inside an if), the simplest
+	// loop-body jump: i advances to 1 then the break exits the loop, so the
+	// return reads 1. Shares the same leaf-node dispatch as the inside-if
+	// fixtures. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; break; } return i; }", false, 1, false)
+}
+
+func TestEmitContinueDirectInLoopBodyCompilesAndRuns(t *testing.T) {
+	// A bare continue directly in the loop body (not inside an if): i advances
+	// each iteration before the continue, which skips the accumulation that
+	// follows, so total stays 0 and the loop still terminates. This proves the
+	// continue actually jumps to the loop's next iteration rather than falling
+	// through the rest of the body. Bounded execution in case of a miscompiled
+	// loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 3 { i = i + 1; continue; total = total + 1; } return total; }", false, 0, false)
+}
+
+func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
+	// The emitted C for the break-inside-if fixture must carry literal
+	// `break;` statements at the arm's indentation: the while at the top level
+	// (4 spaces), the if one level deeper (8), the break inside the arm two
+	// levels deep (12), and no else. Asserting the literal indentation is what
+	// stops the recursive build from quietly collapsing levels or emitting the
+	// jump at the wrong depth.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i == 5 { break; } sum = sum + i; i = i + 1; } return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    while (pebble_local_25 < 10) {\n",
+		"        if (pebble_local_25 == 5) {\n",
+		"            break;",
+		"        }",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
+	// The emitted C for the continue-inside-if fixture must carry a literal
+	// `continue;` at the arm's indentation (12 spaces), mirroring the break
+	// fixture's indentation.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { i = i + 1; if i == 3 { continue; } sum = sum + i; } return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"        if (pebble_local_25 == 3) {\n",
+		"            continue;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRejectsBreakWithDeferChain(t *testing.T) {
+	// A real-source break inside a loop body that also contains a `defer` in
+	// that loop body produces a Break whose DeferChain is non-empty (confirmed
+	// against a fixture dump: deferChain=[<defer register>]). The checker
+	// accepts defer inside a loop body, so real source reaches this shape; this
+	// backend does not lower defer at all, so it must reject the jump cleanly,
+	// naming the defer chain, rather than silently dropping the deferred
+	// cleanup. The break is written *before* the defer so the loop body block's
+	// children list the Break first (confirmed: [Break, DeferRegister]) and the
+	// Break's own DeferChain rejection fires before the DeferRegister statement
+	// would otherwise be rejected.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "DeferChain")
+}
+
+func TestEmitRejectsContinueWithDeferChain(t *testing.T) {
+	// Same non-empty DeferChain rejection for Continue: a defer registered in
+	// the loop body and crossed by a continue produces a non-empty chain that
+	// must be rejected, not silently dropped. The continue precedes the defer
+	// so the Continue node is built (and rejected) before the DeferRegister
+	// statement would be.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "DeferChain")
+}
+
+func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {
+	// A Break reaching the entry body outside any loop body is unreachable from
+	// real source — the checker's C0611 requires a jump to have a valid
+	// enclosing loop target, so a break at the function's top level never
+	// survives checking — but a hand-built unit can still place one as a
+	// leading statement in the entry body block. buildBlock's generic
+	// unsupported-statement path (buildLeadingStatement's default) must reject
+	// it cleanly exactly like any other non-leading statement kind, not
+	// silently emit a break outside a loop.
+	unit, snapshot, entryID := buildTopLevelBreakUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+// assertEmitRejectsContaining is assertEmitRejects for rejections whose error
+// message must name a specific part of the unsupported shape (here: the
+// non-empty DeferChain the backend refuses to drop).
+func assertEmitRejectsContaining(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, entryID symbol.SymbolID, wantSubstring string) {
+	t.Helper()
+	var buf bytes.Buffer
+	err := Emit(unit, snapshot, entryID, &buf)
+	if err == nil {
+		t.Fatalf("Emit succeeded for an unsupported entry shape, want rejection containing %q", wantSubstring)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("Emit wrote output on failure: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), wantSubstring) {
+		t.Fatalf("Emit rejection error %q does not contain %q", err.Error(), wantSubstring)
+	}
+}
+
+// buildTopLevelBreakUnit hand-builds a unit whose i32 entry body is an
+// Initialize (symbol 25 bound to 1), a Break as a leading statement, and the
+// final Return of 1. Real source can never produce a Break in the entry body
+// outside a loop body — the checker's C0611 requires a jump to name a valid
+// enclosing loop target, which a top-level break has no way to satisfy — so it
+// is constructed directly through the IR builder, the same pattern
+// buildWhileAsTailUnit uses, to exercise Emit's own rejection of a jump outside
+// the loop-body grammar. The Break carries a valid target region (the builder
+// verifies Target is nonzero and in range) so the rejection is specifically
+// about its position, not its internals. The type snapshot is borrowed from a
+// checker-built fixture so every TypeID the hand-built nodes reference is owned
+// by the snapshot.
+func buildTopLevelBreakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	init, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "1")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	brk, err := builder.AddNode(tir.Node{
+		Kind:   tir.Break,
+		Target: region,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "1")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{init, brk, ret})
+}

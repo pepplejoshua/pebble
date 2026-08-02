@@ -12,9 +12,10 @@
 // under the same rule, so an arm may contain its own locals, reassignments,
 // nested if/else, and loops. A while loop's body is a block of local
 // declarations, reassignments, if statements (a loop-body if is built by
-// buildLoopIf and has an optional else), and nested while loops (built by
-// buildWhile), with no required tail (see buildLoopBody); a while can only be
-// a leading statement, never the block's tail. Locals
+// buildLoopIf and has an optional else), nested while loops (built by
+// buildWhile), and break/continue statements (built by buildLoopJump), with no
+// required tail (see buildLoopBody); a while can only be a leading statement,
+// never the block's tail. Locals
 // declared in an enclosing block are visible in a nested block; locals
 // declared inside an arm or loop body are visible only within that scope.
 // Everything else is rejected with a descriptive error instead of guessed.
@@ -331,22 +332,23 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 // buildLoopBody validates and builds the C statement sequence for a while
 // loop's body: a Block whose children are local declarations (Initialize),
 // reassignments (Store), conditional if statements (a tir.If built by
-// buildLoopIf — the else is optional in a loop body), and nested while loops (a
-// tir.While built by buildWhile), built one level deeper than the enclosing
-// block. A loop body has no required tail — it just runs statements and does
-// not need to end in a return or if — so buildBlock is deliberately not reused
-// here; the grammar is genuinely different. The body is its own scope: locals
-// are cloned from the enclosing set (the same cloneLocals discipline buildIf's
-// arms use) before any declaration is added, so a local declared inside the
-// loop is invisible outside it and re-initializes on every C iteration, which
-// is the correct C block-scope behavior for a `while cond { let x i32 = ...; }`
-// shape. A nested while's body and each loop-body if arm are their own scopes
-// in turn (buildWhile and buildLoopIf both recurse into buildLoopBody, which
-// clones per entry), so a local declared inside one of them is invisible to its
-// siblings and to anything outside it. Any other statement kind (a Return, a
-// Print, anything else) is a clean rejection naming what was found. An empty
-// loop body (zero children) is legal — `while cond {}` is a real, if useless,
-// program — and emits no statements at all.
+// buildLoopIf — the else is optional in a loop body), nested while loops (a
+// tir.While built by buildWhile), and break/continue statements (a tir.Break /
+// tir.Continue built by buildLoopJump), built one level deeper than the
+// enclosing block. A loop body has no required tail — it just runs statements
+// and does not need to end in a return or if — so buildBlock is deliberately
+// not reused here; the grammar is genuinely different. The body is its own
+// scope: locals are cloned from the enclosing set (the same cloneLocals
+// discipline buildIf's arms use) before any declaration is added, so a local
+// declared inside the loop is invisible outside it and re-initializes on every
+// C iteration, which is the correct C block-scope behavior for a `while cond {
+// let x i32 = ...; }` shape. A nested while's body and each loop-body if arm
+// are their own scopes in turn (buildWhile and buildLoopIf both recurse into
+// buildLoopBody, which clones per entry), so a local declared inside one of
+// them is invisible to its siblings and to anything outside it. Any other
+// statement kind (a Return, a Print, anything else) is a clean rejection
+// naming what was found. An empty loop body (zero children) is legal — `while
+// cond {}` is a real, if useless, program — and emits no statements at all.
 func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
@@ -377,8 +379,14 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 		case tir.If:
 			// A conditional statement inside a loop body is built by buildLoopIf:
 			// its arms are themselves loop bodies (no required tail, optional
-			// else), genuinely different from the tail-requiring buildIf.
+			// else), genuinely different from the tail-requiring buildIf. Because
+			// buildLoopIf recurses into buildLoopBody for each arm, a break or
+			// continue inside an arm is handled by this same switch, unchanged.
 			text, err = buildLoopIf(unit, snapshot, statement, scope, depth)
+		case tir.Break:
+			text, err = buildLoopJump(statement, "break", indent, "entry function body block while loop body")
+		case tir.Continue:
+			text, err = buildLoopJump(statement, "continue", indent, "entry function body block while loop body")
 		default:
 			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body")
 		}
@@ -443,6 +451,31 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 		return "", err
 	}
 	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
+}
+
+// buildLoopJump validates and builds the C text for one break/continue
+// statement in a loop body. A tir.Break or tir.Continue is a leaf node (no
+// children, confirmed against real fixtures) whose Target names the region of
+// the loop the jump leaves, and whose DeferChain would carry the DeferRegister
+// nodes this backend would have to expand before the jump if the loop body had
+// any `defer` statements. This backend does not lower defer at all yet, so a
+// non-empty DeferChain is a shape it cannot correctly emit — it is rejected
+// cleanly, naming the chain length, never silently dropped. (The checker
+// accepts `defer` inside a loop body today, so real source does produce
+// non-empty chains on a jump that crosses a deferred region.) The emitted C is
+// exactly `break;` / `continue;` at the current indent: the language has no
+// labeled break/continue, so a jump's Target always names the nearest enclosing
+// loop and plain C break/continue — which already target the nearest enclosing
+// loop by C's own scoping rules — is a direct, correct translation. No runtime
+// helper is involved, and Target's value never needs to be consulted or
+// compared; it is confirmed (against a nested-loop fixture) to name the loop
+// that actually contains the jump, and the checker (C0611) already guarantees
+// that loop is an enclosing one.
+func buildLoopJump(statement tir.Node, keyword string, indent, context string) (string, error) {
+	if len(statement.DeferChain) != 0 {
+		return "", fmt.Errorf("%s %s statement carries %d deferred statement(s) in its DeferChain, which this backend does not support (defer is not lowered yet)", context, keyword, len(statement.DeferChain))
+	}
+	return fmt.Sprintf("%s%s;", indent, keyword), nil
 }
 
 // buildLeadingStatement validates and builds one leading statement in the
