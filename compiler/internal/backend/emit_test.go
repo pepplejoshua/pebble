@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/check"
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
@@ -394,12 +396,65 @@ func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int
 	compileAndRun(t, buf.Bytes(), wantCode, wantAbnormal)
 }
 
+// emitAndRunBounded is emitAndRun for programs that contain a while loop: the
+// program's execution is bounded by the loop's own condition, so the compiled
+// binary is run through the bounded harness (compileAndRunBounded) rather than
+// the unbounded compileAndRun. A miscompiled non-terminating loop therefore
+// fails the test loudly and quickly instead of hanging the whole test run.
+func emitAndRunBounded(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) {
+	t.Helper()
+	unit, snapshot, entryID := buildFixture(t, sourceText, "main", requireEntry)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRunBounded(t, buf.Bytes(), wantCode, wantAbnormal)
+}
+
 // compileAndRun cc's already-emitted C against the runtime in
 // PEBBLE_RT_MODE_SAFE (the same configuration every end-to-end test here
 // uses), runs the binary, and asserts the exit behavior. With wantAbnormal,
 // the process must terminate abnormally; otherwise its exit code must equal
 // wantCode.
 func compileAndRun(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) {
+	t.Helper()
+	binary := compileEmittedC(t, emitted)
+
+	run := exec.Command(binary)
+	output, err := run.CombinedOutput()
+	if run.ProcessState == nil {
+		t.Fatalf("compiled program did not start: %v\n%s", err, output)
+	}
+	code := run.ProcessState.ExitCode()
+	if wantAbnormal {
+		// CombinedOutput returns a non-nil error for any non-zero exit or
+		// signal; a clean exit 0 would mean the overflow check never fired.
+		if err == nil {
+			t.Fatalf("compiled program exited 0, want abnormal termination\n%s", output)
+		}
+		t.Logf("compiled program terminated abnormally (err=%v, exit code %d): %s", err, code, output)
+		return
+	}
+	// A non-zero exit is expected behavior for some programs (the exit code
+	// IS the program's output), so the run error is not itself a failure —
+	// only a mismatch with the wanted code is. A signaled process would
+	// report exit code -1 and fail the comparison.
+	if code != wantCode {
+		t.Fatalf("compiled program exited %d, want %d\n%s", code, wantCode, output)
+	}
+	t.Logf("compiled program exited %d, want %d", code, wantCode)
+}
+
+// loopExecutionTimeout bounds the execution of a compiled program whose
+// termination is guaranteed only by its own loop conditions. A genuinely
+// non-terminating while loop would otherwise hang the Go test process forever;
+// with this timeout the run fails loudly and quickly instead.
+const loopExecutionTimeout = 5 * time.Second
+
+// compileEmittedC cc's already-emitted C against the runtime in
+// PEBBLE_RT_MODE_SAFE (the same configuration every end-to-end test here uses)
+// and returns the path to the compiled binary.
+func compileEmittedC(t *testing.T, emitted []byte) string {
 	t.Helper()
 	cc, err := exec.LookPath("cc")
 	if err != nil {
@@ -428,26 +483,46 @@ func compileAndRun(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool
 	if output, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc compilation failed: %v\n%s", err, output)
 	}
+	return binary
+}
 
-	run := exec.Command(binary)
+// compileAndRunBounded is compileAndRun for programs whose execution is not
+// statically guaranteed to terminate: a while loop's only bound is its own
+// condition, so a buggy or non-terminating loop could otherwise hang the Go
+// test process forever. It wraps the compiled binary's execution in the
+// loopExecutionTimeout context so a genuinely non-terminating program fails
+// the test loudly and quickly instead of hanging the run, while a program
+// that terminates promptly (normally, or abnormally via a panic such as the
+// overflow abort) finishes well before the deadline. Behavior is otherwise
+// identical to compileAndRun: wantCode is the expected exit code, and with
+// wantAbnormal the process must terminate abnormally (a non-zero exit or a
+// signal, as abort() produces) rather than exiting with any specific code.
+func compileAndRunBounded(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) {
+	t.Helper()
+	binary := compileEmittedC(t, emitted)
+
+	ctx, cancel := context.WithTimeout(context.Background(), loopExecutionTimeout)
+	defer cancel()
+	run := exec.CommandContext(ctx, binary)
 	output, err := run.CombinedOutput()
 	if run.ProcessState == nil {
 		t.Fatalf("compiled program did not start: %v\n%s", err, output)
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("compiled program timed out after %s (a non-terminating loop?), err=%v\n%s", loopExecutionTimeout, err, output)
 	}
 	code := run.ProcessState.ExitCode()
 	if wantAbnormal {
 		// CombinedOutput returns a non-nil error for any non-zero exit or
 		// signal; a clean exit 0 would mean the overflow check never fired.
+		// This branch runs only after the deadline check above, so reaching it
+		// proves the abnormal termination is a genuine panic, not a timeout.
 		if err == nil {
 			t.Fatalf("compiled program exited 0, want abnormal termination\n%s", output)
 		}
 		t.Logf("compiled program terminated abnormally (err=%v, exit code %d): %s", err, code, output)
 		return
 	}
-	// A non-zero exit is expected behavior for some programs (the exit code
-	// IS the program's output), so the run error is not itself a failure —
-	// only a mismatch with the wanted code is. A signaled process would
-	// report exit code -1 and fail the comparison.
 	if code != wantCode {
 		t.Fatalf("compiled program exited %d, want %d\n%s", code, wantCode, output)
 	}
@@ -1128,6 +1203,109 @@ func buildIfWithoutElseUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sy
 	return unit, snapshot, entryID
 }
 
+// buildWhileAsTailUnit hand-builds a unit whose i32 entry's body block has a
+// single child: a While loop, i.e. the loop is the block's last (and only)
+// child. The checker refuses to produce this shape from source — a non-void
+// function must not fall through without returning (C0607), so a trailing
+// while is rejected before typed IR exists — which is exactly why the loop
+// can only ever be a leading statement in this backend's block grammar. The
+// unit is constructed directly through the IR builder to exercise Emit's own
+// tail requirement: a block's last child must be a Return or a two-armed
+// if/else, so a While there must be a clean rejection. The While itself is
+// otherwise well-formed (a BinaryValue comparison for the condition and a
+// Block body) so the rejection is specifically about its position, not its
+// internals. The type snapshot is borrowed from a checker-built fixture so
+// every TypeID the hand-built nodes reference is owned by the snapshot.
+func buildWhileAsTailUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	condition, err := builder.AddNode(tir.Node{
+		Kind:     tir.BinaryValue,
+		Type:     snapshot.Builtins().Bool,
+		Operator: syntax.Less,
+		Children: []tir.NodeID{left, right},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: nil,
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	whileNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.While,
+		Region:   region,
+		Children: []tir.NodeID{condition, bodyBlock},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The entry body block's only child is the While — the loop is the tail.
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{whileNode},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit, snapshot, entryID
+}
+
 // buildSiblingArmLocalLeakUnit hand-builds a unit whose i32 entry is a
 // two-armed if/else where the then-arm declares a local (symbol 25, bound to
 // 100) but the else-arm's return references that same symbol 25. Real source
@@ -1410,6 +1588,81 @@ func TestEmitRejectsStoreToNonStoragePlace(t *testing.T) {
 	// hand-built through the IR builder to exercise Emit's own place-kind
 	// requirement.
 	unit, snapshot, entryID := buildStoreToNonStoragePlaceUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitWhileAccumulationCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture: a real accumulation loop. i counts 0..4 and
+	// sum accumulates i each pass, so sum = 0+1+2+3+4 = 10, returned as the
+	// process exit code. This is the first program in the rewrite where a
+	// loop actually iterates and accumulates across iterations. Execution is
+	// bounded (compileAndRunBounded) so a miscompiled non-terminating loop
+	// fails the test loudly instead of hanging it.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", false, 10, false)
+}
+
+func TestEmitWhileNeverRunsCompilesAndRuns(t *testing.T) {
+	// A loop whose condition is false before the first iteration: i = 10 is
+	// not < 5, so the body never runs and x keeps its initial value 1. This
+	// proves the emitted while does not run its body even once when the
+	// condition is false at entry. Bounded execution in case of a
+	// miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 10; var x i32 = 1; while i < 5 { x = 2; } return x; }", false, 1, false)
+}
+
+func TestEmitWhileCounterCompilesAndRuns(t *testing.T) {
+	// A simple counter with no accumulator, to isolate the loop mechanism
+	// from the accumulation pattern: i goes 0 -> 1 -> 2 -> 3, then i < 3 is
+	// false and the loop exits, returning 3. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; } return i; }", false, 3, false)
+}
+
+func TestEmitWhileOverflowInBodyAborts(t *testing.T) {
+	// Overflow must still be checked inside a loop body, not just in straight-
+	// line code: x starts at 2147483640 and is incremented each of the ten
+	// iterations, overflowing on the eighth (2147483647 + 1). The emitted
+	// pebble_rt_checked_add_i32 call inside the loop must panic through
+	// pebble_rt_panic partway through the loop, so the process terminates
+	// abnormally — not exit 0, not return a silently wrapped value, and not a
+	// hang. Because the program runs in bounded execution, reaching this
+	// assert proves the abnormal termination is the genuine overflow abort and
+	// not the bounded harness confusing it with a timeout.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 2147483640; var i i32 = 0; while i < 10 { x = x + 1; i = i + 1; } return x; }", false, 0, true)
+}
+
+func TestEmitRejectsWhileAsTail(t *testing.T) {
+	// A while can only be a leading statement in the block grammar, never the
+	// block's tail: a while does not satisfy the "must end in return or if"
+	// requirement a block's tail has. The checker itself rejects this shape
+	// from real source (C0607: non-void function can fall through without
+	// returning — a while's condition evaluation does not guarantee a return),
+	// so this unit is hand-built through the IR builder to exercise Emit's own
+	// rejection of a While as the last child of the entry body block.
+	unit, snapshot, entryID := buildWhileAsTailUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsIfInsideWhileBody(t *testing.T) {
+	// The loop-body grammar in this slice accepts only Initialize and Store;
+	// an If inside the body (legal source — the checker happily builds the
+	// nested if/else, confirmed against a real fixture dump) must be a clean
+	// Emit rejection naming what was found, not a guessed lowering.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 5 { if i == 2 { i = 10; } else { i = i + 1; } } return i; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLogicalAndWhileCondition(t *testing.T) {
+	// && is legal source but lowers to a ShortCircuitValue node, a different
+	// kind than the BinaryValue comparison buildComparison accepts, so a while
+	// condition using it must be rejected, not best-effort lowered — the same
+	// rejection 10.7 established for if conditions.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 5 && i > 0 { i = i + 1; } return i; }", "main", false)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitRejectsLogicalOrWhileCondition(t *testing.T) {
+	// Same ShortCircuitValue rejection as &&, for the || operator.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 5 || i > 0 { i = i + 1; } return i; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

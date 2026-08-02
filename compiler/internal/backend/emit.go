@@ -5,14 +5,17 @@
 // matches a single recursive block grammar: a block is zero or more
 // `let <name> i32 = <i32 expression>;` / `var <name> i32 = <i32 expression>;`
 // local declarations, plus `x = <i32 expression>;` reassignments of an
-// already-declared local, followed by a tail that is either one
-// `return <i32 expression>;` or a two-armed `if <comparison> { <block> } else
-// { <block> }` whose condition is a direct i32 comparison; the two arms are
-// themselves blocks under the same rule, so an arm may contain its own
-// locals, reassignments, and nested if/else. Locals declared in an enclosing
-// block are visible in a nested block; locals declared inside an arm are
-// visible only within that arm. Everything else is rejected with a
-// descriptive error instead of guessed.
+// already-declared local, and a `while <comparison> { <loop body> }` loop
+// statement, followed by a tail that is either one `return <i32 expression>;`
+// or a two-armed `if <comparison> { <block> } else { <block> }` whose
+// condition is a direct i32 comparison; the two arms are themselves blocks
+// under the same rule, so an arm may contain its own locals, reassignments,
+// nested if/else, and loops. A while loop's body is a block of only local
+// declarations and reassignments with no required tail (see buildLoopBody); a
+// while can only be a leading statement, never the block's tail. Locals
+// declared in an enclosing block are visible in a nested block; locals
+// declared inside an arm or loop body are visible only within that scope.
+// Everything else is rejected with a descriptive error instead of guessed.
 package backend
 
 import (
@@ -33,10 +36,11 @@ import (
 // {}` produces) or i32 with a body matching the recursive block grammar: a
 // block is zero or more `let <name> i32 = <i32 expression>;` / `var <name> i32
 // = <i32 expression>;` local declarations, plus `x = <i32 expression>;`
-// reassignments of an already-declared local (a tir.Store; see buildBlock),
-// followed by a tail that is either one `return <i32 expression>;` or a
-// two-armed `if <comparison> { <block> } else { <block> }` whose condition is
-// a direct i32 comparison (<, <=, >, >=, ==, !=); each arm is itself a block
+// reassignments of an already-declared local (a tir.Store; see buildBlock) and
+// `while <comparison> { <loop body> }` loop statements (a tir.While; see
+// buildWhile), followed by a tail that is either one `return <i32 expression>;`
+// or a two-armed `if <comparison> { <block> } else { <block> }` whose condition
+// is a direct i32 comparison (<, <=, >, >=, ==, !=); each arm is itself a block
 // under the same grammar, so an arm may contain its own locals and nested
 // if/else. Every expression — a local's initializer, a reassignment's new
 // value, a return value, or an if/else arm's return value — may be a plain
@@ -164,18 +168,21 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 
 // buildBlock validates one block under the entry body's recursive grammar and
 // builds its C statement sequence. A block is zero or more `int32_t
-// pebble_local_<id>` declarations (one per Initialize, in declaration order)
-// and zero or more `pebble_local_<id> = <built value>;` reassignments (one per
-// Store, targeting a local already in scope) followed by a tail that is either
-// the single `return <i32 expression>;` or a two-armed if/else built by
-// buildIf; each if arm is itself a block under the same grammar, so buildBlock
-// recurses into both arms. locals is the set of symbols visible at the block's
-// entry (the enclosing scopes' declarations) and is copied at entry: every
-// addition this block makes — its own declarations, and anything an arm's
-// subtree declares — stays in that copy and never mutates the map the caller
-// or a sibling arm sees. That copy-per-scope discipline is what makes a local
-// declared inside one arm invisible to the sibling arm and to any scope
-// outside the arm, while locals declared in an enclosing block remain visible
+// pebble_local_<id>` declarations (one per Initialize, in declaration order),
+// zero or more `pebble_local_<id> = <built value>;` reassignments (one per
+// Store, targeting a local already in scope), and zero or more `while (...)
+// { <loop body> }` loop statements (one per While, built by buildWhile — a
+// loop is only ever a leading statement here, never the block's tail),
+// followed by a tail that is either the single `return <i32 expression>;` or a
+// two-armed if/else built by buildIf; each if arm is itself a block under the
+// same grammar, so buildBlock recurses into both arms. locals is the set of
+// symbols visible at the block's entry (the enclosing scopes' declarations)
+// and is copied at entry: every addition this block makes — its own
+// declarations, and anything an arm's or a loop body's subtree declares —
+// stays in that copy and never mutates the map the caller or a sibling scope
+// sees. That copy-per-scope discipline is what makes a local declared inside
+// one arm (or inside a loop body) invisible to its siblings and to any scope
+// outside it, while locals declared in an enclosing block remain visible
 // inside. depth is the nesting level of this block below the function body (0
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
@@ -199,57 +206,26 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		if !ok {
 			return "", fmt.Errorf("entry function body block references invalid statement node %d", block.Children[i])
 		}
-		switch statement.Kind {
-		case tir.Initialize:
-			if len(statement.Children) != 1 {
-				return "", fmt.Errorf("entry function body block local declaration initializes %d value(s), want exactly one i32 expression", len(statement.Children))
-			}
-			if scope[statement.Symbol] {
-				return "", fmt.Errorf("entry function body block declares local %d more than once", statement.Symbol)
-			}
-			initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope)
+		if statement.Kind == tir.While {
+			// A while loop is a leading statement in the block grammar, never
+			// the tail: it runs its body (which may itself declare locals and
+			// reassign enclosing ones) as many times as its condition holds,
+			// then control falls through to the statements after it. The loop
+			// body is its own scope (buildWhile clones, exactly as buildIf's
+			// arms do), so nothing the loop declares leaks into this block's
+			// scope map.
+			whileText, err := buildWhile(unit, snapshot, statement, scope, depth)
 			if err != nil {
 				return "", err
 			}
-			scope[statement.Symbol] = true
-			// Every local is emitted as a plain (non-const) int32_t even
-			// though a `let` is conceptually immutable. The Initialize node
-			// does not carry whether the declaration was `let` or `var`, and
-			// the checker guarantees any Store this backend sees targets a
-			// writable `var` (see buildBlock's Store case), so the const
-			// qualifier would only be defense-in-depth — catching an emitter
-			// bug via a C compile error on assignment to const — at the cost
-			// of tracking which locals are ever reassigned. That trade-off is
-			// accepted: every local is a plain int32_t.
-			statements = append(statements, fmt.Sprintf("%sint32_t pebble_local_%d = %s;", indent, statement.Symbol, initExpr))
-		case tir.Store:
-			// A Store reassigns a local declared earlier in this block or an
-			// enclosing one; it does not declare a new symbol, so it never
-			// touches scope. The checker refuses to emit a Store targeting a
-			// `let` (C0606: the assignment place is not writable), so any
-			// Store this backend sees, from real source, necessarily targets
-			// a `var`.
-			if len(statement.Children) != 2 {
-				return "", fmt.Errorf("entry function body block reassignment has %d child(ren), want exactly two: the place being reassigned and the new i32 value", len(statement.Children))
-			}
-			place, ok := unit.Node(statement.Children[0])
-			if !ok {
-				return "", fmt.Errorf("entry function body block reassignment references invalid place node %d", statement.Children[0])
-			}
-			if place.Kind != tir.StoragePlace {
-				return "", fmt.Errorf("entry function body block reassignment targets a %s, want a plain StoragePlace naming a local declared earlier in the entry body", place.Kind)
-			}
-			if !scope[place.Symbol] {
-				return "", fmt.Errorf("entry function body block reassigns symbol %d, which is not a local declared earlier in the entry body", place.Symbol)
-			}
-			storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope)
-			if err != nil {
-				return "", err
-			}
-			statements = append(statements, fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue))
-		default:
-			return "", fmt.Errorf("entry function body block statement is a %s, want a local declaration (Initialize) or a reassignment (Store) before the final return or if/else", statement.Kind)
+			statements = append(statements, whileText)
+			continue
 		}
+		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block")
+		if err != nil {
+			return "", err
+		}
+		statements = append(statements, text)
 	}
 	last, ok := unit.Node(block.Children[len(block.Children)-1])
 	if !ok {
@@ -315,6 +291,145 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 	}
 	indent := strings.Repeat("    ", depth+1)
 	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
+}
+
+// buildWhile validates and builds the C text for a while loop statement: a
+// tir.While with exactly two children — Children[0] the condition, a direct
+// integer comparison built by buildComparison (the same six operators and the
+// same int-literal-in-condition handling an if condition uses), and Children[1]
+// the loop body, which must be a Block built by buildLoopBody at the next
+// nesting depth. The loop body is its own scope: buildLoopBody clones the
+// incoming locals before extending them, so a local declared inside the loop is
+// invisible outside it and re-initializes each C iteration (correct C
+// block-scope behavior). The emitted text is indented at this block's depth,
+// mirroring buildIf exactly:
+//
+//	<indent>while (<condition>) {
+//	<loop body statements, one level deeper>
+//	<indent>}
+//
+// Any other shape — a wrong child count, or a body that is not a Block — is a
+// clean rejection naming what was found.
+func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+	if len(whileNode.Children) != 2 {
+		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
+	}
+	condition, err := buildComparison(unit, snapshot, whileNode.Children[0], locals)
+	if err != nil {
+		return "", err
+	}
+	bodyText, err := buildLoopBody(unit, snapshot, whileNode.Children[1], locals, depth+1)
+	if err != nil {
+		return "", err
+	}
+	indent := strings.Repeat("    ", depth+1)
+	return fmt.Sprintf("%swhile (%s) {\n%s\n%s}", indent, condition, bodyText, indent), nil
+}
+
+// buildLoopBody validates and builds the C statement sequence for a while
+// loop's body: a Block whose children are only local declarations (Initialize)
+// and reassignments (Store), built one level deeper than the enclosing block.
+// A loop body has no required tail — it just runs statements and does not need
+// to end in a return or if — so buildBlock is deliberately not reused here; the
+// grammar is genuinely different. The body is its own scope: locals are cloned
+// from the enclosing set (the same cloneLocals discipline buildIf's arms use)
+// before any declaration is added, so a local declared inside the loop is
+// invisible outside it and re-initializes on every C iteration, which is the
+// correct C block-scope behavior for a `while cond { let x i32 = ...; }` shape.
+// Every child must be an Initialize or a Store, validated by the shared
+// buildLeadingStatement; any other statement kind (an If, a nested While, a
+// Return, anything else) is a clean rejection naming what was found. An empty
+// loop body (zero children) is legal — `while cond {}` is a real, if useless,
+// program — and emits no statements at all.
+func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]bool, depth int) (string, error) {
+	body, ok := unit.Node(bodyID)
+	if !ok {
+		return "", fmt.Errorf("entry function body block while loop body references invalid node %d", bodyID)
+	}
+	if body.Kind != tir.Block {
+		return "", fmt.Errorf("entry function body block while loop body is a %s, want a Block", body.Kind)
+	}
+	if len(body.Children) == 0 {
+		return "", nil
+	}
+	scope := cloneLocals(locals)
+	indent := strings.Repeat("    ", depth+1)
+	var statements []string
+	for _, childID := range body.Children {
+		text, err := buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body")
+		if err != nil {
+			return "", err
+		}
+		statements = append(statements, text)
+	}
+	return strings.Join(statements, "\n"), nil
+}
+
+// buildLeadingStatement validates and builds one leading statement in the
+// block grammar shared by buildBlock and buildLoopBody: an Initialize (a local
+// declaration) or a Store (a reassignment of a local already in scope).
+// context names the enclosing construct in error messages; indent is the
+// statement's C indentation. scope is the set of in-scope locals: an
+// Initialize adds its symbol to it once validated, a Store reads it. The
+// caller is responsible for having already cloned scope if the statements must
+// not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
+// do). Any other statement kind is a clean rejection naming what was found.
+func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]bool, indent, context string) (string, error) {
+	statement, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
+	}
+	switch statement.Kind {
+	case tir.Initialize:
+		if len(statement.Children) != 1 {
+			return "", fmt.Errorf("%s local declaration initializes %d value(s), want exactly one i32 expression", context, len(statement.Children))
+		}
+		if scope[statement.Symbol] {
+			return "", fmt.Errorf("%s declares local %d more than once", context, statement.Symbol)
+		}
+		initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = true
+		// Every local is emitted as a plain (non-const) int32_t even
+		// though a `let` is conceptually immutable. The Initialize node
+		// does not carry whether the declaration was `let` or `var`, and
+		// the checker guarantees any Store this backend sees targets a
+		// writable `var` (see the Store case below), so the const
+		// qualifier would only be defense-in-depth — catching an emitter
+		// bug via a C compile error on assignment to const — at the cost
+		// of tracking which locals are ever reassigned. That trade-off is
+		// accepted: every local is a plain int32_t.
+		return fmt.Sprintf("%sint32_t pebble_local_%d = %s;", indent, statement.Symbol, initExpr), nil
+	case tir.Store:
+		// A Store reassigns a local declared earlier in this block or an
+		// enclosing one; it does not declare a new symbol, so it never
+		// touches scope. The checker refuses to emit a Store targeting a
+		// `let` (C0606: the assignment place is not writable), so any
+		// Store this backend sees, from real source, necessarily targets
+		// a `var`.
+		if len(statement.Children) != 2 {
+			return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new i32 value", context, len(statement.Children))
+		}
+		place, ok := unit.Node(statement.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s reassignment references invalid place node %d", context, statement.Children[0])
+		}
+		if place.Kind != tir.StoragePlace {
+			return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope", context, place.Kind)
+		}
+		if !scope[place.Symbol] {
+			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
+		}
+		storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
+	default:
+		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize) or a reassignment (Store)", context, statement.Kind)
+	}
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
