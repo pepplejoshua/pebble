@@ -259,6 +259,17 @@ incrementally as work proceeds.
   rejection (the `SourceAlias` unwrap makes it reachable). Verified a
   three-way precedence fixture compiles to the correctly-grouped C and
   exits as expected — confirmed independently outside the harness.
+- **10.16 — bool equality/inequality comparisons**
+  (`compiler/internal/backend`): closes 10.15's own confirmed
+  remaining gap, `(1 < 2) == (3 < 4)` — comparing two `bool` values
+  with `==`/`!=`. `buildComparison` decides the operand grammar from
+  the operands' own resolved types rather than assuming integers, and
+  parenthesizes each bool operand so a nested bool comparison can't
+  chain associatively with the outer operator. Ordering comparisons
+  between bool operands are rejected but confirmed unreachable from
+  real source (checker rejects that shape as C0603 before typed IR
+  exists), so it's defense for hand-built IR, not a real gap. Verified
+  end-to-end and independently outside the harness.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
