@@ -469,13 +469,34 @@ func (w *walker) finishLiteral(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 }
 
 func (w *walker) shapeLeaf(expected expectedType, kind types.Kind, origin infer.Origin) typedValue {
-	term := w.session.Variable(origin)
+	var knownChild types.TypeID
+	hasKnownChild := false
 	if id, ok := w.knownDestination(expected); ok {
 		if key, found := w.generation.inputs.Types.Key(id); found && key.Kind() == kind {
 			if child, childOK := key.Child(); childOK {
-				term = w.session.Known(child)
+				knownChild, hasKnownChild = child, true
 			}
 		}
+	}
+	// Create exactly one term, and only the one actually needed: session.Known
+	// and session.Variable both have real session-mutating side effects
+	// (Variable registers a solver cell that must later be resolved through
+	// unification or it is reported as a spurious unresolved-variable error).
+	// Calling session.Variable unconditionally here and then discarding it in
+	// favor of session.Known whenever a known destination shape existed — as
+	// this function used to do — left an orphaned, never-bound cell behind
+	// that the solver's finalizeUnresolved pass reported as a spurious T0510
+	// ("inference variable has no unique semantic type") for both `nil`
+	// against a known pointer destination and `none` against a known
+	// optional destination (both callers of this helper). See the identical
+	// fix and postmortem for prepareArray in aggregate_facts.go (commit
+	// 4a479e8) for the full story, including a first attempt at that fix
+	// that made the same mistake with the two term constructors swapped.
+	var term infer.Term
+	if hasKnownChild {
+		term = w.session.Known(knownChild)
+	} else {
+		term = w.session.Variable(origin)
 	}
 	value, _ := w.newSlotValue(term, origin)
 	return value

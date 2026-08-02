@@ -2225,6 +2225,43 @@ func TestBuildValueSomeOptional(t *testing.T) {
 	}
 }
 
+// TestBuildValueNoneAndNilAgainstKnownDestination is a regression test for a
+// bug in shapeLeaf (expression_facts.go), the helper shared by the `nil` and
+// `none` literal cases: it used to unconditionally call session.Variable —
+// which registers a real solver cell that must later be resolved — and then,
+// only when a known destination shape existed, discard that cell in favor of
+// session.Known instead. The abandoned Variable cell was never bound to
+// anything, so it was reported as a spurious T0510 "inference variable has no
+// unique semantic type" for `none` against a known optional destination and
+// `nil` against a known pointer destination alike — this is the exact same
+// bug class as prepareArray's (see aggregate_facts.go, commit 4a479e8), just
+// surfacing through a different, shared call site. Every one of these must
+// build successfully.
+func TestBuildValueNoneAndNilAgainstKnownDestination(t *testing.T) {
+	cases := []struct {
+		source string
+		kind   literalKind
+	}{
+		{"fn main() i32 { let x ?i32 = none; return 1; }", literalNone},
+		{"fn main() ?i32 { return none; }", literalNone},
+		{"fn main() i32 { let p *i32 = nil; return 1; }", literalNil},
+	}
+	for _, c := range cases {
+		t.Run(c.source, func(t *testing.T) {
+			state, records := testBuildValue(t, c.source)
+			id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool {
+				return e.Kind == expressionLiteral && e.Literal.Kind == c.kind
+			})
+			if _, ok := state.buildValue(id); !ok {
+				t.Fatal("buildValue failed")
+			}
+			if _, err := buildTestIRUnit(state); err != nil {
+				t.Fatalf("Build failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildValueCheckedSlice(t *testing.T) {
 	tests := []struct {
 		name     string
