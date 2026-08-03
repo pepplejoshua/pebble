@@ -799,6 +799,50 @@ incrementally as work proceeds.
   outside the harness — manually compiled and ran the emitted C for
   `fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; }
   return sum; }` with `-Wall -Wextra -Werror`, confirming exit code 3.
+- **10.30 — classic C-style for loops** (`compiler/internal/backend`,
+  plus a `compiler/internal/tir` fix): Phase 2's second slice.
+  `for init; cond; update { body }` lowers directly to a C `for` loop
+  with the same three individually-optional clauses, each reusing the
+  exact machinery its block-level counterpart already has — the
+  initializer shares `buildScalarInitializeCore`, the update shares
+  `buildStoreCore`, and the condition uses the same `buildCondition`
+  an `if`/`while` already uses (`buildLeadingStatement`'s
+  Initialize/Store cases were refactored to call these same shared
+  cores, confirmed byte-identical output for every pre-existing test).
+  `For.Children` is variable-length — the checker appends only
+  whichever clauses are present, in the fixed relative order
+  initializer/condition/update, then the body always last —
+  disambiguated purely by node category (the condition, when present,
+  is the unique `CategoryValue` child among the non-body children),
+  confirmed against real fixtures for every clause-presence
+  combination. **Real, confirmed limitation, documented not silently
+  mis-handled**: a no-condition `Store` used as the initializer
+  (`for step = 0;; { }`, out of scope) is structurally
+  indistinguishable from the in-scope update-only shape
+  (`for ; ; step = step + 1 { }`) — the `For` node carries only
+  `Region` and `Children`, nothing naming which clause a lone `Store`
+  actually is; a lone no-condition `Store` is always treated as the
+  update. **Real bug found and fixed separately before this slice
+  could finish**: the typed-IR verifier wrongly required `For`'s first
+  child to always be `CategoryNonvalue`, rejecting any well-formed
+  for-loop with a condition but no initializer (`for ; cond; { }` /
+  `for ; cond; update { }`, both reachable from real source) before
+  the backend was ever reached — the dispatch that found this
+  correctly stopped and reported it rather than routing around it, per
+  instructions; fixed in `check/tir: attach the range-loop iterator's
+  symbol...`-adjacent commit "`tir: fix verifier rejecting well-formed
+  classic for-loops missing an initializer`", with two end-to-end
+  tests added for the previously-blocked shapes once the fix landed.
+  Verified end-to-end (accumulation, every clause-presence
+  combination including the two the tir fix unblocked, break/continue,
+  nesting inside `while`/range/another `for`, an i64 entry, a bool
+  initializer+condition, a `&&` condition, a for loop inside a helper,
+  a helper call in the condition, and four rejection tests for
+  out-of-scope initializer/update shapes) and independently outside
+  the harness — manually compiled and ran the emitted C for
+  `fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3;
+  step = step + 1 { total = total + step; } return total; }` with
+  `-Wall -Wextra -Werror`, confirming exit code 3.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
