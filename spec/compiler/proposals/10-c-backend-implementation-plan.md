@@ -757,6 +757,48 @@ incrementally as work proceeds.
 
   **Phase 1 (aggregate loose ends) is now complete** — 10.25 through
   10.28.
+- **10.29 — range loops** (`compiler/internal/backend`, plus a
+  prerequisite `compiler/internal/check`/`compiler/internal/tir` fix):
+  Phase 2's first slice (control flow completion). A range loop
+  (`loop start..end : name { body }`, `..=` for inclusive) lowers
+  directly to a C `for` loop whose loop counter *is* the bound
+  iterator, its body built by the same `buildLoopBody` a `while`
+  loop's body already uses, after seeding a cloned locals scope with
+  the iterator as an ordinary local of the entry's width — the same
+  seeding pattern a helper's parameters already use.
+  `break`/`continue` already worked unmodified (their `Target` already
+  named the range loop's own `Region`, confirmed against a real
+  fixture). **This slice depended on a prerequisite fix landed
+  separately first**: `check/tir: attach the range-loop iterator's
+  symbol to its RangeLoop node` — the iterator's `symbol.SymbolID` was
+  resolved during checking but never attached to the `RangeLoop` TIR
+  node itself (the general binding-node pass deliberately skips it,
+  mirroring how it skips parameters — each is meant to be attached by
+  its own owning node's builder instead — but `buildRangeLoop` never
+  did), so the iterator's declaration was structurally unrecoverable
+  from typed IR before the fix. **Real finding, confirmed against real
+  fixtures**: when the iterator is never used in a width-anchoring
+  position (only in a comparison, an array index, or another loop's
+  bound), the checker leaves it as the unanchored `int` builtin rather
+  than the entry's width — handled by reusing the exact precedent this
+  backend already has for unanchored integer literals at every
+  int-literal-tolerant position (comparisons, array indexing), now
+  also recognizing an int-typed `SymbolValue`. **Real deviation from
+  the original scoping**: nested range loops needed a `tir.RangeLoop`
+  case added to `buildLoopBody`'s own statement switch (previously
+  only `tir.While` was handled there), not "zero changes" as assumed
+  going in. The unbound form (`loop start..end { ... }`, no `: name`)
+  is confirmed reachable and rejected cleanly (no way to observe such
+  a loop's iteration from inside it). Reassigning the iterator is
+  checker-blocked (`C0606`) and therefore unreachable. Verified
+  end-to-end (accumulation, exclusive vs. inclusive, break/continue,
+  nested range loops, a range loop inside a `while`, non-literal
+  bounds, an iterator used only in a comparison, an unused iterator, a
+  nested loop using the outer iterator as its own bound, an array
+  index, an i64 entry, and a helper-call bound) and independently
+  outside the harness — manually compiled and ran the emitted C for
+  `fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; }
+  return sum; }` with `-Wall -Wextra -Werror`, confirming exit code 3.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
