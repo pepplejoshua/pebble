@@ -8,8 +8,10 @@
 // `var <name> <width> = <expression>;` local declarations, plus
 // `x = <expression>;` reassignments of an already-declared local, and a
 // `while <condition> { <loop body> }` loop statement, followed by a tail that
-// is either one `return <expression>;` or a two-armed
-// `if <condition> { <block> } else { <block> }`; a condition is an integer
+// is either one `return <expression>;`, a two-armed
+// `if <condition> { <block> } else { <block> }`, or a
+// `switch <subject> { case v1: <body> ... else: <body> }` switch statement;
+// a condition is an integer
 // comparison, a ==/!= equality between two bool values, a bare bool value, or
 // a && / || combination of those, built by buildCondition, and the two arms
 // are themselves blocks under the same rule, so an
@@ -280,7 +282,9 @@ import (
 // ==/!= equality between two bool values, a bare bool value, or a && / ||
 // combination of those (see buildCondition);
 // each arm is itself a block under the same grammar, so an arm may contain its
-// own locals and nested if/else. Every expression — a local's initializer, a
+// own locals and nested if/else. The tail may also be a switch statement (see
+// buildSwitch) whose subject is an integer or bool value and whose cases are
+// integer or bool literals, each body ending in a return. Every expression — a local's initializer, a
 // reassignment's new value, a return value, or an if/else arm's return value —
 // may be a plain non-negative integer literal, a tree of checked negation and
 // checked +, -, *, /, % arithmetic (see buildExpr), a reference to a local
@@ -1287,9 +1291,11 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // statements (one per For, built by buildFor), and zero or more range loop
 // statements (one per RangeLoop, built by buildRangeLoop) — a
 // loop is only ever a leading statement here, never the block's tail —
-// followed by a tail that is either the single `return <expression>;` or a
-// two-armed if/else built by buildIf; each if arm is itself a block under the
-// same grammar, so buildBlock recurses into both arms. width is the entry's
+// followed by a tail that is either the single `return <expression>;`, a
+// two-armed if/else built by buildIf, or a switch statement built by
+// buildSwitch; each if arm and each case body is itself a block under the
+// same grammar, so buildBlock recurses into both arms and case bodies.
+// width is the entry's
 // resolved integer width (types.I32 or types.I64), threaded through to every
 // expression and declaration built here so the emitted C type names and
 // runtime helper names follow the width. locals is the set of
@@ -1406,10 +1412,231 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			return "", err
 		}
 		statements = append(statements, ifText)
+	case tir.Switch:
+		switchText, err := buildSwitch(unit, snapshot, last, scope, depth, width, result)
+		if err != nil {
+			return "", err
+		}
+		statements = append(statements, switchText)
 	default:
-		return "", fmt.Errorf("entry function body block statement is a %s, want a Return of an integer expression or a two-armed if/else", last.Kind)
+		return "", fmt.Errorf("entry function body block statement is a %s, want a Return of an integer expression, a two-armed if/else, or a switch", last.Kind)
 	}
 	return strings.Join(statements, "\n"), nil
+}
+
+// buildSwitch validates and builds the C text for a switch statement used as a
+// block's tail: a tir.Switch whose Children[0] is the subject expression
+// (built by buildExpr for an integer subject or buildBoolExpr for a bool
+// subject) and Children[1:] are SwitchCase nodes. Each case value becomes its
+// own C case label; multiple SwitchCase nodes sharing the same body node ID (a
+// multi-value `case v1, v2:` clause) become stacked C case labels sharing one
+// body. An else arm (HasElse) maps to C's `default:`. The emitted text is:
+//
+//	<indent>switch (<subject>) {
+//	<indent>    case <v1>:
+//	<indent>    case <v2>: {
+//	<indent>        <body>
+//	<indent>    }
+//	<indent>    default: {
+//	<indent>        <body>
+//	<indent>    }
+//	<indent>}
+//
+// A SwitchCase's body child may be a Block (a multi-statement case body
+// requiring braces in the source) or a bare statement (a single-statement case
+// body with no braces). A Block body is built via buildBlock at the next
+// nesting depth; a bare statement is built directly. Every case body must end
+// in a return or a two-armed if/else whose arms each end in return — the same
+// tail-statement grammar buildBlock enforces for every other block in this
+// backend. A CaseValue-based case (an enum variant) is rejected cleanly since
+// this backend has no enum support yet. Any other shape is a clean rejection
+// naming what was found.
+func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
+	if len(switchNode.Children) < 2 {
+		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
+	}
+	// Build the subject expression. The subject's resolved type decides the
+	// grammar: an integer subject (the entry's width) is built by buildExpr,
+	// a bool subject by buildBoolExpr. The subject type is on the subject
+	// node itself (Children[0]).
+	subjectNode, ok := unit.Node(switchNode.Children[0])
+	if !ok {
+		return "", fmt.Errorf("switch statement references invalid subject node %d", switchNode.Children[0])
+	}
+	var subjectExpr string
+	var err error
+	if isWidth(snapshot, width, subjectNode.Type) {
+		subjectExpr, err = buildExpr(unit, snapshot, switchNode.Children[0], locals, width)
+	} else if isBool(snapshot, subjectNode.Type) {
+		subjectExpr, err = buildBoolExpr(unit, snapshot, switchNode.Children[0], locals, width)
+	} else if subjectNode.Kind == tir.IntegerLiteral && subjectNode.Type == snapshot.Builtins().Int {
+		// An int-typed integer literal as the subject: the checker leaves
+		// it as the unanchored int builtin when no width-anchoring position
+		// is available. Lowered directly as its decimal text, the same
+		// precedent buildComparisonOperand and buildRangeBound use.
+		text := subjectNode.Literal.IntegerNum
+		if !isNonNegativeDecimal(text) {
+			return "", fmt.Errorf("switch subject contains an integer literal with malformed text %q", text)
+		}
+		subjectExpr = text
+	} else if subjectNode.Kind == tir.SymbolValue && subjectNode.Type == snapshot.Builtins().Int {
+		// An int-typed SymbolValue: only reachable from hand-built IR in
+		// this backend's grammar (no real source produces an int-typed
+		// local), but accepted for completeness.
+		if _, declared := locals[subjectNode.Symbol]; !declared {
+			return "", fmt.Errorf("switch subject references symbol %d, which is not a local in scope", subjectNode.Symbol)
+		}
+		subjectExpr = fmt.Sprintf("pebble_local_%d", subjectNode.Symbol)
+	} else {
+		return "", fmt.Errorf("switch subject has type %s, want %s or bool", describeType(snapshot, subjectNode.Type), wantName(width))
+	}
+	if err != nil {
+		return "", err
+	}
+	// Group case nodes by shared body node ID to detect multi-value case
+	// labels (a `case 1, 2:` clause produces two SwitchCase nodes sharing
+	// one body node ID). Preserve encounter order within each group and
+	// across groups.
+	type caseGroup struct {
+		bodyID  tir.NodeID
+		caseIDs []tir.NodeID
+		elseID  tir.NodeID // non-zero if this group is the else/default arm
+	}
+	// Use a slice to preserve encounter order; a map for O(1) body-to-group
+	// lookup.
+	groupByBody := make(map[tir.NodeID]int)
+	var groups []caseGroup
+	for _, caseID := range switchNode.Children[1:] {
+		caseNode, ok := unit.Node(caseID)
+		if !ok {
+			return "", fmt.Errorf("switch statement references invalid case node %d", caseID)
+		}
+		if caseNode.Kind != tir.SwitchCase {
+			return "", fmt.Errorf("switch statement child is a %s, want a SwitchCase", caseNode.Kind)
+		}
+		if caseNode.CaseValue != 0 {
+			return "", fmt.Errorf("switch case references enum variant symbol %d; enum cases are not supported yet", caseNode.CaseValue)
+		}
+		if caseNode.HasElse {
+			// The else/default arm has no Literal and no CaseValue.
+			groups = append(groups, caseGroup{bodyID: caseNode.Children[0], elseID: caseID})
+			continue
+		}
+		// Literal case: determine the body node ID. A SwitchCase with
+		// 1 child has the body directly as Children[0]; the brief
+		// confirms both shapes exist.
+		var bodyID tir.NodeID
+		if len(caseNode.Children) == 1 {
+			bodyID = caseNode.Children[0]
+		} else if len(caseNode.Children) == 2 {
+			// The brief confirms: multi-statement case body with braces
+			// arrives as a Block node directly as the child. But the
+			// actual node shape from ir_builder_control.go is: bodyNode
+			// is always Children[0] (the body block). With 2 children,
+			// the second is unused defense. Use Children[0].
+			bodyID = caseNode.Children[0]
+		} else {
+			return "", fmt.Errorf("switch case has %d child(ren), want 1 or 2 (the body block)", len(caseNode.Children))
+		}
+		if idx, exists := groupByBody[bodyID]; exists {
+			groups[idx].caseIDs = append(groups[idx].caseIDs, caseID)
+		} else {
+			idx := len(groups)
+			groupByBody[bodyID] = idx
+			groups = append(groups, caseGroup{bodyID: bodyID, caseIDs: []tir.NodeID{caseID}})
+		}
+	}
+	indent := strings.Repeat("    ", depth+1)
+	caseIndent := strings.Repeat("    ", depth+2)
+	var parts []string
+	for _, g := range groups {
+		if g.elseID != 0 {
+			// The else/default arm.
+			bodyText, err := buildSwitchCaseBody(unit, snapshot, g.bodyID, locals, depth+2, width, result)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, fmt.Sprintf("%sdefault: {\n%s\n%s}", caseIndent, bodyText, caseIndent))
+			continue
+		}
+		// Emit stacked case labels for each SwitchCase in the group.
+		for _, caseID := range g.caseIDs {
+			caseNode, _ := unit.Node(caseID)
+			label, err := buildCaseLabel(snapshot, caseNode, width)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, fmt.Sprintf("%s%s", caseIndent, label))
+		}
+		// The body is shared across all cases in the group.
+		bodyText, err := buildSwitchCaseBody(unit, snapshot, g.bodyID, locals, depth+2, width, result)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("%s{\n%s\n%s}", caseIndent, bodyText, caseIndent))
+	}
+	return fmt.Sprintf("%sswitch (%s) {\n%s\n%s}", indent, subjectExpr, strings.Join(parts, "\n"), indent), nil
+}
+
+// buildCaseLabel emits one C `case <value>:` label from a SwitchCase node's
+// Literal field. An integer literal is emitted as its decimal text; a bool
+// literal is emitted as `0` (false) or `1` (true), since C treats bool as an
+// integer type and switch cases require integral constant expressions. Any
+// other literal kind is a clean rejection.
+func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.BuiltinKind) (string, error) {
+	switch caseNode.Literal.Kind {
+	case tir.LiteralInteger:
+		text := caseNode.Literal.IntegerNum
+		if !isNonNegativeDecimal(text) {
+			return "", fmt.Errorf("switch case contains an integer literal with malformed text %q", text)
+		}
+		return "case " + text + ":", nil
+	case tir.LiteralBool:
+		if caseNode.Literal.Bool {
+			return "case 1:", nil
+		}
+		return "case 0:", nil
+	default:
+		return "", fmt.Errorf("switch case has literal kind %s, want an integer or bool constant", caseNode.Literal.Kind)
+	}
+}
+
+// buildSwitchCaseBody builds the C text for a switch case's body. The body may
+// be a Block node (a multi-statement case body) or a bare statement node (a
+// single-statement case body). A Block body is built via buildBlock at the next
+// nesting depth — the same recursive block grammar every other block in this
+// backend uses — so an arm may contain its own locals, reassignments, nested
+// if/else, and loops. A bare statement body is built directly: the only
+// supported bare statement is a Return (the case body must end in a return),
+// built at the next nesting depth with the same expression grammar buildBlock's
+// tail return uses.
+func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
+	bodyNode, ok := unit.Node(bodyID)
+	if !ok {
+		return "", fmt.Errorf("switch case body references invalid node %d", bodyID)
+	}
+	if bodyNode.Kind == tir.Block {
+		return buildBlock(unit, snapshot, bodyID, locals, depth, width, result)
+	}
+	// Bare single-statement case body: must be a Return.
+	if bodyNode.Kind == tir.Return {
+		if len(bodyNode.Children) != 1 {
+			return "", fmt.Errorf("switch case bare return statement has %d argument(s), want exactly one expression", len(bodyNode.Children))
+		}
+		indent := strings.Repeat("    ", depth+1)
+		var returnValue string
+		var err error
+		if result.tuple != 0 || result.structType != 0 {
+			returnValue, err = buildAggregateReturnValue(unit, snapshot, bodyNode.Children[0], locals, result, width)
+		} else {
+			returnValue, err = buildExpr(unit, snapshot, bodyNode.Children[0], locals, width)
+		}
+		if err != nil {
+			return "", err
+		}
+		return indent + "return " + returnValue + ";", nil
+	}
+	return "", fmt.Errorf("switch case body is a %s, want a Block or a Return", bodyNode.Kind)
 }
 
 // buildIf validates and builds the C text for a two-armed if/else block: a

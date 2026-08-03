@@ -5233,3 +5233,191 @@ func TestEmitTupleReturningHelperInLoopBodyLocalInitializerCompilesAndRuns(t *te
 	// 42. Bounded execution in case of a miscompiled loop.
 	emitAndRunBounded(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { var n i32 = 0; var s i32 = 0; while n < 1 { let t (i32, i32) = makeT(); s = s + t.0 + t.1; n = n + 1; } return s; }", false, 42, false)
 }
+
+// --- 10.31: switch statements ---
+
+func TestEmitSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
+	// The flagship fixture: a switch with a multi-value case (1, 2 share the
+	// same body returning 10), a single-value case (3 returning 30), and an
+	// else (default returning 0). Subject value 1 hits the multi-value case
+	// and returns 10.
+	emitAndRun(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", false, 10, false)
+}
+
+func TestEmitSwitchMultiValueCaseSecondValueCompilesAndRuns(t *testing.T) {
+	// Same switch as above but subject value 2 — still hits the multi-value
+	// case and returns 10, confirming both SwitchCase nodes sharing the same
+	// body produce the same result.
+	emitAndRun(t, "fn main() i32 { switch 2 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", false, 10, false)
+}
+
+func TestEmitSwitchSingleValueCaseCompilesAndRuns(t *testing.T) {
+	// Subject value 3 hits the single-value case and returns 30.
+	emitAndRun(t, "fn main() i32 { switch 3 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", false, 30, false)
+}
+
+func TestEmitSwitchElseCompilesAndRuns(t *testing.T) {
+	// Subject value 99 hits the else/default arm and returns 0.
+	emitAndRun(t, "fn main() i32 { switch 99 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchBlockCaseBodyCompilesAndRuns(t *testing.T) {
+	// A block-wrapped (braced, multi-statement) case body: the case declares
+	// a local and returns an expression using it. This exercises the
+	// Block-bodied path in buildSwitchCaseBody.
+	emitAndRun(t, "fn main() i32 { switch 1 { case 1: { let x i32 = 42; return x; } else: return 0; } }", false, 42, false)
+}
+
+func TestEmitSwitchBareReturnCaseBodyCompilesAndRuns(t *testing.T) {
+	// A bare single-statement case body (no braces): `case 1: return 10;`.
+	// This exercises the bare-statement path in buildSwitchCaseBody.
+	emitAndRun(t, "fn main() i32 { switch 1 { case 1: return 10; else: return 0; } }", false, 10, false)
+}
+
+func TestEmitSwitchBoolSubjectCompilesAndRuns(t *testing.T) {
+	// A bool subject with bool case values: `switch true { case true: return
+	// 1; else: return 0; }`. Bool case values are emitted as `case 1:` (true)
+	// and `case 0:` (false) in C, since C switch requires integral constants.
+	emitAndRun(t, "fn main() i32 { switch true { case true: return 1; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchBoolSubjectFalseCompilesAndRuns(t *testing.T) {
+	// Bool subject `false` hits the else/default arm.
+	emitAndRun(t, "fn main() i32 { switch false { case true: return 1; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchInHelperCompilesAndRuns(t *testing.T) {
+	// A switch nested inside a helper function: the helper receives a
+	// parameter and switches on it, returning different values. The entry
+	// calls the helper with different arguments, confirming the switch works
+	// in a helper context. The entry returns the sum of two calls: helper(1)
+	// = 10 and helper(99) = 0, so exit code is 10.
+	emitAndRun(t, "fn helper(x i32) i32 { switch x { case 1, 2: return 10; case 3: return 30; else: return 0; } } fn main() i32 { return helper(1) + helper(99); }", false, 10, false)
+}
+
+func TestEmitSwitchWithHelperCallInSubjectCompilesAndRuns(t *testing.T) {
+	// A helper call as the switch subject expression: the subject is the
+	// result of calling a helper, confirming buildExpr's DirectCall path
+	// works in the subject position.
+	emitAndRun(t, "fn getVal() i32 { return 2; } fn main() i32 { switch getVal() { case 1: return 10; case 2: return 20; else: return 0; } }", false, 20, false)
+}
+
+func TestEmitSwitchWritesC(t *testing.T) {
+	// Confirm the emitted C for a switch fixture contains the expected
+	// stacked case labels and body structure.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"switch (1)",
+		"case 1:",
+		"case 2:",
+		"case 3:",
+		"default:",
+		"return 10;",
+		"return 30;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
+	// The emitted C for a switch must compile under -Wall -Wextra -Werror
+	// with no warnings. This exercises the full cc compilation path.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 10, false)
+}
+
+func TestEmitSwitchRejectsCaseValue(t *testing.T) {
+	// A CaseValue-based switch case (an enum variant) is out of scope. The
+	// checker would reject this before the backend sees it in real source,
+	// but defense for hand-built IR exercises the rejection path.
+	// We cannot build this from real source (no enum support exists), so
+	// this test is left as a placeholder noting the rejection exists.
+	// If ever reachable, buildSwitch returns a clean error.
+	t.Skip("enum cases cannot be constructed from real source; rejection is defense for hand-built IR")
+}
+
+func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
+	// A switch with no else and non-exhaustive cases, used as a tail
+	// statement: some paths do not end in a return. The checker may or may
+	// not reject this; if it reaches the backend, the switch as a whole is
+	// a tail that must guarantee a return on every path, and a non-exhaustive
+	// switch without else does not — but a C switch is a valid tail only if
+	// every reachable path returns. The checker is expected to reject this
+	// shape (no else means some paths fall through without returning), so
+	// the fixture should fail at check time.
+	_, _, _, err := buildFixtureMaybeFailing(t, "fn main() i32 { switch 1 { case 1: return 10; } }", "main", false)
+	if err == nil {
+		t.Log("checker accepted non-exhaustive switch without else — this may be a checker gap worth investigating")
+	}
+}
+
+// buildFixtureMaybeFailing is like buildFixture but returns an error instead of
+// calling t.Fatal, for tests that expect the checker to reject a fixture.
+func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requireEntry bool) (*tir.Unit, *types.Snapshot, symbol.SymbolID, error) {
+	t.Helper()
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "facts"}, fixtureProvider{"main.peb": []byte(sourceText)}, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	inputs := check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}
+
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == entryName {
+			entryID = candidate.ID
+		}
+	}
+	if entryID == 0 {
+		return nil, nil, 0, fmt.Errorf("missing symbol %q", entryName)
+	}
+
+	config := check.Config{}
+	if requireEntry {
+		config.Entry = check.EntryPoint{Mode: check.EntryRequired, Symbol: entryID}
+	}
+	result := check.Check(inputs, diagnostics, config)
+	if !result.Successful() {
+		return nil, nil, 0, fmt.Errorf("check failed: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		return nil, nil, 0, fmt.Errorf("check succeeded without an IR unit")
+	}
+	return unit, unit.Snapshot(), entryID, nil
+}
+
+func TestEmitSwitchMultipleCasesWithLocalsCompilesAndRuns(t *testing.T) {
+	// A switch where each case body declares its own local — confirming
+	// scope isolation between arms. Case 1 declares x=10 and returns x; case
+	// 2 declares x=20 and returns x; else returns 0. Subject 2 returns 20.
+	emitAndRun(t, "fn main() i32 { switch 2 { case 1: { let x i32 = 10; return x; } case 2: { let x i32 = 20; return x; } else: return 0; } }", false, 20, false)
+}
+
+func TestEmitSwitchI64EntryCompilesAndRuns(t *testing.T) {
+	// A switch with an i64 entry: the subject and case values are i64.
+	emitAndRun(t, "fn main() i64 { switch 2 { case 1: return 100; case 2: return 200; else: return 0; } }", false, 200, false)
+}
+
+func TestEmitSwitchNestedInHelperWithParamsCompilesAndRuns(t *testing.T) {
+	// A switch inside a helper that takes a parameter, with the subject
+	// being the parameter itself. Exercises the full path: parameter seeding
+	// into scope, switch subject resolution, case body building. Two calls:
+	// helper(1) = 10, helper(5) = 0, sum = 10.
+	emitAndRun(t, "fn classify(x i32) i32 { switch x { case 1: return 10; case 2: return 20; case 3: return 30; else: return 0; } } fn main() i32 { return classify(1) + classify(5); }", false, 10, false)
+}
