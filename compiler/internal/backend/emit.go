@@ -456,6 +456,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	sliceInfos, err := collectSliceTypes(unit, snapshot, blockID, helpers)
+	if err != nil {
+		return err
+	}
 	ordered, err := orderAggregateTypes(unit, snapshot, tupleTypes, optionalTypes, structInfos)
 	if err != nil {
 		return err
@@ -474,6 +478,11 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return err
 	}
 	typedefs = appendTypedefBlock(typedefs, enumTypedefs)
+	sliceTypedefs, err := buildSliceTypedefs(unit, snapshot, sliceInfos, result)
+	if err != nil {
+		return err
+	}
+	typedefs = appendTypedefBlock(typedefs, sliceTypedefs)
 	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result, unions)
 	if err != nil {
 		return err
@@ -901,6 +910,106 @@ func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 		}
 	}
 	return nil
+}
+
+// sliceInfo is one distinct slice type the emitted program references,
+// carrying the slice's own types.TypeID (the basis of the C typedef name
+// pebble_slice_<typeID>_t) and its resolved element types.TypeID.
+type sliceInfo struct {
+	typ         types.TypeID
+	elementType types.TypeID
+}
+
+// collectSliceTypes resolves, in first-encountered order, every slice type
+// the emitted program actually references: the entry body (root) followed by
+// every reachable helper's body, each walked by the same Children +
+// DeferChain traversal collectDirectCalls uses. A slice type is referenced
+// by exactly two node shapes — a CheckedSlice node (a slice expression
+// whose Type is the slice type) and an Initialize whose initializer value
+// carries a slice type (a slice-typed local declaration) — so collecting
+// exactly those shapes guarantees every typedef the program needs is
+// discovered. The returned sliceInfos are deduplicated by slice TypeID, so
+// every distinct slice type yields exactly one typedef, emitted before any
+// function definition in the final output.
+func collectSliceTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]sliceInfo, error) {
+	var collected []types.TypeID
+	if err := collectSliceTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectSliceTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var infos []sliceInfo
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		info, err := resolveSliceInfo(snapshot, id)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// collectSliceTypesWalk appends every slice type encountered in the tree
+// rooted at nodeID to out, in first-encountered order, following Children
+// and DeferChain exactly like collectDirectCalls so it visits the same
+// reachable region of the node graph the body builders consume. Two node
+// shapes carry a slice type: a CheckedSlice node's own Type (a slice
+// expression), and an Initialize whose initializer value carries a slice
+// type (a slice-typed local declaration — the local's type is recorded on
+// the initializer value node, not on the Initialize node itself, the same
+// pattern every other aggregate collection made).
+func collectSliceTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("slice-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.CheckedSlice && isSlice(snapshot, node.Type) {
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.Initialize {
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isSlice(snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectSliceTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectSliceTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveSliceInfo turns one collected slice TypeID into a sliceInfo with its
+// element type resolved. The element type comes from the slice type's own
+// Child() key, which for a Slice kind returns the element type.
+func resolveSliceInfo(snapshot *types.Snapshot, id types.TypeID) (sliceInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return sliceInfo{}, fmt.Errorf("slice type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Slice {
+		return sliceInfo{}, fmt.Errorf("type %s is a %v, want a slice type", describeType(snapshot, id), key.Kind())
+	}
+	child, ok := key.Child()
+	if !ok {
+		return sliceInfo{}, fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
+	}
+	return sliceInfo{typ: id, elementType: child}, nil
 }
 
 // structFieldInfo is one field of a distinct struct type the emitted program
@@ -3335,6 +3444,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// clean rejection.
 			return buildStrLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
+		if isSlice(snapshot, initValue.Type) {
+			// A slice-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself, same as every other
+			// compound local). The supported initializer is a CheckedSlice
+			// (a slice expression like a[1:3]); every other slice initializer
+			// shape is a clean rejection.
+			return buildSliceLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
+		}
 		core, err := buildScalarInitializeCore(unit, snapshot, statement, initValue, scope, context, width)
 		if err != nil {
 			return "", err
@@ -3456,6 +3573,7 @@ type localInfo struct {
 	optional   types.TypeID
 	structType types.TypeID
 	enumType   types.TypeID
+	sliceType  types.TypeID
 }
 
 // resultInfo records what the enclosing function's tail return must produce:
@@ -3843,6 +3961,150 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 	return strings.Join(statements, "\n"), nil
 }
 
+// buildSliceLocalDeclaration builds a slice-typed local's declaration from a
+// CheckedSlice initializer. The emitted C constructs a small struct with a
+// data pointer (offset from the base array by the checked start) and a len
+// field (end - start). The start bound is validated by
+// pebble_rt_checked_slice_start_i32/i64, which panics if the range is
+// invalid. Bounds omitted in source are resolved to their defaults: 0 for
+// an absent start, the base array's compile-time element count for an absent
+// end. The local's scope entry records its slice type (localInfo.sliceType)
+// so a later index read resolves through the slice-indexing machinery.
+//
+// The construction is emitted as two C statements rather than one compound-
+// literal initializer because the data pointer depends on the result of the
+// pebble_rt_checked_slice_start call, which cannot appear as a sub-expression
+// of its own compound literal (the pointer would reference a temporary).
+// Instead: first store the validated start offset in a temp, then construct
+// the slice struct using the temp for both the pointer offset and the length
+// computation.
+func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind != tir.CheckedSlice {
+		return "", fmt.Errorf("%s declares a slice-typed local initialized from a %s, want a CheckedSlice", context, initValue.Kind)
+	}
+	if len(initValue.Children) < 1 {
+		return "", fmt.Errorf("%s CheckedSlice has %d child(ren), want at least one (the base array)", context, len(initValue.Children))
+	}
+	baseNode, ok := unit.Node(initValue.Children[0])
+	if !ok {
+		return "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
+	}
+	if baseNode.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
+	}
+	baseInfo, declared := scope[baseNode.Symbol]
+	if !declared {
+		return "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
+	}
+	if baseInfo.array == 0 {
+		return "", fmt.Errorf("%s slice base is not an array-typed local", context)
+	}
+	sliceType := initValue.Type
+	sliceKey, ok := snapshot.Key(sliceType)
+	if !ok {
+		return "", fmt.Errorf("%s slice type %d is not in the type snapshot", context, sliceType)
+	}
+	sliceElementType, ok := sliceKey.Child()
+	if !ok {
+		return "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
+	}
+	if !isWidth(snapshot, width, sliceElementType) && !isBool(snapshot, sliceElementType) {
+		return "", fmt.Errorf("%s slice element type is %s, want %s or bool", context, describeType(snapshot, sliceElementType), wantName(width))
+	}
+	arrayKey, ok := snapshot.Key(baseInfo.array)
+	if !ok {
+		return "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
+	}
+	length, arrayElementType, ok := arrayKey.Array()
+	if !ok {
+		return "", fmt.Errorf("%s base is not an array type", context)
+	}
+	if sliceElementType != arrayElementType {
+		return "", fmt.Errorf("%s slice element type %s does not match base array element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	// Extract start and end bounds from children. Children layout is
+	// [base, start?, end?] with presence determined by
+	// SliceStartPresent/SliceEndPresent.
+	childIdx := 1
+	var startExpr, endExpr string
+	if initValue.SliceStartPresent {
+		if childIdx >= len(initValue.Children) {
+			return "", fmt.Errorf("%s CheckedSlice claims start present but has no start child", context)
+		}
+		startExpr = buildSliceBoundExpr(unit, snapshot, initValue.Children[childIdx], scope, width, context)
+		if startExpr == "" {
+			return "", fmt.Errorf("%s failed to build slice start bound", context)
+		}
+		childIdx++
+	} else {
+		startExpr = "0"
+	}
+	if initValue.SliceEndPresent {
+		if childIdx >= len(initValue.Children) {
+			return "", fmt.Errorf("%s CheckedSlice claims end present but has no end child", context)
+		}
+		endExpr = buildSliceBoundExpr(unit, snapshot, initValue.Children[childIdx], scope, width, context)
+		if endExpr == "" {
+			return "", fmt.Errorf("%s failed to build slice end bound", context)
+		}
+		childIdx++
+	} else {
+		endExpr = fmt.Sprintf("%d", length)
+	}
+	if _, err := sliceElementCType(unit, snapshot, width, sliceElementType); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	lengthLiteral, _ := arrayLengthLiteral(length, width)
+	startArg := startExpr
+	if !initValue.SliceStartPresent {
+		startArg = "0"
+	}
+	endArg := endExpr
+	if !initValue.SliceEndPresent {
+		endArg = lengthLiteral
+	}
+	sliceCType := sliceTypeName(sliceType)
+	scope[statement.Symbol] = localInfo{sliceType: sliceType}
+	// Emit as two statements: first the checked-start call stored in a temp,
+	// then the struct construction using the temp. The temp name derives from
+	// the local's own symbol, guaranteed collision-free. The temp is declared
+	// at the entry's own resolved width (cType(width)), matching whichever of
+	// pebble_rt_checked_slice_start_i32/_i64 checkedSuffix(width) selects —
+	// declaring it as a fixed int32_t regardless of width would silently
+	// narrow an i64 entry's checked-start result.
+	statements := []string{
+		fmt.Sprintf("%s%s pebble_slice_start_%d = pebble_rt_checked_slice_start_%s(%s, %s, %s);", indent, cType(width), statement.Symbol, checkedSuffix(width), startArg, endArg, lengthLiteral),
+		fmt.Sprintf("%s%s pebble_local_%d = (%s){ .data = pebble_local_%d + pebble_slice_start_%d, .len = (size_t)(%s - pebble_slice_start_%d) };", indent, sliceCType, statement.Symbol, sliceCType, baseNode.Symbol, statement.Symbol, endExpr, statement.Symbol),
+		fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
+	}
+	return strings.Join(statements, "\n"), nil
+}
+
+// buildSliceBoundExpr builds the C expression for one slice bound (start or
+// end). The bound may be an integer literal or a reference to a local.
+func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) string {
+	boundNode, ok := unit.Node(nodeID)
+	if !ok {
+		return ""
+	}
+	if boundNode.Kind == tir.IntegerLiteral && boundNode.Type == snapshot.Builtins().Int {
+		return boundNode.Literal.IntegerNum
+	}
+	if boundNode.Kind == tir.SymbolValue {
+		if _, declared := scope[boundNode.Symbol]; declared {
+			return fmt.Sprintf("pebble_local_%d", boundNode.Symbol)
+		}
+	}
+	expr, err := buildExpr(unit, snapshot, nodeID, scope, width)
+	if err != nil {
+		return ""
+	}
+	return expr
+}
+
 func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
@@ -3860,6 +4122,20 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		return structTypeName(id), nil
 	}
 	return cType(width), nil
+}
+
+// sliceElementCType resolves the C pointer target type for a slice's data
+// field: the element's C type. Only the entry's width and bool are supported
+// slice element types, matching arrayElementCType's own gates. Any other
+// element type is a clean rejection naming what was found.
+func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if isBool(snapshot, id) {
+		return "bool", nil
+	}
+	if isWidth(snapshot, width, id) {
+		return cType(width), nil
+	}
+	return "", fmt.Errorf("slice element type %s is not supported; only %s or bool slice elements are supported", describeType(snapshot, id), wantName(width))
 }
 
 // buildOptionalLocalDeclaration builds one optional-typed local's declaration:
@@ -5051,9 +5327,11 @@ func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Nod
 	return fmt.Sprintf("%s._%d", expr, place.Ordinal), nil
 }
 
-// buildArrayPlaceRead lowers Load(CheckedIndexPlace) for an array local. The
-// index is built as an integer expression and checked with the runtime helper
-// selected by the entry width before it is used as the C subscript.
+// buildArrayPlaceRead lowers Load(CheckedIndexPlace) for an array or slice
+// local. The index is built as an integer expression and checked with the
+// runtime helper selected by the entry width before it is used as the C
+// subscript. For a slice base, the subscript uses .data and .len instead of
+// the base array directly.
 func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	if len(place.Children) != 2 {
 		return "", fmt.Errorf("CheckedIndexPlace wants two children")
@@ -5062,6 +5340,51 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Nod
 	if err != nil {
 		return "", err
 	}
+	// Check if the base is a slice-typed local.
+	baseNode, ok := unit.Node(place.Children[0])
+	if ok && baseNode.Kind == tir.StoragePlace {
+		if info, declared := locals[baseNode.Symbol]; declared && info.sliceType != 0 {
+			// Slice-typed base: use .data[checked_index(idx, (width_type).len)].
+			sliceKey, ok := snapshot.Key(info.sliceType)
+			if !ok {
+				return "", fmt.Errorf("slice type %d is not in the type snapshot", info.sliceType)
+			}
+			element, ok := sliceKey.Child()
+			if !ok {
+				return "", fmt.Errorf("slice type %s has no element type", describeType(snapshot, info.sliceType))
+			}
+			if wantBool {
+				if !isBool(snapshot, element) {
+					return "", fmt.Errorf("slice element type is %s, want bool", describeType(snapshot, element))
+				}
+			} else if !isWidth(snapshot, width, element) {
+				return "", fmt.Errorf("slice element type is %s, want %s", describeType(snapshot, element), wantName(width))
+			}
+			indexNode, ok := unit.Node(place.Children[1])
+			if !ok {
+				return "", fmt.Errorf("slice index references invalid node %d", place.Children[1])
+			}
+			var index string
+			if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
+				if !isNonNegativeDecimal(indexNode.Literal.IntegerNum) {
+					return "", fmt.Errorf("slice index contains an integer literal with malformed text %q", indexNode.Literal.IntegerNum)
+				}
+				index = indexNode.Literal.IntegerNum
+			} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
+				if _, declared := locals[indexNode.Symbol]; !declared {
+					return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
+				}
+				index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
+			} else {
+				index, err = buildExpr(unit, snapshot, place.Children[1], locals, width)
+				if err != nil {
+					return "", fmt.Errorf("slice index: %v", err)
+				}
+			}
+			return fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len)]", baseExpr, checkedSuffix(width), index, cType(width), baseExpr), nil
+		}
+	}
+	// Array-typed base: original path.
 	key, ok := snapshot.Key(arrayType)
 	if !ok {
 		return "", fmt.Errorf("array type %d is not in the type snapshot", arrayType)
@@ -5197,6 +5520,8 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, l
 			typ = info.optional
 		case info.structType != 0:
 			typ = info.structType
+		case info.sliceType != 0:
+			typ = info.sliceType
 		default:
 			return "", 0, fmt.Errorf("symbol %d is not an aggregate local", n.Symbol)
 		}
@@ -5239,14 +5564,6 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, l
 		if err != nil {
 			return "", 0, err
 		}
-		key, ok := snapshot.Key(typ)
-		if !ok {
-			return "", 0, fmt.Errorf("array type missing")
-		}
-		length, elem, ok := key.Array()
-		if !ok {
-			return "", 0, fmt.Errorf("index base is not an array")
-		}
 		indexNode, ok := unit.Node(n.Children[1])
 		if !ok {
 			return "", 0, fmt.Errorf("invalid array index")
@@ -5255,12 +5572,6 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, l
 		if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
 			idx = indexNode.Literal.IntegerNum
 		} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-			// An int-typed SymbolValue index can only be a range loop's
-			// iterator referenced from inside its own body when the iterator
-			// is never used in a width-anchoring position (see
-			// buildComparisonOperand), and the iterator is always declared in
-			// C at the entry's width, so its name is the correct C lvalue for
-			// the subscript.
 			if _, declared := locals[indexNode.Symbol]; !declared {
 				return "", 0, fmt.Errorf("symbol %d is not a local in scope", indexNode.Symbol)
 			}
@@ -5270,6 +5581,26 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, l
 			if err != nil {
 				return "", 0, err
 			}
+		}
+		if isSlice(snapshot, typ) {
+			// A slice-typed base: use .data[checked_index(idx, (width_type).len)].
+			sliceKey, ok := snapshot.Key(typ)
+			if !ok {
+				return "", 0, fmt.Errorf("slice type %d is not in the type snapshot", typ)
+			}
+			elem, ok := sliceKey.Child()
+			if !ok {
+				return "", 0, fmt.Errorf("slice type has no element type")
+			}
+			return fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len)]", base, checkedSuffix(width), idx, cType(width), base), elem, nil
+		}
+		key, ok := snapshot.Key(typ)
+		if !ok {
+			return "", 0, fmt.Errorf("array type missing")
+		}
+		length, elem, ok := key.Array()
+		if !ok {
+			return "", 0, fmt.Errorf("index base is not an array")
 		}
 		lit, _ := arrayLengthLiteral(length, width)
 		return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s)]", base, checkedSuffix(width), idx, lit), elem, nil
@@ -5874,6 +6205,15 @@ func isArray(snapshot *types.Snapshot, id types.TypeID) bool {
 	return ok && key.Kind() == types.Array
 }
 
+// isSlice reports whether id resolves to a slice type in the snapshot.
+func isSlice(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.Slice
+}
+
 // isOptional reports whether id resolves to an optional type in the snapshot.
 func isOptional(snapshot *types.Snapshot, id types.TypeID) bool {
 	if snapshot == nil {
@@ -5934,6 +6274,13 @@ func optionalTypeName(id types.TypeID) string {
 // stable types.TypeID, mirroring the tuple naming discipline.
 func structTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_struct_%d_t", id)
+}
+
+// sliceTypeName is the deterministic C name of one distinct slice type's
+// struct typedef: pebble_slice_<typeID>_t, derived from the slice type's own
+// stable types.TypeID, mirroring the tuple/struct/optional naming discipline.
+func sliceTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_slice_%d_t", id)
 }
 
 // enumTypeName is the deterministic C name of one distinct plain enum type's
@@ -6394,6 +6741,40 @@ func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo) (string, error) {
 		constants[i] = "    " + enumVariantName(variant) + ","
 	}
 	return fmt.Sprintf("typedef enum {\n%s\n} %s;", strings.Join(constants, "\n"), enumTypeName(info.typ)), nil
+}
+
+// buildSliceTypedefs builds the C text for every distinct slice type, one
+// typedef per slice type, joining them with newlines. Each slice type is a
+// small C struct with a data pointer and a length field.
+func buildSliceTypedefs(unit *tir.Unit, snapshot *types.Snapshot, infos []sliceInfo, width types.BuiltinKind) (string, error) {
+	texts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		text, err := buildSliceTypedef(unit, snapshot, info, width)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildSliceTypedef builds the C text of one slice type's struct typedef:
+//
+//	typedef struct {
+//	    int32_t *data;
+//	    size_t len;
+//	} pebble_slice_<typeID>_t;
+//
+// Field names data/len match PebbleStrSlice's own naming in pebble_rt.h.
+func buildSliceTypedef(unit *tir.Unit, snapshot *types.Snapshot, info sliceInfo, width types.BuiltinKind) (string, error) {
+	if info.elementType == 0 {
+		return "", fmt.Errorf("slice type %s has no element type", sliceTypeName(info.typ))
+	}
+	elemCType, err := sliceElementCType(unit, snapshot, width, info.elementType)
+	if err != nil {
+		return "", fmt.Errorf("slice type %s: %v", sliceTypeName(info.typ), err)
+	}
+	return fmt.Sprintf("typedef struct {\n    %s *data;\n    size_t len;\n} %s;", elemCType, sliceTypeName(info.typ)), nil
 }
 
 // joinTypedefs joins two typedef text blocks into a single block, with a blank

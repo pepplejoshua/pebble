@@ -1217,6 +1217,82 @@ incrementally as work proceeds.
   `Pointer`/`Optional`, and currently entirely unlowered by this
   backend). This also directly unblocks Phase 6's `main([]str)` entry
   adapter, which needs slice-of-str argument passing regardless.
+- **10.37 — slice-typed locals sliced from a fixed array, and
+  indexing** (`compiler/internal/backend`, plus a prerequisite
+  `runtime/` and `compiler/internal/tir`/`compiler/internal/check`
+  fix): Phase 4's first slice-type slice. A slice (`[]T`) is only ever
+  created by slicing an existing fixed-size array (there is no
+  slice-literal construction) and is a fixed, non-owning view exactly
+  like `str` — the checker's own stance on the slice ownership/
+  lifetime open question (§2.4) is to let it through untouched ("06b
+  neither rejects an otherwise well-typed slice for escape nor invents
+  a lifetime proof"), so this needed no new design decision, only the
+  same "fixed view, no ownership machinery" pattern `str` already
+  uses. Lowers to a small C struct
+  (`pebble_slice_<typeID>_t { <elementCType> *data; size_t len; }`,
+  field names matching `PebbleStrSlice`'s own naming in
+  `pebble_rt.h`), constructed from `a[start:end]` as
+  `{ .data = pebble_local_<array> + <checked start>, .len =
+  (size_t)(end - <checked start>) }`, with the checked start computed
+  by a new runtime primitive (see below) and stored in a temp (the
+  pointer offset can't itself be a sub-expression of the compound
+  literal it initializes). Indexing a slice
+  (`s[i]`) reuses the *exact same* `Load(CheckedIndexPlace)` machinery
+  a fixed array's indexing already uses — confirmed via a real fixture
+  dump before scoping the slice — extended to read `.data`/`.len`
+  instead of subscripting the base directly. Element types are
+  restricted to exactly the entry's resolved width or bool, mirroring
+  every other aggregate slice's initial scope; a tuple/struct/array/
+  optional/str/enum element is a clean rejection.
+
+  **Prerequisite runtime primitive** (commit `50c0236`, landed before
+  this slice was dispatched): `pebble_rt_checked_slice_start_i32`/
+  `_i64` in `runtime/include/pebble_rt.h` / `runtime/src/bounds.c`,
+  mirroring `pebble_rt_checked_index_i32`'s own convention exactly —
+  validates `0 <= start <= end <= length` and returns `start`
+  unchanged on success (panicking otherwise, in every configuration),
+  so the check embeds inline the same way checked indexing already
+  does. Verified independently via the existing
+  `runtime/test/smoke_test.c` harness in both SAFE and RELEASE modes
+  before any backend work began.
+
+  **A real, load-bearing typed-IR bug was found and fixed before this
+  slice could be implemented at all** (commit `a3e6721`): a first
+  dispatch attempt correctly stopped rather than guess, having found
+  that a 2-child `CheckedSlice` node was genuinely ambiguous — `a[1:]`
+  (start-only) and `a[:3]` (end-only) produced byte-identical node
+  shapes (`Children=[base, bound]`), with no field on `tir.Node` or
+  any `Unit` API able to recover which bound the lone trailing child
+  was. Confirmed independently via real fixture dumps before
+  accepting the report. Fixed directly: `tir.Node` gained
+  `SliceStartPresent`/`SliceEndPresent bool` fields, set from the
+  exact same `StartPresent`/`EndPresent` signal the checker's own
+  `indexRecord` already computes at the point `CheckedSlice` is built
+  (`ir_builder_value.go`'s `expressionSlice` and `expressionBracket`
+  cases) — no new computation, just retaining information already in
+  hand — with `tir/verify.go` now enforcing the child count matches
+  what the two flags imply. The backend slice was then re-dispatched
+  against the fix.
+
+  The second implementation attempt also needed a fix during review:
+  the checked-start result was stored in a temp hardcoded to
+  `int32_t` regardless of the entry's own width, so an i64 entry's
+  `pebble_rt_checked_slice_start_i64` call (returning `int64_t`) was
+  silently narrowed — masked in the dispatched tests because their
+  bound values were small enough to survive truncation unchanged.
+  Fixed directly (one line, `cType(width)` instead of the hardcoded
+  `int32_t`) rather than a full re-dispatch, given the rest of the
+  diff was solid; confirmed with an i64 fixture compiled and run
+  outside the harness afterward. Verified end-to-end (both bounds
+  explicit; each of the three bound-omission shapes, each confirming
+  the resolved default actually behaves correctly at runtime, not
+  just that it compiles; a bool-element slice; an i64-entry slice; an
+  out-of-range slice-construction bound aborting at runtime; an
+  out-of-range index into a valid slice aborting at runtime; a
+  rejection test for a tuple-element slice) and independently outside
+  the harness — manually compiled and ran the emitted C for the
+  i64-entry fixture with `-Wall -Wextra -Werror`, confirming exit code
+  200 and the corrected `int64_t` temp declaration.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

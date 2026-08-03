@@ -6259,3 +6259,98 @@ func TestEmitEnumLocalInLoopBodyCompilesAndRuns(t *testing.T) {
 	// execution because the loop's own condition is the only bound.
 	emitAndRunBounded(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 0;\nvar i i32 = 0;\nwhile i < 3 {\nvar c Color = Color.green;\nif i == 2 { c = Color.red; }\nif c == Color.red { n = n + 10; } else { n = n + 1; }\ni = i + 1;\n}\nreturn n;\n}", false, 12, false)
 }
+
+func TestEmitSliceBothBoundsCompilesAndRuns(t *testing.T) {
+	// Slice from array with both bounds explicit: a[1:3] from [1,2,3,4,5]
+	// gives elements [2,3]; s[0] should be 2.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[0]; }", false, 2, false)
+}
+
+func TestEmitSliceStartOnlyCompilesAndRuns(t *testing.T) {
+	// Slice with only start bound: a[2:] from [10,20,30,40,50] gives
+	// elements [30,40,50]; s[0] should be 30.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [10, 20, 30, 40, 50]; var s []i32 = a[2:]; return s[0]; }", false, 30, false)
+}
+
+func TestEmitSliceEndOnlyCompilesAndRuns(t *testing.T) {
+	// Slice with only end bound: a[:3] from [10,20,30,40,50] gives
+	// elements [10,20,30]; s[0] should be 10.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [10, 20, 30, 40, 50]; var s []i32 = a[:3]; return s[0]; }", false, 10, false)
+}
+
+func TestEmitSliceNoBoundsCompilesAndRuns(t *testing.T) {
+	// Slice with no bounds: a[:] from [10,20,30,40,50] gives all 5 elements;
+	// s[2] should be 30.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [10, 20, 30, 40, 50]; var s []i32 = a[:]; return s[2]; }", false, 30, false)
+}
+
+func TestEmitSliceBoolElementCompilesAndRuns(t *testing.T) {
+	// Bool-element slice: a[1:3] from [true, false, true, false] gives
+	// [false, true]; s[0] is false, so if s[0] { return 1 } else { return 0 }
+	// returns 0; s[1] is true, so if s[1] { return 1 } else { return 0 }
+	// returns 1. Use the slice in an expression that drives the return.
+	emitAndRun(t, "fn main() i32 { var a [4]bool = [true, false, true, false]; var s []bool = a[1:3]; if s[1] { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitSliceI64CompilesAndRuns(t *testing.T) {
+	// i64-entry slice: a[1:3] from [100,200,300,400,500] gives [200,300];
+	// s[0] should be 200.
+	emitAndRun(t, "fn main() i64 { var a [5]i64 = [100, 200, 300, 400, 500]; var s []i64 = a[1:3]; return s[0]; }", false, 200, false)
+}
+
+func TestEmitSliceOutOfBoundsRangeAborts(t *testing.T) {
+	// Out-of-range slice end bound: use a helper to supply a runtime end
+	// value that exceeds the array length, bypassing the checker's
+	// compile-time validation. pebble_rt_checked_slice_start_i32 must panic.
+	emitAndRun(t, "fn getEnd() i32 { return 10; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var e i32 = getEnd(); var s []i32 = a[0:e]; return s[0]; }", false, 0, true)
+}
+
+func TestEmitSliceIndexOutOfBoundsAborts(t *testing.T) {
+	// Out-of-range index into a valid slice: a[1:3] gives 2 elements [2,3];
+	// s[5] is out of bounds, triggering pebble_rt_checked_index_i32.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[5]; }", false, 0, true)
+}
+
+func TestEmitSliceEmittedCDirectly(t *testing.T) {
+	// Confirm the emitted C directly: slice typedef shape, construction
+	// compound-literal text (including inline checked-start call), and
+	// indexing expression (including inline checked-index call and .len cast).
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// Slice typedef must be present.
+	if !strings.Contains(out, "typedef struct {") {
+		t.Errorf("emitted C missing slice typedef:\n%s", out)
+	}
+	if !strings.Contains(out, "int32_t *data;") {
+		t.Errorf("emitted C missing data field in slice typedef:\n%s", out)
+	}
+	if !strings.Contains(out, "size_t len;") {
+		t.Errorf("emitted C missing len field in slice typedef:\n%s", out)
+	}
+	// Construction must contain pebble_rt_checked_slice_start_i32.
+	if !strings.Contains(out, "pebble_rt_checked_slice_start_i32") {
+		t.Errorf("emitted C missing checked-slice-start call:\n%s", out)
+	}
+	// Indexing must contain pebble_rt_checked_index_i32 and .data and .len.
+	if !strings.Contains(out, "pebble_rt_checked_index_i32") {
+		t.Errorf("emitted C missing checked-index call for slice indexing:\n%s", out)
+	}
+	if !strings.Contains(out, ".data[") {
+		t.Errorf("emitted C missing .data subscript for slice indexing:\n%s", out)
+	}
+	if !strings.Contains(out, ".len") {
+		t.Errorf("emitted C missing .len in slice indexing:\n%s", out)
+	}
+	// Run end-to-end to confirm correctness.
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitSliceUnsupportedElementTypeRejects(t *testing.T) {
+	// A slice of tuple elements is unsupported — the checker builds it but
+	// the backend must reject it cleanly.
+	emitAndRunRejects(t, "fn main() i32 { var a [3](i32, i32) = [(1, 2), (3, 4), (5, 6)]; var s [](i32, i32) = a[0:2]; return s[0].0; }", "slice element type")
+}
