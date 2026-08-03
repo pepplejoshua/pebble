@@ -1293,6 +1293,61 @@ incrementally as work proceeds.
   the harness — manually compiled and ran the emitted C for the
   i64-entry fixture with `-Wall -Wextra -Werror`, confirming exit code
   200 and the corrected `int64_t` temp declaration.
+- **10.38 — slice-typed function parameters and return values**
+  (`compiler/internal/backend`): closes the two remaining gaps 10.37
+  deliberately left open (locals only). A slice-typed parameter reuses
+  10.37's own typedef unchanged (`pebble_slice_<typeID>_t`) and seeds
+  the callee's scope exactly like a slice local, so an index inside
+  the body routes through the same `Load(CheckedIndexPlace)` machinery
+  with no new code. A slice-typed **return** needed real handling,
+  confirmed via a real fixture before any code was written: a
+  slice-returning helper's tail `return a[1:3];` is a bare
+  `CheckedSlice` construction, not a reference to a pre-declared
+  local — and that construction needs 10.37's own two-statement shape
+  (a temp holding the checked-start result, then the compound literal
+  using it), which doesn't fit into a single-expression `return`.
+  Solved by following the exact precedent `DeferChain` (10.32) already
+  established for the same shape of problem — `buildBlock`'s `Return`
+  case (and `buildSwitchCaseBody`'s bare-`Return` case) already thread
+  an extra statement in *before* the final `return` line for deferred
+  cleanup; a new `buildSliceReturnValue` returns the temp-declaration
+  text and the return expression separately, threaded into the exact
+  same pre-return-statement slot. The construction logic itself was
+  extracted into a shared `buildSliceConstruction`, parameterized on
+  the temp's name, so both the local-declaration and return call sites
+  are one source of truth rather than two copies that could drift —
+  the return-side temp is named from the return value node's own
+  `NodeID` (`pebble_slice_ret_<nodeID>`) rather than a local symbol
+  (a return has none), confirmed distinct from a local's
+  `pebble_slice_start_<symbol>` naming even in principle. A
+  slice-typed local declared from a call result
+  (`var s []i32 = helper();`) was also confirmed reachable and added,
+  mirroring 10.36's own `str`-returning-call local-declaration case.
+  Call-site argument passing accepts only a reference to an
+  already-declared slice-typed local — an inline construction used
+  directly as a call argument (`f(a[1:3])`) is confirmed
+  checker-reachable but a deliberate, explicit clean rejection: a C
+  function argument is a pure expression position with nowhere to
+  place the temp-declaration statement the construction needs, and
+  this backend does not reach for a GNU statement-expression or any
+  other workaround to make it fit. Re-slicing a slice remains rejected
+  by 10.37's existing "slice base is not an array-typed local" check,
+  confirmed unchanged. Verified end-to-end (a slice parameter indexed
+  inside its helper, both `i32` and bool-element and `i64` variants; a
+  slice-returning helper's inline construction, forwarded parameter,
+  and forwarded local, each independently proving the two return paths
+  both actually execute correctly, not just compile; the i64 side of
+  the return-side construction specifically, since a width bug was
+  found in exactly this construction shape during 10.37's own review;
+  two slice constructions in an `if`/`else` tail's two arms; three
+  slice constructions across a `switch`'s case bodies, each getting
+  its own uniquely-named temp; a rejection test for an inline
+  construction used as a call argument) and independently outside the
+  harness — manually compiled and ran the emitted C for the
+  three-case `switch` fixture with `-Wall -Wextra -Werror`, confirming
+  exit code 2 and that all three case-local temps
+  (`pebble_slice_ret_19`/`_25`/`_31`) are distinct and correctly
+  scoped inside their own case braces.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

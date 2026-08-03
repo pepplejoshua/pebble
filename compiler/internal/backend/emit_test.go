@@ -6354,3 +6354,298 @@ func TestEmitSliceUnsupportedElementTypeRejects(t *testing.T) {
 	// the backend must reject it cleanly.
 	emitAndRunRejects(t, "fn main() i32 { var a [3](i32, i32) = [(1, 2), (3, 4), (5, 6)]; var s [](i32, i32) = a[0:2]; return s[0].0; }", "slice element type")
 }
+
+// 10.38 — slice-typed function parameters and return values
+
+func TestEmitSliceParameterCompilesAndRuns(t *testing.T) {
+	// The flagship slice-parameter fixture: first takes a []i32 parameter and
+	// indexes it inside the helper; the entry slices an array into a slice
+	// local and passes that local. s = a[1:3] = [2,3], so s[0] = 2 is the exit
+	// code. The parameter seeds the callee's scope as a slice local and the
+	// index resolves through the same Load(CheckedIndexPlace) machinery a
+	// slice local uses.
+	emitAndRun(t, "fn first(s []i32) i32 { return s[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return first(s); }", false, 2, false)
+}
+
+func TestEmitSliceParameterBoolElementCompilesAndRuns(t *testing.T) {
+	// A bool-element slice parameter: the element-typed index read routes
+	// through the slice's bool element and drives the return. s = a[1:3] =
+	// [false, true], so s[0] is false and the else arm exits 0.
+	emitAndRun(t, "fn first(s []bool) i32 { if s[0] { return 1; } else { return 0; } } fn main() i32 { var a [4]bool = [true, false, true, false]; var s []bool = a[1:3]; return first(s); }", false, 0, false)
+}
+
+func TestEmitSliceParameterI64CompilesAndRuns(t *testing.T) {
+	// The width-generic path holds for slice parameters too, mirroring 10.37's
+	// own i64 test: an i64 entry calls an i64 slice-taking helper whose slice
+	// parameter seeds the callee's scope; s = a[1:3] = [200,300], s[0] = 200 is
+	// the exit code. The parameter's C type is pebble_slice_<id>_t with an
+	// int64_t* data field.
+	emitAndRun(t, "fn first(s []i64) i64 { return s[0]; } fn main() i64 { var a [5]i64 = [100, 200, 300, 400, 500]; var s []i64 = a[1:3]; return first(s); }", false, 200, false)
+}
+
+func TestEmitSliceReturningHelperInlineConstructionCompilesAndRuns(t *testing.T) {
+	// The flagship slice-return fixture: view's tail return constructs the
+	// slice inline (`return a[1:3];` — the Return child is a bare CheckedSlice,
+	// confirmed against a real fixture), so the return needs the same
+	// two-statement temp-then-construction shape a slice local's declaration
+	// uses. The caller declares a slice local from the call (the supported
+	// position) and indexes the result: view() = [2,3], s[0] = 2 is the exit
+	// code. This confirms the two-statement return construction actually works
+	// at runtime, not just that it compiles.
+	emitAndRun(t, "fn view() []i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return a[1:3]; } fn main() i32 { var s []i32 = view(); return s[0]; }", false, 2, false)
+}
+
+func TestEmitSliceReturningHelperForwardsParameterCompilesAndRuns(t *testing.T) {
+	// A slice-returning helper forwarding its slice-typed parameter unchanged
+	// (`return s;` — a plain SymbolValue return, the single-statement path):
+	// echo passes its parameter back, the entry declares a slice local from the
+	// call and indexes it. echo(s) = [2,3], t[0] = 2 is the exit code.
+	emitAndRun(t, "fn echo(s []i32) []i32 { return s; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; var t []i32 = echo(s); return t[0]; }", false, 2, false)
+}
+
+func TestEmitSliceReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	// The local side of forwarding an already-declared slice value: g declares
+	// its own array and slice local and `return s;` forwards the local (a
+	// plain SymbolValue), emitting `return pebble_local_<s>;`. The entry
+	// assigns the call to a matching slice local and indexes it: g() = [2,3],
+	// t[0] = 2 is the exit code.
+	emitAndRun(t, "fn g() []i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s; } fn main() i32 { var t []i32 = g(); return t[0]; }", false, 2, false)
+}
+
+func TestEmitSliceReturningHelperI64CompilesAndRuns(t *testing.T) {
+	// The i64 side of the return-side construction: the return temp must be
+	// declared at int64_t (a width bug in exactly this spot was found and fixed
+	// during 10.37's review), and the caller indexes the returned slice.
+	// view() = [200,300], s[0] = 200 is the exit code.
+	emitAndRun(t, "fn view() []i64 { var a [5]i64 = [100, 200, 300, 400, 500]; return a[1:3]; } fn main() i64 { var s []i64 = view(); return s[0]; }", false, 200, false)
+}
+
+func TestEmitSliceReturningHelperIfElseTailsCompilesAndRuns(t *testing.T) {
+	// Two slice-construction returns in the two arms of an if/else tail: each
+	// arm's Return child is a bare CheckedSlice, each built with its own temp
+	// (named from the return value node's NodeID, so the two sibling-block
+	// temps never collide even though they are the same slice type). With the
+	// flag true the then-arm wins: a[0:2] = [1,2], s[0] = 1 is the exit code.
+	emitAndRun(t, "fn pick(b bool) []i32 { if b { var a [3]i32 = [1, 2, 3]; return a[0:2]; } else { var a [3]i32 = [4, 5, 6]; return a[1:2]; } } fn main() i32 { var s []i32 = pick(true); return s[0]; }", false, 1, false)
+}
+
+func TestEmitSliceReturningHelperSwitchCasesCompilesAndRuns(t *testing.T) {
+	// A slice-returning helper whose body tail is a switch whose case bodies
+	// are bare single-statement returns of fresh slice constructions: each case
+	// body routes through buildSwitchCaseBody's bare-Return slice path and
+	// emits its own temp-then-return pair, each temp named from its own return
+	// value node's NodeID. With the subject 1 the case-1 body wins: a[1:2] =
+	// [2], s[0] = 2 is the exit code.
+	emitAndRun(t, "fn pick(i i32) []i32 { var a [3]i32 = [1, 2, 3]; switch i { case 0: return a[0:1]; case 1: return a[1:2]; else: return a[2:3]; } } fn main() i32 { var s []i32 = pick(1); return s[0]; }", false, 2, false)
+}
+
+func TestEmitSliceReturningHelperWritesC(t *testing.T) {
+	// The emitted C for the inline-construction-return fixture: the helper's C
+	// signature declares its return type as the slice typedef, its body emits
+	// the two-statement shape (a temp declaration holding the checked-start
+	// result, then the return of the compound-literal construction using that
+	// temp for both .data and .len), and the call site declares the entry's
+	// slice local directly from the call. Symbols 24 (view), 26 (its a array
+	// local), 27 (the entry's s local), return value node 18, and slice type 23
+	// come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn view() []i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return a[1:3]; } fn main() i32 { var s []i32 = view(); return s[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_23_t;",
+		"static pebble_slice_23_t pebble_fn_24(PebbleContext *ctx) {",
+		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5);",
+		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
+		"pebble_slice_23_t pebble_local_27 = pebble_fn_24(ctx);",
+		"return pebble_local_27.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_27.len)];",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
+	// The i64 counterpart of the return construction, confirming specifically
+	// that the return-side temp is declared at int64_t (the exact spot where a
+	// width bug was found and fixed during 10.37's review) and then running the
+	// emitted C end-to-end.
+	unit, snapshot, entryID := buildFixture(t, "fn view() []i64 { var a [5]i64 = [100, 200, 300, 400, 500]; return a[1:3]; } fn main() i64 { var s []i64 = view(); return s[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int64_t *data;",
+		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5);",
+		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 200, false)
+}
+
+func TestEmitSliceParameterWritesC(t *testing.T) {
+	// The parameter C type for a slice-taking helper: the C signature declares
+	// the parameter as the slice type's own struct typedef (the same
+	// pebble_slice_<typeID>_t 10.37's local declaration builds, no new typedef
+	// shape) with the pebble_local_<symbol> naming every parameter uses, plus
+	// the (void) cast every parameter gets, and the call site passes the
+	// slice-typed local's own C name. Symbols 24 (first), 25 (its s parameter),
+	// 28 (the entry's s local), and slice type 23 come from the real fixture
+	// dump.
+	unit, snapshot, entryID := buildFixture(t, "fn first(s []i32) i32 { return s[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return first(s); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_slice_23_t pebble_local_25) {",
+		"    (void)pebble_local_25;",
+		"return pebble_local_25.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_25.len)];",
+		"return pebble_fn_24(ctx, pebble_local_28);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitRejectsSliceConstructionAsCallArgument(t *testing.T) {
+	// An inline slice construction used directly as a call argument (f(a[1:3]))
+	// is confirmed checker-reachable (the DirectCall's child is a bare
+	// CheckedSlice) but deliberately out of scope: a C function argument is a
+	// pure expression position with nowhere to place the temp-declaration
+	// statement the construction needs, so it is a clean rejection naming what
+	// was found — not a GNU statement-expression workaround.
+	unit, snapshot, entryID := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return f(a[1:3]); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline slice construction")
+}
+
+func TestEmitRejectsSliceParameterUnsupportedElementType(t *testing.T) {
+	// A slice-typed parameter whose element type is not the entry's width or
+	// bool is a clean rejection from validateHelperSignature. A []str parameter
+	// is checker-reachable but not constructible from real source (a str array
+	// is itself rejected by the array element gate before any slice of it could
+	// reach a call site), so this is hand-built through the IR builder to
+	// exercise the gate directly: helper symbol 24 takes one []str parameter
+	// (its type borrowed from a real checker-built fixture) and main calls it,
+	// so the reachability walk hits the gate before any body is built.
+	unit, snapshot, entryID := buildSliceOfStrParameterUnit(t)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported element type")
+}
+
+// buildSliceOfStrParameterUnit hand-builds a unit whose i32 entry calls a
+// helper (symbol 24) that declares one []str parameter. The []str type is
+// borrowed from a real checker-built fixture (fn f(x []str) i32, which the
+// checker accepts even though the backend rejects the slice-of-str element
+// type); the unit is otherwise the same shape buildCallArgumentCountMismatchUnit
+// builds, so Emit's reachability walk validates the helper's signature and
+// rejects the unsupported element type before building any body.
+func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	realUnit, snapshot, entryID := buildFixture(t, "fn f(x []str) i32 { return 0; } fn main() i32 { return 0; }", "main", false)
+	var strSlice types.TypeID
+	for _, n := range realUnit.Nodes() {
+		if n.Kind == tir.FunctionDeclaration && len(n.Parameters) == 1 {
+			strSlice = n.Parameters[0].Type
+			break
+		}
+	}
+	if strSlice == 0 {
+		t.Fatal("checker-built fixture has no []str parameter to borrow its type from")
+	}
+	i32 := snapshot.Builtins().I32
+	callUnit, _, _ := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
+	var fnType types.TypeID
+	for _, n := range callUnit.Nodes() {
+		if n.Kind == tir.DirectCall {
+			fnType = n.FunctionType
+			break
+		}
+	}
+	if fnType == 0 {
+		t.Fatal("no checker-built DirectCall to borrow FunctionType from")
+	}
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperFid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := addI32Literal(t, builder, i32, "0")
+	helperRet, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: helperFid,
+		Children: []tir.NodeID{zero},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{helperRet},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     24,
+		Function:   helperFid,
+		Parameters: []tir.Parameter{{Symbol: 25, Type: strSlice}},
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(helperFid, helperBlock); err != nil {
+		t.Fatal(err)
+	}
+
+	// The entry: a Return of a DirectCall to symbol 24. The argument count does
+	// not need to match (the signature gate fires before buildCallArguments),
+	// but passing zero children keeps the walk's own shape well-formed.
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := builder.AddNode(tir.Node{
+		Kind:          tir.DirectCall,
+		Type:          i32,
+		FunctionType:  fnType,
+		Symbol:        24,
+		Convention:    types.Pebble,
+		ContextAction: tir.ContextForward,
+		Span:          source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{call},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{ret})
+}

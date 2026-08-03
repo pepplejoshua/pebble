@@ -388,8 +388,9 @@ import (
 // seeded with that function's own parameters
 // (see discoverReachableHelpers and buildHelperFunctions). A called function
 // must be Pebble-convention, take parameters of only the entry's resolved
-// width, bool, str, or a tuple/struct type, and return exactly the
-// entry's resolved width, str, a tuple/struct type, or void; a width mismatch at a call site or a parameter
+// width, bool, str, a tuple/struct type, or, since 10.38, a slice type whose
+// element type is the entry's width or bool, and return exactly the
+// entry's resolved width, str, a tuple/struct type, a slice type, or void; a width mismatch at a call site or a parameter
 // of any other
 // type is a clean rejection. A void-result helper is supported since 10.33
 // in exactly one position — a bare
@@ -940,6 +941,32 @@ func collectSliceTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 		if err := collectSliceTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
 			return nil, err
 		}
+		// A reachable helper's own parameter list is a source of slice types
+		// the body walk cannot see: a slice-typed parameter is referenced by
+		// the helper's C signature even if no reachable body ever constructs a
+		// slice of that type (its slice values arrive as already-built
+		// forwards through the call boundary), so its typedef must be
+		// discovered here too — the same Parameters scan 10.24 added for
+		// tuples/structs.
+		for _, param := range helper.decl.Parameters {
+			if isSlice(snapshot, param.Type) {
+				collected = append(collected, param.Type)
+			}
+		}
+		// A reachable helper's own result type is the same kind of source for
+		// the typedef its C signature names as its return type (10.26): a
+		// slice-returning helper's C signature declares
+		// pebble_slice_<typeID>_t, so a slice type that appears nowhere in any
+		// reachable body still needs its typedef emitted. (For a reachable
+		// slice-returning helper the body walk usually finds the type anyway,
+		// since the helper must produce a slice to return — a CheckedSlice
+		// construction or a forward of a slice-typed local/parameter whose own
+		// construction lives elsewhere in the reachable program; this scan
+		// closes the same class of gap 10.24's Parameters scan closed, for the
+		// return side.)
+		if isSlice(snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
+		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
 	var infos []sliceInfo
@@ -1010,6 +1037,27 @@ func resolveSliceInfo(snapshot *types.Snapshot, id types.TypeID) (sliceInfo, err
 		return sliceInfo{}, fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
 	}
 	return sliceInfo{typ: id, elementType: child}, nil
+}
+
+// validateSliceElementType rejects a slice type whose element type is anything
+// other than the entry's resolved width or bool — the same element gate 10.37
+// enforces for a slice-typed local (see buildSliceLocalDeclaration and
+// sliceElementCType), applied here to a slice-typed function parameter or
+// result type so a helper signature naming a slice of tuples, str, or any
+// other unsupported element is a clean rejection before any body is built.
+func validateSliceElementType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return fmt.Errorf("slice type %d is not in the type snapshot", id)
+	}
+	element, ok := key.Child()
+	if !ok {
+		return fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
+	}
+	if !isWidth(snapshot, width, element) && !isBool(snapshot, element) {
+		return fmt.Errorf("slice element type is %s, want %s or bool", describeType(snapshot, element), wantName(width))
+	}
+	return nil
 }
 
 // structFieldInfo is one field of a distinct struct type the emitted program
@@ -1804,17 +1852,34 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// is: the entry's resolved width (built by buildExpr), bool (built by
 		// buildBoolExpr), a str value (built by buildStrOperand — since 10.36 a
 		// str parameter is seeded like a str local and read/compared/returned
-		// exactly as one), or a tuple/struct type (read back through the
-		// Load(TuplePlace)/Load(FieldPlace) machinery), nothing else. This is
+		// exactly as one), a tuple/struct type (read back through the
+		// Load(TuplePlace)/Load(FieldPlace) machinery), or, since 10.38, a
+		// slice type (read back through the same Load(CheckedIndexPlace)
+		// machinery a slice local uses), nothing else. This is
 		// exactly the width-consistency rule 10.13 established for locals,
 		// applied to parameters and extended to the aggregate and str local
-		// grammars 10.19/10.22/10.23 already build.
-		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, or str, or a tuple/struct type (a parameter may be the entry's integer width, bool, str, or a tuple/struct type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		// grammars 10.19/10.22/10.23/10.37 already build. A slice-typed
+		// parameter's element type must still be exactly the entry's resolved
+		// width or bool — the same gate 10.37 enforces for a slice local — so
+		// a parameter of a slice type whose element is unsupported (a slice of
+		// tuples, str, and so on) is a clean rejection, not a guessed
+		// lowering.
+		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, or str, a tuple/struct type, or a slice type (a parameter may be the entry's integer width, bool, str, a tuple/struct type, or a slice type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		}
+		if isSlice(snapshot, param.Type) {
+			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
+				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a slice type with an unsupported element type: %v", decl.Symbol, i, param.Symbol, err)
+			}
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want %s, str, a tuple/struct result type, or void (a called function may resolve to the entry's integer width, str, a tuple/struct type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	if !isWidth(snapshot, width, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want %s, str, a tuple/struct result type, a slice result type, or void (a called function may resolve to the entry's integer width, str, a tuple/struct type, a slice type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	}
+	if isSlice(snapshot, decl.ResultType) {
+		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
+			return fmt.Errorf("called function symbol %d has a slice result type with an unsupported element type: %v", decl.Symbol, err)
+		}
 	}
 	return nil
 }
@@ -1878,6 +1943,19 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 				// unchanged, declared with the struct's own struct typedef name.
 				params = append(params, structTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{structType: param.Type}
+			case isSlice(snapshot, param.Type):
+				// A slice-typed parameter (10.38) seeds the callee's locals
+				// scope as a slice local (localInfo.sliceType), exactly as a
+				// slice local's Initialize does, so an index of the parameter
+				// inside the body (`s[0]`) resolves through the existing
+				// Load(CheckedIndexPlace) machinery a slice local uses
+				// unchanged, declared with the slice type's own struct typedef
+				// name (pebble_slice_<typeID>_t — the same typedef 10.37
+				// builds for a slice local, no new typedef shape needed). The
+				// element type is validated to be the entry's width or bool by
+				// validateHelperSignature, so the typedef always builds.
+				params = append(params, sliceTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{sliceType: param.Type}
 			case isStr(snapshot, param.Type):
 				// A str-typed parameter seeds the callee's locals scope as a
 				// str local (localInfo.isStr), exactly as a str local's
@@ -1895,7 +1973,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 				// validateHelperSignature rules any unsupported parameter out
 				// before a reachable helper is ever built, so this branch is
 				// defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, or str, or a tuple/struct type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, or str, a tuple/struct type, or a slice type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
@@ -1939,6 +2017,19 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 			// than buildExpr, which would reject a str-typed value.
 			returnType = "PebbleStr"
 			result = resultInfo{isStr: true}
+		case isSlice(snapshot, helper.decl.ResultType):
+			// A slice-result helper (10.38) is declared with the slice type's
+			// own struct typedef name (pebble_slice_<typeID>_t) as its C return
+			// type — the same typedef 10.37 builds for a slice local, no new
+			// typedef shape needed — and resultInfo records the slice shape so
+			// buildBlock's tail-position Return builds its value via
+			// buildSliceReturnValue (a SymbolValue naming a slice-typed local,
+			// or a fresh CheckedSlice construction) rather than buildExpr,
+			// which would reject a slice-typed value. The element type is
+			// validated to be the entry's width or bool by
+			// validateHelperSignature, so the typedef always builds.
+			returnType = sliceTypeName(helper.decl.ResultType)
+			result = resultInfo{sliceType: helper.decl.ResultType}
 		}
 		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width, result, unions)
 		if err != nil {
@@ -2109,6 +2200,24 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			// RecordConstruct of the matching type (both built via 10.25's
 			// expression builders); anything else is a clean rejection.
 			returnValue, err = buildAggregateReturnValue(unit, snapshot, last.Children[0], scope, result, width)
+		} else if result.sliceType != 0 {
+			// The enclosing function returns a slice (a reachable helper whose
+			// ResultType is a slice type), so the return value is built under
+			// the slice grammar by buildSliceReturnValue rather than buildExpr,
+			// which rejects a slice-typed value. Supported return shapes are a
+			// SymbolValue naming a slice-typed local in scope (a single-
+			// statement forward) or a fresh CheckedSlice construction, which
+			// needs the same two-statement temp-then-construction shape a slice
+			// local's declaration uses. The temp-declaration statement is
+			// threaded into the statement sequence as an extra pre-return
+			// statement, the same mechanical shape the deferred statements
+			// below demonstrate — just for construction complexity rather than
+			// deferred cleanup.
+			var preReturn string
+			preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, last.Children[0], scope, result, indent, width)
+			if preReturn != "" {
+				statements = append(statements, preReturn)
+			}
 		} else {
 			returnValue, err = buildExpr(unit, snapshot, last.Children[0], scope, width)
 		}
@@ -2443,10 +2552,20 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 		indent := strings.Repeat("    ", depth+1)
 		var returnValue string
 		var err error
+		var preReturn string
 		if result.isStr {
 			returnValue, err = buildStrOperand(unit, snapshot, bodyNode.Children[0], locals, width)
 		} else if result.tuple != 0 || result.structType != 0 {
 			returnValue, err = buildAggregateReturnValue(unit, snapshot, bodyNode.Children[0], locals, result, width)
+		} else if result.sliceType != 0 {
+			// A slice-returning function's bare single-statement case body
+			// returning a fresh slice construction: the construction needs the
+			// two-statement temp-then-construction shape (see
+			// buildSliceReturnValue), so the temp declaration is returned
+			// separately and joined into the case body ahead of the final
+			// return line, the same mechanical shape the deferred statements
+			// below demonstrate.
+			preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, bodyNode.Children[0], locals, result, indent, width)
 		} else {
 			returnValue, err = buildExpr(unit, snapshot, bodyNode.Children[0], locals, width)
 		}
@@ -2457,10 +2576,15 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 		if err != nil {
 			return "", err
 		}
-		if deferText != "" {
-			return deferText + "\n" + indent + "return " + returnValue + ";", nil
+		parts := []string{}
+		if preReturn != "" {
+			parts = append(parts, preReturn)
 		}
-		return indent + "return " + returnValue + ";", nil
+		if deferText != "" {
+			parts = append(parts, deferText)
+		}
+		parts = append(parts, indent+"return "+returnValue+";")
+		return strings.Join(parts, "\n"), nil
 	}
 	return "", fmt.Errorf("switch case body is a %s, want a Block or a Return", bodyNode.Kind)
 }
@@ -3448,7 +3572,10 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// A slice-typed local: its type is the initializer value's Type
 			// (the Initialize node carries no Type itself, same as every other
 			// compound local). The supported initializer is a CheckedSlice
-			// (a slice expression like a[1:3]); every other slice initializer
+			// (a slice expression like a[1:3]), or since 10.38 a call to a
+			// slice-returning helper (a DirectCall whose result type is the
+			// slice type, the one supported call position for declaring a
+			// slice local); every other slice initializer
 			// shape is a clean rejection.
 			return buildSliceLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
@@ -3578,19 +3705,23 @@ type localInfo struct {
 
 // resultInfo records what the enclosing function's tail return must produce:
 // an ordinary scalar — the entry's resolved integer width, in kind — a str
-// value, in isStr — a tuple, in tuple (its types.TypeID), or a struct, in
-// structType. The fields are
+// value, in isStr — a tuple, in tuple (its types.TypeID), a struct, in
+// structType, or a slice, in sliceType. The fields are
 // mutually exclusive, mirroring localInfo: kind is zero for a compound or str
 // result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
-// str result, and tuple/structType are zero
+// str result, and tuple/structType/sliceType are zero
 // for a scalar result. It is threaded alongside width through buildBlock and
 // buildIf so a tuple/struct-returning helper's tail-position Return builds its
 // value via buildAggregateReturnValue (a SymbolValue naming a matching
-// aggregate-typed local, or a fresh TupleValue/RecordConstruct) and a
+// aggregate-typed local, or a fresh TupleValue/RecordConstruct), a
+// slice-returning helper's tail-position Return builds its value via
+// buildSliceReturnValue (a SymbolValue naming a matching slice-typed local, or
+// a fresh CheckedSlice construction emitted as the two-statement temp-then-
+// construction shape), and a
 // str-returning helper's tail-position Return builds its value via
 // buildStrOperand (a SymbolValue naming a str local, a string literal, or a
 // call to a str-returning helper) instead of
-// buildExpr, which would reject an aggregate- or str-typed value. The entry's own body
+// buildExpr, which would reject an aggregate-, slice-, or str-typed value. The entry's own body
 // always threads resultInfo{kind: width} (a scalar, unchanged behavior), since
 // the entry's C return type stays the integer entryReturnType regardless of
 // what a helper may return.
@@ -3599,6 +3730,7 @@ type resultInfo struct {
 	isStr      bool
 	tuple      types.TypeID
 	structType types.TypeID
+	sliceType  types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -3962,7 +4094,9 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 }
 
 // buildSliceLocalDeclaration builds a slice-typed local's declaration from a
-// CheckedSlice initializer. The emitted C constructs a small struct with a
+// CheckedSlice initializer (a slice expression like `var s []i32 = a[1:3];`)
+// or, since 10.38, a DirectCall to a slice-returning helper (`var s []i32 =
+// helperReturningSlice();`). The emitted C constructs a small struct with a
 // data pointer (offset from the base array by the checked start) and a len
 // field (end - start). The start bound is validated by
 // pebble_rt_checked_slice_start_i32/i64, which panics if the range is
@@ -3979,51 +4113,115 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 // the slice struct using the temp for both the pointer offset and the length
 // computation.
 func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind == tir.DirectCall {
+		// A call to a slice-returning helper used as the direct initializer of a
+		// matching slice-typed local — `let s []i32 = helperReturningSlice();` —
+		// the position (10.38) in which a slice-returning helper's result lands
+		// in a slice local, mirroring buildStrLocalDeclaration's own DirectCall
+		// case. The call's result type is the DirectCall node's own Type, which
+		// is the callee's resolved result type (confirmed against a real
+		// fixture), and it must be exactly the local's declared type — double-
+		// checked against the callee's declared ResultType (defense for
+		// hand-built IR), so the emitted C never initializes a slice local from
+		// a call returning another type. The call itself is built by
+		// buildDirectCall, the same call-building machinery buildExpr's
+		// DirectCall case uses. Like every local, the declaration is followed
+		// by a (void) cast against -Wunused-variable.
+		calleeDecl, err := findFunctionDeclaration(unit, initValue.Symbol, "called function")
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != initValue.Type {
+			return "", fmt.Errorf("%s declares a slice-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, sliceTypeName(initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callExpr, err := buildDirectCall(unit, snapshot, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+	}
+	tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol))
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+	return strings.Join([]string{
+		tempDecl,
+		fmt.Sprintf("%s%s pebble_local_%d = %s;", indent, sliceTypeName(initValue.Type), statement.Symbol, constructionExpr),
+		fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
+	}, "\n"), nil
+}
+
+// buildSliceConstruction validates one CheckedSlice node (a slice expression
+// `a[start:end]`) and builds the two pieces of C text its construction needs:
+// a temp-declaration statement holding the checked-start result, and the
+// compound-literal construction expression that uses that temp for both its
+// .data pointer offset and its .len subtraction. The two-statement shape is
+// required because the temp can't be a sub-expression of the very compound
+// literal it initializes (the pointer offset would reference a value not yet
+// computed in a well-defined order within one expression) — the same
+// construction shape 10.37 established for a slice-typed local's declaration,
+// kept here so both callers share one source of truth rather than two copies
+// that could drift. tempName is the deterministic C identifier of the temp
+// variable, derived by the caller from a stable identity (a slice local's own
+// declaration symbol for a local declaration; the return value node's NodeID
+// for a slice-returning helper's tail return). The declaration statement (with
+// indent) and the construction expression (unindented, a C99 compound literal)
+// are returned separately so each caller assembles them into its own statement
+// shape: buildSliceLocalDeclaration embeds the expression in a local
+// declaration statement, and buildSliceReturnValue hands the declaration back
+// to buildBlock/buildSwitchCaseBody to thread in as an extra pre-return
+// statement before the final return line. The construction reuses the exact
+// validation 10.37 established: the base must be an array-typed local in
+// scope, the slice's element type must equal the base array's element type,
+// and that element type must be the entry's resolved width or bool.
+func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, tempName string) (string, string, error) {
 	if initValue.Kind != tir.CheckedSlice {
-		return "", fmt.Errorf("%s declares a slice-typed local initialized from a %s, want a CheckedSlice", context, initValue.Kind)
+		return "", "", fmt.Errorf("%s slice construction is a %s, want a CheckedSlice", context, initValue.Kind)
 	}
 	if len(initValue.Children) < 1 {
-		return "", fmt.Errorf("%s CheckedSlice has %d child(ren), want at least one (the base array)", context, len(initValue.Children))
+		return "", "", fmt.Errorf("%s CheckedSlice has %d child(ren), want at least one (the base array)", context, len(initValue.Children))
 	}
 	baseNode, ok := unit.Node(initValue.Children[0])
 	if !ok {
-		return "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
+		return "", "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
 	}
 	if baseNode.Kind != tir.SymbolValue {
-		return "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
+		return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
 	}
 	baseInfo, declared := scope[baseNode.Symbol]
 	if !declared {
-		return "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
+		return "", "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
 	}
 	if baseInfo.array == 0 {
-		return "", fmt.Errorf("%s slice base is not an array-typed local", context)
+		return "", "", fmt.Errorf("%s slice base is not an array-typed local", context)
 	}
 	sliceType := initValue.Type
 	sliceKey, ok := snapshot.Key(sliceType)
 	if !ok {
-		return "", fmt.Errorf("%s slice type %d is not in the type snapshot", context, sliceType)
+		return "", "", fmt.Errorf("%s slice type %d is not in the type snapshot", context, sliceType)
 	}
 	sliceElementType, ok := sliceKey.Child()
 	if !ok {
-		return "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
+		return "", "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
 	}
 	if !isWidth(snapshot, width, sliceElementType) && !isBool(snapshot, sliceElementType) {
-		return "", fmt.Errorf("%s slice element type is %s, want %s or bool", context, describeType(snapshot, sliceElementType), wantName(width))
+		return "", "", fmt.Errorf("%s slice element type is %s, want %s or bool", context, describeType(snapshot, sliceElementType), wantName(width))
 	}
 	arrayKey, ok := snapshot.Key(baseInfo.array)
 	if !ok {
-		return "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
+		return "", "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
 	}
 	length, arrayElementType, ok := arrayKey.Array()
 	if !ok {
-		return "", fmt.Errorf("%s base is not an array type", context)
+		return "", "", fmt.Errorf("%s base is not an array type", context)
 	}
 	if sliceElementType != arrayElementType {
-		return "", fmt.Errorf("%s slice element type %s does not match base array element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
+		return "", "", fmt.Errorf("%s slice element type %s does not match base array element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
 	}
 	if _, err := arrayLengthLiteral(length, width); err != nil {
-		return "", fmt.Errorf("%s: %v", context, err)
+		return "", "", fmt.Errorf("%s: %v", context, err)
 	}
 	// Extract start and end bounds from children. Children layout is
 	// [base, start?, end?] with presence determined by
@@ -4032,11 +4230,11 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	var startExpr, endExpr string
 	if initValue.SliceStartPresent {
 		if childIdx >= len(initValue.Children) {
-			return "", fmt.Errorf("%s CheckedSlice claims start present but has no start child", context)
+			return "", "", fmt.Errorf("%s CheckedSlice claims start present but has no start child", context)
 		}
 		startExpr = buildSliceBoundExpr(unit, snapshot, initValue.Children[childIdx], scope, width, context)
 		if startExpr == "" {
-			return "", fmt.Errorf("%s failed to build slice start bound", context)
+			return "", "", fmt.Errorf("%s failed to build slice start bound", context)
 		}
 		childIdx++
 	} else {
@@ -4044,18 +4242,18 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	}
 	if initValue.SliceEndPresent {
 		if childIdx >= len(initValue.Children) {
-			return "", fmt.Errorf("%s CheckedSlice claims end present but has no end child", context)
+			return "", "", fmt.Errorf("%s CheckedSlice claims end present but has no end child", context)
 		}
 		endExpr = buildSliceBoundExpr(unit, snapshot, initValue.Children[childIdx], scope, width, context)
 		if endExpr == "" {
-			return "", fmt.Errorf("%s failed to build slice end bound", context)
+			return "", "", fmt.Errorf("%s failed to build slice end bound", context)
 		}
 		childIdx++
 	} else {
 		endExpr = fmt.Sprintf("%d", length)
 	}
 	if _, err := sliceElementCType(unit, snapshot, width, sliceElementType); err != nil {
-		return "", fmt.Errorf("%s: %v", context, err)
+		return "", "", fmt.Errorf("%s: %v", context, err)
 	}
 	lengthLiteral, _ := arrayLengthLiteral(length, width)
 	startArg := startExpr
@@ -4067,20 +4265,15 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 		endArg = lengthLiteral
 	}
 	sliceCType := sliceTypeName(sliceType)
-	scope[statement.Symbol] = localInfo{sliceType: sliceType}
 	// Emit as two statements: first the checked-start call stored in a temp,
-	// then the struct construction using the temp. The temp name derives from
-	// the local's own symbol, guaranteed collision-free. The temp is declared
-	// at the entry's own resolved width (cType(width)), matching whichever of
+	// then the struct construction using the temp. The temp is declared at the
+	// entry's own resolved width (cType(width)), matching whichever of
 	// pebble_rt_checked_slice_start_i32/_i64 checkedSuffix(width) selects —
 	// declaring it as a fixed int32_t regardless of width would silently
 	// narrow an i64 entry's checked-start result.
-	statements := []string{
-		fmt.Sprintf("%s%s pebble_slice_start_%d = pebble_rt_checked_slice_start_%s(%s, %s, %s);", indent, cType(width), statement.Symbol, checkedSuffix(width), startArg, endArg, lengthLiteral),
-		fmt.Sprintf("%s%s pebble_local_%d = (%s){ .data = pebble_local_%d + pebble_slice_start_%d, .len = (size_t)(%s - pebble_slice_start_%d) };", indent, sliceCType, statement.Symbol, sliceCType, baseNode.Symbol, statement.Symbol, endExpr, statement.Symbol),
-		fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
-	}
-	return strings.Join(statements, "\n"), nil
+	tempDecl := fmt.Sprintf("%s%s %s = pebble_rt_checked_slice_start_%s(%s, %s, %s);", indent, cType(width), tempName, checkedSuffix(width), startArg, endArg, lengthLiteral)
+	constructionExpr := fmt.Sprintf("(%s){ .data = pebble_local_%d + %s, .len = (size_t)(%s - %s) }", sliceCType, baseNode.Symbol, tempName, endExpr, tempName)
+	return tempDecl, constructionExpr, nil
 }
 
 // buildSliceBoundExpr builds the C expression for one slice bound (start or
@@ -5718,6 +5911,25 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 				return "", err
 			}
 			args[i] = arg
+		case isSlice(snapshot, param.Type):
+			// A slice parameter (10.38): the argument must be a reference to an
+			// already-declared slice-typed local in scope of the matching type,
+			// emitted as the local's own pebble_local_<symbol> C name — the
+			// slice type's own struct typedef makes passing the whole slice by
+			// value trivially valid C, no construction needed at the call site
+			// (confirmed checker-reachable: f(s) passes a plain SymbolValue).
+			// An inline slice construction used directly as a call argument
+			// (f(a[1:3])) is also confirmed checker-reachable but is
+			// deliberately out of scope this slice: a C function argument is a
+			// pure expression position with nowhere to place the
+			// temp-declaration statement the construction needs, so it is a
+			// clean rejection naming what was found, not a workaround (see
+			// buildSliceArgument).
+			arg, err := buildSliceArgument(unit, snapshot, argID, locals, param.Type, call.Symbol, i)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
 		default:
 			// validateHelperSignature rules any unsupported parameter out
 			// before a reachable helper is ever built, so this branch is
@@ -5794,6 +6006,48 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.
 	return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 }
 
+// buildSliceArgument builds one call-site argument for a slice-typed parameter
+// (10.38). Exactly one argument shape is supported:
+//
+//   - a plain SymbolValue naming an already-declared slice-typed local in scope
+//     whose declared type is exactly the parameter's slice type, emitted as the
+//     local's own pebble_local_<symbol> C name — the slice type's own struct
+//     typedef makes passing the whole slice by value trivially valid C, so no
+//     construction is needed at the call site (confirmed checker-reachable via
+//     a real fixture: f(s) passes a plain SymbolValue).
+//
+// An inline slice construction used directly as a call argument — f(a[1:3]),
+// a bare CheckedSlice, confirmed checker-reachable via a real fixture — is
+// deliberately out of scope this slice and rejected cleanly: a C function
+// argument is a pure expression position with nowhere to place the
+// temp-declaration statement the slice construction needs (the same reason the
+// return side must emit two statements), and this backend does not reach for a
+// GNU statement-expression or any other workaround to make it fit. Any other
+// argument shape — a local that is not slice-typed, a SourceAlias-wrapped
+// argument, or any other node kind — is likewise a clean rejection naming what
+// was found, matching buildAggregateArgument's own discipline.
+func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, calleeSymbol symbol.SymbolID, position int) (string, error) {
+	node, ok := unit.Node(argID)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references invalid node %d", calleeSymbol, position, argID)
+	}
+	context := fmt.Sprintf("entry function body expression contains a call to symbol %d whose argument %d", calleeSymbol, position)
+	if node.Kind == tir.CheckedSlice {
+		return "", fmt.Errorf("%s is an inline slice construction (a CheckedSlice), which is not supported as a call argument: a C function argument is a pure expression position with nowhere to place the temp-declaration statement the slice construction needs; pass an already-declared slice-typed local instead", context)
+	}
+	if node.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s is a %s, want a reference to a slice-typed local in scope; only passing an already-declared slice-typed local is supported", context, node.Kind)
+	}
+	info, declared := locals[node.Symbol]
+	if !declared {
+		return "", fmt.Errorf("%s references symbol %d, which is not a local in scope", context, node.Symbol)
+	}
+	if info.sliceType != wantType {
+		return "", fmt.Errorf("%s passes symbol %d, which is a local of type %s, not a slice-typed local of type %s", context, node.Symbol, describeType(snapshot, node.Type), sliceTypeName(wantType))
+	}
+	return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+}
+
 // buildAggregateReturnValue builds the C expression text for a tuple/struct-
 // returning function's tail-position return value (10.26). The enclosing
 // function's result type comes from result (mutually exclusive tuple /
@@ -5862,6 +6116,73 @@ func buildAggregateReturnValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.
 		return buildStructValueExpr(unit, snapshot, node, locals, context, width)
 	}
 	return "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only returning an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
+}
+
+// buildSliceReturnValue builds the C text pieces for a slice-returning
+// function's tail-position return (10.38). The enclosing function's result
+// type comes from result.sliceType (set by buildHelperFunctions from the
+// helper's own ResultType), and exactly two return-value shapes are supported
+// (both confirmed against real fixtures):
+//
+//   - a plain SymbolValue naming an already-declared slice-typed local — or a
+//     slice-typed parameter, which seeds the callee's scope identically — in
+//     scope whose declared type is exactly the function's result type, emitted
+//     as the local's own pebble_local_<symbol> C name: forwarding an
+//     already-computed slice value without re-constructing it, a
+//     single-statement return (preReturn is empty);
+//   - a fresh CheckedSlice construction (`return a[1:3];`, whose tail Return
+//     child is the bare CheckedSlice node — confirmed against a real fixture).
+//     This is not a single expression: the construction needs the same
+//     two-statement temp-then-construction shape 10.37's local declaration
+//     uses (a temp holding the checked-start result, then the compound literal
+//     using that temp), but a return is a pure expression position with nowhere
+//     to place the temp-declaration statement, so the temp declaration is
+//     returned as a separate pre-return statement text for the caller
+//     (buildBlock / buildSwitchCaseBody) to thread into its statement sequence
+//     before the final `return <expr>;` line — the same mechanical shape
+//     deferred statements already demonstrate, just for construction complexity
+//     rather than deferred cleanup.
+//
+// A slice-returning helper's result may not itself be another slice-returning
+// call (`return g();`, a DirectCall) — that position is confirmed reachable
+// for tuple/struct returns and rejected there (10.26), and a slice call in a
+// return position is a clean rejection naming what was found here. Any other
+// return-value shape is likewise a clean rejection. indent indents the temp
+// declaration to match the surrounding statement text. width is the entry's
+// resolved integer width, threaded through so the temp is declared at the
+// correct width (the i64-entry width bug found and fixed in 10.37's review).
+func buildSliceReturnValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, indent string, width types.BuiltinKind) (string, string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", "", fmt.Errorf("entry function body return statement references invalid value node %d", id)
+	}
+	if node.Kind == tir.SymbolValue {
+		info, declared := locals[node.Symbol]
+		if !declared {
+			return "", "", fmt.Errorf("entry function body return statement returns symbol %d, which is not a local in scope", node.Symbol)
+		}
+		if info.sliceType != result.sliceType {
+			return "", "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a slice-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), sliceTypeName(result.sliceType))
+		}
+		return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	context := "entry function body return statement"
+	if node.Kind == tir.CheckedSlice {
+		if node.Type != result.sliceType {
+			return "", "", fmt.Errorf("%s returns a CheckedSlice of type %s, not a slice-typed value of type %s", context, describeType(snapshot, node.Type), sliceTypeName(result.sliceType))
+		}
+		// The temp name derives from the return value node's own NodeID — the
+		// only stable identity in hand here (a return has no local symbol to
+		// name it from), distinct from the pebble_slice_start_<symbol> temps a
+		// slice local's declaration uses so the two can never collide even when
+		// a symbol ID numerically equals a node ID.
+		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, node, locals, indent, context, width, fmt.Sprintf("pebble_slice_ret_%d", id))
+		if err != nil {
+			return "", "", err
+		}
+		return tempDecl, constructionExpr, nil
+	}
+	return "", "", fmt.Errorf("%s returns a %s, want a reference to a slice-typed local in scope or a fresh slice construction (a CheckedSlice); only returning an already-declared slice-typed local or constructing a fresh slice from an array inline is supported", context, node.Kind)
 }
 
 // buildBoolExpr builds the C text for a bool value node, used both for a bool
