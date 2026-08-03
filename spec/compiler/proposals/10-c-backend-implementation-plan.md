@@ -1160,14 +1160,63 @@ incrementally as work proceeds.
   outside the harness — manually compiled and ran the emitted C for a
   fixture combining a str parameter, an in-body reassignment, and a
   str-returning helper's result compared in the caller, with
-  `-Wall -Wextra -Werror`, confirming exit code 1. Concatenation,
-  interpolation (`InterpolatedString`), str indexing, and ordering
-  comparisons between strs remain out of scope — concatenation and
-  interpolation specifically need new runtime primitives (a growable
-  `PebbleStr` built through `PebbleContext`'s existing allocator
-  interface, confirmed already wired in
-  `runtime/include/pebble_rt.h`, but not yet used for strings) and are
-  the next slice(s).
+  `-Wall -Wextra -Werror`, confirming exit code 1. str indexing and
+  ordering comparisons between strs remain out of scope, unrelated to
+  the decision below.
+
+  **Decision — str concatenation and interpolation are deferred to a
+  user-level `String` type, not a compiler/runtime primitive.**
+  Reached in discussion after this slice landed, before scoping any
+  further string work. `str` (`PebbleStr`) stays exactly what it is: a
+  fixed, non-owning view — it will never grow a `+` operator or any
+  other mechanism that allocates behind an innocuous-looking
+  expression. The reasoning: the moment concatenation exists, someone
+  has to decide who owns and eventually frees the new buffer it
+  allocates — and Pebble's slice/string ownership and lifetime model
+  is an explicit, acknowledged **open language design question**
+  (`spec/compiler/proposals/open-language-decisions.md` §2.4,
+  `OPEN-DECISIONS.md` highest-priority #4), not something this backend
+  work should quietly settle by picking a runtime representation.
+  Deciding it properly (Rust-style ownership/borrowing, C-style manual
+  free, an arena, refcounting) is a real language-design project on
+  its own, not an incidental detail of adding one operator. Separately
+  — and independent of that unresolved question — hiding an allocation
+  behind `+` is a design smell on its own merits (Rust's own `String +
+  &str` is widely considered a wart for exactly this reason; Go's
+  `strings.Builder` exists because plain concatenation hides its
+  cost); an explicit method call is the more honest shape regardless
+  of how ownership eventually gets decided.
+
+  A `String` type already exists at [`std/string.peb`](../../../std/string.peb),
+  apparently written for the old (pre-C-rewrite) backend: a plain
+  struct (`data *char; len usize; capacity usize;`) with methods
+  (`push_str`, `reserve`, `substr`, `insert`, `remove`, ...), backed by
+  `extern` libc calls (`strlen`, `memcmp`) and a `mem` module
+  (`mem::realloc`/`mem::copy`/`mem::delete`) — ownership is manual and
+  explicit (`new()` allocates, `delete()` frees), the plain-C answer,
+  chosen on purpose over any compiler-enforced scheme. This is the
+  intended home for concatenation (`push_str`, or a future `concat`/`+`
+  method returning a new `String`) once it can actually run.
+
+  It cannot run today: `std/string.peb` depends on backend features
+  that do not exist yet in the new C backend at all — methods on
+  struct types (no method-call lowering exists, only plain function
+  calls), raw pointers (`*char`, `*void`, pointer arithmetic — no
+  pointer lowering exists), and multi-module imports
+  (`import "std:mem"`, `mem::realloc` — `Emit` takes exactly one
+  compilation unit today). Concatenation/interpolation work is
+  therefore blocked on those three prerequisite features landing as
+  their own phases, not scoped as part of Phase 4. When those land,
+  extend `std/string.peb` (or a similar user-level `String`) to
+  support building a `String` from two `str` values, rather than
+  reopening this decision.
+
+  With concatenation/interpolation off the table, Phase 4 (strings/
+  slices) is retargeted at general slice types (`[]T`, `types.Slice`
+  in the type snapshot — confirmed a distinct kind from `Array`/
+  `Pointer`/`Optional`, and currently entirely unlowered by this
+  backend). This also directly unblocks Phase 6's `main([]str)` entry
+  adapter, which needs slice-of-str argument passing regardless.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
