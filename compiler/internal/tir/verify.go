@@ -412,11 +412,50 @@ func (v *verifier) verifyNode(id NodeID) {
 			v.expectChildCategory(id, n, 2, CategoryNonvalue)
 		}
 	case For:
+		// Children is variable-arity: the checker appends, in this fixed
+		// relative order, only whichever of the initializer/condition/update
+		// clauses are actually present (each individually optional in
+		// `for init; cond; update { body }`), then the body always last —
+		// so a well-formed For has anywhere from 1 (bare `for ;; { body }`)
+		// to 4 children, never a fixed per-position shape. The initializer
+		// and update clauses are always CategoryNonvalue (Initialize/Store);
+		// the condition, when present, is the one CategoryValue child among
+		// them. This case used to wrongly require Children[0] to always be
+		// CategoryNonvalue, which rejected any well-formed `for` with a
+		// condition but no initializer (`for ; cond; { }` / `for ; cond;
+		// update { }`, both reachable from real source) — the body's own
+		// position happened to still validate correctly whenever init/cond
+		// were both absent, which is why this went unnoticed. The body
+		// (last child) must always be CategoryNonvalue (a Block); among the
+		// remaining children, at most one may be CategoryValue (the
+		// condition) — this is a purely structural check, not a full
+		// semantic re-derivation of which clause is which, matching this
+		// verifier's role elsewhere.
 		v.allowOnly(id, n, "Region", "Children")
 		v.requireRegion(id, n)
 		v.expectChildCount(id, n, 1, 4)
 		if len(n.Children) >= 1 {
-			v.expectChildCategory(id, n, 0, CategoryNonvalue) // body
+			last := len(n.Children) - 1
+			v.expectChildCategory(id, n, last, CategoryNonvalue) // body
+			valueChildren := 0
+			for i := 0; i < last; i++ {
+				child := n.Children[i]
+				if !child.IsValid() || uint64(child) > uint64(len(v.u.nodes)) {
+					continue // already reported
+				}
+				got, _ := CategoryOf(v.u.nodes[child-1].Kind)
+				switch got {
+				case CategoryValue:
+					valueChildren++
+				case CategoryNonvalue:
+					// initializer or update clause
+				default:
+					v.errorf("node %d For child[%d]=%d has category %s, want value or nonvalue", id, i, child, got)
+				}
+			}
+			if valueChildren > 1 {
+				v.errorf("node %d For has %d value-category children among its initializer/condition/update clauses, want at most one (the condition)", id, valueChildren)
+			}
 		}
 	case Switch:
 		v.allowOnly(id, n, "Region", "HasElse", "Children")

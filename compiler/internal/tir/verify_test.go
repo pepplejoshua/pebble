@@ -623,6 +623,44 @@ func TestVerifyRecordConstructDuplicateField(t *testing.T) {
 	mustFailBuild(t, b)
 }
 
+// TestVerifyForConditionOnlyValid is a regression test for a bug in the For
+// case: it used to unconditionally require Children[0] to be CategoryNonvalue,
+// which is only true when the initializer clause (if present) occupies that
+// position. `for ; cond; { ... }` (no initializer, condition present) is
+// reachable from real source, and its Children[0] is the condition
+// (CategoryValue), not an initializer — this shape used to be wrongly
+// rejected. Children is variable-arity: the checker appends whichever of
+// initializer/condition/update are present, in that fixed relative order,
+// then the body always last.
+func TestVerifyForConditionOnlyValid(t *testing.T) {
+	b := newTestBuilder(t)
+	forRegion := mustRegion(t, b)
+	outerRegion := mustRegion(t, b)
+	cond := boolLit(t, b)
+	forBody := mustNode(t, b, Node{Kind: Block, Span: span(), Region: forRegion})
+	forNode := mustNode(t, b, Node{Kind: For, Span: span(), Region: forRegion, Children: []NodeID{cond, forBody}})
+	outerBody := mustNode(t, b, Node{Kind: Block, Span: span(), Region: outerRegion, Children: []NodeID{forNode}})
+	_ = mustFunction(t, b, outerBody)
+	mustBuild(t, b)
+}
+
+// TestVerifyForTwoValueChildrenInvalid confirms the fixed For case still
+// rejects a genuinely malformed shape: two CategoryValue children among the
+// initializer/condition/update clauses (at most one, the condition, is ever
+// legitimate).
+func TestVerifyForTwoValueChildrenInvalid(t *testing.T) {
+	b := newTestBuilder(t)
+	forRegion := mustRegion(t, b)
+	outerRegion := mustRegion(t, b)
+	condA := boolLit(t, b)
+	condB := boolLit(t, b)
+	forBody := mustNode(t, b, Node{Kind: Block, Span: span(), Region: forRegion})
+	forNode := mustNode(t, b, Node{Kind: For, Span: span(), Region: forRegion, Children: []NodeID{condA, condB, forBody}})
+	outerBody := mustNode(t, b, Node{Kind: Block, Span: span(), Region: outerRegion, Children: []NodeID{forNode}})
+	_ = mustFunction(t, b, outerBody)
+	mustFailBuild(t, b)
+}
+
 func TestVerifyRecordConstructValid(t *testing.T) {
 	b := newTestBuilder(t)
 	v1 := boolLit(t, b)
