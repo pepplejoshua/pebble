@@ -652,6 +652,45 @@ incrementally as work proceeds.
   emitted C for `fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn
   main() i32 { return f((20, 22)); }` with `-Wall -Wextra -Werror`,
   confirming exit code 42.
+- **10.26 — tuple- and struct-typed function return types**
+  (`compiler/internal/backend`): the biggest single change to the
+  backend's core plumbing since 10.17's original multi-function
+  architecture. Every builder threads one `width` parameter meaning
+  two conflated things — the integer grammar to build at, and
+  (implicitly) "this function's own return type." A new `resultInfo`
+  value (mirroring `localInfo`'s `kind`/`tuple`/`structType` shape)
+  threads alongside `width` through `buildBlock`/`buildIf`
+  specifically, recording what the *enclosing function* returns,
+  distinct from `width`'s unchanged meaning everywhere else. The
+  entry's own path passes `resultInfo{kind: result}` — byte-identical
+  to before, confirmed by all 200+ prior tests passing unmodified. A
+  helper whose `ResultType` is a tuple/struct is declared with the
+  aggregate's own typedef as its C return type; its tail `return` is
+  built by a new `buildAggregateReturnValue` (a forwarded local of
+  matching type, or a fresh inline construction via 10.25's compound-
+  literal builders) instead of `buildExpr`. Calling such a helper is
+  supported in exactly one position — the direct initializer of a
+  matching aggregate-typed local declaration; `buildDirectCall` was
+  factored out of `buildExpr`'s `DirectCall` case (byte-identical
+  behavior) and shared with the new `buildAggregateCallInitializer`.
+  **Real, confirmed-not-guessed findings**: calling such a helper as a
+  call argument, as an operand, or as another helper's own return
+  value are all reachable from real source and rejected cleanly; an
+  enum-typed helper result is `Nominal` like a struct and rejected
+  cleanly through the same existing path, no special-casing needed; a
+  tuple/struct-returning helper called as an if/else arm's or a
+  while-loop-body's local initializer "just works" through the
+  existing recursive path with zero special-casing, since `resultInfo`
+  only governs the enclosing function's own return. Typedef discovery
+  extended to scan each reachable helper's own `ResultType` (mirrors
+  10.24's `Parameters` scan). Verified end-to-end (tuple/struct
+  flagship returns, forwarding an existing local vs. fresh
+  construction, a bool element, an if/else-tail return, a
+  result-only-typed helper, and returns used inside an if-arm/loop-body
+  local initializer) and independently outside the harness — manually
+  compiled and ran the emitted C for `fn makeT() (i32, i32) { return
+  (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 +
+  t.1; }` with `-Wall -Wextra -Werror`, confirming exit code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
