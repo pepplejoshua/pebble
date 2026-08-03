@@ -2841,6 +2841,220 @@ func assertEmitRejectsContaining(t *testing.T, unit *tir.Unit, snapshot *types.S
 	}
 }
 
+func TestEmitForLoopAccumulationCompilesAndRuns(t *testing.T) {
+	// The flagship fixture: a classic for loop lowers to a C for loop with
+	// the same three clauses. step counts 0..3 (the initializer declares it as
+	// an ordinary local of the entry's width, seeded into the loop's scope),
+	// and total accumulates step each pass, so total = 0+1+2 = 3, returned as
+	// the process exit code. The body references step through the seeded scope
+	// like any other local. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step = step + 1 { total = total + step; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopAllClausesOmittedCompilesAndRuns(t *testing.T) {
+	// for ;; { ... } — all three clauses absent: an infinite loop from the
+	// header's perspective, so termination comes only from the explicit break
+	// in the body. The body advances its own counter (declared outside) and
+	// breaks at 3, so the program terminates with i = 3 as the exit code.
+	// Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; for ;; { if i >= 3 { break; } i = i + 1; } return i; }", false, 3, false)
+}
+
+func TestEmitForLoopNoConditionNeedsBreakCompilesAndRuns(t *testing.T) {
+	// for var i i32 = 0;; i = i + 1 { ... } — no condition clause (the
+	// initializer and update are both present), so termination comes only from
+	// the explicit break in the body — the omitted-condition combination the
+	// brief calls out explicitly. total accumulates 0+1+2 = 3 before the break
+	// at i == 3. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var i i32 = 0;; i = i + 1 { if i >= 3 { break; } total = total + i; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopNoUpdateCompilesAndRuns(t *testing.T) {
+	// for var step i32 = 0; step < 3; { ... } — no update clause; the body
+	// advances step itself. total accumulates 0+1+2 = 3. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; { total = total + step; step = step + 1; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopInitializerOnlyCompilesAndRuns(t *testing.T) {
+	// for var i i32 = 0;; { ... } — initializer only (no condition, no
+	// update), so the body advances i and breaks when it reaches 3. total
+	// accumulates 0+1+2 = 3. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var i i32 = 0;; { if i >= 3 { break; } total = total + i; i = i + 1; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopUpdateOnlyCompilesAndRuns(t *testing.T) {
+	// for ; ; i = i + 1 { ... } — update only (no initializer, no condition):
+	// i is declared outside, the header's update advances it, and the body
+	// breaks when it reaches 3, so i = 3 is returned. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; for ; ; i = i + 1 { if i >= 3 { break; } } return i; }", false, 3, false)
+}
+
+func TestEmitForLoopConditionOnlyCompilesAndRuns(t *testing.T) {
+	// for ; i < 3; { ... } — condition only (no initializer, no update): i is
+	// declared outside, the header's condition alone controls the loop, and
+	// the body both accumulates and advances i. This shape was blocked by a
+	// real tir/verify.go bug (the verifier wrongly required For's first
+	// child to always be CategoryNonvalue, but with no initializer the first
+	// child is the condition itself, CategoryValue) until that bug was fixed
+	// separately (commit "tir: fix verifier rejecting well-formed classic
+	// for-loops missing an initializer"). sum accumulates 0+1+2 = 3.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; for ; i < 3; { sum = sum + i; i = i + 1; } return sum; }", false, 3, false)
+}
+
+func TestEmitForLoopConditionAndUpdateCompilesAndRuns(t *testing.T) {
+	// for ; i < 3; i = i + 1 { ... } — condition and update, no initializer:
+	// i is declared outside, the header's condition controls the loop and
+	// its update advances i, so the body only needs to accumulate. Also
+	// blocked by the same tir bug as the condition-only case above (the
+	// verifier's fixed-position check rejected any For whose first child
+	// was the condition, which includes this shape too). sum accumulates
+	// 0+1+2 = 3.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; for ; i < 3; i = i + 1 { sum = sum + i; } return sum; }", false, 3, false)
+}
+
+func TestEmitForLoopBreakAndContinueCompilesAndRuns(t *testing.T) {
+	// break/continue inside a for-loop body work through the same
+	// buildLoopJump machinery a while/range body uses: a Break's/Continue's
+	// Target names the For's own Region, and plain C break/continue already
+	// target the nearest enclosing loop, which the emitted for loop is. step
+	// counts 0..9, breaking when step == 5 and skipping the accumulation when
+	// step == 3, so total = 0+1+2+4 = 7, returned as the exit code. Bounded
+	// execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 10; step = step + 1 { if step == 5 { break; } if step == 3 { continue; } total = total + step; } return total; }", false, 7, false)
+}
+
+func TestEmitForLoopNestedInWhileCompilesAndRuns(t *testing.T) {
+	// A classic for loop nested inside a while loop's body: the For is a
+	// statement in the while's body Block, dispatched by buildLoopBody. Each
+	// of the 2 while iterations runs the for loop's 3 inner iterations, so
+	// total = 6, returned as the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 2 { for var j i32 = 0; j < 3; j = j + 1 { total = total + 1; } i = i + 1; } return total; }", false, 6, false)
+}
+
+func TestEmitForLoopNestedInRangeLoopCompilesAndRuns(t *testing.T) {
+	// A classic for loop nested inside a range loop's body: the For is a
+	// statement in the range loop's body Block, dispatched by buildLoopBody.
+	// Each of the 3 range iterations runs the for loop's 2 inner iterations,
+	// so total = 6, returned as the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; loop 0..3 : i { for var j i32 = 0; j < 2; j = j + 1 { total = total + 1; } } return total; }", false, 6, false)
+}
+
+func TestEmitForLoopNestedInForLoopCompilesAndRuns(t *testing.T) {
+	// A classic for loop nested inside another classic for loop: the inner For
+	// is a statement in the outer for's body Block, dispatched by
+	// buildLoopBody exactly like a nested While or RangeLoop. i and j each
+	// count 0..3, so the inner body runs 3 x 3 = 9 times and total = 9,
+	// returned as the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var i i32 = 0; i < 3; i = i + 1 { for var j i32 = 0; j < 3; j = j + 1 { total = total + 1; } } return total; }", false, 9, false)
+}
+
+func TestEmitForLoopI64EntryCompilesAndRuns(t *testing.T) {
+	// A classic for loop inside an i64 entry: the initializer's C type follows
+	// the entry's width (int64_t). total accumulates 0+1+2 = 3, returned as
+	// the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i64 { var total i64 = 0; for var step i64 = 0; step < 3; step = step + 1 { total = total + step; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopBoolInitializerAndConditionCompilesAndRuns(t *testing.T) {
+	// The bool grammar works in every for-loop clause: the initializer
+	// declares a bool local (built by buildScalarInitializeCore's bool case),
+	// the condition is a bare bool value (buildCondition -> buildBoolExpr), and
+	// the update reassigns the bool (buildStoreCore's bool case). The loop
+	// runs once (first is true), accumulates 1, flips first to false, and the
+	// next condition check stops it, so total = 1. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var first bool = true; first; first = false { total = total + 1; } return total; }", false, 1, false)
+}
+
+func TestEmitForLoopLogicalConditionCompilesAndRuns(t *testing.T) {
+	// A && condition in a for header goes through buildCondition ->
+	// buildBoolExpr -> buildComparison exactly as an if/while condition does.
+	// i counts 0..3 under the && condition, so total = 0+1+2 = 3. Bounded
+	// execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var i i32 = 0; i < 3 && i >= 0; i = i + 1 { total = total + i; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopInHelperFunctionCompilesAndRuns(t *testing.T) {
+	// buildHelperFunctions builds each reachable helper's body with the same
+	// buildBlock the entry uses, so a classic for loop works inside a helper
+	// unchanged. sumTo(4) = 0+1+2+3 = 6, returned as the exit code. Bounded
+	// execution.
+	emitAndRunBounded(t, "fn sumTo(n i32) i32 { var total i32 = 0; for var step i32 = 0; step < n; step = step + 1 { total = total + step; } return total; } fn main() i32 { return sumTo(4); }", false, 6, false)
+}
+
+func TestEmitForLoopHelperCallInConditionCompilesAndRuns(t *testing.T) {
+	// A helper call inside a for clause: the DirectCall is discovered by the
+	// reachability walk (which follows For.Children generically) and built by
+	// buildComparison/buildExpr like any other call. ten() returns 10, so the
+	// loop counts 0..9 and total = 0+1+...+9 = 45. Bounded execution.
+	emitAndRunBounded(t, "fn ten() i32 { return 10; } fn main() i32 { var total i32 = 0; for var step i32 = 0; step < ten(); step = step + 1 { total = total + step; } return total; }", false, 45, false)
+}
+
+func TestEmitForLoopWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture must be a C for loop whose
+	// init/condition/update clauses match the source exactly: the initializer
+	// declares the loop local as `<entry ctype> pebble_local_<symbol>` in the
+	// header (no statement newline/indent, the for-header's first `;`
+	// terminating the init clause), the condition is the plain comparison, and
+	// the update is a bare assignment expression with NO trailing `;` (the for
+	// statement supplies it). The initializer local gets its
+	// -Wunused-variable (void) cast as the body's first statement, since its C
+	// declaration lives in the header where a cast cannot go. Symbols 25
+	// (total) and 26 (step) come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step = step + 1 { total = total + step; } return total; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, 1)) {\n",
+		"        (void)pebble_local_26;",
+		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitForLoopRejectsStoreInitializer(t *testing.T) {
+	// An assignment as the for-loop initializer (for step = 0; ...) is
+	// reachable from real source but out of scope: the initializer must be a
+	// single local declaration, matching the backend's rule that only an
+	// Initialize declares a local.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var step i32 = 0; for step = 0; step < 3; step = step + 1 { } return step; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop initializer is a Store")
+}
+
+func TestEmitForLoopRejectsCompoundStoreInitializer(t *testing.T) {
+	// A compound-assignment as the for-loop initializer (for x += 1; ...) is
+	// reachable from real source but out of scope: the initializer must be a
+	// single local declaration.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 0; for x += 1; x < 3; { } return x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop initializer is a CompoundStore")
+}
+
+func TestEmitForLoopRejectsCompoundStoreUpdate(t *testing.T) {
+	// A compound-assignment as the for-loop update (step += 1) is reachable
+	// from real source but out of scope: the update must be a single Store
+	// (a reassignment), matching the backend's rule that a reassignment
+	// lowers through buildStoreCore.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step += 1 { total = total + step; } return total; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop update is a CompoundStore")
+}
+
+func TestEmitForLoopRejectsExpressionStatementClause(t *testing.T) {
+	// A discarded-expression clause (for x + 1; ... or for ; ; x + 1 ...) is
+	// reachable from real source but out of scope: a no-condition for whose
+	// only clause is an ExpressionStatement is ambiguous (expression
+	// initializer or expression update — both out of scope, so the rejection
+	// is unambiguous in outcome).
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 0; for x + 1; ; { break; } return x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "with no condition has a ExpressionStatement clause")
+	unit, snapshot, entryID = buildFixture(t, "fn main() i32 { var x i32 = 0; for ; ; x + 1 { break; } return x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "with no condition has a ExpressionStatement clause")
+}
+
 // buildTopLevelBreakUnit hand-builds a unit whose i32 entry body is an
 // Initialize (symbol 25 bound to 1), a Break as a leading statement, and the
 // final Return of 1. Real source can never produce a Break in the entry body

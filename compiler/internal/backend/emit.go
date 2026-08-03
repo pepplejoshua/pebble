@@ -28,7 +28,27 @@
 // `: name` is rejected), its body built by the same buildLoopBody seeded with
 // the iterator as an ordinary local of the entry's width, so a SymbolValue
 // reference to the iterator inside the body resolves like any other local
-// (see buildRangeLoop). Locals declared in an enclosing block are visible in
+// (see buildRangeLoop). A `for <init>; <cond>; <update> { <body> }` classic
+// for loop (a tir.For) is a leading statement exactly like a while and range
+// loop, lowering to a C for loop with the same three individually-optional
+// clauses: each clause is built by the same machinery its block-level
+// counterpart uses — the initializer, when present, is a single Initialize
+// declaring a local of the entry's width or bool (see buildForInitClause,
+// sharing buildScalarInitializeCore with an ordinary leading declaration), the
+// condition, when present, is built by buildCondition, and the update, when
+// present, is a single Store reassigning a local already in scope (see
+// buildForUpdateClause, sharing buildStoreCore with an ordinary Store), with
+// the init/update clauses emitted bare (no statement indent/newline, the
+// for-header's own syntax supplying the semicolons). For.Children is
+// variable-length: the checker appends only the clauses actually present in
+// the fixed relative order initializer, condition, update, then the body a
+// Block last, and buildFor disambiguates them by node category — the
+// condition, when present, is the unique CategoryValue among the non-body
+// children. The initializer's declared local seeds a cloned locals scope
+// before the body is built (mirroring how a range loop seeds its iterator),
+// so references to it inside the condition/update/body resolve through the
+// existing machinery, and a (void) cast for it is emitted as the body's first
+// statement (the -Wunused-variable defense). Locals declared in an enclosing block are visible in
 // a nested block;
 // locals declared inside an arm or loop body are visible only within that
 // scope. Every expression in an accepted body must carry the entry's own
@@ -250,8 +270,10 @@ import (
 // `var <name> <width> = <expression>;` local declarations, plus
 // `x = <expression>;` reassignments of an already-declared local (a tir.Store;
 // see buildBlock) and `while <comparison> { <loop body> }` loop statements (a
-// tir.While; see buildWhile) and `loop <start>..<end> : <name> { <loop body> }`
-// range loop statements (a tir.RangeLoop; see buildRangeLoop), followed by a
+// tir.While; see buildWhile), `loop <start>..<end> : <name> { <loop body> }`
+// range loop statements (a tir.RangeLoop; see buildRangeLoop), and
+// `for <init>; <cond>; <update> { <loop body> }` classic for loop statements
+// (a tir.For; see buildFor), followed by a
 // tail that is either one
 // `return <expression>;` or a two-armed `if <condition> { <block> } else {
 // <block> }` whose condition is an integer comparison (<, <=, >, >=, ==, !=), a
@@ -1260,8 +1282,11 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // pebble_local_<id>` declarations (one per Initialize, in declaration order),
 // zero or more `pebble_local_<id> = <built value>;` reassignments (one per
 // Store, targeting a local already in scope), and zero or more `while (...)
-// { <loop body> }` loop statements (one per While, built by buildWhile — a
-// loop is only ever a leading statement here, never the block's tail),
+// { <loop body> }` loop statements (one per While, built by buildWhile), zero
+// or more `for (<init>; <cond>; <update>) { <loop body> }` classic for loop
+// statements (one per For, built by buildFor), and zero or more range loop
+// statements (one per RangeLoop, built by buildRangeLoop) — a
+// loop is only ever a leading statement here, never the block's tail —
 // followed by a tail that is either the single `return <expression>;` or a
 // two-armed if/else built by buildIf; each if arm is itself a block under the
 // same grammar, so buildBlock recurses into both arms. width is the entry's
@@ -1324,6 +1349,20 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 				return "", err
 			}
 			statements = append(statements, rangeText)
+			continue
+		}
+		if statement.Kind == tir.For {
+			// A classic for loop is a leading statement in the block grammar
+			// exactly like a while — never the tail — lowering to a C for loop
+			// with the same three individually-optional clauses. Its body is
+			// its own scope (buildFor seeds the initializer's local and
+			// buildLoopBody clones), so nothing the loop declares leaks into
+			// this block's scope map.
+			forText, err := buildFor(unit, snapshot, statement, scope, depth, width)
+			if err != nil {
+				return "", err
+			}
+			statements = append(statements, forText)
 			continue
 		}
 		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block", width)
@@ -1562,11 +1601,399 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 	return buildExpr(unit, snapshot, id, locals, width)
 }
 
+// buildFor validates and builds the C text for a classic for loop statement
+// (a tir.For): `for <init>; <cond>; <update> { <body> }` with each of the
+// three clauses individually optional, lowering directly to a C for loop with
+// the same three clauses:
+//
+//	<indent>for (<init>; <cond>; <update>) {
+//	<loop body statements, one level deeper>
+//	<indent>}
+//
+// For.Children is a variable-length list the checker builds by appending, in
+// this fixed relative order, only the clauses actually present — the
+// initializer, then the condition, then the update — with the body a Block
+// always last (confirmed against real fixtures for every clause-presence
+// combination). The clauses are disambiguated by their node categories, not
+// by position assumptions: the condition, when present, is the unique
+// CategoryValue child among the non-body children, and every other clause
+// child is a CategoryNonvalue. The initializer, when present, must be a
+// single Initialize declaring a local of the entry's width or bool (built by
+// buildForInitClause) — a Store/CompoundStore/ExpressionStatement initializer
+// is reachable from real source (`for step = 0; ...`, `for x += 1; ...`,
+// `for x + 1; ...`) and is a clean rejection, matching the backend's rule
+// that only an Initialize declares a local. The update, when present, must be
+// a single Store reassigning a local already in scope (built by
+// buildForUpdateClause) — a CompoundStore update (`step += 1`) and a
+// discarded-expression update are reachable from real source and are clean
+// rejections, matching the backend's rule that a reassignment lowers through
+// buildStoreCore. With no condition present the checker's fixed relative
+// order leaves at most `[initializer?] [update?]`, so an Initialize child is
+// the initializer and a Store child is the update; a lone no-condition Store
+// is treated as the update (the in-scope update-only shape `for ; ; update {
+// ... }`) — note this makes a no-condition Store *initializer* (`for step =
+// 0;; { ... }`, out of scope but reachable) structurally indistinguishable
+// from update-only and silently lowered as the update, a real ambiguity with
+// no IR-level way to tell them apart (the For node carries only Region and
+// Children). The condition is built by the exact same buildCondition an
+// if/while condition uses. The body is built by the exact same buildLoopBody
+// a while/range loop uses, one level deeper, against a cloned scope seeded
+// with the initializer's local if it declares one — so a SymbolValue
+// reference to the initializer's local inside the condition, update, or body
+// resolves through the existing machinery unchanged, mirroring how a range
+// loop seeds its iterator. If the initializer declares a local, a `(void)
+// pebble_local_<symbol>;` cast is emitted as the body's first statement, the
+// same -Wunused-variable defense every declared local gets (confirmed: cc
+// fires -Wunused-variable under -Wall -Wextra -Werror for a for-init local
+// never referenced anywhere, and the cast is a no-op when it is). The body is
+// its own scope (buildLoopBody clones), so nothing the body declares leaks
+// outside, while the seeded initializer local remains visible inside.
+// break/continue inside the body are handled by buildLoopBody's own
+// Break/Continue cases — plain C break/continue already target the nearest
+// enclosing loop, which the emitted for loop is (the same confirmation a
+// range loop made). Any other shape — an ambiguous clause list, an
+// out-of-scope initializer or update, a missing or non-Block body — is a
+// clean rejection naming what was found.
+func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+	if len(forNode.Children) < 1 || len(forNode.Children) > 4 {
+		return "", fmt.Errorf("entry function body block for loop has %d child(ren), want 1 to 4 (the optional initializer, condition, and update clauses, then the loop body)", len(forNode.Children))
+	}
+	bodyID := forNode.Children[len(forNode.Children)-1]
+	bodyNode, ok := unit.Node(bodyID)
+	if !ok {
+		return "", fmt.Errorf("entry function body block for loop references invalid body node %d", bodyID)
+	}
+	if bodyNode.Kind != tir.Block {
+		return "", fmt.Errorf("entry function body block for loop body is a %s, want a Block", bodyNode.Kind)
+	}
+	clauses := forNode.Children[:len(forNode.Children)-1]
+	// The condition, when present, is the unique CategoryValue child among the
+	// non-body clauses (confirmed against real fixtures for every
+	// clause-presence combination). Every other clause child is a
+	// CategoryNonvalue (an Initialize/Store/CompoundStore/ExpressionStatement),
+	// so a unique CategoryValue can only be the condition, and it appears in
+	// the position matching its role: the checker appends clauses in the fixed
+	// relative order initializer, condition, update.
+	condIndex := -1
+	for i, clauseID := range clauses {
+		clause, clauseOK := unit.Node(clauseID)
+		if !clauseOK {
+			return "", fmt.Errorf("entry function body block for loop references invalid clause node %d", clauseID)
+		}
+		category, categoryOK := tir.CategoryOf(clause.Kind)
+		if !categoryOK {
+			return "", fmt.Errorf("entry function body block for loop clause %d has unknown node kind %s", i, clause.Kind)
+		}
+		if category == tir.CategoryValue {
+			if condIndex >= 0 {
+				return "", fmt.Errorf("entry function body block for loop has %d value clause(s), want at most one (the condition)", len(clauses))
+			}
+			condIndex = i
+		}
+	}
+	loopScope := cloneLocals(locals)
+	var initText, condText, updateText string
+	var initSymbol symbol.SymbolID
+	if condIndex >= 0 {
+		// The condition is present. The initializer slot is the at-most-one
+		// nonvalue clause before it, and the update slot the at-most-one
+		// nonvalue clause after it. A nonvalue clause before the condition is
+		// the initializer and must be an Initialize; a nonvalue clause after
+		// it is the update and must be a Store.
+		if condIndex > 1 {
+			return "", fmt.Errorf("entry function body block for loop has %d clause(s) before its condition, want at most one (the initializer)", condIndex)
+		}
+		if len(clauses)-condIndex-1 > 1 {
+			return "", fmt.Errorf("entry function body block for loop has %d clause(s) after its condition, want at most one (the update)", len(clauses)-condIndex-1)
+		}
+		if condIndex == 1 {
+			text, symbol, err := buildForInitClause(unit, snapshot, clauses[0], loopScope, width)
+			if err != nil {
+				return "", err
+			}
+			initText = text
+			initSymbol = symbol
+		}
+		cond, err := buildCondition(unit, snapshot, clauses[condIndex], loopScope, width)
+		if err != nil {
+			return "", err
+		}
+		condText = cond
+		if len(clauses)-condIndex-1 == 1 {
+			text, err := buildForUpdateClause(unit, snapshot, clauses[len(clauses)-1], loopScope, width)
+			if err != nil {
+				return "", err
+			}
+			updateText = text
+		}
+	} else {
+		// No condition: the checker's fixed relative order leaves at most
+		// `[initializer?] [update?]`, so an Initialize child is the
+		// initializer and a Store child is the update.
+		switch len(clauses) {
+		case 0:
+			// All three clauses absent — an infinite loop from the header's
+			// perspective (`for (; ; )`).
+		case 1:
+			clause, _ := unit.Node(clauses[0])
+			switch clause.Kind {
+			case tir.Initialize:
+				text, symbol, err := buildForInitClause(unit, snapshot, clauses[0], loopScope, width)
+				if err != nil {
+					return "", err
+				}
+				initText = text
+				initSymbol = symbol
+			case tir.Store:
+				// A lone no-condition Store is the update-only shape
+				// (`for ; ; update { ... }`), the in-scope interpretation.
+				// A no-condition Store *initializer* (`for step = 0;; { ...
+				// }`) is structurally indistinguishable from it (confirmed
+				// against real fixtures) and is documented as a real
+				// ambiguity: it lowers as the update, never guessed as
+				// something else.
+				text, err := buildForUpdateClause(unit, snapshot, clauses[0], loopScope, width)
+				if err != nil {
+					return "", err
+				}
+				updateText = text
+			default:
+				return "", fmt.Errorf("entry function body block for loop with no condition has a %s clause, want an Initialize (a local declaration) or a Store (an update)", clause.Kind)
+			}
+		case 2:
+			initClause, _ := unit.Node(clauses[0])
+			updateClause, _ := unit.Node(clauses[1])
+			if initClause.Kind != tir.Initialize {
+				return "", fmt.Errorf("entry function body block for loop with no condition leads with a %s clause, want an Initialize (the initializer declares a local)", initClause.Kind)
+			}
+			if updateClause.Kind != tir.Store {
+				return "", fmt.Errorf("entry function body block for loop with no condition follows the initializer with a %s clause, want a Store (the update)", updateClause.Kind)
+			}
+			text, symbol, err := buildForInitClause(unit, snapshot, clauses[0], loopScope, width)
+			if err != nil {
+				return "", err
+			}
+			initText = text
+			initSymbol = symbol
+			text, err = buildForUpdateClause(unit, snapshot, clauses[1], loopScope, width)
+			if err != nil {
+				return "", err
+			}
+			updateText = text
+		default:
+			return "", fmt.Errorf("entry function body block for loop with no condition has %d clause(s), want at most two (an initializer and an update)", len(clauses))
+		}
+	}
+	bodyText, err := buildLoopBody(unit, snapshot, bodyID, loopScope, depth+1, width)
+	if err != nil {
+		return "", err
+	}
+	if initSymbol != 0 {
+		// The initializer declared a local whose C declaration lives in the
+		// for-header, so the (void) cast against -Wunused-variable must go
+		// inside the loop body — the for-init local's C scope is the loop
+		// itself, and cc fires the warning for a for-init local never
+		// referenced anywhere (confirmed with a real compile). The cast is the
+		// body's first statement, at the body's own statement indent.
+		bodyIndent := strings.Repeat("    ", depth+2)
+		bodyText = bodyIndent + fmt.Sprintf("(void)pebble_local_%d;", initSymbol) + "\n" + bodyText
+	}
+	indent := strings.Repeat("    ", depth+1)
+	return fmt.Sprintf("%sfor (%s; %s; %s) {\n%s\n%s}", indent, initText, condText, updateText, bodyText, indent), nil
+}
+
+// buildForInitClause validates and builds the C init-clause text for a classic
+// for loop's initializer: `<cType> pebble_local_<symbol> = <expr>` — a C
+// declaration with no leading indent, no statement-terminating newline, and no
+// trailing `;` of its own (the for-header `for (<init>; <cond>; <update>)`'s
+// first `;` is what terminates the init clause). The initializer must be a
+// single Initialize (a local declaration) — a Store (an assignment), a
+// CompoundStore, or a discarded ExpressionStatement initializer are all
+// reachable from real source but out of scope and cleanly rejected, matching
+// the backend's rule that only an Initialize declares a local. The declared
+// local must be of the entry's resolved width or bool — the same two scalar
+// grammars a bare Initialize supports — validated and emitted by
+// buildScalarInitializeCore, which also records the local in the caller's loop
+// scope so the condition, update, and body can reference it. Returns the
+// clause text and the declared symbol (so buildFor can emit the (void) cast
+// as the body's first statement).
+func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, symbol.SymbolID, error) {
+	statement, ok := unit.Node(id)
+	if !ok {
+		return "", 0, fmt.Errorf("entry function body block for loop initializer references invalid node %d", id)
+	}
+	if statement.Kind != tir.Initialize {
+		return "", 0, fmt.Errorf("entry function body block for loop initializer is a %s, want a local declaration (an Initialize); a for-loop initializer must declare a local of %s or bool", statement.Kind, wantName(width))
+	}
+	if len(statement.Children) != 1 {
+		return "", 0, fmt.Errorf("entry function body block for loop initializer initializes %d value(s), want exactly one expression", len(statement.Children))
+	}
+	if _, declared := scope[statement.Symbol]; declared {
+		return "", 0, fmt.Errorf("entry function body block for loop initializer declares local %d more than once", statement.Symbol)
+	}
+	initValue, ok := unit.Node(statement.Children[0])
+	if !ok {
+		return "", 0, fmt.Errorf("entry function body block for loop initializer references invalid value node %d", statement.Children[0])
+	}
+	core, err := buildScalarInitializeCore(unit, snapshot, statement, initValue, scope, "entry function body block for loop initializer", width)
+	if err != nil {
+		return "", 0, err
+	}
+	return core, statement.Symbol, nil
+}
+
+// buildForUpdateClause validates and builds the C update-clause text for a
+// classic for loop's update: `pebble_local_<symbol> = <expr>` with no leading
+// indent and no trailing `;` — the for statement's own header syntax supplies
+// the semicolons, so the update clause is a bare assignment expression, not a
+// full C statement (the equivalent block-level Store's trailing `;` is
+// deliberately omitted). The update must be a single Store reassigning a
+// local already in scope, validated and emitted by buildStoreCore against the
+// local's own declared type (the entry's width or bool) — a CompoundStore
+// update (`step += 1`) and a discarded-expression update are reachable from
+// real source but out of scope and cleanly rejected, matching the backend's
+// rule that a reassignment lowers through buildStoreCore.
+func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	statement, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body block for loop update references invalid node %d", id)
+	}
+	if statement.Kind != tir.Store {
+		return "", fmt.Errorf("entry function body block for loop update is a %s, want a Store (a reassignment of a local already in scope); a for-loop update must be a single reassignment", statement.Kind)
+	}
+	return buildStoreCore(unit, snapshot, statement, scope, "entry function body block for loop update", width)
+}
+
+// buildScalarInitializeCore builds the declaration text for a scalar local of
+// the entry's resolved width or bool, WITHOUT the leading indent and WITHOUT
+// the trailing `;` (and without the trailing (void) cast) a full block-level
+// declaration statement gets: `<cType> pebble_local_<symbol> = <expr>`. It is
+// the scalar tail of the Initialize dispatch, shared by buildLeadingStatement
+// (which prepends the indent and appends `;` plus the (void) cast to form the
+// full statement) and buildForInitClause (which uses the core as the
+// for-header init clause, where the for statement's own header syntax supplies
+// the terminating `;`), so the entry's-width-or-bool validation, the
+// buildExpr/buildBoolExpr dispatch, and the scope recording live in exactly
+// one place. The initializer value must carry exactly the entry's resolved
+// width (built by buildExpr) or the bool builtin (built by buildBoolExpr);
+// anything else — a tuple/array/optional/struct/str local, or the other
+// integer width — is a clean rejection naming the type, matching
+// buildLeadingStatement's own rule. On success the local is recorded in scope
+// (localInfo{kind: width} or localInfo{kind: types.Bool}) so a later
+// reference or reassignment resolves against the same type.
+func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	kind, ok := resolvedBuiltin(snapshot, initValue.Type)
+	if !ok {
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+	}
+	switch kind {
+	case width:
+		// An integer local: emitted at the entry's width, exactly as
+		// buildLeadingStatement emits it (buildExpr re-checks every node in
+		// the initializer is that width). The scope entry records the width so
+		// a later reference or reassignment is validated and emitted as an
+		// integer.
+		initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{kind: width}
+		return fmt.Sprintf("%s pebble_local_%d = %s", cType(width), statement.Symbol, initExpr), nil
+	case types.Bool:
+		// A bool local: emitted as a C bool, its value built by buildBoolExpr
+		// (the bool grammar is genuinely different from the integer one).
+		initExpr, err := buildBoolExpr(unit, snapshot, statement.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{kind: types.Bool}
+		return fmt.Sprintf("bool pebble_local_%d = %s", statement.Symbol, initExpr), nil
+	default:
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+	}
+}
+
+// buildStoreCore builds the value text for a reassignment of a local already
+// in scope, WITHOUT the leading indent and WITHOUT the trailing `;` a full
+// block-level Store statement gets: `pebble_local_<symbol> = <expr>`. It is
+// the Store dispatch, shared by buildLeadingStatement (which prepends the
+// indent and appends the `;` to form the full statement) and
+// buildForUpdateClause (which uses the core as the for-header update clause,
+// where the for statement's own syntax supplies the `;`), so the
+// place-validation and the buildExpr/buildBoolExpr dispatch live in exactly
+// one place. The place must be a plain StoragePlace naming a local in scope,
+// and the new value is validated and emitted against the local's own declared
+// type — the entry's width (buildExpr) or bool (buildBoolExpr), mirroring
+// buildLeadingStatement's Store case exactly, including its rejections of a
+// Store targeting a str/tuple/array/optional/struct local.
+func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if len(statement.Children) != 2 {
+		return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
+	}
+	place, ok := unit.Node(statement.Children[0])
+	if !ok {
+		return "", fmt.Errorf("%s reassignment references invalid place node %d", context, statement.Children[0])
+	}
+	if place.Kind != tir.StoragePlace {
+		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope", context, place.Kind)
+	}
+	targetInfo, declared := scope[place.Symbol]
+	if !declared {
+		return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
+	}
+	// The new value is validated and emitted against the local's own declared
+	// type: the entry's width for an integer local (buildExpr), the bool
+	// grammar for a bool local (buildBoolExpr). A value of the wrong type — a
+	// bool assigned to an integer local, or an integer assigned to a bool
+	// local — is rejected by the appropriate builder.
+	switch targetInfo.kind {
+	case width:
+		storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+	case types.Bool:
+		storeValue, err := buildBoolExpr(unit, snapshot, statement.Children[1], scope, width)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+	default:
+		if targetInfo.isStr {
+			// A Store whose place names a str-typed local is a whole-str
+			// reassignment, which is out of scope this slice (a str local is
+			// only ever initialized from a string literal and then compared,
+			// never reassigned).
+			return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local; reassigning a str is not supported yet", context, place.Symbol)
+		}
+		if targetInfo.tuple != 0 {
+			// A Store whose place names a tuple-typed local is a
+			// whole-tuple reassignment, which is out of scope this slice
+			// (only element reads of a tuple local are supported, never
+			// assignment into or reassignment of one).
+			return "", fmt.Errorf("%s reassigns symbol %d, a tuple-typed local of type %s; reassigning a whole tuple is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.tuple))
+		}
+		if targetInfo.array != 0 {
+			return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
+		}
+		if targetInfo.optional != 0 {
+			return "", fmt.Errorf("%s reassigns symbol %d, an optional-typed local of type %s; reassigning an optional is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.optional))
+		}
+		if targetInfo.structType != 0 {
+			return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
+		}
+		return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
+	}
+}
+
 // buildLoopBody validates and builds the C statement sequence for a while
 // loop's body: a Block whose children are local declarations (Initialize),
 // reassignments (Store), conditional if statements (a tir.If built by
 // buildLoopIf — the else is optional in a loop body), nested while loops (a
-// tir.While built by buildWhile), and break/continue statements (a tir.Break /
+// tir.While built by buildWhile), nested range loops (a tir.RangeLoop built
+// by buildRangeLoop), nested classic for loops (a tir.For built by buildFor),
+// and break/continue statements (a tir.Break /
 // tir.Continue built by buildLoopJump), built one level deeper than the
 // enclosing block. A loop body has no required tail — it just runs statements
 // and does not need to end in a return or if — so buildBlock is deliberately
@@ -1615,6 +2042,13 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// into this same buildLoopBody for its own body, so nested range
 			// loops compose exactly like nested whiles do.
 			text, err = buildRangeLoop(unit, snapshot, statement, scope, depth, width)
+		case tir.For:
+			// A nested classic for loop inside a loop body (a while's, range
+			// loop's, or another for loop's body) reuses buildFor unchanged:
+			// it recurses into this same buildLoopBody for its own body, so
+			// nested classic for loops compose exactly like nested whiles and
+			// range loops do.
+			text, err = buildFor(unit, snapshot, statement, scope, depth, width)
 		case tir.If:
 			// A conditional statement inside a loop body is built by buildLoopIf:
 			// its arms are themselves loop bodies (no required tail, optional
@@ -1801,113 +2235,34 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// every other str initializer shape is a clean rejection.
 			return buildStrLocalDeclaration(unit, statement, initValue, scope, indent, context)
 		}
-		kind, ok := resolvedBuiltin(snapshot, initValue.Type)
-		if !ok {
-			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+		core, err := buildScalarInitializeCore(unit, snapshot, statement, initValue, scope, context, width)
+		if err != nil {
+			return "", err
 		}
-		switch kind {
-		case width:
-			// An integer local: emitted at the entry's width, exactly as
-			// before (buildExpr re-checks every node in the initializer is
-			// that width). The scope entry records the width so a later
-			// reference or reassignment is validated and emitted as an
-			// integer.
-			initExpr, err := buildExpr(unit, snapshot, statement.Children[0], scope, width)
-			if err != nil {
-				return "", err
-			}
-			scope[statement.Symbol] = localInfo{kind: width}
-			// A local that a later statement never reads would otherwise
-			// trigger -Wunused-variable under the mandated -Wall -Wextra
-			// -Werror; a redundant (void) cast is a no-op when the local IS
-			// read later, so it is emitted unconditionally rather than
-			// tracking whether a use actually follows.
-			return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, cType(width), statement.Symbol, initExpr, indent, statement.Symbol), nil
-		case types.Bool:
-			// A bool local: emitted as a C bool. The bool value grammar is
-			// genuinely different from the integer one (no checked
-			// arithmetic), so it is built by buildBoolExpr, not buildExpr.
-			initExpr, err := buildBoolExpr(unit, snapshot, statement.Children[0], scope, width)
-			if err != nil {
-				return "", err
-			}
-			scope[statement.Symbol] = localInfo{kind: types.Bool}
-			// Like integer locals (see the width case), a bool local is
-			// emitted as a plain (non-const) bool: the Initialize node does
-			// not carry let-vs-var, and the checker guarantees any Store
-			// this backend sees targets a writable `var`, so const would
-			// only be defense-in-depth at the cost of tracking which locals
-			// are ever reassigned. The (void) cast guards against
-			// -Wunused-variable exactly as the integer case above does.
-			return fmt.Sprintf("%sbool pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, initExpr, indent, statement.Symbol), nil
-		default:
-			return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
-		}
+		// A local that a later statement never reads would otherwise trigger
+		// -Wunused-variable under the mandated -Wall -Wextra -Werror; a
+		// redundant (void) cast is a no-op when the local IS read later, so it
+		// is emitted unconditionally rather than tracking whether a use
+		// actually follows. buildScalarInitializeCore produced the declaration
+		// core (`<cType> pebble_local_<id> = <expr>`); the indent, the
+		// statement-terminating `;`, and the (void) cast turn it into this
+		// full statement, byte-identical to before this helper was extracted.
+		return indent + core + ";\n" + indent + fmt.Sprintf("(void)pebble_local_%d;", statement.Symbol), nil
 	case tir.Store:
 		// A Store reassigns a local declared earlier in this block or an
 		// enclosing one; it does not declare a new symbol, so it never
 		// touches scope. The checker refuses to emit a Store targeting a
 		// `let` (C0606: the assignment place is not writable), so any
 		// Store this backend sees, from real source, necessarily targets
-		// a `var`.
-		if len(statement.Children) != 2 {
-			return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
+		// a `var`. The value text is built by buildStoreCore (shared with the
+		// for-loop update clause); the indent and the trailing `;` turn it
+		// into this full statement, byte-identical to before the helper was
+		// extracted.
+		core, err := buildStoreCore(unit, snapshot, statement, scope, context, width)
+		if err != nil {
+			return "", err
 		}
-		place, ok := unit.Node(statement.Children[0])
-		if !ok {
-			return "", fmt.Errorf("%s reassignment references invalid place node %d", context, statement.Children[0])
-		}
-		if place.Kind != tir.StoragePlace {
-			return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope", context, place.Kind)
-		}
-		targetInfo, declared := scope[place.Symbol]
-		if !declared {
-			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
-		}
-		// The new value is validated and emitted against the local's own
-		// declared type: the entry's width for an integer local (buildExpr),
-		// the bool grammar for a bool local (buildBoolExpr). A value of the
-		// wrong type — a bool assigned to an integer local, or an integer
-		// assigned to a bool local — is rejected by the appropriate builder.
-		switch targetInfo.kind {
-		case width:
-			storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
-		case types.Bool:
-			storeValue, err := buildBoolExpr(unit, snapshot, statement.Children[1], scope, width)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("%spebble_local_%d = %s;", indent, place.Symbol, storeValue), nil
-		default:
-			if targetInfo.isStr {
-				// A Store whose place names a str-typed local is a whole-str
-				// reassignment, which is out of scope this slice (a str local
-				// is only ever initialized from a string literal and then
-				// compared, never reassigned).
-				return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local; reassigning a str is not supported yet", context, place.Symbol)
-			}
-			if targetInfo.tuple != 0 {
-				// A Store whose place names a tuple-typed local is a
-				// whole-tuple reassignment, which is out of scope this slice
-				// (only element reads of a tuple local are supported, never
-				// assignment into or reassignment of one).
-				return "", fmt.Errorf("%s reassigns symbol %d, a tuple-typed local of type %s; reassigning a whole tuple is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.tuple))
-			}
-			if targetInfo.array != 0 {
-				return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
-			}
-			if targetInfo.optional != 0 {
-				return "", fmt.Errorf("%s reassigns symbol %d, an optional-typed local of type %s; reassigning an optional is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.optional))
-			}
-			if targetInfo.structType != 0 {
-				return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
-			}
-			return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
-		}
+		return indent + core + ";", nil
 	default:
 		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize) or a reassignment (Store)", context, statement.Kind)
 	}
