@@ -157,13 +157,39 @@
 // comparison lowers to a plain tir.BinaryValue with two un-wrapped operand
 // nodes (confirmed against a real fixture), handled in buildComparison
 // alongside the integer and bool comparison paths. Everything else str-shaped
-// is out of scope and a clean rejection: reassigning a str local, str-typed
-// function parameters/results, str fields/elements inside a tuple, array,
-// optional, or struct, ordering comparisons between strs (reachable from real
-// source but rejected), concatenation and interpolation (InterpolatedString),
-// and str indexing (a tir.CheckedIndex, reachable from real source via e.g.
-// `let c char = s[0];` — a separate mechanism this backend does not build for
-// str, rejected because its char result is not a supported local type).
+// is out of scope and a clean rejection: str fields/elements inside a tuple,
+// array, optional, or struct, ordering comparisons between strs (reachable from
+// real source but rejected), concatenation and interpolation
+// (InterpolatedString), and str indexing (a tir.CheckedIndex, reachable from
+// real source via e.g. `let c char = s[0];` — a separate mechanism this
+// backend does not build for str, rejected because its char result is not a
+// supported local type).
+//
+// Since 10.36, a str-typed local may also be reassigned (a tir.Store whose
+// place names a str local), and a helper function may declare str-typed
+// parameters and results. A reassignment's new value must be a string literal
+// — this slice is deliberately literal-to-literal only, matching the
+// declaration's own scope — emitted as a whole-struct PebbleStr reassignment,
+// `pebble_local_<sym> = (PebbleStr){ .data = ..., .len = <N> };`, whose inner
+// construction text is byte-identical to the declaration's (both share
+// buildStrLiteralValue). Reassigning a str local from anything else — a
+// str-typed local, a call result, concatenation — is confirmed reachable from
+// real source and a clean rejection naming what was found. A str-typed
+// parameter (validateHelperSignature now admits str alongside width/bool/
+// tuple/struct) seeds the callee's locals scope with localInfo{isStr: true}
+// exactly as a str local's Initialize does and is declared in the C signature
+// as the runtime's fixed PebbleStr, so a reference to it inside the body reads,
+// compares, and returns exactly like a str local. A str-typed result is
+// declared as PebbleStr and built with resultInfo{isStr: true}, so the helper's
+// tail-position Return builds its value via buildStrOperand (a SymbolValue
+// naming a str local, a string literal, or a call to another str-returning
+// helper). A str-returning helper's result is supported in exactly three
+// positions: a matching str-typed local's declaration initializer
+// (`let s str = g();`), a ==/!= comparison operand (`g() == "hi"`), and another
+// str-returning helper's return value (`return g();`) — all confirmed
+// reachable from real source. Call-site arguments to a str parameter accept a
+// str local, a string literal, or a str-returning call, all built by
+// buildStrOperand.
 //
 // Since 10.24, a helper function may declare a parameter of tuple type (one
 // of the shapes 10.19 supports) or struct type (one of the shapes 10.22
@@ -362,8 +388,8 @@ import (
 // seeded with that function's own parameters
 // (see discoverReachableHelpers and buildHelperFunctions). A called function
 // must be Pebble-convention, take parameters of only the entry's resolved
-// width or bool, and return exactly the
-// entry's resolved width; a width mismatch at a call site or a parameter
+// width, bool, str, or a tuple/struct type, and return exactly the
+// entry's resolved width, str, a tuple/struct type, or void; a width mismatch at a call site or a parameter
 // of any other
 // type is a clean rejection. A void-result helper is supported since 10.33
 // in exactly one position — a bare
@@ -1637,21 +1663,23 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 
 // validateHelperSignature checks one called function against the constraints
 // every reachable helper must satisfy: Pebble-convention, parameters whose
-// types are exactly the entry's resolved width, bool, a tuple type, or a
-// struct type, and a result of exactly the entry's resolved width, a tuple
+// types are exactly the entry's resolved width, bool, str, a tuple type, or a
+// struct type, and a result of exactly the entry's resolved width, str, a tuple
 // type, a struct type, or void. The width
 // rule is the same reasoning 10.13 established for locals — a called function
 // of the other width (an i32 helper called from an i64 entry, or vice versa) is
 // a clean width-mismatch rejection, never a coercion, since there is no
 // cast/coercion lowering to fall back on. A parameter's own type has the same
-// options a local has: the entry's width, bool, a tuple type (one of the
+// options a local has: the entry's width, bool, str (a str parameter is
+// declared as the runtime's PebbleStr and read/compared/returned exactly like a
+// str local — 10.36), a tuple type (one of the
 // shapes 10.19 supports — element types the entry's width or bool), or a
 // struct type (one of the shapes 10.22 supports — field types the entry's
-// width or bool); a tuple/struct result type has the same options. The
+// width or bool); a tuple/struct/str result type has the same options. The
 // tuple/struct's own internal shape is validated wherever
 // its typedef gets built (buildTupleTypedef / buildStructTypedef), not here.
-// Anything else (str, a pointer, an array, an optional, a helper of the other
-// integer width) is a clean rejection naming the position. A void-result
+// Anything else (a pointer, an array, an optional, an enum, a helper of the
+// other integer width) is a clean rejection naming the position. A void-result
 // helper is accepted: 10.33 added the one position such a call is legal in —
 // a bare discarded-expression statement (buildExpressionStatement), which the
 // void call's only reachable shape from real source (helper(); as its own
@@ -1665,17 +1693,19 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 	for i, param := range decl.Parameters {
 		// A parameter's type is resolved the same way a local's initializer's
 		// is: the entry's resolved width (built by buildExpr), bool (built by
-		// buildBoolExpr), or a tuple/struct type (read back through the
+		// buildBoolExpr), a str value (built by buildStrOperand — since 10.36 a
+		// str parameter is seeded like a str local and read/compared/returned
+		// exactly as one), or a tuple/struct type (read back through the
 		// Load(TuplePlace)/Load(FieldPlace) machinery), nothing else. This is
 		// exactly the width-consistency rule 10.13 established for locals,
-		// applied to parameters and extended to the aggregate local grammars
-		// 10.19/10.22 already build.
-		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s or bool, or a tuple/struct type (a parameter may be the entry's integer width, bool, or a tuple/struct type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		// applied to parameters and extended to the aggregate and str local
+		// grammars 10.19/10.22/10.23 already build.
+		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, or str, or a tuple/struct type (a parameter may be the entry's integer width, bool, str, or a tuple/struct type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want %s, a tuple/struct result type, or void (a called function may resolve to the entry's integer width, a tuple/struct type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	if !isWidth(snapshot, width, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want %s, str, a tuple/struct result type, or void (a called function may resolve to the entry's integer width, str, a tuple/struct type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
 	}
 	return nil
 }
@@ -1686,7 +1716,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // block with its body built by the exact same buildBlock the entry's body
 // uses — no parallel body-builder. Before the body is built, the helper's own
 // parameters seed its locals scope exactly as if each had been Initialize'd:
-// every parameter maps to its resolved type — the entry's width, bool, a tuple
+// every parameter maps to its resolved type — the entry's width, bool, str
+// (localInfo{isStr}), a tuple
 // type (localInfo{tuple}), or a struct type (localInfo{structType}) — so a
 // SymbolValue reference or a Store targeting a parameter inside the body
 // resolves through the existing machinery unchanged, and a tuple/struct
@@ -1696,7 +1727,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // naming every local uses, so a parameter and a local are textually identical
 // inside the body (which is correct: they behave identically once inside the
 // function), a tuple/struct parameter's C type being its aggregate's own
-// typedef name (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t). Each
+// typedef name (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t) and a str
+// parameter's C type being the runtime's fixed PebbleStr. Each
 // parameter also gets a `(void)pebble_local_<symbolID>;` immediately after
 // the opening brace, the same -Wunused-parameter defense the `(void)ctx;`
 // already provides for the context (confirmed: -Wunused-parameter genuinely
@@ -1737,11 +1769,24 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 				// unchanged, declared with the struct's own struct typedef name.
 				params = append(params, structTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{structType: param.Type}
+			case isStr(snapshot, param.Type):
+				// A str-typed parameter seeds the callee's locals scope as a
+				// str local (localInfo.isStr), exactly as a str local's
+				// Initialize does, so a reference to the parameter inside the
+				// body resolves through the existing buildStrOperand machinery
+				// unchanged (read in a ==/!= comparison, forwarded by a
+				// str-returning helper's return, or passed to another str
+				// parameter). The C parameter is declared as the runtime ABI's
+				// fixed PebbleStr type — the same C type a str local is declared
+				// with, no typedef involved — so passing a str by value is
+				// trivially valid C.
+				params = append(params, "PebbleStr"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{isStr: true}
 			default:
 				// validateHelperSignature rules any unsupported parameter out
 				// before a reachable helper is ever built, so this branch is
 				// defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s or bool, or a tuple/struct type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, or str, or a tuple/struct type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
@@ -1775,6 +1820,16 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 		case isStruct(snapshot, helper.decl.ResultType):
 			returnType = structTypeName(helper.decl.ResultType)
 			result = resultInfo{structType: helper.decl.ResultType}
+		case isStr(snapshot, helper.decl.ResultType):
+			// A str-result helper (10.36) is declared with the runtime ABI's
+			// fixed PebbleStr as its C return type — the same C type a str
+			// local is declared with, no typedef involved — and resultInfo
+			// records the str shape so buildBlock's tail-position Return builds
+			// its value via buildStrOperand (a SymbolValue naming a str local, a
+			// string literal, or a call to another str-returning helper) rather
+			// than buildExpr, which would reject a str-typed value.
+			returnType = "PebbleStr"
+			result = resultInfo{isStr: true}
 		}
 		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width, result, unions)
 		if err != nil {
@@ -1925,7 +1980,16 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		}
 		var returnValue string
 		var err error
-		if result.tuple != 0 || result.structType != 0 {
+		if result.isStr {
+			// The enclosing function returns str (a reachable helper whose
+			// ResultType is str — the entry always threads a scalar resultInfo),
+			// so the return value is built under the str grammar by
+			// buildStrOperand rather than buildExpr, which rejects a str-typed
+			// value. Supported return shapes are a SymbolValue naming a
+			// str-typed local in scope, a string literal, or a call to another
+			// str-returning helper.
+			returnValue, err = buildStrOperand(unit, snapshot, last.Children[0], scope, width)
+		} else if result.tuple != 0 || result.structType != 0 {
 			// The enclosing function returns a tuple/struct (a reachable helper
 			// whose ResultType is an aggregate — the entry always threads a
 			// scalar resultInfo), so the return value is built under the
@@ -2270,7 +2334,9 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 		indent := strings.Repeat("    ", depth+1)
 		var returnValue string
 		var err error
-		if result.tuple != 0 || result.structType != 0 {
+		if result.isStr {
+			returnValue, err = buildStrOperand(unit, snapshot, bodyNode.Children[0], locals, width)
+		} else if result.tuple != 0 || result.structType != 0 {
 			returnValue, err = buildAggregateReturnValue(unit, snapshot, bodyNode.Children[0], locals, result, width)
 		} else {
 			returnValue, err = buildExpr(unit, snapshot, bodyNode.Children[0], locals, width)
@@ -2801,9 +2867,11 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, stateme
 // place-validation and the buildExpr/buildBoolExpr dispatch live in exactly
 // one place. The place must be a plain StoragePlace naming a local in scope,
 // and the new value is validated and emitted against the local's own declared
-// type — the entry's width (buildExpr) or bool (buildBoolExpr), mirroring
+// type — the entry's width (buildExpr), bool (buildBoolExpr), or, since 10.36,
+// str (a new value that must be a string literal, emitted as a whole-struct
+// PebbleStr reassignment; see the isStr branch below), mirroring
 // buildLeadingStatement's Store case exactly, including its rejections of a
-// Store targeting a str/tuple/array/optional/struct local.
+// Store targeting a tuple/array/optional/struct local.
 func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(statement.Children) != 2 {
 		return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
@@ -2865,10 +2933,34 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node
 		}
 		if targetInfo.isStr {
 			// A Store whose place names a str-typed local is a whole-str
-			// reassignment, which is out of scope this slice (a str local is
-			// only ever initialized from a string literal and then compared,
-			// never reassigned).
-			return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local; reassigning a str is not supported yet", context, place.Symbol)
+			// reassignment. The only supported new-value shape is a string
+			// literal (a StringLiteral), the same single shape a str local's
+			// declaration accepts — this slice is deliberately literal-to-
+			// literal only, so `s = "hi";` works while reassigning from any
+			// other value does not. The emitted C is a whole-struct
+			// reassignment, `pebble_local_<sym> = (PebbleStr){ .data = ...,
+			// .len = <N> };`, whose inner PebbleStr construction text is the
+			// exact same byte-for-byte text buildStrLocalDeclaration embeds in
+			// a str local's declaration from the same literal (via
+			// buildStrLiteralValue — the (PebbleStr) compound-literal cast is
+			// what makes the brace text a valid C assignment expression).
+			// Reassigning a str local from anything else — a str-typed local
+			// (s = t;), a call result (s = g();), string concatenation (s =
+			// "h" + "i";), all confirmed reachable from real source against
+			// real fixtures — is a clean rejection naming what was found,
+			// never a guessed lowering.
+			storeValue, ok := unit.Node(statement.Children[1])
+			if !ok {
+				return "", fmt.Errorf("%s reassignment references invalid value node %d", context, statement.Children[1])
+			}
+			if storeValue.Kind != tir.StringLiteral {
+				return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local, from a %s; reassigning a str local from anything other than a string literal is not supported yet", context, place.Symbol, storeValue.Kind)
+			}
+			valueText, err := buildStrLiteralValue(storeValue)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("pebble_local_%d = (PebbleStr)%s", place.Symbol, valueText), nil
 		}
 		if targetInfo.tuple != 0 {
 			// A Store whose place names a tuple-typed local is a
@@ -3236,9 +3328,12 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// A str-typed local: its type is the initializer value's Type
 			// (the Initialize node carries no Type itself, confirmed against
 			// a real fixture — same as the compound locals above). The
-			// supported initializer is a StringLiteral (a string literal);
-			// every other str initializer shape is a clean rejection.
-			return buildStrLocalDeclaration(unit, statement, initValue, scope, indent, context)
+			// supported initializer is a StringLiteral (a string literal), or
+			// since 10.36 a call to a str-returning helper (a DirectCall whose
+			// result type is str, the one supported call position for
+			// declaring a str local); every other str initializer shape is a
+			// clean rejection.
+			return buildStrLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
 		core, err := buildScalarInitializeCore(unit, snapshot, statement, initValue, scope, context, width)
 		if err != nil {
@@ -3343,8 +3438,9 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, statemen
 // for a compound local (a tuple/array/optional/struct/enum is not a
 // types.BuiltinKind), isStr is true only for a str local (a str is a
 // types.BuiltinKind but has no width or bool grammar this backend builds —
-// it is initialized from a string literal and only ever compared, never
-// arithmetically combined), and tuple/array/optional/structType/enumType are
+// it is initialized from a string literal or a call to a str-returning
+// helper, reassigned from a string literal, and otherwise compared, passed,
+// and returned via the str-value builders), and tuple/array/optional/structType/enumType are
 // zero for a
 // scalar local. A struct value
 // rather than a parallel map keeps the scope a single map threaded through
@@ -3363,20 +3459,26 @@ type localInfo struct {
 }
 
 // resultInfo records what the enclosing function's tail return must produce:
-// an ordinary scalar — the entry's resolved integer width, in kind — a tuple,
-// in tuple (its types.TypeID), or a struct, in structType. The fields are
-// mutually exclusive, mirroring localInfo: kind is zero for a compound result
-// (a tuple/struct is not a types.BuiltinKind), and tuple/structType are zero
+// an ordinary scalar — the entry's resolved integer width, in kind — a str
+// value, in isStr — a tuple, in tuple (its types.TypeID), or a struct, in
+// structType. The fields are
+// mutually exclusive, mirroring localInfo: kind is zero for a compound or str
+// result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
+// str result, and tuple/structType are zero
 // for a scalar result. It is threaded alongside width through buildBlock and
 // buildIf so a tuple/struct-returning helper's tail-position Return builds its
 // value via buildAggregateReturnValue (a SymbolValue naming a matching
-// aggregate-typed local, or a fresh TupleValue/RecordConstruct) instead of
-// buildExpr, which would reject an aggregate-typed value. The entry's own body
+// aggregate-typed local, or a fresh TupleValue/RecordConstruct) and a
+// str-returning helper's tail-position Return builds its value via
+// buildStrOperand (a SymbolValue naming a str local, a string literal, or a
+// call to a str-returning helper) instead of
+// buildExpr, which would reject an aggregate- or str-typed value. The entry's own body
 // always threads resultInfo{kind: width} (a scalar, unchanged behavior), since
 // the entry's C return type stays the integer entryReturnType regardless of
 // what a helper may return.
 type resultInfo struct {
 	kind       types.BuiltinKind
+	isStr      bool
 	tuple      types.TypeID
 	structType types.TypeID
 }
@@ -4247,8 +4349,9 @@ func unionMemberType(members []unionMemberInfo, member symbol.SymbolID) (types.T
 
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
 // `PebbleStr pebble_local_<symbol> = { .data = (const uint8_t *)"<escaped>",
-// .len = <N> };` whose initializer is a StringLiteral (a string literal) —
-// the only supported str initializer this slice builds. PebbleStr is the
+// .len = <N> };` whose initializer is a StringLiteral (a string literal) or,
+// since 10.36, a call to a str-returning helper (a DirectCall whose result
+// type is str — `let s str = g();`). PebbleStr is the
 // runtime ABI's length-prefixed string type (runtime/include/pebble_rt.h), a
 // fixed runtime type rather than a program-specific shape, so the local is
 // declared directly as PebbleStr with no typedef. .data points at the
@@ -4258,23 +4361,79 @@ func unionMemberType(members []unionMemberInfo, member symbol.SymbolID) (types.T
 // printable byte emitted as a fixed-width octal escape so a following digit
 // can never be swallowed by C's maximal-munch escape rules); .len is the
 // decoded byte length, a compile-time constant known from the literal itself,
-// so no runtime strlen is involved. The initializer must be a StringLiteral:
+// so no runtime strlen is involved. The initializer must be a StringLiteral
+// or a matching str-returning DirectCall:
 // initializing a str local from any other value — a copy of another str
-// local, a call, anything else — is a clean rejection, keeping this slice's
-// supported initializer exactly the string literal. The local's scope entry
-// records isStr, so a later str ==/!= comparison resolves the operand as a
+// local, anything else — is a clean rejection, keeping this slice's
+// supported initializer exactly the string literal (or a call to a
+// str-returning helper). The local's scope entry
+// records isStr, so a later str ==/!= comparison, reassignment, or
+// str-returning function return resolves the operand as a
 // str local. Like every scalar local, the declaration is followed by a (void)
 // cast against -Wunused-variable.
-func buildStrLocalDeclaration(unit *tir.Unit, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string) (string, error) {
+func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind == tir.DirectCall {
+		// A call to a str-returning helper used as the direct initializer of a
+		// matching str-typed local — `let s str = helperReturningStr();` — the
+		// one position (10.36) in which calling a str-returning helper is
+		// supported for declaring a str local. The call's result type is the
+		// DirectCall node's own Type, which is the callee's resolved result
+		// type (confirmed against a real fixture), and it must be exactly the
+		// local's declared type — double-checked against the callee's declared
+		// ResultType (defense for hand-built IR), so the emitted C never
+		// initializes a str local from a call returning another type. The call
+		// itself is built by buildDirectCall, the same call-building machinery
+		// buildExpr's DirectCall case uses, so context and argument handling
+		// are identical to a scalar call — only the result type differs. Like
+		// every local, the declaration is followed by a (void) cast against
+		// -Wunused-variable.
+		calleeDecl, err := findFunctionDeclaration(unit, initValue.Symbol, "called function")
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != initValue.Type {
+			return "", fmt.Errorf("%s declares a str-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callExpr, err := buildDirectCall(unit, snapshot, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{isStr: true}
+		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol), nil
+	}
 	if initValue.Kind != tir.StringLiteral {
-		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal); initializing a str local from another value is not supported yet", context, initValue.Kind)
+		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal) or a call to a str-returning helper; initializing a str local from another value is not supported yet", context, initValue.Kind)
 	}
-	if initValue.Literal.Kind != tir.LiteralString {
-		return "", fmt.Errorf("%s declares a str-typed local from a StringLiteral with literal kind %s, want a decoded string", context, initValue.Literal.Kind)
+	valueText, err := buildStrLiteralValue(initValue)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
 	}
-	text := initValue.Literal.String
 	scope[statement.Symbol] = localInfo{isStr: true}
-	return fmt.Sprintf("%sPebbleStr pebble_local_%d = { .data = (const uint8_t *)\"%s\", .len = %d };\n%s(void)pebble_local_%d;", indent, statement.Symbol, escapeCString(text), len(text), indent, statement.Symbol), nil
+	return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, valueText, indent, statement.Symbol), nil
+}
+
+// buildStrLiteralValue builds the C text constructing a PebbleStr value from a
+// StringLiteral node's decoded bytes: the `{ .data = (const uint8_t *)
+// "<escaped>", .len = <N> }` brace text every str value is built from. It is
+// the single source of the string-literal-to-PebbleStr construction text,
+// shared byte-for-byte by the three places a str value is built from a
+// literal: a str-typed local's declaration initializer (buildStrLocalDeclaration
+// embeds it in `PebbleStr pebble_local_<id> = <text>;`), a comparison operand
+// with no local behind it (buildStrOperand wraps it in a (PebbleStr) compound
+// literal), and a str-typed local's reassignment (buildStoreCore wraps it the
+// same way) — so a declaration and a later reassignment from the same literal
+// emit byte-identical PebbleStr construction text. The escaping is
+// escapeCString's fixed-width-octal scheme (a \NNN octal escape for every
+// non-printable byte, so C's maximal-munch escape rules can never swallow a
+// following digit) and the length is the literal's compile-time decoded byte
+// length, so no runtime strlen is involved. A StringLiteral whose literal kind
+// is not a decoded string is a clean rejection.
+func buildStrLiteralValue(node tir.Node) (string, error) {
+	if node.Literal.Kind != tir.LiteralString {
+		return "", fmt.Errorf("contains a StringLiteral with literal kind %s, want a decoded string", node.Literal.Kind)
+	}
+	text := node.Literal.String
+	return fmt.Sprintf("{ .data = (const uint8_t *)\"%s\", .len = %d }", escapeCString(text), len(text)), nil
 }
 
 // escapeCString re-escapes a string literal's already-decoded byte content
@@ -4402,11 +4561,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 		if node.Operator != syntax.Equal && node.Operator != syntax.NotEqual {
 			return "", fmt.Errorf("entry function body if condition compares two str operands with operator %s, want == or !=", node.Operator)
 		}
-		left, err := buildStrOperand(unit, snapshot, node.Children[0], locals)
+		left, err := buildStrOperand(unit, snapshot, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildStrOperand(unit, snapshot, node.Children[1], locals)
+		right, err := buildStrOperand(unit, snapshot, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -4511,16 +4670,27 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.Nod
 	return buildExpr(unit, snapshot, id, locals, width)
 }
 
-// buildStrOperand builds one operand of a str ==/!= comparison, which is
-// exactly two shapes (both confirmed against a real fixture): a SymbolValue
-// naming an in-scope str-typed local (emitted as its pebble_local_<symbolID>
-// C name — a PebbleStr lvalue), or a StringLiteral (a str value with no
-// local behind it, emitted as a PebbleStr compound literal carrying the
-// escaped bytes and their compile-time length, the same construction a
-// str-typed local's declaration embeds). Anything else — a reference to a
-// non-str local, a call, any other node — is a clean rejection, never a
-// guessed lowering.
-func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo) (string, error) {
+// buildStrOperand builds one str value in a position that accepts a str
+// expression, which is exactly three shapes (each confirmed against a real
+// fixture): a SymbolValue naming an in-scope str-typed local (emitted as its
+// pebble_local_<symbolID> C name — a PebbleStr lvalue), a StringLiteral (a
+// str value with no local behind it, emitted as a PebbleStr compound literal
+// carrying the escaped bytes and their compile-time length, the same
+// construction a str-typed local's declaration embeds), or — since 10.36 — a
+// DirectCall to a str-returning helper (emitted as
+// pebble_fn_<calleeSymbolID>(ctx, <args>) by buildDirectCall, the same
+// call-building machinery buildExpr's DirectCall case uses), so a str-returning
+// helper's result can be compared directly (g() == "hi") or passed to a str
+// parameter (f(g())) without an intermediate local. width is the entry's
+// resolved integer width, threaded through to buildDirectCall so a call's
+// arguments are built at the width the callee's other parameters expect.
+// Anything else — a reference to a non-str local, any other node — is a clean
+// rejection, never a guessed lowering. The function is shared by the three
+// positions a str value is built: a ==/!= comparison operand (buildComparison),
+// a call-site argument for a str parameter (buildCallArguments), and a
+// str-returning helper's tail-position return value (buildBlock /
+// buildSwitchCaseBody dispatch on resultInfo.isStr).
+func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -4529,17 +4699,28 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || !info.isStr {
-			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a str-typed local declared earlier in the entry body", node.Symbol)
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a str-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	case tir.StringLiteral:
-		if node.Literal.Kind != tir.LiteralString {
-			return "", fmt.Errorf("entry function body expression contains a StringLiteral with literal kind %s, want a decoded string", node.Literal.Kind)
+		valueText, err := buildStrLiteralValue(node)
+		if err != nil {
+			return "", err
 		}
-		text := node.Literal.String
-		return fmt.Sprintf("(PebbleStr){ .data = (const uint8_t *)\"%s\", .len = %d }", escapeCString(text), len(text)), nil
+		return "(PebbleStr)" + valueText, nil
+	case tir.DirectCall:
+		// A call to a str-returning helper used directly as a str value. The
+		// DirectCall's own Type is the callee's resolved result type, which
+		// the reachability walk has already validated as str for a reachable
+		// helper (the check here is defense for hand-built IR); the call is
+		// built by the same buildDirectCall machinery a scalar-width call
+		// uses, so context and argument handling are identical.
+		if !isStr(snapshot, node.Type) {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want str", node.Symbol, describeType(snapshot, node.Type))
+		}
+		return buildDirectCall(unit, snapshot, node, locals, width)
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference or a string literal", node.Kind)
+		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference, a string literal, or a call to a str-returning function", node.Kind)
 	}
 }
 
@@ -5151,7 +5332,8 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 // DirectCall's children, one expression per child in order. Each child's
 // grammar is decided by the callee's corresponding parameter's resolved type
 // — the entry's width parameters take buildExpr, bool parameters take
-// buildBoolExpr, and tuple/struct parameters take buildAggregateArgument (an
+// buildBoolExpr, str parameters (since 10.36) take buildStrOperand, and
+// tuple/struct parameters take buildAggregateArgument (an
 // already-declared aggregate-typed local emitted as its own C name, or a
 // freshly-constructed aggregate built inline as a compound-literal expression,
 // see buildAggregateArgument) — so the same value grammars this backend
@@ -5193,11 +5375,23 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 				return "", err
 			}
 			args[i] = arg
+		case isStr(snapshot, param.Type):
+			// A str parameter: the argument is a str value built by
+			// buildStrOperand — a reference to a str-typed local in scope, a
+			// string literal directly (f("hi")), or a call to a str-returning
+			// helper (f(g())) — emitted as a PebbleStr value, the same C type
+			// the parameter is declared with, so passing a str by value is
+			// trivially valid C.
+			arg, err := buildStrOperand(unit, snapshot, argID, locals, width)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
 		default:
 			// validateHelperSignature rules any unsupported parameter out
 			// before a reachable helper is ever built, so this branch is
 			// defense for hand-built IR only.
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s or bool, or a tuple/struct type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, or str, or a tuple/struct type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	return strings.Join(args, ", "), nil
@@ -5628,10 +5822,12 @@ func isBool(snapshot *types.Snapshot, id types.TypeID) bool {
 
 // isStr reports whether id is the snapshot's str builtin. A str value is a
 // builtin like bool, but unlike bool (or the entry's integer width) it has no
-// arithmetic grammar this backend builds — a str local is initialized only
-// from a string literal and a str value is only ever an operand of a ==/!=
-// comparison — so it is recognized by this distinct predicate rather than by
-// a shared scalar-builder switch.
+// arithmetic grammar this backend builds — a str local is initialized from a
+// string literal (or, since 10.36, a call to a str-returning helper), may be
+// reassigned from a string literal, and a str value is an operand of a ==/!=
+// comparison, a call-site argument, or a str-returning function's return value
+// — so it is recognized by this distinct predicate rather than by a shared
+// scalar-builder switch.
 func isStr(snapshot *types.Snapshot, id types.TypeID) bool {
 	if snapshot == nil {
 		return false

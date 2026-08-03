@@ -3646,12 +3646,13 @@ func TestEmitI64ParameterizedHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRejectsUnsupportedParameterType(t *testing.T) {
-	// A str parameter is reachable from real source (the checker accepts it),
-	// so this is a genuine backend-scope rejection, not hand-built IR:
+	// An array parameter is reachable from real source (the checker accepts
+	// it), so this is a genuine backend-scope rejection, not hand-built IR:
 	// validateHelperSignature must reject the parameter because its type is
-	// neither the entry's width nor bool, naming the parameter position.
-	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { return 1; } fn main() i32 { return f(\"hi\"); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	// neither the entry's width, bool, str, nor a tuple/struct type, naming the
+	// parameter position.
+	unit, snapshot, entryID := buildFixture(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, or str")
 }
 
 func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
@@ -3660,7 +3661,7 @@ func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
 	// its result, here also i64) must be a clean rejection naming the width,
 	// never a coercion. The parameter check fires before the result check.
 	unit, snapshot, entryID := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, or str")
 }
 
 func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
@@ -4975,14 +4976,232 @@ func TestEmitRejectsStrOrderingComparison(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "compares two str operands")
 }
 
-func TestEmitRejectsStrReassignment(t *testing.T) {
-	// Reassigning a str-typed local (s = "ho") is reachable from real source
-	// but out of scope this slice: a str local is only ever initialized from
-	// a string literal and then compared. The Store's place names a str-typed
-	// local, so buildLeadingStatement rejects it with a clear error naming the
-	// reassignment.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a str is not supported")
+// 10.36 — str reassignment and str-typed parameters/results
+
+func TestEmitStrReassignmentCompilesAndRuns(t *testing.T) {
+	// Reassigning a str-typed local from a new string literal, the effect
+	// observed indirectly (this backend has no way to return or print a str's
+	// contents, so the reassignment's effect must be proven through a later
+	// comparison): s starts as "hi", is reassigned to "ho", and the subsequent
+	// comparisons prove the stored value actually changed — s == "ho" (the new
+	// literal) is true and s != "hi" (the old literal) is true — so the
+	// then-arm runs and the process exits 7. If the reassignment were a no-op
+	// the stored value would still be "hi" and the else-arm would exit 3.
+	emitAndRun(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; if s != \"hi\" && s == \"ho\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReassignmentEscapedLiteralCompilesAndRuns(t *testing.T) {
+	// The escaping correctness must survive a reassignment, not just a
+	// declaration: reassigning from a literal whose decoded content forces C
+	// escapes (newline, tab, quote, backslash, control byte), then comparing
+	// against a differently-spelled literal that decodes to the same bytes.
+	// If the reassignment's escaped C text were wrong the equality would fail
+	// and the else-arm would exit 3 instead of 7.
+	emitAndRun(t, "fn main() i32 { var s str = \"x\"; s = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReassignmentWritesC(t *testing.T) {
+	// The emitted C for a str local reassigned from a string literal: the
+	// reassignment is a whole-struct PebbleStr assignment whose inner
+	// construction text is byte-identical to the declaration's from the same
+	// literal — `pebble_local_<sym> = (PebbleStr){ .data = (const uint8_t *)
+	// "ho", .len = 2 };` — the (PebbleStr) compound-literal cast being what
+	// makes the shared brace text a valid C assignment expression. Symbol 25 is
+	// the s local, confirmed against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; if s != \"hi\" && s == \"ho\" { return 7; } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"pebble_local_25 = (PebbleStr){ .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"    (void)pebble_local_25;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRejectsStrReassignmentFromLocal(t *testing.T) {
+	// Reassigning a str local from another str local (s = t) is reachable from
+	// real source (confirmed against a real fixture dump: the Store's value
+	// child is a SymbolValue) but out of scope — this slice is deliberately
+	// literal-to-literal only — so it is a clean rejection naming what was
+	// found.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; var t str = \"ho\"; s = t; return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a SymbolValue")
+}
+
+func TestEmitRejectsStrReassignmentFromCall(t *testing.T) {
+	// Reassigning a str local from a str-returning call (s = g()) is reachable
+	// from real source (confirmed against a real fixture dump: the Store's
+	// value child is a DirectCall) but out of scope — literal-to-literal only —
+	// so it is a clean rejection naming what was found.
+	unit, snapshot, entryID := buildFixture(t, "fn g() str { return \"ho\"; } fn main() i32 { var s str = \"hi\"; s = g(); return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a DirectCall")
+}
+
+func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
+	// Reassigning a str local from concatenation (s = "h" + "i") is reachable
+	// from real source (confirmed against a real fixture dump: the Store's
+	// value child is a BinaryValue of type str — concatenation lowers to a
+	// str-typed BinaryValue, and interpolation is the separate
+	// InterpolatedString node) but out of scope — concatenation/interpolation
+	// needs runtime primitives this backend has none of — so it is a clean
+	// rejection naming what was found.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"h\" + \"i\"; return 0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a BinaryValue")
+}
+
+func TestEmitStrParameterLiteralCompilesAndRuns(t *testing.T) {
+	// A str-typed parameter passed a string literal at the call site, the
+	// helper comparing it against a literal and returning a distinguishing
+	// integer result: f("hi") compares s == "hi" (true) and exits 1, f("ho")
+	// compares false and exits 0. The parameter is seeded into the callee's
+	// scope as a str local and the comparison routes through the existing str
+	// comparison machinery.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"hi\"); }", 1},
+		{"not equal", "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"ho\"); }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStrParameterLocalCompilesAndRuns(t *testing.T) {
+	// A str-typed parameter passed a str-typed local (not a literal directly)
+	// at the call site: the local's decoded content flows into the callee
+	// through the parameter, proving the value is passed rather than
+	// re-created at the call site. With the local holding "hi" the comparison
+	// is true (exit 1); with "ho" it is false (exit 0).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"local equals literal", "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { let x str = \"hi\"; return f(x); }", 1},
+		{"local differs from literal", "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { let x str = \"ho\"; return f(x); }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStrParameterWritesC(t *testing.T) {
+	// The parameter C type for a str-taking helper: the C signature declares
+	// the parameter as the runtime ABI's fixed PebbleStr (the same C type a
+	// str local is declared with, no typedef involved) with the
+	// pebble_local_<symbol> naming every parameter uses, plus the (void) cast
+	// every parameter gets. Symbols 24 (f), 25 (the s parameter), and 26 (main)
+	// come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"hi\"); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx, PebbleStr pebble_local_25) {",
+		"    (void)pebble_local_25;",
+		"return pebble_fn_24(ctx, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 });",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrReturningHelperLocalDeclarationCompilesAndRuns(t *testing.T) {
+	// A str-returning helper whose result is used in a str-typed local's
+	// declaration, then compared: g returns "hi", the entry declares s from the
+	// call (the one supported call position for declaring a str local — the
+	// direct initializer of a matching str local), and the comparison against
+	// the literal proves the returned value landed in the local. 7 on the
+	// then-arm, 3 on the else.
+	emitAndRun(t, "fn g() str { return \"hi\"; } fn main() i32 { let s str = g(); if s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	// A str-returning helper forwarding an already-declared str local: g
+	// declares its own str local and `return s;` forwards it (a plain
+	// SymbolValue return, the str analog of the tuple/struct forward), so the
+	// return statement emits `return pebble_local_<s>;`. The returned value
+	// lands in the entry's local and compares equal. 7 on the then-arm.
+	emitAndRun(t, "fn g() str { var s str = \"hi\"; return s; } fn main() i32 { let s str = g(); if s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReturningHelperDirectComparisonCompilesAndRuns(t *testing.T) {
+	// A str-returning helper whose result is directly compared without an
+	// intermediate local: g() == "hi" — confirmed checker-reachable (the
+	// comparison's left operand is a DirectCall of type str, dumped from a real
+	// fixture). The call result flows straight into pebble_rt_str_eq as a
+	// PebbleStr value. 7 on the then-arm.
+	emitAndRun(t, "fn g() str { return \"hi\"; } fn main() i32 { if g() == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReturningHelperChainedReturnCompilesAndRuns(t *testing.T) {
+	// A str-returning helper whose result is another str-returning helper's
+	// return value (`return g();` — confirmed checker-reachable, a DirectCall
+	// as a str-returning function's Return child): h forwards g's result, the
+	// entry declares s from h's call, and the comparison proves the value
+	// survived the two-hop chain. 7 on the then-arm.
+	emitAndRun(t, "fn g() str { return \"hi\"; } fn h() str { return g(); } fn main() i32 { let s str = h(); if s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrParameterAndResultCompilesAndRuns(t *testing.T) {
+	// A helper taking a str parameter and returning it — `fn echo(s str) str
+	// { return s; }` — combining the str-parameter and str-result support: the
+	// parameter seeds the callee's scope as a str local and the tail return
+	// forwards it, so the same value round-trips through the function
+	// boundary. 7 on the then-arm.
+	emitAndRun(t, "fn echo(s str) str { return s; } fn main() i32 { let s str = echo(\"hi\"); if s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReturningHelperAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// A str-returning helper's result passed as a str-typed call argument
+	// (f(g())) — the argument builder shares buildStrOperand with the direct-
+	// comparison and return paths, so a str value is uniformly whatever a str
+	// expression builds. g's result lands in f's parameter and compares equal,
+	// exiting 1.
+	emitAndRun(t, "fn g() str { return \"hi\"; } fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(g()); }", false, 1, false)
+}
+
+func TestEmitStrReturningHelperWritesC(t *testing.T) {
+	// The parameter and return C types for a str-taking, str-returning helper
+	// (the greet flagship): the helper's C signature declares PebbleStr for
+	// both the parameter and the return type — the runtime ABI's fixed type, no
+	// typedef — its return statement forwards the parameter, and the call site
+	// passes the literal as a PebbleStr compound literal and declares the
+	// entry's local from the call. Symbols 24 (greet), 25 (the name
+	// parameter), and 27 (the entry's s local) come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn greet(name str) str { return name; } fn main() i32 { let s str = greet(\"hi\"); if s == \"hi\" { return 7; } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static PebbleStr pebble_fn_24(PebbleContext *ctx, PebbleStr pebble_local_25) {",
+		"    (void)pebble_local_25;",
+		"    return pebble_local_25;",
+		"PebbleStr pebble_local_27 = pebble_fn_24(ctx, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 });",
+		"    (void)pebble_local_27;",
+		"if (pebble_rt_str_eq(pebble_local_27, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestEmitRejectsStrIndexing(t *testing.T) {
@@ -4996,14 +5215,6 @@ func TestEmitRejectsStrIndexing(t *testing.T) {
 	// IR construction failed — so the reachable form here is the char-typed
 	// read.)
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
-}
-
-func TestEmitRejectsStrParameter(t *testing.T) {
-	// A function taking a str parameter is reachable from real source but out
-	// of scope this slice: validateHelperSignature requires every parameter to
-	// be the entry's width or bool, and str is neither.
-	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { return 1; } fn main() i32 { return f(\"hi\"); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
 

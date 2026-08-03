@@ -1123,6 +1123,51 @@ incrementally as work proceeds.
 
   **Phase 3 (enums/tagged unions) is now fully complete** — 10.34 and
   10.35, plus the prerequisite checker fix.
+- **10.36 — str reassignment and str-typed function parameters/
+  results** (`compiler/internal/backend`): Phase 4's (strings/slices)
+  first slice — deliberately the smallest, lowest-risk piece,
+  closing two gaps the file's own doc comment already named as
+  out of scope, neither needing any new runtime primitive (confirmed:
+  `runtime/src/str.c` has exactly one function, `pebble_rt_str_eq`,
+  unchanged by this slice). A str-typed local may now be reassigned —
+  `s = "hi";` — but only from a string literal, the same single
+  initializer shape a str local's declaration already accepts;
+  reassigning from a str-typed local, a call result, or string
+  concatenation is confirmed checker-reachable and a clean rejection
+  naming what was found, not implemented. A helper function may now
+  declare str-typed parameters and a str result, each declared as the
+  runtime ABI's fixed `PebbleStr` (no typedef, exactly like a str
+  local). A str-returning helper's result is supported in exactly
+  three positions, each confirmed checker-reachable: a matching
+  str-typed local's declaration initializer, a `==`/`!=` comparison
+  operand, and another str-returning helper's own return value — all
+  routed through a single shared `buildStrOperand`, extended with a
+  `DirectCall` case, so a str value builds identically regardless of
+  which of the three positions it appears in. A new
+  `buildStrLiteralValue` helper was extracted so a str local's
+  declaration, a bare-literal comparison operand, and a reassignment
+  all emit byte-identical `PebbleStr` construction text from the same
+  literal — one source of truth rather than three copies that could
+  drift. Verified end-to-end (reassignment observed indirectly via a
+  subsequent `==` comparison, since this backend has no way to
+  directly return/print a str's contents; an escaped-literal
+  reassignment; a str parameter passed a literal and a local at
+  different call sites; a str-returning helper's result used in a
+  local declaration, forwarded by reference, compared directly with no
+  intermediate local, chained into another helper's return, and passed
+  as another call's argument; rejection tests for reassigning a str
+  local from a local, a call, and a concatenation) and independently
+  outside the harness — manually compiled and ran the emitted C for a
+  fixture combining a str parameter, an in-body reassignment, and a
+  str-returning helper's result compared in the caller, with
+  `-Wall -Wextra -Werror`, confirming exit code 1. Concatenation,
+  interpolation (`InterpolatedString`), str indexing, and ordering
+  comparisons between strs remain out of scope — concatenation and
+  interpolation specifically need new runtime primitives (a growable
+  `PebbleStr` built through `PebbleContext`'s existing allocator
+  interface, confirmed already wired in
+  `runtime/include/pebble_rt.h`, but not yet used for strings) and are
+  the next slice(s).
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
