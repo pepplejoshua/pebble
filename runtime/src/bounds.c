@@ -30,3 +30,17 @@ int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length) {
     }
     return index;
 }
+
+int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length) {
+    if (start < 0 || start > end || end > length) {
+        pebble_rt_index_panic();
+    }
+    return start;
+}
+
+int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length) {
+    if (start < 0 || start > end || end > length) {
+        pebble_rt_index_panic();
+    }
+    return start;
+}

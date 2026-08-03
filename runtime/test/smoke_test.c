@@ -37,6 +37,12 @@
  *  11. Str equality: identical bytes compare equal, differing bytes compare
  *      unequal, a length mismatch compares unequal without reading past the
  *      shorter operand, and two empty strs compare equal.
+ *  12. Checked slice range: a valid range (0 <= start <= end <= length,
+ *      including the empty-slice start == end and the full-range start == 0,
+ *      end == length edge cases) returns start unchanged at both widths; an
+ *      invalid range (start negative, start after end, or end past length)
+ *      panics in EVERY configuration (RELEASE included) — same reasoning as
+ *      checked array indexing above.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -222,6 +228,45 @@ static void trigger_index_too_high_i64(void) {
 
 static void trigger_index_negative_i64(void) {
     (void)pebble_rt_checked_index_i64(-1, 3);
+}
+
+/* Checked slice range: a valid range returns start unchanged, including both
+ * edge cases (an empty slice, start == end; a full-range slice, start == 0
+ * and end == length); an invalid range panics in EVERY configuration — same
+ * reasoning as checked array indexing above (an out-of-range slice has no
+ * defined fallback view to return).
+ */
+static void test_checked_slice_range_normal(void) {
+    assert(pebble_rt_checked_slice_start_i32(1, 3, 5) == 1);
+    assert(pebble_rt_checked_slice_start_i32(0, 5, 5) == 0);
+    assert(pebble_rt_checked_slice_start_i32(2, 2, 5) == 2);
+    assert(pebble_rt_checked_slice_start_i64(1, 3, 5) == 1);
+    assert(pebble_rt_checked_slice_start_i64(0, 5, 5) == 0);
+    assert(pebble_rt_checked_slice_start_i64(2, 2, 5) == 2);
+}
+
+static void trigger_slice_start_negative(void) {
+    (void)pebble_rt_checked_slice_start_i32(-1, 3, 5);
+}
+
+static void trigger_slice_start_after_end(void) {
+    (void)pebble_rt_checked_slice_start_i32(3, 2, 5);
+}
+
+static void trigger_slice_end_too_high(void) {
+    (void)pebble_rt_checked_slice_start_i32(0, 6, 5);
+}
+
+static void trigger_slice_start_negative_i64(void) {
+    (void)pebble_rt_checked_slice_start_i64(-1, 3, 5);
+}
+
+static void trigger_slice_start_after_end_i64(void) {
+    (void)pebble_rt_checked_slice_start_i64(3, 2, 5);
+}
+
+static void trigger_slice_end_too_high_i64(void) {
+    (void)pebble_rt_checked_slice_start_i64(0, 6, 5);
 }
 
 /* Checked optional unwrap: a present optional returns its payload unchanged
@@ -497,6 +542,39 @@ int main(void) {
         return 1;
     }
     printf("ok: out-of-bounds indexing panics in subprocess\n");
+
+    test_checked_slice_range_normal();
+    printf("ok: checked slice range normal results\n");
+
+    /* An invalid slice range panics in EVERY configuration, both widths,
+     * every invalid shape (negative start, start after end, end past
+     * length) — same reasoning as division by zero and array bounds above.
+     */
+    if (verify_checked_overflow_panics("i32 slice start negative", trigger_slice_start_negative) != 0) {
+        fprintf(stderr, "smoke_test: checked slice start-negative subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i32 slice start after end", trigger_slice_start_after_end) != 0) {
+        fprintf(stderr, "smoke_test: checked slice start-after-end subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i32 slice end too high", trigger_slice_end_too_high) != 0) {
+        fprintf(stderr, "smoke_test: checked slice end-too-high subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i64 slice start negative", trigger_slice_start_negative_i64) != 0) {
+        fprintf(stderr, "smoke_test: checked i64 slice start-negative subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i64 slice start after end", trigger_slice_start_after_end_i64) != 0) {
+        fprintf(stderr, "smoke_test: checked i64 slice start-after-end subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i64 slice end too high", trigger_slice_end_too_high_i64) != 0) {
+        fprintf(stderr, "smoke_test: checked i64 slice end-too-high subprocess check FAILED\n");
+        return 1;
+    }
+    printf("ok: invalid slice range panics in subprocess\n");
 
     test_checked_unwrap_normal();
     printf("ok: checked unwrap normal results\n");

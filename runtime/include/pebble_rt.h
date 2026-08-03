@@ -196,6 +196,20 @@ int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b);
 int32_t pebble_rt_checked_index_i32(int32_t index, int32_t length);
 int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length);
 
+/* ---- checked slice range ---------------------------------------------------
+ * A slice expression (arr[start:end]) validates 0 <= start <= end <= length
+ * before forming the view, panicking with PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS
+ * otherwise — like checked indexing above, this is not gated by
+ * PEBBLE_RT_MODE_SAFE/RELEASE, since there is no defined "wrapped" slice for
+ * an invalid range to fall back to. Returns start unchanged when the range is
+ * valid, so a call site can be used directly as the emitted slice's base
+ * pointer offset: arr + pebble_rt_checked_slice_start_i32(start, end, N)
+ * (the slice's own length is then simply end - start, itself already proven
+ * non-negative by this check, so no separate helper computes it).
+ */
+int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length);
+int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length);
+
 /* ---- checked optional unwrap -----------------------------------------------
  * An optional's force-unwrap (`value!`) panics with PEBBLE_PANIC_UNWRAP_FAILED
  * when the optional holds no value. Like array bounds and division by zero,
