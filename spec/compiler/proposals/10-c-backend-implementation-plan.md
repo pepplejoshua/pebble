@@ -843,6 +843,48 @@ incrementally as work proceeds.
   `fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3;
   step = step + 1 { total = total + step; } return total; }` with
   `-Wall -Wextra -Werror`, confirming exit code 3.
+- **10.31 — switch statements** (`compiler/internal/backend`): Phase
+  2's third and final control-flow slice.
+  `switch <subject> { case v1, v2: <body> case v3: <body> else: <body> }`
+  lowers directly to a C `switch` statement, as a block's tail
+  statement (mirroring how a two-armed if/else is the only other
+  non-return tail shape `buildBlock` accepts). Multiple `SwitchCase`
+  nodes sharing the same body node ID (a multi-value `case v1, v2:`
+  clause, confirmed against a real fixture) are grouped and emitted as
+  stacked C case labels sharing one body, rather than duplicating the
+  body text. An `else` arm maps to C's `default:`. A `SwitchCase`'s
+  body may be a `Block` (multi-statement, braces required) or a bare
+  statement directly (single-statement, no braces, confirmed against a
+  real fixture) — the only supported bare shape is a `Return`, since
+  every case body must end in a return or a two-armed if/else whose
+  arms each end in return (confirmed: a non-exhaustive switch with no
+  `else` is checker-rejected), the same tail-statement grammar
+  `buildBlock` already enforces everywhere else — so no `break;` is
+  ever needed. A `Block`-shaped case body reuses `buildBlock`
+  completely unchanged, correctly threading `resultInfo` (10.26) so a
+  case's return value builds correctly for both scalar- and
+  aggregate-returning functions. A `CaseValue`-based case (an enum
+  variant) is rejected cleanly — no enum support exists yet. No
+  checker/tir bug found this slice (unlike 10.29/10.30, which each
+  needed one). This dispatch needed two model attempts for reasons
+  unrelated to the task: the default-tier model failed to even start
+  twice in a row (OpenCode's own infrastructure was down, confirmed by
+  an alternate model completing cleanly on its first attempt
+  immediately after). Verified end-to-end (multi-value case, both
+  matching values, single-value case, else, block- and bare-return
+  case bodies, bool subject both values, switch inside a helper, a
+  helper call in the subject, an i64 entry, multiple cases with their
+  own locals, and rejection tests for an enum case and a
+  non-exhaustive switch) and independently outside the harness —
+  manually compiled and ran the emitted C for
+  `fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30;
+  else: return 0; } }` with `-Wall -Wextra -Werror`, confirming exit
+  code 10.
+
+  **Phase 2's control-flow trio (range loops, classic for loops,
+  switch) is now complete** — 10.29 through 10.31. `defer` (Phase 2's
+  fourth originally-planned item) remains, needing real design work
+  (per-exit-edge lowering) before it can be scoped into a slice.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
