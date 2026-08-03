@@ -863,3 +863,34 @@ func TestShared06aDiagnosticBudgetReplacesOnlyItsLastDiagnostic(t *testing.T) {
 		t.Fatalf("shared 06a overflow diagnostics = %+v", items)
 	}
 }
+
+// TestDeclarationFactsTaggedUnionVariantPublishesUnionType is a regression
+// test for a real bug: a tagged-union variant's published symbol term used to
+// stay as the variant's own payload type (member.Type) rather than being
+// overridden to the declaring union type, unlike a plain enum variant (whose
+// term IS correctly overridden a few lines above, in the exact same loop).
+// A tagged-union variant construction's own value IS the union type, exactly
+// like a plain enum variant's value IS the enum type — Choice.value(5) is a
+// Choice, not an i32 — so without this override, prepareVariant's call-result
+// constraint (compiler/internal/check/call_facts.go, which unifies the call's
+// result with the variant symbol's own published term) unified the result
+// with the payload type instead, and the full checker pipeline could not
+// build ANY program that assigns a tagged-union construction to a
+// union-typed destination: `var c Choice = Choice.value(5);` failed C0601,
+// and even a top-level `let` failed C0616. Found while implementing the C
+// backend's 10.34 (plain enum) slice, whose tagged-union rejection test had
+// to hand-build its IR directly because this bug made the shape entirely
+// unreachable from real source.
+func TestDeclarationFactsTaggedUnionVariantPublishesUnionType(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Choice = union enum { empty void; value i32; };
+fn main() i32 {
+	var c Choice = Choice.value(5);
+	return 0;
+}
+`)})
+	result := Check(inputs, diagnostics, Config{})
+	if !result.Successful() {
+		t.Fatalf("tagged-union variant construction was rejected: %+v", diagnostics.Items())
+	}
+}

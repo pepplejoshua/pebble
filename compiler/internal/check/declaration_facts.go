@@ -177,7 +177,17 @@ func (w *walker) handleTypeDeclaration(ref symbol.SyntaxRef, node syntax.Node) {
 				continue
 			}
 			term := w.termForTemplate(member.Type, descriptor.Parameters, w.origin(ref, node, "member type", value.ID, genericOwner))
-			if descriptor.Nominal == infer.NominalEnum {
+			if descriptor.Nominal == infer.NominalEnum || descriptor.Nominal == infer.NominalTaggedUnion {
+				// A tagged-union variant's own value (Choice.value(5)) IS a
+				// Choice, exactly like a plain enum variant's value IS a
+				// Color — its published term must be the declaring type
+				// itself, not the payload's own type (member.Type, still used
+				// unmodified for payload argument checking in
+				// prepareVariant, which re-derives it independently from the
+				// TypeDeclaration's own Members list). Without this, a
+				// variant construction's call result unifies with its
+				// payload type instead of the union type, and any assignment
+				// of that value to a Choice-typed destination fails C0601.
 				term = w.termForTemplate(descriptor.Template, descriptor.Parameters, w.origin(ref, node, "enum variant", value.ID, genericOwner))
 			}
 			memberNode, _ := item.Tree.Node(memberSymbol.Declaration.Node)
