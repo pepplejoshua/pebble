@@ -255,6 +255,33 @@
 // (rejected by the element-type gates), or indexed directly ([v; N][i],
 // which lowers to a bare CheckedIndex) — is confirmed reachable from real
 // source but already rejected cleanly by the existing gates, never guessed.
+//
+// Since 10.34, a local may also be declared as a plain (payload-less) enum —
+// type Color = enum { red, green, blue }; — initialized from a variant literal
+// (an EnumVariantValue, Color.green, or a zero-payload VariantConstruct,
+// Color.red(), both confirmed reachable from real source), reassigned (c =
+// Color.red;), switched on (the switch subject is an enum-typed local or
+// variant literal, each case a SwitchCase whose CaseValue is the variant
+// symbol, emitted as `case pebble_variant_<caseValue>:`, multi-value cases and
+// the else/default arm unchanged from 10.31), and compared (all six
+// comparisons between two enum values, confirmed checker-reachable including
+// the ordering operators, lowered to the plain C operator on the enum
+// constants). A plain enum type is emitted as one C enum typedef,
+// pebble_enum_<typeID>_t, with one named constant pebble_variant_<member> per
+// variant in the enum's declared order (TypeDecl.Members) — the declared order
+// IS the discriminant (Members[i] gets C value i), so case labels and stored
+// values agree with the typedef by construction. An enum and a struct are both
+// Nominal in the type snapshot, so isEnumType distinguishes them from the
+// unit's own node graph (an enum's members carry no struct-field evidence);
+// the enum check precedes the struct check everywhere the two could collide.
+// A tagged union (union enum, a variant carrying a payload) is rejected
+// cleanly naming that payload support does not exist yet — the payload is
+// recorded in TIR only as a VariantConstruct's children (a plain enum's
+// variants are payload-less, and the checker rejects calling one with an
+// argument, C0604), and a full tagged-union program cannot be produced by the
+// checker today at all (C0601/C0616 — reported, not fixed). Enum-typed
+// function parameters/results, and enum-typed tuple/struct/array/optional
+// elements and fields, remain clean rejections.
 package backend
 
 import (
@@ -374,13 +401,28 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	ordered, err := orderAggregateTypes(snapshot, tupleTypes, optionalTypes, structInfos)
+	enumInfos, err := collectEnumTypes(unit, snapshot, blockID, helpers)
 	if err != nil {
 		return err
 	}
-	typedefs, err := buildAggregateTypedefs(snapshot, result, ordered.all, ordered.structs)
+	ordered, err := orderAggregateTypes(unit, snapshot, tupleTypes, optionalTypes, structInfos)
 	if err != nil {
 		return err
+	}
+	typedefs, err := buildAggregateTypedefs(unit, snapshot, result, ordered.all, ordered.structs)
+	if err != nil {
+		return err
+	}
+	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos)
+	if err != nil {
+		return err
+	}
+	if enumTypedefs != "" {
+		if typedefs == "" {
+			typedefs = enumTypedefs
+		} else {
+			typedefs = typedefs + "\n" + enumTypedefs
+		}
 	}
 	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result)
 	if err != nil {
@@ -927,7 +969,14 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 	}
 	if node.Kind == tir.Initialize {
 		for _, childID := range node.Children {
-			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) {
+			// A struct-typed local's initializer carries the struct type; an
+			// enum-typed local's initializer also carries a Nominal type (a
+			// plain enum is Nominal exactly like a struct — see isEnumType),
+			// so an enum child must be excluded here or it would be collected
+			// as a struct and resolveStructInfo would fail trying to resolve
+			// its members as fields. Enums are collected by
+			// collectEnumTypes instead.
+			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) && !isEnumType(unit, snapshot, child.Type) {
 				*out = append(*out, child.Type)
 			}
 		}
@@ -954,8 +1003,13 @@ type aggregateTypeOrder struct {
 
 // orderAggregateTypes performs a stable dependency-first traversal. The input
 // order is deliberately the historical tuple, optional, struct collection
-// order, so unrelated programs retain their prior output.
-func orderAggregateTypes(snapshot *types.Snapshot, tuples, optionals []types.TypeID, structs []structInfo) (aggregateTypeOrder, error) {
+// order, so unrelated programs retain their prior output. unit is threaded
+// through so an enum-typed dependency (a plain enum is Nominal like a struct —
+// see isEnumType) is never mistaken for a struct: enum types are not
+// aggregates this pass orders (they are emitted by buildEnumTypedefs) and have
+// no field dependencies to recurse into, so they are skipped entirely rather
+// than appended to the postorder as a zero-valued structInfo.
+func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optionals []types.TypeID, structs []structInfo) (aggregateTypeOrder, error) {
 	structByType := make(map[types.TypeID]structInfo, len(structs))
 	for _, info := range structs {
 		structByType[info.typ] = info
@@ -992,7 +1046,7 @@ func orderAggregateTypes(snapshot *types.Snapshot, tuples, optionals []types.Typ
 		}
 		max := 0
 		for _, d := range deps {
-			if isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || isStruct(snapshot, d) {
+			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || isStruct(snapshot, d)) && !isEnumType(unit, snapshot, d) {
 				if v := depth(d, active) + 1; v > max {
 					max = v
 				}
@@ -1038,7 +1092,7 @@ func orderAggregateTypes(snapshot *types.Snapshot, tuples, optionals []types.Typ
 			}
 		}
 		for _, dep := range deps {
-			if isTuple(snapshot, dep) || isOptional(snapshot, dep) || isStruct(snapshot, dep) {
+			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || isStruct(snapshot, dep)) && !isEnumType(unit, snapshot, dep) {
 				if err := dfs(dep); err != nil {
 					return err
 				}
@@ -1122,6 +1176,226 @@ func findTypeDeclaration(unit *tir.Unit, symbolID symbol.SymbolID) (tir.TypeDecl
 		}
 	}
 	return tir.TypeDecl{}, false
+}
+
+// enumInfo is one distinct plain enum type the emitted program references,
+// carrying everything buildEnumTypedef needs: the enum's own types.TypeID (the
+// basis of the C typedef name pebble_enum_<typeID>_t), its declaration symbol,
+// and its variants in the enum's *declared* order (from the TypeDecl's
+// Members list, resolved here once). The declared order is the natural, stable
+// discriminant ordinal — variant Members[i] gets the C enum value i, so a
+// switch's CaseValue labels and the value stored in an enum-typed local agree
+// with the emitted typedef by construction.
+type enumInfo struct {
+	typ      types.TypeID
+	decl     symbol.SymbolID
+	variants []symbol.SymbolID
+}
+
+// collectEnumTypes resolves, in first-encountered order, every plain enum type
+// the emitted program actually references: the entry body (root) followed by
+// every reachable helper's body, each walked by the same Children + DeferChain
+// traversal collectDirectCalls uses. A plain enum type is referenced in the
+// emitted C in exactly two node shapes — an enum-typed local's declaration
+// (an Initialize whose initializer value is an EnumVariantValue or a
+// zero-payload VariantConstruct carrying the enum type) and a bare
+// EnumVariantValue / VariantConstruct value node (whose own Type is the enum
+// type) — so collecting exactly those shapes guarantees every typedef the
+// program needs is discovered, exactly like collectTupleTypes /
+// collectStructTypes discover their types from construction nodes. A
+// VariantConstruct carrying one or more payload children is the only
+// in-IR record of a variant with a non-void payload type — the tagged-union
+// (union enum) form — and is rejected cleanly here, naming that payload
+// support does not exist yet, rather than guessed at (confirmed against real
+// fixtures: a plain enum's variants are payload-less, constructed either as an
+// EnumVariantValue (Color.red) or a zero-payload VariantConstruct
+// (Color.red()), and the checker rejects a plain-enum variant called with an
+// argument, C0604, so a payload-carrying VariantConstruct can only be a union
+// enum). The returned enumInfos are deduplicated by enum TypeID and each
+// resolved to its declared variant order, so every distinct enum type yields
+// exactly one typedef, emitted before any function definition in the final
+// output. Enum-typed helper parameters/results are rejected earlier by
+// validateHelperSignature (before a reachable helper is ever collected), so no
+// Parameters/ResultType scan is needed here, mirroring how those two scans
+// exist only to close struct/tuple param-result gaps.
+func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]enumInfo, error) {
+	var collected []types.TypeID
+	if err := collectEnumTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectEnumTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var infos []enumInfo
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		info, err := resolveEnumInfo(unit, snapshot, id)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// collectEnumTypesWalk appends every plain enum type encountered in the tree
+// rooted at nodeID to out, in first-encountered order, following Children and
+// DeferChain exactly like collectDirectCalls so it visits the same reachable
+// region of the node graph the body builders consume. Three node shapes carry
+// an enum type: an EnumVariantValue node's own Type (a variant literal,
+// e.g. Color.green), a VariantConstruct node's own Type (a variant
+// construction, e.g. Color.red() — the parenthesized-call form of a plain
+// enum's payload-less variant), and an Initialize whose initializer value
+// carries an enum type (an enum-typed local declaration — the local's type is
+// recorded on the initializer value node, not on the Initialize node itself,
+// confirmed against a real fixture, the same finding every aggregate
+// collection made). The Initialize rule also collects an enum type used as a
+// local's declared type with a rejected initializer shape (a whole-copy of
+// another enum local), so its typedef is still emitted before the builder
+// rejects the initializer — mirroring collectTupleTypesWalk's own rule. A
+// VariantConstruct (or EnumVariantValue) carrying a payload child is rejected
+// outright: that is the union-enum (tagged-union) construction, and this
+// backend has no payload representation.
+func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("enum-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.EnumVariantValue {
+		if len(node.Children) == 1 {
+			return fmt.Errorf("enum variant symbol %d is constructed with a payload; union enum (payload-carrying variant) support does not exist yet", node.Member)
+		}
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.VariantConstruct {
+		if len(node.Children) >= 1 {
+			return fmt.Errorf("enum variant symbol %d is constructed with %d payload(s); union enum (payload-carrying variant) support does not exist yet", node.Member, len(node.Children))
+		}
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.Initialize {
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isEnumType(unit, snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectEnumTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectEnumTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveEnumInfo turns one collected enum TypeID into an enumInfo with its
+// variants in declared order. The declaration symbol comes from the type's own
+// Nominal key (TypeKey.Nominal); the declared variant order comes from the
+// corresponding TypeDecl's Members (unit.TypeDeclarations), which lists the
+// variant symbols in the enum's source declaration order — the same mechanism
+// resolveStructInfo uses for structs (the TypeDeclaration *node* carries only
+// the symbol, so the container is authoritative). The type must actually be a
+// plain enum, not a struct that shares the Nominal key shape — isEnumType
+// distinguishes the two from the unit's own node graph, so a collected
+// non-enum Nominal type is a clean rejection, not a guessed layout.
+func resolveEnumInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (enumInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return enumInfo{}, fmt.Errorf("enum type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return enumInfo{}, fmt.Errorf("type %s is a %v, want an enum type", enumTypeName(id), key.Kind())
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return enumInfo{}, fmt.Errorf("type %s has no nominal declaration", enumTypeName(id))
+	}
+	if !isEnumType(unit, snapshot, id) {
+		return enumInfo{}, fmt.Errorf("type %s is not a plain enum (its declaration symbol %d's members resolve to struct fields, not enum variants)", enumTypeName(id), decl)
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return enumInfo{}, fmt.Errorf("enum type %s has no TypeDeclaration for symbol %d in the unit", enumTypeName(id), decl)
+	}
+	if len(typeDecl.Members) == 0 {
+		return enumInfo{}, fmt.Errorf("enum type %s has no declared variants", enumTypeName(id))
+	}
+	return enumInfo{typ: id, decl: decl, variants: append([]symbol.SymbolID(nil), typeDecl.Members...)}, nil
+}
+
+// isEnumType reports whether id resolves to a plain enum type in the snapshot,
+// as opposed to a struct — the two are indistinguishable in the type snapshot
+// itself (both are Nominal keys carrying only the declaration symbol), so the
+// distinction is resolved from the unit's own node graph: a Nominal type whose
+// declared members carry no struct-field evidence is an enum. A member carries
+// field evidence exactly when it appears as a FieldPlace.Member (a field read,
+// e.g. point.x) or as a RecordConstruct field of the same declaration (a field
+// written at a construction site) — both confirmed shapes for a struct field in
+// real source, and shapes the checker never produces for an enum's variants
+// (those appear as EnumVariantValue / VariantConstruct members instead). The
+// scan is safe for every reachable program because any struct that survives
+// collectStructTypes necessarily has field evidence somewhere in the unit:
+// resolveStructInfo rejects a member with no resolvable type, and the only
+// field types it ever sees come from FieldPlace / RecordConstruct nodes (the
+// 10.24 parameter-only-typedef test's callee reads both its fields for exactly
+// this reason). A struct whose members never appear anywhere can never be
+// collected or resolved, so it never reaches this predicate.
+func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil || unit == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FieldPlace && node.Member != 0 {
+			for _, m := range typeDecl.Members {
+				if m == node.Member {
+					return false
+				}
+			}
+		}
+		if node.Kind == tir.RecordConstruct && node.Symbol == decl {
+			for _, field := range node.Fields {
+				for _, m := range typeDecl.Members {
+					if m == field.Field {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
+// containsVariant reports whether id is one of the variant symbols in variants.
+func containsVariant(variants []symbol.SymbolID, id symbol.SymbolID) bool {
+	for _, variant := range variants {
+		if variant == id {
+			return true
+		}
+	}
+	return false
 }
 
 // indexOfSymbol returns the position of id in ids, or -1 if absent.
@@ -1491,8 +1765,10 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 
 // buildSwitch validates and builds the C text for a switch statement used as a
 // block's tail: a tir.Switch whose Children[0] is the subject expression
-// (built by buildExpr for an integer subject or buildBoolExpr for a bool
-// subject) and Children[1:] are SwitchCase nodes. Each case value becomes its
+// (built by buildExpr for an integer subject, buildBoolExpr for a bool
+// subject, or buildEnumValue for a plain enum subject — the enum subject
+// grammar added by 10.34) and Children[1:] are SwitchCase nodes. Each case
+// value becomes its
 // own C case label; multiple SwitchCase nodes sharing the same body node ID (a
 // multi-value `case v1, v2:` clause) become stacked C case labels sharing one
 // body. An else arm (HasElse) maps to C's `default:`. The emitted text is:
@@ -1513,24 +1789,45 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // nesting depth; a bare statement is built directly. Every case body must end
 // in a return or a two-armed if/else whose arms each end in return — the same
 // tail-statement grammar buildBlock enforces for every other block in this
-// backend. A CaseValue-based case (an enum variant) is rejected cleanly since
-// this backend has no enum support yet. Any other shape is a clean rejection
-// naming what was found.
+// backend. A CaseValue-based case (an enum variant) is supported since 10.34
+// when the subject is a plain enum type: such a case's label is
+// `case pebble_variant_<caseValue>:` (see buildCaseLabel), the case value's C
+// enum constant, and its value (the variant's ordinal in the enum's declared
+// order) matches the subject's own typedef by construction. Any other shape is
+// a clean rejection naming what was found.
 func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
 	if len(switchNode.Children) < 2 {
 		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
 	}
 	// Build the subject expression. The subject's resolved type decides the
 	// grammar: an integer subject (the entry's width) is built by buildExpr,
-	// a bool subject by buildBoolExpr. The subject type is on the subject
-	// node itself (Children[0]).
+	// a bool subject by buildBoolExpr, a plain enum subject by buildEnumValue.
+	// The subject type is on the subject node itself (Children[0]).
 	subjectNode, ok := unit.Node(switchNode.Children[0])
 	if !ok {
 		return "", fmt.Errorf("switch statement references invalid subject node %d", switchNode.Children[0])
 	}
+	// enumSubject is nonzero exactly when the subject is a plain enum type; it
+	// governs both the subject grammar (buildEnumValue) and the case labels
+	// (CaseValue cases become `case pebble_variant_<caseValue>:`).
+	var enumSubject types.TypeID
+	var enumVariants []symbol.SymbolID
+	if isEnumType(unit, snapshot, subjectNode.Type) {
+		enumSubject = subjectNode.Type
+		info, err := resolveEnumInfo(unit, snapshot, enumSubject)
+		if err != nil {
+			return "", err
+		}
+		enumVariants = info.variants
+	}
 	var subjectExpr string
 	var err error
-	if isWidth(snapshot, width, subjectNode.Type) {
+	if enumSubject != 0 {
+		// An enum-typed subject: a reference to an enum-typed local (a
+		// SymbolValue) or a variant literal (an EnumVariantValue /
+		// zero-payload VariantConstruct) — buildEnumValue handles all three.
+		subjectExpr, err = buildEnumValue(unit, snapshot, switchNode.Children[0], locals)
+	} else if isWidth(snapshot, width, subjectNode.Type) {
 		subjectExpr, err = buildExpr(unit, snapshot, switchNode.Children[0], locals, width)
 	} else if isBool(snapshot, subjectNode.Type) {
 		subjectExpr, err = buildBoolExpr(unit, snapshot, switchNode.Children[0], locals, width)
@@ -1553,7 +1850,7 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 		}
 		subjectExpr = fmt.Sprintf("pebble_local_%d", subjectNode.Symbol)
 	} else {
-		return "", fmt.Errorf("switch subject has type %s, want %s or bool", describeType(snapshot, subjectNode.Type), wantName(width))
+		return "", fmt.Errorf("switch subject has type %s, want %s or bool, or a plain enum type", describeType(snapshot, subjectNode.Type), wantName(width))
 	}
 	if err != nil {
 		return "", err
@@ -1579,26 +1876,33 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 		if caseNode.Kind != tir.SwitchCase {
 			return "", fmt.Errorf("switch statement child is a %s, want a SwitchCase", caseNode.Kind)
 		}
-		if caseNode.CaseValue != 0 {
-			return "", fmt.Errorf("switch case references enum variant symbol %d; enum cases are not supported yet", caseNode.CaseValue)
-		}
 		if caseNode.HasElse {
 			// The else/default arm has no Literal and no CaseValue.
 			groups = append(groups, caseGroup{bodyID: caseNode.Children[0], elseID: caseID})
 			continue
 		}
-		// Literal case: determine the body node ID. A SwitchCase with
-		// 1 child has the body directly as Children[0]; the brief
-		// confirms both shapes exist.
+		if caseNode.CaseValue != 0 {
+			// An enum-variant case: its CaseValue is the variant symbol, which
+			// becomes the C enum constant label. It requires an enum-typed
+			// subject (the checker only produces CaseValue cases for an
+			// enum/tagged-union subject — confirmed against a real fixture),
+			// and the variant must be one of the subject enum's declared
+			// variants.
+			if enumSubject == 0 {
+				return "", fmt.Errorf("switch case references enum variant symbol %d, but the subject is not a plain enum type", caseNode.CaseValue)
+			}
+			if !containsVariant(enumVariants, caseNode.CaseValue) {
+				return "", fmt.Errorf("switch case references variant symbol %d, which is not one of the subject enum %s's declared variants", caseNode.CaseValue, enumTypeName(enumSubject))
+			}
+		}
+		// Case body node: a SwitchCase with 1 child has the body directly as
+		// Children[0]; with 2 children the body is still Children[0] (the
+		// second is unused defense — the body block arrives as the direct
+		// child, confirmed against real fixtures).
 		var bodyID tir.NodeID
 		if len(caseNode.Children) == 1 {
 			bodyID = caseNode.Children[0]
 		} else if len(caseNode.Children) == 2 {
-			// The brief confirms: multi-statement case body with braces
-			// arrives as a Block node directly as the child. But the
-			// actual node shape from ir_builder_control.go is: bodyNode
-			// is always Children[0] (the body block). With 2 children,
-			// the second is unused defense. Use Children[0].
 			bodyID = caseNode.Children[0]
 		} else {
 			return "", fmt.Errorf("switch case has %d child(ren), want 1 or 2 (the body block)", len(caseNode.Children))
@@ -1643,12 +1947,22 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 	return fmt.Sprintf("%sswitch (%s) {\n%s\n%s}", indent, subjectExpr, strings.Join(parts, "\n"), indent), nil
 }
 
-// buildCaseLabel emits one C `case <value>:` label from a SwitchCase node's
-// Literal field. An integer literal is emitted as its decimal text; a bool
-// literal is emitted as `0` (false) or `1` (true), since C treats bool as an
-// integer type and switch cases require integral constant expressions. Any
-// other literal kind is a clean rejection.
+// buildCaseLabel emits one C `case <value>:` label from a SwitchCase node.
+// An enum-variant case (CaseValue set — a CaseValue-based case, produced by
+// the checker for an enum subject) is emitted as
+// `case pebble_variant_<caseValue>:`, the variant's C enum constant, whose
+// value (the variant's ordinal in the enum's declared order) matches the
+// subject's own typedef by construction. An integer literal is emitted as its
+// decimal text; a bool literal is emitted as `0` (false) or `1` (true), since
+// C treats bool as an integer type and switch cases require integral constant
+// expressions. Any other case shape is a clean rejection.
 func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.BuiltinKind) (string, error) {
+	if caseNode.CaseValue != 0 {
+		// An enum-variant case label, emitted as the variant's C enum constant
+		// name. buildSwitch has already verified the subject is a plain enum
+		// and the variant belongs to it; this function only spells the label.
+		return "case " + enumVariantName(caseNode.CaseValue) + ":", nil
+	}
 	switch caseNode.Literal.Kind {
 	case tir.LiteralInteger:
 		text := caseNode.Literal.IntegerNum
@@ -2259,6 +2573,18 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node
 		}
 		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
 	default:
+		if targetInfo.enumType != 0 {
+			// A Store whose place names an enum-typed local is a whole-value
+			// reassignment of a plain enum local — c = Color.red; — whose new
+			// value is a variant literal (an EnumVariantValue, or a
+			// zero-payload VariantConstruct) built by the enum value builder,
+			// emitted as `pebble_local_<sym> = pebble_variant_<member>;`.
+			storeValue, err := buildEnumValue(unit, snapshot, statement.Children[1], scope)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+		}
 		if targetInfo.isStr {
 			// A Store whose place names a str-typed local is a whole-str
 			// reassignment, which is out of scope this slice (a str local is
@@ -2600,6 +2926,19 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			// other optional initializer shape is a clean rejection.
 			return buildOptionalLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
+		if isEnumType(unit, snapshot, initValue.Type) {
+			// A plain enum-typed local: its type is the initializer value's
+			// Type (the Initialize node carries no Type itself, confirmed
+			// against a real fixture — same as the compound locals above), and
+			// the type is Nominal exactly like a struct's (see isEnumType), so
+			// this check must precede the struct check below. The supported
+			// initializer is a variant literal (an EnumVariantValue, e.g.
+			// Color.green, or a zero-payload VariantConstruct, e.g.
+			// Color.red()); every other enum initializer shape is a clean
+			// rejection, and a payload-carrying variant construction (a union
+			// enum) is rejected naming the missing support.
+			return buildEnumLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context)
+		}
 		if isStruct(snapshot, initValue.Type) {
 			// A struct-typed local: its type is the initializer value's Type
 			// (the Initialize node carries no Type itself, confirmed against
@@ -2713,13 +3052,15 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, statemen
 // entry's resolved integer width or bool, in kind — a str value, in isStr, a
 // tuple, in tuple (its
 // tuple types.TypeID, stable within one Emit call), an array, in array, an
-// optional, in optional, or a struct, in structType. The fields are
+// optional, in optional, a struct, in structType, or a plain enum, in enumType.
+// The fields are
 // mutually exclusive: kind is zero
-// for a compound local (a tuple/array/optional/struct is not a
+// for a compound local (a tuple/array/optional/struct/enum is not a
 // types.BuiltinKind), isStr is true only for a str local (a str is a
 // types.BuiltinKind but has no width or bool grammar this backend builds —
 // it is initialized from a string literal and only ever compared, never
-// arithmetically combined), and tuple/array/optional/structType are zero for a
+// arithmetically combined), and tuple/array/optional/structType/enumType are
+// zero for a
 // scalar local. A struct value
 // rather than a parallel map keeps the scope a single map threaded through
 // every builder unchanged in shape — the existing
@@ -2733,6 +3074,7 @@ type localInfo struct {
 	array      types.TypeID
 	optional   types.TypeID
 	structType types.TypeID
+	enumType   types.TypeID
 }
 
 // resultInfo records what the enclosing function's tail return must produce:
@@ -2988,7 +3330,12 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	// Every element type must be exactly the entry's width or bool, for both
 	// initializer forms; anything else (a nested array element) is a clean
 	// rejection naming the element type, since this backend emits exactly
-	// those two C types as array elements.
+	// those two C types as array elements. An enum element is a Nominal type
+	// exactly like a struct element (see isEnumType) and is rejected here
+	// explicitly, since enum-typed array elements are out of scope.
+	if isEnumType(unit, snapshot, elementType) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type %s is an enum type; enum-typed array elements are not supported yet", context, describeType(snapshot, initValue.Type), enumTypeName(elementType))
+	}
 	if !isWidth(snapshot, width, elementType) && !isBool(snapshot, elementType) && !isTuple(snapshot, elementType) && !isArray(snapshot, elementType) && !isOptional(snapshot, elementType) && !isStruct(snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want %s or bool", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType), wantName(width))
 	}
@@ -3019,7 +3366,11 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 		}
 		exprs[i] = expr
 	}
-	return fmt.Sprintf("%s%s pebble_local_%d[%d] = { %s };\n%s(void)pebble_local_%d;", indent, arrayElementCType(snapshot, width, elementType), statement.Symbol, length, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+	elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	return fmt.Sprintf("%s%s pebble_local_%d[%d] = { %s };\n%s(void)pebble_local_%d;", indent, elementCType, statement.Symbol, length, strings.Join(exprs, ", "), indent, statement.Symbol), nil
 }
 
 // buildArrayRepeatLocalDeclaration builds an array-typed local whose
@@ -3090,7 +3441,10 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 	if err != nil {
 		return "", err
 	}
-	ctype := arrayElementCType(snapshot, width, elementType)
+	ctype, err := arrayElementCType(unit, snapshot, width, elementType)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
 	statements := []string{
 		fmt.Sprintf("%s%s pebble_local_%d[%d];", indent, ctype, statement.Symbol, length),
 		fmt.Sprintf("%s%s pebble_repeat_%d = %s;", indent, ctype, statement.Symbol, valueExpr),
@@ -3102,20 +3456,23 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 	return strings.Join(statements, "\n"), nil
 }
 
-func arrayElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) string {
+func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
-		return "bool"
+		return "bool", nil
 	}
 	if isTuple(snapshot, id) {
-		return tupleTypeName(id)
+		return tupleTypeName(id), nil
 	}
 	if isOptional(snapshot, id) {
-		return optionalTypeName(id)
+		return optionalTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
-		return structTypeName(id)
+		if isEnumType(unit, snapshot, id) {
+			return "", fmt.Errorf("array element type %s is an enum type; enum-typed array elements are not supported yet", enumTypeName(id))
+		}
+		return structTypeName(id), nil
 	}
-	return cType(width)
+	return cType(width), nil
 }
 
 // buildOptionalLocalDeclaration builds one optional-typed local's declaration:
@@ -3393,6 +3750,91 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Nod
 	return fmt.Sprintf("(%s)%s", structTypeName(node.Type), braceList), nil
 }
 
+// buildEnumLocalDeclaration builds one plain enum-typed local's declaration: a
+// `pebble_enum_<typeID>_t pebble_local_<symbol> = pebble_variant_<member>;`
+// whose initializer is a variant literal — an EnumVariantValue (Color.green,
+// the member-access form) or a zero-payload VariantConstruct (Color.red(), the
+// parenthesized-call form, which a plain enum's payload-less variants also
+// produce — confirmed against a real fixture). Both lower to the variant's C
+// enum constant, whose value is the variant's ordinal in the enum's declared
+// order (the C typedef emits one named constant per variant in TypeDecl order,
+// so the constant and the typedef agree by construction). A payload-carrying
+// initializer — an EnumVariantValue or VariantConstruct with one or more
+// children — is the union-enum (tagged-union) construction and is rejected
+// cleanly naming that payload support does not exist yet, never guessed at. The
+// initializer's variant symbol must be one of the enum's declared variants, and
+// the enum type must actually be a plain enum (not a struct that shares the
+// Nominal key shape — isEnumType distinguishes them). The local's scope entry
+// records its enum type (a localInfo with enumType set), so a later reference,
+// reassignment, switch subject, or comparison resolves the enum type being
+// used. Like every scalar local, the declaration is followed by a (void) cast
+// against -Wunused-variable.
+func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string) (string, error) {
+	switch initValue.Kind {
+	case tir.EnumVariantValue:
+		if len(initValue.Children) == 1 {
+			return "", fmt.Errorf("%s declares an enum-typed local initialized from an enum variant with a payload; union enum (payload-carrying variant) support does not exist yet", context)
+		}
+	case tir.VariantConstruct:
+		if len(initValue.Children) >= 1 {
+			return "", fmt.Errorf("%s declares an enum-typed local initialized from a variant construction with %d payload(s); union enum (payload-carrying variant) support does not exist yet", context, len(initValue.Children))
+		}
+	default:
+		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a %s, want a variant literal (e.g. Color.green); initializing an enum local from another value is not supported yet", context, enumTypeName(initValue.Type), initValue.Kind)
+	}
+	info, err := resolveEnumInfo(unit, snapshot, initValue.Type)
+	if err != nil {
+		return "", err
+	}
+	if !containsVariant(info.variants, initValue.Member) {
+		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from variant symbol %d, which is not one of its declared variants", context, enumTypeName(initValue.Type), initValue.Member)
+	}
+	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, enumVariantName(initValue.Member), indent, statement.Symbol), nil
+}
+
+// buildEnumValue builds the C expression text for a plain enum value node of
+// three shapes (all confirmed against real fixtures): an EnumVariantValue
+// (Color.green, a variant literal with no payload), a zero-payload
+// VariantConstruct (Color.red(), the parenthesized-call form of a plain
+// enum's payload-less variant), and a SymbolValue naming an enum-typed local
+// declared earlier in the body (emitted as its pebble_local_<symbolID> C name).
+// A variant literal emits its C enum constant pebble_variant_<member>, whose
+// value is the variant's ordinal in the enum's declared order. A
+// payload-carrying variant — an EnumVariantValue or VariantConstruct with one
+// or more children — is the union-enum construction and is rejected cleanly
+// naming that payload support does not exist yet. Anything else is a clean
+// rejection, never a guessed lowering. This is the one shared builder for an
+// enum value wherever one is needed this slice: an enum-typed local's
+// declaration initializer, a reassignment's new value, an enum switch's
+// subject, and an enum comparison's operand.
+func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
+	}
+	switch node.Kind {
+	case tir.EnumVariantValue:
+		if len(node.Children) == 1 {
+			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with a payload; union enum (payload-carrying variant) support does not exist yet", node.Member)
+		}
+		return enumVariantName(node.Member), nil
+	case tir.VariantConstruct:
+		if len(node.Children) >= 1 {
+			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with %d payload(s); union enum (payload-carrying variant) support does not exist yet", node.Member, len(node.Children))
+		}
+		return enumVariantName(node.Member), nil
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || info.enumType == 0 {
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not an enum-typed local declared earlier in the body", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	default:
+		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
+	}
+}
+
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
 // `PebbleStr pebble_local_<symbol> = { .data = (const uint8_t *)"<escaped>",
 // .len = <N> };` whose initializer is a StringLiteral (a string literal) —
@@ -3584,6 +4026,30 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 			return "", err
 		}
 		return "(" + left + ") " + op + " (" + right + ")", nil
+	}
+	if isEnumType(unit, snapshot, leftOperand.Type) && isEnumType(unit, snapshot, rightOperand.Type) {
+		// A comparison between two plain enum values — c == Color.red,
+		// c != Color.red, and (confirmed against a real fixture) the ordering
+		// comparisons c < Color.red and so on, all accepted by the checker and
+		// therefore reachable. Both operands are built by buildEnumValue (an
+		// enum-typed local reference or a variant literal) and the plain C
+		// operator is emitted directly: a C enum's value IS the variant's
+		// ordinal in declared order, so comparing two enum values compares
+		// their discriminants — a direct, correct lowering that cannot fault.
+		// The two enum types must match (the checker guarantees it for real
+		// source; mismatched operands are a clean rejection for hand-built IR).
+		if leftOperand.Type != rightOperand.Type {
+			return "", fmt.Errorf("entry function body if condition compares two enum values of different types %s and %s", enumTypeName(leftOperand.Type), enumTypeName(rightOperand.Type))
+		}
+		left, err := buildEnumValue(unit, snapshot, node.Children[0], locals)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildEnumValue(unit, snapshot, node.Children[1], locals)
+		if err != nil {
+			return "", err
+		}
+		return left + " " + op + " " + right, nil
 	}
 	left, err := buildComparisonOperand(unit, snapshot, node.Children[0], locals, width)
 	if err != nil {
@@ -4864,12 +5330,32 @@ func structTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_struct_%d_t", id)
 }
 
+// enumTypeName is the deterministic C name of one distinct plain enum type's
+// enum typedef: pebble_enum_<typeID>_t, derived from the enum type's own
+// stable types.TypeID, mirroring the pebble_struct_<typeID>_t / pebble_tuple_
+// <typeID>_t naming discipline of reusing a stable IR identity rather than a
+// counter.
+func enumTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_enum_%d_t", id)
+}
+
+// enumVariantName is the deterministic C name of one plain enum variant's
+// enum constant: pebble_variant_<memberSymbolID>, derived from the variant's
+// own stable symbol.SymbolID (mirroring the pebble_field_<memberSymbolID>
+// naming discipline struct fields use, and the pebble_local_<symbolID> /
+// pebble_fn_<symbolID> discipline everywhere else), so a C constant name can
+// never collide with another identifier even if a source variant name were a C
+// keyword.
+func enumVariantName(member symbol.SymbolID) string {
+	return fmt.Sprintf("pebble_variant_%d", member)
+}
+
 // tupleElementCType is the C field type a tuple element of the given type is
 // declared with in its tuple's struct typedef: int32_t / int64_t for an
 // element of the entry's resolved width, bool for a bool element. Any other
 // element type is a clean rejection naming what was found, since this backend
 // emits exactly those two C types as tuple fields.
-func tupleElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isWidth(snapshot, width, id) {
 		return cType(width), nil
 	}
@@ -4883,6 +5369,9 @@ func tupleElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 		return optionalTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
+		if isEnumType(unit, snapshot, id) {
+			return "", fmt.Errorf("element type %s is an enum type; enum-typed tuple elements are not supported yet", enumTypeName(id))
+		}
 		return structTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
@@ -4898,10 +5387,10 @@ func tupleElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 // first-encountered order from the tuple-type collection pass, so every tuple
 // type the emitted program references has exactly one typedef here, written
 // before any function definition in the final output.
-func buildTupleTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+func buildTupleTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildTupleTypedef(snapshot, width, id)
+		text, err := buildTupleTypedef(unit, snapshot, width, id)
 		if err != nil {
 			return "", err
 		}
@@ -4910,7 +5399,7 @@ func buildTupleTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids [
 	return strings.Join(texts, "\n"), nil
 }
 
-func buildAggregateTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo) (string, error) {
+func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo) (string, error) {
 	structs := make(map[types.TypeID]structInfo, len(infos))
 	for _, info := range infos {
 		structs[info.typ] = info
@@ -4921,11 +5410,11 @@ func buildAggregateTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, i
 		var err error
 		switch {
 		case isTuple(snapshot, id):
-			text, err = buildTupleTypedef(snapshot, width, id)
+			text, err = buildTupleTypedef(unit, snapshot, width, id)
 		case isOptional(snapshot, id):
-			text, err = buildOptionalTypedef(snapshot, width, id)
+			text, err = buildOptionalTypedef(unit, snapshot, width, id)
 		case isStruct(snapshot, id):
-			text, err = buildStructTypedef(snapshot, width, structs[id])
+			text, err = buildStructTypedef(unit, snapshot, width, structs[id])
 		}
 		if err != nil {
 			return "", err
@@ -4949,7 +5438,7 @@ func buildAggregateTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, i
 // Each field's C type comes from tupleElementCType, which validates the
 // element is the entry's width or bool. A TypeID that is not a tuple type in
 // the snapshot is a clean rejection, not a guessed layout.
-func buildTupleTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func buildTupleTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return "", fmt.Errorf("tuple type %d is not in the type snapshot", id)
@@ -4963,7 +5452,7 @@ func buildTupleTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 	}
 	fields := make([]string, len(elements))
 	for i, element := range elements {
-		ctype, err := tupleElementCType(snapshot, width, element)
+		ctype, err := tupleElementCType(unit, snapshot, width, element)
 		if err != nil {
 			return "", fmt.Errorf("tuple type %s: %v", tupleTypeName(id), err)
 		}
@@ -4977,10 +5466,10 @@ func buildTupleTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 // ids in first-encountered order from the optional-type collection pass, so
 // every optional type the emitted program references has exactly one typedef
 // here, written before any function definition in the final output.
-func buildOptionalTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+func buildOptionalTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildOptionalTypedef(snapshot, width, id)
+		text, err := buildOptionalTypedef(unit, snapshot, width, id)
 		if err != nil {
 			return "", err
 		}
@@ -4999,7 +5488,7 @@ func buildOptionalTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, id
 // The value field's C type is the payload's own type (int32_t/int64_t for the
 // entry's width, bool for a bool payload). A TypeID that is not an optional
 // type in the snapshot is a clean rejection, not a guessed layout.
-func buildOptionalTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return "", fmt.Errorf("optional type %d is not in the type snapshot", id)
@@ -5011,7 +5500,7 @@ func buildOptionalTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id 
 	if !ok {
 		return "", fmt.Errorf("optional type %s has no payload type", optionalTypeName(id))
 	}
-	valueCType, err := optionalPayloadCType(snapshot, width, payloadType)
+	valueCType, err := optionalPayloadCType(unit, snapshot, width, payloadType)
 	if err != nil {
 		return "", fmt.Errorf("optional type %s: %v", optionalTypeName(id), err)
 	}
@@ -5023,10 +5512,10 @@ func buildOptionalTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id 
 // infos in first-encountered order from the struct-type collection pass, so
 // every struct type the emitted program references has exactly one typedef
 // here, written before any function definition in the final output.
-func buildStructTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, infos []structInfo) (string, error) {
+func buildStructTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []structInfo) (string, error) {
 	texts := make([]string, 0, len(infos))
 	for _, info := range infos {
-		text, err := buildStructTypedef(snapshot, width, info)
+		text, err := buildStructTypedef(unit, snapshot, width, info)
 		if err != nil {
 			return "", err
 		}
@@ -5054,7 +5543,7 @@ func buildStructTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, info
 // A structInfo whose TypeID is not a Nominal type in the snapshot is a clean
 // rejection, not a guessed layout (defense for hand-built IR; collectStructTypes
 // has already resolved every collected TypeID through resolveStructInfo).
-func buildStructTypedef(snapshot *types.Snapshot, width types.BuiltinKind, info structInfo) (string, error) {
+func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info structInfo) (string, error) {
 	key, ok := snapshot.Key(info.typ)
 	if !ok {
 		return "", fmt.Errorf("struct type %d is not in the type snapshot", info.typ)
@@ -5064,7 +5553,7 @@ func buildStructTypedef(snapshot *types.Snapshot, width types.BuiltinKind, info 
 	}
 	fields := make([]string, len(info.fields))
 	for i, field := range info.fields {
-		ctype, err := structFieldCType(snapshot, width, field.typ)
+		ctype, err := structFieldCType(unit, snapshot, width, field.typ)
 		if err != nil {
 			return "", fmt.Errorf("struct type %s: %v", structTypeName(info.typ), err)
 		}
@@ -5076,10 +5565,10 @@ func buildStructTypedef(snapshot *types.Snapshot, width types.BuiltinKind, info 
 // structFieldCType is the C field type a struct field of the given type is
 // declared with in its struct's typedef: int32_t / int64_t for a field of the
 // entry's resolved width, bool for a bool field. Any other field type — a str
-// field, a nested struct field, a tuple/array/optional field — is a clean
+// field, a nested struct field, a tuple/array/optional/enum field — is a clean
 // rejection naming what was found, since this backend emits exactly those two
 // C types as struct fields.
-func structFieldCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isWidth(snapshot, width, id) {
 		return cType(width), nil
 	}
@@ -5093,6 +5582,9 @@ func structFieldCType(snapshot *types.Snapshot, width types.BuiltinKind, id type
 		return optionalTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
+		if isEnumType(unit, snapshot, id) {
+			return "", fmt.Errorf("field type %s is an enum type; enum-typed struct fields are not supported yet", enumTypeName(id))
+		}
 		return structTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
@@ -5108,7 +5600,7 @@ func structFieldCType(snapshot *types.Snapshot, width types.BuiltinKind, id type
 // for a payload of the entry's resolved width, bool for a bool payload. Any
 // other payload type is a clean rejection naming what was found, since this
 // backend emits exactly those two C types as optional value fields.
-func optionalPayloadCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isWidth(snapshot, width, id) {
 		return cType(width), nil
 	}
@@ -5119,6 +5611,9 @@ func optionalPayloadCType(snapshot *types.Snapshot, width types.BuiltinKind, id 
 		return tupleTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
+		if isEnumType(unit, snapshot, id) {
+			return "", fmt.Errorf("payload type %s is an enum type; enum-typed optional payloads are not supported yet", enumTypeName(id))
+		}
 		return structTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
@@ -5127,6 +5622,64 @@ func optionalPayloadCType(snapshot *types.Snapshot, width types.BuiltinKind, id 
 		}
 	}
 	return "", fmt.Errorf("payload type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+}
+
+// buildEnumTypedefs builds the C text of one enum typedef per plain enum type
+// in infos, in order, each joined by a newline. The caller (Emit) supplies
+// infos in first-encountered order from the enum-type collection pass, so
+// every enum type the emitted program references has exactly one typedef here,
+// written before any function definition in the final output.
+func buildEnumTypedefs(snapshot *types.Snapshot, infos []enumInfo) (string, error) {
+	texts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		text, err := buildEnumTypedef(snapshot, info)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildEnumTypedef builds the C text of one plain enum type's enum typedef,
+// with one named constant per declared variant, in the enum's *declared* order
+// (from the TypeDecl's Members list, resolved by collectEnumTypes — the same
+// ordering a struct typedef resolves its fields by), each named
+// deterministically from the variant's own stable symbol.SymbolID:
+//
+//	typedef enum {
+//	    pebble_variant_25,
+//	    pebble_variant_26,
+//	    pebble_variant_27,
+//	} pebble_enum_23_t;
+//
+// The declared order IS the discriminant: C assigns the constants the ordinal
+// values 0, 1, 2, ... in declaration order, so variant Members[i] is the value
+// i — the natural, stable discriminant the switch case labels and the values
+// stored in enum-typed locals agree with by construction. Naming each constant
+// from the variant's symbol ID (mirroring the pebble_field_<memberSymbolID>
+// discipline) makes a C constant-name collision impossible even if a source
+// variant name were a C keyword or duplicated another identifier. An enumInfo
+// whose TypeID is not a Nominal type in the snapshot is a clean rejection, not
+// a guessed layout (defense for hand-built IR; collectEnumTypes has already
+// resolved every collected TypeID through resolveEnumInfo, which requires a
+// plain enum).
+func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo) (string, error) {
+	key, ok := snapshot.Key(info.typ)
+	if !ok {
+		return "", fmt.Errorf("enum type %d is not in the type snapshot", info.typ)
+	}
+	if key.Kind() != types.Nominal {
+		return "", fmt.Errorf("type %s is a %v, want an enum type", enumTypeName(info.typ), key.Kind())
+	}
+	if len(info.variants) == 0 {
+		return "", fmt.Errorf("enum type %s has no declared variants", enumTypeName(info.typ))
+	}
+	constants := make([]string, len(info.variants))
+	for i, variant := range info.variants {
+		constants[i] = "    " + enumVariantName(variant) + ","
+	}
+	return fmt.Sprintf("typedef enum {\n%s\n} %s;", strings.Join(constants, "\n"), enumTypeName(info.typ)), nil
 }
 
 // joinTypedefs joins two typedef text blocks into a single block, with a blank

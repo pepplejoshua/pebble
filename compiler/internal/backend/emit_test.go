@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -5397,15 +5398,10 @@ func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 10, false)
 }
 
-func TestEmitSwitchRejectsCaseValue(t *testing.T) {
-	// A CaseValue-based switch case (an enum variant) is out of scope. The
-	// checker would reject this before the backend sees it in real source,
-	// but defense for hand-built IR exercises the rejection path.
-	// We cannot build this from real source (no enum support exists), so
-	// this test is left as a placeholder noting the rejection exists.
-	// If ever reachable, buildSwitch returns a clean error.
-	t.Skip("enum cases cannot be constructed from real source; rejection is defense for hand-built IR")
-}
+// TestEmitSwitchRejectsCaseValue is superseded by 10.34: a CaseValue-based
+// switch case (an enum variant) is now supported for a plain enum subject —
+// see TestEmitEnumLocalSwitchGreenCompilesAndRuns and its neighbors — so
+// there is no longer a rejection to test here.
 
 func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
 	// A switch with no else and non-exhaustive cases, used as a tail
@@ -5648,4 +5644,354 @@ func TestEmitDeferredVoidCallCOutput(t *testing.T) {
 		t.Errorf("emitted C has no return statement:\n%s", out)
 	}
 	compileAndRunBounded(t, buf.Bytes(), 1, false)
+}
+
+// --- 10.34: plain enum locals and switch matching ---
+
+// enumFixture resolves the single enum type a checker-built fixture declares:
+// its TypeID (from the unit's Nominal TypeUse node) and its variant symbols in
+// declared order (from the TypeDecl container's Members). Tests hardcode the
+// fixture's symbol IDs where the existing suite does, but the C-emission test
+// and the tagged-union rejection test resolve IDs from the unit so they stay
+// robust to renumbering.
+func enumFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, types.TypeID, []symbol.SymbolID) {
+	t.Helper()
+	unit, snapshot, entryID := buildFixture(t, sourceText, "main", false)
+	var decl symbol.SymbolID
+	var members []symbol.SymbolID
+	for _, td := range unit.TypeDeclarations() {
+		decl = td.Symbol
+		members = td.Members
+		break
+	}
+	var enumType types.TypeID
+	for _, n := range unit.Nodes() {
+		if n.Kind == tir.TypeUse && n.TypeArg != 0 {
+			if key, ok := snapshot.Key(n.TypeArg); ok {
+				if d, _, ok := key.Nominal(); ok && d == decl {
+					enumType = n.TypeArg
+					break
+				}
+			}
+		}
+	}
+	if enumType == 0 {
+		t.Fatalf("fixture declares no enum type")
+	}
+	return unit, snapshot, entryID, enumType, members
+}
+
+func TestEmitEnumLocalSwitchGreenCompilesAndRuns(t *testing.T) {
+	// The flagship fixture from the brief: a plain enum local declared from a
+	// variant literal and switched on, each case returning a distinct value.
+	// c is Color.green (variant 26, ordinal 1), so the green case fires and the
+	// exit code is 1. The emitted C typedef assigns pebble_variant_26 the value
+	// 1 by declaration order, and the C switch compares the local's stored
+	// constant against the case labels, so the right case fires end to end.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}", false, 1, false)
+}
+
+func TestEmitEnumLocalSwitchBlueCompilesAndRuns(t *testing.T) {
+	// Same switch, c = Color.blue (variant 27, ordinal 2): the blue case fires
+	// and the exit code is 2, proving a second variant value dispatches to a
+	// different C case label rather than the switch only ever firing the first
+	// case.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.blue;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}", false, 2, false)
+}
+
+func TestEmitEnumLocalSwitchRedCompilesAndRuns(t *testing.T) {
+	// Same switch, c = Color.red (variant 25, ordinal 0): the red case fires
+	// and the exit code is 0, proving the first declared variant (ordinal 0)
+	// matches case label pebble_variant_25 — the 0 constant C assigns first.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}", false, 0, false)
+}
+
+func TestEmitEnumSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
+	// A multi-value case on an enum subject: `case Color.red, Color.green:`
+	// produces two SwitchCase nodes sharing one body node ID (confirmed against
+	// a real fixture), which must stack as two C case labels sharing one body,
+	// exactly as 10.31's integer multi-value cases do. c = Color.green hits the
+	// multi-value case and returns 10.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red, Color.green: return 10; case Color.blue: return 20; }\n}", false, 10, false)
+}
+
+func TestEmitEnumSwitchMultiValueCaseOtherVariantCompilesAndRuns(t *testing.T) {
+	// Same multi-value switch with c = Color.red: the other member of the
+	// multi-value case fires, proving both stacked case labels share the body.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nswitch c { case Color.red, Color.green: return 10; case Color.blue: return 20; }\n}", false, 10, false)
+}
+
+func TestEmitEnumSwitchElseCompilesAndRuns(t *testing.T) {
+	// An else arm on an enum switch: c = Color.blue is covered by no case
+	// (only red and green have cases), so the else/default arm fires and
+	// returns 20.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.blue;\nswitch c { case Color.red, Color.green: return 10; else: return 20; }\n}", false, 20, false)
+}
+
+func TestEmitEnumSwitchElseCaseHitCompilesAndRuns(t *testing.T) {
+	// Same switch, c = Color.green: the case fires (10), not the else arm,
+	// proving the else/default arm is not selected when a case matches.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red, Color.green: return 10; else: return 20; }\n}", false, 10, false)
+}
+
+func TestEmitEnumBlockCaseBodyCompilesAndRuns(t *testing.T) {
+	// A block-wrapped (braced, multi-statement) case body on an enum switch,
+	// exercising the Block-bodied path in buildSwitchCaseBody for an enum
+	// subject: the case declares a local and returns an expression using it.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nswitch c { case Color.red: { let x i32 = 42; return x; } case Color.green: return 1; case Color.blue: return 2; }\n}", false, 42, false)
+}
+
+func TestEmitEnumSwitchBareReturnCaseBodyCompilesAndRuns(t *testing.T) {
+	// A bare single-statement case body (no braces) on an enum switch,
+	// exercising the bare-Return path in buildSwitchCaseBody.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.blue;\nswitch c { case Color.red: return 1; case Color.green: return 2; case Color.blue: return 3; }\n}", false, 3, false)
+}
+
+func TestEmitEnumStoreCompilesAndRuns(t *testing.T) {
+	// Reassigning an enum-typed local (c = Color.red; after declaration) lowers
+	// through buildStoreCore's enum branch to
+	// `pebble_local_<sym> = pebble_variant_<red>;`, so the subsequent switch
+	// fires the red case. This proves the value actually changed, not just that
+	// the store compiled.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nc = Color.red;\nswitch c { case Color.red: return 7; case Color.green: return 1; case Color.blue: return 2; }\n}", false, 7, false)
+}
+
+func TestEmitEnumVariantCallFormCompilesAndRuns(t *testing.T) {
+	// A plain enum variant written with explicit empty parens — Color.red() —
+	// is a zero-payload VariantConstruct (confirmed against a real fixture),
+	// the same discriminant value as Color.red, so it is accepted as an enum
+	// local's initializer and the red case fires.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red();\nswitch c { case Color.red: return 9; case Color.green: return 1; case Color.blue: return 2; }\n}", false, 9, false)
+}
+
+func TestEmitEnumEqualityCompilesAndRuns(t *testing.T) {
+	// Equality between enum values, c == Color.red — confirmed checker-
+	// reachable (it produces a BinaryValue with two enum-typed operands), so it
+	// lowers through buildComparison's enum branch to the plain C == on the
+	// two enum constants. With c = green the comparison is false and the else
+	// arm returns 5.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nif c == Color.red { return 1; } else { return 5; }\n}", false, 5, false)
+}
+
+func TestEmitEnumEqualityTrueCompilesAndRuns(t *testing.T) {
+	// The == comparison with c = red is true, proving the equality actually
+	// evaluates rather than always falling to the else arm.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nif c == Color.red { return 1; } else { return 5; }\n}", false, 1, false)
+}
+
+func TestEmitEnumOrderingCompilesAndRuns(t *testing.T) {
+	// An ordering comparison on enum values, c < Color.blue — also confirmed
+	// checker-reachable (the checker accepts it, unlike bool ordering). Both
+	// operands lower to their enum constants (green = ordinal 1, blue = ordinal
+	// 2), and the plain C < on the discriminants is the direct, correct
+	// lowering: 1 < 2 is true, so the then-arm returns 1.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nif c < Color.blue { return 1; } else { return 5; }\n}", false, 1, false)
+}
+
+func TestEmitEnumWhileConditionCompilesAndRuns(t *testing.T) {
+	// An enum equality comparison as a while condition, reassigning the enum
+	// local inside the loop so the loop terminates. The first iteration sees
+	// c == Color.red true (c = red), so the loop runs once, reassigns c to
+	// blue, and exits on the second condition check. Bounded execution because
+	// the loop's own condition is the only bound.
+	emitAndRunBounded(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nvar n i32 = 0;\nwhile c == Color.red { n = n + 1; c = Color.blue; }\nreturn n;\n}", false, 1, false)
+}
+
+func TestEmitEnumLocalUnusedCompilesClean(t *testing.T) {
+	// A plain enum local declared and never referenced after its declaration
+	// still compiles clean under -Wall -Wextra -Werror: the emitted declaration
+	// is followed by the same (void) cast every other local gets, so the strict
+	// build never warns about an unused variable.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nreturn 3;\n}", false, 3, false)
+}
+
+func TestEmitEnumWritesC(t *testing.T) {
+	// Confirm the emitted C directly for one fixture: the enum typedef's exact
+	// shape (one named constant per variant, in declared order, named from each
+	// variant's symbol ID; the typedef named from the enum's type ID), the
+	// enum-typed local's declaration initializing from the variant's constant,
+	// and the switch's case labels naming the same constants.
+	unit, snapshot, entryID, enumType, variants := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}")
+	if len(variants) != 3 {
+		t.Fatalf("fixture has %d variants, want 3 (red, green, blue)", len(variants))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	typedef := "typedef enum {\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[1])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[2])) + ",\n" +
+		"} " + enumTypeName(enumType) + ";"
+	if !strings.Contains(out, typedef) {
+		t.Errorf("emitted C is missing the enum typedef %q:\n%s", typedef, out)
+	}
+	for _, want := range []string{
+		enumTypeName(enumType) + " pebble_local_",
+		"= pebble_variant_" + strconv.Itoa(int(variants[1])) + ";",
+		"switch (pebble_local_",
+		"case pebble_variant_" + strconv.Itoa(int(variants[0])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(variants[1])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(variants[2])) + ":",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// buildTaggedUnionPayloadUnit hand-builds a unit whose entry body declares an
+// enum-typed local initialized from a payload-carrying variant construction
+// (Choice.value(5), a VariantConstruct with one payload child). The checker
+// cannot produce this program through the full pipeline (confirmed: assigning
+// a tagged-union construction fails C0601 / C0616 — a real checker limitation,
+// reported, not fixed), so the shape is constructed directly through the IR
+// builder, borrowing the tagged union's type declaration and type ID from a
+// checker-built fixture. Emit must reject it cleanly, naming that union-enum
+// payload support does not exist.
+func buildTaggedUnionPayloadUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	unit, snapshot, entryID := buildFixture(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 { return 0; }", "main", false)
+	var decl symbol.SymbolID
+	var members []symbol.SymbolID
+	for _, td := range unit.TypeDeclarations() {
+		decl = td.Symbol
+		members = td.Members
+		break
+	}
+	if len(members) < 2 {
+		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(members))
+	}
+	var choiceType types.TypeID
+	for _, n := range unit.Nodes() {
+		if n.Kind == tir.TypeUse && n.TypeArg != 0 {
+			if key, ok := snapshot.Key(n.TypeArg); ok {
+				if d, _, ok := key.Nominal(); ok && d == decl {
+					choiceType = n.TypeArg
+					break
+				}
+			}
+		}
+	}
+	if choiceType == 0 {
+		t.Fatal("could not resolve the Choice type ID from the fixture")
+	}
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	if err := builder.AddTypeDecl(tir.TypeDecl{Symbol: decl, Members: members, Span: source.NewSpan(0, 0, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    snapshot.Builtins().I32,
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "5"},
+		Span:    source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	construct, err := builder.AddNode(tir.Node{
+		Kind:     tir.VariantConstruct,
+		Type:     choiceType,
+		Member:   members[1],
+		Children: []tir.NodeID{payload},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	init, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   30,
+		Children: []tir.NodeID{construct},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    snapshot.Builtins().I32,
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "0"},
+		Span:    source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{zero},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{init, ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		ResultType: snapshot.Builtins().I32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	built, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return built, snapshot, entryID
+}
+
+func TestEmitRejectsTaggedUnionPayload(t *testing.T) {
+	// A tagged union (union enum) with a payload-carrying variant reaching this
+	// backend is a clean rejection naming what is unsupported — there is no
+	// representation decision to make here, and the backend must not guess one.
+	// The payload-carrying VariantConstruct is the only in-IR record of the
+	// union form (a plain enum's variants are payload-less, and the checker
+	// rejects calling one with an argument, C0604), so its presence in a
+	// reachable body is rejected at enum-type collection time.
+	unit, snapshot, entryID := buildTaggedUnionPayloadUnit(t)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "union enum (payload-carrying variant) support does not exist yet")
+}
+
+func TestEmitEnumSwitchInHelperCompilesAndRuns(t *testing.T) {
+	// A plain enum local and switch inside a reachable helper, the entry
+	// calling the helper: collectEnumTypes walks every reachable helper's body,
+	// so the enum typedef is discovered and emitted even when no reachable
+	// *entry* statement references the enum type. The helper's switch on its
+	// own enum local fires the green case and returns 1.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn pick() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}\nfn main() i32 { return pick(); }", false, 1, false)
+}
+
+func TestEmitEnumLocalInLoopBodyCompilesAndRuns(t *testing.T) {
+	// An enum-typed local declared inside a while loop body, reassigned and
+	// compared there, and accumulated: the enum dispatch routes through
+	// buildLeadingStatement from buildLoopBody exactly as a scalar local does.
+	// i = 0 and i = 1 leave c as green, each adding 1 (n = 2); i = 2 reassigns
+	// c to red, whose equality comparison is true and adds 10 (n = 12). Bounded
+	// execution because the loop's own condition is the only bound.
+	emitAndRunBounded(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 0;\nvar i i32 = 0;\nwhile i < 3 {\nvar c Color = Color.green;\nif i == 2 { c = Color.red; }\nif c == Color.red { n = n + 10; } else { n = n + 1; }\ni = i + 1;\n}\nreturn n;\n}", false, 12, false)
 }

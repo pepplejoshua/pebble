@@ -987,6 +987,72 @@ incrementally as work proceeds.
   argument with a same-scope deferred `Store`, crossing a `break`,
   with `-Wall -Wextra -Werror`, confirming exit code 11 with no
   `-Wunused-function` warning.
+- **10.34 — plain (payload-less) enum locals and switch matching**
+  (`compiler/internal/backend`): Phase 3's first slice. Pebble has two
+  enum forms — a plain enum (`type Color = enum { red, green, blue
+  };`, no variant carries a payload) and a tagged union (`type Choice
+  = union enum { empty void; value i32; };`, at least one variant
+  carries a payload). This slice is plain enums only; tagged unions
+  need a real C representation decision (a tagged struct with a union
+  member) and remain a clean rejection. A real, load-bearing finding
+  from the investigation: `types.TypeKey`'s `Nominal` shape carries
+  only the declaration symbol — a plain enum and a struct are
+  otherwise indistinguishable in the type snapshot, and the checker's
+  own enum/union distinction (`infer.NominalKind`) isn't reachable
+  from the backend at all (no `infer` import). The backend
+  distinguishes them from the unit's own node graph instead
+  (`isEnumType`): a Nominal type's declared members are enum variants
+  exactly when none of them ever appears as a `FieldPlace.Member` or a
+  `RecordConstruct` field anywhere in the *entire* compilation unit —
+  sound because any struct that survives `collectStructTypes` must
+  already have that evidence somewhere (`resolveStructInfo` hard-fails
+  a member with no resolvable field type), so a genuine struct can
+  never be starved of evidence and misread as an enum. A plain enum is
+  emitted as one C `enum` typedef (`pebble_enum_<typeID>_t`) with one
+  named constant per variant (`pebble_variant_<memberSymbol>`) in the
+  enum's declared order (`TypeDecl.Members`) — that declared order
+  *is* the discriminant (`Members[i]` gets C value `i`), so switch
+  case labels and stored values agree with the typedef by
+  construction. Supported: a variant literal (`Color.green`, an
+  `EnumVariantValue`, or the zero-payload call form `Color.red()`, a
+  payload-less `VariantConstruct` — both confirmed reachable from real
+  source) as an enum-typed local's initializer or a reassignment's new
+  value; a `CaseValue`-based switch case (`buildSwitch`/
+  `buildCaseLabel`, previously a hard rejection since 10.31) for an
+  enum-typed subject, multi-value cases and `else`/`default:` unchanged
+  from 10.31; and — a genuine surprise the investigation confirmed via
+  real fixtures rather than assumed unreachable — **enum comparison**,
+  both equality *and* the ordering operators (`<`, `<=`, `>`, `>=`),
+  all six confirmed checker-reachable and lowered to the plain C
+  operator on the underlying discriminant. Enum-typed function
+  parameters/results, and enum-typed tuple/struct/array/optional
+  elements or fields, remain clean rejections (deliberately out of
+  scope, threaded through every `*CType` helper so each names the enum
+  type explicitly rather than falling through to a generic struct
+  error). A genuine **checker limitation** was found and reported (not
+  fixed, out of this slice's scope): the full check pipeline cannot
+  build *any* tagged-union program at all today — `var c Choice =
+  Choice.value(5);` fails `C0601`, and even a top-level `let` fails
+  `C0616` — so the tagged-union rejection test had to hand-build its
+  IR directly through `tir.Builder` rather than via `buildFixture`. A
+  stale pre-existing test (`TestEmitSwitchRejectsCaseValue`, whose own
+  comment claimed enum cases "cannot be constructed from real
+  source") was replaced with a comment pointing at the now-passing
+  coverage, since the shape it skipped is exactly what this slice
+  implements. Verified end-to-end (each of the three variants
+  independently selecting its own switch case; a multi-value case on
+  an enum subject, both member values; an `else` arm, both the
+  fallthrough and a direct-case-hit path; block- and bare-return case
+  bodies; reassignment; the zero-payload call-construction form;
+  equality both true and false; an ordering comparison; an enum
+  comparison as a `while` condition; an unused enum local under strict
+  warnings; an enum switch inside a helper; an enum local inside a
+  loop body; a hand-built-IR rejection test for a tagged-union
+  payload) and independently outside the harness — manually compiled
+  and ran the emitted C for a fixture combining an ordering comparison
+  gating a multi-value-case switch, with `-Wall -Wextra -Werror`,
+  confirming exit code 10 and a typedef whose constants are ordered
+  exactly as predicted.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
