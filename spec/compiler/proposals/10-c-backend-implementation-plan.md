@@ -932,6 +932,61 @@ incrementally as work proceeds.
 
   **Phase 2 (control flow completion) is now fully complete** —
   10.29 through 10.32.
+- **10.33 — void-returning call used as a statement**
+  (`compiler/internal/backend`): closes a gap discovered while
+  implementing 10.32 — this backend could only call a function when
+  the result was used as an expression value; a bare `helper();`
+  statement (discarding the result, or calling a void-returning
+  function at all) was entirely unsupported anywhere, including as a
+  deferred statement. Confirmed against real fixtures: a bare
+  discarded-expression statement is a `tir.ExpressionStatement`
+  (`CategoryNonvalue`, one child — the discarded expression), produced
+  by the checker's `controlExpression` case with no `StatementForm`
+  set. The only supported shape is a `tir.DirectCall` to a
+  void-returning function, emitted as a bare
+  `pebble_fn_<symbol>(ctx, <args>);` by a new shared
+  `buildExpressionStatement`, wired into `buildLeadingStatement`
+  (covering both `buildBlock`'s and `buildLoopBody`'s leading-statement
+  sequences) and into `buildDeferredStatements` (`defer helper();` now
+  works). `validateHelperSignature` now accepts a void result;
+  `buildHelperFunctions` declares such a helper with C return type
+  `void` and `resultInfo{kind: types.Void}`; `buildBlock` gained a
+  `tir.ImplicitReturn` tail case (the synthesized fall-through every
+  void function's body ends in, confirmed against fixtures — emits
+  nothing, after any deferred statements, and is a clean rejection if
+  it somehow reaches a non-void-result block). A call to a
+  **non-void**-returning function discarded as a bare statement
+  (`f();` where `f` returns `i32`) is confirmed checker-reachable but
+  deliberately out of scope — rejected cleanly, naming the callee's
+  actual result type, rather than guessing how to drop a non-void
+  result. `CompoundStore` (`x += 1;` as a bare statement) and
+  `tir.Print` remain unimplemented, out of scope for this slice.
+  A real latent bug was found and fixed during verification: a
+  deferred void call registered inside a region no exit's `DeferChain`
+  ever reaches (the defer never fires, by 10.32's own static/lexical
+  design) was still being emitted as a helper function, since the
+  reachability walk (`collectDirectCalls`) followed a `DeferRegister`'s
+  children at its *registration* position — tripping
+  `-Wunused-function` under the mandated `-Wall -Wextra -Werror`
+  build. Fixed by having `collectDirectCalls` skip a `DeferRegister`'s
+  children entirely at registration (a firing defer's call is always
+  reached separately, through the exit's own `DeferChain` walk); this
+  also retroactively fixes the same latent gap for a 10.32-style
+  deferred `Store` whose right-hand side is a helper call that never
+  fires. Verified end-to-end (a void helper called as a statement; a
+  void helper with a parameter and a non-trivial self-contained body;
+  a void call inside a loop body; a void helper calling another void
+  helper as its own statement; a void call from an i64 entry; a
+  deferred void call firing before a return, paired with a deferred
+  Store to make the LIFO firing independently observable; a deferred
+  void call firing before a break; a deferred void call that does
+  *not* fire, confirming its callee is correctly absent from the
+  emitted C entirely; a rejection test for a non-void discarded call)
+  and independently outside the harness — manually compiled and ran
+  the emitted C for a fixture combining a deferred void call taking an
+  argument with a same-scope deferred `Store`, crossing a `break`,
+  with `-Wall -Wextra -Werror`, confirming exit code 11 with no
+  `-Wunused-function` warning.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

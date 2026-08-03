@@ -3409,16 +3409,82 @@ func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
 }
 
-func TestEmitRejectsVoidHelperCall(t *testing.T) {
-	// A void-result helper is deliberately out of scope this slice: its only
-	// use is a bare statement call (helper();), which needs an
-	// expression-statement construct the block grammar does not have, and its
-	// body (statement-only, ending in ImplicitReturn) does not fit the
-	// return/if-tail grammar buildBlock implements. The reachability walk must
-	// reject it cleanly, naming the void result, not emit it. (A void helper
-	// the entry never calls is simply unreachable and not emitted at all.)
+func TestEmitVoidHelperStatementCompilesAndRuns(t *testing.T) {
+	// The flagship 10.33 shape: a void-returning helper called purely for its
+	// side effect as a bare discarded-expression statement (helper(); on its
+	// own line, a tir.ExpressionStatement wrapping a tir.DirectCall to a void
+	// callee). This backend has no mutable-reference parameters or globals, so
+	// a void helper cannot observe any effect outside itself; the observable
+	// contract is that the call compiles and runs without error and the exit
+	// code still reflects the caller's own subsequent logic (here return 1).
+	emitAndRun(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", false, 1, false)
+}
+
+func TestEmitVoidHelperStatementWithParamCompilesAndRuns(t *testing.T) {
+	// A void helper with a parameter and a non-trivial self-contained body: it
+	// computes internally (sum 0..x into a local) and returns void, so the
+	// call's arguments are built by the same buildCallArguments machinery a
+	// value-context call uses, and the exit code (7) reflects only the
+	// caller's own logic, proving the call statement did not disturb it.
+	emitAndRunBounded(t, "fn helper(x i32) void { var acc i32 = 0; var i i32 = 0; while i < x { acc = acc + i; i = i + 1; } } fn main() i32 { helper(4); return 7; }", false, 7, false)
+}
+
+func TestEmitVoidCallInLoopBodyCompilesAndRuns(t *testing.T) {
+	// A void call as a statement inside a loop body: the ExpressionStatement
+	// is a plain child of the loop body's Block, flowing through buildLoopBody's
+	// statement switch (via the shared buildLeadingStatement) alongside the
+	// accumulation Store, so the call executes on every iteration without
+	// disrupting the loop's own logic. x = 0+1+2 = 3, the loop's own result.
+	emitAndRunBounded(t, "fn helper() void {} fn main() i32 { var x i32 = 0; var i i32 = 0; while i < 3 { helper(); x = x + i; i = i + 1; } return x; }", false, 3, false)
+}
+
+func TestEmitVoidHelperCallingVoidHelperCompilesAndRuns(t *testing.T) {
+	// A void helper whose own body is a void call statement plus its
+	// ImplicitReturn tail: helper() calls inner(5) as a statement, then falls
+	// off the end of its body. The reachability walk follows the nested call
+	// and emits both helpers; the caller exits 3 on its own logic.
+	emitAndRun(t, "fn inner(x i32) void { } fn helper() void { inner(5); } fn main() i32 { helper(); return 3; }", false, 3, false)
+}
+
+func TestEmitVoidCallInI64EntryCompilesAndRuns(t *testing.T) {
+	// A void call statement reached from an i64 entry: the void helper is
+	// emitted with the C return type void regardless of the entry's width, and
+	// the call compiles and runs to the caller's own exit code.
+	emitAndRun(t, "fn helper() void {} fn main() i64 { helper(); return 1; }", false, 1, false)
+}
+
+func TestEmitVoidHelperWritesC(t *testing.T) {
+	// Confirm the emitted C for the flagship shape: the void helper is declared
+	// with the C return type void (pebble_fn_<symbolID>, symbol 24 for this
+	// fixture), and the call statement appears as a bare
+	// `pebble_fn_24(ctx);` — a statement, not a value expression — at the
+	// call's own position in program order.
 	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns void")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "static void pebble_fn_24(PebbleContext *ctx)") {
+		t.Errorf("emitted C does not declare the void helper with the C return type void:\n%s", out)
+	}
+	if !strings.Contains(out, "    pebble_fn_24(ctx);") {
+		t.Errorf("emitted C is missing the bare void-call statement:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitRejectsNonVoidDiscardedCallStatement(t *testing.T) {
+	// A call to a non-void-returning function used purely as a statement
+	// (`f();` where f returns i32, the result silently discarded) IS reachable
+	// from real source — the checker's C0612 rejects only a discarded
+	// expression statement whose value is a non-void NON-call expression, and
+	// deliberately permits a discarded call — so the backend must reject it
+	// cleanly, naming the callee and its result type, rather than guessing
+	// how a discarded non-void result would be dropped (a real future gap,
+	// out of this slice's void-only scope).
+	unit, snapshot, entryID := buildFixture(t, "fn f() i32 { return 5; } fn main() i32 { f(); return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "result type is i32, want a call to a void-returning function")
 }
 
 func TestEmitUnreachableFunctionNotEmitted(t *testing.T) {
@@ -5515,5 +5581,71 @@ func TestEmitDeferredStoreCOutput(t *testing.T) {
 		t.Errorf("emitted C has no return statement:\n%s", out)
 	}
 	// Compile and run to confirm correctness.
+	compileAndRunBounded(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitDeferredVoidCallFiresCompilesAndRuns(t *testing.T) {
+	// A deferred void call, mirroring 10.32's defer test structure: the defer
+	// is registered in the same scope as the return, so the return's DeferChain
+	// includes it and the call fires immediately before the exit. A void call
+	// has no observable value, so the exit code is the caller's own; a
+	// same-scope deferred Store is paired with it so the defer mechanism's
+	// firing is independently observable (LIFO: x = x + 1 runs first -> x = 1,
+	// then helper() runs; return reads x = 1).
+	emitAndRunBounded(t, "fn helper() void {} fn main() i32 { var x i32 = 0; defer helper(); defer x = x + 1; return x; }", false, 1, false)
+}
+
+func TestEmitDeferredVoidCallBeforeBreakCompilesAndRuns(t *testing.T) {
+	// A deferred void call inside a loop firing before a break, mirroring
+	// 10.32's TestEmitDeferBeforeBreakCompilesAndRuns: the break's DeferChain
+	// includes the loop-registered defers, so both the deferred Store and the
+	// deferred void call run before the break. x starts at 10; on i == 3 the
+	// break fires the deferred x = x + 1 (x = 11) then helper(); the program
+	// exits 11. If the deferred call were miscompiled the build would fail.
+	emitAndRunBounded(t, "fn helper() void {} fn main() i32 { var x i32 = 10; var i i32 = 0; while i < 5 { if i == 3 { defer helper(); defer x = x + 1; break; } i = i + 1; } return x; }", false, 11, false)
+}
+
+func TestEmitDeferredVoidCallOutsideLoopDoesNotFireCompilesAndRuns(t *testing.T) {
+	// A deferred void call registered inside a loop whose exit is AFTER the
+	// loop: the return's DeferChain does not include the loop-registered defer
+	// (static/lexical scoping, the same property 10.32's
+	// TestEmitDeferOutsideIfDoesNotFireCompilesAndRuns proves for a deferred
+	// Store), so the call never fires — and, because a never-firing deferred
+	// call has no call site, the reachability walk must NOT emit its callee at
+	// all (emitting it would trip -Wunused-function under the mandated -Wall
+	// -Wextra -Werror build). The program still compiles and runs to its own
+	// exit code with no trace of the helper in the emitted C.
+	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { var x i32 = 0; var i i32 = 0; while i < 5 { if i == 0 { defer helper(); } i = i + 1; } return x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "pebble_fn_") {
+		t.Errorf("emitted C contains a helper for a deferred call that never fires, which would trip -Wunused-function:\n%s", out)
+	}
+	compileAndRunBounded(t, buf.Bytes(), 0, false)
+}
+
+func TestEmitDeferredVoidCallCOutput(t *testing.T) {
+	// Confirm the emitted C for a deferred void call that fires: the call
+	// statement's text appears immediately before the return, and nothing is
+	// emitted at the defer statement's own position in program order (the
+	// DeferRegister is a pure registration marker).
+	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { defer helper(); return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_fn_24(ctx);") {
+		t.Errorf("emitted C is missing the deferred void-call statement:\n%s", out)
+	}
+	if strings.Contains(out, "defer") {
+		t.Errorf("emitted C contains the word 'defer':\n%s", out)
+	}
+	if !strings.Contains(out, "return") {
+		t.Errorf("emitted C has no return statement:\n%s", out)
+	}
 	compileAndRunBounded(t, buf.Bytes(), 1, false)
 }

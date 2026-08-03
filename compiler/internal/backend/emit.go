@@ -71,13 +71,19 @@
 // pebble_local_<symbolID> naming locals use, so a reference to a parameter
 // inside the body is read exactly like a reference to a declared local.
 // Every called function must resolve to the
-// entry's own integer width — there is no cast/coercion lowering, and
-// void-result helpers are deliberately out of scope this slice (a void call
-// has no expression-statement construct in the block grammar). Recursion
+// entry's own integer width — there is no cast/coercion lowering — and since
+// 10.33 a called function may also resolve to void, in exactly one position: a
+// bare discarded-expression statement (`helper();` on its own line, a
+// tir.ExpressionStatement whose single child is a tir.DirectCall to a
+// void-returning function, emitted as a bare `pebble_fn_<symbolID>(ctx,
+// <args>);` C statement by buildExpressionStatement — the leading-statement,
+// loop-body, and deferred-statement positions all route through that one
+// builder). Recursion
 // (self- or mutual) is rejected cleanly at discovery time, since this backend
 // has no forward-declaration mechanism yet. Each called function's body is
 // built by the exact same buildBlock, with its own fresh locals scope seeded
-// with the function's own parameters.
+// with the function's own parameters; a void helper's body ends in the
+// ImplicitReturn the checker appends, which emits nothing.
 // A call expression emits `pebble_fn_<calleeSymbolID>(ctx, <arg0>, <arg1>,
 // ...)`: the typed IR's
 // DirectCall records context forwarding via ContextAction (ContextForward for a
@@ -313,9 +319,12 @@ import (
 // (see discoverReachableHelpers and buildHelperFunctions). A called function
 // must be Pebble-convention, take parameters of only the entry's resolved
 // width or bool, and return exactly the
-// entry's resolved width; a width mismatch at a call site, a parameter of any
-// other type, a void-result
-// helper (deliberately out of scope this slice), or a call that is part of a
+// entry's resolved width; a width mismatch at a call site or a parameter
+// of any other
+// type is a clean rejection. A void-result helper is supported since 10.33
+// in exactly one position — a bare
+// discarded-expression statement (`helper();`, see buildExpressionStatement)
+// — while a call that is part of a
 // cycle (a function that can reach itself, directly or through others — the
 // recursion boundary) is a clean rejection naming what was found, since this
 // backend has no forward-declaration mechanism to order recursive or
@@ -579,10 +588,17 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 // collectDirectCalls appends every tir.DirectCall node in the tree rooted at
 // nodeID, following Children and DeferChain. The typed-IR node graph is
 // single-parented, so this walk terminates and each node is visited at most
-// once per path. DeferChain is followed for completeness even though defer is
-// rejected by the block builders anyway — following it only affects which
-// callees are validated, never whether the program is accepted (a deferring
-// body is rejected on its own merits).
+// once per path. A DeferRegister child is skipped here: the deferred statement
+// inside it is only ever emitted at exit points whose DeferChain references
+// the register, so a call inside it is reachable exactly when some exit's
+// DeferChain walk (below, which DOES recurse into the register's children)
+// reaches it. Walking the register's children at its registration position
+// would instead treat a defer that never fires — registered in a region no
+// exit of the program leaves through — as making its callee reachable,
+// emitting a helper no emitted call site ever invokes and tripping
+// -Wunused-function under the mandated -Wall -Wextra -Werror build. (This also
+// keeps a deferred Store whose value is a helper call consistent: the callee
+// is emitted only when that defer actually fires.)
 func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
@@ -592,6 +608,9 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 		*out = append(*out, node)
 	}
 	for _, childID := range node.Children {
+		if child, ok := unit.Node(childID); ok && child.Kind == tir.DeferRegister {
+			continue
+		}
 		if err := collectDirectCalls(unit, childID, out); err != nil {
 			return err
 		}
@@ -1119,7 +1138,7 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 // every reachable helper must satisfy: Pebble-convention, parameters whose
 // types are exactly the entry's resolved width, bool, a tuple type, or a
 // struct type, and a result of exactly the entry's resolved width, a tuple
-// type, or a struct type. The width
+// type, a struct type, or void. The width
 // rule is the same reasoning 10.13 established for locals — a called function
 // of the other width (an i32 helper called from an i64 entry, or vice versa) is
 // a clean width-mismatch rejection, never a coercion, since there is no
@@ -1132,11 +1151,12 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 // its typedef gets built (buildTupleTypedef / buildStructTypedef), not here.
 // Anything else (str, a pointer, an array, an optional, a helper of the other
 // integer width) is a clean rejection naming the position. A void-result
-// helper is also a
-// clean rejection: this slice only supports integer- and aggregate-result
-// calls used as expression values, deliberately leaving bare void calls (which
-// would need an expression-statement construct in the block grammar) out of
-// scope.
+// helper is accepted: 10.33 added the one position such a call is legal in —
+// a bare discarded-expression statement (buildExpressionStatement), which the
+// void call's only reachable shape from real source (helper(); as its own
+// statement) produces. A void call in any value position is still rejected by
+// the value builders themselves (buildExpr's width gate and
+// buildAggregateCallInitializer's result-type match), never silently emitted.
 func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width types.BuiltinKind) error {
 	if decl.Convention != types.Pebble {
 		return fmt.Errorf("called function symbol %d uses %s calling convention, want Pebble", decl.Symbol, callingConventionName(decl.Convention))
@@ -1153,11 +1173,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s or bool, or a tuple/struct type (a parameter may be the entry's integer width, bool, or a tuple/struct type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) {
-		if builtin, ok := resolvedBuiltin(snapshot, decl.ResultType); ok && builtin == types.Void {
-			return fmt.Errorf("called function symbol %d returns void; void-result helper calls are not supported yet (only %s-result calls used as expression values are)", decl.Symbol, wantName(width))
-		}
-		return fmt.Errorf("called function symbol %d has result type %s, want %s or a tuple/struct result type (a called function may resolve to the entry's integer width, or a tuple/struct type)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	if !isWidth(snapshot, width, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want %s, a tuple/struct result type, or void (a called function may resolve to the entry's integer width, a tuple/struct type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
 	}
 	return nil
 }
@@ -1233,12 +1250,24 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 		// recording that aggregate so the tail-position Return is built by
 		// buildAggregateReturnValue rather than buildExpr. A scalar-result
 		// helper is unchanged: cType(width) and resultInfo{kind: width}, so its
-		// emitted text is byte-identical to before this slice. The tuple/struct
+		// emitted text is byte-identical to before this slice. A void-result
+		// helper (10.33) is declared with the C return type "void" and
+		// resultInfo{kind: types.Void}. The tuple/struct
 		// shape is validated wherever its typedef is built (buildTupleTypedef /
 		// buildStructTypedef), exactly like a tuple/struct parameter's.
 		returnType := cType(width)
 		result := resultInfo{kind: width}
 		switch {
+		case isVoid(snapshot, helper.decl.ResultType):
+			// A void-result helper (10.33) is declared with the C return type
+			// "void" — a void call has no value to return, so its body's tail
+			// is an ImplicitReturn that emits nothing (buildBlock's ImplicitReturn
+			// case). resultInfo records types.Void so buildBlock knows the tail
+			// is a legal fall-through rather than a missing return, and the
+			// helper is only ever reached by a bare discarded-expression
+			// statement call (buildExpressionStatement), never as a value.
+			returnType = "void"
+			result = resultInfo{kind: types.Void}
 		case isTuple(snapshot, helper.decl.ResultType):
 			returnType = tupleTypeName(helper.decl.ResultType)
 			result = resultInfo{tuple: helper.decl.ResultType}
@@ -1420,6 +1449,28 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			statements = append(statements, deferText)
 		}
 		statements = append(statements, indent+"return "+returnValue+";")
+	case tir.ImplicitReturn:
+		// A void-result function (a reachable void helper — the entry's own
+		// void shape is handled separately by validateEmptyBody and never
+		// reaches buildBlock) ends its body with a synthesized ImplicitReturn,
+		// confirmed against real fixtures. It emits nothing: the C function
+		// simply falls off the end, which is legal for a `static void`
+		// function. Any DeferChain on it is emitted first (a defer registered
+		// inside a void helper must still fire at the helper's exit). A
+		// non-void function can never end in an ImplicitReturn from real
+		// source (the checker rejects fall-through with C0607), so this case
+		// only ever fires for result.kind == types.Void; a hand-built non-void
+		// block ending in ImplicitReturn is a clean rejection.
+		if result.kind != types.Void {
+			return "", fmt.Errorf("entry function body block statement is an ImplicitReturn, want a Return of an integer expression, a two-armed if/else, or a switch (an implicit fall-through tail only appears in a void function, but the enclosing function resolves to a non-void result)")
+		}
+		deferText, err := buildDeferredStatements(unit, snapshot, last.DeferChain, scope, indent, "entry function body block", width)
+		if err != nil {
+			return "", err
+		}
+		if deferText != "" {
+			statements = append(statements, deferText)
+		}
 	case tir.If:
 		ifText, err := buildIf(unit, snapshot, last, scope, depth, width, result)
 		if err != nil {
@@ -2314,6 +2365,15 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// backend must emit nothing at this position. The deferred statement
 			// is only ever emitted at exit points whose DeferChain references it.
 			continue
+		case tir.ExpressionStatement:
+			// A bare discarded-expression statement inside a loop body —
+			// `helper();` on its own line — flows through the same shared
+			// leading-statement builder buildBlock uses, so the emission logic
+			// lives in exactly one place. (The default case below would reach
+			// buildLeadingStatement too; the case is spelled out so the loop
+			// body's statement switch documents the supported kinds the way it
+			// does for While/RangeLoop/For/If/Break/Continue/DeferRegister.)
+			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width)
 		default:
 			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width)
 		}
@@ -2388,8 +2448,11 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 // at the given indent, joined by newlines, to be placed immediately before the
 // actual exit statement (return/break/continue). The checker already rejects
 // deferred return/break/continue/nested defer (C0613), so the only reachable
-// deferred statement kinds from real source are Store (reassignment) and
-// Print (the built-in). A DeferRegister whose child is an unsupported
+// deferred statement kinds from real source are Store (reassignment), Print
+// (the built-in), and — since 10.33 — a bare discarded-expression statement
+// that is a call to a void-returning function (defer helper();, built by the
+// same buildExpressionStatement the leading-statement case uses). A
+// DeferRegister whose child is an unsupported
 // statement kind is a clean rejection naming what was found.
 func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if len(chain) == 0 {
@@ -2418,13 +2481,25 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []t
 				return "", err
 			}
 			parts = append(parts, indent+core+";")
+		case tir.ExpressionStatement:
+			// A deferred call to a void-returning function — `defer
+			// helper();` — built by the same shared statement builder a
+			// non-deferred discarded-expression statement uses, so the emission
+			// logic lives in exactly one place. The builder rejects a deferred
+			// call to a non-void-returning function (and any non-call discarded
+			// expression) cleanly.
+			text, err := buildExpressionStatement(unit, snapshot, stmt, scope, indent, context, width)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, text)
 		case tir.Initialize:
 			// A deferred local declaration is reachable from real source but
 			// not yet supported as a deferred statement in this backend's
 			// current scope. Reject cleanly rather than guess.
 			return "", fmt.Errorf("%s deferred statement is an Initialize (local declaration), which is not supported as a deferred statement yet", context)
 		default:
-			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment is supported)", context, stmt.Kind)
+			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment and a void-returning function call used as a statement are supported)", context, stmt.Kind)
 		}
 	}
 	return strings.Join(parts, "\n"), nil
@@ -2569,9 +2644,69 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			return "", err
 		}
 		return indent + core + ";", nil
+	case tir.ExpressionStatement:
+		// A bare discarded-expression statement — `helper();` written as its
+		// own statement, its result unused (a tir.ExpressionStatement wrapping
+		// exactly one value, built by the checker's controlExpression case).
+		// The only supported shape is a call to a void-returning function,
+		// emitted as a bare C statement by the shared buildExpressionStatement
+		// (also used by buildDeferredStatements for a deferred call); any other
+		// discarded expression — a non-call value, or a call to a non-void-
+		// returning function — is a clean rejection naming what was found.
+		return buildExpressionStatement(unit, snapshot, statement, scope, indent, context, width)
 	default:
-		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize) or a reassignment (Store)", context, statement.Kind)
+		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize), a reassignment (Store), or a call to a void-returning function used as a statement (ExpressionStatement)", context, statement.Kind)
 	}
+}
+
+// buildExpressionStatement builds the C statement text for one
+// tir.ExpressionStatement — a bare discarded-expression statement such as
+// `helper();` written as its own statement, produced by the checker's
+// controlExpression case with no StatementForm set and a single value child
+// (confirmed against real fixtures). It is the statement-context twin of a
+// value-context call: the single supported shape is a tir.DirectCall to a
+// void-returning function, emitted as `pebble_fn_<calleeSymbolID>(ctx, <args>);`
+// at the given indent, mirroring buildDirectCall's two return shapes exactly
+// (`pebble_fn_<sym>(ctx)` with no arguments, `pebble_fn_<sym>(ctx, <args>)`
+// with some) but as a statement instead of a value expression. The callee is
+// resolved through findFunctionDeclaration and required to be void-returning
+// via the same resolvedBuiltin == types.Void check validateHelperSignature
+// used before this slice rejected void helpers outright — a call whose callee
+// returns anything else is a clean rejection naming the callee and its result
+// type. The call text itself is built by buildDirectCall unchanged, so
+// argument building, context threading, and the convention/context-action
+// checks are identical to a value-context call. Any other ExpressionStatement
+// child — a discarded non-call expression, or a call to a non-void-returning
+// function used purely as a statement (legal Pebble, confirmed the checker
+// produces it, but requiring a decision about how a discarded non-void result
+// is dropped — out of this slice's scope) — is a clean rejection naming what
+// was found. The function is shared by buildLeadingStatement's
+// ExpressionStatement case (which covers both buildBlock's and buildLoopBody's
+// leading-statement sequences) and buildDeferredStatements' deferred-statement
+// case, so the emission logic lives in exactly one place.
+func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if len(statement.Children) != 1 {
+		return "", fmt.Errorf("%s discarded-expression statement has %d child(ren), want exactly one (the expression being discarded)", context, len(statement.Children))
+	}
+	expr, ok := unit.Node(statement.Children[0])
+	if !ok {
+		return "", fmt.Errorf("%s discarded-expression statement references invalid value node %d", context, statement.Children[0])
+	}
+	if expr.Kind != tir.DirectCall {
+		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a call to a void-returning function is)", context, expr.Kind)
+	}
+	calleeDecl, err := findFunctionDeclaration(unit, expr.Symbol, "called function")
+	if err != nil {
+		return "", err
+	}
+	if !isVoid(snapshot, calleeDecl.ResultType) {
+		return "", fmt.Errorf("%s discarded-expression statement discards a call to symbol %d whose result type is %s, want a call to a void-returning function (a call to a non-void-returning function used as a bare statement is not supported yet)", context, expr.Symbol, describeType(snapshot, calleeDecl.ResultType))
+	}
+	callExpr, err := buildDirectCall(unit, snapshot, expr, scope, width)
+	if err != nil {
+		return "", err
+	}
+	return indent + callExpr + ";", nil
 }
 
 // localInfo records what a declared local holds: an ordinary scalar — the
@@ -4626,6 +4761,20 @@ func isStr(snapshot *types.Snapshot, id types.TypeID) bool {
 		return false
 	}
 	return id == snapshot.Builtins().Str
+}
+
+// isVoid reports whether id is the snapshot's void builtin. A void result is
+// the third accepted result kind for a reachable helper (alongside the entry's
+// width and a tuple/struct type), recognized so validateHelperSignature can
+// admit a void-returning callee and buildHelperFunctions can declare it with
+// the C return type "void"; a void-returning call is then built only in the
+// bare discarded-expression statement position (buildExpressionStatement),
+// never as a value.
+func isVoid(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	return id == snapshot.Builtins().Void
 }
 
 // isTuple reports whether id resolves to a tuple type in the snapshot. It is
