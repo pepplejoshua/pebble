@@ -327,19 +327,14 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	tupleTypedefs, err := buildTupleTypedefs(snapshot, result, tupleTypes)
+	ordered, err := orderAggregateTypes(snapshot, tupleTypes, optionalTypes, structInfos)
 	if err != nil {
 		return err
 	}
-	optionalTypedefs, err := buildOptionalTypedefs(snapshot, result, optionalTypes)
+	typedefs, err := buildAggregateTypedefs(snapshot, result, ordered.all, ordered.structs)
 	if err != nil {
 		return err
 	}
-	structTypedefs, err := buildStructTypedefs(snapshot, result, structInfos)
-	if err != nil {
-		return err
-	}
-	typedefs := joinTypedefs(tupleTypedefs, joinTypedefs(optionalTypedefs, structTypedefs))
 	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result)
 	if err != nil {
 		return err
@@ -891,6 +886,133 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 		}
 	}
 	return nil
+}
+
+type aggregateTypeOrder struct {
+	all       []types.TypeID
+	tuples    []types.TypeID
+	optionals []types.TypeID
+	structs   []structInfo
+}
+
+// orderAggregateTypes performs a stable dependency-first traversal. The input
+// order is deliberately the historical tuple, optional, struct collection
+// order, so unrelated programs retain their prior output.
+func orderAggregateTypes(snapshot *types.Snapshot, tuples, optionals []types.TypeID, structs []structInfo) (aggregateTypeOrder, error) {
+	structByType := make(map[types.TypeID]structInfo, len(structs))
+	for _, info := range structs {
+		structByType[info.typ] = info
+	}
+	var depth func(types.TypeID, map[types.TypeID]bool) int
+	depth = func(id types.TypeID, active map[types.TypeID]bool) int {
+		if active[id] {
+			return 0
+		}
+		active[id] = true
+		defer delete(active, id)
+		key, ok := snapshot.Key(id)
+		if !ok {
+			return 0
+		}
+		var deps []types.TypeID
+		switch key.Kind() {
+		case types.Tuple:
+			deps, _ = key.Elements()
+		case types.Optional:
+			if c, ok := key.Child(); ok {
+				deps = []types.TypeID{c}
+			}
+		case types.Array:
+			if _, c, ok := key.Array(); ok {
+				deps = []types.TypeID{c}
+			}
+		case types.Nominal:
+			if in, ok := structByType[id]; ok {
+				for _, f := range in.fields {
+					deps = append(deps, f.typ)
+				}
+			}
+		}
+		max := 0
+		for _, d := range deps {
+			if isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || isStruct(snapshot, d) {
+				if v := depth(d, active) + 1; v > max {
+					max = v
+				}
+			}
+		}
+		return max
+	}
+	for _, id := range append(append(append([]types.TypeID{}, tuples...), optionals...), func() []types.TypeID {
+		r := make([]types.TypeID, len(structs))
+		for i := range structs {
+			r[i] = structs[i].typ
+		}
+		return r
+	}()...) {
+		if depth(id, map[types.TypeID]bool{}) > 1 {
+			return aggregateTypeOrder{}, fmt.Errorf("aggregate type %s has more than one level of nesting, which is unsupported", describeType(snapshot, id))
+		}
+	}
+	result := aggregateTypeOrder{}
+	// DFS postorder gives dependencies before users while preserving roots.
+	seen := make(map[types.TypeID]bool)
+	var post []types.TypeID
+	var dfs func(types.TypeID) error
+	dfs = func(id types.TypeID) error {
+		if seen[id] {
+			return nil
+		}
+		seen[id] = true
+		key, _ := snapshot.Key(id)
+		var deps []types.TypeID
+		switch key.Kind() {
+		case types.Tuple:
+			deps, _ = key.Elements()
+		case types.Optional:
+			if c, ok := key.Child(); ok {
+				deps = []types.TypeID{c}
+			}
+		case types.Nominal:
+			if in, ok := structByType[id]; ok {
+				for _, f := range in.fields {
+					deps = append(deps, f.typ)
+				}
+			}
+		}
+		for _, dep := range deps {
+			if isTuple(snapshot, dep) || isOptional(snapshot, dep) || isStruct(snapshot, dep) {
+				if err := dfs(dep); err != nil {
+					return err
+				}
+			}
+		}
+		post = append(post, id)
+		return nil
+	}
+	all := append(append(append([]types.TypeID{}, tuples...), optionals...), func() []types.TypeID {
+		r := make([]types.TypeID, len(structs))
+		for i := range structs {
+			r[i] = structs[i].typ
+		}
+		return r
+	}()...)
+	for _, id := range all {
+		if err := dfs(id); err != nil {
+			return aggregateTypeOrder{}, err
+		}
+	}
+	for _, id := range post {
+		if isTuple(snapshot, id) {
+			result.tuples = append(result.tuples, id)
+		} else if isOptional(snapshot, id) {
+			result.optionals = append(result.optionals, id)
+		} else if isStruct(snapshot, id) {
+			result.structs = append(result.structs, structByType[id])
+		}
+	}
+	result.all = post
+	return result, nil
 }
 
 // resolveStructInfo turns one collected struct TypeID into a structInfo with
@@ -1820,6 +1942,24 @@ func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node
 				return "", err
 			}
 			exprs[i] = elementExpr
+		case isTuple(snapshot, elementType):
+			elementExpr, err := buildNestedAggregateValue(unit, snapshot, node.Children[i], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isStruct(snapshot, elementType):
+			elementExpr, err := buildNestedAggregateValue(unit, snapshot, node.Children[i], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isOptional(snapshot, elementType):
+			elementExpr, err := buildNestedAggregateValue(unit, snapshot, node.Children[i], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
 		default:
 			return "", fmt.Errorf("%s contains a tuple value of type %s whose element %d is %s, want %s or bool", context, tupleTypeName(node.Type), i, describeType(snapshot, elementType), wantName(width))
 		}
@@ -1852,6 +1992,32 @@ func buildTupleValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node
 	return fmt.Sprintf("(%s)%s", tupleTypeName(node.Type), braceList), nil
 }
 
+func buildNestedAggregateValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, typ types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s references invalid aggregate value", context)
+	}
+	if node.Kind == tir.SymbolValue {
+		info, ok := scope[node.Symbol]
+		if !ok {
+			return "", fmt.Errorf("%s references unknown aggregate symbol", context)
+		}
+		if info.tuple != typ && info.array != typ && info.optional != typ && info.structType != typ {
+			return "", fmt.Errorf("%s aggregate symbol has the wrong type", context)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	switch {
+	case isTuple(snapshot, typ):
+		return buildTupleValueExpr(unit, snapshot, node, scope, context, width)
+	case isStruct(snapshot, typ):
+		return buildStructValueExpr(unit, snapshot, node, scope, context, width)
+	case isOptional(snapshot, typ):
+		return buildOptionalValueExpr(unit, snapshot, node, scope, context, width)
+	}
+	return "", fmt.Errorf("%s aggregate type is unsupported", context)
+}
+
 // buildArrayLocalDeclaration builds a fixed-length C array from an ArrayValue
 // literal or an ArrayRepeat ([v; N]) initializer. Array elements use the same
 // integer/bool builders as scalar locals; nested arrays and all other element
@@ -1880,7 +2046,7 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	// initializer forms; anything else (a nested array element) is a clean
 	// rejection naming the element type, since this backend emits exactly
 	// those two C types as array elements.
-	if !isWidth(snapshot, width, elementType) && !isBool(snapshot, elementType) {
+	if !isWidth(snapshot, width, elementType) && !isBool(snapshot, elementType) && !isTuple(snapshot, elementType) && !isArray(snapshot, elementType) && !isOptional(snapshot, elementType) && !isStruct(snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want %s or bool", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType), wantName(width))
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
@@ -1896,6 +2062,12 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 		var err error
 		if isBool(snapshot, elementType) {
 			expr, err = buildBoolExpr(unit, snapshot, child, scope, width)
+		} else if isTuple(snapshot, elementType) {
+			expr, err = buildNestedAggregateValue(unit, snapshot, child, scope, elementType, context, width)
+		} else if isStruct(snapshot, elementType) {
+			expr, err = buildNestedAggregateValue(unit, snapshot, child, scope, elementType, context, width)
+		} else if isOptional(snapshot, elementType) {
+			expr, err = buildNestedAggregateValue(unit, snapshot, child, scope, elementType, context, width)
 		} else {
 			expr, err = buildExpr(unit, snapshot, child, scope, width)
 		}
@@ -1991,6 +2163,15 @@ func arrayElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 	if isBool(snapshot, id) {
 		return "bool"
 	}
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id)
+	}
+	if isOptional(snapshot, id) {
+		return optionalTypeName(id)
+	}
+	if isStruct(snapshot, id) {
+		return structTypeName(id)
+	}
 	return cType(width)
 }
 
@@ -2037,6 +2218,18 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, sta
 				return "", err
 			}
 			valueExpr = expr
+		case isTuple(snapshot, payloadType):
+			expr, err := buildNestedAggregateValue(unit, snapshot, initValue.Children[0], scope, payloadType, context, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
+		case isStruct(snapshot, payloadType):
+			expr, err := buildNestedAggregateValue(unit, snapshot, initValue.Children[0], scope, payloadType, context, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
 		default:
 			return "", fmt.Errorf("%s declares an optional-typed local of type %s whose payload is %s, want %s or bool", context, optionalTypeName(initValue.Type), describeType(snapshot, payloadType), wantName(width))
 		}
@@ -2051,6 +2244,43 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, sta
 		return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a %s, want some <expr> or none", context, optionalTypeName(initValue.Type), initValue.Kind)
 	}
 }
+
+func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(node.Type)
+	if !ok {
+		return "", fmt.Errorf("%s optional value type %d is not in the type snapshot", context, node.Type)
+	}
+	payload, ok := key.Child()
+	if !ok {
+		return "", fmt.Errorf("%s optional value has no payload type", context)
+	}
+	if node.Kind == tir.NoneOptional {
+		return fmt.Sprintf("(%s){ .has_value = false, .value = 0 }", optionalTypeName(node.Type)), nil
+	}
+	if node.Kind != tir.SomeOptional || len(node.Children) != 1 {
+		return "", fmt.Errorf("%s contains a %s, want some or none optional value", context, node.Kind)
+	}
+	var value string
+	var err error
+	switch {
+	case isWidth(snapshot, width, payload):
+		value, err = buildExpr(unit, snapshot, node.Children[0], scope, width)
+	case isBool(snapshot, payload):
+		value, err = buildBoolExpr(unit, snapshot, node.Children[0], scope, width)
+	case isTuple(snapshot, payload):
+		value, err = buildTupleValueExpr(unit, snapshot, mustNode(unit, node.Children[0]), scope, context, width)
+	case isStruct(snapshot, payload):
+		value, err = buildStructValueExpr(unit, snapshot, mustNode(unit, node.Children[0]), scope, context, width)
+	default:
+		return "", fmt.Errorf("%s optional payload %s is unsupported", context, describeType(snapshot, payload))
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s){ .has_value = true, .value = %s }", optionalTypeName(node.Type), value), nil
+}
+
+func mustNode(unit *tir.Unit, id tir.NodeID) tir.Node { n, _ := unit.Node(id); return n }
 
 // buildStructLocalDeclaration builds one struct-typed local's declaration: a
 // `pebble_struct_<typeID>_t pebble_local_<symbol> = { .pebble_field_<m0> =
@@ -2150,22 +2380,44 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, node tir.Nod
 		if !ok {
 			return "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
 		}
+		fieldType, found := declaredFieldType(unit, snapshot, node.Type, field.Field)
+		if !found {
+			fieldType = valueNode.Type
+		}
 		var expr string
 		switch {
-		case isWidth(snapshot, width, valueNode.Type):
+		case isWidth(snapshot, width, fieldType):
 			built, err := buildExpr(unit, snapshot, field.Value, scope, width)
 			if err != nil {
 				return "", err
 			}
 			expr = built
-		case isBool(snapshot, valueNode.Type):
+		case isBool(snapshot, fieldType):
 			built, err := buildBoolExpr(unit, snapshot, field.Value, scope, width)
 			if err != nil {
 				return "", err
 			}
 			expr = built
+		case isTuple(snapshot, fieldType):
+			built, err := buildNestedAggregateValue(unit, snapshot, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", err
+			}
+			expr = built
+		case isOptional(snapshot, fieldType):
+			built, err := buildNestedAggregateValue(unit, snapshot, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", err
+			}
+			expr = built
+		case isStruct(snapshot, fieldType):
+			built, err := buildNestedAggregateValue(unit, snapshot, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", err
+			}
+			expr = built
 		default:
-			return "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, valueNode.Type), wantName(width))
+			return "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType), wantName(width))
 		}
 		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
 	}
@@ -2587,6 +2839,16 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
 		}
+		if child.Kind == tir.Load && len(child.Children) == 1 {
+			expr, typ, err := buildPlaceLValue(unit, snapshot, child.Children[0], locals, width)
+			if err != nil {
+				return "", err
+			}
+			if !isOptional(snapshot, typ) {
+				return "", fmt.Errorf("optional unwrap base is not optional")
+			}
+			return fmt.Sprintf("pebble_rt_checked_unwrap_%s(%s.has_value, %s.value)", checkedSuffix(width), expr, expr), nil
+		}
 		if child.Kind != tir.SymbolValue {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
 		}
@@ -2648,10 +2910,38 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a TupleElementValue referencing invalid node %d", node.Children[0])
 		}
+		if base.Kind == tir.Load && len(base.Children) == 1 {
+			place, ok := unit.Node(base.Children[0])
+			if !ok || place.Kind != tir.TuplePlace {
+				return "", fmt.Errorf("tuple element base is not a tuple place")
+			}
+			return buildTuplePlaceRead(unit, snapshot, place, locals, width, false)
+		}
+		if base.Kind == tir.SourceAlias && len(base.Children) == 1 {
+			inner, ok := unit.Node(base.Children[0])
+			if ok && inner.Kind == tir.Load && len(inner.Children) == 1 {
+				place, ok := unit.Node(inner.Children[0])
+				if ok && place.Kind == tir.TuplePlace && len(place.Children) == 1 {
+					baseExpr, _, err := buildPlaceLValue(unit, snapshot, place.Children[0], locals, width)
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("%s._%d._%d", baseExpr, place.Ordinal, node.Ordinal), nil
+				}
+			}
+		}
 		if base.Kind != tir.SymbolValue {
 			return "", fmt.Errorf("entry function body expression reads element %d of a %s, want a SymbolValue naming a tuple-typed local (indexing a tuple literal is not supported)", node.Ordinal, base.Kind)
 		}
 		return buildTupleElement(unit, snapshot, base.Symbol, node.Ordinal, locals, width, false)
+	case tir.SourceAlias:
+		if len(node.Children) == 1 {
+			child, ok := unit.Node(node.Children[0])
+			if ok && child.Kind == tir.TupleElementValue {
+				return buildExpr(unit, snapshot, node.Children[0], locals, width)
+			}
+		}
+		return "", fmt.Errorf("entry function body expression contains a SourceAlias, which is not supported")
 	case tir.DirectCall:
 		// A call to another Pebble-convention function whose result is the
 		// entry's own width. The width gate above already
@@ -2723,16 +3013,28 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, lo
 // is pebble_local_<symbol>._<ordinal>.
 func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	if len(place.Children) != 1 {
-		return "", fmt.Errorf("entry function body expression contains a TuplePlace with %d child(ren), want exactly one (the tuple local's place)", len(place.Children))
+		return "", fmt.Errorf("tuple place wants one base")
 	}
-	base, ok := unit.Node(place.Children[0])
+	expr, typ, err := buildPlaceLValue(unit, snapshot, place.Children[0], locals, width)
+	if err != nil {
+		return "", err
+	}
+	key, ok := snapshot.Key(typ)
 	if !ok {
-		return "", fmt.Errorf("entry function body expression contains a TuplePlace referencing invalid node %d", place.Children[0])
+		return "", fmt.Errorf("tuple place type %d is not in the type snapshot", typ)
 	}
-	if base.Kind != tir.StoragePlace {
-		return "", fmt.Errorf("entry function body expression contains a TuplePlace whose child is a %s, want a StoragePlace naming a tuple-typed local", base.Kind)
+	elements, ok := key.Elements()
+	if !ok || place.Ordinal >= uint32(len(elements)) {
+		return "", fmt.Errorf("tuple element %d is out of range", place.Ordinal)
 	}
-	return buildTupleElement(unit, snapshot, base.Symbol, place.Ordinal, locals, width, wantBool)
+	elem := elements[place.Ordinal]
+	if wantBool && !isBool(snapshot, elem) {
+		return "", fmt.Errorf("tuple element %d is not bool", place.Ordinal)
+	}
+	if !wantBool && !isWidth(snapshot, width, elem) {
+		return "", fmt.Errorf("tuple element %d is not %s", place.Ordinal, wantName(width))
+	}
+	return fmt.Sprintf("%s._%d", expr, place.Ordinal), nil
 }
 
 // buildArrayPlaceRead lowers Load(CheckedIndexPlace) for an array local. The
@@ -2740,37 +3042,29 @@ func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Nod
 // selected by the entry width before it is used as the C subscript.
 func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	if len(place.Children) != 2 {
-		return "", fmt.Errorf("entry function body expression contains a CheckedIndexPlace with %d child(ren), want exactly two (the array local's place and index)", len(place.Children))
+		return "", fmt.Errorf("CheckedIndexPlace wants two children")
 	}
-	base, ok := unit.Node(place.Children[0])
-	if !ok || base.Kind != tir.StoragePlace {
-		kind := "invalid"
-		if ok {
-			kind = string(base.Kind)
-		}
-		return "", fmt.Errorf("entry function body expression contains a CheckedIndexPlace whose base is a %s, want a StoragePlace naming an array-typed local", kind)
+	baseExpr, arrayType, err := buildPlaceLValue(unit, snapshot, place.Children[0], locals, width)
+	if err != nil {
+		return "", err
 	}
-	info, declared := locals[base.Symbol]
-	if !declared || info.array == 0 {
-		return "", fmt.Errorf("entry function body expression indexes symbol %d, which is not an array-typed local declared earlier in the entry body", base.Symbol)
-	}
-	key, ok := snapshot.Key(info.array)
+	key, ok := snapshot.Key(arrayType)
 	if !ok {
-		return "", fmt.Errorf("entry function body expression indexes an array local whose type %d is not in the type snapshot", info.array)
+		return "", fmt.Errorf("array type %d is not in the type snapshot", arrayType)
 	}
 	length, element, ok := key.Array()
 	if !ok {
-		return "", fmt.Errorf("entry function body expression indexes local %d whose type is not an array", base.Symbol)
+		return "", fmt.Errorf("checked index base is not an array")
 	}
 	if _, err := arrayLengthLiteral(length, width); err != nil {
 		return "", err
 	}
 	if wantBool {
 		if !isBool(snapshot, element) {
-			return "", fmt.Errorf("entry function body expression indexes array local %d, whose element type is %s, want bool", base.Symbol, describeType(snapshot, element))
+			return "", fmt.Errorf("array element type is %s, want bool", describeType(snapshot, element))
 		}
 	} else if !isWidth(snapshot, width, element) {
-		return "", fmt.Errorf("entry function body expression indexes array local %d, whose element type is %s, want %s", base.Symbol, describeType(snapshot, element), wantName(width))
+		return "", fmt.Errorf("array element type is %s, want %s", describeType(snapshot, element), wantName(width))
 	}
 	indexNode, ok := unit.Node(place.Children[1])
 	if !ok {
@@ -2790,7 +3084,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Nod
 		}
 	}
 	literal, _ := arrayLengthLiteral(length, width)
-	return fmt.Sprintf("pebble_local_%d[pebble_rt_checked_index_%s(%s, %s)]", base.Symbol, checkedSuffix(width), index, literal), nil
+	return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s)]", baseExpr, checkedSuffix(width), index, literal), nil
 }
 
 // buildTupleElement builds the C text for reading one element of a tuple local
@@ -2839,37 +3133,112 @@ func buildTupleElement(unit *tir.Unit, snapshot *types.Snapshot, symbolID symbol
 // place's own Type. The emitted C is
 // pebble_local_<symbol>.pebble_field_<member>.
 func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
-	if len(place.Children) != 1 {
-		return "", fmt.Errorf("entry function body expression contains a FieldPlace with %d child(ren), want exactly one (the struct local's place)", len(place.Children))
+	baseExpr, structType, err := buildPlaceLValue(unit, snapshot, place.Children[0], locals, width)
+	if err != nil {
+		return "", err
 	}
-	base, ok := unit.Node(place.Children[0])
+	fieldType, ok := declaredFieldType(unit, snapshot, structType, place.Member)
 	if !ok {
-		return "", fmt.Errorf("entry function body expression contains a FieldPlace referencing invalid node %d", place.Children[0])
-	}
-	if base.Kind != tir.StoragePlace {
-		// A FieldPlace whose base is not a plain StoragePlace is a nested
-		// field access (o.inner.x, whose outer FieldPlace's base is another
-		// FieldPlace) or a field read off a non-local value — both confirmed
-		// reachable from real source but out of scope this slice, so a clean
-		// rejection naming what was found.
-		return "", fmt.Errorf("entry function body expression contains a FieldPlace whose base is a %s, want a StoragePlace naming a struct-typed local (nested field access and reading a field off a struct literal are not supported)", base.Kind)
-	}
-	info, declared := locals[base.Symbol]
-	if !declared || info.structType == 0 {
-		return "", fmt.Errorf("entry function body expression reads a field of symbol %d, which is not a struct-typed local declared earlier in the entry body", base.Symbol)
-	}
-	fieldType, ok := declaredFieldType(unit, snapshot, info.structType, place.Member)
-	if !ok {
-		return "", fmt.Errorf("entry function body expression reads field %d of symbol %d, which is not a declared field of struct type %s", place.Member, base.Symbol, describeType(snapshot, info.structType))
+		return "", fmt.Errorf("field %d is not declared", place.Member)
 	}
 	if wantBool {
 		if !isBool(snapshot, fieldType) {
-			return "", fmt.Errorf("entry function body expression reads field %d of symbol %d, whose type is %s, want bool", place.Member, base.Symbol, describeType(snapshot, fieldType))
+			return "", fmt.Errorf("field %d has type %s, want bool", place.Member, describeType(snapshot, fieldType))
 		}
 	} else if !isWidth(snapshot, width, fieldType) {
-		return "", fmt.Errorf("entry function body expression reads field %d of symbol %d, whose type is %s, want %s", place.Member, base.Symbol, describeType(snapshot, fieldType), wantName(width))
+		return "", fmt.Errorf("field %d has type %s, want %s", place.Member, describeType(snapshot, fieldType), wantName(width))
 	}
-	return fmt.Sprintf("pebble_local_%d.pebble_field_%d", base.Symbol, place.Member), nil
+	return fmt.Sprintf("%s.pebble_field_%d", baseExpr, place.Member), nil
+}
+
+func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, types.TypeID, error) {
+	n, ok := unit.Node(id)
+	if !ok {
+		return "", 0, fmt.Errorf("place %d is invalid", id)
+	}
+	switch n.Kind {
+	case tir.StoragePlace:
+		info, ok := locals[n.Symbol]
+		if !ok {
+			return "", 0, fmt.Errorf("symbol %d is not a local", n.Symbol)
+		}
+		var typ types.TypeID
+		switch {
+		case info.tuple != 0:
+			typ = info.tuple
+		case info.array != 0:
+			typ = info.array
+		case info.optional != 0:
+			typ = info.optional
+		case info.structType != 0:
+			typ = info.structType
+		default:
+			return "", 0, fmt.Errorf("symbol %d is not an aggregate local", n.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", n.Symbol), typ, nil
+	case tir.TuplePlace:
+		if len(n.Children) != 1 {
+			return "", 0, fmt.Errorf("tuple place wants one base")
+		}
+		base, typ, err := buildPlaceLValue(unit, snapshot, n.Children[0], locals, width)
+		if err != nil {
+			return "", 0, err
+		}
+		key, ok := snapshot.Key(typ)
+		if !ok {
+			return "", 0, fmt.Errorf("tuple type missing")
+		}
+		elems, ok := key.Elements()
+		if !ok || n.Ordinal >= uint32(len(elems)) {
+			return "", 0, fmt.Errorf("tuple element out of range")
+		}
+		return fmt.Sprintf("%s._%d", base, n.Ordinal), elems[n.Ordinal], nil
+	case tir.FieldPlace:
+		if len(n.Children) != 1 {
+			return "", 0, fmt.Errorf("field place wants one base")
+		}
+		base, typ, err := buildPlaceLValue(unit, snapshot, n.Children[0], locals, width)
+		if err != nil {
+			return "", 0, err
+		}
+		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
+		if !ok {
+			return "", 0, fmt.Errorf("field %d is not declared", n.Member)
+		}
+		return fmt.Sprintf("%s.pebble_field_%d", base, n.Member), ft, nil
+	case tir.CheckedIndexPlace:
+		if len(n.Children) != 2 {
+			return "", 0, fmt.Errorf("index place wants two children")
+		}
+		base, typ, err := buildPlaceLValue(unit, snapshot, n.Children[0], locals, width)
+		if err != nil {
+			return "", 0, err
+		}
+		key, ok := snapshot.Key(typ)
+		if !ok {
+			return "", 0, fmt.Errorf("array type missing")
+		}
+		length, elem, ok := key.Array()
+		if !ok {
+			return "", 0, fmt.Errorf("index base is not an array")
+		}
+		indexNode, ok := unit.Node(n.Children[1])
+		if !ok {
+			return "", 0, fmt.Errorf("invalid array index")
+		}
+		idx := ""
+		if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
+			idx = indexNode.Literal.IntegerNum
+		} else {
+			idx, err = buildExpr(unit, snapshot, n.Children[1], locals, width)
+			if err != nil {
+				return "", 0, err
+			}
+		}
+		lit, _ := arrayLengthLiteral(length, width)
+		return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s)]", base, checkedSuffix(width), idx, lit), elem, nil
+	}
+	return "", 0, fmt.Errorf("place base %s is unsupported", n.Kind)
 }
 
 // declaredFieldType resolves one field's own type from a struct type's
@@ -3212,6 +3581,19 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loca
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
 		}
+		if child.Kind == tir.Load && len(child.Children) == 1 {
+			if _, ok := unit.Node(child.Children[0]); !ok {
+				return "", fmt.Errorf("invalid optional place")
+			}
+			expr, typ, err := buildPlaceLValue(unit, snapshot, child.Children[0], locals, width)
+			if err != nil {
+				return "", err
+			}
+			if !isOptional(snapshot, typ) {
+				return "", fmt.Errorf("optional unwrap base is not optional")
+			}
+			return fmt.Sprintf("pebble_rt_checked_unwrap_%s(%s.has_value, %s.value)", checkedSuffix(width), expr, expr), nil
+		}
 		if child.Kind != tir.SymbolValue {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
 		}
@@ -3501,6 +3883,15 @@ func tupleElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id typ
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id), nil
+	}
+	if isOptional(snapshot, id) {
+		return optionalTypeName(id), nil
+	}
+	if isStruct(snapshot, id) {
+		return structTypeName(id), nil
+	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
 			return "", fmt.Errorf("element type %s is not supported, want %s or bool", name, wantName(width))
@@ -3522,6 +3913,33 @@ func buildTupleTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids [
 			return "", err
 		}
 		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+func buildAggregateTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo) (string, error) {
+	structs := make(map[types.TypeID]structInfo, len(infos))
+	for _, info := range infos {
+		structs[info.typ] = info
+	}
+	texts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		var text string
+		var err error
+		switch {
+		case isTuple(snapshot, id):
+			text, err = buildTupleTypedef(snapshot, width, id)
+		case isOptional(snapshot, id):
+			text, err = buildOptionalTypedef(snapshot, width, id)
+		case isStruct(snapshot, id):
+			text, err = buildStructTypedef(snapshot, width, structs[id])
+		}
+		if err != nil {
+			return "", err
+		}
+		if text != "" {
+			texts = append(texts, text)
+		}
 	}
 	return strings.Join(texts, "\n"), nil
 }
@@ -3675,6 +4093,15 @@ func structFieldCType(snapshot *types.Snapshot, width types.BuiltinKind, id type
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id), nil
+	}
+	if isOptional(snapshot, id) {
+		return optionalTypeName(id), nil
+	}
+	if isStruct(snapshot, id) {
+		return structTypeName(id), nil
+	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
 			return "", fmt.Errorf("field type %s is not supported, want %s or bool", name, wantName(width))
@@ -3694,6 +4121,12 @@ func optionalPayloadCType(snapshot *types.Snapshot, width types.BuiltinKind, id 
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
+	}
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id), nil
+	}
+	if isStruct(snapshot, id) {
+		return structTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {

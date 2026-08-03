@@ -3548,14 +3548,13 @@ func TestEmitRejectsTupleWithUnsupportedElementType(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
 
-func TestEmitRejectsNestedTupleElement(t *testing.T) {
-	// A tuple whose element is itself a tuple (tuple-of-tuple) is reachable
-	// from real source, so this is a genuine backend-scope rejection: the
-	// outer tuple's element 0 type is the inner (i32, i32) tuple, which is
-	// neither the entry's width nor bool, and must be rejected by the tuple
-	// typedef pass, not mis-emitted as a struct field of a struct.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let inner (i32, i32) = (1, 2); let outer ((i32, i32), bool) = (inner, true); return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+func TestEmitNestedTupleElementCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { let inner (i32, i32) = (20, 22); let outer ((i32, i32), bool) = (inner, true); return (outer.0).1; }", false, 22, false)
+}
+
+func TestEmitRejectsTupleNestedMoreThanOneLevel(t *testing.T) {
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a (i32, i32) = (1, 2); let b ((i32, i32), i32) = (a, 3); let c (((i32, i32), i32), i32) = (b, 4); return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported")
 }
 
 func TestEmitRejectsWholeTupleStore(t *testing.T) {
@@ -3953,6 +3952,45 @@ func TestEmitStructLocalInsideHelperCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn helper() i32 { let point Point = Point.{ x = 20, y = 22 }; return point.y; } fn main() i32 { return helper(); }", false, 22, false)
 }
 
+func TestEmitStructContainingTupleCompilesAndRuns(t *testing.T) {
+	src := "type HasTuple = struct { t (i32, i32); x i32; }; fn main() i32 { let t (i32, i32) = (20, 22); let h HasTuple = HasTuple.{ t = t, x = 1 }; return h.t.1; }"
+	emitAndRun(t, src, false, 22, false)
+}
+
+func TestEmitTupleContainingStructCompilesAndRuns(t *testing.T) {
+	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let t (Point, i32) = (p, 1); return t.0.y; }"
+	emitAndRun(t, src, false, 22, false)
+}
+
+func TestEmitArrayOfStructsCompilesAndRuns(t *testing.T) {
+	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let a [2]Point = [p, p]; return a[1].x + a[1].y; }"
+	emitAndRun(t, src, false, 42, false)
+}
+
+func TestEmitStructContainingOptionalCompilesAndRuns(t *testing.T) {
+	src := "type HasOpt = struct { o ?i32; x i32; }; fn main() i32 { let o ?i32 = some 42; let h HasOpt = HasOpt.{ o = o, x = 1 }; return h.o!; }"
+	emitAndRun(t, src, false, 42, false)
+}
+
+func TestEmitNestedTypedefOrderWritesAndCompiles(t *testing.T) {
+	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let t (Point, i32) = (p, 1); return t.0.x + t.0.y; }"
+	unit, snapshot, entryID := buildFixture(t, src, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	inner := strings.Index(out, "pebble_struct_")
+	outer := strings.Index(out, "pebble_tuple_")
+	if inner < 0 || outer < 0 || inner > outer {
+		t.Fatalf("nested typedef dependency order is wrong:\n%s", out)
+	}
+	if !strings.Contains(out, ".pebble_field_") || !strings.Contains(out, "._0") {
+		t.Fatalf("nested access chain missing:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
 func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 	// The emitted C for the out-of-declaration-order construction fixture.
 	// The typedef's fields must be in the struct's *declared* order (x = 25
@@ -4110,8 +4148,7 @@ func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
 	// (a struct field must be the entry's width or bool), so the program is a
 	// clean rejection naming the unsupported field type before the nested read
 	// (a FieldPlace whose base is another FieldPlace) is even reached.
-	unit, snapshot, entryID := buildFixture(t, "type Inner = struct { x i32; };\ntype Outer = struct { inner Inner; y i32; };\nfn main() i32 { let o Outer = Outer.{ inner = Inner.{ x = 7 }, y = 8 }; return o.inner.x; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "is not supported, want i32 or bool")
+	emitAndRun(t, "type Inner = struct { x i32; };\ntype Outer = struct { inner Inner; y i32; };\nfn main() i32 { let i Inner = Inner.{ x = 7 }; let o Outer = Outer.{ inner = i, y = 8 }; return o.inner.x; }", false, 7, false)
 }
 
 // 10.25 — aggregate values as compound-literal expressions (inline
