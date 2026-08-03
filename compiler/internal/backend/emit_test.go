@@ -3449,9 +3449,93 @@ func TestEmitArrayWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsArrayRepeatInitializer(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a [3]i32 = [1; 3]; return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "ArrayRepeat")
+func TestEmitArrayRepeatSumCompilesAndRuns(t *testing.T) {
+	// The flagship ArrayRepeat fixture (10.27): [5; 3] initializes all three
+	// slots from a single evaluation of 5, so the sum of every element read is
+	// 5 + 5 + 5 = 15. This is the end-to-end confirmation that the
+	// three-statement emission (bare declaration, one-time repeat temp, fill
+	// loop) produces a correct array that reads back exactly like 10.20's
+	// ArrayValue arrays.
+	emitAndRun(t, "fn main() i32 { let a [3]i32 = [5; 3]; return a[0] + a[1] + a[2]; }", false, 15, false)
+}
+
+func TestEmitArrayRepeatExprValueCompilesAndRuns(t *testing.T) {
+	// A repeat value that is itself a non-trivial expression: x * 5 references
+	// an earlier local through checked arithmetic, so the single evaluation is
+	// pebble_rt_checked_mul_i32(pebble_local_<x>, 5) = 10, and all three slots
+	// get that one value: 10 + 10 + 10 = 30. Proves the repeat value is built
+	// through buildExpr (a local reference composing with checked arithmetic),
+	// not just a bare literal.
+	emitAndRun(t, "fn main() i32 { let x i32 = 2; let a [3]i32 = [x * 5; 3]; return a[0] + a[1] + a[2]; }", false, 30, false)
+}
+
+func TestEmitArrayRepeatBoolElementDrivesIfCompilesAndRuns(t *testing.T) {
+	// A bool-element array repeat: [true; 2] fills both bool slots from one
+	// evaluation of true, and the element read drives an if condition through
+	// the existing Load(CheckedIndexPlace) bool path. a[1] is true, so the
+	// then-arm runs and the process exits 10.
+	emitAndRun(t, "fn main() i32 { let a [2]bool = [true; 2]; if a[1] { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitArrayRepeatI64CompilesAndRuns(t *testing.T) {
+	// The width discipline extends to array repeat element types: an i64
+	// entry's [2]i64 repeat fills both int64_t slots, the reads lower through
+	// pebble_rt_checked_index_i64, and 7 + 7 = 14 is the process exit code.
+	emitAndRun(t, "fn main() i64 { let a [2]i64 = [7; 2]; return a[0] + a[1]; }", false, 14, false)
+}
+
+func TestEmitArrayRepeatWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture: an ArrayRepeat-initialized local
+	// is three C statements instead of one declaration line — the array's own
+	// bare declaration, a synthetic temp (pebble_repeat_<symbolID>) holding
+	// the one-time-evaluated repeat value, and a for loop over a size_t
+	// counter (pebble_i_<symbolID>) filling every slot from the temp — still
+	// followed by the (void) cast every array local gets. Both synthetic names
+	// derive from the local's own symbol (25, confirmed against the real
+	// fixture dump). The element reads are unchanged from 10.20.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a [3]i32 = [5; 3]; return a[0] + a[1] + a[2]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    int32_t pebble_local_25[3];\n    int32_t pebble_repeat_25 = 5;\n    for (size_t pebble_i_25 = 0; pebble_i_25 < 3; pebble_i_25++) {\n        pebble_local_25[pebble_i_25] = pebble_repeat_25;\n    }\n    (void)pebble_local_25;",
+		"pebble_rt_checked_index_i32(0, 3)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
+	// The single-evaluation proof: a repeat value that is a call to a helper
+	// function. A naive brace-list duplication ({ v, v, v }) would have
+	// emitted pebble_fn_<five>(ctx) three times — once per slot — evaluating
+	// the call three times. This backend's one-time temp emission must contain
+	// the call expression exactly once (in the pebble_repeat_<sym> = ... line),
+	// so the call is evaluated exactly once at runtime. The assertion is
+	// structural (strings.Count over the emitted C), the strongest proof
+	// available without mutable global state to observe call count; the
+	// end-to-end run confirms the resulting values are still correct
+	// (5 + 5 + 5 = 15).
+	unit, snapshot, entryID := buildFixture(t, "fn five() i32 { return 5; } fn main() i32 { let a [3]i32 = [five(); 3]; return a[0] + a[1] + a[2]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// five's own body is `return 5;` (no call), so the only
+	// pebble_fn_24(ctx) call site in the whole emitted file is the repeat
+	// temp initializer — exactly one.
+	if got := strings.Count(out, "pebble_fn_24(ctx)"); got != 1 {
+		t.Errorf("pebble_fn_24(ctx) appears %d time(s) in the emitted C, want exactly 1 (the repeat value must be evaluated once, not once per slot):\n%s", got, out)
+	}
+	if !strings.Contains(out, "int32_t pebble_repeat_26 = pebble_fn_24(ctx);") {
+		t.Errorf("emitted C missing the one-time repeat temp initialized from the call:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 15, false)
 }
 
 func TestEmitRejectsTupleWithUnsupportedElementType(t *testing.T) {

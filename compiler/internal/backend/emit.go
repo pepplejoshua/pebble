@@ -191,11 +191,38 @@
 // result type from each reachable helper's ResultType, mirroring 10.24's
 // Parameters scan, so such a typedef is still emitted even when no reachable
 // body ever constructs one.
+//
+// Since 10.27, an array-typed local may also be initialized from an
+// ArrayRepeat ([v; N] — a single value repeated N times, the other array
+// literal form 10.20 deferred). Unlike 10.20's ArrayValue brace-list
+// construction — which would evaluate v once per slot if naively duplicated
+// into a C initializer list — an ArrayRepeat-initialized local is emitted as
+// three C statements instead of one declaration line: the array's own bare
+// declaration, a synthetic temp (pebble_repeat_<symbolID>) holding the
+// repeat value evaluated exactly once via buildExpr/buildBoolExpr, and a
+// `for (size_t pebble_i_<symbolID> = 0; ...)` loop that fills every slot
+// from the temp. Both synthetic names derive from the local's own
+// declaration symbol, which is collision-free by construction: ArrayRepeat
+// only ever appears as that one local's own initializer, so no other
+// statement in the same function can reuse the symbol ID. The count child of
+// an ArrayRepeat node is a synthesized compile-time IntegerLiteral that
+// always equals the array type's own TypeKey.Array() length (confirmed
+// against a real fixture), so the loop bound comes from the array type, not
+// from re-parsing the count child. Element types stay restricted to the
+// entry's width or bool, matching 10.20; element reads afterward work
+// completely unchanged, since nothing about how the array is read changes,
+// only how it is initialized. ArrayRepeat in any other position — a call
+// argument (array-typed parameters are unsupported, rejected by
+// validateHelperSignature), nested inside another aggregate's construction
+// (rejected by the element-type gates), or indexed directly ([v; N][i],
+// which lowers to a bare CheckedIndex) — is confirmed reachable from real
+// source but already rejected cleanly by the existing gates, never guessed.
 package backend
 
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -1826,14 +1853,17 @@ func buildTupleValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node
 }
 
 // buildArrayLocalDeclaration builds a fixed-length C array from an ArrayValue
-// literal. Array elements use the same integer/bool builders as scalar locals;
-// nested arrays, repeats, and all other element types remain out of scope.
+// literal or an ArrayRepeat ([v; N]) initializer. Array elements use the same
+// integer/bool builders as scalar locals; nested arrays and all other element
+// types remain out of scope. An ArrayValue initializer emits the array's
+// declaration directly with a C brace-list initializer (10.20); an ArrayRepeat
+// initializer is emitted by buildArrayRepeatLocalDeclaration as a three-
+// statement sequence (bare declaration, one-time-evaluated repeat temp, fill
+// loop) so the repeat value is evaluated exactly once, not once per slot
+// (10.27).
 func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind != tir.ArrayValue {
-		if initValue.Kind == tir.ArrayRepeat {
-			return "", fmt.Errorf("%s declares an array-typed local initialized from ArrayRepeat; array repeat initializers are not supported yet", context)
-		}
-		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal); initializing an array local from another value is not supported yet", context, describeType(snapshot, initValue.Type), initValue.Kind)
+	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal) or an ArrayRepeat (a [v; N] repeat initializer); initializing an array local from another value is not supported yet", context, describeType(snapshot, initValue.Type), initValue.Kind)
 	}
 	key, ok := snapshot.Key(initValue.Type)
 	if !ok {
@@ -1843,33 +1873,118 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	if !ok {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s, which has no array length and element type", context, describeType(snapshot, initValue.Type))
 	}
-	if len(initValue.Children) != int(length) {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
-	}
 	if _, err := arrayLengthLiteral(length, width); err != nil {
 		return "", fmt.Errorf("%s: %v", context, err)
 	}
-	exprs := make([]string, len(initValue.Children))
-	for i, child := range initValue.Children {
-		switch {
-		case isWidth(snapshot, width, elementType):
-			expr, err := buildExpr(unit, snapshot, child, scope, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = expr
-		case isBool(snapshot, elementType):
-			expr, err := buildBoolExpr(unit, snapshot, child, scope, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = expr
-		default:
-			return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want %s or bool", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType), wantName(width))
-		}
+	// Every element type must be exactly the entry's width or bool, for both
+	// initializer forms; anything else (a nested array element) is a clean
+	// rejection naming the element type, since this backend emits exactly
+	// those two C types as array elements.
+	if !isWidth(snapshot, width, elementType) && !isBool(snapshot, elementType) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want %s or bool", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType), wantName(width))
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
+	if initValue.Kind == tir.ArrayRepeat {
+		return buildArrayRepeatLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width, length, elementType)
+	}
+	if len(initValue.Children) != int(length) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
+	}
+	exprs := make([]string, len(initValue.Children))
+	for i, child := range initValue.Children {
+		var expr string
+		var err error
+		if isBool(snapshot, elementType) {
+			expr, err = buildBoolExpr(unit, snapshot, child, scope, width)
+		} else {
+			expr, err = buildExpr(unit, snapshot, child, scope, width)
+		}
+		if err != nil {
+			return "", err
+		}
+		exprs[i] = expr
+	}
 	return fmt.Sprintf("%s%s pebble_local_%d[%d] = { %s };\n%s(void)pebble_local_%d;", indent, arrayElementCType(snapshot, width, elementType), statement.Symbol, length, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+}
+
+// buildArrayRepeatLocalDeclaration builds an array-typed local whose
+// initializer is an ArrayRepeat ([v; N]): a single value expression repeated
+// N times. The local is emitted as three C statements instead of one
+// declaration line, so the repeat value is evaluated exactly once rather than
+// once per slot (a naive brace-list { v, v, v } would re-evaluate v N times —
+// wrong if v has any observable side effect, e.g. a checked-arithmetic panic
+// or a call):
+//
+//	<indent>int32_t pebble_local_<sym>[<len>];
+//	<indent>int32_t pebble_repeat_<sym> = <v>;
+//	<indent>for (size_t pebble_i_<sym> = 0; pebble_i_<sym> < <len>; pebble_i_<sym>++) {
+//	<indent>    pebble_local_<sym>[pebble_i_<sym>] = pebble_repeat_<sym>;
+//	<indent>}
+//	<indent>(void)pebble_local_<sym>;
+//
+// Both synthetic names derive from the local's own declaration symbol
+// (pebble_repeat_<symbolID>, pebble_i_<symbolID>), which is guaranteed
+// collision-free by construction: ArrayRepeat only ever appears as that one
+// local's own initializer, so no other statement in the same function can
+// reuse the symbol ID. The loop counter is size_t (C's own array-indexing
+// idiom, available because pebble_rt.h includes <stddef.h>); comparing it
+// against the array-length literal compiles clean under -Wall -Wextra -Werror
+// (confirmed with a real cc compile), so no signed/unsigned adjustment is
+// needed. The repeat value v is built by the grammar its element type selects
+// — buildExpr for an element of the entry's width, buildBoolExpr for a bool
+// element — and appears in the emitted C exactly once, so it is evaluated
+// exactly once at runtime. The count child of an ArrayRepeat node is a
+// synthesized compile-time IntegerLiteral of the snapshot's uint builtin that
+// always equals the array type's own TypeKey.Array() length (confirmed
+// against a real fixture: the checker builds it from the array's declared
+// length in check's ir_builder_literals.go), so the loop bound comes from
+// length here, and a count child that is not such a matching literal is a
+// clean rejection for hand-built IR, never a guessed loop bound. The local's
+// scope entry records the array type (a localInfo with array set) exactly as
+// the ArrayValue path does, so element reads afterward resolve through the
+// existing Load(CheckedIndexPlace) machinery unchanged — nothing about how
+// the array is read changes, only how it is initialized. Like every local,
+// the sequence ends with the (void) cast against -Wunused-variable.
+func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, length uint64, elementType types.TypeID) (string, error) {
+	if len(initValue.Children) != 2 {
+		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat with %d child(ren), want exactly two (the repeated value and the count)", context, len(initValue.Children))
+	}
+	countNode, ok := unit.Node(initValue.Children[1])
+	if !ok {
+		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat referencing invalid count node %d", context, initValue.Children[1])
+	}
+	if countNode.Kind != tir.IntegerLiteral {
+		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat whose count is a %s, want a compile-time integer literal equal to the array's declared length %d", context, countNode.Kind, length)
+	}
+	if countNode.Type != snapshot.Builtins().Uint {
+		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat whose count has type %s, want uint (the count is a synthesized integer literal)", context, describeType(snapshot, countNode.Type))
+	}
+	count, err := strconv.ParseUint(countNode.Literal.IntegerNum, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat whose count %q is not a valid non-negative integer", context, countNode.Literal.IntegerNum)
+	}
+	if count != length {
+		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat whose count %d does not equal the array's declared length %d", context, count, length)
+	}
+	var valueExpr string
+	if isBool(snapshot, elementType) {
+		valueExpr, err = buildBoolExpr(unit, snapshot, initValue.Children[0], scope, width)
+	} else {
+		valueExpr, err = buildExpr(unit, snapshot, initValue.Children[0], scope, width)
+	}
+	if err != nil {
+		return "", err
+	}
+	ctype := arrayElementCType(snapshot, width, elementType)
+	statements := []string{
+		fmt.Sprintf("%s%s pebble_local_%d[%d];", indent, ctype, statement.Symbol, length),
+		fmt.Sprintf("%s%s pebble_repeat_%d = %s;", indent, ctype, statement.Symbol, valueExpr),
+		fmt.Sprintf("%sfor (size_t pebble_i_%d = 0; pebble_i_%d < %d; pebble_i_%d++) {", indent, statement.Symbol, statement.Symbol, length, statement.Symbol),
+		fmt.Sprintf("%s    pebble_local_%d[pebble_i_%d] = pebble_repeat_%d;", indent, statement.Symbol, statement.Symbol, statement.Symbol),
+		fmt.Sprintf("%s}", indent),
+		fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
+	}
+	return strings.Join(statements, "\n"), nil
 }
 
 func arrayElementCType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) string {
