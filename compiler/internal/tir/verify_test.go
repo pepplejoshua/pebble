@@ -661,6 +661,43 @@ func TestVerifyForTwoValueChildrenInvalid(t *testing.T) {
 	mustFailBuild(t, b)
 }
 
+// TestVerifyCheckedSliceBothBoundsPresentValid confirms a 3-child CheckedSlice
+// (both bounds authored) with both presence flags set passes verification —
+// the child count matches what the two flags imply.
+func TestVerifyCheckedSliceBothBoundsPresentValid(t *testing.T) {
+	b := newTestBuilder(t)
+	base := boolLit(t, b)
+	start := intLit(t, b, builtinType(testSnapshot(t), types.Int))
+	end := intLit(t, b, builtinType(testSnapshot(t), types.Int))
+	_ = mustNode(t, b, Node{Kind: CheckedSlice, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Children: []NodeID{base, start, end}, SliceStartPresent: true, SliceEndPresent: true})
+	mustBuild(t, b)
+}
+
+// TestVerifyCheckedSliceOneBoundOmittedValid confirms a 2-child CheckedSlice
+// with only SliceEndPresent set (a start-omitted slice, arr[:j]) passes —
+// this is exactly the previously-ambiguous shape a start-omitted and an
+// end-omitted slice used to share indistinguishably.
+func TestVerifyCheckedSliceOneBoundOmittedValid(t *testing.T) {
+	b := newTestBuilder(t)
+	base := boolLit(t, b)
+	end := intLit(t, b, builtinType(testSnapshot(t), types.Int))
+	_ = mustNode(t, b, Node{Kind: CheckedSlice, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Children: []NodeID{base, end}, SliceEndPresent: true})
+	mustBuild(t, b)
+}
+
+// TestVerifyCheckedSliceFlagChildMismatchInvalid confirms the verifier
+// rejects a CheckedSlice whose child count doesn't match what its presence
+// flags imply — here, both flags set (implying 3 children: base + start +
+// end) but only 2 children actually present, a malformed shape no real
+// source can produce.
+func TestVerifyCheckedSliceFlagChildMismatchInvalid(t *testing.T) {
+	b := newTestBuilder(t)
+	base := boolLit(t, b)
+	bound := intLit(t, b, builtinType(testSnapshot(t), types.Int))
+	_ = mustNode(t, b, Node{Kind: CheckedSlice, Type: builtinType(testSnapshot(t), types.Int), Span: span(), Children: []NodeID{base, bound}, SliceStartPresent: true, SliceEndPresent: true})
+	mustFailBuild(t, b)
+}
+
 func TestVerifyRecordConstructValid(t *testing.T) {
 	b := newTestBuilder(t)
 	v1 := boolLit(t, b)

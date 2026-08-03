@@ -408,6 +408,18 @@ type Node struct {
 	ConditionPresent bool
 	CaseValue        symbol.SymbolID
 
+	// CheckedSlice bound presence. A CheckedSlice's Children after the base
+	// (Children[0]) are the present bounds only — a 2-child CheckedSlice is
+	// otherwise ambiguous between a start-only slice (a[i:]) and an end-only
+	// slice (a[:j]), since both produce the identical shape
+	// Children=[base, bound] with nothing to say which bound it is. These two
+	// flags carry the same StartPresent/EndPresent signal the checker's own
+	// indexRecord already computes when building this node, so a consumer can
+	// tell which of the up-to-two trailing children (if only one is present)
+	// is the start and which is the end.
+	SliceStartPresent bool
+	SliceEndPresent   bool
+
 	// SourceAlias is the sole tag that may set ExplicitCast.
 	ExplicitCast bool
 

@@ -2277,14 +2277,28 @@ func TestBuildValueNoneAndNilAgainstKnownDestination(t *testing.T) {
 }
 
 func TestBuildValueCheckedSlice(t *testing.T) {
+	// A 2-child CheckedSlice is otherwise structurally ambiguous: a
+	// start-only slice (arr[1:]) and an end-only slice (arr[:3]) both
+	// produce Children=[base, bound] with nothing to say which bound the
+	// lone trailing child is — confirmed as a real, live bug (both fixtures
+	// dumped byte-identical node shapes except for the bound's own literal
+	// value) while implementing 10.37's slice-typed-local backend work.
+	// SliceStartPresent/SliceEndPresent close that gap: they carry the same
+	// StartPresent/EndPresent signal the checker's own indexRecord already
+	// computes right where this node is built, so this test asserts not
+	// just the child count (which was always distinguishable) but which
+	// specific bound is present, at each of the four bound-presence shapes.
 	tests := []struct {
-		name     string
-		source   string
-		wantKids int
+		name      string
+		source    string
+		wantKids  int
+		wantStart bool
+		wantEnd   bool
 	}{
-		{"both bounds", "fn slice(arr []i32) []i32 => arr[1:3];", 3},
-		{"start omitted", "fn slice(arr []i32) []i32 => arr[:3];", 2},
-		{"end omitted", "fn slice(arr []i32) []i32 => arr[1:];", 2},
+		{"both bounds", "fn slice(arr []i32) []i32 => arr[1:3];", 3, true, true},
+		{"start omitted", "fn slice(arr []i32) []i32 => arr[:3];", 2, false, true},
+		{"end omitted", "fn slice(arr []i32) []i32 => arr[1:];", 2, true, false},
+		{"both omitted", "fn slice(arr []i32) []i32 => arr[:];", 1, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2301,6 +2315,9 @@ func TestBuildValueCheckedSlice(t *testing.T) {
 			node := unit.Nodes()[nid-1]
 			if node.Kind != tir.CheckedSlice || len(node.Children) != tt.wantKids {
 				t.Fatalf("slice node = %+v, want %d children", node, tt.wantKids)
+			}
+			if node.SliceStartPresent != tt.wantStart || node.SliceEndPresent != tt.wantEnd {
+				t.Fatalf("slice node SliceStartPresent=%v SliceEndPresent=%v, want start=%v end=%v", node.SliceStartPresent, node.SliceEndPresent, tt.wantStart, tt.wantEnd)
 			}
 			base := unit.Nodes()[node.Children[0]-1]
 			if base.Kind != tir.SymbolValue {

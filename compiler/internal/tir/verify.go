@@ -774,8 +774,26 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCategory(id, n, 0, CategoryValue)
 		v.expectChildCategory(id, n, 1, CategoryValue)
 	case CheckedSlice:
-		v.allowOnly(id, n, "Children")
-		v.expectChildCount(id, n, 1, 3)
+		v.allowOnly(id, n, "Children", "SliceStartPresent", "SliceEndPresent")
+		if v.expectChildCount(id, n, 1, 3) {
+			// Children beyond the base (Children[0]) are the present bounds
+			// only, in order (start before end when both are present); the
+			// count must equal exactly 1 (the base) plus one child for each
+			// flag that's set, so a 2-child node's lone trailing child is
+			// unambiguously either the start (SliceStartPresent) or the end
+			// (SliceEndPresent) — never both false or both true with only one
+			// child present.
+			want := 1
+			if n.SliceStartPresent {
+				want++
+			}
+			if n.SliceEndPresent {
+				want++
+			}
+			if len(n.Children) != want {
+				v.errorf("node %d CheckedSlice has %d children but SliceStartPresent=%v SliceEndPresent=%v implies %d", id, len(n.Children), n.SliceStartPresent, n.SliceEndPresent, want)
+			}
+		}
 		v.expectChildCategory(id, n, 0, CategoryValue)
 		for i := 1; i < len(n.Children); i++ {
 			v.expectChildCategory(id, n, i, CategoryValue)
@@ -853,6 +871,8 @@ func (v *verifier) allowOnly(id NodeID, n Node, fields ...string) {
 	check("HasElse", n.HasElse)
 	check("RangeInclusive", n.RangeInclusive)
 	check("ConditionPresent", n.ConditionPresent)
+	check("SliceStartPresent", n.SliceStartPresent)
+	check("SliceEndPresent", n.SliceEndPresent)
 	check("Writable", n.Writable)
 	check("ShortCircuit", n.ShortCircuit)
 	check("ExplicitCast", n.ExplicitCast)

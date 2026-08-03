@@ -213,6 +213,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 			return 0, false
 		}
 		node.Kind, node.Children = tir.CheckedSlice, []tir.NodeID{base}
+		node.SliceStartPresent, node.SliceEndPresent = index.StartPresent, index.EndPresent
 		if index.StartPresent {
 			start, ok := s.buildValue(index.Start)
 			if !ok {
@@ -243,6 +244,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 				node.Kind, node.Children = tir.CheckedIndex, []tir.NodeID{base, start}
 			} else {
 				node.Kind, node.Children = tir.CheckedSlice, []tir.NodeID{base}
+				node.SliceStartPresent, node.SliceEndPresent = index.StartPresent, index.EndPresent
 				if index.StartPresent {
 					start, ok := s.buildValue(index.Start)
 					if !ok {
