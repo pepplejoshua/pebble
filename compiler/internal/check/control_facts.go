@@ -28,6 +28,7 @@ type controlEmission struct {
 	elsePresent      bool
 	rangeInclusive   bool
 	syntheticSyntax  bool
+	iteratorSymbol   symbol.SymbolID
 }
 
 // retainControl appends one control record. Region-owning statements retain
@@ -55,6 +56,7 @@ func (w *walker) retainControl(ref symbol.SyntaxRef, ctx walkContext, emission c
 		Composition:      emission.composition,
 		ConditionPresent: emission.conditionPresent, ElsePresent: emission.elsePresent,
 		RangeInclusive: emission.rangeInclusive, SyntheticSyntax: emission.syntheticSyntax,
+		IteratorSymbol: emission.iteratorSymbol,
 	}
 	controls := []controlID{emission.region}
 	if emission.target != 0 {
@@ -294,6 +296,7 @@ func (w *walker) prepareRangeLoop(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 			bound, published := w.publishSymbol(binding.ID, w.symbolTerm(binding.ID, bindingOrigin), bindingOrigin)
 			if published && bound.ID != 0 {
 				emission.values = append(emission.values, controlValue{Role: valueRangeIterator, Value: bound.ID, Syntax: iterator})
+				emission.iteratorSymbol = binding.ID
 				if startOK {
 					w.addConstraint(infer.Equal(bound.Term, startValue.Term, bindingOrigin))
 				}

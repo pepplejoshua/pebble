@@ -473,6 +473,16 @@ func (s *irBuildState) buildWhile(ctrl *controlRecord) (tir.NodeID, bool, bool, 
 	return node, ok, false, false
 }
 
+// buildRangeLoop builds a `loop start..end : name { body }` (or the bare,
+// unbound `loop start..end { body }` form, which has no iterator symbol) as a
+// tir.RangeLoop. The bound iterator's own symbol.SymbolID is attached
+// directly as the node's Symbol field — this is the only place in typed IR
+// that declaration exists. The general binding pass in ir_builder.go
+// deliberately skips a retained bindingRangeIterator record (the same way it
+// skips bindingParameter, which FunctionDeclaration attaches directly), so
+// without this the iterator's declaration would be unrecoverable from typed
+// IR entirely: nothing else names which symbol.SymbolID a SymbolValue inside
+// the loop body that refers to the iterator actually is.
 func (s *irBuildState) buildRangeLoop(ctrl *controlRecord) (tir.NodeID, bool, bool, bool) {
 	start, startOK := controlValueForRole(ctrl, valueRangeStart)
 	end, endOK := controlValueForRole(ctrl, valueRangeEnd)
@@ -496,7 +506,7 @@ func (s *irBuildState) buildRangeLoop(ctrl *controlRecord) (tir.NodeID, bool, bo
 	if !ok {
 		return 0, false, false, false
 	}
-	node, ok := s.addNode(tir.Node{Kind: tir.RangeLoop, Span: ctrl.Header.Span, Region: region, RangeInclusive: ctrl.RangeInclusive, Children: []tir.NodeID{startNode, endNode, bodyNode}}, ctrl.Header.Syntax)
+	node, ok := s.addNode(tir.Node{Kind: tir.RangeLoop, Span: ctrl.Header.Span, Region: region, RangeInclusive: ctrl.RangeInclusive, Symbol: ctrl.IteratorSymbol, Children: []tir.NodeID{startNode, endNode, bodyNode}}, ctrl.Header.Syntax)
 	return node, ok, false, false
 }
 

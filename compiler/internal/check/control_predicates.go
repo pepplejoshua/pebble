@@ -84,6 +84,15 @@ type controlRecord struct {
 	Composition                                   []structuralChild
 	ConditionPresent, ElsePresent, RangeInclusive bool
 	SyntheticSyntax                               bool
+	// IteratorSymbol is the range loop's bound iterator variable (`loop
+	// start..end : name { ... }`), zero when the loop has no bound name.
+	// buildRangeLoop attaches it to the RangeLoop TIR node's own Symbol
+	// field, since nothing else in typed IR records this declaration (the
+	// general binding pass in ir_builder.go deliberately skips
+	// bindingRangeIterator records the same way it skips bindingParameter —
+	// each is meant to be attached directly by its owning node's own
+	// builder instead).
+	IteratorSymbol symbol.SymbolID
 }
 
 type deferRecord struct {

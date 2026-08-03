@@ -394,7 +394,12 @@ func (v *verifier) verifyNode(id NodeID) {
 			v.expectChildCategory(id, n, 1, CategoryNonvalue)
 		}
 	case RangeLoop:
-		v.allowOnly(id, n, "Region", "RangeInclusive", "Children")
+		// Symbol is the loop's bound iterator variable (`loop start..end :
+		// name { ... }`) and is legitimately zero for the unbound form
+		// (`loop start..end { ... }`, no `: name`), so there is no
+		// requireSymbol call here — unlike most other Symbol-carrying kinds,
+		// zero is a valid, not just an unset, value.
+		v.allowOnly(id, n, "Region", "RangeInclusive", "Symbol", "Children")
 		v.requireRegion(id, n)
 		v.expectChildCount(id, n, 3, 3)
 		if len(n.Children) > 0 {

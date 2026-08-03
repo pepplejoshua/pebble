@@ -346,6 +346,20 @@ fn f() void {
 	if iterator.Kind != tir.SymbolValue || iterator.Symbol == 0 {
 		t.Fatalf("range iterator operand = %+v, want SymbolValue of the loop binding", iterator)
 	}
+	// Regression: buildRangeLoop used to build the RangeLoop node without
+	// ever attaching the iterator's own symbol.SymbolID anywhere on it,
+	// even though the prepare phase resolves and records it
+	// (bindingRangeIterator, valueRangeIterator) — leaving no way for any
+	// TIR consumer to know which symbol.SymbolID a SymbolValue referencing
+	// the iterator inside the loop body actually names. The RangeLoop
+	// node's own Symbol field must equal the iterator's symbol used in the
+	// body.
+	if exclusive.Symbol == 0 {
+		t.Fatalf("RangeLoop Symbol = 0, want the range iterator's own symbol.SymbolID")
+	}
+	if exclusive.Symbol != iterator.Symbol {
+		t.Fatalf("RangeLoop Symbol = %d, want %d (the same symbol the body's SymbolValue references)", exclusive.Symbol, iterator.Symbol)
+	}
 }
 
 func TestBuildUnitG2ForWithClausesAndInfinite(t *testing.T) {
