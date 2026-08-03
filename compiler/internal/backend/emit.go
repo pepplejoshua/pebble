@@ -159,13 +159,38 @@
 // construct — including a SourceAlias-wrapped argument from extra parens
 // (f(((1, 2)))), rejected consistently with every other SourceAlias-wrapped
 // argument in this backend — is a clean rejection naming what was found.
-// Tuple/struct-typed function *return* types remain out of scope: a helper's
-// C return type stays the entry's scalar width, and a helper declaring a
-// tuple/struct result type (reachable from real source) is rejected cleanly by
-// validateHelperSignature's result check. collectTupleTypes/collectStructTypes
-// discover a tuple/struct type used only as a parameter type from each
-// reachable helper's Parameters list, so such a typedef is still emitted even
-// when no reachable body ever constructs one.
+//
+// Since 10.26, a helper function (not the entry — the entry's own C return
+// type stays entryReturnType(width) regardless of what the language lets you
+// write, since a process exit code must be an integer) may declare a tuple or
+// struct result type, one of the shapes 10.19/10.22 already support. Such a
+// helper is declared with its aggregate's own typedef name as its C return
+// type (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t), and its body is
+// built with a resultInfo recording that aggregate, so its tail-position
+// `return` builds its value via buildAggregateReturnValue instead of buildExpr:
+// the return value must be either a plain SymbolValue naming an
+// aggregate-typed local already in scope of the matching type (forwarding an
+// already-computed aggregate without re-construction) or a fresh inline
+// construction — a TupleValue (return (20, 22)) or a RecordConstruct (return
+// Point.{ x = 20, y = 22 }), emitted as the C99 compound-literal expression
+// buildTupleValueExpr / buildStructValueExpr build (the same 10.25 expression
+// builders an inline call argument uses). Calling a tuple/struct-returning
+// helper is supported in exactly one position: as the direct initializer of a
+// matching aggregate-typed local declaration — `let t (i32, i32) =
+// helperReturningTuple();` — where buildTupleLocalDeclaration /
+// buildStructLocalDeclaration now accept a DirectCall initializer whose
+// callee's result type matches the local's declared type, built by the same
+// buildDirectCall machinery buildExpr's DirectCall case uses (context and
+// argument handling identical; only the result type differs from the scalar
+// case). Calling such a helper in any other position — as a call argument
+// (f(makeT())), as an operand (makeT().0), or as another helper's return value
+// (return helperReturningTuple();) — is confirmed reachable from real source
+// and rejected cleanly naming what was found, never guessed. The entry itself
+// still cannot declare a tuple/struct result type. collectTupleTypes /
+// collectStructTypes discover a tuple/struct type used only as a helper's
+// result type from each reachable helper's ResultType, mirroring 10.24's
+// Parameters scan, so such a typedef is still emitted even when no reachable
+// body ever constructs one.
 package backend
 
 import (
@@ -292,7 +317,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	statements, err := buildBlock(unit, snapshot, blockID, nil, 0, result)
+	statements, err := buildBlock(unit, snapshot, blockID, nil, 0, result, resultInfo{kind: result})
 	if err != nil {
 		return err
 	}
@@ -523,15 +548,18 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 // every tuple type the emitted program actually references: the entry body
 // (root) followed by every reachable helper's body, each walked by the same
 // Children + DeferChain traversal collectDirectCalls uses. A tuple type is
-// referenced in exactly three places in the emitted C — a tuple-typed local's
+// referenced in exactly four places in the emitted C — a tuple-typed local's
 // declaration (an Initialize whose initializer value carries the tuple type), a
-// tuple construction (a TupleValue, whose Type is the tuple type), and a
+// tuple construction (a TupleValue, whose Type is the tuple type), a
 // tuple-typed parameter of a reachable helper (a FunctionDeclaration.Parameters
-// entry's Type) — so collecting exactly those node shapes and each reachable
-// helper's Parameters list guarantees every typedef the program needs is
-// discovered. The Parameters coverage closes a real gap: a tuple type used
-// only as a parameter type (never constructed in any reachable body) still
-// needs its typedef emitted, since the helper's C signature names
+// entry's Type), and a tuple-typed result of a reachable helper (a
+// FunctionDeclaration.ResultType, whose typedef its C signature names as its
+// return type) — so collecting exactly those node shapes, each reachable
+// helper's Parameters list, and each reachable helper's ResultType guarantees
+// every typedef the program needs is discovered. The Parameters/ResultType
+// coverage closes a real gap: a tuple type used only as a parameter type or
+// only as a helper's result type (never constructed in any reachable body)
+// still needs its typedef emitted, since the helper's C signature names
 // pebble_tuple_<typeID>_t. The caller deduplicates (see Emit) so each distinct
 // tuple type yields exactly one typedef, emitted before any function
 // definition in the final output.
@@ -552,6 +580,18 @@ func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 			if isTuple(snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
+		}
+		// A reachable helper's own result type is the same kind of source for
+		// the typedef its C signature names as its return type (10.26): a
+		// tuple-returning helper's C signature declares
+		// pebble_tuple_<typeID>_t, so a tuple type that appears nowhere in any
+		// reachable body still needs its typedef emitted. (For a reachable
+		// tuple-returning helper the body walk usually finds the type anyway,
+		// since the helper must produce a tuple to return; this scan closes the
+		// same class of gap 10.24's Parameters scan closed, for the return side
+		// — the type may be used only as the helper's result type.)
+		if isTuple(snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -705,15 +745,18 @@ type structInfo struct {
 // the emitted program actually references: the entry body (root) followed by
 // every reachable helper's body, each walked by the same Children + DeferChain
 // traversal collectDirectCalls uses. A struct type is referenced in exactly
-// three places in the emitted C — a struct-typed local's declaration (an
+// four places in the emitted C — a struct-typed local's declaration (an
 // Initialize whose initializer value carries the struct type), a struct
-// construction (a RecordConstruct, whose Type is the struct type), and a
+// construction (a RecordConstruct, whose Type is the struct type), a
 // struct-typed parameter of a reachable helper (a FunctionDeclaration.Parameters
-// entry's Type) — so collecting exactly those node shapes and each reachable
-// helper's Parameters list guarantees every typedef the program needs is
-// discovered. The Parameters coverage closes a real gap: a struct type used
-// only as a parameter type (never constructed in any reachable body) still
-// needs its typedef emitted, since the helper's C signature names
+// entry's Type), and a struct-typed result of a reachable helper (a
+// FunctionDeclaration.ResultType, whose typedef its C signature names as its
+// return type) — so collecting exactly those node shapes, each reachable
+// helper's Parameters list, and each reachable helper's ResultType guarantees
+// every typedef the program needs is discovered. The Parameters/ResultType
+// coverage closes a real gap: a struct type used only as a parameter type or
+// only as a helper's result type (never constructed in any reachable body)
+// still needs its typedef emitted, since the helper's C signature names
 // pebble_struct_<typeID>_t. The walk also accumulates each field's resolved
 // type from the same nodes (a RecordConstruct field value's own type, and a
 // FieldPlace's Type), since the FieldDeclaration nodes in the unit carry only
@@ -741,6 +784,19 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 			if isStruct(snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
+		}
+		// A reachable helper's own result type is the same kind of source for
+		// the typedef its C signature names as its return type (10.26): a
+		// struct-returning helper's C signature declares
+		// pebble_struct_<typeID>_t, so a struct type that appears nowhere in
+		// any reachable body still needs its typedef emitted, mirroring the
+		// Parameters scan above. (For a reachable struct-returning helper the
+		// body walk usually finds the type anyway, since the helper must
+		// produce a struct to return — and resolveStructInfo still needs the
+		// field types the body walk accumulates — so this closes the same class
+		// of gap 10.24's Parameters scan closed, for the return side.)
+		if isStruct(snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -875,7 +931,8 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 // validateHelperSignature checks one called function against the constraints
 // every reachable helper must satisfy: Pebble-convention, parameters whose
 // types are exactly the entry's resolved width, bool, a tuple type, or a
-// struct type, and a result of exactly the entry's resolved width. The width
+// struct type, and a result of exactly the entry's resolved width, a tuple
+// type, or a struct type. The width
 // rule is the same reasoning 10.13 established for locals — a called function
 // of the other width (an i32 helper called from an i64 entry, or vice versa) is
 // a clean width-mismatch rejection, never a coercion, since there is no
@@ -883,14 +940,16 @@ func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
 // options a local has: the entry's width, bool, a tuple type (one of the
 // shapes 10.19 supports — element types the entry's width or bool), or a
 // struct type (one of the shapes 10.22 supports — field types the entry's
-// width or bool); the tuple/struct's own internal shape is validated wherever
+// width or bool); a tuple/struct result type has the same options. The
+// tuple/struct's own internal shape is validated wherever
 // its typedef gets built (buildTupleTypedef / buildStructTypedef), not here.
 // Anything else (str, a pointer, an array, an optional, a helper of the other
 // integer width) is a clean rejection naming the position. A void-result
 // helper is also a
-// clean rejection: this slice only supports integer-result calls used as
-// expression values, deliberately leaving bare void calls (which would need an
-// expression-statement construct in the block grammar) out of scope.
+// clean rejection: this slice only supports integer- and aggregate-result
+// calls used as expression values, deliberately leaving bare void calls (which
+// would need an expression-statement construct in the block grammar) out of
+// scope.
 func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width types.BuiltinKind) error {
 	if decl.Convention != types.Pebble {
 		return fmt.Errorf("called function symbol %d uses %s calling convention, want Pebble", decl.Symbol, callingConventionName(decl.Convention))
@@ -907,11 +966,11 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s or bool, or a tuple/struct type (a parameter may be the entry's integer width, bool, or a tuple/struct type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) {
+	if !isWidth(snapshot, width, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) {
 		if builtin, ok := resolvedBuiltin(snapshot, decl.ResultType); ok && builtin == types.Void {
 			return fmt.Errorf("called function symbol %d returns void; void-result helper calls are not supported yet (only %s-result calls used as expression values are)", decl.Symbol, wantName(width))
 		}
-		return fmt.Errorf("called function symbol %d has result type %s, want %s (a called function must resolve to the entry's integer width)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+		return fmt.Errorf("called function symbol %d has result type %s, want %s or a tuple/struct result type (a called function may resolve to the entry's integer width, or a tuple/struct type)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
 	}
 	return nil
 }
@@ -981,7 +1040,26 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
-		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width)
+		// A helper whose ResultType is a tuple/struct is declared with its
+		// aggregate's own typedef name as the C return type instead of the
+		// entry's scalar cType(width), and its body is built with a resultInfo
+		// recording that aggregate so the tail-position Return is built by
+		// buildAggregateReturnValue rather than buildExpr. A scalar-result
+		// helper is unchanged: cType(width) and resultInfo{kind: width}, so its
+		// emitted text is byte-identical to before this slice. The tuple/struct
+		// shape is validated wherever its typedef is built (buildTupleTypedef /
+		// buildStructTypedef), exactly like a tuple/struct parameter's.
+		returnType := cType(width)
+		result := resultInfo{kind: width}
+		switch {
+		case isTuple(snapshot, helper.decl.ResultType):
+			returnType = tupleTypeName(helper.decl.ResultType)
+			result = resultInfo{tuple: helper.decl.ResultType}
+		case isStruct(snapshot, helper.decl.ResultType):
+			returnType = structTypeName(helper.decl.ResultType)
+			result = resultInfo{structType: helper.decl.ResultType}
+		}
+		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width, result)
 		if err != nil {
 			return "", err
 		}
@@ -993,7 +1071,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 		if len(casts) > 0 {
 			castText = strings.Join(casts, "\n") + "\n"
 		}
-		texts = append(texts, fmt.Sprintf(helperFunction, cType(width), helper.decl.Symbol, paramList, castText, statements))
+		texts = append(texts, fmt.Sprintf(helperFunction, returnType, helper.decl.Symbol, paramList, castText, statements))
 	}
 	return strings.Join(texts, "\n"), nil
 }
@@ -1040,7 +1118,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
-func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
@@ -1087,15 +1165,30 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 	switch last.Kind {
 	case tir.Return:
 		if len(last.Children) != 1 {
-			return "", fmt.Errorf("entry function body return statement has %d argument(s), want exactly one integer expression", len(last.Children))
+			return "", fmt.Errorf("entry function body return statement has %d argument(s), want exactly one expression", len(last.Children))
 		}
-		returnExpr, err := buildExpr(unit, snapshot, last.Children[0], scope, width)
+		var returnValue string
+		var err error
+		if result.tuple != 0 || result.structType != 0 {
+			// The enclosing function returns a tuple/struct (a reachable helper
+			// whose ResultType is an aggregate — the entry always threads a
+			// scalar resultInfo), so the return value is built under the
+			// aggregate grammar by buildAggregateReturnValue rather than
+			// buildExpr, which rejects an aggregate-typed value. Supported
+			// return shapes are a SymbolValue naming an aggregate-typed local
+			// in scope of the matching type, or a fresh inline TupleValue /
+			// RecordConstruct of the matching type (both built via 10.25's
+			// expression builders); anything else is a clean rejection.
+			returnValue, err = buildAggregateReturnValue(unit, snapshot, last.Children[0], scope, result, width)
+		} else {
+			returnValue, err = buildExpr(unit, snapshot, last.Children[0], scope, width)
+		}
 		if err != nil {
 			return "", err
 		}
-		statements = append(statements, indent+"return "+returnExpr+";")
+		statements = append(statements, indent+"return "+returnValue+";")
 	case tir.If:
-		ifText, err := buildIf(unit, snapshot, last, scope, depth, width)
+		ifText, err := buildIf(unit, snapshot, last, scope, depth, width, result)
 		if err != nil {
 			return "", err
 		}
@@ -1123,7 +1216,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // Any other shape — an If without an else, an arm that is not a Block, or a
 // block with the wrong child count — is a clean rejection naming what was
 // found.
-func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
@@ -1134,11 +1227,11 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1, width)
+	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1, width, result)
 	if err != nil {
 		return "", err
 	}
-	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1, width)
+	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1, width, result)
 	if err != nil {
 		return "", err
 	}
@@ -1550,6 +1643,25 @@ type localInfo struct {
 	structType types.TypeID
 }
 
+// resultInfo records what the enclosing function's tail return must produce:
+// an ordinary scalar — the entry's resolved integer width, in kind — a tuple,
+// in tuple (its types.TypeID), or a struct, in structType. The fields are
+// mutually exclusive, mirroring localInfo: kind is zero for a compound result
+// (a tuple/struct is not a types.BuiltinKind), and tuple/structType are zero
+// for a scalar result. It is threaded alongside width through buildBlock and
+// buildIf so a tuple/struct-returning helper's tail-position Return builds its
+// value via buildAggregateReturnValue (a SymbolValue naming a matching
+// aggregate-typed local, or a fresh TupleValue/RecordConstruct) instead of
+// buildExpr, which would reject an aggregate-typed value. The entry's own body
+// always threads resultInfo{kind: width} (a scalar, unchanged behavior), since
+// the entry's C return type stays the integer entryReturnType regardless of
+// what a helper may return.
+type resultInfo struct {
+	kind       types.BuiltinKind
+	tuple      types.TypeID
+	structType types.TypeID
+}
+
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
 // recursive scope entry in buildBlock copies before extending, so a block's
 // own declarations never leak into the map the caller or a sibling scope
@@ -1572,15 +1684,24 @@ func cloneLocals(locals map[symbol.SymbolID]localInfo) map[symbol.SymbolID]local
 // nested tuple element) is a clean rejection naming the element position, since
 // this backend emits exactly those two C field types. The local's scope entry
 // records its tuple type (a localInfo with tuple set), so a later element read
-// resolves the tuple type being indexed. The initializer must be a TupleValue
-// (a tuple literal): initializing a tuple local from any other value — a
-// whole-tuple copy of another local, a call, anything else — is a clean
-// rejection, keeping this slice's supported initializer exactly the tuple
-// literal. Like every scalar local, the declaration is followed by a (void)
-// cast against -Wunused-variable.
+// resolves the tuple type being indexed. Two initializer shapes are supported
+// (10.26): a TupleValue (a tuple literal), emitted as a bare brace list, or a
+// DirectCall to a tuple-returning helper whose result type matches the local's
+// declared type, emitted by the same call-building machinery buildExpr's
+// DirectCall case uses (see buildAggregateCallInitializer). Initializing a
+// tuple local from any other value — a whole-tuple copy of another local,
+// anything else — is a clean rejection. Like every scalar local, the
+// declaration is followed by a (void) cast against -Wunused-variable.
 func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind == tir.DirectCall {
+		// A call to a tuple-returning helper used as the direct initializer of
+		// a matching tuple-typed local — `let t (i32, i32) =
+		// helperReturningTuple();` — the one position (10.26) in which calling
+		// a tuple-returning helper is supported.
+		return buildAggregateCallInitializer(unit, snapshot, statement, initValue, scope, indent, context, width, true)
+	}
 	if initValue.Kind != tir.TupleValue {
-		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal); initializing a tuple local from another value is not supported yet", context, tupleTypeName(initValue.Type), initValue.Kind)
+		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal) or a call to a tuple-returning helper; initializing a tuple local from another value is not supported yet", context, tupleTypeName(initValue.Type), initValue.Kind)
 	}
 	braceList, err := buildTupleBraceList(unit, snapshot, initValue, scope, context, width)
 	if err != nil {
@@ -1588,6 +1709,47 @@ func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statem
 	}
 	scope[statement.Symbol] = localInfo{tuple: initValue.Type}
 	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, braceList, indent, statement.Symbol), nil
+}
+
+// buildAggregateCallInitializer builds a tuple/struct-typed local's declaration
+// whose initializer is a DirectCall to a helper returning the same aggregate
+// type (10.26): `let t (i32, i32) = helperReturningTuple();`. This is the one
+// position in which calling a tuple/struct-returning helper is supported — the
+// direct initializer of a matching aggregate-typed local declaration. The
+// call's result type is the DirectCall node's own Type, which is the callee's
+// resolved result type (confirmed against a real fixture), and it must be
+// exactly the local's declared type — double-checked against the callee's
+// declared ResultType (defense for hand-built IR), so the emitted C never
+// initializes a local of one aggregate type from a call returning another. The
+// call itself is built by buildDirectCall, the same call-building machinery
+// buildExpr's DirectCall case uses, so context and argument handling are
+// identical to a scalar call — only the result type differs. wantTuple selects
+// the tuple grammar (the local is declared pebble_tuple_<typeID>_t and its
+// scope entry records localInfo{tuple}) over the struct grammar
+// (pebble_struct_<typeID>_t and localInfo{structType}). Like every local, the
+// declaration is followed by a (void) cast against -Wunused-variable.
+func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, wantTuple bool) (string, error) {
+	calleeDecl, err := findFunctionDeclaration(unit, initValue.Symbol, "called function")
+	if err != nil {
+		return "", err
+	}
+	if calleeDecl.ResultType != initValue.Type {
+		what := "tuple"
+		if !wantTuple {
+			what = "struct"
+		}
+		return "", fmt.Errorf("%s declares a %s-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, what, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+	}
+	callExpr, err := buildDirectCall(unit, snapshot, initValue, scope, width)
+	if err != nil {
+		return "", err
+	}
+	if wantTuple {
+		scope[statement.Symbol] = localInfo{tuple: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+	}
+	scope[statement.Symbol] = localInfo{structType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
 }
 
 // buildTupleBraceList validates one TupleValue node's element list and builds
@@ -1791,16 +1953,27 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, sta
 // suite's own harness). Every field type must be exactly the entry's width or
 // bool; anything else (a str field, a nested struct field) is a clean
 // rejection naming the field position, since this backend emits exactly those
-// two C field types. The initializer must be a RecordConstruct (a struct
-// literal): initializing a struct local from any other value — a whole-struct
-// copy of another local, a call, anything else — is a clean rejection. The
+// two C field types. Two initializer shapes are supported (10.26): a
+// RecordConstruct (a struct literal), emitted as a designated-initializer
+// brace list, or a DirectCall to a struct-returning helper whose result type
+// matches the local's declared type, emitted by the same call-building
+// machinery buildExpr's DirectCall case uses (see buildAggregateCallInitializer).
+// Initializing a struct local from any other value — a whole-struct
+// copy of another local, anything else — is a clean rejection. The
 // local's scope entry records its struct type (a localInfo with structType
 // set), so a later field read resolves the struct type being projected. Like
 // every scalar local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
 func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind == tir.DirectCall {
+		// A call to a struct-returning helper used as the direct initializer of
+		// a matching struct-typed local — `let p Point =
+		// helperReturningPoint();` — the one position (10.26) in which calling
+		// a struct-returning helper is supported.
+		return buildAggregateCallInitializer(unit, snapshot, statement, initValue, scope, indent, context, width, false)
+	}
 	if initValue.Kind != tir.RecordConstruct {
-		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal); initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
+		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal) or a call to a struct-returning helper; initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
 	}
 	braceList, err := buildStructBraceList(unit, snapshot, initValue, scope, context, width)
 	if err != nil {
@@ -2368,45 +2541,61 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals m
 		// A call to another Pebble-convention function whose result is the
 		// entry's own width. The width gate above already
 		// checked node.Type (the call's result type, which is the callee's
-		// resolved result type) is the entry's width. Context threading is
-		// not an explicit IR child — the DirectCall records it as
-		// ContextAction (ContextForward for a Pebble-convention call) — so,
-		// exactly as the old backend textually injected `context`, this
-		// backend prepends ctx as the first C argument itself, the same way
-		// pebble_user_main receives it. The callee is a reachable helper
-		// emitted as pebble_fn_<calleeSymbolID>; the reachability walk has
-		// already validated the callee's signature (including its parameters'
-		// types, each the entry's width or bool), so the checks below are
-		// defense against hand-built IR, matching the file's style.
-		if node.Convention != types.Pebble {
-			return "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
-		}
-		if node.ContextAction != tir.ContextForward {
-			return "", fmt.Errorf("entry function body expression contains a call that records ContextAction %s, want ForwardCurrentContext (this backend only lowers Pebble-convention calls that thread the context)", node.ContextAction)
-		}
-		// The callee's own declaration supplies the parameter list that decides
-		// each argument's grammar below (the reachability walk in
-		// discoverReachableHelpers has already resolved and validated this
-		// callee, so the checks here are defense against hand-built IR,
-		// matching the file's style).
-		calleeDecl, err := findFunctionDeclaration(unit, node.Symbol, "called function")
-		if err != nil {
-			return "", err
-		}
-		callArgs, err := buildCallArguments(unit, snapshot, node, calleeDecl, locals, width)
-		if err != nil {
-			return "", err
-		}
-		if len(node.TypeArgs) != 0 {
-			return "", fmt.Errorf("entry function body expression contains a call to a generic function with %d type argument(s), which this backend does not lower (generics are not supported yet)", len(node.TypeArgs))
-		}
-		if callArgs == "" {
-			return fmt.Sprintf("pebble_fn_%d(ctx)", node.Symbol), nil
-		}
-		return fmt.Sprintf("pebble_fn_%d(ctx, %s)", node.Symbol, callArgs), nil
+		// resolved result type) is the entry's width. The call itself is built
+		// by buildDirectCall, the single call-building machinery shared with an
+		// aggregate-typed call used as a matching local's declaration
+		// initializer (buildAggregateCallInitializer) — context and argument
+		// handling are identical there; only the result type differs from the
+		// scalar case.
+		return buildDirectCall(unit, snapshot, node, locals, width)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, or a call to another function", node.Kind)
 	}
+}
+
+// buildDirectCall builds the C expression text for one tir.DirectCall: a call
+// to another Pebble-convention function emitted as
+// pebble_fn_<calleeSymbolID>(ctx, <arg0>, <arg1>, ...). Context threading is
+// not an explicit IR child — the DirectCall records it as ContextAction
+// (ContextForward for a Pebble-convention call) — so, exactly as the old
+// backend textually injected `context`, this backend prepends ctx as the first
+// C argument itself, the same way pebble_user_main receives it. Each argument
+// is built by buildCallArguments, which decides each child's grammar from the
+// callee's declared parameter type (the reachability walk has already resolved
+// and validated the callee, so the checks here are defense against hand-built
+// IR, matching the file's style). The function is shared (10.26) by the two
+// call-building sites whose result type differs: buildExpr's DirectCall case
+// (a scalar-width call) and buildAggregateCallInitializer (a tuple/struct-
+// returning call used as a matching local's declaration initializer) — the
+// context and argument handling are identical; only the call's result type
+// differs, and that is decided by the caller, never here.
+func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if node.Convention != types.Pebble {
+		return "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
+	}
+	if node.ContextAction != tir.ContextForward {
+		return "", fmt.Errorf("entry function body expression contains a call that records ContextAction %s, want ForwardCurrentContext (this backend only lowers Pebble-convention calls that thread the context)", node.ContextAction)
+	}
+	// The callee's own declaration supplies the parameter list that decides
+	// each argument's grammar below (the reachability walk in
+	// discoverReachableHelpers has already resolved and validated this
+	// callee, so the checks here are defense against hand-built IR,
+	// matching the file's style).
+	calleeDecl, err := findFunctionDeclaration(unit, node.Symbol, "called function")
+	if err != nil {
+		return "", err
+	}
+	callArgs, err := buildCallArguments(unit, snapshot, node, calleeDecl, locals, width)
+	if err != nil {
+		return "", err
+	}
+	if len(node.TypeArgs) != 0 {
+		return "", fmt.Errorf("entry function body expression contains a call to a generic function with %d type argument(s), which this backend does not lower (generics are not supported yet)", len(node.TypeArgs))
+	}
+	if callArgs == "" {
+		return fmt.Sprintf("pebble_fn_%d(ctx)", node.Symbol), nil
+	}
+	return fmt.Sprintf("pebble_fn_%d(ctx, %s)", node.Symbol, callArgs), nil
 }
 
 // buildTuplePlaceRead builds the C text for reading one element of a tuple
@@ -2739,6 +2928,76 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.
 		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d passes symbol %d, which is a local of type %s, not a struct-typed local of type %s", calleeSymbol, position, node.Symbol, describeType(snapshot, node.Type), structTypeName(wantType))
 	}
 	return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+}
+
+// buildAggregateReturnValue builds the C expression text for a tuple/struct-
+// returning function's tail-position return value (10.26). The enclosing
+// function's result type comes from result (mutually exclusive tuple /
+// structType, set by buildHelperFunctions from the helper's own ResultType),
+// and exactly two return-value shapes are supported (both confirmed against
+// real fixtures):
+//
+//   - a plain SymbolValue naming an already-declared aggregate-typed local in
+//     scope whose declared type is exactly the function's result type, emitted
+//     as the local's own pebble_local_<symbol> C name — forwarding an
+//     already-computed aggregate value without re-constructing it;
+//   - a freshly-constructed aggregate built inline in the return — a
+//     TupleValue (return (20, 22)) or a RecordConstruct (return
+//     Point.{ x = 20, y = 22 }), emitted as a C99 compound-literal expression
+//     by buildTupleValueExpr / buildStructValueExpr (the same 10.25 expression
+//     builders an inline call argument uses), so the return statement emits
+//     e.g. `return (pebble_tuple_23_t){ 20, 22 };`.
+//
+// An inline construct whose own Type is not exactly the function's result type
+// (defense for hand-built IR — the checker coerces every return value to the
+// function's declared result type) is a clean rejection, so the emitted C never
+// returns a value of the wrong aggregate type. Any other return-value shape —
+// most notably a DirectCall, i.e. `return helperReturningTuple();` from another
+// tuple/struct-returning helper, which is confirmed reachable from real source
+// but deliberately out of scope this slice (a call may only be a tuple/struct-
+// returning helper's direct-initializer use, never this return-forwarding
+// position) — is a clean rejection naming what was found. width is the entry's
+// resolved integer width, threaded through to the inline builders so each
+// element/field is built at the width the result type's own typedef uses.
+func buildAggregateReturnValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body return statement references invalid value node %d", id)
+	}
+	if node.Kind == tir.SymbolValue {
+		info, declared := locals[node.Symbol]
+		if !declared {
+			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is not a local in scope", node.Symbol)
+		}
+		if result.tuple != 0 {
+			if info.tuple != result.tuple {
+				return "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a tuple-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
+			}
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		}
+		if info.structType != result.structType {
+			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a struct-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), structTypeName(result.structType))
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	if result.tuple != 0 {
+		context := "entry function body return statement"
+		if node.Kind == tir.TupleValue {
+			if node.Type != result.tuple {
+				return "", fmt.Errorf("%s returns a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
+			}
+			return buildTupleValueExpr(unit, snapshot, node, locals, context, width)
+		}
+		return "", fmt.Errorf("%s returns a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only returning an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
+	}
+	context := "entry function body return statement"
+	if node.Kind == tir.RecordConstruct {
+		if node.Type != result.structType {
+			return "", fmt.Errorf("%s returns a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
+		}
+		return buildStructValueExpr(unit, snapshot, node, locals, context, width)
+	}
+	return "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only returning an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
 }
 
 // buildBoolExpr builds the C text for a bool value node, used both for a bool

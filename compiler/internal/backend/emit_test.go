@@ -4434,3 +4434,290 @@ func TestEmitRejectsStrParameter(t *testing.T) {
 	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { return 1; } fn main() i32 { return f(\"hi\"); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
+
+// 10.26 — tuple- and struct-typed function return types
+
+func TestEmitTupleReturningHelperCompilesAndRuns(t *testing.T) {
+	// The flagship tuple-return fixture: makeT returns a fresh (i32, i32)
+	// tuple constructed inline in its return statement, the entry declares a
+	// matching tuple local from the call (the one supported call position for
+	// a tuple-returning helper — the direct initializer of a matching local),
+	// and reads both elements back. The helper's C signature must declare its
+	// return type as the tuple's own typedef, its return statement must emit
+	// the compound-literal expression, and the call site must initialize the
+	// local from the call. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", false, 42, false)
+}
+
+func TestEmitStructReturningHelperCompilesAndRuns(t *testing.T) {
+	// The flagship struct-return fixture, mirroring the tuple one: makeP
+	// returns a fresh Point constructed inline in its return statement, the
+	// entry declares a matching struct local from the call and reads both
+	// fields back. The designated-initializer compound-literal return value is
+	// exercised end-to-end. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", false, 42, false)
+}
+
+func TestEmitTupleReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	// A tuple-returning helper whose return statement forwards an
+	// already-declared aggregate-typed local (a plain SymbolValue, not a fresh
+	// construction): x is declared in the helper's body from a tuple literal,
+	// and `return x;` forwards it, emitting `return pebble_local_<x>;`. The
+	// entry assigns the call to a matching local and reads both elements back.
+	// 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn makeT() (i32, i32) { let x (i32, i32) = (20, 22); return x; } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", false, 42, false)
+}
+
+func TestEmitStructReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	// The struct side of forwarding an already-declared local: p is declared
+	// in the helper's body from a struct literal and `return p;` forwards it,
+	// emitting `return pebble_local_<p>;`. The entry assigns the call to a
+	// matching local and reads both fields back. 20 + 22 = 42 is the process
+	// exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { let p Point = Point.{ x = 20, y = 22 }; return p; } fn main() i32 { let q Point = makeP(); return q.x + q.y; }", false, 42, false)
+}
+
+func TestEmitTupleReturningHelperWithBoolElementCompilesAndRuns(t *testing.T) {
+	// A mixed width/bool tuple result: the bool element is built by
+	// buildBoolExpr inside the tuple's brace list (proving the element grammar
+	// dispatch in the return path, not just the local-declaration path), and
+	// once read back in the entry it drives an if. With t.1 true the then-arm
+	// returns the i32 element 20.
+	emitAndRun(t, "fn makeT() (i32, bool) { return (20, true); } fn main() i32 { let t (i32, bool) = makeT(); if t.1 { return t.0; } else { return 99; } }", false, 20, false)
+}
+
+func TestEmitTupleReturningHelperIfElseTailCompilesAndRuns(t *testing.T) {
+	// A tuple-returning helper whose body tail is a two-armed if/else (not a
+	// bare return): each arm's return is a fresh tuple construction, proving
+	// buildIf threads the enclosing function's resultInfo into both arms so
+	// each arm's Return routes through buildAggregateReturnValue. With the flag
+	// true the then-arm's (20, 22) wins, and 20 + 22 = 42 is the exit code.
+	emitAndRun(t, "fn pick(b bool) (i32, i32) { if b { return (20, 22); } else { return (0, 0); } } fn main() i32 { let t (i32, i32) = pick(true); return t.0 + t.1; }", false, 42, false)
+}
+
+func TestEmitTupleReturningHelperWritesC(t *testing.T) {
+	// The emitted C for the tuple flagship: the tuple typedef must precede the
+	// helper, the helper's signature declares its return type as
+	// pebble_tuple_23_t (the aggregate's own typedef, not the entry's scalar
+	// int32_t), its return statement emits the C99 compound-literal expression
+	// (pebble_tuple_23_t){ 20, 22 }, and the call site initializes the local
+	// directly from pebble_fn_24(ctx). Symbols 24 (makeT), 25 (main), 26 (t
+	// local), and tuple type 23 come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
+		"static pebble_tuple_23_t pebble_fn_24(PebbleContext *ctx) {",
+		"    return (pebble_tuple_23_t){ 20, 22 };",
+		"pebble_tuple_23_t pebble_local_26 = pebble_fn_24(ctx);",
+		"    (void)pebble_local_26;",
+		"return pebble_rt_checked_add_i32(pebble_local_26._0, pebble_local_26._1);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static pebble_tuple_23_t pebble_fn_24")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("tuple typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitStructReturningHelperWritesC(t *testing.T) {
+	// The emitted C for the struct flagship: the struct typedef precedes the
+	// helper, the helper's signature declares its return type as
+	// pebble_struct_23_t, its return statement emits the designated-
+	// initializer compound-literal expression, and the call site initializes
+	// the local from pebble_fn_27(ctx). Symbols 24 (Point), 25 (x), 26 (y), 27
+	// (makeP), 28 (main), 29 (p local), and struct type 23 come from the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
+		"static pebble_struct_23_t pebble_fn_27(PebbleContext *ctx) {",
+		"    return (pebble_struct_23_t){ .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"pebble_struct_23_t pebble_local_29 = pebble_fn_27(ctx);",
+		"return pebble_rt_checked_add_i32(pebble_local_29.pebble_field_25, pebble_local_29.pebble_field_26);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static pebble_struct_23_t pebble_fn_27")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("struct typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitTupleReturningHelperForwardsLocalWritesC(t *testing.T) {
+	// The emitted C for the local-forwarding return: the helper's return
+	// statement emits `return pebble_local_<x>;` (the already-declared local's
+	// own C name, no re-construction). Symbols 24 (makeT), 25 (main), 26 (x
+	// local), 27 (t local), and tuple type 23 come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { let x (i32, i32) = (20, 22); return x; } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static pebble_tuple_23_t pebble_fn_24(PebbleContext *ctx) {",
+		"    pebble_tuple_23_t pebble_local_26 = { 20, 22 };",
+		"    return pebble_local_26;",
+		"pebble_tuple_23_t pebble_local_27 = pebble_fn_24(ctx);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitTupleReturnResultTypeOnlyHelperCompilesAndRuns(t *testing.T) {
+	// The typedef-discovery fixture (10.26): the (i32, i32) tuple type appears
+	// only as makeT's result type — makeT constructs a tuple of that type in
+	// its return (never anywhere in main, which only assigns the call to a
+	// matching local and never reads an element or constructs a tuple), so the
+	// emitted helper's C signature still names pebble_tuple_<typeID>_t and the
+	// typedef must be emitted before it. The program compiles clean under the
+	// strict flags and exits 0.
+	emitAndRun(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return 0; }", false, 0, false)
+}
+
+func TestEmitStructReturnResultTypeOnlyHelperCompilesAndRuns(t *testing.T) {
+	// The struct side of the typedef-discovery fixture: the Point type appears
+	// only as makeP's result type — makeP constructs a Point in its return,
+	// and main only assigns the call to a matching local and never reads a
+	// field or constructs a Point — yet the typedef must still be emitted
+	// before the helper whose C signature names pebble_struct_<typeID>_t. The
+	// program compiles clean under the strict flags and exits 0.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return 0; }", false, 0, false)
+}
+
+func TestEmitTupleResultTypeScanGetsTypedef(t *testing.T) {
+	// The ResultType scan in collectTupleTypes, proven load-bearing: the
+	// (i32, i32) tuple type is used ONLY as makeT's result type, and the
+	// helpers slice pairs makeT's declaration with main's body block — a real,
+	// valid Block that contains no tuple construction (main is `return 0;`), so
+	// the body walk finds nothing and makeT's Parameters are empty. The only
+	// path by which collectTupleTypes can discover type 23 is the helper's own
+	// ResultType; without 10.26's ResultType scan this returns nothing and the
+	// test fails. (The concrete type ID 23 is confirmed from the fixture dump.)
+	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { return 0; }", "main", false)
+	entryDecl, err := findFunctionDeclaration(unit, entryID, "entry function")
+	if err != nil {
+		t.Fatalf("entry declaration: %v", err)
+	}
+	_, entryBlock, err := findFunctionBody(unit, entryDecl, "entry function")
+	if err != nil {
+		t.Fatalf("entry body: %v", err)
+	}
+	makeTDecl, err := findFunctionDeclaration(unit, 24, "called function")
+	if err != nil {
+		t.Fatalf("makeT declaration: %v", err)
+	}
+	// Pair makeT's declaration with main's tuple-free body block, isolating the
+	// ResultType scan as the sole discovery path for tuple type 23.
+	helpers := []helperInfo{{decl: makeTDecl, block: entryBlock}}
+	ids, err := collectTupleTypes(unit, snapshot, entryBlock, helpers)
+	if err != nil {
+		t.Fatalf("collectTupleTypes failed: %v", err)
+	}
+	found := false
+	for _, id := range ids {
+		if id == 23 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tuple type 23 used only as a helper's result type was not discovered, got %v", ids)
+	}
+}
+
+func TestEmitRejectsTupleReturningHelperAsArgument(t *testing.T) {
+	// Calling a tuple-returning helper outside the one supported position — as
+	// an argument to another function (f(makeT())) — is reachable from real
+	// source: the outer DirectCall's argument is the inner DirectCall. The
+	// aggregate-argument builder rejects it cleanly, naming what was found,
+	// never a guessed lowering.
+	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
+}
+
+func TestEmitRejectsStructReturningHelperAsArgument(t *testing.T) {
+	// The struct side of the argument-position rejection: f(makeP()) passes a
+	// struct-returning call as an argument, which the aggregate-argument
+	// builder rejects naming what was found.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
+}
+
+func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
+	// Calling a tuple-returning helper as an operand of an element read —
+	// return makeT().0; — is reachable from real source: the read lowers to a
+	// TupleElementValue whose child is the DirectCall, not a SymbolValue naming
+	// a tuple-typed local. The integer expression builder rejects the
+	// non-local base cleanly.
+	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { return makeT().0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "of a DirectCall")
+}
+
+func TestEmitRejectsTupleReturningHelperInAnotherHelpersReturn(t *testing.T) {
+	// Calling a tuple-returning helper as another tuple-returning helper's
+	// return value — `return makeT();` from makeT2 — is reachable from real
+	// source but deliberately out of scope (a call is only supported as a
+	// direct-initializer use, never this return-forwarding position). The
+	// tuple-returning helper's own tail Return routes through
+	// buildAggregateReturnValue, which rejects the DirectCall value cleanly,
+	// naming what was found.
+	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn makeT2() (i32, i32) { return makeT(); } fn main() i32 { let t (i32, i32) = makeT2(); return t.0 + t.1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
+}
+
+func TestEmitRejectsStructReturningHelperInAnotherHelpersReturn(t *testing.T) {
+	// The struct side of the return-forwarding rejection: `return makeP();`
+	// from another struct-returning helper is a DirectCall return value,
+	// rejected by buildAggregateReturnValue naming what was found.
+	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn makeP2() Point { return makeP(); } fn main() i32 { let p Point = makeP2(); return p.x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
+}
+
+func TestEmitRejectsEntryReturningTuple(t *testing.T) {
+	// The entry itself cannot declare a tuple/struct result type: its C return
+	// type stays the integer entryReturnType regardless of what the language
+	// lets a helper write. validateEntrySignature rejects the tuple result
+	// exactly as it always has, unchanged by this slice.
+	unit, snapshot, entryID := buildFixture(t, "fn main() (i32, i32) { return (1, 2); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "entry function result type is (i32, i32), want void, i32, or i64")
+}
+
+func TestEmitTupleReturningHelperInIfArmLocalInitializerCompilesAndRuns(t *testing.T) {
+	// A tuple-returning helper called from an if/else arm's own local
+	// declaration: the arm is a block built by the same recursive buildBlock,
+	// so the DirectCall initializer is handled by the identical
+	// buildTupleLocalDeclaration path the top-level case uses — no special
+	// plumbing for the nested position. With the flag true the then-arm
+	// declares t from makeT() and returns t.0 = 20.
+	emitAndRun(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let b bool = true; if b { let t (i32, i32) = makeT(); return t.0; } else { return 0; } }", false, 20, false)
+}
+
+func TestEmitTupleReturningHelperInLoopBodyLocalInitializerCompilesAndRuns(t *testing.T) {
+	// A tuple-returning helper called from a while loop body's local
+	// declaration: the loop body is built by buildLoopBody, whose leading
+	// statements go through the same buildLeadingStatement /
+	// buildTupleLocalDeclaration path, so the DirectCall initializer works in
+	// the nested position without special-casing. The loop declares t from
+	// makeT() once, accumulates both elements, and the entry returns the sum
+	// 42. Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { var n i32 = 0; var s i32 = 0; while n < 1 { let t (i32, i32) = makeT(); s = s + t.0 + t.1; n = n + 1; } return s; }", false, 42, false)
+}
