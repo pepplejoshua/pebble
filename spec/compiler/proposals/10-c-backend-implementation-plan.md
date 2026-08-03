@@ -716,6 +716,47 @@ incrementally as work proceeds.
   and independently outside the harness — manually compiled and ran
   the emitted C for `let a [3]i32 = [5; 3]; return a[0] + a[1] +
   a[2];` with `-Wall -Wextra -Werror`, confirming exit code 15.
+- **10.28 — one level of nested aggregates, with typedef dependency
+  ordering** (`compiler/internal/backend`): closes Phase 1's last gap.
+  Every prior aggregate slice restricted its elements/fields to scalar
+  types only; this slice lifts that by exactly one level — a tuple
+  element, struct field, array element, or optional payload may now
+  itself be a tuple/struct/optional (not an array — see below). **A
+  real structural correctness problem**: C requires a type fully
+  defined before use as another type's field, but every prior
+  typedef-collection pass emitted types in first-encountered walk
+  order, coincidentally correct only because nothing depended on
+  anything else before now. Fixed with dependency-first ordering
+  across the tuple/optional/struct typedef families (reproduced the
+  wrong-order failure before the fix, confirmed correct after),
+  preserving first-encountered order for unrelated types so no
+  existing typedef ordering changed. **A real correctness trap found
+  and fixed**: for an inline nested aggregate literal used directly as
+  a struct field's value, the checker leaves that literal's own `Type`
+  unanchored; field-type resolution now prefers the struct's own
+  declared field type over the raw value node's `Type`. **Real,
+  confirmed checker-level limitations** (not backend gaps, left as
+  clean rejections): arrays cannot be tuple elements or struct fields
+  at all today — the checker itself fails to construct or resolve them
+  (`C0619`/`T0501`); an inline `some` as a struct field value is
+  separately checker-rejected (`C0601`). This slice needed two
+  dispatch attempts: the first (`opencode-go/deepseek-v4-flash`)
+  investigated thoroughly and correctly identified the real problems
+  above, but its ~1400-line implementation was never verified — zero
+  new tests, and independently found to have regressed two
+  pre-existing rejection tests whose fixtures the new nesting support
+  should have turned into positive cases. Discarded entirely (not
+  patched); its confirmed findings were folded into a refined brief
+  for the retry (`openai/gpt-5.6-luna`), which produced a smaller,
+  correct, fully-verified implementation. Verified end-to-end (238
+  backend tests, 0 failures, including both previously-regressed tests
+  now passing as intended positive cases) and independently outside
+  the harness — manually compiled and ran the emitted C for a
+  struct-in-tuple fixture with `-Wall -Wextra -Werror`, confirming
+  exit code 42 and correct struct-before-tuple typedef order.
+
+  **Phase 1 (aggregate loose ends) is now complete** — 10.25 through
+  10.28.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
