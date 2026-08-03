@@ -691,6 +691,31 @@ incrementally as work proceeds.
   compiled and ran the emitted C for `fn makeT() (i32, i32) { return
   (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 +
   t.1; }` with `-Wall -Wextra -Werror`, confirming exit code 42.
+- **10.27 — ArrayRepeat array initializers** (`compiler/internal/backend`):
+  closes 10.20's deferred `[v; N]` gap. A naive brace-list duplication
+  (`{ v, v, v }`) would evaluate `v` N times, wrong if `v` has any
+  observable side effect. This slice evaluates the repeat value
+  exactly once and fills every slot from that one evaluation, emitting
+  three C statements instead of one declaration line (a bare array
+  declaration, a one-time-evaluated `pebble_repeat_<sym>` temp, and a
+  `size_t` fill loop) — the synthetic names derived from the local's
+  own declaration symbol, collision-free by construction since
+  `ArrayRepeat` only ever appears as that one local's own initializer.
+  **Real, confirmed-not-guessed finding**: `ArrayRepeat`'s second
+  child is always a checker-synthesized `uint` `IntegerLiteral` exactly
+  equal to the array type's own declared length — never a runtime
+  expression, never differing — confirmed via real fixture dumps at
+  three array lengths/widths. Every out-of-scope `ArrayRepeat` shape
+  (a call argument, nested in another aggregate, direct indexing) is
+  reachable from real source but already rejected cleanly by
+  pre-existing gates, so no new rejection code was needed. Single
+  evaluation proved structurally: a dedicated test confirms a repeat
+  value that calls a helper function appears exactly once in the
+  emitted C text. Verified end-to-end (sum of three repeated elements,
+  a non-trivial repeat-value expression, a bool element, an i64 array)
+  and independently outside the harness — manually compiled and ran
+  the emitted C for `let a [3]i32 = [5; 3]; return a[0] + a[1] +
+  a[2];` with `-Wall -Wextra -Werror`, confirming exit code 15.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
