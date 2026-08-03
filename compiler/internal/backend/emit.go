@@ -16,10 +16,20 @@
 // arm may contain its own locals, reassignments, nested if/else, and loops. A
 // while loop's body is a block of local declarations, reassignments, if
 // statements (a loop-body if is built by buildLoopIf and has an optional
-// else), nested while loops (built by buildWhile), and break/continue
+// else), nested while loops (built by buildWhile), nested range loops (built
+// by buildRangeLoop), and break/continue
 // statements (built by buildLoopJump), with no required tail (see
 // buildLoopBody); a while can only be a leading statement, never the block's
-// tail. Locals declared in an enclosing block are visible in a nested block;
+// tail. A `loop start..end : name { <body> }` range loop (or `..=`, the
+// inclusive form) is a leading statement exactly like a while, lowering to a
+// C for loop whose loop counter IS the bound iterator (a tir.RangeLoop with
+// the iterator's own symbol.SymbolID on its Symbol field and Children
+// [start, end, body]; the unbound `loop start..end { ... }` form with no
+// `: name` is rejected), its body built by the same buildLoopBody seeded with
+// the iterator as an ordinary local of the entry's width, so a SymbolValue
+// reference to the iterator inside the body resolves like any other local
+// (see buildRangeLoop). Locals declared in an enclosing block are visible in
+// a nested block;
 // locals declared inside an arm or loop body are visible only within that
 // scope. Every expression in an accepted body must carry the entry's own
 // width — a local of the other width (an i32 local inside an i64 entry, or
@@ -240,7 +250,9 @@ import (
 // `var <name> <width> = <expression>;` local declarations, plus
 // `x = <expression>;` reassignments of an already-declared local (a tir.Store;
 // see buildBlock) and `while <comparison> { <loop body> }` loop statements (a
-// tir.While; see buildWhile), followed by a tail that is either one
+// tir.While; see buildWhile) and `loop <start>..<end> : <name> { <loop body> }`
+// range loop statements (a tir.RangeLoop; see buildRangeLoop), followed by a
+// tail that is either one
 // `return <expression>;` or a two-armed `if <condition> { <block> } else {
 // <block> }` whose condition is an integer comparison (<, <=, >, >=, ==, !=), a
 // ==/!= equality between two bool values, a bare bool value, or a && / ||
@@ -1301,6 +1313,19 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			statements = append(statements, whileText)
 			continue
 		}
+		if statement.Kind == tir.RangeLoop {
+			// A range loop is a leading statement in the block grammar exactly
+			// like a while — never the tail — lowering to a C for loop over the
+			// bound iterator. Its body is its own scope (buildRangeLoop seeds
+			// the iterator and buildLoopBody clones), so nothing the loop
+			// declares leaks into this block's scope map.
+			rangeText, err := buildRangeLoop(unit, snapshot, statement, scope, depth, width)
+			if err != nil {
+				return "", err
+			}
+			statements = append(statements, rangeText)
+			continue
+		}
 		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block", width)
 		if err != nil {
 			return "", err
@@ -1421,6 +1446,122 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 	return fmt.Sprintf("%swhile (%s) {\n%s\n%s}", indent, condition, bodyText, indent), nil
 }
 
+// buildRangeLoop validates and builds the C text for a range loop statement: a
+// tir.RangeLoop with exactly three children — Children[0] the start value,
+// Children[1] the end value, and Children[2] the loop body, which must be a
+// Block built by buildLoopBody at the next nesting depth — and a bound
+// iterator (`loop start..end : name { ... }`) whose own symbol.SymbolID is
+// recorded on the node's Symbol field. The loop lowers directly to a C for
+// loop whose loop counter IS the iterator, the representation this backend's
+// design decides:
+//
+//	<indent>for (int32_t pebble_local_<iterSym> = <start>; pebble_local_<iterSym> < <end>; pebble_local_<iterSym>++) {
+//	<loop body statements, one level deeper>
+//	<indent>}
+//
+// `<` for the exclusive form (`..`), `<=` for the inclusive form (`..=`),
+// from the node's RangeInclusive field. The iterator's own C type is the
+// entry's resolved width (cType(width)); the start/end are ordinary integer
+// expressions built by buildRangeBound (an int-typed integer literal lowered
+// as its decimal text, anything else via buildExpr at the entry's width — the
+// checker leaves the bounds as the unanchored int builtin whenever the
+// iterator is never used in a width-anchoring position, confirmed against a
+// real fixture). Before the body is built, the loop's own locals scope is
+// seeded with the iterator (scope[iteratorSymbol] = localInfo{kind: width}),
+// exactly the seeding pattern a helper's parameters already use, so a
+// SymbolValue reference to the iterator inside the body resolves through the
+// existing machinery unchanged. The loop body is built by the exact same
+// buildLoopBody buildWhile uses, one level deeper; the body is its own scope
+// (buildLoopBody clones), so nothing the body declares leaks outside, while
+// the seeded iterator remains visible inside. break/continue inside the body
+// are handled by buildLoopBody's own Break/Continue cases — plain C
+// break/continue already target the nearest enclosing loop, which the emitted
+// for loop is (confirmed against a real fixture that a Break/Continue inside
+// a range loop body names the range loop's own Region as its Target). Any
+// other shape — a wrong child count, an unbound loop (`loop start..end {
+// ... }` with no `: name`, which has no way to be observed from inside and is
+// low-value), or a body that is not a Block — is a clean rejection naming
+// what was found.
+func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+	if len(rangeNode.Children) != 3 {
+		return "", fmt.Errorf("entry function body block range loop has %d child(ren), want exactly 3 (the start value, the end value, then the loop body)", len(rangeNode.Children))
+	}
+	if rangeNode.Symbol == 0 {
+		// The unbound form (`loop start..end { ... }`, no `: name`) carries no
+		// iterator symbol on the node (Symbol stays zero — confirmed against a
+		// real fixture) and nothing for the body to read the loop's current
+		// value from, so it is low-value and rejected cleanly rather than
+		// lowered with a synthetic counter the source never names.
+		return "", fmt.Errorf("entry function body block contains an unbound range loop (loop start..end { ... } with no `: name` iterator); only the bound `loop start..end : name { ... }` form is supported")
+	}
+	startText, err := buildRangeBound(unit, snapshot, rangeNode.Children[0], locals, width)
+	if err != nil {
+		return "", err
+	}
+	endText, err := buildRangeBound(unit, snapshot, rangeNode.Children[1], locals, width)
+	if err != nil {
+		return "", err
+	}
+	// The loop's own scope is a clone of the enclosing set seeded with the
+	// iterator as an ordinary local of the entry's width — the same seeding
+	// pattern a helper's parameters use — so a SymbolValue reference to the
+	// iterator inside the body (and a Store reassigning it, were the checker
+	// to permit one) resolves through the existing machinery with zero changes
+	// to buildExpr. The clone discipline keeps the iterator and anything the
+	// body declares out of this block's own scope map.
+	loopScope := cloneLocals(locals)
+	loopScope[rangeNode.Symbol] = localInfo{kind: width}
+	bodyText, err := buildLoopBody(unit, snapshot, rangeNode.Children[2], loopScope, depth+1, width)
+	if err != nil {
+		return "", err
+	}
+	rangeOp := "<"
+	if rangeNode.RangeInclusive {
+		rangeOp = "<="
+	}
+	indent := strings.Repeat("    ", depth+1)
+	return fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d++) {\n%s\n%s}", indent, cType(width), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endText, rangeNode.Symbol, bodyText, indent), nil
+}
+
+// buildRangeBound builds one bound (the start or the end) of a range loop. A
+// bound is an ordinary integer expression built by buildExpr at the entry's
+// resolved width — a literal, a local reference, arithmetic, a helper call,
+// anything buildExpr already builds. The one exception mirrors
+// buildComparisonOperand: when the range loop's iterator is never used in a
+// width-anchoring position, the checker leaves the bounds as the snapshot's
+// unanchored int builtin (confirmed against real fixtures — `loop 0..3 : i {
+// if i == 2 { ... } }` has int-typed bounds while `loop 0..3 : i { sum = sum
+// + i; }` anchors both to i32), so an int-typed integer literal is lowered
+// directly as its decimal text and an int-typed SymbolValue — only ever a
+// range-loop iterator in this backend's grammar, e.g. a nested loop whose
+// bound reads the outer loop's iterator — as its pebble_local_<symbol> name
+// (the iterator is always declared in C at the entry's width, so the name is
+// the correct C lvalue; assigning `0` into the iterator's int32_t and
+// comparing it against `3` is trivially valid C). An int-typed non-literal
+// bound — int-typed arithmetic from a loop whose iterator is never used —
+// reaches buildExpr and is rejected there by its width gate, exactly as the
+// rest of this backend treats int-typed arithmetic.
+func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body block range loop references invalid bound node %d", id)
+	}
+	if node.Kind == tir.IntegerLiteral && node.Type == snapshot.Builtins().Int {
+		text := node.Literal.IntegerNum
+		if !isNonNegativeDecimal(text) {
+			return "", fmt.Errorf("entry function body block range loop bound contains an integer literal with malformed text %q", text)
+		}
+		return text, nil
+	}
+	if node.Kind == tir.SymbolValue && node.Type == snapshot.Builtins().Int {
+		if _, declared := locals[node.Symbol]; !declared {
+			return "", fmt.Errorf("entry function body block range loop bound references symbol %d, which is not a local in scope", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	return buildExpr(unit, snapshot, id, locals, width)
+}
+
 // buildLoopBody validates and builds the C statement sequence for a while
 // loop's body: a Block whose children are local declarations (Initialize),
 // reassignments (Store), conditional if statements (a tir.If built by
@@ -1468,6 +1609,12 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// already recurses into buildLoopBody for its own body, so nested
 			// loops compose without any change to buildWhile itself.
 			text, err = buildWhile(unit, snapshot, statement, scope, depth, width)
+		case tir.RangeLoop:
+			// A nested range loop inside a loop body (a while's or another
+			// range loop's body) reuses buildRangeLoop unchanged: it recurses
+			// into this same buildLoopBody for its own body, so nested range
+			// loops compose exactly like nested whiles do.
+			text, err = buildRangeLoop(unit, snapshot, statement, scope, depth, width)
 		case tir.If:
 			// A conditional statement inside a loop body is built by buildLoopIf:
 			// its arms are themselves loop bodies (no required tail, optional
@@ -2657,7 +2804,15 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 // between two untyped integer literals defaults both operands to the
 // snapshot's int builtin (confirmed against a real fixture — the same for an
 // i64 entry as for an i32 one, since a bare comparison has no anchor), so an
-// IntegerLiteral of type int is lowered directly as its decimal text. Every
+// IntegerLiteral of type int is lowered directly as its decimal text. An
+// int-typed SymbolValue operand is likewise lowered directly as its
+// pebble_local_<symbol> name: in this backend's grammar such a symbol can
+// only be a range loop's iterator referenced from inside its own body when
+// the iterator is never used in a width-anchoring position (confirmed against
+// a real fixture — `loop 0..3 : i { if i == 2 { ... } }` leaves the iterator
+// as the unanchored int builtin, since the comparison anchors nothing), and
+// the iterator is always declared in C at the entry's width, so its name is
+// the correct C lvalue in the comparison. Every
 // other operand must be an expression of the entry's width that buildExpr
 // accepts — a literal, a
 // reference to a local declared earlier in the entry body, or checked negation
@@ -2674,6 +2829,12 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.Nod
 			return "", fmt.Errorf("entry function body if condition contains an integer literal with malformed text %q", text)
 		}
 		return text, nil
+	}
+	if node.Kind == tir.SymbolValue && node.Type == snapshot.Builtins().Int {
+		if _, declared := locals[node.Symbol]; !declared {
+			return "", fmt.Errorf("entry function body if condition references symbol %d, which is not a local in scope", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
 	return buildExpr(unit, snapshot, id, locals, width)
 }
@@ -3076,6 +3237,17 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, place tir.Nod
 			return "", fmt.Errorf("array index contains an integer literal with malformed text %q", indexNode.Literal.IntegerNum)
 		}
 		index = indexNode.Literal.IntegerNum
+	} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
+		// An int-typed SymbolValue index can only be a range loop's iterator
+		// referenced from inside its own body when the iterator is never used
+		// in a width-anchoring position (the same unanchored-int case
+		// buildComparisonOperand handles), and the iterator is always declared
+		// in C at the entry's width, so its name is the correct C lvalue for
+		// the subscript.
+		if _, declared := locals[indexNode.Symbol]; !declared {
+			return "", fmt.Errorf("array index references symbol %d, which is not a local in scope", indexNode.Symbol)
+		}
+		index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 	} else {
 		var err error
 		index, err = buildExpr(unit, snapshot, place.Children[1], locals, width)
@@ -3229,6 +3401,17 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, l
 		idx := ""
 		if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
 			idx = indexNode.Literal.IntegerNum
+		} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
+			// An int-typed SymbolValue index can only be a range loop's
+			// iterator referenced from inside its own body when the iterator
+			// is never used in a width-anchoring position (see
+			// buildComparisonOperand), and the iterator is always declared in
+			// C at the entry's width, so its name is the correct C lvalue for
+			// the subscript.
+			if _, declared := locals[indexNode.Symbol]; !declared {
+				return "", 0, fmt.Errorf("symbol %d is not a local in scope", indexNode.Symbol)
+			}
+			idx = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 		} else {
 			idx, err = buildExpr(unit, snapshot, n.Children[1], locals, width)
 			if err != nil {

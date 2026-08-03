@@ -2646,6 +2646,183 @@ func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
+func TestEmitRangeLoopAccumulationCompilesAndRuns(t *testing.T) {
+	// The confirmation fixture: a range loop lowers to a C for loop over the
+	// bound iterator, and the iterator is an ordinary C loop counter the body
+	// can read. i counts 0..3 (exclusive), sum accumulates i each pass, so
+	// sum = 0+1+2 = 3, returned as the process exit code. The iterator's C
+	// type is the entry's width (int32_t) and the body references it through
+	// the seeded local scope like any other local. Bounded execution in case
+	// of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", false, 3, false)
+}
+
+func TestEmitRangeLoopExclusiveVsInclusiveCompilesAndRuns(t *testing.T) {
+	// The inclusive form (`..=`) differs from the exclusive form (`..`) by one
+	// iteration: 0..3 sums 0+1+2 = 3, while 0..=3 sums 0+1+2+3 = 6 — the
+	// emitted C condition is `<` for the exclusive form and `<=` for the
+	// inclusive form (RangeLoop.RangeInclusive). Each row's expected exit code
+	// therefore proves the right operator was chosen. Bounded execution.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"exclusive", "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", 3},
+		{"inclusive", "fn main() i32 { var sum i32 = 0; loop 0..=3 : i { sum = sum + i; } return sum; }", 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRunBounded(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitRangeLoopBreakAndContinueCompilesAndRuns(t *testing.T) {
+	// break/continue inside a range loop body work through the same
+	// buildLoopJump machinery a while body uses: a Break's/Continue's Target
+	// names the RangeLoop's own Region (confirmed against a real fixture dump),
+	// and plain C break/continue already target the nearest enclosing loop,
+	// which the emitted for loop is. i counts 0..9, breaking when i == 5 and
+	// skipping the accumulation when i == 3, so sum = 0+1+2+4 = 7, returned as
+	// the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var sum i32 = 0; loop 0..10 : i { if i == 5 { break; } if i == 3 { continue; } sum = sum + i; } return sum; }", false, 7, false)
+}
+
+func TestEmitRangeLoopNestedInRangeLoopCompilesAndRuns(t *testing.T) {
+	// A range loop nested inside another range loop: the inner RangeLoop is a
+	// plain statement in the outer loop's body Block, dispatched by
+	// buildLoopBody exactly like a nested While. i and j each count 0..2, so
+	// the inner body runs 3 x 3 = 9 times and total = 9, returned as the exit
+	// code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; loop 0..3 : i { loop 0..3 : j { total = total + 1; } } return total; }", false, 9, false)
+}
+
+func TestEmitRangeLoopInsideWhileCompilesAndRuns(t *testing.T) {
+	// A range loop nested inside a while loop's body: the RangeLoop is a
+	// statement in the while's body Block, dispatched by buildLoopBody. Each
+	// of the 2 while iterations runs the range loop's 3 inner iterations, so
+	// total = 6, returned as the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 2 { loop 0..3 : j { total = total + 1; } i = i + 1; } return total; }", false, 6, false)
+}
+
+func TestEmitRangeLoopNonLiteralBoundsCompilesAndRuns(t *testing.T) {
+	// The start/end are ordinary integer expressions built by buildExpr at
+	// the entry's width — a local reference for the end, and checked
+	// arithmetic for the start. With the iterator anchored by the i32
+	// accumulation, n = 3 makes 1..=n sum 1+2+3 = 6, and the arithmetic start
+	// 1+2 = 3 makes 3..=5 sum 3+4+5 = 12. Bounded execution.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"local reference bound", "fn main() i32 { var n i32 = 3; var sum i32 = 0; loop 1..=n : i { sum = sum + i; } return sum; }", 6},
+		{"arithmetic bound", "fn main() i32 { var sum i32 = 0; loop 1+2..=5 : i { sum = sum + i; } return sum; }", 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRunBounded(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitRangeLoopIteratorComparisonOnlyCompilesAndRuns(t *testing.T) {
+	// The iterator referenced only in a comparison (`if i == 2`) — never in a
+	// width-anchoring position — stays the checker's unanchored int builtin
+	// (confirmed against a real fixture dump), so the comparison operand
+	// lowers it directly as its pebble_local_<symbol> name via
+	// buildComparisonOperand's int-typed-SymbolValue case, and both bounds are
+	// int-typed literals lowered as their decimal text. i counts 0..2, and the
+	// accumulation happens once (when i == 2), so sum = 1. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { if i == 2 { sum = sum + 1; } } return sum; }", false, 1, false)
+}
+
+func TestEmitRangeLoopUnusedIteratorCompilesAndRuns(t *testing.T) {
+	// A bound range loop whose iterator is never read in the body: the loop
+	// still iterates over its C counter (the condition and increment read it),
+	// so the body runs 3 times and sum = 3. The bounds are int-typed literals
+	// (nothing anchors them), lowered as their decimal text. Bounded
+	// execution.
+	emitAndRunBounded(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + 1; } return sum; }", false, 3, false)
+}
+
+func TestEmitRangeLoopNestedIteratorAsInnerBoundCompilesAndRuns(t *testing.T) {
+	// A nested range loop whose bound reads the outer loop's iterator
+	// (`loop 0..i : j`): the outer iterator is an int-typed SymbolValue in the
+	// inner loop's end position, lowered as its pebble_local_<symbol> name by
+	// buildRangeBound's int-typed-SymbolValue case. The inner loop runs 0, 1,
+	// and 2 iterations for i = 0, 1, 2, so total = 3. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; loop 0..3 : i { loop 0..i : j { total = total + 1; } } return total; }", false, 3, false)
+}
+
+func TestEmitRangeLoopArrayIndexCompilesAndRuns(t *testing.T) {
+	// The iterator used as an array index (`a[i]`): the int-typed iterator
+	// SymbolValue is lowered as its pebble_local_<symbol> name by the
+	// array-index int-typed-SymbolValue case, so the sum of the three elements
+	// (10+20+30) = 60 is returned. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; var sum i32 = 0; loop 0..3 : i { sum = sum + a[i]; } return sum; }", false, 60, false)
+}
+
+func TestEmitRangeLoopI64EntryCompilesAndRuns(t *testing.T) {
+	// A range loop inside an i64 entry: the iterator's C type follows the
+	// entry's width (int64_t), and the bounds/iterator are anchored to i64 by
+	// the i64 accumulation. sum = 0+1+2 = 3, returned as the exit code.
+	// Bounded execution.
+	emitAndRunBounded(t, "fn main() i64 { var sum i64 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", false, 3, false)
+}
+
+func TestEmitRangeLoopHelperCallBoundCompilesAndRuns(t *testing.T) {
+	// A helper call as a range-loop bound: the end is a DirectCall to a
+	// helper returning the entry's width, built by buildExpr exactly as any
+	// other call expression, and emitted in the for-loop condition. five()
+	// returns 5, so 0..five() sums 0+1+2+3+4 = 10. Bounded execution.
+	emitAndRunBounded(t, "fn five() i32 { return 5; } fn main() i32 { var sum i32 = 0; loop 0..five() : i { sum = sum + i; } return sum; }", false, 10, false)
+}
+
+func TestEmitRangeLoopWritesC(t *testing.T) {
+	// The emitted C for the flagship fixture must be a C for loop whose
+	// init/condition/increment all use the iterator's own
+	// pebble_local_<symbol> name as an ordinary C loop counter at the entry's
+	// width: `for (int32_t pebble_local_26 = 0; pebble_local_26 < 3;
+	// pebble_local_26++)`. Symbols 25 (sum) and 26 (the iterator) come from
+	// the real fixture dump. The inclusive form's condition must instead be
+	// `<=` (RangeLoop.RangeInclusive), so the two operators are distinguishable
+	// in the emitted text.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26++) {\n",
+		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	unit, snapshot, entryID = buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..=3 : i { sum = sum + i; } return sum; }", "main", false)
+	buf.Reset()
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out = buf.String()
+	if !strings.Contains(out, "    for (int32_t pebble_local_26 = 0; pebble_local_26 <= 3; pebble_local_26++) {\n") {
+		t.Errorf("emitted C missing the inclusive for-loop header:\n%s", out)
+	}
+}
+
+func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
+	// The unbound form (`loop start..end { ... }`, no `: name`) builds a
+	// RangeLoop whose Symbol field is zero (confirmed against a real fixture
+	// dump — nothing attaches an iterator), and there is no way to observe
+	// such a loop's iteration count from inside the body, so it is rejected
+	// cleanly rather than lowered with a synthetic counter the source never
+	// names.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 { sum = sum + 1; } return sum; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unbound range loop")
+}
+
 // assertEmitRejectsContaining is assertEmitRejects for rejections whose error
 // message must name a specific part of the unsupported shape (here: the
 // non-empty DeferChain the backend refuses to drop).
