@@ -1371,6 +1371,13 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			statements = append(statements, forText)
 			continue
 		}
+		if statement.Kind == tir.DeferRegister {
+			// A DeferRegister in a block's leading-statement sequence is a
+			// registration marker the checker's analysis already consumed; the
+			// backend must emit nothing at this position. The deferred statement
+			// is only ever emitted at exit points whose DeferChain references it.
+			continue
+		}
 		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block", width)
 		if err != nil {
 			return "", err
@@ -1404,6 +1411,13 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		}
 		if err != nil {
 			return "", err
+		}
+		deferText, err := buildDeferredStatements(unit, snapshot, last.DeferChain, scope, indent, "entry function body block", width)
+		if err != nil {
+			return "", err
+		}
+		if deferText != "" {
+			statements = append(statements, deferText)
 		}
 		statements = append(statements, indent+"return "+returnValue+";")
 	case tir.If:
@@ -1633,6 +1647,13 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 		}
 		if err != nil {
 			return "", err
+		}
+		deferText, err := buildDeferredStatements(unit, snapshot, bodyNode.DeferChain, locals, indent, "switch case body", width)
+		if err != nil {
+			return "", err
+		}
+		if deferText != "" {
+			return deferText + "\n" + indent + "return " + returnValue + ";", nil
 		}
 		return indent + "return " + returnValue + ";", nil
 	}
@@ -2284,9 +2305,15 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// continue inside an arm is handled by this same switch, unchanged.
 			text, err = buildLoopIf(unit, snapshot, statement, scope, depth, width)
 		case tir.Break:
-			text, err = buildLoopJump(statement, "break", indent, "entry function body block while loop body")
+			text, err = buildLoopJump(unit, snapshot, statement, "break", indent, "entry function body block while loop body", scope, width)
 		case tir.Continue:
-			text, err = buildLoopJump(statement, "continue", indent, "entry function body block while loop body")
+			text, err = buildLoopJump(unit, snapshot, statement, "continue", indent, "entry function body block while loop body", scope, width)
+		case tir.DeferRegister:
+			// A DeferRegister in a loop body's leading-statement sequence is a
+			// registration marker the checker's analysis already consumed; the
+			// backend must emit nothing at this position. The deferred statement
+			// is only ever emitted at exit points whose DeferChain references it.
+			continue
 		default:
 			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width)
 		}
@@ -2353,29 +2380,81 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
 }
 
+// buildDeferredStatements emits the C statements for each DeferRegister node in
+// a DeferChain, in the chain's own order (already LIFO — last-registered-first
+// — computed by the checker's deferChainFor in ir_builder_control.go). Each
+// DeferRegister's single child is the deferred statement itself, built by the
+// appropriate statement builder. The emitted text is a sequence of C statements
+// at the given indent, joined by newlines, to be placed immediately before the
+// actual exit statement (return/break/continue). The checker already rejects
+// deferred return/break/continue/nested defer (C0613), so the only reachable
+// deferred statement kinds from real source are Store (reassignment) and
+// Print (the built-in). A DeferRegister whose child is an unsupported
+// statement kind is a clean rejection naming what was found.
+func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if len(chain) == 0 {
+		return "", nil
+	}
+	var parts []string
+	for _, deferRegID := range chain {
+		deferReg, ok := unit.Node(deferRegID)
+		if !ok {
+			return "", fmt.Errorf("%s references invalid DeferRegister node %d", context, deferRegID)
+		}
+		if deferReg.Kind != tir.DeferRegister {
+			return "", fmt.Errorf("%s DeferChain entry %d is a %s, want a DeferRegister", context, deferRegID, deferReg.Kind)
+		}
+		if len(deferReg.Children) != 1 {
+			return "", fmt.Errorf("%s DeferRegister %d has %d child(ren), want exactly one (the deferred statement)", context, deferRegID, len(deferReg.Children))
+		}
+		stmt, ok := unit.Node(deferReg.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s DeferRegister %d references invalid statement child %d", context, deferRegID, deferReg.Children[0])
+		}
+		switch stmt.Kind {
+		case tir.Store:
+			core, err := buildStoreCore(unit, snapshot, stmt, scope, context, width)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+core+";")
+		case tir.Initialize:
+			// A deferred local declaration is reachable from real source but
+			// not yet supported as a deferred statement in this backend's
+			// current scope. Reject cleanly rather than guess.
+			return "", fmt.Errorf("%s deferred statement is an Initialize (local declaration), which is not supported as a deferred statement yet", context)
+		default:
+			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment is supported)", context, stmt.Kind)
+		}
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
 // buildLoopJump validates and builds the C text for one break/continue
 // statement in a loop body. A tir.Break or tir.Continue is a leaf node (no
 // children, confirmed against real fixtures) whose Target names the region of
-// the loop the jump leaves, and whose DeferChain would carry the DeferRegister
-// nodes this backend would have to expand before the jump if the loop body had
-// any `defer` statements. This backend does not lower defer at all yet, so a
-// non-empty DeferChain is a shape it cannot correctly emit — it is rejected
-// cleanly, naming the chain length, never silently dropped. (The checker
-// accepts `defer` inside a loop body today, so real source does produce
-// non-empty chains on a jump that crosses a deferred region.) The emitted C is
-// exactly `break;` / `continue;` at the current indent: the language has no
-// labeled break/continue, so a jump's Target always names the nearest enclosing
-// loop and plain C break/continue — which already target the nearest enclosing
-// loop by C's own scoping rules — is a direct, correct translation. No runtime
-// helper is involved, and Target's value never needs to be consulted or
-// compared; it is confirmed (against a nested-loop fixture) to name the loop
-// that actually contains the jump, and the checker (C0611) already guarantees
-// that loop is an enclosing one.
-func buildLoopJump(statement tir.Node, keyword string, indent, context string) (string, error) {
-	if len(statement.DeferChain) != 0 {
-		return "", fmt.Errorf("%s %s statement carries %d deferred statement(s) in its DeferChain, which this backend does not support (defer is not lowered yet)", context, keyword, len(statement.DeferChain))
+// the loop the jump leaves, and whose DeferChain carries the DeferRegister
+// nodes whose deferred statements must run before the jump. The chain is
+// emitted as ordinary C statements (via buildDeferredStatements) immediately
+// before the break/continue, in the chain's own LIFO order. The emitted C is
+// the deferred statements followed by `break;` / `continue;` at the current
+// indent: the language has no labeled break/continue, so a jump's Target
+// always names the nearest enclosing loop and plain C break/continue — which
+// already target the nearest enclosing loop by C's own scoping rules — is a
+// direct, correct translation. No runtime helper is involved, and Target's
+// value never needs to be consulted or compared; it is confirmed (against a
+// nested-loop fixture) to name the loop that actually contains the jump, and
+// the checker (C0611) already guarantees that loop is an enclosing one.
+func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	deferText, err := buildDeferredStatements(unit, snapshot, statement.DeferChain, scope, indent, context, width)
+	if err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("%s%s;", indent, keyword), nil
+	jump := fmt.Sprintf("%s%s;", indent, keyword)
+	if deferText == "" {
+		return jump, nil
+	}
+	return deferText + "\n" + jump, nil
 }
 
 // buildLeadingStatement validates and builds one leading statement in the

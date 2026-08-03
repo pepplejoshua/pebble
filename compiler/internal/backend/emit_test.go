@@ -2608,29 +2608,22 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsBreakWithDeferChain(t *testing.T) {
-	// A real-source break inside a loop body that also contains a `defer` in
-	// that loop body produces a Break whose DeferChain is non-empty (confirmed
-	// against a fixture dump: deferChain=[<defer register>]). The checker
-	// accepts defer inside a loop body, so real source reaches this shape; this
-	// backend does not lower defer at all, so it must reject the jump cleanly,
-	// naming the defer chain, rather than silently dropping the deferred
-	// cleanup. The break is written *before* the defer so the loop body block's
-	// children list the Break first (confirmed: [Break, DeferRegister]) and the
-	// Break's own DeferChain rejection fires before the DeferRegister statement
-	// would otherwise be rejected.
+func TestEmitRejectsBreakWithUnsupportedDeferStatement(t *testing.T) {
+	// A real-source break inside a loop body that also contains a `defer` with
+	// an unsupported deferred statement kind (Print) produces a Break whose
+	// DeferChain references a Print node. The backend now attempts to emit
+	// deferred statements but correctly rejects Print as an unsupported
+	// deferred statement kind (only Store reassignment is currently supported).
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "DeferChain")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "not a supported deferred statement kind")
 }
 
-func TestEmitRejectsContinueWithDeferChain(t *testing.T) {
-	// Same non-empty DeferChain rejection for Continue: a defer registered in
-	// the loop body and crossed by a continue produces a non-empty chain that
-	// must be rejected, not silently dropped. The continue precedes the defer
-	// so the Continue node is built (and rejected) before the DeferRegister
-	// statement would be.
+func TestEmitRejectsContinueWithUnsupportedDeferStatement(t *testing.T) {
+	// Same unsupported deferred statement rejection for Continue: a defer with
+	// a Print node is correctly rejected as an unsupported deferred statement
+	// kind, rather than being silently dropped or rejected for DeferChain.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "DeferChain")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "not a supported deferred statement kind")
 }
 
 func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {
@@ -5420,4 +5413,107 @@ func TestEmitSwitchNestedInHelperWithParamsCompilesAndRuns(t *testing.T) {
 	// into scope, switch subject resolution, case body building. Two calls:
 	// helper(1) = 10, helper(5) = 0, sum = 10.
 	emitAndRun(t, "fn classify(x i32) i32 { switch x { case 1: return 10; case 2: return 20; case 3: return 30; else: return 0; } } fn main() i32 { return classify(1) + classify(5); }", false, 10, false)
+}
+
+func TestEmitDeferBeforeReturnCompilesAndRuns(t *testing.T) {
+	// A single defer running before a return, observably changing the returned
+	// value. var x i32 = 0; defer x = x + 1; return x; should return 1, not 0,
+	// proving the deferred Store executes before the return value is read.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 0; defer x = x + 1; return x; }", false, 1, false)
+}
+
+func TestEmitTwoDefersLIFOOrderCompilesAndRuns(t *testing.T) {
+	// Two defers in the same scope, proving LIFO (last-registered-first)
+	// order. The second-registered defer (x = x + 10) must run before the
+	// first (x = x * 2). Starting from x=1: first defer registers x*2, then
+	// x+10. LIFO means x+10 runs first (1+10=11), then x*2 (11*2=22).
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 1; defer x = x * 2; defer x = x + 10; return x; }", false, 22, false)
+}
+
+func TestEmitDeferInsideIfArmFiresCompilesAndRuns(t *testing.T) {
+	// A defer inside an if-arm whose exit (return) is inside that same arm.
+	// The defer fires because the return's DeferChain includes it. Both arms
+	// return, so the if is the block's tail. Condition true: defer x=x+1
+	// runs, return 0+1=1. Condition false: no defer, return 2.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 0; if x == 0 { defer x = x + 1; return x; } else { return 2; } }", false, 1, false)
+}
+
+func TestEmitDeferOutsideIfDoesNotFireCompilesAndRuns(t *testing.T) {
+	// A defer registered inside a while-loop body, where the return is AFTER
+	// the loop (outside the loop's region). The return's DeferChain does not
+	// include the loop's defer because the return is outside the region the
+	// defer was registered in. This proves static/lexical scoping: the defer
+	// only fires at exits inside the same region it was registered in.
+	// Loop: i counts 0..2, when i==0 defer x=x+100 is registered and x=1.
+	// After loop, return x=1 (defer did NOT fire).
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 0; var i i32 = 0; while i < 2 { if i == 0 { defer x = x + 100; x = 1; } i = i + 1; } return x; }", false, 1, false)
+}
+
+func TestEmitDeferBeforeBreakCompilesAndRuns(t *testing.T) {
+	// A defer before a break inside a loop. The break's DeferChain includes
+	// the deferred Store, so it fires before the break. Loop: i counts 0..5,
+	// defer x=x+1 fires on break when i==3, break exits. x starts at 10,
+	// after defer x=11. Exit code 11.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 10; var i i32 = 0; while i < 5 { if i == 3 { defer x = x + 1; break; } i = i + 1; } return x; }", false, 11, false)
+}
+
+func TestEmitDeferBeforeContinueCompilesAndRuns(t *testing.T) {
+	// A defer before a continue inside a loop. The continue's DeferChain
+	// includes the deferred Store. Loop: i counts 0..5, when i==2, defer
+	// x=x+1 fires on continue (skipping i=i+1), then i is incremented by
+	// the loop body's i=i+1 for non-continue passes. Actually, continue
+	// skips the rest of the body, so i=i+1 is skipped when i==2. Let me
+	// restructure: use a for loop where the update is separate.
+	// Simpler: while loop, i starts at 0, defer x=x+1 then continue when
+	// i==1, so i stays at 1 forever — no, that would loop forever.
+	// Better approach: defer fires on continue, then manually increment.
+	// i: 0->1->2 (continue fires defer x=x+1) ->3->4->5 exits. x=20+1=21.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 20; var i i32 = 0; while i < 5 { if i == 2 { defer x = x + 1; i = i + 1; continue; } i = i + 1; } return x; }", false, 21, false)
+}
+
+func TestEmitDeferNestedScopesCompilesAndRuns(t *testing.T) {
+	// Defers in multiple nested scopes crossing an exit: a defer at the
+	// function's top level, a while loop with its own defer, and a break
+	// inside the loop. The break's DeferChain should include the loop's
+	// defer but NOT the function-level defer. After break, the function's
+	// defer fires on the return.
+	// x=0, outer defer x=x+100 registered.
+	// Loop: i=0, inner defer x=x+1 registered. i==0 -> break.
+	// Break's DeferChain: inner defer only. x = 0+1 = 1.
+	// Return's DeferChain: outer defer. x = 1+100 = 101.
+	emitAndRunBounded(t, "fn main() i32 { var x i32 = 0; defer x = x + 100; var i i32 = 0; while i < 5 { defer x = x + 1; if i == 0 { break; } i = i + 1; } return x; }", false, 101, false)
+}
+
+func TestEmitDeferInHelperCompilesAndRuns(t *testing.T) {
+	// A defer inside a helper function. The helper has its own defer that
+	// modifies a local before returning it. The entry calls the helper and
+	// returns the result. helper(): x=0, defer x=x+5, return x -> returns 5.
+	// main() returns helper() = 5.
+	emitAndRunBounded(t, "fn helper() i32 { var x i32 = 0; defer x = x + 5; return x; } fn main() i32 { return helper(); }", false, 5, false)
+}
+
+func TestEmitDeferredStoreCOutput(t *testing.T) {
+	// Confirm the emitted C for a fixture: the deferred statement's text
+	// appears immediately before the return, and nothing is emitted at the
+	// defer statement's own position in program order.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 0; defer x = x + 1; return x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// The deferred assignment must appear before the return.
+	if !strings.Contains(out, "pebble_local_") {
+		t.Errorf("emitted C has no local references:\n%s", out)
+	}
+	// The deferred statement should be an assignment, not a declaration.
+	if strings.Contains(out, "defer") {
+		t.Errorf("emitted C contains the word 'defer':\n%s", out)
+	}
+	// The return must be present.
+	if !strings.Contains(out, "return") {
+		t.Errorf("emitted C has no return statement:\n%s", out)
+	}
+	// Compile and run to confirm correctness.
+	compileAndRunBounded(t, buf.Bytes(), 1, false)
 }

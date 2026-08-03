@@ -885,6 +885,53 @@ incrementally as work proceeds.
   switch) is now complete** — 10.29 through 10.31. `defer` (Phase 2's
   fourth originally-planned item) remains, needing real design work
   (per-exit-edge lowering) before it can be scoped into a slice.
+- **10.32 — defer statements** (`compiler/internal/backend`): Phase
+  2's fourth and final slice, completing Phase 2. The design
+  investigation this slice depended on (done directly, not delegated)
+  found `defer`'s C lowering needs no runtime bookkeeping at all:
+  Pebble's `defer` is purely static/lexical, not runtime-conditional
+  like Go's. The checker's own `deferChainFor`
+  (`compiler/internal/check/ir_builder_control.go`) has already
+  resolved, at check time, exactly which `DeferRegister` nodes must
+  run at every exit — `Return`, `Break`, `Continue` — via that exit
+  node's own `DeferChain []NodeID` field, in LIFO (last-registered-
+  first) order; confirmed against real fixtures that a defer
+  registered inside an `if`/loop region is correctly excluded from an
+  exit's chain once the exit is lexically outside that region,
+  regardless of the runtime branch taken. The backend's job is close
+  to mechanical: a `DeferRegister` node encountered at its own
+  position in program order (in a block's or loop body's
+  leading-statement sequence) emits nothing — it's a pure registration
+  marker; at every exit point, `buildDeferredStatements` walks the
+  exit node's `DeferChain` and emits each entry's single deferred
+  statement, in chain order, immediately before the actual C
+  `return`/`break`/`continue`. Wired into `buildBlock`'s tail `Return`
+  case, `buildLoopJump` (`Break`/`Continue`), and
+  `buildSwitchCaseBody`'s bare-`Return` case. Only `Store`
+  (reassignment) is supported as a deferred statement's kind for now;
+  a deferred `Initialize` or `Print` is rejected cleanly, naming the
+  unsupported kind, rather than guessed at — the checker already
+  guarantees a deferred statement is never itself an exit or a nested
+  `defer` (C0613), so the backend never needs to handle those shapes.
+  Verified end-to-end (a single defer observably firing before a
+  return; two defers in one scope proving LIFO order; a defer inside
+  an if-arm whose exit is in the same arm, firing; a defer inside a
+  while-loop body whose exit is after the loop, correctly not firing;
+  a defer before a break; a defer before a continue; nested scopes —
+  an outer function-level defer plus an inner loop-level defer plus a
+  break, proving the break's chain includes only the inner defer and
+  the outer defer fires separately at the function's own return; a
+  defer inside a helper function) and independently outside the
+  harness — manually compiled and ran the emitted C for the
+  nested-scopes fixture (`fn main() i32 { var x i32 = 0;
+  defer x = x + 100; var i i32 = 0; while i < 5 { defer x = x + 1;
+  if i == 0 { break; } i = i + 1; } return x; }`) with
+  `-Wall -Wextra -Werror`, confirming exit code 101 (inner defer fires
+  on break: 0+1=1; outer defer fires on the function's return:
+  1+100=101). No checker/tir bug found this slice.
+
+  **Phase 2 (control flow completion) is now fully complete** —
+  10.29 through 10.32.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
