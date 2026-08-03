@@ -274,14 +274,31 @@
 // Nominal in the type snapshot, so isEnumType distinguishes them from the
 // unit's own node graph (an enum's members carry no struct-field evidence);
 // the enum check precedes the struct check everywhere the two could collide.
-// A tagged union (union enum, a variant carrying a payload) is rejected
-// cleanly naming that payload support does not exist yet — the payload is
-// recorded in TIR only as a VariantConstruct's children (a plain enum's
-// variants are payload-less, and the checker rejects calling one with an
-// argument, C0604), and a full tagged-union program cannot be produced by the
-// checker today at all (C0601/C0616 — reported, not fixed). Enum-typed
-// function parameters/results, and enum-typed tuple/struct/array/optional
-// elements and fields, remain clean rejections.
+// A tagged union (union enum, a variant carrying a payload) is now supported
+// since 10.35: a tagged union with at least one non-void variant whose
+// construction reaches this backend is emitted as a tagged struct typedef
+// (pebble_union_<typeID>_t) whose tag field is the union's own discriminant
+// enum typedef (pebble_enum_<typeID>_t, the same one-constant-per-variant enum
+// a plain enum emits) and whose payload union has one member per non-void
+// variant actually constructed in the reachable program, each named
+// pebble_field_<member> exactly like a struct field. Construction (Choice.value(5))
+// lowers to a C99 compound literal, (pebble_union_<typeID>_t){ .tag =
+// pebble_variant_<member>, .payload = { .pebble_field_<member> = <payload> } },
+// a payload-less construction (Choice.empty / Choice.empty()) to the same
+// literal with only the tag set. A tagged-union-typed local may be declared,
+// reassigned, and switched on; the switch subject reads the local's .tag field
+// (or a construction used directly as the subject builds the compound literal
+// and reads its .tag), and the case labels are the same
+// `case pebble_variant_<caseValue>:` a plain enum uses, since the discriminant
+// ordinal scheme is identical. Payloads are restricted to exactly the entry's
+// resolved width or bool — any other payload (a tuple/struct/array/optional/
+// str/nested-enum, or the checker's unanchored int for a literal-arithmetic
+// payload) is a clean rejection naming what is unsupported. No syntax exists in
+// the language to read a payload back out of a matched case (a switch case
+// value is a bare expression — there is no pattern-binding syntax), so this
+// backend implements construction + storage + discriminant-only matching only.
+// Enum-typed function parameters/results, and enum-typed
+// tuple/struct/array/optional elements and fields, remain clean rejections.
 package backend
 
 import (
@@ -401,7 +418,15 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	enumInfos, err := collectEnumTypes(unit, snapshot, blockID, helpers)
+	unionInfos, err := collectUnionTypes(unit, snapshot, result, blockID, helpers)
+	if err != nil {
+		return err
+	}
+	unions := make(map[types.TypeID]unionInfo, len(unionInfos))
+	for _, info := range unionInfos {
+		unions[info.typ] = info
+	}
+	enumInfos, err := collectEnumTypes(unit, snapshot, blockID, helpers, unions)
 	if err != nil {
 		return err
 	}
@@ -413,26 +438,38 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, result, unionInfos)
+	if err != nil {
+		return err
+	}
+	typedefs = appendTypedefBlock(typedefs, unionTypedefs)
 	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos)
 	if err != nil {
 		return err
 	}
-	if enumTypedefs != "" {
-		if typedefs == "" {
-			typedefs = enumTypedefs
-		} else {
-			typedefs = typedefs + "\n" + enumTypedefs
-		}
-	}
-	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result)
+	typedefs = appendTypedefBlock(typedefs, enumTypedefs)
+	helpersText, err := buildHelperFunctions(unit, snapshot, helpers, result, unions)
 	if err != nil {
 		return err
 	}
-	statements, err := buildBlock(unit, snapshot, blockID, nil, 0, result, resultInfo{kind: result})
+	statements, err := buildBlock(unit, snapshot, blockID, nil, 0, result, resultInfo{kind: result}, unions)
 	if err != nil {
 		return err
 	}
 	return emitEntryC(w, typedefs, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
+}
+
+// appendTypedefBlock appends a second typedef block onto a first, joining them
+// with a blank line when both are non-empty. Either may be empty; the result is
+// the non-empty one when only one is non-empty, and empty when both are.
+func appendTypedefBlock(first, second string) string {
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	return first + "\n" + second
 }
 
 // findEntryDeclaration locates the FunctionDeclaration node for entrySymbol.
@@ -1205,20 +1242,19 @@ type enumInfo struct {
 // collectStructTypes discover their types from construction nodes. A
 // VariantConstruct carrying one or more payload children is the only
 // in-IR record of a variant with a non-void payload type — the tagged-union
-// (union enum) form — and is rejected cleanly here, naming that payload
-// support does not exist yet, rather than guessed at (confirmed against real
-// fixtures: a plain enum's variants are payload-less, constructed either as an
-// EnumVariantValue (Color.red) or a zero-payload VariantConstruct
-// (Color.red()), and the checker rejects a plain-enum variant called with an
-// argument, C0604, so a payload-carrying VariantConstruct can only be a union
-// enum). The returned enumInfos are deduplicated by enum TypeID and each
-// resolved to its declared variant order, so every distinct enum type yields
-// exactly one typedef, emitted before any function definition in the final
-// output. Enum-typed helper parameters/results are rejected earlier by
-// validateHelperSignature (before a reachable helper is ever collected), so no
-// Parameters/ResultType scan is needed here, mirroring how those two scans
-// exist only to close struct/tuple param-result gaps.
-func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]enumInfo, error) {
+// (union enum) form — and since 10.35 that is handled by collectUnionTypes
+// instead: this pass excludes every such type (unions, threaded in as the
+// caller's union map) so a tagged union is never emitted as a plain enum
+// typedef (its discriminant enum typedef is emitted as the tag of its tagged
+// struct instead, see buildUnionTypedef). The returned enumInfos are
+// deduplicated by enum TypeID and each resolved to its declared variant order,
+// so every distinct plain enum type yields exactly one typedef, emitted before
+// any function definition in the final output. Enum-typed helper
+// parameters/results are rejected earlier by validateHelperSignature (before a
+// reachable helper is ever collected), so no Parameters/ResultType scan is
+// needed here, mirroring how those two scans exist only to close struct/tuple
+// param-result gaps.
+func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, unions map[types.TypeID]unionInfo) ([]enumInfo, error) {
 	var collected []types.TypeID
 	if err := collectEnumTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
 		return nil, err
@@ -1235,6 +1271,16 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 			continue
 		}
 		seen[id] = true
+		if _, isUnion := unions[id]; isUnion {
+			// A tagged-union type is collected by this walk exactly like a
+			// plain enum (its variants are enum-shaped — isEnumType returns
+			// true for it), but it is not a plain enum: its discriminant enum
+			// typedef is emitted as the tag field of its tagged struct (see
+			// buildUnionTypedef), so it must be excluded from the plain-enum
+			// typedef list or the same pebble_enum_<typeID>_t typedef would be
+			// emitted twice.
+			continue
+		}
 		info, err := resolveEnumInfo(unit, snapshot, id)
 		if err != nil {
 			return nil, err
@@ -1244,39 +1290,36 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 	return infos, nil
 }
 
-// collectEnumTypesWalk appends every plain enum type encountered in the tree
+// collectEnumTypesWalk appends every enum type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
 // region of the node graph the body builders consume. Three node shapes carry
 // an enum type: an EnumVariantValue node's own Type (a variant literal,
 // e.g. Color.green), a VariantConstruct node's own Type (a variant
 // construction, e.g. Color.red() — the parenthesized-call form of a plain
-// enum's payload-less variant), and an Initialize whose initializer value
-// carries an enum type (an enum-typed local declaration — the local's type is
-// recorded on the initializer value node, not on the Initialize node itself,
-// confirmed against a real fixture, the same finding every aggregate
-// collection made). The Initialize rule also collects an enum type used as a
-// local's declared type with a rejected initializer shape (a whole-copy of
-// another enum local), so its typedef is still emitted before the builder
-// rejects the initializer — mirroring collectTupleTypesWalk's own rule. A
-// VariantConstruct (or EnumVariantValue) carrying a payload child is rejected
-// outright: that is the union-enum (tagged-union) construction, and this
-// backend has no payload representation.
+// enum's payload-less variant, or e.g. Choice.value(5) — a tagged-union
+// payload-carrying construction, which this walk collects exactly the same way
+// and the caller filters out as a tagged union; see collectUnionTypes), and an
+// Initialize whose initializer value carries an enum type (an enum-typed local
+// declaration — the local's type is recorded on the initializer value node,
+// not on the Initialize node itself, confirmed against a real fixture, the
+// same finding every aggregate collection made). The Initialize rule also
+// collects an enum type used as a local's declared type with a rejected
+// initializer shape (a whole-copy of another enum local), so its typedef is
+// still emitted before the builder rejects the initializer — mirroring
+// collectTupleTypesWalk's own rule. A payload-carrying VariantConstruct is no
+// longer rejected here (10.35): it is the tagged-union construction, collected
+// by collectUnionTypes, and the caller filters the type out of the plain-enum
+// results.
 func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
 		return fmt.Errorf("enum-type walk references invalid node %d", nodeID)
 	}
 	if node.Kind == tir.EnumVariantValue {
-		if len(node.Children) == 1 {
-			return fmt.Errorf("enum variant symbol %d is constructed with a payload; union enum (payload-carrying variant) support does not exist yet", node.Member)
-		}
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.VariantConstruct {
-		if len(node.Children) >= 1 {
-			return fmt.Errorf("enum variant symbol %d is constructed with %d payload(s); union enum (payload-carrying variant) support does not exist yet", node.Member, len(node.Children))
-		}
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.Initialize {
@@ -1297,6 +1340,190 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 		}
 	}
 	return nil
+}
+
+// unionMemberInfo is one variant of a distinct tagged-union type whose payload
+// type is known from a construction site in the reachable program: its member
+// symbol (the basis of the C union member name pebble_field_<member>) and the
+// variant's resolved payload types.TypeID.
+type unionMemberInfo struct {
+	member      symbol.SymbolID
+	payloadType types.TypeID
+}
+
+// unionInfo is one distinct tagged-union type the emitted program references,
+// carrying everything buildUnionTypedef needs: the union's own types.TypeID
+// (the basis of the C typedef name pebble_union_<typeID>_t), its declaration
+// symbol, its variants in declared order (from the TypeDecl's Members list —
+// the same discriminant-ordinal scheme a plain enum uses, so the tag enum
+// typedef and the switch case labels agree by construction), and the union
+// members whose payload types are known from construction sites (one union
+// member per non-void variant actually constructed somewhere in the reachable
+// program — a variant with no construction site never needs a union member,
+// since no payload is ever read or written for it).
+type unionInfo struct {
+	typ      types.TypeID
+	decl     symbol.SymbolID
+	variants []symbol.SymbolID
+	members  []unionMemberInfo
+}
+
+// collectUnionTypes resolves, in first-encountered order, every tagged-union
+// type the emitted program actually references: the entry body (root) followed
+// by every reachable helper's body, each walked by the same Children +
+// DeferChain traversal collectDirectCalls uses. A tagged-union type is
+// referenced by exactly one node shape — a payload-carrying VariantConstruct
+// (e.g. Choice.value(5), a VariantConstruct whose Type is the union's own
+// TypeID and whose Children are the payload expression(s); a plain enum's
+// variants are payload-less, and the checker rejects calling one with an
+// argument, C0604, so a payload-carrying VariantConstruct can only be a union
+// enum). Each constructed variant's payload type is resolved from its own
+// construction site's payload child Type (the checker anchors every
+// construction of a variant to its one declared payload type, so all sites of
+// a variant agree — confirmed against real fixtures at three payload shapes),
+// and must be exactly the entry's resolved width or bool — a tuple/struct/
+// array/optional/str/nested-enum payload is a clean rejection naming what is
+// unsupported, never guessed at, enforced here in the collection walk where
+// each variant's payload type is first resolved. width is threaded so the
+// payload gate can be enforced against the entry's own width. The returned
+// unionInfos are deduplicated by union TypeID and each resolved to its
+// declared variant order plus its constructed members, so every distinct union
+// type yields exactly one tagged struct typedef (plus its tag enum typedef),
+// emitted before any function definition in the final output.
+func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, entryBlockID tir.NodeID, helpers []helperInfo) ([]unionInfo, error) {
+	payloads := make(map[types.TypeID]map[symbol.SymbolID]types.TypeID)
+	var collected []types.TypeID
+	if err := collectUnionTypesWalk(unit, snapshot, width, entryBlockID, &collected, payloads); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectUnionTypesWalk(unit, snapshot, width, helper.block, &collected, payloads); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var infos []unionInfo
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		info, err := resolveUnionInfo(unit, snapshot, id, payloads[id])
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// collectUnionTypesWalk appends every tagged-union type encountered in the
+// tree rooted at nodeID to out, in first-encountered order, following Children
+// and DeferChain exactly like collectDirectCalls so it visits the same
+// reachable region of the node graph the body builders consume. The one node
+// shape that carries a tagged-union type is a VariantConstruct with one or
+// more children: its Type is the union's own TypeID, its Member the variant
+// symbol, and each child the payload expression whose own Type is the
+// variant's declared payload type (confirmed against real fixtures). The walk
+// records node.Type as a union type and, for each construction, the payload
+// type under the variant's member symbol; a second construction of the same
+// variant must carry the same payload type (the checker enforces one declared
+// type per variant, so this is guaranteed for real source; a mismatch is a
+// clean rejection for hand-built IR, never a guessed layout). The payload type
+// is gated here — it must be exactly the entry's resolved width or bool, since
+// this backend emits exactly those two C types as union members; any other
+// payload (a tuple/struct/array/optional/str/nested-enum) is a clean rejection
+// naming what is unsupported.
+func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, nodeID tir.NodeID, out *[]types.TypeID, payloads map[types.TypeID]map[symbol.SymbolID]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("union-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.VariantConstruct && len(node.Children) >= 1 {
+		// A payload-carrying variant construction. node.Type is the union's
+		// own type (the 7feaf0c checker fix publishes the variant's term as the
+		// union type — confirmed against a real fixture: the VariantConstruct's
+		// Type is the union TypeID, not the payload's type). The payload child
+		// node's own Type is the variant's declared payload type, anchored by
+		// the checker at every construction site (confirmed against real
+		// fixtures at three payload shapes: an i32 literal, a bool literal, and
+		// an i32 expression referencing a local).
+		if len(node.Children) != 1 {
+			return fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload of %s or bool", node.Member, len(node.Children), wantName(width))
+		}
+		payloadNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return fmt.Errorf("union variant symbol %d references invalid payload node %d", node.Member, node.Children[0])
+		}
+		if !isWidth(snapshot, width, payloadNode.Type) && !isBool(snapshot, payloadNode.Type) {
+			return fmt.Errorf("union variant symbol %d carries a payload of type %s; only a payload of %s or bool is supported", node.Member, describeType(snapshot, payloadNode.Type), wantName(width))
+		}
+		byMember, seen := payloads[node.Type]
+		if !seen {
+			byMember = make(map[symbol.SymbolID]types.TypeID)
+			payloads[node.Type] = byMember
+		}
+		if existing, ok := byMember[node.Member]; ok && existing != payloadNode.Type {
+			return fmt.Errorf("union variant symbol %d is constructed with inconsistent payload types %s and %s", node.Member, describeType(snapshot, existing), describeType(snapshot, payloadNode.Type))
+		}
+		byMember[node.Member] = payloadNode.Type
+		*out = append(*out, node.Type)
+	}
+	for _, childID := range node.Children {
+		if err := collectUnionTypesWalk(unit, snapshot, width, childID, out, payloads); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectUnionTypesWalk(unit, snapshot, width, deferID, out, payloads); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveUnionInfo turns one collected union TypeID into a unionInfo with its
+// variants in declared order and its constructed members resolved. The
+// declaration symbol comes from the type's own Nominal key (TypeKey.Nominal);
+// the declared variant order comes from the corresponding TypeDecl's Members
+// (unit.TypeDeclarations), the same mechanism resolveEnumInfo uses for a plain
+// enum (the TypeDeclaration *node* carries only the symbol, so the container is
+// authoritative). The constructed members come from the payloads map the walk
+// accumulated (member symbol -> resolved payload type), listed in declared
+// variant order so the C union member order is deterministic regardless of
+// construction-site order. The type must actually be enum-shaped, not a struct
+// that shares the Nominal key shape — isEnumType distinguishes the two from the
+// unit's own node graph, so a collected non-enum Nominal type is a clean
+// rejection, not a guessed layout.
+func resolveUnionInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID, payloads map[symbol.SymbolID]types.TypeID) (unionInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return unionInfo{}, fmt.Errorf("union type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return unionInfo{}, fmt.Errorf("type %s is a %v, want a tagged-union type", unionTypeName(id), key.Kind())
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return unionInfo{}, fmt.Errorf("type %s has no nominal declaration", unionTypeName(id))
+	}
+	if !isEnumType(unit, snapshot, id) {
+		return unionInfo{}, fmt.Errorf("type %s is not a tagged-union type (its declaration symbol %d's members resolve to struct fields, not enum variants)", unionTypeName(id), decl)
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return unionInfo{}, fmt.Errorf("union type %s has no TypeDeclaration for symbol %d in the unit", unionTypeName(id), decl)
+	}
+	if len(typeDecl.Members) == 0 {
+		return unionInfo{}, fmt.Errorf("union type %s has no declared variants", unionTypeName(id))
+	}
+	members := make([]unionMemberInfo, 0, len(payloads))
+	for _, variant := range typeDecl.Members {
+		if payloadType, ok := payloads[variant]; ok {
+			members = append(members, unionMemberInfo{member: variant, payloadType: payloadType})
+		}
+	}
+	return unionInfo{typ: id, decl: decl, variants: append([]symbol.SymbolID(nil), typeDecl.Members...), members: members}, nil
 }
 
 // resolveEnumInfo turns one collected enum TypeID into an enumInfo with its
@@ -1478,7 +1705,7 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // seeded parameters plus whatever buildBlock adds), so a helper's locals are
 // invisible to the entry and to sibling helpers, exactly as two blocks at the
 // same nesting level are isolated.
-func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []helperInfo, width types.BuiltinKind) (string, error) {
+func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []helperInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	texts := make([]string, 0, len(helpers))
 	for _, helper := range helpers {
 		scope := make(map[symbol.SymbolID]localInfo, len(helper.decl.Parameters))
@@ -1549,7 +1776,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 			returnType = structTypeName(helper.decl.ResultType)
 			result = resultInfo{structType: helper.decl.ResultType}
 		}
-		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width, result)
+		statements, err := buildBlock(unit, snapshot, helper.block, scope, 0, width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1613,7 +1840,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
-func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
+func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
@@ -1640,7 +1867,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			// body is its own scope (buildWhile clones, exactly as buildIf's
 			// arms do), so nothing the loop declares leaks into this block's
 			// scope map.
-			whileText, err := buildWhile(unit, snapshot, statement, scope, depth, width)
+			whileText, err := buildWhile(unit, snapshot, statement, scope, depth, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -1653,7 +1880,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			// bound iterator. Its body is its own scope (buildRangeLoop seeds
 			// the iterator and buildLoopBody clones), so nothing the loop
 			// declares leaks into this block's scope map.
-			rangeText, err := buildRangeLoop(unit, snapshot, statement, scope, depth, width)
+			rangeText, err := buildRangeLoop(unit, snapshot, statement, scope, depth, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -1667,7 +1894,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			// its own scope (buildFor seeds the initializer's local and
 			// buildLoopBody clones), so nothing the loop declares leaks into
 			// this block's scope map.
-			forText, err := buildFor(unit, snapshot, statement, scope, depth, width)
+			forText, err := buildFor(unit, snapshot, statement, scope, depth, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -1681,7 +1908,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			// is only ever emitted at exit points whose DeferChain references it.
 			continue
 		}
-		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block", width)
+		text, err := buildLeadingStatement(unit, snapshot, block.Children[i], scope, indent, "entry function body block", width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1715,7 +1942,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		if err != nil {
 			return "", err
 		}
-		deferText, err := buildDeferredStatements(unit, snapshot, last.DeferChain, scope, indent, "entry function body block", width)
+		deferText, err := buildDeferredStatements(unit, snapshot, last.DeferChain, scope, indent, "entry function body block", width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1738,7 +1965,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		if result.kind != types.Void {
 			return "", fmt.Errorf("entry function body block statement is an ImplicitReturn, want a Return of an integer expression, a two-armed if/else, or a switch (an implicit fall-through tail only appears in a void function, but the enclosing function resolves to a non-void result)")
 		}
-		deferText, err := buildDeferredStatements(unit, snapshot, last.DeferChain, scope, indent, "entry function body block", width)
+		deferText, err := buildDeferredStatements(unit, snapshot, last.DeferChain, scope, indent, "entry function body block", width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1746,13 +1973,13 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 			statements = append(statements, deferText)
 		}
 	case tir.If:
-		ifText, err := buildIf(unit, snapshot, last, scope, depth, width, result)
+		ifText, err := buildIf(unit, snapshot, last, scope, depth, width, result, unions)
 		if err != nil {
 			return "", err
 		}
 		statements = append(statements, ifText)
 	case tir.Switch:
-		switchText, err := buildSwitch(unit, snapshot, last, scope, depth, width, result)
+		switchText, err := buildSwitch(unit, snapshot, last, scope, depth, width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1766,8 +1993,11 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // buildSwitch validates and builds the C text for a switch statement used as a
 // block's tail: a tir.Switch whose Children[0] is the subject expression
 // (built by buildExpr for an integer subject, buildBoolExpr for a bool
-// subject, or buildEnumValue for a plain enum subject — the enum subject
-// grammar added by 10.34) and Children[1:] are SwitchCase nodes. Each case
+// subject, buildEnumValue for a plain enum subject — the enum subject
+// grammar added by 10.34 — or, since 10.35, the .tag field read of a
+// tagged-union subject, whose value is a local reference or an inline variant
+// construction built as the union's compound literal) and Children[1:] are
+// SwitchCase nodes. Each case
 // value becomes its
 // own C case label; multiple SwitchCase nodes sharing the same body node ID (a
 // multi-value `case v1, v2:` clause) become stacked C case labels sharing one
@@ -1790,26 +2020,29 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 // in a return or a two-armed if/else whose arms each end in return — the same
 // tail-statement grammar buildBlock enforces for every other block in this
 // backend. A CaseValue-based case (an enum variant) is supported since 10.34
-// when the subject is a plain enum type: such a case's label is
+// when the subject is a plain enum type or, since 10.35, a tagged-union type:
+// such a case's label is
 // `case pebble_variant_<caseValue>:` (see buildCaseLabel), the case value's C
 // enum constant, and its value (the variant's ordinal in the enum's declared
 // order) matches the subject's own typedef by construction. Any other shape is
 // a clean rejection naming what was found.
-func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
+func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(switchNode.Children) < 2 {
 		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
 	}
 	// Build the subject expression. The subject's resolved type decides the
 	// grammar: an integer subject (the entry's width) is built by buildExpr,
-	// a bool subject by buildBoolExpr, a plain enum subject by buildEnumValue.
+	// a bool subject by buildBoolExpr, a tagged-union subject by
+	// buildUnionConstruction (reading its .tag field), a plain enum subject
+	// by buildEnumValue.
 	// The subject type is on the subject node itself (Children[0]).
 	subjectNode, ok := unit.Node(switchNode.Children[0])
 	if !ok {
 		return "", fmt.Errorf("switch statement references invalid subject node %d", switchNode.Children[0])
 	}
-	// enumSubject is nonzero exactly when the subject is a plain enum type; it
-	// governs both the subject grammar (buildEnumValue) and the case labels
-	// (CaseValue cases become `case pebble_variant_<caseValue>:`).
+	// enumSubject is nonzero exactly when the subject is an enum-typed type
+	// (a plain enum or a tagged union); it governs the case labels (CaseValue
+	// cases become `case pebble_variant_<caseValue>:`).
 	var enumSubject types.TypeID
 	var enumVariants []symbol.SymbolID
 	if isEnumType(unit, snapshot, subjectNode.Type) {
@@ -1823,10 +2056,42 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 	var subjectExpr string
 	var err error
 	if enumSubject != 0 {
-		// An enum-typed subject: a reference to an enum-typed local (a
-		// SymbolValue) or a variant literal (an EnumVariantValue /
-		// zero-payload VariantConstruct) — buildEnumValue handles all three.
-		subjectExpr, err = buildEnumValue(unit, snapshot, switchNode.Children[0], locals)
+		if _, isUnion := unions[enumSubject]; isUnion {
+			// A tagged-union-typed subject: its value is the union's tagged
+			// struct, so the switch compares the stored discriminant — the
+			// tag field — against the case labels. A reference to a
+			// union-typed local (a SymbolValue) is read as
+			// `pebble_local_<sym>.tag`; a variant construction used directly as
+			// the subject (switch Choice.value(5), confirmed checker-reachable)
+			// is built as the union's compound literal and its .tag field read
+			// the same way. The case labels are unchanged: `case
+			// pebble_variant_<caseValue>:` names the same enum constant the
+			// stored tag holds (see buildCaseLabel).
+			switch subjectNode.Kind {
+			case tir.SymbolValue:
+				info, declared := locals[subjectNode.Symbol]
+				if !declared || info.enumType == 0 {
+					return "", fmt.Errorf("switch subject references symbol %d, which is not an enum-typed local declared earlier in the body", subjectNode.Symbol)
+				}
+				if info.enumType != enumSubject {
+					return "", fmt.Errorf("switch subject references symbol %d, a local of type %s, not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, info.enumType), unionTypeName(enumSubject))
+				}
+				subjectExpr = fmt.Sprintf("pebble_local_%d.tag", subjectNode.Symbol)
+			case tir.VariantConstruct, tir.EnumVariantValue:
+				construction, buildErr := buildUnionConstruction(unit, snapshot, subjectNode, locals, "switch subject", unions, width)
+				if buildErr != nil {
+					return "", buildErr
+				}
+				subjectExpr = construction + ".tag"
+			default:
+				return "", fmt.Errorf("switch subject is a %s of tagged-union type %s, want a reference to a union-typed local in scope or a union variant construction", subjectNode.Kind, unionTypeName(enumSubject))
+			}
+		} else {
+			// A plain-enum-typed subject: a reference to an enum-typed local
+			// (a SymbolValue) or a variant literal (an EnumVariantValue /
+			// zero-payload VariantConstruct) — buildEnumValue handles all three.
+			subjectExpr, err = buildEnumValue(unit, snapshot, switchNode.Children[0], locals)
+		}
 	} else if isWidth(snapshot, width, subjectNode.Type) {
 		subjectExpr, err = buildExpr(unit, snapshot, switchNode.Children[0], locals, width)
 	} else if isBool(snapshot, subjectNode.Type) {
@@ -1850,7 +2115,7 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 		}
 		subjectExpr = fmt.Sprintf("pebble_local_%d", subjectNode.Symbol)
 	} else {
-		return "", fmt.Errorf("switch subject has type %s, want %s or bool, or a plain enum type", describeType(snapshot, subjectNode.Type), wantName(width))
+		return "", fmt.Errorf("switch subject has type %s, want %s or bool, or an enum/tagged-union type", describeType(snapshot, subjectNode.Type), wantName(width))
 	}
 	if err != nil {
 		return "", err
@@ -1889,7 +2154,7 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 			// and the variant must be one of the subject enum's declared
 			// variants.
 			if enumSubject == 0 {
-				return "", fmt.Errorf("switch case references enum variant symbol %d, but the subject is not a plain enum type", caseNode.CaseValue)
+				return "", fmt.Errorf("switch case references enum variant symbol %d, but the subject is not an enum or tagged-union type", caseNode.CaseValue)
 			}
 			if !containsVariant(enumVariants, caseNode.CaseValue) {
 				return "", fmt.Errorf("switch case references variant symbol %d, which is not one of the subject enum %s's declared variants", caseNode.CaseValue, enumTypeName(enumSubject))
@@ -1921,7 +2186,7 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 	for _, g := range groups {
 		if g.elseID != 0 {
 			// The else/default arm.
-			bodyText, err := buildSwitchCaseBody(unit, snapshot, g.bodyID, locals, depth+2, width, result)
+			bodyText, err := buildSwitchCaseBody(unit, snapshot, g.bodyID, locals, depth+2, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -1938,7 +2203,7 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, switchNode tir.Node, 
 			parts = append(parts, fmt.Sprintf("%s%s", caseIndent, label))
 		}
 		// The body is shared across all cases in the group.
-		bodyText, err := buildSwitchCaseBody(unit, snapshot, g.bodyID, locals, depth+2, width, result)
+		bodyText, err := buildSwitchCaseBody(unit, snapshot, g.bodyID, locals, depth+2, width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1989,13 +2254,13 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 // supported bare statement is a Return (the case body must end in a return),
 // built at the next nesting depth with the same expression grammar buildBlock's
 // tail return uses.
-func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
+func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	bodyNode, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("switch case body references invalid node %d", bodyID)
 	}
 	if bodyNode.Kind == tir.Block {
-		return buildBlock(unit, snapshot, bodyID, locals, depth, width, result)
+		return buildBlock(unit, snapshot, bodyID, locals, depth, width, result, unions)
 	}
 	// Bare single-statement case body: must be a Return.
 	if bodyNode.Kind == tir.Return {
@@ -2013,7 +2278,7 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 		if err != nil {
 			return "", err
 		}
-		deferText, err := buildDeferredStatements(unit, snapshot, bodyNode.DeferChain, locals, indent, "switch case body", width)
+		deferText, err := buildDeferredStatements(unit, snapshot, bodyNode.DeferChain, locals, indent, "switch case body", width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -2042,7 +2307,7 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 // Any other shape — an If without an else, an arm that is not a Block, or a
 // block with the wrong child count — is a clean rejection naming what was
 // found.
-func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo) (string, error) {
+func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
@@ -2053,11 +2318,11 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1, width, result)
+	thenText, err := buildBlock(unit, snapshot, ifNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
-	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1, width, result)
+	elseText, err := buildBlock(unit, snapshot, ifNode.Children[2], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2082,7 +2347,7 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals m
 //
 // Any other shape — a wrong child count, or a body that is not a Block — is a
 // clean rejection naming what was found.
-func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(whileNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
 	}
@@ -2090,7 +2355,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 	if err != nil {
 		return "", err
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, whileNode.Children[1], locals, depth+1, width)
+	bodyText, err := buildLoopBody(unit, snapshot, whileNode.Children[1], locals, depth+1, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2134,7 +2399,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, whileNode tir.Node, lo
 // ... }` with no `: name`, which has no way to be observed from inside and is
 // low-value), or a body that is not a Block — is a clean rejection naming
 // what was found.
-func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(rangeNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block range loop has %d child(ren), want exactly 3 (the start value, the end value, then the loop body)", len(rangeNode.Children))
 	}
@@ -2163,7 +2428,7 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, rangeNode tir.Node
 	// body declares out of this block's own scope map.
 	loopScope := cloneLocals(locals)
 	loopScope[rangeNode.Symbol] = localInfo{kind: width}
-	bodyText, err := buildLoopBody(unit, snapshot, rangeNode.Children[2], loopScope, depth+1, width)
+	bodyText, err := buildLoopBody(unit, snapshot, rangeNode.Children[2], loopScope, depth+1, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2267,7 +2532,7 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 // range loop made). Any other shape — an ambiguous clause list, an
 // out-of-scope initializer or update, a missing or non-Block body — is a
 // clean rejection naming what was found.
-func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(forNode.Children) < 1 || len(forNode.Children) > 4 {
 		return "", fmt.Errorf("entry function body block for loop has %d child(ren), want 1 to 4 (the optional initializer, condition, and update clauses, then the loop body)", len(forNode.Children))
 	}
@@ -2333,7 +2598,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals
 		}
 		condText = cond
 		if len(clauses)-condIndex-1 == 1 {
-			text, err := buildForUpdateClause(unit, snapshot, clauses[len(clauses)-1], loopScope, width)
+			text, err := buildForUpdateClause(unit, snapshot, clauses[len(clauses)-1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2365,7 +2630,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals
 				// against real fixtures) and is documented as a real
 				// ambiguity: it lowers as the update, never guessed as
 				// something else.
-				text, err := buildForUpdateClause(unit, snapshot, clauses[0], loopScope, width)
+				text, err := buildForUpdateClause(unit, snapshot, clauses[0], loopScope, width, unions)
 				if err != nil {
 					return "", err
 				}
@@ -2388,7 +2653,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals
 			}
 			initText = text
 			initSymbol = symbol
-			text, err = buildForUpdateClause(unit, snapshot, clauses[1], loopScope, width)
+			text, err = buildForUpdateClause(unit, snapshot, clauses[1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2397,7 +2662,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, forNode tir.Node, locals
 			return "", fmt.Errorf("entry function body block for loop with no condition has %d clause(s), want at most two (an initializer and an update)", len(clauses))
 		}
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, bodyID, loopScope, depth+1, width)
+	bodyText, err := buildLoopBody(unit, snapshot, bodyID, loopScope, depth+1, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2466,7 +2731,7 @@ func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID,
 // update (`step += 1`) and a discarded-expression update are reachable from
 // real source but out of scope and cleanly rejected, matching the backend's
 // rule that a reassignment lowers through buildStoreCore.
-func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body block for loop update references invalid node %d", id)
@@ -2474,7 +2739,7 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeI
 	if statement.Kind != tir.Store {
 		return "", fmt.Errorf("entry function body block for loop update is a %s, want a Store (a reassignment of a local already in scope); a for-loop update must be a single reassignment", statement.Kind)
 	}
-	return buildStoreCore(unit, snapshot, statement, scope, "entry function body block for loop update", width)
+	return buildStoreCore(unit, snapshot, statement, scope, "entry function body block for loop update", width, unions)
 }
 
 // buildScalarInitializeCore builds the declaration text for a scalar local of
@@ -2539,7 +2804,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, stateme
 // type — the entry's width (buildExpr) or bool (buildBoolExpr), mirroring
 // buildLeadingStatement's Store case exactly, including its rejections of a
 // Store targeting a str/tuple/array/optional/struct local.
-func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(statement.Children) != 2 {
 		return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
 	}
@@ -2574,6 +2839,19 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node
 		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
 	default:
 		if targetInfo.enumType != 0 {
+			if _, isUnion := unions[targetInfo.enumType]; isUnion {
+				// A Store whose place names a tagged-union-typed local is a
+				// whole-value reassignment — c = Choice.value(5); — whose new
+				// value is a variant construction built by
+				// buildUnionConstruction (a C99 compound literal of the
+				// union's struct typedef), emitted as
+				// `pebble_local_<sym> = (pebble_union_<id>_t){ .tag = ... };`.
+				storeValue, err := buildUnionConstruction(unit, snapshot, mustNode(unit, statement.Children[1]), scope, context, unions, width)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+			}
 			// A Store whose place names an enum-typed local is a whole-value
 			// reassignment of a plain enum local — c = Color.red; — whose new
 			// value is a variant literal (an EnumVariantValue, or a
@@ -2634,7 +2912,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node
 // statement kind (a Return, a Print, anything else) is a clean rejection
 // naming what was found. An empty loop body (zero children) is legal — `while
 // cond {}` is a real, if useless, program — and emits no statements at all.
-func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("entry function body block while loop body references invalid node %d", bodyID)
@@ -2660,31 +2938,31 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// A nested while inside a loop body reuses buildWhile unchanged: it
 			// already recurses into buildLoopBody for its own body, so nested
 			// loops compose without any change to buildWhile itself.
-			text, err = buildWhile(unit, snapshot, statement, scope, depth, width)
+			text, err = buildWhile(unit, snapshot, statement, scope, depth, width, unions)
 		case tir.RangeLoop:
 			// A nested range loop inside a loop body (a while's or another
 			// range loop's body) reuses buildRangeLoop unchanged: it recurses
 			// into this same buildLoopBody for its own body, so nested range
 			// loops compose exactly like nested whiles do.
-			text, err = buildRangeLoop(unit, snapshot, statement, scope, depth, width)
+			text, err = buildRangeLoop(unit, snapshot, statement, scope, depth, width, unions)
 		case tir.For:
 			// A nested classic for loop inside a loop body (a while's, range
 			// loop's, or another for loop's body) reuses buildFor unchanged:
 			// it recurses into this same buildLoopBody for its own body, so
 			// nested classic for loops compose exactly like nested whiles and
 			// range loops do.
-			text, err = buildFor(unit, snapshot, statement, scope, depth, width)
+			text, err = buildFor(unit, snapshot, statement, scope, depth, width, unions)
 		case tir.If:
 			// A conditional statement inside a loop body is built by buildLoopIf:
 			// its arms are themselves loop bodies (no required tail, optional
 			// else), genuinely different from the tail-requiring buildIf. Because
 			// buildLoopIf recurses into buildLoopBody for each arm, a break or
 			// continue inside an arm is handled by this same switch, unchanged.
-			text, err = buildLoopIf(unit, snapshot, statement, scope, depth, width)
+			text, err = buildLoopIf(unit, snapshot, statement, scope, depth, width, unions)
 		case tir.Break:
-			text, err = buildLoopJump(unit, snapshot, statement, "break", indent, "entry function body block while loop body", scope, width)
+			text, err = buildLoopJump(unit, snapshot, statement, "break", indent, "entry function body block while loop body", scope, width, unions)
 		case tir.Continue:
-			text, err = buildLoopJump(unit, snapshot, statement, "continue", indent, "entry function body block while loop body", scope, width)
+			text, err = buildLoopJump(unit, snapshot, statement, "continue", indent, "entry function body block while loop body", scope, width, unions)
 		case tir.DeferRegister:
 			// A DeferRegister in a loop body's leading-statement sequence is a
 			// registration marker the checker's analysis already consumed; the
@@ -2699,9 +2977,9 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 			// buildLeadingStatement too; the case is spelled out so the loop
 			// body's statement switch documents the supported kinds the way it
 			// does for While/RangeLoop/For/If/Break/Continue/DeferRegister.)
-			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width)
+			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width, unions)
 		default:
-			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width)
+			text, err = buildLeadingStatement(unit, snapshot, childID, scope, indent, "entry function body block while loop body", width, unions)
 		}
 		if err != nil {
 			return "", err
@@ -2740,7 +3018,7 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.NodeID, 
 //
 // Any other shape — a child count inconsistent with HasElse, or an arm that is
 // not a Block — is a clean rejection naming what was found.
-func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind) (string, error) {
+func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
@@ -2751,7 +3029,7 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildLoopBody(unit, snapshot, ifNode.Children[1], locals, depth+1, width)
+	thenText, err := buildLoopBody(unit, snapshot, ifNode.Children[1], locals, depth+1, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2759,7 +3037,7 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 	if !ifNode.HasElse {
 		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
 	}
-	elseText, err := buildLoopBody(unit, snapshot, ifNode.Children[2], locals, depth+1, width)
+	elseText, err := buildLoopBody(unit, snapshot, ifNode.Children[2], locals, depth+1, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2780,7 +3058,7 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, ifNode tir.Node, loca
 // same buildExpressionStatement the leading-statement case uses). A
 // DeferRegister whose child is an unsupported
 // statement kind is a clean rejection naming what was found.
-func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(chain) == 0 {
 		return "", nil
 	}
@@ -2802,7 +3080,7 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []t
 		}
 		switch stmt.Kind {
 		case tir.Store:
-			core, err := buildStoreCore(unit, snapshot, stmt, scope, context, width)
+			core, err := buildStoreCore(unit, snapshot, stmt, scope, context, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2846,8 +3124,8 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, chain []t
 // value never needs to be consulted or compared; it is confirmed (against a
 // nested-loop fixture) to name the loop that actually contains the jump, and
 // the checker (C0611) already guarantees that loop is an enclosing one.
-func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
-	deferText, err := buildDeferredStatements(unit, snapshot, statement.DeferChain, scope, indent, context, width)
+func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+	deferText, err := buildDeferredStatements(unit, snapshot, statement.DeferChain, scope, indent, context, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2890,7 +3168,7 @@ func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node,
 // caller is responsible for having already cloned scope if the statements must
 // not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
 // do). Any other statement kind is a clean rejection naming what was found.
-func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
@@ -2927,16 +3205,23 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 			return buildOptionalLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, width)
 		}
 		if isEnumType(unit, snapshot, initValue.Type) {
-			// A plain enum-typed local: its type is the initializer value's
-			// Type (the Initialize node carries no Type itself, confirmed
-			// against a real fixture — same as the compound locals above), and
-			// the type is Nominal exactly like a struct's (see isEnumType), so
-			// this check must precede the struct check below. The supported
-			// initializer is a variant literal (an EnumVariantValue, e.g.
+			// An enum-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself, confirmed against
+			// a real fixture — same as the compound locals above), and the
+			// type is Nominal exactly like a struct's (see isEnumType), so
+			// this check must precede the struct check below. The type is a
+			// tagged union (10.35) exactly when the caller's union map, built
+			// from reachable payload-carrying constructions, contains it: such
+			// a local is declared as the union's tagged struct and initialized
+			// from a variant construction (see buildUnionLocalDeclaration). A
+			// plain-enum-typed local is declared as the enum typedef and
+			// initialized from a variant literal (an EnumVariantValue, e.g.
 			// Color.green, or a zero-payload VariantConstruct, e.g.
 			// Color.red()); every other enum initializer shape is a clean
-			// rejection, and a payload-carrying variant construction (a union
-			// enum) is rejected naming the missing support.
+			// rejection.
+			if _, isUnion := unions[initValue.Type]; isUnion {
+				return buildUnionLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context, unions, width)
+			}
 			return buildEnumLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context)
 		}
 		if isStruct(snapshot, initValue.Type) {
@@ -2978,7 +3263,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, id tir.Node
 		// for-loop update clause); the indent and the trailing `;` turn it
 		// into this full statement, byte-identical to before the helper was
 		// extracted.
-		core, err := buildStoreCore(unit, snapshot, statement, scope, context, width)
+		core, err := buildStoreCore(unit, snapshot, statement, scope, context, width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -3760,8 +4045,11 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Nod
 // order (the C typedef emits one named constant per variant in TypeDecl order,
 // so the constant and the typedef agree by construction). A payload-carrying
 // initializer — an EnumVariantValue or VariantConstruct with one or more
-// children — is the union-enum (tagged-union) construction and is rejected
-// cleanly naming that payload support does not exist yet, never guessed at. The
+// children — is a tagged-union (union enum) construction, which real source
+// routes to buildUnionLocalDeclaration instead (the type is a tagged union
+// whenever any reachable construction carries a payload); this payload
+// rejection is defense for hand-built IR where such a construction reaches
+// this plain-enum builder, never guessed at. The
 // initializer's variant symbol must be one of the enum's declared variants, and
 // the enum type must actually be a plain enum (not a struct that shares the
 // Nominal key shape — isEnumType distinguishes them). The local's scope entry
@@ -3773,11 +4061,11 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, stateme
 	switch initValue.Kind {
 	case tir.EnumVariantValue:
 		if len(initValue.Children) == 1 {
-			return "", fmt.Errorf("%s declares an enum-typed local initialized from an enum variant with a payload; union enum (payload-carrying variant) support does not exist yet", context)
+			return "", fmt.Errorf("%s declares an enum-typed local initialized from an enum variant with a payload; a tagged-union (union enum) construction routes through buildUnionLocalDeclaration, never a plain enum declaration", context)
 		}
 	case tir.VariantConstruct:
 		if len(initValue.Children) >= 1 {
-			return "", fmt.Errorf("%s declares an enum-typed local initialized from a variant construction with %d payload(s); union enum (payload-carrying variant) support does not exist yet", context, len(initValue.Children))
+			return "", fmt.Errorf("%s declares an enum-typed local initialized from a variant construction with %d payload(s); a tagged-union (union enum) construction routes through buildUnionLocalDeclaration, never a plain enum declaration", context, len(initValue.Children))
 		}
 	default:
 		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a %s, want a variant literal (e.g. Color.green); initializing an enum local from another value is not supported yet", context, enumTypeName(initValue.Type), initValue.Kind)
@@ -3802,8 +4090,10 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, stateme
 // A variant literal emits its C enum constant pebble_variant_<member>, whose
 // value is the variant's ordinal in the enum's declared order. A
 // payload-carrying variant — an EnumVariantValue or VariantConstruct with one
-// or more children — is the union-enum construction and is rejected cleanly
-// naming that payload support does not exist yet. Anything else is a clean
+// or more children — is a tagged-union construction, which real source routes
+// to buildUnionConstruction instead; this rejection is defense for hand-built
+// IR where such a construction reaches this plain-enum builder. Anything else
+// is a clean
 // rejection, never a guessed lowering. This is the one shared builder for an
 // enum value wherever one is needed this slice: an enum-typed local's
 // declaration initializer, a reassignment's new value, an enum switch's
@@ -3816,12 +4106,12 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 	switch node.Kind {
 	case tir.EnumVariantValue:
 		if len(node.Children) == 1 {
-			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with a payload; union enum (payload-carrying variant) support does not exist yet", node.Member)
+			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with a payload; a tagged-union (union enum) construction routes through buildUnionConstruction, never a plain enum value", node.Member)
 		}
 		return enumVariantName(node.Member), nil
 	case tir.VariantConstruct:
 		if len(node.Children) >= 1 {
-			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with %d payload(s); union enum (payload-carrying variant) support does not exist yet", node.Member, len(node.Children))
+			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with %d payload(s); a tagged-union (union enum) construction routes through buildUnionConstruction, never a plain enum value", node.Member, len(node.Children))
 		}
 		return enumVariantName(node.Member), nil
 	case tir.SymbolValue:
@@ -3833,6 +4123,126 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
 	}
+}
+
+// buildUnionLocalDeclaration builds one tagged-union-typed local's declaration:
+// a `pebble_union_<typeID>_t pebble_local_<symbol> = <construction>;` whose
+// initializer is a variant construction — a payload-carrying VariantConstruct
+// (Choice.value(5)), a payload-less EnumVariantValue (Choice.empty), or a
+// zero-payload VariantConstruct (Choice.empty()) — built by
+// buildUnionConstruction as a C99 compound literal. The union type is the
+// initializer value's own Type (the Initialize node carries no Type itself,
+// confirmed against a real fixture — same as every other local kind), and the
+// type must be a tagged union in this program (the caller's unions map,
+// collected by collectUnionTypes from reachable payload-carrying
+// constructions); a type that is enum-shaped but not in the union map routes
+// here's sibling buildEnumLocalDeclaration instead. The construction is
+// validated by buildUnionConstruction, which requires the constructed variant's
+// symbol to be one of the union's declared variants, so the emitted C's tag
+// value and payload member always exist in the union's typedef. The
+// local's scope entry records its union type (a localInfo with enumType set —
+// a tagged union is enum-shaped exactly like a plain enum), so a later switch
+// subject, reassignment, or reference resolves the union type being used.
+// Like every local, the declaration is followed by a (void) cast against
+// -Wunused-variable.
+func buildUnionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, unions map[types.TypeID]unionInfo, width types.BuiltinKind) (string, error) {
+	if _, ok := unions[initValue.Type]; !ok {
+		return "", fmt.Errorf("%s declares an enum-typed local of type %s, which is not a tagged-union type in this program", context, describeType(snapshot, initValue.Type))
+	}
+	construction, err := buildUnionConstruction(unit, snapshot, initValue, scope, context, unions, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, unionTypeName(initValue.Type), statement.Symbol, construction, indent, statement.Symbol), nil
+}
+
+// buildUnionConstruction builds the C expression text for one tagged-union
+// variant construction, of three shapes (all confirmed against real fixtures):
+// a payload-carrying VariantConstruct (Choice.value(5), the variant's payload
+// expression as its one child), a payload-less EnumVariantValue (Choice.empty,
+// the member-access form), and a zero-payload VariantConstruct (Choice.empty(),
+// the parenthesized-call form). All three lower to a C99 compound literal of
+// the union's own struct typedef:
+//
+//	(pebble_union_<typeID>_t){ .tag = pebble_variant_<member> }
+//	(pebble_union_<typeID>_t){ .tag = pebble_variant_<member>, .payload = { .pebble_field_<member> = <payload expr> } }
+//
+// The tag is the variant's C enum constant (the same pebble_variant_<member>
+// name a plain enum uses — the discriminant ordinal scheme is identical), so a
+// payload-less construction leaves the payload union unspecified, which is
+// legal C: the tag alone determines which member, if any, is meaningful. A
+// payload-carrying construction's payload expression is built by the grammar
+// its own type selects — buildExpr for a payload of the entry's width,
+// buildBoolExpr for a bool payload — and the payload union member is named
+// pebble_field_<member> exactly as the union's typedef declares it. The node's
+// Type is the union type and its Member the variant symbol (both confirmed
+// against real fixtures); the member must be one of the union's declared
+// variants, and a payload-carrying construction must name a variant whose
+// payload member the union's typedef declares (both guaranteed for real source
+// by the checker; the checks are defense for hand-built IR). Any other node
+// kind is a clean rejection, never a guessed lowering.
+func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, unions map[types.TypeID]unionInfo, width types.BuiltinKind) (string, error) {
+	info, ok := unions[node.Type]
+	if !ok {
+		return "", fmt.Errorf("%s constructs an enum-typed value of type %s, which is not a tagged-union type in this program", context, describeType(snapshot, node.Type))
+	}
+	if !containsVariant(info.variants, node.Member) {
+		return "", fmt.Errorf("%s constructs variant symbol %d, which is not one of the union %s's declared variants", context, node.Member, unionTypeName(node.Type))
+	}
+	tag := enumVariantName(node.Member)
+	switch node.Kind {
+	case tir.EnumVariantValue:
+		if len(node.Children) != 0 {
+			return "", fmt.Errorf("%s constructs union variant symbol %d with %d payload(s), want zero (a payload-less member access)", context, node.Member, len(node.Children))
+		}
+		return fmt.Sprintf("(%s){ .tag = %s }", unionTypeName(node.Type), tag), nil
+	case tir.VariantConstruct:
+		if len(node.Children) == 0 {
+			return fmt.Sprintf("(%s){ .tag = %s }", unionTypeName(node.Type), tag), nil
+		}
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s constructs union variant symbol %d with %d payload(s), want exactly one (a tagged-union variant carries exactly one payload)", context, node.Member, len(node.Children))
+		}
+		payloadNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s constructs union variant symbol %d referencing invalid payload node %d", context, node.Member, node.Children[0])
+		}
+		memberType, hasMember := unionMemberType(info.members, node.Member)
+		if !hasMember {
+			return "", fmt.Errorf("%s constructs union variant symbol %d, whose payload type is not resolved (no construction of it is collected as a union member)", context, node.Member)
+		}
+		if payloadNode.Type != memberType {
+			return "", fmt.Errorf("%s constructs union variant symbol %d with a payload of type %s, want %s (the variant's resolved payload type)", context, node.Member, describeType(snapshot, payloadNode.Type), describeType(snapshot, memberType))
+		}
+		var payloadExpr string
+		var err error
+		if isBool(snapshot, payloadNode.Type) {
+			payloadExpr, err = buildBoolExpr(unit, snapshot, node.Children[0], scope, width)
+		} else {
+			payloadExpr, err = buildExpr(unit, snapshot, node.Children[0], scope, width)
+		}
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s){ .tag = %s, .payload = { .pebble_field_%d = %s } }", unionTypeName(node.Type), tag, node.Member, payloadExpr), nil
+	default:
+		return "", fmt.Errorf("%s constructs a %s, want a union variant construction (a VariantConstruct) or a member access (an EnumVariantValue)", context, node.Kind)
+	}
+}
+
+// unionMemberType returns the resolved payload type of one of a tagged-union
+// type's constructed members, by member symbol. The members list carries the
+// payload types resolved by collectUnionTypes from construction sites, so a
+// construction of a variant that was never collected as a union member reports
+// false.
+func unionMemberType(members []unionMemberInfo, member symbol.SymbolID) (types.TypeID, bool) {
+	for _, m := range members {
+		if m.member == member {
+			return m.payloadType, true
+		}
+	}
+	return 0, false
 }
 
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
@@ -5339,6 +5749,17 @@ func enumTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_enum_%d_t", id)
 }
 
+// unionTypeName is the deterministic C name of one distinct tagged-union type's
+// struct typedef: pebble_union_<typeID>_t, derived from the union type's own
+// stable types.TypeID, mirroring the pebble_struct_<typeID>_t / pebble_enum_
+// <typeID>_t naming discipline of reusing a stable IR identity rather than a
+// counter. The discriminant enum typedef the struct's tag field uses is
+// pebble_enum_<typeID>_t (see enumTypeName) — the two names share the type ID
+// suffix and never collide, since one spells "enum" and the other "union".
+func unionTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_union_%d_t", id)
+}
+
 // enumVariantName is the deterministic C name of one plain enum variant's
 // enum constant: pebble_variant_<memberSymbolID>, derived from the variant's
 // own stable symbol.SymbolID (mirroring the pebble_field_<memberSymbolID>
@@ -5615,6 +6036,103 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 			return "", fmt.Errorf("payload type %s is an enum type; enum-typed optional payloads are not supported yet", enumTypeName(id))
 		}
 		return structTypeName(id), nil
+	}
+	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
+		if name, ok := builtinName(builtin); ok {
+			return "", fmt.Errorf("payload type %s is not supported, want %s or bool", name, wantName(width))
+		}
+	}
+	return "", fmt.Errorf("payload type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+}
+
+// buildUnionTypedefs builds the C text of one tagged-union typedef pair per
+// union type in infos, in order, each joined by a newline. Each pair is the
+// discriminant enum typedef followed by the tagged struct typedef (in that
+// order, since the struct typedef's tag field references the enum typedef by
+// name — C requires a type fully defined before use). The caller (Emit)
+// supplies infos in first-encountered order from the union-type collection
+// pass, so every union type the emitted program references has exactly one
+// pair here, written before any function definition in the final output.
+func buildUnionTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []unionInfo) (string, error) {
+	texts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		text, err := buildUnionTypedef(unit, snapshot, width, info)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildUnionTypedef builds the C text of one tagged-union type's typedef pair:
+// the discriminant enum typedef (reused verbatim from buildEnumTypedef over the
+// union's variants in declared order — the declared order IS the discriminant,
+// exactly like a plain enum, so the switch case labels and the stored tag
+// values agree with the typedef by construction) followed by the tagged struct
+// typedef:
+//
+//	typedef enum {
+//	    pebble_variant_25,
+//	    pebble_variant_26,
+//	} pebble_enum_23_t;
+//	typedef struct {
+//	    pebble_enum_23_t tag;
+//	    union {
+//	        int32_t pebble_field_26;
+//	    } payload;
+//	} pebble_union_23_t;
+//
+// The tag field is typed as the discriminant enum typedef, the union's
+// identity carrier: a tagged union's value IS its discriminant plus the
+// payload union, and the discriminant ordinal scheme is identical to a plain
+// enum's. Each payload union member is named pebble_field_<memberSymbolID>
+// from the variant's own stable symbol.SymbolID, exactly the naming discipline
+// struct fields use (see buildStructTypedef) — deliberately distinct from
+// pebble_variant_<memberSymbolID>, which names the *enum constant* (the tag
+// value), not a union member, so the two can never collide. One member is
+// declared per non-void variant actually constructed somewhere in the reachable
+// program (the unionInfo's members, resolved by resolveUnionInfo); a variant
+// never constructed has no member, since no payload for it is ever read or
+// written. A unionInfo whose TypeID is not an enum-shaped Nominal type in the
+// snapshot is a clean rejection, not a guessed layout (defense for hand-built
+// IR; collectUnionTypes has already resolved every collected TypeID through
+// resolveUnionInfo, which requires a tagged-union type).
+func buildUnionTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info unionInfo) (string, error) {
+	key, ok := snapshot.Key(info.typ)
+	if !ok {
+		return "", fmt.Errorf("union type %d is not in the type snapshot", info.typ)
+	}
+	if key.Kind() != types.Nominal {
+		return "", fmt.Errorf("type %s is a %v, want a tagged-union type", unionTypeName(info.typ), key.Kind())
+	}
+	enumText, err := buildEnumTypedef(snapshot, enumInfo{typ: info.typ, decl: info.decl, variants: info.variants})
+	if err != nil {
+		return "", err
+	}
+	members := make([]string, len(info.members))
+	for i, member := range info.members {
+		ctype, err := unionMemberCType(unit, snapshot, width, member.payloadType)
+		if err != nil {
+			return "", fmt.Errorf("union type %s: %v", unionTypeName(info.typ), err)
+		}
+		members[i] = "        " + ctype + fmt.Sprintf(" pebble_field_%d;", member.member)
+	}
+	structText := fmt.Sprintf("typedef struct {\n    %s tag;\n    union {\n%s\n    } payload;\n} %s;", enumTypeName(info.typ), strings.Join(members, "\n"), unionTypeName(info.typ))
+	return enumText + "\n" + structText, nil
+}
+
+// unionMemberCType is the C type one tagged-union payload member of the given
+// payload type is declared with in its union's struct typedef: int32_t /
+// int64_t for a payload of the entry's resolved width, bool for a bool payload.
+// Any other payload type is a clean rejection naming what was found, since this
+// backend emits exactly those two C types as union members.
+func unionMemberCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if isWidth(snapshot, width, id) {
+		return cType(width), nil
+	}
+	if isBool(snapshot, id) {
+		return "bool", nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {

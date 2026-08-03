@@ -1053,6 +1053,76 @@ incrementally as work proceeds.
   gating a multi-value-case switch, with `-Wall -Wextra -Werror`,
   confirming exit code 10 and a typedef whose constants are ordered
   exactly as predicted.
+- **10.35 — tagged-union (`union enum`) locals and discriminant-only
+  switch matching** (`compiler/internal/backend`): Phase 3's second
+  slice, completing enum/tagged-union support. Depends on a separate
+  checker fix landed in this session (commit `7feaf0c`,
+  `compiler/internal/check/declaration_facts.go`): a tagged-union
+  variant's construction (`Choice.value(5)`) previously had its
+  inferred type wrongly published as its own *payload* type instead of
+  the declaring union type, so the full checker pipeline could not
+  build any program assigning one to a union-typed destination at all;
+  with that fixed, tagged unions became newly reachable from real
+  source. A second scoping finding — confirmed by reading the language
+  spec (`spec/compiler/OPEN-DECISIONS.md`) and the parser
+  (`parseSwitchCase`, which parses a case value as a bare expression
+  with no pattern-binding syntax) — is that **nothing in Pebble can
+  read a tagged union's payload back out of a matched case**, so this
+  slice is construction + storage + discriminant-only matching only;
+  there is no payload-read path to implement because none exists in
+  the language. A tagged union with at least one non-void variant
+  whose construction reaches this backend lowers to a tagged struct
+  (`pebble_union_<typeID>_t`): a `tag` field typed as the same
+  discriminant enum a plain enum emits (`pebble_enum_<typeID>_t`,
+  reused verbatim via `buildEnumTypedef`) plus a `payload` union with
+  one member per non-void variant *actually constructed somewhere in
+  the reachable program* (a variant with no construction site needs no
+  union member, since nothing ever reads or writes it), each member
+  named `pebble_field_<memberSymbol>` — the same naming convention a
+  struct field uses, deliberately distinct from
+  `pebble_variant_<memberSymbol>` (the *enum constant*, i.e. the tag
+  value), so the two names can never collide. Construction
+  (`Choice.value(5)`) lowers to a C99 compound literal:
+  `(pebble_union_<typeID>_t){ .tag = pebble_variant_<member>, .payload
+  = { .pebble_field_<member> = <payload> } }`; a payload-less
+  construction leaves the `payload` union unspecified (legal C — the
+  tag alone determines which member, if any, is meaningful). A
+  tagged-union switch subject reads `.tag` (a local reference or an
+  inline construction used directly as the subject, confirmed
+  checker-reachable) and its `CaseValue` case labels are byte-identical
+  to a plain enum's — the discriminant ordinal scheme is shared.
+  Payloads are restricted to exactly the entry's resolved width or
+  bool (mirroring every other aggregate slice's own scalar-only
+  scope); a tuple/struct/array/optional/str/nested-enum payload, or an
+  unanchored-int literal-arithmetic payload, is a clean rejection
+  naming what's unsupported. A `union enum` whose every variant is
+  payload-less needs no new code at all — it was already reachable
+  through 10.34's plain-enum path unmodified, confirmed by a test
+  rather than assumed. Comparison between two tagged-union values is
+  confirmed checker-unreachable (`C0603`), so nothing needed
+  rejecting there. The obsolete 10.34 hand-built-IR rejection test
+  (`TestEmitRejectsTaggedUnionPayload`, whose fixture the checker
+  fix now makes buildable through the ordinary pipeline) was replaced
+  with 14 new tests. Verified end-to-end (a payload-carrying and a
+  payload-less variant each firing their own switch case; a
+  multi-value case; an `else` arm; reassignment from a payload-less to
+  a payload-carrying construction; a bool payload; two non-void
+  variants with differing payload types, both selecting correctly; a
+  variant construction used directly as a switch subject; a payload
+  round-trip proved through the only observable channel that exists —
+  an anchored overflowing payload aborting at construction, since the
+  language has no way to read the value back directly; the all-void
+  `union enum` case; a union switch inside a helper; an unused union
+  local under strict warnings; a rejection test for a non-scalar
+  payload) and independently outside the harness — manually compiled
+  and ran the emitted C for a fixture with two non-void variants of
+  different payload types (one `i32`, one `bool`) constructed into two
+  separate locals and switched on, with `-Wall -Wextra -Werror`,
+  confirming exit code 1 and a tagged-struct typedef with both
+  distinct union members declared exactly as predicted.
+
+  **Phase 3 (enums/tagged unions) is now fully complete** — 10.34 and
+  10.35, plus the prerequisite checker fix.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

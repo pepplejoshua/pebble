@@ -5842,139 +5842,192 @@ func TestEmitEnumWritesC(t *testing.T) {
 	}
 }
 
-// buildTaggedUnionPayloadUnit hand-builds a unit whose entry body declares an
-// enum-typed local initialized from a payload-carrying variant construction
-// (Choice.value(5), a VariantConstruct with one payload child). The checker
-// cannot produce this program through the full pipeline (confirmed: assigning
-// a tagged-union construction fails C0601 / C0616 — a real checker limitation,
-// reported, not fixed), so the shape is constructed directly through the IR
-// builder, borrowing the tagged union's type declaration and type ID from a
-// checker-built fixture. Emit must reject it cleanly, naming that union-enum
-// payload support does not exist.
-func buildTaggedUnionPayloadUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+// unionFixture builds one .peb source through the full check pipeline and
+// resolves the tagged-union type's TypeID and its variant symbols in declared
+// order, reusing enumFixture's exact type-resolution mechanism (a tagged union
+// is a Nominal type exactly like a plain enum, so a TypeUse carries its
+// TypeID the same way).
+func unionFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, types.TypeID, []symbol.SymbolID) {
 	t.Helper()
-	unit, snapshot, entryID := buildFixture(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 { return 0; }", "main", false)
-	var decl symbol.SymbolID
-	var members []symbol.SymbolID
-	for _, td := range unit.TypeDeclarations() {
-		decl = td.Symbol
-		members = td.Members
-		break
-	}
-	if len(members) < 2 {
-		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(members))
-	}
-	var choiceType types.TypeID
-	for _, n := range unit.Nodes() {
-		if n.Kind == tir.TypeUse && n.TypeArg != 0 {
-			if key, ok := snapshot.Key(n.TypeArg); ok {
-				if d, _, ok := key.Nominal(); ok && d == decl {
-					choiceType = n.TypeArg
-					break
-				}
-			}
-		}
-	}
-	if choiceType == 0 {
-		t.Fatal("could not resolve the Choice type ID from the fixture")
-	}
-	builder := tir.NewBuilder(snapshot, tir.Config{})
-	if err := builder.AddTypeDecl(tir.TypeDecl{Symbol: decl, Members: members, Span: source.NewSpan(0, 0, 1)}); err != nil {
-		t.Fatal(err)
-	}
-	region, err := builder.AddRegion()
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err := builder.AddNode(tir.Node{
-		Kind:    tir.IntegerLiteral,
-		Type:    snapshot.Builtins().I32,
-		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "5"},
-		Span:    source.NewSpan(0, 0, 1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	construct, err := builder.AddNode(tir.Node{
-		Kind:     tir.VariantConstruct,
-		Type:     choiceType,
-		Member:   members[1],
-		Children: []tir.NodeID{payload},
-		Span:     source.NewSpan(0, 0, 1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	init, err := builder.AddNode(tir.Node{
-		Kind:     tir.Initialize,
-		Symbol:   30,
-		Children: []tir.NodeID{construct},
-		Span:     source.NewSpan(0, 0, 1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	zero, err := builder.AddNode(tir.Node{
-		Kind:    tir.IntegerLiteral,
-		Type:    snapshot.Builtins().I32,
-		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "0"},
-		Span:    source.NewSpan(0, 0, 1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ret, err := builder.AddNode(tir.Node{
-		Kind:     tir.Return,
-		Function: fid,
-		Children: []tir.NodeID{zero},
-		Span:     source.NewSpan(0, 0, 1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, err := builder.AddNode(tir.Node{
-		Kind:     tir.Block,
-		Region:   region,
-		Children: []tir.NodeID{init, ret},
-		Span:     source.NewSpan(0, 0, 1),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := builder.AddNode(tir.Node{
-		Kind:       tir.FunctionDeclaration,
-		Symbol:     entryID,
-		Function:   fid,
-		ResultType: snapshot.Builtins().I32,
-		Convention: types.Pebble,
-		Span:       source.NewSpan(0, 0, 1),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
-		t.Fatal(err)
-	}
-	built, err := builder.Build()
-	if err != nil {
-		t.Fatalf("builder rejected the hand-built unit: %v", err)
-	}
-	return built, snapshot, entryID
+	return enumFixture(t, sourceText)
 }
 
-func TestEmitRejectsTaggedUnionPayload(t *testing.T) {
-	// A tagged union (union enum) with a payload-carrying variant reaching this
-	// backend is a clean rejection naming what is unsupported — there is no
-	// representation decision to make here, and the backend must not guess one.
-	// The payload-carrying VariantConstruct is the only in-IR record of the
-	// union form (a plain enum's variants are payload-less, and the checker
-	// rejects calling one with an argument, C0604), so its presence in a
-	// reachable body is rejected at enum-type collection time.
-	unit, snapshot, entryID := buildTaggedUnionPayloadUnit(t)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "union enum (payload-carrying variant) support does not exist yet")
+func TestEmitUnionLocalSwitchValueCompilesAndRuns(t *testing.T) {
+	// The flagship fixture from the brief: a tagged-union local constructed
+	// with a payload (Choice.value(5)) and switched on by discriminant, each
+	// case returning a distinct value. The union is emitted as a tagged struct
+	// whose tag is the discriminant enum constant; the switch compares
+	// pebble_local_<sym>.tag against the case labels, so the value case fires
+	// and the exit code is 1.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}", false, 1, false)
+}
+
+func TestEmitUnionLocalSwitchEmptyCompilesAndRuns(t *testing.T) {
+	// Same switch, c constructed as the payload-less variant (Choice.empty, an
+	// EnumVariantValue): the empty case fires and the exit code is 0, proving
+	// the payload-less variant of a tagged union (whose other variant DOES
+	// carry a payload elsewhere in the reachable program) still dispatches to
+	// its own discriminant case — the payload union is simply left unspecified.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.empty;\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}", false, 0, false)
+}
+
+func TestEmitUnionSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
+	// A multi-value case on a tagged-union subject: `case Choice.empty,
+	// Choice.value:` produces two SwitchCase nodes sharing one body node ID
+	// (confirmed against a real fixture), which stack as two C case labels
+	// sharing one body exactly as plain-enum and integer multi-value cases do.
+	// c = Choice.value(5) hits the multi-value case and returns 10.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty, Choice.value: return 10; }\n}", false, 10, false)
+}
+
+func TestEmitUnionSwitchElseCompilesAndRuns(t *testing.T) {
+	// An else arm on a tagged-union switch: c = Choice.empty is covered by no
+	// case (only value has one), so the else/default arm fires and returns 20.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.empty;\nswitch c { case Choice.value: return 10; else: return 20; }\n}", false, 20, false)
+}
+
+func TestEmitUnionStoreCompilesAndRuns(t *testing.T) {
+	// Reassigning a tagged-union local from a payload-less construction to a
+	// payload-carrying one (c = Choice.value(5);) lowers through buildStoreCore
+	// to the union's compound literal, so the subsequent switch fires the value
+	// case. This proves the stored value actually changed, not just that the
+	// store compiled.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.empty;\nc = Choice.value(5);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}", false, 1, false)
+}
+
+func TestEmitUnionBoolPayloadCompilesAndRuns(t *testing.T) {
+	// A bool payload variant (Flag.on(true)): the union member is declared bool
+	// and the payload expression builds under the bool grammar. The on case
+	// fires and the exit code is 1.
+	emitAndRun(t, "type Flag = union enum { off void; on bool; }; fn main() i32 {\nvar f Flag = Flag.on(true);\nswitch f { case Flag.off: return 0; case Flag.on: return 1; }\n}", false, 1, false)
+}
+
+func TestEmitUnionTwoPayloadVariantsCompilesAndRuns(t *testing.T) {
+	// A tagged union with two non-void variants whose payload types differ (one
+	// i32, one bool): both union members are declared (int32_t and bool), the
+	// construction of each names its own member, and the discriminant alone
+	// selects the correct case. Constructing the wide variant and switching
+	// fires the wide case (exit 1), independent of the big variant's payload
+	// member.
+	emitAndRun(t, "type Shape = union enum { empty void; wide i32; big bool; }; fn main() i32 {\nvar a Shape = Shape.wide(42);\nvar b Shape = Shape.big(false);\nswitch a { case Shape.empty: return 0; case Shape.wide: return 1; case Shape.big: return 2; }\n}", false, 1, false)
+}
+
+func TestEmitUnionTwoPayloadVariantsOtherCaseCompilesAndRuns(t *testing.T) {
+	// Same two-payload-variant union, switching on the bool-constructed local:
+	// the big case fires (exit 2), proving the discriminant dispatch reaches
+	// the other payload-carrying variant too.
+	emitAndRun(t, "type Shape = union enum { empty void; wide i32; big bool; }; fn main() i32 {\nvar a Shape = Shape.wide(42);\nvar b Shape = Shape.big(true);\nswitch b { case Shape.empty: return 0; case Shape.wide: return 1; case Shape.big: return 2; }\n}", false, 2, false)
+}
+
+func TestEmitUnionVariantLiteralSwitchSubjectCompilesAndRuns(t *testing.T) {
+	// A variant construction used directly as the switch subject (switch
+	// Choice.value(5)) — confirmed checker-reachable — is built as the union's
+	// compound literal and its .tag field read, so the value case fires.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nswitch Choice.value(5) { case Choice.empty: return 0; case Choice.value: return 1; }\n}", false, 1, false)
+}
+
+func TestEmitUnionPayloadRoundTripsThroughConstruction(t *testing.T) {
+	// No syntax in the language reads a tagged-union payload back out (a switch
+	// case value is a bare expression — there is no pattern-binding syntax, so
+	// a case can only ever match by discriminant), so the payload's round-trip
+	// is observed through the only channel that exists: construction itself. An
+	// anchored payload expression that overflows must be evaluated exactly once
+	// and stored at construction time — if the backend dropped or mis-lowered
+	// the payload, the overflow would never fire. Constructing
+	// Choice.value(x + 1) with x = INT32_MAX must abort at construction, which
+	// proves the payload value is genuinely evaluated and stored even though
+	// the language cannot read it back.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nlet x i32 = 2147483647;\nvar c Choice = Choice.value(x + 1);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}", false, 0, true)
+}
+
+func TestEmitUnionAllVoidVariantsCompilesAndRuns(t *testing.T) {
+	// A tagged union every variant of which is payload-less (union enum { a
+	// void; b void; } — legal per the grammar, since `union enum` merely marks
+	// the tagged form) reaches this backend with no payload-carrying
+	// construction anywhere, so nothing in 10.34's plain-enum code path changes
+	// for it: the type is emitted as a plain enum typedef exactly like an
+	// `enum` declaration, and the switch dispatches on the bare enum value.
+	// This test proves the all-void union case needs no new implementation.
+	emitAndRun(t, "type Empty = union enum { a void; b void; }; fn main() i32 {\nvar e Empty = Empty.b;\nswitch e { case Empty.a: return 0; case Empty.b: return 1; }\n}", false, 1, false)
+}
+
+func TestEmitUnionSwitchInHelperCompilesAndRuns(t *testing.T) {
+	// A tagged-union local and switch inside a reachable helper, the entry
+	// calling the helper: collectUnionTypes walks every reachable helper's
+	// body, so the union's typedef pair is discovered and emitted even when no
+	// reachable *entry* statement constructs a payload variant.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn pick() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}\nfn main() i32 { return pick(); }", false, 1, false)
+}
+
+func TestEmitUnionLocalUnusedCompilesClean(t *testing.T) {
+	// A tagged-union local declared and never referenced after its declaration
+	// still compiles clean under -Wall -Wextra -Werror: the emitted declaration
+	// is followed by the same (void) cast every other local gets, so the strict
+	// build never warns about an unused variable.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nreturn 3;\n}", false, 3, false)
+}
+
+func TestEmitUnionWritesC(t *testing.T) {
+	// Confirm the emitted C directly for one fixture: the tag-enum typedef
+	// (one constant per variant in declared order), the tagged-struct typedef
+	// with its union member(s) named pebble_field_<member> from each
+	// constructed variant's symbol, the local declaration initializing from
+	// the construction's compound literal (tag + designated payload member),
+	// and the switch subject reading the .tag field.
+	unit, snapshot, entryID, unionType, variants := unionFixture(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}")
+	if len(variants) != 2 {
+		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(variants))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	tagEnum := "typedef enum {\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[1])) + ",\n" +
+		"} " + enumTypeName(unionType) + ";"
+	if !strings.Contains(out, tagEnum) {
+		t.Errorf("emitted C is missing the tag enum typedef %q:\n%s", tagEnum, out)
+	}
+	unionStruct := "typedef struct {\n" +
+		"    " + enumTypeName(unionType) + " tag;\n" +
+		"    union {\n" +
+		"        int32_t pebble_field_" + strconv.Itoa(int(variants[1])) + ";\n" +
+		"    } payload;\n" +
+		"} " + unionTypeName(unionType) + ";"
+	if !strings.Contains(out, unionStruct) {
+		t.Errorf("emitted C is missing the tagged-struct typedef %q:\n%s", unionStruct, out)
+	}
+	for _, want := range []string{
+		unionTypeName(unionType) + " pebble_local_",
+		"(pebble_union_" + strconv.Itoa(int(unionType)) + "_t){ .tag = pebble_variant_" + strconv.Itoa(int(variants[1])) + ", .payload = { .pebble_field_" + strconv.Itoa(int(variants[1])) + " = 5 } }",
+		"switch (pebble_local_",
+		".tag) {",
+		"case pebble_variant_" + strconv.Itoa(int(variants[0])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(variants[1])) + ":",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
+	// A tagged-union payload that is not exactly the entry's resolved width or
+	// bool — a tuple, struct, array, optional, str, or nested enum — is
+	// reachable from real source (the checker accepts such a variant
+	// declaration and construction) but is a clean rejection naming what is
+	// unsupported, never guessed at. The rejection happens in the union-type
+	// collection walk, where each constructed variant's payload type is first
+	// resolved from its construction site.
+	emitAndRunRejects(t, "type C = union enum { empty void; value (i32, i32); }; fn main() i32 {\nvar c C = C.value((1, 2));\nreturn 0;\n}", "carries a payload of type (int, int); only a payload of i32 or bool is supported")
+}
+
+func emitAndRunRejects(t *testing.T, sourceText, wantSubstring string) {
+	t.Helper()
+	unit, snapshot, entryID := buildFixture(t, sourceText, "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, wantSubstring)
 }
 
 func TestEmitEnumSwitchInHelperCompilesAndRuns(t *testing.T) {
