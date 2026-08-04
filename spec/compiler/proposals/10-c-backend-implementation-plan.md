@@ -1586,6 +1586,62 @@ incrementally as work proceeds.
   manually compiled and ran the emitted C for an out-of-bounds array
   index with `-Wall -Wextra -Werror`, producing the real panic report
   `pebble: index out of bounds at main.peb:1:68`.
+- **10.45 — support `types.Int` as a third entry-point width**
+  (`compiler/internal/backend`): closes a previously-unknown gap
+  between `check.EntryRequired` (which only ever accepted a `main`
+  returning `Void` or `Int` — the bare `int` type, confirmed the real,
+  documented entry-point convention via `ADVANCED.md` and every fixture
+  under `compiler/tests/module/valid/*/main.peb`) and `Emit`'s own
+  entry validation (which only accepted `Void`, `I32`, or `I64` and
+  explicitly rejected `Int`, by design). The two had never overlapped
+  for any exit-code-returning program: every existing backend test
+  proving an integer exit code used an `i32`/`i64` main with
+  `requireEntry: false`, so `EntryRequired` combined with a real
+  integer-returning entry had literally never been exercised anywhere
+  in this codebase before. Fixed by adding `types.Int` as a third,
+  fully independent exact width alongside `I32`/`I64` in the five
+  width-dispatch sites (`validateEntrySignature`, `isWidth`, `cType`,
+  `checkedSuffix`, plus confirming `entryReturnType` and
+  `arrayLengthLiteral` already covered it via their existing
+  non-I64-defaults-to-32-bit paths) — `Int` maps to C `int32_t` and
+  reuses the existing `pebble_rt_checked_*_i32` runtime family
+  unchanged, no new runtime primitives. `isWidth` deliberately treats
+  `Int` as its own exact width, not aliased to `I32`: a body under an
+  `int`-entry must use `int`-typed locals/arithmetic consistently,
+  exactly like the pre-existing i32-vs-i64 no-mixing rule. Verified
+  end-to-end with four new tests (a trivial expression-bodied `int`
+  entry, a checked-addition `int` entry, a checked array read under
+  `int` width, and an out-of-bounds abort under `int` width — all with
+  `requireEntry: true`, actually exercising the checker's entry gate
+  this time), the full pre-existing backend suite (one stale
+  hardcoded-error-message assertion updated to include `int` in its
+  expected text), and the full repo suite.
+- **10.46 — `pebblec`, the first real CLI driver (Phase 6)**
+  (new `compiler/cmd/pebblec` package): `backend.Emit` had never been
+  called from anywhere except Go tests until this slice. `pebblec
+  [-o path] <entry.peb>` runs the real pipeline —
+  `module.FileSystemProvider` (already existed, unused until now) →
+  `symbol.Resolve` → `types.New` → `check.Check` with
+  `check.EntryRequired` genuinely turned on → `backend.Emit` — and
+  writes the emitted C to a file or stdout, rendering diagnostics via
+  `diagnostic.RenderText` on any failure. Also settled an open question
+  about multi-module imports: the plan's own text previously assumed
+  `import` support was blocked on `Emit` accepting more than one
+  compilation unit, but investigation found `check.Check` already
+  merges an entire module graph into a single `*tir.Unit` before
+  `Emit` ever sees it — nobody had ever actually run a multi-module
+  program through the C backend before, though, since every existing
+  backend fixture was single-file. A real two-file `import "./helper";`
+  fixture, run end-to-end through `pebblec` and compiled/run for real,
+  confirms **multi-module import already works through this backend**
+  — no additional lowering work needed for that specific gap. Verified
+  with four tests (single-file happy path, a real type error reported
+  on stderr, a missing-entry-point error, and the multi-module proof),
+  the full repo suite, and independently outside the harness — built
+  the actual `pebblec` binary, ran it against a real `.peb` file on
+  disk (`fn main() int { let a int = 19; let b int = 23; return a +
+  b; }`), and compiled/ran its emitted C standalone, producing exit
+  code 42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
