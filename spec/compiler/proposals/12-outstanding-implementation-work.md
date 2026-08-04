@@ -28,10 +28,10 @@ See `11-raw-pointers-and-unsafe-ops.md` for full design/history.
 - [ ] Known follow-up (documented in 11 §6): `std/string.peb` needs a
       rewrite — it does raw pointer arithmetic throughout, illegal under
       §1.5. Overlaps with the std-library audit below.
-- [ ] Known follow-up (documented in 11 §6): `std/func.peb`'s
+- [x] Known follow-up (documented in 11 §6): `std/func.peb`'s
       `map`/`filter`/`zip` inline `(mem::new(...) as *T)[:count]` instead of
-      calling `mem::new_slice[T]` — illegal pointer-slicing. Overlaps with
-      the std-library audit below.
+      calling `mem::new_slice[T]` — fixed, see the std-library audit below
+      (`4d1a8e5`).
 - [ ] Known, deliberately deferred, not scoped: `(*p).x` on a struct
       pointer / materializing a whole dereferenced struct into a local
       (`let v Point = *p;`) — the checker's place-tracking doesn't extend a
@@ -40,6 +40,22 @@ See `11-raw-pointers-and-unsafe-ops.md` for full design/history.
       with the exact root cause recorded inline. Needs new struct-rvalue
       backend support; not urgent, just tracked here so it isn't
       rediscovered from scratch later.
+- [ ] **Newly discovered, likely the same class of gap as the item
+      above**: `&self.data[i]` — address-of a slice-index place, reached
+      through a pointer receiver's field (e.g. `type V = struct { data
+      []i32; fn get(self *V, i uint) *i32 { return &self.data[i]; } }`)
+      — fails with `C0619 typed-IR construction failed during
+      buildTypeUses`. Confirmed the same construct on a plain local
+      (non-pointer-receiver) slice works fine (`fn f(s []i32) *i32 { var
+      v = s; return &v[0]; }`), so this is specific to place-construction
+      through a pointer-receiver field, not address-of-slice-index in
+      general. **This directly blocks the planned `vec.peb`/`string.peb`
+      pointer-arithmetic-to-slice-indexing redesign below** — that
+      redesign's `get_by_ref`-style methods need exactly this construct
+      (`return &self.data[index];`) to return a pointer into the backing
+      slice. Not yet scoped into a dispatch brief; should probably be
+      fixed together with (or right before) the vec/string redesign work,
+      since the redesign can't be verified until this works.
 - [ ] Known, deliberately deferred (11 §6, "v2, deliberately deferred"):
       generational-pointer UAF/double-free tracking, `any` with real type
       erasure, ownership/borrow-checking. Not scoped, intentionally out of
