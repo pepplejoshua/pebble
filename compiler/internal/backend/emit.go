@@ -3773,7 +3773,8 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// (the Initialize node carries no Type itself, same as every other
 			// compound local). The supported initializers are an AddressOf
 			// expression (`let p *i32 = &y;`), another pointer-typed local
-			// (pointer-to-pointer copy), or a nil literal; every other
+			// (pointer-to-pointer copy), a nil literal, a pointer-returning
+			// call, or an explicit pointer-to-pointer cast; every other
 			// pointer initializer shape is a clean rejection.
 			return buildPointerLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
@@ -5146,8 +5147,22 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		}
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, callText, indent, statement.Symbol), nil
+	case tir.PointerCast:
+		// An explicit pointer-to-pointer cast: `let q *void = p as *void;`.
+		// The PointerCast node has one child (the source pointer value) and
+		// its Type is the destination pointer type. The emitted C is a
+		// simple assignment since C pointer types are already named.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s pointer cast initializer has %d children, want exactly one", context, len(initValue.Children))
+		}
+		childText, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s pointer cast child: %v", context, err)
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, childText, indent, statement.Symbol), nil
 	default:
-		return "", fmt.Errorf("%s declares a pointer-typed local initialized from a %s, want an AddressOf expression, another pointer local, a pointer-returning call, or nil", context, initValue.Kind)
+		return "", fmt.Errorf("%s declares a pointer-typed local initialized from a %s, want an AddressOf expression, another pointer local, a pointer-returning call, a pointer-to-pointer cast, or nil", context, initValue.Kind)
 	}
 }
 
@@ -5776,6 +5791,19 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 		case tir.DirectCall:
 			return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		case tir.PointerCast:
+			if len(node.Children) != 1 {
+				return "", fmt.Errorf("entry function body expression contains a PointerCast with %d children, want exactly one", len(node.Children))
+			}
+			child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+			if err != nil {
+				return "", fmt.Errorf("entry function body pointer cast child: %v", err)
+			}
+			pointeeTypeID, ok := pointerPointeeType(snapshot, node.Type)
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a PointerCast with unsupported pointer type %s", describeType(snapshot, node.Type))
+			}
+			return "(" + pointerTypeName(snapshot, pointeeTypeID) + ")(" + child + ")", nil
 		default:
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}
@@ -7224,7 +7252,26 @@ func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
 	}
 	if builtin, ok := snapshot.Key(pointee); ok {
 		if bk, ok := builtin.Builtin(); ok {
-			return cType(bk) + " *"
+			// cType only maps the fixed-width integer kinds (Int/I32/I64) —
+			// it's meant for width-typed locals, not every possible pointee.
+			// void/bool/char are real, common pointee kinds (*void is
+			// pervasive in std/libc.peb and std/mem.peb) with their own C
+			// spellings that don't go through cType's narrower convention.
+			switch bk {
+			case types.Void:
+				return "void *"
+			case types.Bool:
+				return "bool *"
+			case types.Char:
+				// Matches the existing convention: a char value/local is
+				// always declared as int32_t in emitted C (see the
+				// char-typed-parameter case in buildHelperFunctions).
+				return "int32_t *"
+			}
+			if ctype := cType(bk); ctype != "" {
+				return ctype + " *"
+			}
+			return ""
 		}
 	}
 	if isStr(snapshot, pointee) {

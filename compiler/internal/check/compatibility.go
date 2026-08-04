@@ -95,6 +95,9 @@ func classifyComposite(snapshot *infer.SemanticSnapshot, sourceID, destinationID
 	if sourceID == destinationID {
 		return compatibleIdentity, true
 	}
+	if source.Kind() == types.Pointer && destination.Kind() == types.Pointer {
+		return compatibleExplicit, true
+	}
 
 	sourceBuiltin, sourceIsBuiltin := source.Builtin()
 	destinationBuiltin, destinationIsBuiltin := destination.Builtin()
@@ -154,6 +157,7 @@ const (
 	coercionEnumToInteger
 	coercionOptionalIntegerToEnum
 	coercionCheckedIntegerToEnum
+	coercionPointerCast
 )
 
 // coercionFor returns the typed-IR operation kind that would coerce sourceID
@@ -207,6 +211,10 @@ func coercionFor(snapshot *infer.SemanticSnapshot, class compatibilityClass, sou
 		if child, ok := destKey.Child(); ok && isEnumType(snapshot, child) {
 			return coercionOptionalIntegerToEnum
 		}
+	}
+
+	if sourceKey.Kind() == types.Pointer && destKey.Kind() == types.Pointer {
+		return coercionPointerCast
 	}
 
 	return coercionNone

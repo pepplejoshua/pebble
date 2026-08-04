@@ -58,7 +58,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 			coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
 			coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
 			coercionEnumToInteger: tir.EnumToInteger, coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum,
-			coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
+			coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum, coercionPointerCast: tir.PointerCast,
 		}[coercion]
 		if coercionNode == 0 {
 			return 0, false
@@ -367,6 +367,7 @@ func (s *irBuildState) addCoercionNode(kind coercionKind, destination types.Type
 		coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
 		coercionOptionalInject: tir.OptionalInject, coercionEnumToInteger: tir.EnumToInteger,
 		coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum, coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
+		coercionPointerCast: tir.PointerCast,
 	}[kind]
 	if irKind == 0 {
 		return 0, false

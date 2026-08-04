@@ -1542,6 +1542,68 @@ let ff f32 = 1.0 as f32;
 	}
 }
 
+func TestBuildValuePointerCastNode(t *testing.T) {
+	state, _ := testBuildValue(t, `
+fn main() i32 {
+    var y i32 = 42;
+    let p *i32 = &y;
+    let q *void = p as *void;
+    return 0;
+}`)
+	var castIDs []valueID
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Expression != nil && retained.Expression.Kind == expressionCast {
+			castIDs = append(castIDs, retained.Expression.Result)
+		}
+	}
+	if len(castIDs) != 1 {
+		t.Fatalf("cast expressions = %d, want 1", len(castIDs))
+	}
+	for _, id := range castIDs {
+		if _, ok := state.buildValue(id); !ok {
+			t.Fatalf("cast %d failed to build", id)
+		}
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range castIDs {
+		node := unit.Nodes()[state.values[id]-1]
+		if node.Kind != tir.PointerCast {
+			t.Fatalf("pointer cast node kind = %v, want PointerCast", node.Kind)
+		}
+	}
+}
+
+func TestBuildValueImplicitPointerCastRejected(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn main() i32 {
+    var y i32 = 42;
+    let p *i32 = &y;
+    let q *i64 = p;
+    return 0;
+}`)})
+	result := Check(inputs, diagnostics, Config{})
+	if result.Successful() {
+		t.Fatal("implicit pointer-to-pointer assignment should be rejected")
+	}
+}
+
+func TestBuildValueSameTypePointerIdentity(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn main() i32 {
+    var y i32 = 42;
+    let p *i32 = &y;
+    let q *i32 = p;
+    return 0;
+}`)})
+	result := Check(inputs, diagnostics, Config{})
+	if !result.Successful() {
+		t.Fatalf("same-type pointer assignment should be accepted: %+v", diagnostics.Items())
+	}
+}
+
 func TestBuildRetainedPlaceChain(t *testing.T) {
 	state, _ := testBuildValue(t, `type Box = struct { value i32; }; fn main(box Box) void { box.value = 1; }`)
 	count := 0

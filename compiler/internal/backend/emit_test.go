@@ -7452,6 +7452,16 @@ func TestEmitPointerToPointerCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var y i32 = 7; let p *i32 = &y; let q *i32 = p; return *q; }", false, 7, false)
 }
 
+func TestEmitExplicitPointerCastRoundTripCompilesAndRuns(t *testing.T) {
+	// var y i32 = 42; let p *i32 = &y; let q *void = p as *void; let r *i32 = q as *i32; return *r;
+	// An explicit pointer-to-pointer cast (*i32 -> *void -> *i32) round-trips
+	// correctly. Also exercises *void's own C representation (void *), which
+	// pointerTypeName previously produced as a malformed empty type name
+	// since it routed through cType (meant only for the fixed-width integer
+	// kinds) rather than handling void/bool/char explicitly.
+	emitAndRun(t, "fn main() i32 { var y i32 = 42; let p *i32 = &y; let q *void = p as *void; let r *i32 = q as *i32; return *r; }", false, 42, false)
+}
+
 func TestEmitNilPointerLocalCompilesAndRuns(t *testing.T) {
 	// let p *i32 = nil; return 0;
 	// Declaring a nil pointer local is valid; we just don't dereference it.

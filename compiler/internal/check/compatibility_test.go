@@ -187,7 +187,7 @@ func TestClassifyCompositeMatrix(t *testing.T) {
 		want     compatibilityClass
 	}{
 		{"identical pointer", ids["ptrA"], ids["ptrA"], compatibleIdentity},
-		{"different pointer payload", ids["ptrA"], ids["ptrB"], compatibleForbidden},
+		{"different pointer payload", ids["ptrA"], ids["ptrB"], compatibleExplicit},
 		{"different array payload", ids["arrayA"], ids["arrayB"], compatibleForbidden},
 		{"different array length", ids["arrayA"], ids["arrayA5"], compatibleForbidden},
 		{"different slices", ids["sliceA"], ids["sliceB"], compatibleForbidden},
@@ -236,7 +236,7 @@ func TestCoercionFor(t *testing.T) {
 		{"identity slice", ids["sliceA"], ids["sliceA"], coercionNone},
 		// 2. compatibleForbidden → coercionNone
 		{"forbidden builtin", f.b, f.a, coercionNone},
-		{"forbidden pointer", ids["ptrA"], ids["ptrB"], coercionNone},
+		{"forbidden pointer", ids["ptrA"], ids["ptrB"], coercionPointerCast},
 		{"forbidden array payload", ids["arrayA"], ids["arrayB"], coercionNone},
 		{"forbidden different slice", ids["sliceA"], ids["sliceB"], coercionNone},
 		// 3. integer cast (different integer builtins)

@@ -14,7 +14,7 @@ import (
 // one contiguous nonzero range; maxNodeKind is the private exclusive bound.
 type NodeKind uint8
 
-// The exact 83-tag inventory, in the written order of the seven category
+// The exact 84-tag inventory, in the written order of the seven category
 // blocks from the accepted 06b specification.
 const (
 	// Declarations and nonvalue structure.
@@ -108,6 +108,7 @@ const (
 	EnumToInteger
 	OptionalIntegerToEnum
 	CheckedIntegerToEnum
+	PointerCast
 
 	// Evaluation sequencing.
 	TempBind
@@ -531,6 +532,7 @@ var nodeMetas = [nodeKindCount]nodeMeta{
 	{EnumToInteger, "EnumToInteger", CategoryValue},
 	{OptionalIntegerToEnum, "OptionalIntegerToEnum", CategoryValue},
 	{CheckedIntegerToEnum, "CheckedIntegerToEnum", CategoryValue},
+	{PointerCast, "PointerCast", CategoryValue},
 
 	{TempBind, "TempBind", CategoryNonvalue},
 	{TempRead, "TempRead", CategoryValue},

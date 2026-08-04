@@ -164,7 +164,7 @@ func validNode(t *testing.T, b *Builder, kind NodeKind, refs map[NodeID]struct{}
 		return Node{Kind: kind, Type: boolType, Span: span, Symbol: 1, Convention: types.Pebble, ContextAction: ContextForward, FunctionType: boolType, Children: []NodeID{ensureChild(BoolLiteral)}}
 	case VariantConstruct:
 		return Node{Kind: kind, Type: intType, Span: span, Member: 1}
-	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum:
+	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum, PointerCast:
 		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(IntegerLiteral)}}
 	case TupleCoerce:
 		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(BoolLiteral), ensureChild(IntegerLiteral)}}
@@ -471,7 +471,7 @@ func damageNode(t *testing.T, b *Builder, kind NodeKind, n Node, refs map[NodeID
 		n.ContextAction = ContextExpr
 	case VariantConstruct:
 		n.Member = 0
-	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum:
+	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum, PointerCast:
 		n.Children = nil
 	case TupleCoerce:
 		// Add a place child.
