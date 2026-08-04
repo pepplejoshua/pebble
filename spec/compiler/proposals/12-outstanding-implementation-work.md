@@ -87,21 +87,50 @@ is illegal per 11 §4's decision.
       (`new`, `stack_new`, `realloc`, `copy`, `align_up`, the `extern`
       block). Colliding `slice`-named identifiers already renamed as part
       of the Slice 4 keyword work.
-- [ ] **Newly discovered, not yet scoped**: `std/mem.peb`'s
-      `delete_slice[T](s *[]T) void { delete(s.data); s.data = nil; }` —
-      `s.data` (a field access through a pointer-to-slice) fails
-      type-checking with `T0507 field receiver is not a nominal type`.
-      Confirmed via direct probe against the real file (not a synthetic
-      repro) after the allocator and method-call fixes landed. Not yet
-      root-caused; needs its own investigation before a fix brief can be
-      written.
-- [ ] **Newly discovered, not yet scoped**: `std/mem.peb`'s `new_typed[T]()
-      *T { return new(sizeof T); }` is missing an explicit `*void` → `*T`
-      cast — `new` returns `*void`, and this compiler has no implicit
-      pointer conversions (11 §3: "casts between differently-typed
-      pointers are explicit-only"). Surfaced by the `sizeof T` fix's own
-      commit message while confirming `mem.peb` checks cleanly past the
-      `sizeof`/allocator layers; mechanical fix (`as *T`), not yet applied.
+- [x] `std/mem.peb`'s `new_typed[T]() *T { return new(sizeof T); }` was
+      missing an explicit `*void` → `*T` cast — fixed directly
+      (`return new(sizeof T) as *T;`), confirmed the resulting error is
+      gone from a real check of the file.
+- [ ] **Root-caused, not yet fixed — much bigger than originally scoped**:
+      `.len`/`.data` field access on a slice value from Pebble source does
+      not work AT ALL, in any context. Confirmed via direct probes: fails
+      identically for a plain concrete `[]i32` parameter, a slice freshly
+      cut from an array, a slice already used elsewhere first, and inside
+      a `loop 0..items.len` bound (the exact pattern `std/func.peb` uses
+      everywhere) — always `T0507 field receiver is not a nominal type`.
+      Root cause: `internal/infer/instantiate.go`'s `hasField` only
+      resolves fields on nominal (struct) types; a slice is a distinct
+      structural `SliceShape`, and there is zero special-casing anywhere in
+      `member_facts.go`/`expression_facts.go`/`bracket_facts.go` that
+      routes `.len`/`.data` to a slice instead. The backend's
+      `.data`/`.len` (`pebble_slice_<id>_t`) are internal C field names
+      used only during lowering (e.g. `s[i]` indexing already reads them
+      internally) — never exposed as Pebble-source-accessible fields at
+      the checker level. **Confirmed to also affect**:
+  - `[N]T` fixed arrays' `.len` — same `T0507`, same root cause. Note:
+    unlike a slice, an array's length is a compile-time constant already
+    carried on its type shape (`infer.ArrayShape`'s own `length` field,
+    confirmed by reading `internal/infer/shape.go`) — so the correct fix
+    for `array.len` is resolving it to that constant, NOT a runtime
+    struct-field read the way slice/str's `.len` needs to be.
+  - `str`'s `.len` — same `T0507`, same root cause (`str` is also a
+    non-nominal builtin shape, backed by the same
+    `PebbleStr { .data; .len; }` C representation slices use).
+  - **Not yet confirmed either way** (my own test syntax may have been
+    wrong, not a confirmed checker gap): plain `union` field access failed
+    with a different, unrelated-looking error (`C0605 member operation is
+    invalid`, not `T0507`) — a distinct code path, needs its own
+    investigation with correct syntax before concluding anything. Tagged
+    union (`union enum`) pattern-matching wasn't tested validly (parser
+    errors from guessed-wrong match/switch syntax) — needs the real
+    syntax looked up before testing.
+  - **Confirmed unaffected**: tuple `.0`/`.1` component access already
+    works (`memberTuple` has its own dedicated path in `member_facts.go`).
+  - This blocks essentially every function in `std/func.peb`,
+    `std/vec.peb`, `std/string.peb`, `std/hmap.peb`, `std/set.peb` that
+    reads `.len` (nearly all of them), independent of every other fix so
+    far — likely the single highest-leverage remaining checker fix for
+    unblocking the standard library. Not yet scoped into a dispatch brief.
 - [ ] `std/libc.peb` — `usize` → `uint` sweep (mechanical; extern
       declarations only, no pointer arithmetic present).
 - [ ] `std/hash.peb` — `usize` → `uint` sweep (mechanical).

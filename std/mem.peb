@@ -9,7 +9,7 @@ fn new(size uint) *void {
 }
 
 fn new_typed[T]() *T {
-  return new(sizeof T);
+  return new(sizeof T) as *T;
 }
 
 fn new_slice[T](count uint) []T {
