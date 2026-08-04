@@ -286,10 +286,38 @@ is illegal per 11 §4's decision.
       (`.is_some` → `.has_value`, `cf6c41e`); the pointer-arithmetic
       redesign is still pending.
 
-## CRITICAL — pointer-receiver methods can't be called on a value-typed local at all
+## Pointer-receiver methods can't be called on a value-typed local (fixed, then a regression, fix in flight)
 
-**Confirmed via direct, minimal, isolated testing — very likely the
-single highest-leverage remaining bug for the standard library.**
+- [x] **Fixed.** Committed `ea5aecb`. See below for the full description
+      of the bug this fixed. Independently re-verified — full suite
+      green, and confirmed `std/string.peb` (which needed exactly this
+      pattern in `substr()`) now checks completely clean end to end
+      (0 diagnostics).
+- [ ] **Regression found in the same commit, confirmed via `git worktree`
+      against the pre-fix commit (not pre-existing) — dispatch in
+      flight.** Calling a pointer-receiver method from INSIDE another
+      pointer-receiver method on an already-pointer `self`, when both
+      methods belong to the same GENERIC type, now fails:
+      ```
+      fn push[T](self *Vec[T], value T) void {
+          self.reserve(1);   // regressed by ea5aecb
+          ...
+      }
+      ```
+      This worked before `ea5aecb` and must keep working — it's the
+      exact pattern `std/vec.peb` uses throughout (`push`/`insert`/
+      `resize`/etc. all call `self.reserve(...)` from inside other
+      pointer-receiver methods) and is very likely why `vec.peb` still
+      doesn't fully check even after the auto-ref fix landed. Root-cause
+      hypothesis, not yet confirmed by the fix itself: `callMember`'s new
+      `receiverPointer` check only handles a fully-concrete resolved
+      type, not a still-generic (shape-based, unspecialized) one — so
+      inside a still-generic method body, an already-pointer `self` gets
+      misdetected as "not a pointer" and wrongly double-wrapped. Needs
+      the same two-case treatment `receiverNominal` (used for method
+      *selection*, elsewhere in the same file) already has.
+
+**Original bug this fixed, for reference:**
 Calling a pointer-receiver method (`fn method(self *T, ...) ...`)
 directly on a value-typed (not already pointer-typed) receiver fails
 universally — even the simplest possible case:
