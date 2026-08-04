@@ -2,12 +2,12 @@ import "std:mem";
 
 type Vec[T] = struct {
     data *T;
-    len usize;
-    cap usize;
+    len uint;
+    cap uint;
     backing Allocator;
 
     // Ensures the vector can hold at least `additional` more elements without reallocating.
-    fn reserve[T](self *Vec[T], additional usize) void {
+    fn reserve[T](self *Vec[T], additional uint) void {
         if self.len + additional > self.cap {
             let needed = self.len + additional;
             var new_cap = 0;
@@ -53,14 +53,14 @@ type Vec[T] = struct {
     }
 
     // Safe indexed access.
-    fn get_by_ref[T](self *Vec[T], index usize) ?*T {
+    fn get_by_ref[T](self *Vec[T], index uint) ?*T {
         if index >= self.len {
             return none;
         }
         return some self.data + index;
     }
 
-    fn get[T](self *Vec[T], index usize) ?T {
+    fn get[T](self *Vec[T], index uint) ?T {
         if index >= self.len {
             return none;
         }
@@ -68,7 +68,7 @@ type Vec[T] = struct {
     }
 
     // Safe indexed mutation. Returns true if set, false if out of bounds.
-    fn set[T](self *Vec[T], index usize, value T) bool {
+    fn set[T](self *Vec[T], index uint, value T) bool {
         if index >= self.len {
             return false;
         }
@@ -77,7 +77,7 @@ type Vec[T] = struct {
     }
 
     // Insert an element at index, shifting later elements right.
-    fn insert[T](self *Vec[T], index usize, value T) void {
+    fn insert[T](self *Vec[T], index uint, value T) void {
         if index > self.len {
             index = self.len;
         }
@@ -91,7 +91,7 @@ type Vec[T] = struct {
     }
 
     // Remove and return element at index, shifting later elements left.
-    fn remove[T](self *Vec[T], index usize) ?T {
+    fn remove[T](self *Vec[T], index uint) ?T {
         if index >= self.len {
             return none;
         }
@@ -105,7 +105,7 @@ type Vec[T] = struct {
     }
 
     // Remove element by swapping with last (no shift). Returns the removed value.
-    fn swap_remove[T](self *Vec[T], index usize) ?T {
+    fn swap_remove[T](self *Vec[T], index uint) ?T {
         if index >= self.len {
             return none;
         }
@@ -137,7 +137,7 @@ type Vec[T] = struct {
     }
 
     // Resize to new_len, filling with default if growing.
-    fn resize[T](self *Vec[T], new_len usize, fill T) void {
+    fn resize[T](self *Vec[T], new_len uint, fill T) void {
         if new_len > self.len {
             self.reserve(new_len - self.len);
             loop self.len..new_len : i {
@@ -148,7 +148,7 @@ type Vec[T] = struct {
     }
 
     // Shorten to len, dropping excess.
-    fn truncate[T](self *Vec[T], len usize) void {
+    fn truncate[T](self *Vec[T], len uint) void {
         if len < self.len {
             self.len = len;
         }
@@ -179,7 +179,7 @@ type Vec[T] = struct {
     }
 
     // Return index of first element matching predicate.
-    fn find[T](self *Vec[T], predicate fn(T) bool) ?usize {
+    fn find[T](self *Vec[T], predicate fn(T) bool) ?uint {
         loop 0..self.len : i {
             if predicate(*(self.data + i)) {
                 return some i;
@@ -189,11 +189,11 @@ type Vec[T] = struct {
     }
 
     // Return vector of indices where predicate matches.
-    fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[usize] {
-        var result = new[usize]();
+    fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[uint] {
+        var result = new[uint]();
         loop 0..self.len : i {
             if predicate(*(self.data + i)) {
-                result.push(i as usize);
+                result.push(i as uint);
             }
         }
         return result;
@@ -252,7 +252,7 @@ fn new[T]() Vec[T] {
 }
 
 // Creates a new vector with a specified capacity.
-fn with_capacity[T](cap usize) Vec[T] {
+fn with_capacity[T](cap uint) Vec[T] {
     if cap == 0 {
         return new[T]();
     }
@@ -286,8 +286,8 @@ type Ordering = enum {
 };
 
 // This cannot be made a method, because of this line:
-// var stack = with_capacity[(usize, usize)](self.len);  // Estimate stack size
-// Vec.contains() performs a == comparison, which is not supported for (usize, usize)
+// var stack = with_capacity[(uint, uint)](self.len);  // Estimate stack size
+// Vec.contains() performs a == comparison, which is not supported for (uint, uint)
 // type and will prevent the creation of that Vec object.
 // I am considering what the right way to handle this is. I am probably going to go the
 // way I went for the HashMap type where an eq_fn fn (T, T) bool is required each time
@@ -298,9 +298,9 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
         return;
     }
     // Use a stack for iterative partitioning
-    var stack = with_capacity[(usize, usize)](self.len);  // Estimate stack size
+    var stack = with_capacity[(uint, uint)](self.len);  // Estimate stack size
     defer delete(&stack);
-    push(&stack, (0 as usize, self.len - 1));
+    push(&stack, (0 as uint, self.len - 1));
 
     while !(stack.len == 0) {
         let stack_val = pop(&stack);
@@ -320,7 +320,7 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
 }
 
 // Partition with median-of-three pivot selection.
-fn partition[T](self *Vec[T], low usize, high usize, cmp fn(T, T) Ordering) usize {
+fn partition[T](self *Vec[T], low uint, high uint, cmp fn(T, T) Ordering) uint {
     // Median-of-three: compare low, mid, high
     let mid = low + (high - low) / 2;
     let a = *(self.data + low);

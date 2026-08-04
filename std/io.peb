@@ -11,8 +11,8 @@ extern {
 
     // Core file ops
     fn fopen(path str, mode str) *FILE;  // const char* -> str
-    fn fread(buffer *void, size usize, count usize, file *FILE) usize;  // size_t/bytes
-    fn fwrite(data *void, size usize, count usize, file *FILE) usize;
+    fn fread(buffer *void, size uint, count uint, file *FILE) uint;  // size_t/bytes
+    fn fwrite(data *void, size uint, count uint, file *FILE) uint;
     fn fclose(file *FILE) i32;  // Returns 0 on success
     fn feof(file *FILE) i32;  // Non-zero if EOF
     fn ferror(file *FILE) i32;  // Non-zero if error
@@ -41,7 +41,7 @@ extern {
     // For line reads (if implementing read_line)
     fn fgets(buf *void, size i32, file *FILE) *void;  // char* -> *void, returns buf or null
 
-    fn strlen(s str) usize;
+    fn strlen(s str) uint;
 }
 
 let SeekStart = 0;
@@ -70,7 +70,7 @@ fn close(file *FILE) bool {
     return result == 0;
 }
 
-fn read(file *FILE, buffer *void, max_bytes usize) usize {
+fn read(file *FILE, buffer *void, max_bytes uint) uint {
     var bytes_read = fread(buffer, 1, max_bytes, file);
     // Bytes read (0 on EOF/error)
     return bytes_read;
@@ -103,13 +103,13 @@ fn read_all(file *FILE) string::String {
     }
 
     var s = string::new();
-    var needed usize = size + 1; // +1 for null terminator
+    var needed uint = size + 1; // +1 for null terminator
     if needed > s.capacity {
         s.grow(needed);
     }
 
     var bytes_read = fread(s.data, 1, size, file);
-    if bytes_read != size as usize {
+    if bytes_read != size as uint {
         // Partial read; error
         string::delete(&s);
         fseek(file, pos, SeekStart); // Restore
@@ -157,12 +157,12 @@ fn read_line(file *FILE) string::String {
 }
 
 // Write binary
-fn write_bytes(file *FILE, data *void, size usize) usize {
+fn write_bytes(file *FILE, data *void, size uint) uint {
     return fwrite(data, 1, size, file);
 }
 
 // Write
-fn write(file *FILE, data str, size usize) usize {
+fn write(file *FILE, data str, size uint) uint {
     // Bytes written (use data as *void if binary)
     return write_bytes(file, data as *void, size);
 }
@@ -179,7 +179,7 @@ fn tell(file *FILE) i64 {
     return ftell(file);
 }
 
-fn filesize(file *FILE) usize {
+fn filesize(file *FILE) uint {
     // File size (0 on error); seeks to end
     var orig_pos = tell(file);
     if orig_pos == -1 { return 0; }
@@ -201,7 +201,7 @@ fn filesize(file *FILE) usize {
 
     seek(file, orig_pos, SeekStart);
     // Since it is not -1, it is >= 0
-    return size as usize;
+    return size as uint;
 }
 
 // Control

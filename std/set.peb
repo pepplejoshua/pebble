@@ -13,8 +13,8 @@ type Entry[K] = struct {
 
 type Set[K] = struct {
     entries *Entry[K];
-    len     usize;       // number of OCCUPIED entries
-    cap     usize;       // number of slots in table
+    len     uint;       // number of OCCUPIED entries
+    cap     uint;       // number of slots in table
     hash_fn fn (K) u64;
     eq_fn   fn (K, K) bool;
     backing Allocator;
@@ -36,7 +36,7 @@ type Set[K] = struct {
     }
 
     // Rehash into a new table with new_cap buckets.
-    fn rehash[K](self *Set[K], new_cap usize) void {
+    fn rehash[K](self *Set[K], new_cap uint) void {
         let allocator = self.backing;
         let new_size = new_cap * (sizeof Entry[K]);
         let new_entries *Entry[K] = allocator.alloc(allocator.ptr, new_size);
@@ -72,8 +72,8 @@ type Set[K] = struct {
         self.maybe_grow();
 
         let hash = self.hash_fn(key);
-        var index = (hash as usize) % self.cap;
-        var tombstone_index ?usize = none;
+        var index = (hash as uint) % self.cap;
+        var tombstone_index ?uint = none;
 
         while true {
             let entry = self.entries + index;
@@ -113,7 +113,7 @@ type Set[K] = struct {
         }
 
         let hash = self.hash_fn(key);
-        var index = (hash as usize) % self.cap;
+        var index = (hash as uint) % self.cap;
 
         while true {
             let entry = self.entries + index;
@@ -139,7 +139,7 @@ type Set[K] = struct {
         }
 
         let hash = self.hash_fn(key);
-        var index = (hash as usize) % self.cap;
+        var index = (hash as uint) % self.cap;
 
         while true {
             let entry = self.entries + index;
@@ -183,7 +183,7 @@ fn new[K](hash_fn fn (K) u64, eq_fn fn (K, K) bool) Set[K] {
 }
 
 // Create set with specified capacity.
-fn with_capacity[K](cap usize, hash_fn fn (K) u64,
+fn with_capacity[K](cap uint, hash_fn fn (K) u64,
                         eq_fn fn (K, K) bool) Set[K] {
     if cap == 0 {
         return new[K](hash_fn, eq_fn);

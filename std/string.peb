@@ -2,17 +2,17 @@
 import "std:mem";
 
 extern {
-    fn strlen(s str) usize;
+    fn strlen(s str) uint;
     fn strcmp(a str, b str) int;
-    fn memcmp(a *void, b *void, n usize) int;
+    fn memcmp(a *void, b *void, n uint) int;
 }
 
 type String = struct {
     data *char;
-    len usize;
-    capacity usize;
+    len uint;
+    capacity uint;
 
-    fn grow(self *String, new_cap usize) void {
+    fn grow(self *String, new_cap uint) void {
         if new_cap == 0 {
             new_cap = 16; // Minimum capacity
         }
@@ -55,7 +55,7 @@ type String = struct {
         *(self.data + self.len) = '\0';
     }
 
-    fn reserve(self *String, additional usize) void {
+    fn reserve(self *String, additional uint) void {
         var needed = self.len + additional + 1;
         if (needed > self.capacity) {
             var new_cap = self.capacity;
@@ -133,7 +133,7 @@ type String = struct {
         return memcmp((self.data + start_pos), suffix, suffix_len) == 0;
     }
 
-    fn find(self String, needle str) ?isize {
+    fn find(self String, needle str) ?int {
         var needle_len = strlen(needle);
         if (needle_len == 0) {
             return some 0;
@@ -152,7 +152,7 @@ type String = struct {
         return none; // Not found
     }
 
-    fn substr(self String, start usize, count usize) String {
+    fn substr(self String, start uint, count uint) String {
         if (start >= self.len) {
             return new();
         }
@@ -173,7 +173,7 @@ type String = struct {
         return result;
     }
 
-    fn insert(self *String, pos usize, new_str str) void {
+    fn insert(self *String, pos uint, new_str str) void {
         var insert_len = strlen(new_str);
         if (insert_len == 0) {
             return; // Nothing to insert
@@ -196,7 +196,7 @@ type String = struct {
         *(self.data + self.len) = '\0';
     }
 
-    fn remove(self *String, pos usize, count usize) void {
+    fn remove(self *String, pos uint, count uint) void {
         if (pos >= self.len || count == 0) {
             return; // Nothing to remove
         }

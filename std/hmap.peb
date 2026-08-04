@@ -14,14 +14,14 @@ type Entry[K, V] = struct {
 
 type HashMap[K, V] = struct {
     entries *Entry[K, V];
-    len     usize;       // number of OCCUPIED entries
-    cap     usize;       // number of slots in table
+    len     uint;       // number of OCCUPIED entries
+    cap     uint;       // number of slots in table
     hash_fn fn (K) u64;
     eq_fn   fn (K, K) bool;
     backing Allocator;
 
     // Rehash into a new table with new_cap buckets.
-    fn rehash[K, V](self *HashMap[K, V], new_cap usize) void {
+    fn rehash[K, V](self *HashMap[K, V], new_cap uint) void {
         let allocator = self.backing;
         let new_size = new_cap * (sizeof Entry[K, V]);
         let new_entries *Entry[K, V] = allocator.alloc(allocator.ptr, new_size);
@@ -73,8 +73,8 @@ type HashMap[K, V] = struct {
         self.maybe_grow();
 
         let hash = self.hash_fn(key);
-        var index = (hash as usize) % self.cap;
-        var tombstone_index ?usize = none;
+        var index = (hash as uint) % self.cap;
+        var tombstone_index ?uint = none;
 
         while true {
             let entry = self.entries + index;
@@ -117,7 +117,7 @@ type HashMap[K, V] = struct {
         }
 
         let hash = self.hash_fn(key);
-        var index = (hash as usize) % self.cap;
+        var index = (hash as uint) % self.cap;
 
         while true {
             let entry = self.entries + index;
@@ -157,7 +157,7 @@ type HashMap[K, V] = struct {
         }
 
         let hash = self.hash_fn(key);
-        var index = (hash as usize) % self.cap;
+        var index = (hash as uint) % self.cap;
 
         while true {
             let entry = self.entries + index;
@@ -201,7 +201,7 @@ fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
 }
 
 // Create map with specified capacity.
-fn with_capacity[K, V](cap usize, hash_fn fn (K) u64,
+fn with_capacity[K, V](cap uint, hash_fn fn (K) u64,
                         eq_fn fn (K, K) bool) HashMap[K, V] {
     if cap == 0 {
         return new[K, V](hash_fn, eq_fn);

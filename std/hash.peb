@@ -36,7 +36,7 @@ fn hash_int(val int) u64 {
     return hash_u64(val as u64);
 }
 
-fn hash_isize(val isize) u64 {
+fn hash_isize(val int) u64 {
     return hash_u64(val as u64);
 }
 
@@ -63,7 +63,7 @@ fn hash_u64(val u64) u64 {
     return x;
 }
 
-fn hash_usize(val usize) u64 {
+fn hash_usize(val uint) u64 {
     return hash_u64(val as u64);
 }
 
@@ -87,7 +87,7 @@ fn hash_char(val char) u64 {
 }
 
 // Byte Array Hashing (FNV-1a for raw bytes)
-fn hash_bytes(data *u8, len usize) u64 {
+fn hash_bytes(data *u8, len uint) u64 {
     var hash u64 = 14695981039346656037; // FNV offset basis
     let fnv_prime u64 = 1099511628211;
 
