@@ -106,6 +106,30 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	if !ok {
 		return false
 	}
+	functionKey, functionKeyOK := s.handoff.Semantics.Types().Key(functionType)
+	if functionKeyOK {
+		_, parameters, _, _, isFunction := functionKey.Function()
+		if isFunction && len(parameters) != 0 {
+			selfType := parameters[0]
+			receiverType, receiverTypeOK := s.resolveType(call.Receiver)
+			selfKey, selfKeyOK := s.handoff.Semantics.Types().Key(selfType)
+			receiverKey, receiverKeyOK := s.handoff.Semantics.Types().Key(receiverType)
+			if receiverTypeOK && selfKeyOK && receiverKeyOK && selfKey.Kind() == types.Pointer && receiverKey.Kind() != types.Pointer {
+				pointee, pointeeOK := selfKey.Child()
+				if pointeeOK && pointee == receiverType {
+					place, placeOK := s.buildPlaceForValue(call.Receiver)
+					if !placeOK {
+						return false
+					}
+					address, addressOK := s.addNode(tir.Node{Kind: tir.AddressOf, Type: selfType, Span: call.Header.Span, Children: []tir.NodeID{place}}, symbol.SyntaxRef{})
+					if !addressOK {
+						return false
+					}
+					receiver = address
+				}
+			}
+		}
+	}
 	node.Kind = tir.MethodCall
 	node.Symbol = method.Method
 	node.FunctionType = functionType

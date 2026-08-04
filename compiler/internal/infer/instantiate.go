@@ -360,6 +360,17 @@ func (s *Session) selectMethod(value Constraint) (bool, bool, bool) {
 		s.failMethodArguments(value.site)
 		return false, false, false
 	}
+	if len(parameters) != 0 {
+		pointerReceiver := parameters[0].kind == shapePointer
+		if !pointerReceiver && parameters[0].kind == shapeLeaf {
+			if id, known := s.resolvedType(parameters[0].term); known {
+				if key, found := s.program.typeKey(id); found {
+					pointerReceiver = key.Kind() == types.Pointer
+				}
+			}
+		}
+		s.methodPointerReceivers[value.site] = pointerReceiver
+	}
 	changed, success := s.constrainShape(value.b, FunctionShape(signature.Convention, parameters, result, signature.Variadic), value.origin)
 	if !success {
 		s.failMethodArguments(value.site)
@@ -391,7 +402,17 @@ func (s *Session) callMember(value Constraint) (bool, bool, bool) {
 		if delayed || !success {
 			return changed, success, delayed
 		}
-		shapes := []Shape{Leaf(value.a)}
+		receiverShape := Leaf(value.a)
+		receiverPointer := false
+		if receiverType, known := s.resolvedType(value.a); known {
+			if key, found := s.program.typeKey(receiverType); found {
+				receiverPointer = key.Kind() == types.Pointer
+			}
+		}
+		if s.methodPointerReceivers[value.site] && !receiverPointer {
+			receiverShape = PointerShape(receiverShape)
+		}
+		shapes := []Shape{receiverShape}
 		for _, argument := range value.arguments {
 			shapes = append(shapes, Leaf(argument.Destination))
 		}

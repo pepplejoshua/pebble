@@ -114,6 +114,7 @@ type Session struct {
 	instantiations         map[symbol.SyntaxRef]publishedInstantiation
 	instantiationArguments uint64
 	methodStates           map[symbol.SyntaxRef]methodState
+	methodPointerReceivers map[symbol.SyntaxRef]bool
 	methodSites            map[symbol.SyntaxRef]bool
 	resolveMemo            map[resolveKey]TypeResult
 	typeOccurrenceMemo     map[resolveKey]occurrenceResult
@@ -134,10 +135,11 @@ func NewSession(program *Program, diagnostics *diagnostic.DiagnosticSet, config 
 		program: program, config: config, token: &sessionToken{},
 		reporter:    newReporter(diagnostics, config.MaxDiagnostics),
 		symbolRoots: make(map[symbol.SymbolID]Term), syntaxRoots: make(map[symbol.SyntaxRef]Term),
-		instantiations: make(map[symbol.SyntaxRef]publishedInstantiation),
-		methodStates:   make(map[symbol.SyntaxRef]methodState),
-		methodSites:    make(map[symbol.SyntaxRef]bool),
-		resolveMemo:    make(map[resolveKey]TypeResult), selections: make(map[ConstraintID]uint32),
+		instantiations:         make(map[symbol.SyntaxRef]publishedInstantiation),
+		methodStates:           make(map[symbol.SyntaxRef]methodState),
+		methodPointerReceivers: make(map[symbol.SyntaxRef]bool),
+		methodSites:            make(map[symbol.SyntaxRef]bool),
+		resolveMemo:            make(map[resolveKey]TypeResult), selections: make(map[ConstraintID]uint32),
 		typeOccurrenceMemo:  make(map[resolveKey]occurrenceResult),
 		valueOccurrenceMemo: make(map[symbol.SyntaxRef]*inferenceConflict),
 		slotPublications:    make(map[slotPublicationKey]bool),

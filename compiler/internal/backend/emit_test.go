@@ -311,6 +311,10 @@ func TestEmitPointerReceiverMethodCallCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, `type Point = struct { fn get(self *Point) i32 => 1; }; fn main() i32 { let p *Point = nil; return p.get(); }`, false, 1, false)
 }
 
+func TestEmitAutoReferencesValueForPointerReceiver(t *testing.T) {
+	emitAndRun(t, `type S = struct { n i32; fn set(self *S, value i32) void { self.n = value; } }; fn main() i32 { var s = S.{ n = 0 }; s.set(9); return s.n; }`, false, 9, false)
+}
+
 func TestEmitOptionalHasValueCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, `fn main() i32 { let present ?i32 = some 7; if present.has_value { return 1; } else { return 0; } }`, false, 1, false)
 	emitAndRun(t, `fn main() i32 { let absent ?i32 = none; if !absent.has_value { return 1; } else { return 0; } }`, false, 1, false)

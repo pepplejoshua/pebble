@@ -69,6 +69,43 @@ let c_call i32 = foreign(6);
 	}
 }
 
+func TestCallFactsAutoReferencesValueForPointerReceiver(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type S = struct {
+    n i32;
+    fn set(self *S, value i32) void { self.n = value; }
+    fn touch(self *S) void { }
+};
+fn make() S => S.{ n = 0 };
+fn copied(s S) void { var mutable = s; mutable.set(1); mutable.touch(); }
+fn use() void {
+    var s = S.{ n = 0 };
+    s.set(1);
+    s.touch();
+    var made = make();
+    made.set(2);
+    let p *S = &s;
+    p.set(3);
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("diagnostics=%+v", diagnostics.Items())
+	}
+}
+
+func TestCallFactsValueReceiverStillWorks(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type S = struct { n i32; fn read(self S) i32 => self.n; };
+fn use() i32 { let s = S.{ n = 7 }; return s.read(); }
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if solution := facts.Session.Solve(); !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("diagnostics=%+v", diagnostics.Items())
+	}
+}
+
 func TestCallFactsFunctionFieldsUseMethodSyntax(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 fn add(value i32) i32 => value;
