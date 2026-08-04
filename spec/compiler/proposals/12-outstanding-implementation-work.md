@@ -195,22 +195,29 @@ is illegal per 11 §4's decision.
 - [x] `std/mem.peb`'s `new_slice[T]` had a second missing explicit cast
       (`allocator.alloc` returns `*void`, assigned directly to a `*T`
       local) — fixed (`4d1a8e5`).
-- [ ] **Newly discovered, real, separate from everything above**:
-      assigning `nil` through ANY field place (`p.field = nil;`) fails
-      with `T0510 inference variable has no unique semantic type` —
-      confirmed this is not specific to pointers, slices, or generics: a
-      plain, non-generic, value-receiver nominal struct field
-      (`type P = struct { d *i32; }; fn f(p P) void { var pp P = p; pp.d
-      = nil; }`) fails identically. Confirmed pre-existing (identical
-      failure on the commit before today's pointer-receiver fix, not a
-      regression from it). A plain local (`var p *i32 = nil; p = nil;`)
-      works fine — the gap is specific to field-place targets, meaning
-      whatever propagates the assignment target's expected type down to
-      ground `nil`'s literal type doesn't handle `FieldPlace`. This
-      directly blocks `std/mem.peb`'s `delete_slice` (`s.data = nil;`)
-      and is likely present throughout `std/vec.peb`/`std/string.peb`
-      wherever a field is reset to `nil` after freeing. Not yet scoped
-      into a dispatch brief.
+- [x] `p.field = nil;` (any field place — pointer, slice, or plain
+      nominal struct alike) previously failed with `T0510`. Fixed
+      (`ca1ee43`): `expectedType` gained a `ShapeLiteral` flag, set only
+      for `nil`/`none`, and `applyExpected` now unifies exactly those
+      shape-literal terms with the assignment destination so later
+      constraint solving can ground them — narrow and additive, doesn't
+      touch ordinary (non-literal) field assignment. Also closed a
+      previously-unexercised backend gap surfaced while adding the
+      required round-trip test: pointer-typed struct fields had no
+      support anywhere in struct construction, field reads, field
+      stores, or C-type declaration (no prior test in this repo ever
+      constructed/read/wrote a struct field of pointer type through the
+      backend). Independently re-verified — full suite green.
+  - **Residual, smaller, separate finding from re-checking
+    `std/mem.peb`**: the file is down to a single different error
+    (`C0619 typed-IR construction failed during buildDeclarations`,
+    not the `T0510` this fix targeted) — confirmed NOT reproduced by
+    `delete_slice` alone, nor by several individual function-pair
+    combinations from the file (`new_slice`+`delete_slice`,
+    `new_typed`+`delete_slice`, `realloc`+`delete_slice` all pass
+    standalone). Appears to need a specific larger subset of the file's
+    functions coexisting to reproduce — not yet bisected further, not
+    yet scoped into a dispatch brief.
 - [ ] `std/vec.peb` — real redesign needed beyond the `usize` sweep:
       `data` needs to be backed by a `mem::new_slice`d slice
       (capacity-sized) and indexed via `data[i]` instead of pointer
