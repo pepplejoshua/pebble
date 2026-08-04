@@ -152,6 +152,11 @@ function (e.g. a `switch`) instead.
 
 ### 1.5 Pointer arithmetic, ordering, and nil policy
 
+**Reaffirmed unchanged by `proposals/11-raw-pointers-and-unsafe-ops.md`**,
+which also closes §3.3/§3.8 above — see that doc for the fuller raw-pointer
+story (checked null dereference, explicit-only pointer casts, the `slice`
+keyword).
+
 **Undecided in one place, answered in another.** `05b-algebraic-inference.md`
 §"Boundary with phase 6" assigns "pointer arithmetic, pointer comparison, and
 nil policy beyond the structural fact above" to phase 6 as unowned. But
@@ -442,6 +447,15 @@ no lightweight nominal-wrapper safety net for primitives until this lands.
 
 ### 3.3 Pointer mutability, nullability, and safety distinctions
 
+**Partially resolved, see `proposals/11-raw-pointers-and-unsafe-ops.md`.**
+`*T` still has no `const`-vs-mutable distinction, no address-space tag, and
+no ownership/safety bit — that part of this entry stands, deliberately, as
+a v2 item (a generational-pointer safety net is the planned answer, not
+scoped yet). What *is* now decided: dereference is checked for null only
+(a runtime panic with a real source location, not a type-level
+non-nullability guarantee), and casts between differently-typed pointers
+are explicit-only. Originally:
+
 **Undecided:** Pebble has exactly one pointer form, `*T`, identified only by
 its pointee. No `const`-vs-mutable pointer, no address-space tag, no
 non-null-by-construction pointer, and no safety/ownership bit exist yet.
@@ -535,6 +549,18 @@ not work — you must call `obj.method(...)` directly at the call site every
 time. No first-class bound methods to pass around as callbacks.
 
 ### 3.8 Unsafe pointer policy
+
+**Resolved, see `proposals/11-raw-pointers-and-unsafe-ops.md`.** No general
+`unsafe` block or opt-out exists — the decision is narrower and more
+specific than that. One new, purpose-built primitive (`slice <ptr>, <count>`,
+a keyword modeled on `sizeof`) constructs a `[]T` from a raw pointer and a
+runtime length without a bounds check, and it is restricted to the std lib
+package (`module.StandardPackage`) at check time, not just by convention.
+Everything else stays exactly as restrictive as before: pointer arithmetic
+and pointer-to-pointer implicit casts are still rejected, and array-slice
+syntax (`ptr[:n]`) on a pointer is now explicitly illegal everywhere
+(closing a gap the existing `std/mem.peb`/`func.peb`/`vec.peb`/`string.peb`
+had silently assumed away). Originally:
 
 **Undecided:** whether Pebble ever gets an "unsafe" pointer escape hatch
 (unchecked casts, raw memory reinterpretation, etc.) beyond the single
