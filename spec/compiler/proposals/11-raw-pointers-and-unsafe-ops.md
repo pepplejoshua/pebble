@@ -188,3 +188,37 @@ gap to close first — not a redesign, a missing case in a switch that
 already handles its sibling operations. This should be confirmed with its
 own investigation dispatch before committing to a implementation-slice
 sequence.
+
+## 8. Slice 1 — address-of (`&x`) TIR construction (done)
+
+Confirmed the hypothesis in §7 precisely, then closed it. Root cause:
+`ir_builder_value.go`'s `expressionPrefix`/`Postfix`/`Binary` dispatch only
+special-cased `operatorDereference`; `operatorAddress` (already correctly
+classified as its own operator family, separately from bitwise-AND, and
+already constrained to `PointerShape(pointee)` by the solver — both
+pre-existing, confirmed by reading `operator_facts.go` directly) fell
+through to `buildOperatorValue`, which cannot construct a place-valued
+operand. Fixed by adding a new `tir.AddressOf` value node kind (one child,
+required to be a `CategoryPlace` node — distinct from `DereferencePlace`,
+which is itself a place, not a value) and a new case in `ir_builder_value.go`
+that calls `buildPlaceForValue` on the *operand* (not the address-of
+expression itself) and wraps the resulting place in `tir.AddressOf`. No
+changes needed to `operator_facts.go`, `place_validation.go`'s existing
+`C0606` immutable-place rejection, or the type-resolution side — all three
+were already correct.
+
+Verified end-to-end through `check.Check()` (not just parsing/validation)
+for both a `var`-bound scalar local and a `var`-bound struct local, with a
+real round-trip test proving `&y` followed by `*p` produces the correct
+`AddressOf` → `Load`/`DereferencePlace` shape, not just that `Check()`
+returns success. The existing `C0606` rejection of `&` on a `let`-bound
+local was confirmed still correct (regression guard). Full checker suite,
+full `tir` suite, and full repo suite all pass — `compiler/internal/backend`
+genuinely untouched (still zero pointer support there, as intended for this
+slice).
+
+**Still not done, unchanged from §3/§6 above**: backend lowering (`Emit`
+still can't compile any of this to C), the checked-null-dereference runtime
+primitive, the explicit-only pointer-cast rule, and `slice`/`mem::new_slice`.
+Taking the address of a tuple/array/slice element (`&t.0`, `&a[0]`) was
+deliberately left out of scope and not investigated.
