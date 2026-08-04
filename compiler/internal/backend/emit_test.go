@@ -173,6 +173,15 @@ func TestEmitIndirectlyReachedMethodCall(t *testing.T) {
 	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn read(p Point) i32 { return p.get(); } fn main() i32 { let p Point = Point.{ x = 42 }; return read(p); }`, false, 42, false)
 }
 
+func TestEmitMethodCallWithExplicitArgument(t *testing.T) {
+	// Was blocked until the call_validation.go fix (a real checker bug
+	// compared a method call's argument count against its generic
+	// type-argument count, wrongly rejecting any non-generic method call
+	// with an argument beyond the receiver) — proves the receiver field and
+	// the explicit argument both flow through correctly.
+	emitAndRun(t, `type Point = struct { x i32; fn add(self Point, delta i32) i32 => self.x + delta; }; fn main() i32 { let p Point = Point.{ x = 40 }; return p.add(2); }`, false, 42, false)
+}
+
 func TestEmitRejectsPointerReceiverMethodCall(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, `type Point = struct { fn get(self *Point) i32 => 1; }; fn main() i32 { let p *Point = nil; return p.get(); }`, "main", false)
 	var buf bytes.Buffer

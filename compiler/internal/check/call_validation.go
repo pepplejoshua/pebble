@@ -80,12 +80,18 @@ func validateCallRecords(handoff *solveHandoff, records *solvedRecords, diagnost
 
 		case callMethod:
 			selection, found := handoff.Solution.Method(call.Target.Site)
-			if !found || call.Receiver == 0 || len(call.Arguments) != len(selection.Arguments) {
+			if !found || call.Receiver == 0 {
 				valid = false
 			} else {
-				selected, resolved := resolution.Symbols.Symbol(selection.Method)
-				if !resolved || selected.Error || selected.Kind != symbol.SymbolMethod {
+				signature, sigFound := handoff.Semantics.Signature(selection.Method)
+				if !sigFound || signature.State != infer.DeclarationReady || len(signature.Inputs) == 0 ||
+					len(call.Arguments) != len(signature.Inputs)-1 {
 					valid = false
+				} else {
+					selected, resolved := resolution.Symbols.Symbol(selection.Method)
+					if !resolved || selected.Error || selected.Kind != symbol.SymbolMethod {
+						valid = false
+					}
 				}
 			}
 

@@ -69,6 +69,35 @@ func TestValidateCallRecordsRejectsArityMismatchByKind(t *testing.T) {
 	}
 }
 
+// TestValidateCallRecordsAcceptsMethodCallWithArgument guards against a real
+// bug: validateCallRecords used to compare a method call's explicit argument
+// count against MethodSelection.Arguments, which is the method's own generic
+// type-argument list (see infer.MethodSelection and methodState.arguments in
+// internal/infer/instantiate.go), not its runtime call arguments. For any
+// non-generic method that list is always empty, so any method call passing a
+// real argument beyond the receiver was wrongly rejected with CodeCall. The
+// fix compares against the method's resolved Signature.Inputs (minus one for
+// the receiver, which occupies Inputs[0] exactly like Parameters[0] — see
+// call_validation.go's callMethod case) instead.
+func TestValidateCallRecordsAcceptsMethodCallWithArgument(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Point = struct { x i32; fn add(self Point, delta i32) i32 => self.x + delta; };
+let p Point = Point.{ x = 40 };
+let sum i32 = p.add(2);
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.Semantics == nil || handoff.Solution == nil {
+		t.Fatalf("06a did not produce a handoff: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatalf("records did not resolve: %+v", diagnostics.Items())
+	}
+	if !validateCallRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeCall) {
+		t.Fatalf("method call with a real argument was wrongly rejected: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateCallRecordsSkipsInactiveGuardedCalls(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 fn identity[T](value T) T => value;
