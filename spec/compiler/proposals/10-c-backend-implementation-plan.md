@@ -1642,6 +1642,47 @@ incrementally as work proceeds.
   disk (`fn main() int { let a int = 19; let b int = 23; return a +
   b; }`), and compiled/ran its emitted C standalone, producing exit
   code 42.
+- **10.47 — lower `tir.MethodCall` to C (method calls)**
+  (`compiler/internal/backend`): closes the most-blocking missing
+  backend feature. Investigation found this was narrower than assumed:
+  `tir.MethodCall` already existed as a full TIR node kind, fully
+  constructed by the checker's IR builder (`buildMethodCall` in
+  `ir_builder_calls.go`) for every method call in real source. A
+  method's receiver (`self`, by convention — not a keyword) is not
+  synthesized anywhere; it's an entirely ordinary declared parameter
+  at `Parameters[0]` (confirmed via `call_validation.go`'s positional
+  validation), and a `MethodCall` node's `Children` (`[receiver,
+  arg0, arg1, ...]`) is positionally identical in shape to what a
+  `DirectCall` to an equivalent function would produce. The fix was
+  therefore purely additive: every place `emit.go` dispatched on
+  `tir.DirectCall` (call-site expression building, reachability
+  discovery, str/char operand building, aggregate-typed local
+  initializers, discarded-expression statements) now also accepts
+  `tir.MethodCall` and treats it identically — no receiver synthesis,
+  no new plumbing. `buildDirectCall`/`buildCallArguments` needed zero
+  changes since they operate purely on node fields with no `Kind`
+  check. Generic-method rejection and pointer-receiver rejection both
+  fall out for free from pre-existing checks (`TypeArgs` length, and
+  the existing unsupported-parameter-type path respectively) — neither
+  needed new code. Verified with four new tests (a value-receiver
+  method reading its own field, a method reached only indirectly
+  through a helper, a pointer-receiver method cleanly rejected, and a
+  generic method cleanly rejected), the full backend suite, the full
+  repo suite, and independently outside the harness — manually
+  compiled and ran the emitted C for the value-receiver field-read
+  case with `-Wall -Wextra -Werror`, exit code 41.
+
+  **Known follow-up, not fixed here (out of this task's scope —
+  `compiler/internal/check`, not `backend`)**: a real checker bug in
+  `call_validation.go` (~line 81-89) conflates `len(call.Arguments)`
+  (the call site's actual runtime argument count) with
+  `len(selection.Arguments)` (generic type-argument count, from
+  `infer.instantiate.go`) — so **any** non-generic method call with an
+  explicit argument beyond `self` (e.g. `p.add(2)` where `add(self
+  Point, delta int)`) is wrongly rejected with `C0604` before it ever
+  reaches the backend. This blocks realistic method usage broadly
+  (methods taking only `self` work; methods taking any other parameter
+  don't) and needs its own checker-side fix.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
