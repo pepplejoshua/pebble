@@ -208,16 +208,23 @@ is illegal per 11 §4's decision.
       stores, or C-type declaration (no prior test in this repo ever
       constructed/read/wrote a struct field of pointer type through the
       backend). Independently re-verified — full suite green.
-  - **Residual, smaller, separate finding from re-checking
-    `std/mem.peb`**: the file is down to a single different error
-    (`C0619 typed-IR construction failed during buildDeclarations`,
-    not the `T0510` this fix targeted) — confirmed NOT reproduced by
-    `delete_slice` alone, nor by several individual function-pair
-    combinations from the file (`new_slice`+`delete_slice`,
-    `new_typed`+`delete_slice`, `realloc`+`delete_slice` all pass
-    standalone). Appears to need a specific larger subset of the file's
-    functions coexisting to reproduce — not yet bisected further, not
-    yet scoped into a dispatch brief.
+  - **Residual, smaller, separate finding, now with a clean minimal
+    repro**: the file is down to a single different error (`C0619 typed-IR
+    construction failed during buildDeclarations`, not the `T0510` this
+    fix targeted). Confirmed NOT reproduced by `delete_slice` alone, nor
+    several individual function-pair combinations tried standalone — but
+    IS reproduced by the ENTIRE file's declarations coexisting, and
+    critically, **reproduces from a real cross-module import alone, with
+    zero usage**: `import "std:mem"; fn main() i32 { return 0; }` fails
+    checking with this exact error the moment `std:mem` is imported at
+    all (confirmed directly — not a call-site interaction, not specific
+    to `mem::new_slice`, purely a property of building typed IR for
+    `mem.peb`'s own full declaration set). This is the actual current
+    blocker for a genuine `mem::new_slice[T]` end-to-end backend test
+    (referenced as still-missing in `11-raw-pointers-and-unsafe-ops.md`'s
+    now-corrected Slice 4 entry). Not yet bisected to a specific pair of
+    declarations within the full set, not yet scoped into a dispatch
+    brief.
 - [ ] `std/vec.peb` — real redesign needed beyond the `usize` sweep:
       `data` needs to be backed by a `mem::new_slice`d slice
       (capacity-sized) and indexed via `data[i]` instead of pointer

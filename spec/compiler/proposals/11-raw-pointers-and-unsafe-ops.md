@@ -457,7 +457,33 @@ independently outside the harness — manually compiled and ran the
 emitted C for `slice ptr, 1` under a standard-package fixture, exit
 code 42.
 
-**Known follow-up**: implement `context`/`Allocator` as real compiler
-builtins so `std/mem.peb`'s allocator-backed functions (`new`,
-`stack_new`, `realloc`, `delete`, and therefore a genuine
-`mem::new_slice` end-to-end test) actually type-check and run.
+**Update — most of the known follow-up above is resolved, and the note
+it corrects itself needed a correction.** `context`/`Allocator` turned
+out to already be partially registered (`symbol.SymbolRuntimeType`,
+confirmed in `internal/symbol/resolve.go`'s `installPrelude` — the
+original note above claiming "no such symbol exists anywhere" was
+itself wrong, written from an incomplete investigation) — the real gap
+was that the backend had zero emission support for these two
+runtime-injected types (no `TypeDeclaration`, so struct emission failed
+outright). Closed in a later session by mapping them to the runtime's
+already-existing `PebbleAllocator`/`PebbleContext` C types instead of
+synthesizing new ones (commit `67f6319`). A second, separate gap
+surfaced right after — `obj.name(args)` method-call syntax only ever
+resolved a real declared method, never a plain function-typed field
+(`Allocator.alloc`/`.realloc`/`.free`), so `allocator.alloc(...)` calls
+still failed even with the backend fix in place; fixed generically, not
+`Allocator`-specific (commit `33a4880`).
+
+The genuine `mem::new_slice[T]` end-to-end backend test **still does not
+exist and still does not pass** — confirmed directly, not assumed: a
+real `import "std:mem"; ... mem::new_slice[i32](3)` fixture fails
+checking today with `C0619 typed-IR construction failed during
+buildDeclarations`. This is a real, separate, currently-unresolved
+residual bug in `std/mem.peb` itself (not this slice's own scope — every
+issue this slice's own code was ever responsible for is fixed), tracked
+in `12-outstanding-implementation-work.md`, which has the fuller, ongoing
+history of everything discovered downstream of this slice (including the
+pointer-receiver `self.field` gap this uncovered, which was, in
+retrospect, the actual remaining piece of this arc's own motivating goal
+— closed there, not here, since it turned out to be general and not
+slice-4-specific).
