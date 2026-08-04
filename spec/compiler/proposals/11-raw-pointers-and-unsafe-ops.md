@@ -368,3 +368,96 @@ full backend suite (every pre-existing test, including the four this
 slice's first version broke and then fixed), full repo suite, and
 independently outside the harness — manually compiled and ran the
 emitted C for a `*i32 -> *void -> *i32` round trip, exit code 42.
+
+## 11. Slice 4 — the `slice` keyword (pointer + count → slice) (done)
+
+Closes §4's pointer-to-slice construction design: `slice ptr, count` is a
+new unconditional reserved keyword (lexer/token/tree layers), parsing to
+`SliceFromExpr` (pointer expression, count expression). The checker
+constrains the pointer operand to `infer.PointerShape(infer.Leaf(pointee))`,
+the count to `infer.Integral(...)`, and the result to
+`infer.SliceShape(infer.Leaf(pointee))`, and — mirroring the existing
+`sizeof`-type-use restriction pattern exactly — rejects use outside the
+standard library package (`item.Key.Package != module.StandardPackage`,
+diagnostic `"slice is restricted to the standard library package"`).
+Lowers to a new `tir.SliceFromRaw` node (two value children: pointer,
+count) and a backend helper (`buildRawSliceConstruction`) that emits
+`(%s){ .data = %s, .len = (size_t)(%s) }` directly — no bounds check, no
+new runtime primitive, matching §4.2. Wired into local-decl initializers,
+general expression position, and function tail-return position (the last
+of which is exactly what `std/mem.peb`'s `new_slice[T]` needs for
+`return slice ptr, count;`).
+
+This slice went through the first dispatch of this whole arc that bundled
+every compiler layer (lexer/parser, checker/TIR, backend, std-lib call
+site) into one task — a scoping mistake, not a model-capability one. It
+took four dispatch attempts (two infra stalls, one investigation-only run
+that correctly identified `infer.Integral` and `uint`-not-`usize` as the
+compiler's real size type but implemented nothing, then a successful
+retry seeded with those findings) before landing real code, and the
+landed result itself needed a real design correction:
+
+1. **The dispatch made `slice` a "soft"/contextual keyword** — using
+   lookahead on the token following `slice` (`[`, `.`, `::`, `)`, `;`) to
+   decide between parsing the `SliceFromExpr` keyword form or falling
+   back to an ordinary identifier, specifically to avoid breaking
+   pre-existing parameters literally named `slice` in `std/mem.peb` and
+   `std/vec.peb`. Rejected outright: `slice` must be unconditional,
+   exactly like `sizeof` — no contextual/lookahead disambiguation for a
+   keyword, ever. Fixed by reverting the heuristic (both the `parsePrimary`
+   `KwSlice` case and `parseName`'s special-case admitting `KwSlice` as a
+   declarable name) and instead renaming every real identifier collision:
+   `std/mem.peb`'s `delete_slice[T](slice *[]T)` → `delete_slice[T](s *[]T)`,
+   `std/vec.peb`'s `from_slice[T](slice []T)` → `from_slice[T](s []T)`,
+   `examples/slice_minmax.peb`'s `find_min`/`find_max` parameter `slice`
+   → `items` (caught by the whole-repository parser corpus scan test),
+   and two checker test fixtures — one `.peb` file
+   (`tests/check/ir/valid/operations_and_calls.peb`'s
+   `let slice []i32 = ...;` → `let sub`, which also required regenerating
+   `tests/check/ir/operations_and_calls.tir.golden`, verified via diff
+   that the only changes were consistent byte-offset shifts, not
+   structural ones) and one inline Go fixture
+   (`TestPlaceFactsAssignmentIndexSliceAndSingleEvaluation`) with the same
+   pattern, plus `TestBuildValueCheckedSlice`'s four sub-tests, which used
+   `fn slice(...)` as a function name.
+2. **The required end-to-end `mem::new_slice[T]` backend test was never
+   added** — confirmed by grepping for it, not assumed. Writing it
+   directly surfaced a separate, genuine, pre-existing bug: `usize` is
+   not a recognized type spelling anywhere in this compiler (confirmed —
+   `uint` is the only valid size/index builtin), yet `std/mem.peb`'s
+   `new`, `stack_new`, `realloc`, `copy`, `align_up`, and the `extern`
+   block's `alloca`/`memcpy` all still spelled it `usize`. Fixed directly
+   (mechanical `usize` → `uint`, matching what `new_slice`'s own
+   signature already correctly used). This unblocked type-checking the
+   file but exposed a second, larger pre-existing gap: `std/mem.peb`'s
+   allocator functions all reference `context.default_allocator`, and
+   `context`/`Allocator` are not implemented as compiler builtins at all
+   (confirmed — no such symbol exists anywhere in `internal/symbol` or
+   `internal/check`). This is well beyond a mechanical fix — it needs a
+   real context/allocator subsystem — so the full `mem::new_slice`
+   end-to-end test is **not achievable yet** and was not added; it
+   remains a known follow-up. The narrower, already-passing
+   `TestEmitSliceFromRawCompilesAndRuns` (a direct `slice ptr, count`
+   under a standard-package fixture, not routed through `mem.peb`) is
+   the test actually covering this slice's backend lowering.
+
+Also confirmed, independently, a useful design fact while investigating
+the std-library restriction: `import "std:..."` always resolves through
+`module.StandardPackage` regardless of the importing module's own
+package (`internal/module/build.go`'s `resolveImport`), so an ordinary
+non-std program can legitimately call `mem::new_slice[T](n)` even though
+it can never write the `slice` keyword directly itself.
+
+Verified: `gofmt`/`go vet`/`go build` clean, full `syntax`/`check`/`tir`
+suites (including the new `TestParserSliceFromExpression` and the three
+`slice_from_test.go` checker tests — std-package acceptance, non-std
+rejection, non-pointer-operand rejection), full backend suite (including
+`TestEmitSliceFromRawCompilesAndRuns`), full repo suite, and
+independently outside the harness — manually compiled and ran the
+emitted C for `slice ptr, 1` under a standard-package fixture, exit
+code 42.
+
+**Known follow-up**: implement `context`/`Allocator` as real compiler
+builtins so `std/mem.peb`'s allocator-backed functions (`new`,
+`stack_new`, `realloc`, `delete`, and therefore a genuine
+`mem::new_slice` end-to-end test) actually type-check and run.
