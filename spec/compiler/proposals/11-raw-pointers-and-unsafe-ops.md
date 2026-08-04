@@ -474,16 +474,17 @@ resolved a real declared method, never a plain function-typed field
 still failed even with the backend fix in place; fixed generically, not
 `Allocator`-specific (commit `33a4880`).
 
-The genuine `mem::new_slice[T]` end-to-end backend test **still does not
-exist and still does not pass** — confirmed directly, not assumed: a
-real `import "std:mem"; ... mem::new_slice[i32](3)` fixture fails
-checking today with `C0619 typed-IR construction failed during
-buildDeclarations`. This is a real, separate, currently-unresolved
-residual bug in `std/mem.peb` itself (not this slice's own scope — every
-issue this slice's own code was ever responsible for is fixed), tracked
-in `12-outstanding-implementation-work.md`, which has the fuller, ongoing
-history of everything discovered downstream of this slice (including the
-pointer-receiver `self.field` gap this uncovered, which was, in
-retrospect, the actual remaining piece of this arc's own motivating goal
-— closed there, not here, since it turned out to be general and not
-slice-4-specific).
+**Final update — the genuine end-to-end test now exists and passes.**
+Getting there required three more real, separate compiler fixes
+downstream of this slice, none of them this slice's own scope: the
+pointer-receiver `self.field` gap (the actual remaining piece of this
+arc's own motivating goal), a duplicate-source-map bug for grouped
+parameter declarations (`std/mem.peb`'s own `align_up`), and — the
+biggest one — the backend never lowered any generic function call at
+all, which also blocked every other generic std-library function
+(`Vec[T]`, `HashMap[K,V]`, etc.), not just `mem::new_slice[T]`.
+`TestEmitStdMemNewSliceCompilesAndRuns`
+(`internal/backend/emit_test.go`) now compiles and runs a real `import
+"std:mem"; var values []i32 = mem::new_slice[i32](3); ...` fixture, exit
+42. Full history of this whole downstream chain is in
+`12-outstanding-implementation-work.md`.

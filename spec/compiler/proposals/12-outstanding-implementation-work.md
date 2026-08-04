@@ -299,30 +299,53 @@ slice in `10-c-backend-implementation-plan.md` once scoped, since 07
 (generics, checker/typed-IR side) is already fully closed per that doc's
 own baseline note.
 
-- [ ] **Not started, only investigated.** The backend today cleanly
-      rejects any call carrying type arguments ("generics are not
-      supported yet" — `internal/backend/emit.go`, two call sites). This
-      blocks every generic std-library function (`Vec[T]`, `HashMap[K,V]`,
-      `mem::new_slice[T]`, etc.) from ever compiling end-to-end, regardless
-      of the std-library audit above landing.
-  - Confirmed via direct probe: the checker's specialization machinery
-    (phase 07) already builds a genuinely distinct, fully-monomorphized
-    `FunctionDecl` per concrete instantiation — a generic `fn f[T]`
-    called as `f[i32](...)` and `f[i64](...)` produced *three* separate
-    `FunctionDecl` entries (one generic template plus two specializations)
-    with three distinct `FunctionID`s, all sharing one `Symbol`.
-  - Two concrete gaps identified, neither investigated deep enough yet to
-    write a dispatch brief:
-    1. No accessor found yet correlating a call site's `TypeArgs` to the
-       right specialized `FunctionID` (`Unit.Instantiations()` returned
-       empty in the probe — either it's not wired into this build path, or
-       the real correlation mechanism is something else not yet found).
-    2. Emitted C helper functions are named `pebble_fn_<symbol>` — since
-       multiple specializations share one `Symbol`, this scheme collides
-       across specializations and needs a per-specialization disambiguator
-       (likely `FunctionID`-based).
-  - This is confirmed to be on the project's actual roadmap, not
-    speculative: `07-generics.md`'s "Specialization" section commits to
-    full monomorphization as the permanent design, and
-    `10-c-backend-implementation-plan.md`'s own baseline note treats phase
-    07 as an already-closed prerequisite feeding into phase 10.
+- [x] **Fixed — the single biggest blocker on this whole list is closed.**
+      The backend previously rejected any call carrying type arguments
+      outright. Fixed across two commits (`4d35c99`, includes the
+      checker-side fix `ir_builder_value.go` from a prior dispatch this
+      same commit absorbed):
+  - Checker: generic specialization's pointer-cast substitution
+    (`value as *T` inside a generic body) consulted the immutable
+    pre-specialization semantic snapshot for classification, which
+    didn't recognize the concrete substituted pointer pair as valid —
+    added a store-backed fallback.
+  - Backend: real call resolution for specialized generic calls —
+    `findCalledFunctionDeclaration` matches a call's concrete `TypeArgs`
+    against a unit's `FunctionDeclaration` nodes (resolving the two
+    gaps below); C helper names disambiguated per specialization
+    (`pebble_fn_<symbol>_<functionID>`); `uint` added as a first-class
+    helper parameter/argument type.
+  - **A real bug found and fixed along the way, confirmed via direct
+    testing** (not caught by the fix's own first-pass test coverage,
+    which only exercised a single instantiation): the reachability
+    walk's visited/cycle tracking (`w.done`, `w.stack`) was keyed by
+    bare `Symbol`, so visiting the first specialization of a generic
+    incorrectly marked every OTHER specialization of the same generic
+    symbol as already-visited — silently dropping its body from
+    emission while call sites still referenced it, a real compile
+    failure (`undeclared function`). Fixed by keying reachability
+    tracking by `tir.FunctionID` instead (unique per concrete
+    declaration, stable 1:1 with `Symbol` for non-generic functions).
+  - Independently re-verified beyond trusting the dispatch reports: full
+    suite green, and manually reproduced both the original bug (built a
+    two-specialization fixture from scratch, confirmed it emitted C
+    that failed to compile — `undeclared function`) and the fix
+    (same fixture now compiles under `-Wall -Wextra -Werror` and runs,
+    exit 80, proving both specializations' distinct bodies execute
+    correctly).
+  - **The actual, long-sought `mem::new_slice[T]` end-to-end test now
+    passes for real**: `TestEmitStdMemNewSliceCompilesAndRuns` in
+    `internal/backend/emit_test.go`, a genuine `import "std:mem"; var
+    values []i32 = mem::new_slice[i32](3); ...` fixture, compiled and
+    run, exit 42. This closes the very last "not yet achieved" note in
+    `11-raw-pointers-and-unsafe-ops.md`'s Slice 4 entry — see that file
+    for the correction.
+  - **Known, separate, still-open limitation, confirmed NOT fixed by
+    this work**: a generic specialization using a non-entry integer
+    width (e.g. `i64` when the entry is `i32`) or a non-`i32`/`bool`
+    result type still hits this backend's separate, pre-existing
+    "entry width only" constraint on ordinary helper functions —
+    confirmed this is not a regression (ordinary, non-generic code has
+    the identical limitation today) but is a real, still-open backend
+    gap for a FUTURE task: generalize helper functions to support
+    arbitrary widths/result types, not just the entry's own.
