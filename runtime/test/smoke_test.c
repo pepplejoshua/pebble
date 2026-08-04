@@ -46,6 +46,12 @@
  *  13. Str comparison: equal strings compare zero, a byte difference decides
  *      the sign at the first differing position, a shorter prefix sorts
  *      first, and two empty strs compare equal.
+ *  14. Str character access (a Unicode-scalar-value index, not a byte
+ *      offset): decodes 1/2/3/4-byte UTF-8 sequences correctly at both
+ *      index widths; a negative index, an index past the last codepoint, a
+ *      truncated multi-byte sequence, an invalid continuation byte, and an
+ *      invalid lead byte all panic in EVERY configuration (RELEASE
+ *      included) — same reasoning as checked array indexing above.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -228,6 +234,56 @@ static void test_str_cmp(void) {
     assert(pebble_rt_str_cmp(shorter, a) < 0);
     assert(pebble_rt_str_cmp(a, shorter) > 0);
     assert(pebble_rt_str_cmp(empty1, empty2) == 0);
+}
+
+/* Str character access: a Unicode-scalar-value index, not a byte offset.
+ * "aé€😀b" mixes ASCII (1 byte), a 2-byte sequence (é, U+00E9), a 3-byte
+ * sequence (€, U+20AC), and a 4-byte sequence (😀, U+1F600), each still one
+ * scalar-value index step regardless of its byte width.
+ */
+static const uint8_t mixed_width_str_bytes[] = {
+    'a',
+    0xC3, 0xA9,             /* U+00E9 */
+    0xE2, 0x82, 0xAC,       /* U+20AC */
+    0xF0, 0x9F, 0x98, 0x80, /* U+1F600 */
+    'b',
+};
+static const PebbleStr mixed_width_str = {mixed_width_str_bytes, sizeof(mixed_width_str_bytes)};
+
+static void test_str_char_at_normal(void) {
+    assert(pebble_rt_str_char_at_i32(mixed_width_str, 0) == 'a');
+    assert(pebble_rt_str_char_at_i32(mixed_width_str, 1) == 0x00E9);
+    assert(pebble_rt_str_char_at_i32(mixed_width_str, 2) == 0x20AC);
+    assert(pebble_rt_str_char_at_i32(mixed_width_str, 3) == 0x1F600);
+    assert(pebble_rt_str_char_at_i32(mixed_width_str, 4) == 'b');
+    assert(pebble_rt_str_char_at_i64(mixed_width_str, 0) == 'a');
+    assert(pebble_rt_str_char_at_i64(mixed_width_str, 4) == 'b');
+}
+
+static void trigger_str_char_at_negative_index(void) {
+    (void)pebble_rt_str_char_at_i32(mixed_width_str, -1);
+}
+
+static void trigger_str_char_at_index_past_end(void) {
+    (void)pebble_rt_str_char_at_i32(mixed_width_str, 5);
+}
+
+static void trigger_str_char_at_truncated_sequence(void) {
+    const uint8_t bytes[] = {0xE2, 0x82}; /* missing the 3rd byte of a 3-byte sequence */
+    PebbleStr s = {bytes, sizeof(bytes)};
+    (void)pebble_rt_str_char_at_i32(s, 0);
+}
+
+static void trigger_str_char_at_invalid_continuation(void) {
+    const uint8_t bytes[] = {0xC3, 0x28}; /* 0x28 is not a valid continuation byte */
+    PebbleStr s = {bytes, sizeof(bytes)};
+    (void)pebble_rt_str_char_at_i32(s, 0);
+}
+
+static void trigger_str_char_at_invalid_lead_byte(void) {
+    const uint8_t bytes[] = {0xFF};
+    PebbleStr s = {bytes, sizeof(bytes)};
+    (void)pebble_rt_str_char_at_i32(s, 0);
 }
 
 static void test_checked_index_normal(void) {
@@ -520,6 +576,36 @@ int main(void) {
 
     test_str_cmp();
     printf("ok: str comparison\n");
+
+    test_str_char_at_normal();
+    printf("ok: str char-at normal results\n");
+
+    /* An invalid str character access panics in EVERY configuration, every
+     * invalid shape (negative index, index past the last codepoint, a
+     * truncated multi-byte sequence, an invalid continuation byte, an
+     * invalid lead byte) — same reasoning as checked array indexing above.
+     */
+    if (verify_checked_overflow_panics("str char-at negative index", trigger_str_char_at_negative_index) != 0) {
+        fprintf(stderr, "smoke_test: str char-at negative-index subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("str char-at index past end", trigger_str_char_at_index_past_end) != 0) {
+        fprintf(stderr, "smoke_test: str char-at index-past-end subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("str char-at truncated sequence", trigger_str_char_at_truncated_sequence) != 0) {
+        fprintf(stderr, "smoke_test: str char-at truncated-sequence subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("str char-at invalid continuation byte", trigger_str_char_at_invalid_continuation) != 0) {
+        fprintf(stderr, "smoke_test: str char-at invalid-continuation subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("str char-at invalid lead byte", trigger_str_char_at_invalid_lead_byte) != 0) {
+        fprintf(stderr, "smoke_test: str char-at invalid-lead-byte subprocess check FAILED\n");
+        return 1;
+    }
+    printf("ok: invalid str char-at panics in subprocess\n");
 
     if (verify_panic_aborts() != 0) {
         fprintf(stderr, "smoke_test: panic subprocess check FAILED\n");

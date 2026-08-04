@@ -251,6 +251,29 @@ bool pebble_rt_str_eq(PebbleStr a, PebbleStr b);
  */
 int pebble_rt_str_cmp(PebbleStr a, PebbleStr b);
 
+/* Indexed access into a str, `s[i]`, is a Unicode-scalar-value index, not a
+ * byte offset: index 0 names the first decoded codepoint, index 1 the
+ * second, and so on, regardless of how many UTF-8 bytes each one occupies.
+ * This walks the UTF-8 byte sequence from the start, decoding one codepoint
+ * at a time, until the index'th one is reached — O(index) work, not O(1),
+ * since UTF-8 is a variable-width encoding with no random-access byte
+ * offset for "the i'th codepoint". Panics with
+ * PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS in every configuration (SAFE and
+ * RELEASE) — like checked array indexing and the checked slice range
+ * above, there is no defined fallback result for an index past the last
+ * codepoint — and, since PebbleStr's own bytes are not guaranteed to be
+ * valid UTF-8 (a slice or a hand-constructed str could contain anything),
+ * also panics on a malformed encoding it encounters along the way: a lead
+ * byte that doesn't start a valid 1/2/3/4-byte sequence, a continuation
+ * byte that isn't in [0x80, 0xBF], or a sequence truncated by the end of
+ * the string's own length. Returns the decoded scalar value as an int32_t
+ * (a Unicode scalar value fits in 21 bits; the language's own `char` type
+ * is a full Unicode scalar value, not a single byte, matching tir.Literal's
+ * own `Char rune` field, Go's rune being an int32 alias).
+ */
+int32_t pebble_rt_str_char_at_i32(PebbleStr s, int32_t index);
+int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index);
+
 #ifndef PEBBLE_RT_FREESTANDING
 /* ---- hosted argument adaptation --------------------------------------------
  * Adapts host argc/argv into a slice of PebbleStr. The returned slice's
