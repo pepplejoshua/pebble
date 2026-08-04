@@ -1852,7 +1852,10 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 	for i, param := range decl.Parameters {
 		// A parameter's type is resolved the same way a local's initializer's
 		// is: the entry's resolved width (built by buildExpr), bool (built by
-		// buildBoolExpr), a str value (built by buildStrOperand — since 10.36 a
+		// buildBoolExpr), a char value (built by buildCharOperand — since
+		// 10.41 a char parameter is seeded like a char local and read/
+		// compared/returned exactly as one), a str value (built by
+		// buildStrOperand — since 10.36 a
 		// str parameter is seeded like a str local and read/compared/returned
 		// exactly as one), a tuple/struct type (read back through the
 		// Load(TuplePlace)/Load(FieldPlace) machinery), or, since 10.38, a
@@ -1866,8 +1869,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, or str, a tuple/struct type, or a slice type (a parameter may be the entry's integer width, bool, str, a tuple/struct type, or a slice type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, or a slice type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, or a slice type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
@@ -1875,8 +1878,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 			}
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want %s, str, a tuple/struct result type, a slice result type, or void (a called function may resolve to the entry's integer width, str, a tuple/struct type, a slice type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	if !isWidth(snapshot, width, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want %s, char, str, a tuple/struct result type, a slice result type, or void (a called function may resolve to the entry's integer width, char, str, a tuple/struct type, a slice type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
@@ -1892,7 +1895,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // block with its body built by the exact same buildBlock the entry's body
 // uses — no parallel body-builder. Before the body is built, the helper's own
 // parameters seed its locals scope exactly as if each had been Initialize'd:
-// every parameter maps to its resolved type — the entry's width, bool, str
+// every parameter maps to its resolved type — the entry's width, bool, char
+// (localInfo{isChar}), str
 // (localInfo{isStr}), a tuple
 // type (localInfo{tuple}), or a struct type (localInfo{structType}) — so a
 // SymbolValue reference or a Store targeting a parameter inside the body
@@ -1927,6 +1931,19 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 			case isBool(snapshot, param.Type):
 				params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{kind: types.Bool}
+			case isChar(snapshot, param.Type):
+				// A char-typed parameter seeds the callee's locals scope as a
+				// char local (localInfo.isChar), exactly as a char local's
+				// Initialize does, so a reference to the parameter inside the
+				// body resolves through the existing buildCharOperand
+				// machinery unchanged (read in any of the six comparisons,
+				// forwarded by a char-returning helper's return, or passed to
+				// another char parameter). The C parameter is declared as the
+				// fixed int32_t — the same C type a char local is declared
+				// with, no typedef involved — so passing a char by value is
+				// trivially valid C.
+				params = append(params, "int32_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{isChar: true}
 			case isTuple(snapshot, param.Type):
 				// A tuple-typed parameter seeds the callee's locals scope as a
 				// tuple local (localInfo.tuple), exactly as a tuple local's
@@ -1975,7 +1992,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 				// validateHelperSignature rules any unsupported parameter out
 				// before a reachable helper is ever built, so this branch is
 				// defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, or str, a tuple/struct type, or a slice type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, or a slice type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
@@ -2003,6 +2020,17 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, helpers []he
 			// statement call (buildExpressionStatement), never as a value.
 			returnType = "void"
 			result = resultInfo{kind: types.Void}
+		case isChar(snapshot, helper.decl.ResultType):
+			// A char-result helper (10.41) is declared with the fixed C
+			// int32_t as its C return type — the same C type a char local is
+			// declared with, independent of the entry's resolved width, no
+			// typedef involved — and resultInfo records the char shape so
+			// buildBlock's tail-position Return builds its value via
+			// buildCharOperand (a char literal, a SymbolValue naming a
+			// char-typed local, or a call to another char-returning helper)
+			// rather than buildExpr, which would reject a char-typed value.
+			returnType = "int32_t"
+			result = resultInfo{isChar: true}
 		case isTuple(snapshot, helper.decl.ResultType):
 			returnType = tupleTypeName(helper.decl.ResultType)
 			result = resultInfo{tuple: helper.decl.ResultType}
@@ -2182,7 +2210,16 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, blockID tir.NodeID, lo
 		}
 		var returnValue string
 		var err error
-		if result.isStr {
+		if result.isChar {
+			// The enclosing function returns char (a reachable helper whose
+			// ResultType is char — the entry always threads a scalar resultInfo),
+			// so the return value is built under the char grammar by
+			// buildCharOperand rather than buildExpr, which rejects a
+			// char-typed value. Supported return shapes are a SymbolValue
+			// naming a char-typed local in scope, a char literal, or a call to
+			// another char-returning helper.
+			returnValue, err = buildCharOperand(unit, snapshot, last.Children[0], scope, width)
+		} else if result.isStr {
 			// The enclosing function returns str (a reachable helper whose
 			// ResultType is str — the entry always threads a scalar resultInfo),
 			// so the return value is built under the str grammar by
@@ -2555,7 +2592,13 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, bodyID tir.No
 		var returnValue string
 		var err error
 		var preReturn string
-		if result.isStr {
+		if result.isChar {
+			// A char-returning function's bare single-statement case body
+			// returning a char value: built under the char grammar by
+			// buildCharOperand, exactly like buildBlock's tail-position Return
+			// case.
+			returnValue, err = buildCharOperand(unit, snapshot, bodyNode.Children[0], locals, width)
+		} else if result.isStr {
 			returnValue, err = buildStrOperand(unit, snapshot, bodyNode.Children[0], locals, width)
 		} else if result.tuple != 0 || result.structType != 0 {
 			returnValue, err = buildAggregateReturnValue(unit, snapshot, bodyNode.Children[0], locals, result, width)
@@ -3063,7 +3106,7 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeI
 func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 	if !ok {
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s, bool, or char", context, describeType(snapshot, initValue.Type), wantName(width))
 	}
 	switch kind {
 	case width:
@@ -3087,8 +3130,21 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, stateme
 		}
 		scope[statement.Symbol] = localInfo{kind: types.Bool}
 		return fmt.Sprintf("bool pebble_local_%d = %s", statement.Symbol, initExpr), nil
+	case types.Char:
+		// A char local: emitted as the fixed C int32_t (the language's char
+		// is a full Unicode scalar value, always int32_t regardless of the
+		// entry's resolved width), its value built by buildCharOperand (a char
+		// literal, a reference to an in-scope char-typed local, or a call to a
+		// char-returning helper). The scope entry records isChar so a later
+		// reference or reassignment is validated and emitted as a char.
+		initExpr, err := buildCharOperand(unit, snapshot, statement.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{isChar: true}
+		return fmt.Sprintf("int32_t pebble_local_%d = %s", statement.Symbol, initExpr), nil
 	default:
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s or bool", context, describeType(snapshot, initValue.Type), wantName(width))
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s, bool, or char", context, describeType(snapshot, initValue.Type), wantName(width))
 	}
 }
 
@@ -3234,6 +3290,23 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node
 				return "", err
 			}
 			return fmt.Sprintf("pebble_local_%d = (PebbleStr)%s", place.Symbol, valueText), nil
+		}
+		if targetInfo.isChar {
+			// A Store whose place names a char-typed local is a char
+			// reassignment. The new value is built by buildCharOperand under
+			// the char grammar — the same three shapes a char local's
+			// declaration accepts (a char literal, a reference to an in-scope
+			// char-typed local, or a call to a char-returning helper), each
+			// emitted as an int32_t value — so `c = 'b';`, `c = d;`, and
+			// `c = g();` (all confirmed checker-reachable against real
+			// fixtures) reassign the fixed-width int32_t local correctly. A
+			// value of any other shape or type is a clean rejection naming
+			// what was found.
+			storeValue, err := buildCharOperand(unit, snapshot, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
 		}
 		if targetInfo.tuple != 0 {
 			// A Store whose place names a tuple-typed local is a
@@ -3714,17 +3787,23 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, statemen
 
 // localInfo records what a declared local holds: an ordinary scalar — the
 // entry's resolved integer width or bool, in kind — a str value, in isStr, a
+// char value, in isChar, a
 // tuple, in tuple (its
 // tuple types.TypeID, stable within one Emit call), an array, in array, an
 // optional, in optional, a struct, in structType, or a plain enum, in enumType.
 // The fields are
 // mutually exclusive: kind is zero
-// for a compound local (a tuple/array/optional/struct/enum is not a
+// for a compound or char local (a tuple/array/optional/struct/enum is not a
 // types.BuiltinKind), isStr is true only for a str local (a str is a
 // types.BuiltinKind but has no width or bool grammar this backend builds —
 // it is initialized from a string literal or a call to a str-returning
 // helper, reassigned from a string literal, and otherwise compared, passed,
-// and returned via the str-value builders), and tuple/array/optional/structType/enumType are
+// and returned via the str-value builders), isChar is true only for a char
+// local (a char is a types.BuiltinKind but has a fixed int32_t representation
+// this backend builds independently of the entry's width — it is initialized
+// from a char literal, a char-typed local reference, or a call to a
+// char-returning helper, reassigned the same ways, and otherwise compared,
+// passed, and returned via the char-value builders), and tuple/array/optional/structType/enumType are
 // zero for a
 // scalar local. A struct value
 // rather than a parallel map keeps the scope a single map threaded through
@@ -3735,6 +3814,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, statemen
 type localInfo struct {
 	kind       types.BuiltinKind
 	isStr      bool
+	isChar     bool
 	tuple      types.TypeID
 	array      types.TypeID
 	optional   types.TypeID
@@ -3745,11 +3825,12 @@ type localInfo struct {
 
 // resultInfo records what the enclosing function's tail return must produce:
 // an ordinary scalar — the entry's resolved integer width, in kind — a str
-// value, in isStr — a tuple, in tuple (its types.TypeID), a struct, in
+// value, in isStr, a char value, in isChar, a tuple, in tuple (its types.TypeID), a struct, in
 // structType, or a slice, in sliceType. The fields are
 // mutually exclusive, mirroring localInfo: kind is zero for a compound or str
-// result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
-// str result, and tuple/structType/sliceType are zero
+// or char result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
+// str result, isChar is true only for a char result (whose C return type is
+// the fixed int32_t, independent of the entry's width), and tuple/structType/sliceType are zero
 // for a scalar result. It is threaded alongside width through buildBlock and
 // buildIf so a tuple/struct-returning helper's tail-position Return builds its
 // value via buildAggregateReturnValue (a SymbolValue naming a matching
@@ -3768,6 +3849,7 @@ type localInfo struct {
 type resultInfo struct {
 	kind       types.BuiltinKind
 	isStr      bool
+	isChar     bool
 	tuple      types.TypeID
 	structType types.TypeID
 	sliceType  types.TypeID
@@ -4945,6 +5027,25 @@ func buildStrLiteralValue(node tir.Node) (string, error) {
 	return fmt.Sprintf("{ .data = (const uint8_t *)\"%s\", .len = %d }", escapeCString(text), len(text)), nil
 }
 
+// buildCharLiteralValue builds the C text for one CharLiteral node: its
+// decoded rune emitted as an int32_t decimal literal, `(int32_t)97`. A char's
+// C representation is always the fixed int32_t — a Unicode scalar value fits
+// in 21 bits, so no emitted literal ever overflows a signed 32-bit constant,
+// regardless of the entry's resolved integer width (the two are unrelated
+// concepts: the entry's width picks integer arithmetic's size; a char's size
+// is fixed by the Unicode scalar value range). The decimal text comes from the
+// literal's Char field (a Go rune, an int32 alias) with no escaping and no
+// width splitting, so a non-ASCII value like 'é' (233) or an emoji such as
+// '😀' (128512) emits its full scalar value, not a truncated byte. A
+// CharLiteral whose literal kind is not a decoded character is a clean
+// rejection.
+func buildCharLiteralValue(node tir.Node) (string, error) {
+	if node.Literal.Kind != tir.LiteralChar {
+		return "", fmt.Errorf("contains a CharLiteral with literal kind %s, want a decoded character", node.Literal.Kind)
+	}
+	return fmt.Sprintf("(int32_t)%d", node.Literal.Char), nil
+}
+
 // escapeCString re-escapes a string literal's already-decoded byte content
 // into the body of a C string literal, producing a C literal that is
 // byte-for-byte the original decoded content. The decoded bytes are not
@@ -5005,7 +5106,8 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 // buildComparison builds the C text for an if condition. It accepts exactly a
 // tir.BinaryValue with two operands and one of the six comparison operators
 // (<, <=, >, >=, ==, !=), and emits the plain C operator directly — comparing
-// two integers, or two bools with ==/!=, cannot overflow, so no runtime helper
+// two integers, two char values, or two bools with ==/!=, cannot overflow, so
+// no runtime helper
 // is needed. The operand grammar is decided from the operands' own resolved
 // types, not assumed to be integers: when both operands carry the snapshot's
 // str builtin, they are an equality between two str values built by
@@ -5013,6 +5115,13 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 // pebble_rt_str_eq(<left>, <right>) (==) or its negation (!=) — ordering
 // comparisons between strs are rejected cleanly, since the checker does not
 // reject them from source (confirmed against a real fixture). When both
+// operands carry the snapshot's
+// char builtin, they are two char values built by buildCharOperand (a char
+// literal, a char local reference, or a call to a char-returning helper), and
+// all six operators are legal — comparing Unicode scalar values numerically
+// is well-defined, and the checker accepts ordering comparisons between chars
+// (confirmed against a real fixture) — emitted as the plain C operator with
+// no runtime helper. When both
 // operands carry the snapshot's
 // bool builtin, they are built by buildBoolExpr (a bool comparison result, a
 // bool local, a bool literal, a ! negation, or a && / || combination — the
@@ -5084,6 +5193,28 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 		// operator is translated to its C spelling by comparisonOperator,
 		// which has already validated the token kind above.
 		return "pebble_rt_str_cmp(" + left + ", " + right + ") " + op + " 0", nil
+	}
+	if isChar(snapshot, leftOperand.Type) && isChar(snapshot, rightOperand.Type) {
+		// A comparison between two char values — c == 'a', c != d, and all
+		// four ordering operators (c < d and so on), all confirmed
+		// checker-reachable against real fixtures: a char is a Unicode scalar
+		// value, and comparing two scalar values numerically is well-defined
+		// for every one of the six operators, so the plain C operator is a
+		// direct, correct lowering — no runtime helper (this is not the str
+		// case) and no overflow concern (comparisons never fault). Both
+		// operands are built by buildCharOperand (a char literal, a char
+		// local reference, or a call to a char-returning helper), each
+		// emitted as an int32_t value, so a literal operand participates
+		// without needing a declared local.
+		left, err := buildCharOperand(unit, snapshot, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildCharOperand(unit, snapshot, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return left + " " + op + " " + right, nil
 	}
 	if isBool(snapshot, leftOperand.Type) && isBool(snapshot, rightOperand.Type) {
 		// Both operands are bool values, so this is an equality between bools
@@ -5232,6 +5363,60 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 		return buildDirectCall(unit, snapshot, node, locals, width)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference, a string literal, or a call to a str-returning function", node.Kind)
+	}
+}
+
+// buildCharOperand builds one char value in a position that accepts a char
+// expression, which is exactly three shapes (each confirmed against a real
+// fixture): a CharLiteral (a char value with no local behind it, emitted as an
+// int32_t decimal literal), a SymbolValue naming an in-scope char-typed local
+// (emitted as its pebble_local_<symbolID> C name — an int32_t lvalue), or a
+// DirectCall to a char-returning helper (emitted as
+// pebble_fn_<calleeSymbolID>(ctx, <args>) by buildDirectCall, the same
+// call-building machinery buildExpr's DirectCall case uses), so a
+// char-returning helper's result can be compared directly (g() == 'a') or
+// passed to a char parameter (f(g())) without an intermediate local. width is
+// the entry's resolved integer width, threaded through to buildDirectCall so a
+// call's arguments are built at the width the callee's other parameters
+// expect. Anything else — a reference to a non-char local, any other node — is
+// a clean rejection, never a guessed lowering. The function is shared by the
+// six positions a char value is built: a comparison operand (buildComparison),
+// a char-typed local's declaration initializer (buildScalarInitializeCore), a
+// char-typed local's reassignment new value (buildStoreCore), a call-site
+// argument for a char parameter (buildCallArguments), and a char-returning
+// helper's tail-position return value (buildBlock / buildSwitchCaseBody
+// dispatch on resultInfo.isChar).
+func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
+	}
+	switch node.Kind {
+	case tir.CharLiteral:
+		valueText, err := buildCharLiteralValue(node)
+		if err != nil {
+			return "", err
+		}
+		return valueText, nil
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || !info.isChar {
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a char-typed local declared earlier in the body", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.DirectCall:
+		// A call to a char-returning helper used directly as a char value. The
+		// DirectCall's own Type is the callee's resolved result type, which
+		// the reachability walk has already validated as char for a reachable
+		// helper (the check here is defense for hand-built IR); the call is
+		// built by the same buildDirectCall machinery a scalar-width call
+		// uses, so context and argument handling are identical.
+		if !isChar(snapshot, node.Type) {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want char", node.Symbol, describeType(snapshot, node.Type))
+		}
+		return buildDirectCall(unit, snapshot, node, locals, width)
+	default:
+		return "", fmt.Errorf("entry function body expression contains a %s, want a char literal, a reference to a char-typed local declared earlier in the body, or a call to a char-returning function", node.Kind)
 	}
 }
 
@@ -5929,6 +6114,18 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 				return "", err
 			}
 			args[i] = arg
+		case isChar(snapshot, param.Type):
+			// A char parameter: the argument is a char value built by
+			// buildCharOperand — a reference to a char-typed local in scope, a
+			// char literal directly (f('a')), or a call to a char-returning
+			// helper (f(g())) — emitted as an int32_t value, the same C type
+			// the parameter is declared with, so passing a char by value is
+			// trivially valid C.
+			arg, err := buildCharOperand(unit, snapshot, argID, locals, width)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
 		case isTuple(snapshot, param.Type):
 			arg, err := buildAggregateArgument(unit, snapshot, argID, locals, param.Type, true, call.Symbol, i, width)
 			if err != nil {
@@ -5976,7 +6173,7 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node,
 			// validateHelperSignature rules any unsupported parameter out
 			// before a reachable helper is ever built, so this branch is
 			// defense for hand-built IR only.
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, or str, or a tuple/struct type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, or a tuple/struct type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	return strings.Join(args, ", "), nil
@@ -6527,6 +6724,23 @@ func isStr(snapshot *types.Snapshot, id types.TypeID) bool {
 		return false
 	}
 	return id == snapshot.Builtins().Str
+}
+
+// isChar reports whether id is the snapshot's char builtin. A char value is a
+// builtin like bool, but like str it has no width grammar this backend builds —
+// its C representation is the fixed int32_t (the language's char is a full
+// Unicode scalar value, which always fits in 32 bits, regardless of the entry's
+// resolved integer width), so a char local is initialized from a char literal,
+// a char-typed local reference, or a call to a char-returning helper, may be
+// reassigned the same ways, and a char value is an operand of any of the six
+// comparisons, a call-site argument, or a char-returning function's return
+// value — recognized by this distinct predicate rather than by a shared
+// scalar-builder switch.
+func isChar(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	return id == snapshot.Builtins().Char
 }
 
 // isVoid reports whether id is the snapshot's void builtin. A void result is

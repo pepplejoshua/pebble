@@ -1419,6 +1419,69 @@ incrementally as work proceeds.
   comparison could get backwards) with `-Wall -Wextra -Werror`,
   confirming exit code 10 (true — the shorter string correctly sorts
   first).
+- **10.41 — `char` as a scalar local/parameter/result type**
+  (`compiler/internal/backend`, plus a prerequisite `runtime/`
+  addition): the first prerequisite for closing Phase 4's last real
+  gap, str indexing (`s[0]`) — confirmed via a real fixture that
+  `s[0]`'s result type is `char`, so char had to exist as a supported
+  scalar before indexing could return one. `char` was a real,
+  already-typed builtin with zero backend handling before this slice;
+  it is a full Unicode scalar value (confirmed via the parser spec and
+  `tir.Literal.Char`'s own `rune`/`int32` field), not a single byte,
+  so its C representation is a fixed `int32_t` — independent of the
+  entry's own resolved i32/i64 width, the same way `str` and slice
+  types are independent of it. Mirrors `bool`/`str`'s own support
+  surface one for one: char-typed locals (from a literal, a char-typed
+  local reference, or a call to a char-returning helper — all three
+  confirmed checker-reachable, the same three shapes `str`'s own
+  `buildStrOperand` already handles), reassignment (from any of the
+  same three shapes), all six comparisons (`==`, `!=`, and — a genuine
+  surprise confirmed via a real fixture rather than assumed
+  unreachable, the same kind of finding 10.34's enum-ordering
+  confirmation was — all four ordering operators too, since comparing
+  Unicode scalar values numerically is well-defined), and char-typed
+  parameters/results/call arguments. One shared `buildCharOperand`
+  builds a char value in all six positions, mirroring `buildStrOperand`
+  exactly.
+
+  **Prerequisite runtime primitive** (commit `8fb8b21`, landed before
+  this slice was dispatched, for the *next* piece — str indexing
+  itself, not yet dispatched at the time 10.41 was written):
+  `pebble_rt_str_char_at_i32`/`_i64` in `runtime/include/pebble_rt.h`
+  / `runtime/src/str.c` — a real UTF-8 decoder, not a mechanical
+  wrapper, since `s[i]` is a Unicode-scalar-value index (confirmed via
+  spec `06b-validation-and-typed-ir.md`: "`str` | one integer | `char`,
+  Unicode-scalar index"), not a byte offset, so finding "the i'th
+  codepoint" requires walking and decoding the variable-width UTF-8
+  byte sequence from the start — O(index) work, not O(1). Panics in
+  every configuration on a negative index, an index past the last
+  codepoint, or any malformed UTF-8 encountered along the way (an
+  invalid lead byte, an invalid continuation byte, or a sequence
+  truncated by the string's own length) — `PebbleStr`'s bytes are not
+  guaranteed to be valid UTF-8. Verified standalone against real
+  multi-byte UTF-8 (1/2/3/4-byte sequences, decoding `"aé€😀b"`
+  correctly at every index) and all five panic paths, before being
+  added to `runtime/test/smoke_test.c` and re-verified there in both
+  SAFE and RELEASE modes.
+
+  Verified end-to-end for the char slice itself (equality both
+  directions; `!=`; a non-ASCII literal (`'é'`, U+00E9) and an emoji
+  literal (`'😀'`, U+1F600) each round-tripping their full scalar
+  value through equality, not just ASCII; reassignment from a literal
+  and from another char local; ordering comparison both directions;
+  a local declared from another local; a char parameter and result
+  called and compared, both a matching and a distinguishing outcome,
+  proving the value that survives the call is the actual argument, not
+  a fixed constant) and independently outside the harness — manually
+  compiled and ran the emitted C for the emoji-through-a-helper-call
+  fixture with `-Wall -Wextra -Werror`, confirming exit code 1 (the
+  full 21-bit scalar value `128512` survived the `int32_t` parameter/
+  return round trip intact). A pre-existing rejection test for str
+  indexing was updated for its now-more-accurate error message: char
+  is a supported local type since this slice, so the rejection now
+  comes from `buildCharOperand` refusing the `CheckedIndex` initializer
+  shape rather than from char itself being unsupported — str indexing
+  remains rejected, unchanged, pending 10.42.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

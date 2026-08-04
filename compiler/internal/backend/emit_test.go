@@ -3649,10 +3649,10 @@ func TestEmitRejectsUnsupportedParameterType(t *testing.T) {
 	// An array parameter is reachable from real source (the checker accepts
 	// it), so this is a genuine backend-scope rejection, not hand-built IR:
 	// validateHelperSignature must reject the parameter because its type is
-	// neither the entry's width, bool, str, nor a tuple/struct type, naming the
-	// parameter position.
+	// neither the entry's width, bool, char, str, nor a tuple/struct type,
+	// naming the parameter position.
 	unit, snapshot, entryID := buildFixture(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, or str")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, char, or str")
 }
 
 func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
@@ -3661,7 +3661,7 @@ func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
 	// its result, here also i64) must be a clean rejection naming the width,
 	// never a coercion. The parameter check fires before the result check.
 	unit, snapshot, entryID := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, or str")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, char, or str")
 }
 
 func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
@@ -5305,14 +5305,17 @@ func TestEmitRejectsStrIndexing(t *testing.T) {
 	// String indexing (s[0]) is reachable from real source — confirmed
 	// against a real fixture dump: `let c char = s[0];` lowers the read to a
 	// tir.CheckedIndex node whose result type is char, a separate mechanism
-	// this backend does not build for str (and a char-typed value is not a
-	// supported local type). The declaration is therefore a clean rejection
-	// naming the found type, never a guessed lowering. (The exact shape
+	// this backend does not build for str (that is slice 10.42, dispatched
+	// separately). The declaration is therefore still a clean rejection — but
+	// since 10.41, char IS a supported local type, so the rejection now comes
+	// from buildCharOperand refusing the CheckedIndex as a char initializer
+	// shape rather than from char being an unsupported local type; the
+	// substring below names the newly-accurate rejection. (The exact shape
 	// `s[0] as i32` is rejected by the checker itself before typed IR — typed
 	// IR construction failed — so the reachable form here is the char-typed
 	// read.)
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a char literal")
 }
 
 // 10.26 — tuple- and struct-typed function return types
@@ -6863,4 +6866,172 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 		}
 	}
 	compileAndRun(t, buf.Bytes(), 9, false)
+}
+
+func TestEmitCharLocalEqualityTrueCompilesAndRuns(t *testing.T) {
+	// A char-typed local declared from a literal, compared for equality,
+	// driving a return value — the true outcome: c and d both hold 'a', so
+	// c == d and the process exits 1. Exercises the full char path: a
+	// CharLiteral local declaration, two char local references as == operands,
+	// and the equality feeding a tail return.
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'a'; if c == d { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharLocalEqualityFalseCompilesAndRuns(t *testing.T) {
+	// The false outcome of the equality fixture: d holds 'b' instead of 'a',
+	// so c == d is false and the process exits 0 — proving the comparison
+	// actually distinguishes the two scalar values rather than always being
+	// true.
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c == d { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitCharNotEqualCompilesAndRuns(t *testing.T) {
+	// The != comparison between two char values: c='a' and d='b' differ, so
+	// c != d is true and the process exits 1.
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c != d { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharNonAsciiEqualityCompilesAndRuns(t *testing.T) {
+	// A char-typed local declared from a non-ASCII literal — the accented
+	// letter 'é' (U+00E9, 233) — compared for equality against the same
+	// literal, proving the full Unicode scalar value round-trips through the
+	// int32_t emission and back, not just an ASCII slice of it.
+	emitAndRun(t, "fn main() i32 { let c char = 'é'; if c == 'é' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharEmojiEqualityCompilesAndRuns(t *testing.T) {
+	// A char-typed local declared from an emoji — '😀' (U+1F600, 128512), a
+	// value that needs more than a byte to represent — compared for equality.
+	// This proves the full 21-bit Unicode scalar value round-trips, not just a
+	// truncated low byte (which would collide with a different code point).
+	emitAndRun(t, "fn main() i32 { let c char = '😀'; if c == '😀' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharReassignmentCompilesAndRuns(t *testing.T) {
+	// A char-typed reassignment: c is declared var 'a', reassigned to 'b',
+	// then compared against 'b' — the process exits 1 only if the reassignment
+	// actually changed the stored int32_t value.
+	emitAndRun(t, "fn main() i32 { var c char = 'a'; c = 'b'; if c == 'b' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharReassignmentFromLocalCompilesAndRuns(t *testing.T) {
+	// A char-typed reassignment from another char-typed local: a holds 'a', b
+	// holds 'b', a = b copies b's scalar value into a, and comparing a against
+	// 'b' afterwards proves the copy landed — the char-typed local reference
+	// is a valid reassignment right-hand side.
+	emitAndRun(t, "fn main() i32 { var a char = 'a'; let b char = 'b'; a = b; if a == 'b' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharOrderingCompilesAndRuns(t *testing.T) {
+	// An ordering comparison between two char values: c holds 'a' (97) and d
+	// holds 'b' (98), so c < d is true and the process exits 1. Comparing
+	// Unicode scalar values numerically is well-defined, and the checker
+	// accepts ordering comparisons between chars (confirmed against a real
+	// fixture), so the plain C operator is the correct lowering.
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c < d { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharOrderingFalseCompilesAndRuns(t *testing.T) {
+	// The false outcome of the char ordering fixture: 'b' < 'a' is false, so
+	// the process exits 0 — proving the ordering distinguishes the two scalar
+	// values in the correct direction.
+	emitAndRun(t, "fn main() i32 { let c char = 'b'; let d char = 'a'; if c < d { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitCharLocalFromLocalCompilesAndRuns(t *testing.T) {
+	// A char-typed local declared from a char-typed local reference: b is
+	// declared from a (confirmed checker-reachable against a real fixture), so
+	// b holds 'a' and the comparison is true. This exercises the SymbolValue
+	// initializer shape a char local's declaration accepts.
+	emitAndRun(t, "fn main() i32 { let a char = 'a'; let b char = a; if b == 'a' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharParameterAndResultCompilesAndRuns(t *testing.T) {
+	// A char-typed parameter and result, called and compared: f takes a char,
+	// forwards it as its char result, and main declares c from the call then
+	// compares it against 'a' — proving the char value survives the
+	// helper-call round trip at both the C int32_t parameter and return type.
+	emitAndRun(t, "fn f(c char) char { return c; } fn main() i32 { let c char = f('a'); if c == 'a' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharParameterAndResultDistinctCompilesAndRuns(t *testing.T) {
+	// The false outcome of the parameter/result fixture: f('b') returns 'b',
+	// compared against 'a', so the process exits 0 — the value that survives
+	// the call round trip is the argument, not a fixed constant.
+	emitAndRun(t, "fn f(c char) char { return c; } fn main() i32 { let c char = f('b'); if c == 'a' { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitCharReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	// A char-returning helper whose result is forwarded through its own local:
+	// f declares x from its char parameter and returns x, proving a char local
+	// inside a helper and a char return value both build correctly, and main
+	// compares the surviving value.
+	emitAndRun(t, "fn f(c char) char { var x char = c; return x; } fn main() i32 { let c char = f('a'); if c == 'a' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharCallArgumentLocalCompilesAndRuns(t *testing.T) {
+	// A char-typed local passed as a call argument: main declares c from a
+	// literal and passes it to f, which compares it against 'a' — the
+	// char-typed local reference is a valid call-site argument for a char
+	// parameter.
+	emitAndRun(t, "fn f(x char) i32 { if x == 'a' { return 1; } else { return 0; } } fn main() i32 { let c char = 'a'; return f(c); }", false, 1, false)
+}
+
+func TestEmitCharCallArgumentLiteralCompilesAndRuns(t *testing.T) {
+	// A char literal passed directly as a call argument (f('a')), no
+	// intermediate local — the CharLiteral shape a char parameter accepts at
+	// the call site.
+	emitAndRun(t, "fn f(x char) i32 { if x == 'a' { return 1; } else { return 0; } } fn main() i32 { return f('a'); }", false, 1, false)
+}
+
+func TestEmitCharLocalFromCallCompilesAndRuns(t *testing.T) {
+	// A char-typed local declared from a call to a char-returning helper
+	// (confirmed checker-reachable against a real fixture): c is declared from
+	// f('a') and compared, proving the DirectCall initializer shape works for
+	// a char local.
+	emitAndRun(t, "fn f(x char) char { return x; } fn main() i32 { let c char = f('a'); if c == 'a' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharI64EntryCompilesAndRuns(t *testing.T) {
+	// A char-typed local inside an i64 entry: the entry's integer width picks
+	// i64 arithmetic, but a char is still the fixed int32_t (the two are
+	// unrelated concepts), so this confirms the char grammar is independent of
+	// the entry's width.
+	emitAndRun(t, "fn main() i64 { let c char = 'a'; if c == 'a' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitCharInLoopBodyCompilesAndRuns(t *testing.T) {
+	// A char-typed local declared and compared inside a while-loop body: the
+	// loop runs three passes, each declaring c='a' and summing 1 when c == 'a',
+	// exiting with 3 — proving char locals work through the loop-body
+	// leading-statement and condition paths.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 3 { let c char = 'a'; if c == 'a' { sum = sum + 1; } i = i + 1; } return sum; }", false, 3, false)
+}
+
+func TestEmitCharWritesC(t *testing.T) {
+	// The emitted C for the char fixture: the char local is declared with the
+	// fixed int32_t type and its literal emitted as an int32_t constant
+	// ((int32_t)97 for 'a', (int32_t)98 for 'b'), the helper's parameter and
+	// return type are both int32_t, the reassignment stores the call result,
+	// and the comparison emits the plain C == operator between the two
+	// int32_t operands. Symbols 24 (f), 25 (f's c parameter), 26 (main), 27
+	// (main's c local) come from the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn f(c char) char { return c; } fn main() i32 { var c char = 'a'; c = f('b'); if c == 'b' { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx, int32_t pebble_local_25) {",
+		"int32_t pebble_local_27 = (int32_t)97;",
+		"pebble_local_27 = pebble_fn_24(ctx, (int32_t)98);",
+		"if (pebble_local_27 == (int32_t)98) {",
+		"return pebble_local_25;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
 }
