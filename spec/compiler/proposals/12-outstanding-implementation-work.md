@@ -244,23 +244,81 @@ is illegal per 11 §4's decision.
       form works (switched to the explicit form). Also fixed an unrelated
       pre-existing bug in `sort()`: `push(&stack, ...)`/`pop(&stack)` used
       free-function syntax for what are actually methods.
-  - **Not yet fully checking**: a further, real, not-yet-root-caused
-    failure (`T0501`/`T0505`/`T0510`) reproduces only with the file's
-    FULL declaration set together — every isolated snippet tried
-    (`push`+`reserve`, `push` alone, etc.) passes standalone. Same
-    pattern as the `std/mem.peb` `buildDeclarations` bug below — likely
-    worth investigating together, may share a root cause (both are
-    "fails only with enough declarations coexisting in one unit" bugs).
-    Not yet scoped into a dispatch brief.
-- [ ] `std/string.peb` — same redesign as `vec.peb` for its buffer (this is
-      also 11 §6's tracked follow-up — one item, not two). Not started.
+  - **Root-caused (not fixed yet — dispatch in flight)**: the further
+    `T0501`/`T0505`/`T0510` failure that only reproduces with the file's
+    full declaration set is almost certainly the auto-reference gap
+    tracked in the new section directly below — `sort()` calls
+    `stack.push(...)`/`stack.pop()` on `var stack = with_capacity[...](...)`,
+    exactly the broken pattern (a pointer-receiver method called
+    directly on a value-typed local). Confirmed the `mem.peb`
+    `buildDeclarations` bug this note used to compare against was
+    actually unrelated (different, already-fixed root cause — a
+    grouped-parameter source-map bug) — don't conflate the two anymore.
+- [ ] `std/string.peb` — redesign started (in progress, not committed):
+      `data []char` instead of `*char`, indexing instead of pointer
+      arithmetic. Also found and worked around, mid-redesign, a THIRD
+      real category of gap (beyond `vec.peb`'s two): `str`↔pointer casts
+      (`s as *char`, `self.data as str`, etc.) are correctly, deliberately
+      FORBIDDEN by this compiler's own spec (`06b-validation-and-typed-ir.md`'s
+      primitive matrix — `str`'s only legal conversion is identity), not
+      merely unimplemented — confirmed via the user directly ("We should
+      not allow str to *char"). The real fix, per direct user guidance:
+      `str`'s existing legal operations (indexing `s[i]` → `char`, `.len`)
+      are enough to move bytes between a `str` and a `[]char` buffer via
+      plain userland char-by-char loops — no compiler feature needed at
+      all for this. One method (`as_str()`, which needs to construct a
+      real `str` from arbitrary runtime buffer data) has no legal
+      implementation at all right now and was deliberately left out with
+      an explanatory comment rather than faked — real `str` construction
+      from a buffer needs a dedicated C-interop constructor (an
+      extern-declared function backed by a real runtime implementation),
+      explicitly out of scope per the user ("we can use it for C interop
+      but it should not be built in" — i.e. not a language-level cast).
+      Separately, real bug found: `find()`'s loop-bound comparison against
+      `self.len` (`uint`) forces its loop variable to infer as `uint`,
+      but the method's declared return type is `?int` — a real,
+      pre-existing type mismatch (present in the file before this
+      session's redesign too), not yet fixed.
 - [~] `std/hmap.peb`, `std/set.peb` — confirmed to need the same
       pointer-arithmetic-to-slice-indexing redesign as
       `vec.peb`/`string.peb` (e.g. `(new_entries + i).state = .Empty;`).
-      Not started. The separate `.is_some` blocker below is resolved;
-      the actual `.peb` rewrite (`tombstone_index.is_some` →
-      `tombstone_index.has_value`, plus the pointer-arithmetic redesign)
-      is still pending.
+      Not started. The separate `.is_some` blocker is resolved
+      (`.is_some` → `.has_value`, `cf6c41e`); the pointer-arithmetic
+      redesign is still pending.
+
+## CRITICAL — pointer-receiver methods can't be called on a value-typed local at all
+
+**Confirmed via direct, minimal, isolated testing — very likely the
+single highest-leverage remaining bug for the standard library.**
+Calling a pointer-receiver method (`fn method(self *T, ...) ...`)
+directly on a value-typed (not already pointer-typed) receiver fails
+universally — even the simplest possible case:
+
+```
+type S = struct { n i32; fn set(self *S, v i32) void { self.n = v; } };
+fn f() void {
+    var s = S.{ n = 0 };
+    s.set(1);   // FAILS: T0505 cannot unify semantic type kind 8 with kind 2
+}
+```
+
+Confirmed this fails identically regardless of: whether the local came
+from a struct literal, a function call, a copied parameter; with or
+without arguments. Confirmed it DOES work when the receiver is already
+pointer-typed (`let p *S = &s; p.set(1);` — fine). So the gap is
+precisely: method-call resolution never inserts an implicit
+address-of when the receiver expression's type is `T` but the resolved
+method's `self` parameter is `*T`, even though the receiver is a
+perfectly valid addressable place and explicit `&s` works fine on its
+own.
+
+**This is the standard, idiomatic way every container type in `std/`
+gets used** — `var v = Vec::new[T](); v.push(x);`-shaped code, with no
+explicit `&`. Every pointer-receiver method call confirmed working
+elsewhere this session happened to use an already-pointer-typed receiver
+(a `self *T` parameter, or an explicit `let p *T = &v;`) — this specific,
+extremely common pattern was never actually exercised until now. Not yet
+fixed — dispatch in flight.
 
 ## Optional `.has_value` field (was an open design question, now resolved and shipped)
 
