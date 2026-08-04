@@ -53,7 +53,37 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 			}
 		}
 	}
-	b := tir.NewBuilder(handoff.Semantics.Types(), tir.Config{
+	// Specialization substitution interns composite sizeof targets before the
+	// immutable IR type snapshot is taken.
+	for _, instantiation := range handoff.Solution.Instantiations() {
+		signature, exists := handoff.Semantics.Signature(instantiation.Generic)
+		if !exists || len(signature.TypeParams) != len(instantiation.Arguments) {
+			continue
+		}
+		substitution := make(map[symbol.SymbolID]types.TypeID, len(signature.TypeParams))
+		for index, parameter := range signature.TypeParams {
+			if instantiation.Arguments[index].State != infer.TypeFinal {
+				substitution = nil
+				break
+			}
+			substitution[parameter] = instantiation.Arguments[index].Type
+		}
+		if substitution == nil {
+			continue
+		}
+		for _, resolved := range records.roots {
+			if resolved.State == infer.TypeFinal {
+				if _, err := store.Substitute(resolved.Type, substitution); err != nil {
+					return fail("typed-IR construction failed during specialization type substitution")
+				}
+			}
+		}
+	}
+	typeSnapshot, err := store.Snapshot()
+	if err != nil {
+		return fail("typed-IR construction failed during specialization type snapshot")
+	}
+	b := tir.NewBuilder(typeSnapshot, tir.Config{
 		MaxIRNodes: config.MaxIRNodes, MaxIRComponents: config.MaxIRComponents,
 		MaxDumpBytes: config.MaxDumpBytes,
 		Runtime:      runtimeInfo,
@@ -75,7 +105,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 			return fail("typed-IR construction failed during " + step.name)
 		}
 	}
-	unit, err := b.Build()
+	unit, err = b.Build()
 	if err != nil {
 		return fail("typed-IR construction failed during Build: " + err.Error())
 	}

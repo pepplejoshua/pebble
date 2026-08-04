@@ -86,15 +86,16 @@ func TestValidateSizeofVoid(t *testing.T) {
 }
 
 func TestValidateSizeofFunctionAndGenericTypes(t *testing.T) {
-	tests := []string{
-		"fn check() void { let x u64 = sizeof fn() void; }",
-		"fn check[T]() void { let x u64 = sizeof T; }",
+	diagnostics, handoff, records := runGlobalValidation(t, "fn check() void { let x u64 = sizeof fn() void; }")
+	if validateSizeof(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("invalid sizeof function type was not rejected: %+v", diagnostics.Items())
 	}
-	for _, source := range tests {
-		diagnostics, handoff, records := runGlobalValidation(t, source)
-		if validateSizeof(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeAggregate) {
-			t.Fatalf("invalid sizeof type was not rejected: %+v", diagnostics.Items())
-		}
+}
+
+func TestValidateSizeofGenericTypeParameterIsDeferred(t *testing.T) {
+	diagnostics, handoff, records := runGlobalValidation(t, "fn check[T]() void { let x u64 = sizeof T; }")
+	if !validateSizeof(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("generic sizeof type parameter was rejected before instantiation: %+v", diagnostics.Items())
 	}
 }
 

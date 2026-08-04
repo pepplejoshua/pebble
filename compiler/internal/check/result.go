@@ -185,6 +185,9 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	if !validateGenericInstantiations(handoff, records, requirements, diagnostics, config) {
 		return newResult(handoff, records, requirements, nil, false)
 	}
+	if !validateSpecializedSizeof(handoff, records, store, diagnostics, config) {
+		return newResult(handoff, records, requirements, nil, false)
+	}
 
 	// Per-function structural control flow, defers, returns, and reachability.
 	if !auditControlArena(handoff, diagnostics, config) {

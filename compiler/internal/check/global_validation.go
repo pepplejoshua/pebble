@@ -3,6 +3,7 @@ package check
 import (
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -70,7 +71,7 @@ func validateSizeof(handoff *solveHandoff, records *solvedRecords, diagnostics *
 		if !ok {
 			continue
 		}
-		invalid := key.Kind() == types.Function || key.Kind() == types.TypeParameter
+		invalid := key.Kind() == types.Function
 		if key.Kind() == types.Builtin {
 			builtin, builtinOK := key.Builtin()
 			invalid = builtinOK && builtin == types.Void
@@ -90,6 +91,71 @@ func validateSizeof(handoff *solveHandoff, records *solvedRecords, diagnostics *
 				Message:  "sizeof type is invalid",
 				Primary:  diagnostic.Label{Span: typeUse.Header.Span},
 			})
+		}
+	}
+	return !failed
+}
+
+func sizeofTypeInvalid(handoff *solveHandoff, store *types.Store, typ types.TypeID) bool {
+	key, ok := store.Key(typ)
+	if !ok {
+		return false
+	}
+	invalid := key.Kind() == types.Function
+	if key.Kind() == types.Builtin {
+		builtin, builtinOK := key.Builtin()
+		invalid = builtinOK && builtin == types.Void
+	}
+	if key.Kind() == types.Nominal {
+		declaration, _, declarationOK := key.Nominal()
+		if declarationOK {
+			descriptor, descriptorOK := handoff.Semantics.TypeDeclaration(declaration)
+			invalid = descriptorOK && descriptor.Nominal == infer.NominalExtern
+		}
+	}
+	return invalid
+}
+
+// validateSpecializedSizeof checks symbolic sizeof records after replacing
+// the enclosing generic's type parameters with concrete instantiation args.
+func validateSpecializedSizeof(handoff *solveHandoff, records *solvedRecords, store *types.Store, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
+	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil || store == nil {
+		return true
+	}
+	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
+	failed := false
+	for _, instantiation := range handoff.Solution.Instantiations() {
+		signature, ok := handoff.Semantics.Signature(instantiation.Generic)
+		if !ok || len(signature.TypeParams) != len(instantiation.Arguments) {
+			continue
+		}
+		substitution := make(map[symbol.SymbolID]types.TypeID, len(signature.TypeParams))
+		for index, parameter := range signature.TypeParams {
+			argument := instantiation.Arguments[index]
+			if argument.State != infer.TypeFinal {
+				substitution = nil
+				break
+			}
+			substitution[parameter] = argument.Type
+		}
+		if substitution == nil {
+			continue
+		}
+		for _, retained := range handoff.Records.Records() {
+			typeUse := retained.TypeUse
+			if typeUse == nil || typeUse.Kind != typeUseSizeof || retained.Header.Owner != instantiation.Generic || !activeOperatorRecord(handoff, retained.Header) {
+				continue
+			}
+			resolved, ok := records.Root(typeUse.Type)
+			if !ok || resolved.State != infer.TypeFinal {
+				continue
+			}
+			specialized, err := store.Substitute(resolved.Type, substitution)
+			if err != nil || !sizeofTypeInvalid(handoff, store, specialized) {
+				continue
+			}
+			failed = true
+			reporter.add(diagnostic.Diagnostic{Severity: diagnostic.Error, Code: CodeAggregate, Message: "sizeof type is invalid", Primary: diagnostic.Label{Span: typeUse.Header.Span}})
 		}
 	}
 	return !failed

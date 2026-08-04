@@ -40,6 +40,27 @@ fn check() void { let result i32 = max(1, 2); }
 	}
 }
 
+func TestGenericSizeofTypeParameter(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		valid  bool
+	}{
+		{"concrete instantiation", `fn f[T]() uint { return sizeof T; } fn main() i32 { return f[i32]() as i32; }`, true},
+		{"uninstantiated template", `fn f[T]() uint { return sizeof T; }`, true},
+		{"invalid concrete function type", `fn g[T]() uint { return sizeof T; } fn f() void {} fn main() i32 { return g[fn() void]() as i32; }`, false},
+		{"generic nominal type", `type Entry[K, V] = struct { key K; value V; }; fn size[K, V]() uint { return sizeof Entry[K, V]; } fn main() i32 { return size[i32, i64]() as i32; }`, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, diagnostics := checkGenericFixture(t, test.source)
+			if result.Successful() != test.valid || (!test.valid && !hasValidationDiagnostic(diagnostics, CodeAggregate)) {
+				t.Fatalf("sizeof generic validity mismatch: valid=%v result=%v diagnostics=%+v", test.valid, result.Successful(), diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestGenericInstantiationEquatable(t *testing.T) {
 	tests := []struct {
 		name   string
