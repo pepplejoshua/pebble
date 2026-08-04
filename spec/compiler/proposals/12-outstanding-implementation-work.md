@@ -225,11 +225,36 @@ is illegal per 11 §4's decision.
       bug: both call `.is_some` as a field on an Optional value
       (`tombstone_index.is_some`) — confirmed via checking every other
       `?T`-consuming pattern in `std/` that `.is_some` is not a real
-      accessor anywhere else in this language (no hits in the grammar
-      doc, no other file uses it); the likely correct form is a direct
-      comparison against `none` (`tombstone_index != none`), but this
-      needs confirming against how Optionals are actually queried
-      elsewhere before rewriting — not yet done.
+      accessor anywhere else in this language.
+
+## OPEN DESIGN QUESTION — how is an Optional's "is it set" queried at all?
+
+Not a bug — genuinely unclear, needs a real answer before `hmap.peb`/
+`set.peb` can be fixed (see `.is_some` above). Confirmed, via direct
+testing against the real checker, that NONE of the following work:
+
+- `.is_some` as a field/method (`T0507`/`C0605`, not a real accessor)
+- `o == none` / `o != none` (`C0603 operator operands or result have
+  invalid types` — equality against `none` is not supported)
+
+Also confirmed via grep: no existing test anywhere in this repo
+(`internal/check/*_test.go`, `internal/backend/*_test.go`) exercises
+`== none`/`!= none`/`.is_some`/any other Optional-query form. The only
+two operations this language supports on a `?T` today, confirmed
+working, are: constructing one (`some x` / `none`), and force-unwrapping
+one (`!`, e.g. `stack_val!.0`, used throughout `std/vec.peb`). There is
+no confirmed way to check "is this Optional set" without unwrapping it
+unconditionally (which panics on `none`).
+
+This needs a real design decision — likely one of: (a) support `==`/`!=`
+against `none` as a genuine boolean query (cheapest, matches how pointer
+`nil` comparison already works per `11-raw-pointers-and-unsafe-ops.md`
+§3 / `OPEN-DECISIONS.md`'s resolved pointer-equality note — an Optional
+being "none" is conceptually the same shape of question), (b) add an
+`is_some`/`is_none` accessor as a real language feature, or (c) something
+else entirely (pattern-binding `if`, etc.). Whichever is chosen, it's a
+real, if small, checker feature — not a one-line bug fix — and
+`hmap.peb`/`set.peb` can't be finished until it exists.
 
 ## Backend generic function-call lowering
 
