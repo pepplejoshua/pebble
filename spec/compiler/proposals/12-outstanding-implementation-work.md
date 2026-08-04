@@ -74,42 +74,33 @@ emission, not missing symbol registration. Fix this note when writing the
       taken). Committed `f7f92d7`, independently re-verified (gofmt/vet/
       build/full suite all clean, no `std/` files touched).
 
-## CRITICAL — pointer-receiver `self.field` access has never worked
+## Pointer-receiver `self.field` access (was CRITICAL, now fixed)
 
-**Confirmed via direct testing, independent of every other fix in this
-doc** (identical failure with and without the slice/array/str `.len` fix
-below — not a regression from it, a pre-existing gap): a method with a
-pointer receiver (`fn get(self *P) uint => self.cap;`, exactly the
-declared shape every method in `std/vec.peb`/`std/string.peb`/
-`std/hmap.peb`/`std/set.peb` uses) fails reading its own field with
-`T0507 field receiver is not a nominal type` (or, after the structural-
-field fix, `T0507 type has no structural field named cap`). Confirmed
-this is **not** limited to methods — an ordinary plain function taking a
-pointer parameter (`fn f(p *P) uint { return p.cap; }`) fails identically.
-The checker's field-resolution constraint (`hasField`) never auto-derefs
-a pointer receiver; something else in this codebase must have been doing
-that for every previously-confirmed-working pointer-receiver test
-(10.47's own summary explicitly lists "a pointer-receiver method cleanly
-rejected" as one of its four passing tests — meaning pointer receivers
-were deliberately unsupported as of that point), and it appears nothing
-has closed that gap since, despite the entire raw-pointers-and-unsafe-ops
-arc (11) being explicitly motivated by exactly this: 11's own §1
-Motivation says outright, "raw pointers... are the one prerequisite
-`std/string.peb` actually needs — every mutating method on `String`
-takes `self *String`."
-
-**This means the raw-pointers arc's own stated goal isn't actually
-delivered yet, despite all 4 of its slices being done and committed.**
-This is very likely the single highest-leverage remaining item on this
-entire list — every pointer-receiver method in the standard library is
-blocked by it, independent of `.len`, `usize`, pointer arithmetic, or
-anything else already fixed or still open. Not yet scoped into a dispatch
-brief; needs its own investigation into exactly where a fix belongs (the
-member-facts/hasField/structuralField layer most likely, possibly needing
-an explicit pointer-deref step on the receiver term before field
-resolution runs, mirroring how `receiverNominal` — used for method
-*selection* — already handles a pointer receiver by dereffing it, per
-`internal/infer/instantiate.go`).
+- [x] **Fixed.** A method with a pointer receiver (`fn get(self *P) uint
+      => self.cap;`, exactly the declared shape every method in
+      `std/vec.peb`/`std/string.peb`/`std/hmap.peb`/`std/set.peb` uses),
+      and even an ordinary plain function taking a pointer parameter,
+      never worked reading (or writing) a field through the pointer —
+      confirmed this was the actual reason the raw-pointers-and-unsafe-
+      ops arc's (11) own stated motivation ("every mutating method on
+      `String` takes `self *String`") wasn't really delivered despite all
+      4 of that arc's slices being committed. Root cause: `hasField` and
+      `structuralField` never dereferenced a pointer receiver before
+      classifying it, unlike `receiverNominal` (used for method
+      *selection*, which already worked). Fixed by adding the identical
+      one-level pointer peel `receiverNominal` already had, to both
+      functions' known-type and shape-based branches, plus the same peel
+      in two downstream consumers (`member_validation.go`'s diagnostic
+      pass, `ir_builder_place.go`'s `memberSymbol` lookup). The backend
+      now emits `->` instead of `.` for a pointer-typed field base, and
+      `buildStoreCore` now accepts `FieldPlace` as a write target (which
+      also fixed plain non-pointer struct field assignment,
+      `point.x = 5;`, previously rejected outright for the same reason).
+      Committed `d9baea8`, independently re-verified — full suite green,
+      and confirmed directly against a real `vec.peb`-shaped fixture (a
+      struct with a pointer-receiver method conditionally reading AND
+      writing its own fields) that the exact pattern used throughout
+      `std/` now type-checks.
 
 ## Standard-library correctness audit (user request: "inspect all lib files
 for now wrong/illegal behaviour and correct them")
@@ -128,17 +119,18 @@ is illegal per 11 §4's decision.
       missing an explicit `*void` → `*T` cast — fixed directly
       (`return new(sizeof T) as *T;`), confirmed the resulting error is
       gone from a real check of the file.
-- [x] `.len`/`.data` field access on a slice, fixed-array, or `str` VALUE
-      (not through a pointer — see the CRITICAL section above for that
-      separate, bigger gap) from Pebble source. New
-      `constraintStructuralField` resolves slice `.len`/`.data`, array
-      `.len` as a genuine compile-time constant (an `IntegerLiteral`, not
-      a runtime field — array length is already carried on the type
-      shape), and `str.len`; falls back to the unchanged, existing
-      `hasField` for real nominal structs (confirmed no regression via a
-      dedicated test: a struct declaring its own fields literally named
-      `len`/`data` still resolves via nominal lookup). Committed `b4f0eb9`,
-      independently re-verified (gofmt/vet/build/full suite all clean).
+- [x] `.len`/`.data` field access on a slice, fixed-array, or `str` value
+      from Pebble source (`b4f0eb9`), and through a pointer to one, e.g.
+      `s *[]T` (`d9baea8`, same fix as the pointer-receiver item above).
+      New `constraintStructuralField` resolves slice `.len`/`.data`,
+      array `.len` as a genuine compile-time constant (an
+      `IntegerLiteral`, not a runtime field — array length is already
+      carried on the type shape), and `str.len`; falls back to the
+      unchanged, existing `hasField` for real nominal structs (confirmed
+      no regression via a dedicated test: a struct declaring its own
+      fields literally named `len`/`data` still resolves via nominal
+      lookup). Both commits independently re-verified (gofmt/vet/build/
+      full suite all clean).
   - `[N]T` fixed arrays' `.len` and `str`'s `.len` were also confirmed
     affected by the same root cause and are fixed by the same commit.
   - **Not yet confirmed either way** (my own test syntax may have been
@@ -162,10 +154,8 @@ is illegal per 11 §4's decision.
     natural fixture needed a `uint` → `i32` cast to produce an entry-
     compatible return type) — correctly left out rather than worked
     around. Not yet scoped into its own dispatch brief.
-  - This fix unblocks `.len`/`.data` for VALUE receivers; the CRITICAL
-    pointer-receiver gap above still blocks the same std-library files'
-    actual methods (which all use pointer receivers), independent of this
-    fix.
+  - Combined with the pointer-receiver fix above, `.len`/`.data` now
+    resolves through both value and pointer receivers.
 - [ ] `std/libc.peb` — `usize` → `uint` sweep (mechanical; extern
       declarations only, no pointer arithmetic present).
 - [ ] `std/hash.peb` — `usize` → `uint` sweep (mechanical).
