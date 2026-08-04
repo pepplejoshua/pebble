@@ -229,13 +229,32 @@ is illegal per 11 §4's decision.
     now-corrected Slice 4 entry). Not yet bisected to a specific pair of
     declarations within the full set, not yet scoped into a dispatch
     brief.
-- [ ] `std/vec.peb` — real redesign needed beyond the `usize` sweep:
-      `data` needs to be backed by a `mem::new_slice`d slice
-      (capacity-sized) and indexed via `data[i]` instead of pointer
-      arithmetic (`*(self.data + i)`, confirmed still present and still
-      illegal). Not mechanical — a structural change.
+- [~] `std/vec.peb` — redesigned (`0fce73e`): `data` is now `[]T`
+      (capacity-sized, allocated via the allocator directly then wrapped
+      with `slice ptr, cap` — not `mem::new_slice`, which only supports
+      fresh allocation, not growing existing memory the way
+      `reserve`/`shrink_to_fit` need), indexed via `data[i]` instead of
+      pointer arithmetic throughout. Two more real, separate, pre-existing
+      bugs found and legitimately worked around while verifying this
+      (both confirmed via isolated tests, not introduced by the redesign):
+      `slice`'s pointer operand doesn't ground its type from a bare `nil`
+      literal without an explicit binding (worked around by binding to a
+      typed local first, not by avoiding `slice`); implicit `.{ field =
+      value }` struct-literal syntax fails when the destination type is a
+      generic instantiation (`Vec[T]`), while the explicit `Vec[T].{ }`
+      form works (switched to the explicit form). Also fixed an unrelated
+      pre-existing bug in `sort()`: `push(&stack, ...)`/`pop(&stack)` used
+      free-function syntax for what are actually methods.
+  - **Not yet fully checking**: a further, real, not-yet-root-caused
+    failure (`T0501`/`T0505`/`T0510`) reproduces only with the file's
+    FULL declaration set together — every isolated snippet tried
+    (`push`+`reserve`, `push` alone, etc.) passes standalone. Same
+    pattern as the `std/mem.peb` `buildDeclarations` bug below — likely
+    worth investigating together, may share a root cause (both are
+    "fails only with enough declarations coexisting in one unit" bugs).
+    Not yet scoped into a dispatch brief.
 - [ ] `std/string.peb` — same redesign as `vec.peb` for its buffer (this is
-      also 11 §6's tracked follow-up — one item, not two).
+      also 11 §6's tracked follow-up — one item, not two). Not started.
 - [ ] `std/hmap.peb`, `std/set.peb` — confirmed via direct checking (not
       previously known) to need the same pointer-arithmetic-to-slice-
       indexing redesign as `vec.peb`/`string.peb` (e.g.
