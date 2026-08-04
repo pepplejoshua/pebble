@@ -80,7 +80,17 @@ func validateCallRecords(handoff *solveHandoff, records *solvedRecords, diagnost
 
 		case callMethod:
 			selection, found := handoff.Solution.Method(call.Target.Site)
-			if !found || call.Receiver == 0 {
+			if !found {
+				callee, calleeFound := records.Root(call.Callee)
+				if !calleeFound || callee.State != infer.TypeFinal {
+					continue
+				}
+				key, keyFound := typeSnapshot.Key(callee.Type)
+				convention, parameters, functionResult, variadic, isFunction := key.Function()
+				if !keyFound || !isFunction || result.Type != functionResult || (!variadic && len(call.Arguments) != len(parameters)) || (convention == types.C && variadic) {
+					valid = false
+				}
+			} else if call.Receiver == 0 {
 				valid = false
 			} else {
 				signature, sigFound := handoff.Semantics.Signature(selection.Method)

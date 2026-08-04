@@ -69,6 +69,48 @@ let c_call i32 = foreign(6);
 	}
 }
 
+func TestCallFactsFunctionFieldsUseMethodSyntax(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn add(value i32) i32 => value;
+type Box = struct {
+    callback fn(i32) i32;
+    fn get(self Box, value i32) i32 => self.callback(value);
+};
+let callback_box Box = Box.{ callback = add };
+let field_result i32 = callback_box.callback(7);
+let method_result i32 = callback_box.get(8);
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("function field or real method did not solve: %+v", diagnostics.Items())
+	}
+	methodCalls, selectedMethods := 0, 0
+	for _, retained := range facts.Generation.records.values {
+		if retained.Call != nil && retained.Call.Target.Kind == callMethod {
+			methodCalls++
+			if _, ok := solution.Method(retained.Call.Target.Site); ok {
+				selectedMethods++
+			}
+		}
+	}
+	if methodCalls != 3 || selectedMethods != 1 {
+		t.Fatalf("method-shaped calls = %d selected methods = %d", methodCalls, selectedMethods)
+	}
+}
+
+func TestCallFactsFunctionFieldCallRejectsUnknownMember(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Box = struct { callback fn(i32) i32; };
+fn main() void { let box Box = Box.{}; let value i32 = box.missing(1); }
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	facts.Session.Solve()
+	if !diagnostics.HasErrors() {
+		t.Fatal("unknown member call was accepted")
+	}
+}
+
 func TestCallFactsRecoveryKeepsIndependentCall(t *testing.T) {
 	contents, err := os.ReadFile("../../../tests/check/facts/recovery/call_independent.peb")
 	if err != nil {

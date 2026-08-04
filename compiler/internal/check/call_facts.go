@@ -343,14 +343,10 @@ func (w *walker) finishCall(ref symbol.SyntaxRef, node syntax.Node, ctx walkCont
 		if bracket := w.bracketPlans[p.method]; bracket != nil && bracket.deferredMember != nil {
 			receiver = w.valuesBySyntax[bracket.deferredMember.base]
 		}
-		var shapes []infer.Shape
-		if receiver.ID != 0 {
-			shapes = append(shapes, infer.Leaf(receiver.Term))
+		member := w.memberPlans[p.method]
+		if member != nil && receiver.ID != 0 {
+			w.addConstraint(infer.CallMember(receiver.Term, member.nameText, callee.Term, callable, p.result.Term, nil, p.target.Site, origin))
 		}
-		for _, a := range arguments {
-			shapes = append(shapes, infer.Leaf(w.generation.values[a.Destination-1].Term))
-		}
-		w.addConstraint(infer.ConstrainShape(callee.Term, infer.FunctionShape(types.Pebble, shapes, infer.Leaf(p.result.Term), false), origin))
 	}
 	result, ok := w.publishExistingSyntax(ref, p.result, origin)
 	if !ok {

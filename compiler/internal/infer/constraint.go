@@ -38,6 +38,7 @@ const (
 	constraintHasField
 	constraintHasComponent
 	constraintSelectMethod
+	constraintCallMember
 	constraintCallable
 	constraintIndexable
 	constraintSliceable
@@ -87,6 +88,9 @@ func HasComponent(receiver Term, ordinal uint32, result Term, origin Origin) Con
 }
 func SelectMethod(receiver Term, name string, callable Term, explicit []Term, site symbol.SyntaxRef, origin Origin) Constraint {
 	return Constraint{kind: constraintSelectMethod, a: receiver, b: callable, name: name, site: site, explicit: append([]Term(nil), explicit...), origin: origin}
+}
+func CallMember(receiver Term, name string, callable Term, arguments []CallableArgument, result Term, explicit []Term, site symbol.SyntaxRef, origin Origin) Constraint {
+	return Constraint{kind: constraintCallMember, a: receiver, b: callable, c: result, name: name, site: site, arguments: append([]CallableArgument(nil), arguments...), explicit: append([]Term(nil), explicit...), origin: origin}
 }
 func Callable(callee Term, arguments []CallableArgument, result Term, origin Origin) Constraint {
 	return Constraint{kind: constraintCallable, a: callee, b: result, arguments: append([]CallableArgument(nil), arguments...), origin: origin}

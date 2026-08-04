@@ -147,9 +147,9 @@ func TestFactHandoffRepositoryFixtures(t *testing.T) {
 	// Define expected behavior per recovery file.
 	recoveryExpectations := map[string]struct {
 		wantGenerationErrors bool
-		wantSemantics       bool
-		wantSolutionSuccess bool
-		wantDiagnostics     bool
+		wantSemantics        bool
+		wantSolutionSuccess  bool
+		wantDiagnostics      bool
 	}{
 		"handoff_type_conflict.peb": {
 			wantGenerationErrors: true,  // Type conflict -> GenerationHadErrors

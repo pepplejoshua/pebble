@@ -83,7 +83,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		}
 		node.Kind, node.Symbol, node.Function = tir.HoistedFunctionValue, callable.Symbol, function
 	case expressionMember:
-		if member := s.membersByResult[id]; member != nil && (member.Kind == memberField || member.Kind == memberTuple) {
+		if member := s.membersByResult[id]; member != nil && (member.Kind == memberField || member.Kind == memberMethod || member.Kind == memberTuple) {
 			if place, ok := s.buildPlaceForValue(id); ok {
 				node.Kind, node.Children = tir.Load, []tir.NodeID{place}
 			} else if len(record.Children) == 1 {
@@ -95,7 +95,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 				if memberID == 0 {
 					memberID = s.memberSymbol(record.Children[0], member.Name)
 				}
-				if member.Kind == memberField {
+				if member.Kind == memberField || member.Kind == memberMethod {
 					node.Kind, node.Member, node.Children = tir.FieldValue, memberID, []tir.NodeID{base}
 				} else {
 					node.Kind, node.Ordinal, node.Children = tir.TupleElementValue, member.TupleOrdinal, []tir.NodeID{base}

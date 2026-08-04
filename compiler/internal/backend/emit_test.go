@@ -161,6 +161,10 @@ func TestEmitRuntimeAllocatorRoundTrip(t *testing.T) {
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = (a.alloc)(a.ptr, 4) as *i32; *p = 42; let value = *p; (a.free)(a.ptr, p as *void); return value; }", 42)
 }
 
+func TestEmitRuntimeAllocatorUnparenthesizedRoundTrip(t *testing.T) {
+	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = a.alloc(a.ptr, 4) as *i32; *p = 42; let value = *p; a.free(a.ptr, p as *void); return value; }", 42)
+}
+
 func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
 	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")

@@ -92,7 +92,7 @@ func (s *irBuildState) buildIndirectCall(call *callRecord, flow *contextFlowReco
 func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord, node *tir.Node) bool {
 	method, ok := s.handoff.Solution.Method(call.Target.Site)
 	if !ok || method.Method == 0 {
-		return false
+		return s.buildIndirectCall(call, flow, node)
 	}
 	functionType, ok := s.resolveType(call.Callee)
 	if !ok {

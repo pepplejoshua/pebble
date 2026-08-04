@@ -534,6 +534,20 @@ func (s *Session) validateConstraint(value Constraint, depth uint32) error {
 				return fmt.Errorf("method-selection constraint contains a foreign explicit argument")
 			}
 		}
+	case constraintCallMember:
+		if !validTerm(value.a) || !validTerm(value.b) || !validTerm(value.c) || value.name == "" || value.site.Module == 0 || value.site.Node == 0 {
+			return fmt.Errorf("invalid member-call constraint")
+		}
+		for _, argument := range value.arguments {
+			if !validTerm(argument.Source) || !validTerm(argument.Destination) {
+				return fmt.Errorf("member-call constraint contains a foreign argument")
+			}
+		}
+		for _, term := range value.explicit {
+			if !validTerm(term) {
+				return fmt.Errorf("member-call constraint contains a foreign explicit argument")
+			}
+		}
 	case constraintCallable:
 		if !validTerm(value.a) || !validTerm(value.b) {
 			return fmt.Errorf("invalid callable constraint")
@@ -615,7 +629,7 @@ func constraintMethodSites(value Constraint) ([]symbol.SyntaxRef, bool) {
 		last := len(stack) - 1
 		current := stack[last]
 		stack = stack[:last]
-		if current.kind == constraintSelectMethod {
+		if current.kind == constraintSelectMethod || current.kind == constraintCallMember {
 			if seen[current.site] {
 				return nil, false
 			}

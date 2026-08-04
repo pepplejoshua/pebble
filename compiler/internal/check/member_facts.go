@@ -130,11 +130,8 @@ func (w *walker) finishMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 	case memberTuple:
 		w.addConstraint(infer.HasComponent(base.Term, p.ordinal, term, origin))
 	case memberMethod:
-		site := p.callSite
-		if site == (symbol.SyntaxRef{}) {
-			site = ref
-		}
-		w.addConstraint(infer.SelectMethod(base.Term, p.nameText, term, nil, site, origin))
+		// The enclosing call owns resolution because a member-call may be either
+		// a declared method or a function-valued field.
 	}
 	result := w.expressionResult(ref, term, origin)
 	if result.ID == 0 || !w.publishedSyntax[ref] {

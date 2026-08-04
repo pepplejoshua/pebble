@@ -248,6 +248,46 @@ func (s *Session) selectMethod(value Constraint) (bool, bool, bool) {
 	return changed, true, false
 }
 
+func (s *Session) callMember(value Constraint) (bool, bool, bool) {
+	if value.a.kind == termError || value.b.kind == termError || value.c.kind == termError {
+		return false, true, false
+	}
+	declaration, _, delayed, ok := s.receiverNominal(value.a, value.origin)
+	if delayed || !ok {
+		return false, ok, delayed
+	}
+	method := false
+	for _, candidateID := range s.program.inputs.Resolution.Members(declaration) {
+		candidate, exists := s.program.inputs.Resolution.Symbols.Symbol(candidateID)
+		if exists && !candidate.Error && candidate.Name == value.name && candidate.Kind == symbol.SymbolMethod {
+			method = true
+			break
+		}
+	}
+	if method {
+		changed, success, delayed := s.selectMethod(Constraint{a: value.a, b: value.b, name: value.name, site: value.site, explicit: value.explicit, origin: value.origin})
+		if delayed || !success {
+			return changed, success, delayed
+		}
+		shapes := []Shape{Leaf(value.a)}
+		for _, argument := range value.arguments {
+			shapes = append(shapes, Leaf(argument.Destination))
+		}
+		shapeChanged, shapeSuccess := s.constrainShape(value.b, FunctionShape(types.Pebble, shapes, Leaf(value.c), false), value.origin)
+		return changed || shapeChanged, shapeSuccess, false
+	}
+	changed, success, delayed := s.hasField(value.a, value.name, value.b, value.origin)
+	if delayed || !success {
+		return changed, success, delayed
+	}
+	shapes := make([]Shape, 0, len(value.arguments))
+	for _, argument := range value.arguments {
+		shapes = append(shapes, Leaf(argument.Destination))
+	}
+	shapeChanged, shapeSuccess := s.constrainShape(value.b, FunctionShape(types.Pebble, shapes, Leaf(value.c), false), value.origin)
+	return changed || shapeChanged, shapeSuccess, false
+}
+
 func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID, []Term, bool, bool) {
 	if receiver.kind == termError {
 		return 0, nil, false, true
