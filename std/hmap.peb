@@ -81,7 +81,7 @@ type HashMap[K, V] = struct {
 
             if entry.state == .Empty {
                 // Prefer first tombstone if found
-                if tombstone_index.is_some {
+                if tombstone_index.has_value {
                     let t = tombstone_index!;
                     let slot = self.entries + t;
                     slot.key = key;
@@ -97,7 +97,7 @@ type HashMap[K, V] = struct {
                 return;
             }
 
-            if entry.state == .Tombstone && !tombstone_index.is_some {
+            if entry.state == .Tombstone && !tombstone_index.has_value {
                 tombstone_index = some index;
             }
 
@@ -139,7 +139,7 @@ type HashMap[K, V] = struct {
     // Returns a value directly.
     fn get[K, V](self *HashMap[K, V], key K) ?V {
         let ptr = self.get_by_ref(key);
-        if !ptr.is_some {
+        if !ptr.has_value {
             return none;
         }
         return some *(ptr!);
@@ -147,7 +147,7 @@ type HashMap[K, V] = struct {
 
     // Check if the hashmap contains a key
     fn contains[K, V](self *HashMap[K, V], key K) bool {
-        return self.get_by_ref(key).is_some;
+        return self.get_by_ref(key).has_value;
     }
 
     // Remove a key. Returns true if removed.

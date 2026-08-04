@@ -80,7 +80,7 @@ type Set[K] = struct {
 
             if entry.state == .Empty {
                 // Prefer first tombstone if found
-                if tombstone_index.is_some {
+                if tombstone_index.has_value {
                     let t = tombstone_index!;
                     let slot = self.entries + t;
                     slot.key = key;
@@ -94,7 +94,7 @@ type Set[K] = struct {
                 return;
             }
 
-            if entry.state == .Tombstone && !tombstone_index.is_some {
+            if entry.state == .Tombstone && !tombstone_index.has_value {
                 tombstone_index = some index;
             }
 

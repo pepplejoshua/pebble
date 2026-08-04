@@ -254,43 +254,29 @@ is illegal per 11 §4's decision.
     Not yet scoped into a dispatch brief.
 - [ ] `std/string.peb` — same redesign as `vec.peb` for its buffer (this is
       also 11 §6's tracked follow-up — one item, not two). Not started.
-- [ ] `std/hmap.peb`, `std/set.peb` — confirmed via direct checking (not
-      previously known) to need the same pointer-arithmetic-to-slice-
-      indexing redesign as `vec.peb`/`string.peb` (e.g.
-      `(new_entries + i).state = .Empty;`), **plus** a separate, genuine
-      bug: both call `.is_some` as a field on an Optional value
-      (`tombstone_index.is_some`) — confirmed via checking every other
-      `?T`-consuming pattern in `std/` that `.is_some` is not a real
-      accessor anywhere else in this language.
+- [~] `std/hmap.peb`, `std/set.peb` — confirmed to need the same
+      pointer-arithmetic-to-slice-indexing redesign as
+      `vec.peb`/`string.peb` (e.g. `(new_entries + i).state = .Empty;`).
+      Not started. The separate `.is_some` blocker below is resolved;
+      the actual `.peb` rewrite (`tombstone_index.is_some` →
+      `tombstone_index.has_value`, plus the pointer-arithmetic redesign)
+      is still pending.
 
-## OPEN DESIGN QUESTION — how is an Optional's "is it set" queried at all?
+## Optional `.has_value` field (was an open design question, now resolved and shipped)
 
-Not a bug — genuinely unclear, needs a real answer before `hmap.peb`/
-`set.peb` can be fixed (see `.is_some` above). Confirmed, via direct
-testing against the real checker, that NONE of the following work:
-
-- `.is_some` as a field/method (`T0507`/`C0605`, not a real accessor)
-- `o == none` / `o != none` (`C0603 operator operands or result have
-  invalid types` — equality against `none` is not supported)
-
-Also confirmed via grep: no existing test anywhere in this repo
-(`internal/check/*_test.go`, `internal/backend/*_test.go`) exercises
-`== none`/`!= none`/`.is_some`/any other Optional-query form. The only
-two operations this language supports on a `?T` today, confirmed
-working, are: constructing one (`some x` / `none`), and force-unwrapping
-one (`!`, e.g. `stack_val!.0`, used throughout `std/vec.peb`). There is
-no confirmed way to check "is this Optional set" without unwrapping it
-unconditionally (which panics on `none`).
-
-This needs a real design decision — likely one of: (a) support `==`/`!=`
-against `none` as a genuine boolean query (cheapest, matches how pointer
-`nil` comparison already works per `11-raw-pointers-and-unsafe-ops.md`
-§3 / `OPEN-DECISIONS.md`'s resolved pointer-equality note — an Optional
-being "none" is conceptually the same shape of question), (b) add an
-`is_some`/`is_none` accessor as a real language feature, or (c) something
-else entirely (pattern-binding `if`, etc.). Whichever is chosen, it's a
-real, if small, checker feature — not a one-line bug fix — and
-`hmap.peb`/`set.peb` can't be finished until it exists.
+- [x] **Fixed.** Resolved by the user: an Optional exposes `.has_value`
+      directly (matching the underlying C representation's own field
+      name 1:1 — confirmed via reading `buildOptionalTypedef` that an
+      Optional was ALREADY a tagged struct, `{ bool has_value; T value;
+      }`, never a pointer; the discriminant already existed, it just had
+      no Pebble-source query before this). No separate negation field —
+      `!o.has_value` covers that. Extends the same
+      `constraintStructuralField` mechanism used for slice/array/str's
+      `.len`/`.data`. Committed `b1ed8ea`, independently re-verified —
+      full suite green, real round trip proving both `some`/`none`
+      discriminant states via compiled, executed C.
+  - `== none`/`!= none` deliberately NOT implemented — out of scope,
+    `.has_value` is the sanctioned query form.
 
 ## Backend generic function-call lowering
 
