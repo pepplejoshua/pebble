@@ -1,9 +1,98 @@
 package infer
 
 import (
+	"strconv"
+
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
+
+func (s *Session) structuralField(receiver Term, name string, field Term, origin Origin) (bool, bool, bool) {
+	state, known, shape := s.structure(receiver)
+	switch state {
+	case structuralUnresolved:
+		return false, true, true
+	case structuralError, structuralRigid:
+		return s.recoverTerms(field), true, false
+	case structuralKnown:
+		if !s.stepDecompose(origin) {
+			return false, false, false
+		}
+		key, ok := s.program.typeKey(known)
+		if !ok {
+			return s.failStructural("field receiver is not a store-owned type", origin, []Term{field})
+		}
+		if _, _, nominal := key.Nominal(); nominal {
+			return s.hasField(receiver, name, field, origin)
+		}
+		if length, _, array := key.Array(); array {
+			if name != "len" {
+				return s.failStructural("array type has no field named "+name, origin, []Term{field})
+			}
+			return s.arrayLengthField(length, field, origin)
+		}
+		if key.Kind() == types.Slice {
+			element, _ := key.Child()
+			switch name {
+			case "len":
+				changed, success := s.unify(field, s.Known(s.program.builtins().Uint), origin)
+				return changed, success, false
+			case "data":
+				changed, success := s.constrainShape(field, PointerShape(Leaf(s.Known(element))), origin)
+				return changed, success, false
+			default:
+				return s.failStructural("slice type has no field named "+name, origin, []Term{field})
+			}
+		}
+		if known == s.program.builtins().Str && name == "len" {
+			changed, success := s.unify(field, s.Known(s.program.builtins().Uint), origin)
+			return changed, success, false
+		}
+		return s.failStructural("type has no structural field named "+name, origin, []Term{field})
+	case structuralShape:
+		if shape.kind == shapeLeaf {
+			return false, true, true
+		}
+		if shape.kind == shapeNominal {
+			return s.hasField(receiver, name, field, origin)
+		}
+		if !s.stepDecompose(origin) {
+			return false, false, false
+		}
+		switch shape.kind {
+		case shapeArray:
+			if name != "len" {
+				return s.failStructural("array type has no field named "+name, origin, []Term{field})
+			}
+			return s.arrayLengthField(shape.length, field, origin)
+		case shapeSlice:
+			switch name {
+			case "len":
+				changed, success := s.unify(field, s.Known(s.program.builtins().Uint), origin)
+				return changed, success, false
+			case "data":
+				changed, success := s.constrainShape(field, PointerShape(shape.children[0]), origin)
+				return changed, success, false
+			default:
+				return s.failStructural("slice type has no field named "+name, origin, []Term{field})
+			}
+		default:
+			return s.failStructural("type has no structural field named "+name, origin, []Term{field})
+		}
+	default:
+		return false, true, true
+	}
+}
+
+func (s *Session) arrayLengthField(length uint64, field Term, origin Origin) (bool, bool, bool) {
+	changed, success := s.unify(field, s.Known(s.program.builtins().Uint), origin)
+	if !success {
+		return changed, false, false
+	}
+	literal := s.IntegerLiteral([]byte(strconv.FormatUint(length, 10)), origin)
+	literalChanged, literalSuccess := s.unify(field, literal, origin)
+	return changed || literalChanged, literalSuccess, false
+}
 
 func (s *Session) instantiate(value Constraint) (bool, bool) {
 	template, ok := s.program.Template(value.template)

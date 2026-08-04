@@ -36,6 +36,7 @@ const (
 	constraintIntegral
 	constraintOrdered
 	constraintHasField
+	constraintStructuralField
 	constraintHasComponent
 	constraintSelectMethod
 	constraintCallMember
@@ -82,6 +83,9 @@ func Ordered(term Term, origin Origin) Constraint {
 }
 func HasField(receiver Term, name string, field Term, origin Origin) Constraint {
 	return Constraint{kind: constraintHasField, a: receiver, b: field, name: name, origin: origin}
+}
+func StructuralField(receiver Term, name string, field Term, origin Origin) Constraint {
+	return Constraint{kind: constraintStructuralField, a: receiver, b: field, name: name, origin: origin}
 }
 func HasComponent(receiver Term, ordinal uint32, result Term, origin Origin) Constraint {
 	return Constraint{kind: constraintHasComponent, a: receiver, b: result, ordinal: ordinal, origin: origin}

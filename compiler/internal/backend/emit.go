@@ -6448,6 +6448,25 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	if err != nil {
 		return "", err
 	}
+	if place.Member == tir.StructuralFieldLen || place.Member == tir.StructuralFieldData {
+		name := "len"
+		if place.Member == tir.StructuralFieldData {
+			name = "data"
+		}
+		key, found := snapshot.Key(structType)
+		if !found {
+			return "", fmt.Errorf("structural field receiver type %d is not in the type snapshot", structType)
+		}
+		if key.Kind() == types.Slice && (name == "len" || name == "data") {
+			return baseExpr + "." + name, nil
+		}
+		if name == "len" {
+			if builtin, ok := key.Builtin(); ok && builtin == types.Str {
+				return baseExpr + ".len", nil
+			}
+		}
+		return "", fmt.Errorf("unsupported structural field %s", name)
+	}
 	fieldType, ok := declaredFieldType(unit, snapshot, structType, place.Member)
 	if runtimeType(unit, snapshot, structType) != 0 {
 		fieldType = place.Type

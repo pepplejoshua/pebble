@@ -521,6 +521,10 @@ func (s *Session) validateConstraint(value Constraint, depth uint32) error {
 		if !validTerm(value.a) || !validTerm(value.b) || value.name == "" {
 			return fmt.Errorf("invalid field constraint")
 		}
+	case constraintStructuralField:
+		if !validTerm(value.a) || !validTerm(value.b) || value.name == "" {
+			return fmt.Errorf("invalid structural field constraint")
+		}
 	case constraintHasComponent:
 		if !validTerm(value.a) || !validTerm(value.b) {
 			return fmt.Errorf("invalid component constraint")

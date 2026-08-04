@@ -14,19 +14,36 @@ fn f() void {
     let second str = pair.1;
 }
 `)})
-
 	handoff := run06a(inputs, diagnostics, Config{})
-	if handoff == nil {
-		t.Fatal("handoff is nil")
+	if handoff == nil || handoff.GenerationHadErrors || !handoff.Solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("tuple access failed: %+v", diagnostics.Items())
 	}
-	if handoff.GenerationHadErrors {
-		t.Fatalf("generation had errors: %+v", diagnostics.Items())
+}
+
+func TestStructuralFieldAccessClean(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn slice_len(s []i32) uint => s.len;
+fn generic_len[T](s []T) uint => s.len;
+fn slice_data(s []i32) *i32 => s.data;
+fn array_len(a [5]i32) uint => a.len;
+fn string_len(s str) uint => s.len;
+fn loop_len(items []i32) void { loop 0..items.len : i {} }
+type Own = struct { len uint; data *i32; };
+fn own(o Own) uint => o.len;
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors || !handoff.Solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("structural fields rejected: %+v", diagnostics.Items())
 	}
-	if !handoff.Solution.Successful() {
-		t.Fatalf("solution is not successful: %+v", diagnostics.Items())
-	}
-	if diagnostics.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %+v", diagnostics.Items())
+}
+
+func TestStructuralFieldUnknownRejected(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn f(s []i32) uint => s.missing;
+`)})
+	run06a(inputs, diagnostics, Config{})
+	if !diagnostics.HasErrors() {
+		t.Fatal("unknown structural field was accepted")
 	}
 }
 
@@ -37,7 +54,6 @@ fn f() void {
     let third i32 = pair.2;
 }
 `)})
-
 	handoff := run06a(inputs, diagnostics, Config{})
 	if handoff == nil {
 		t.Fatal("handoff is nil")
@@ -62,7 +78,6 @@ func TestTupleComponentRigidRetainsUnsupportedRequirement(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 fn first[T](value T) T => value.0;
 `)})
-
 	facts := run06a3(inputs, diagnostics, Config{})
 	var member *memberRecord
 	var requirement *requirementRecord

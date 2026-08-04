@@ -258,6 +258,31 @@ func TestIndexableAndSliceableKnownAndShapeRelations(t *testing.T) {
 	assertSlotType(t, shapeSolution, slicedSlot, mustType(t, store, types.SliceKey(b.Uint)))
 }
 
+func TestStructuralFieldRelations(t *testing.T) {
+	program, store := testProgram(t)
+	b := store.Builtins()
+	slice := mustType(t, store, types.SliceKey(b.I32))
+	data := mustType(t, store, types.PointerKey(b.I32))
+	array := mustType(t, store, types.ArrayKey(5, b.I32))
+	session := NewSession(program, diagnostic.NewDiagnosticSet(), Config{})
+	lenValue := session.Variable(Origin{})
+	dataValue := session.Variable(Origin{})
+	arrayLen := session.Variable(Origin{})
+	session.Add(StructuralField(session.Known(slice), "len", lenValue, Origin{}))
+	session.Add(StructuralField(session.Known(slice), "data", dataValue, Origin{}))
+	session.Add(StructuralField(session.Known(array), "len", arrayLen, Origin{}))
+	lenSlot := session.PublishSlot(lenValue)
+	dataSlot := session.PublishSlot(dataValue)
+	arraySlot := session.PublishSlot(arrayLen)
+	solution := session.Solve()
+	if !solution.Successful() {
+		t.Fatal("structural fields did not solve")
+	}
+	assertSlotType(t, solution, lenSlot, b.Uint)
+	assertSlotType(t, solution, dataSlot, data)
+	assertSlotType(t, solution, arraySlot, b.Uint)
+}
+
 func TestStructuralFailuresCrossSessionAndRigidRecovery(t *testing.T) {
 	program, store := testProgram(t)
 	b := store.Builtins()

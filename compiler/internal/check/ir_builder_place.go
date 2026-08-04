@@ -51,6 +51,7 @@ func (s *irBuildState) buildPlace(ref symbol.SyntaxRef) (tir.NodeID, bool) {
 			n.Kind, n.Children = tir.DereferencePlace, []tir.NodeID{child}
 		case placeField:
 			memberID := projection.Member
+			structuralName := ""
 			if memberID == 0 {
 				var result valueID
 				if i+1 < len(record.Projections) {
@@ -63,14 +64,25 @@ func (s *irBuildState) buildPlace(ref symbol.SyntaxRef) (tir.NodeID, bool) {
 					return 0, false
 				}
 				memberID = member.Member
+				structuralName = member.Name
 				if memberID == 0 {
 					memberID = s.memberSymbol(projection.Base, member.Name)
 				}
 			}
-			if memberID == 0 {
+			if memberID == 0 && structuralName == "" {
 				return 0, false
 			}
 			n.Kind, n.Member, n.Children = tir.FieldPlace, memberID, []tir.NodeID{current}
+			if memberID == 0 {
+				if structuralName == "len" {
+					memberID = tir.StructuralFieldLen
+				} else if structuralName == "data" {
+					memberID = tir.StructuralFieldData
+				}
+				n.SyntheticRole = "structural-field"
+				n.Origin = record.Header.Span
+				n.Member = memberID
+			}
 		case placeTuple:
 			n.Kind, n.Ordinal, n.Children = tir.TuplePlace, projection.TupleOrdinal, []tir.NodeID{current}
 		case placeIndex:
@@ -162,6 +174,15 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 			n := tir.Node{Type: typ, Span: record.Header.Span, Writable: writable}
 			if member.Kind == memberField {
 				n.Kind, n.Member = tir.FieldPlace, member.Member
+				if n.Member == 0 {
+					if member.Name == "len" {
+						n.Member = tir.StructuralFieldLen
+					} else if member.Name == "data" {
+						n.Member = tir.StructuralFieldData
+					}
+					n.SyntheticRole = "structural-field"
+					n.Origin = record.Header.Span
+				}
 				if n.Member == 0 {
 					n.Member = s.memberSymbol(record.Children[0], member.Name)
 				}

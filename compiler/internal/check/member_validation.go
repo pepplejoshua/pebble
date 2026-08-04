@@ -63,7 +63,13 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 			}
 			declaration, _, ok := key.Nominal()
 			if !ok {
-				report(member.Header)
+				valid := member.Name == "len" && (key.Kind() == types.Array || (key.Kind() == types.Builtin && func() bool { builtin, ok := key.Builtin(); return ok && builtin == types.Str }()))
+				if key.Kind() == types.Slice {
+					valid = member.Name == "len" || member.Name == "data"
+				}
+				if !valid {
+					report(member.Header)
+				}
 				continue
 			}
 			matched := false

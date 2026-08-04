@@ -124,6 +124,9 @@ func (s *Session) apply(value Constraint) applyResult {
 	case constraintHasField:
 		changed, ok, delayed := s.hasField(value.a, value.name, value.b, value.origin)
 		return applyResult{changed: changed, success: ok, delayed: delayed}
+	case constraintStructuralField:
+		changed, ok, delayed := s.structuralField(value.a, value.name, value.b, value.origin)
+		return applyResult{changed: changed, success: ok, delayed: delayed}
 	case constraintHasComponent:
 		changed, ok, delayed := s.hasComponent(value.a, value.ordinal, value.b, value.origin)
 		return applyResult{changed: changed, success: ok, delayed: delayed}

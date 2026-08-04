@@ -2,6 +2,7 @@ package check
 
 import (
 	"sort"
+	"strconv"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
@@ -84,6 +85,18 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		node.Kind, node.Symbol, node.Function = tir.HoistedFunctionValue, callable.Symbol, function
 	case expressionMember:
 		if member := s.membersByResult[id]; member != nil && (member.Kind == memberField || member.Kind == memberMethod || member.Kind == memberTuple) {
+			if member.Kind == memberField && member.Name == "len" && len(record.Children) == 1 {
+				baseType, found := s.resolveType(record.Children[0])
+				if found {
+					if key, keyFound := s.handoff.Semantics.Types().Key(baseType); keyFound {
+						if length, _, array := key.Array(); array {
+							node.Kind = tir.IntegerLiteral
+							node.Literal = tir.Literal{Kind: tir.LiteralInteger, IntegerNum: strconv.FormatUint(length, 10), IntegerDen: "1"}
+							break
+						}
+					}
+				}
+			}
 			if place, ok := s.buildPlaceForValue(id); ok {
 				node.Kind, node.Children = tir.Load, []tir.NodeID{place}
 			} else if len(record.Children) == 1 {
