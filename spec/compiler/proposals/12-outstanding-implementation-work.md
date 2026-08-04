@@ -40,22 +40,26 @@ See `11-raw-pointers-and-unsafe-ops.md` for full design/history.
       with the exact root cause recorded inline. Needs new struct-rvalue
       backend support; not urgent, just tracked here so it isn't
       rediscovered from scratch later.
-- [ ] **Newly discovered, likely the same class of gap as the item
-      above**: `&self.data[i]` — address-of a slice-index place, reached
-      through a pointer receiver's field (e.g. `type V = struct { data
-      []i32; fn get(self *V, i uint) *i32 { return &self.data[i]; } }`)
-      — fails with `C0619 typed-IR construction failed during
-      buildTypeUses`. Confirmed the same construct on a plain local
-      (non-pointer-receiver) slice works fine (`fn f(s []i32) *i32 { var
-      v = s; return &v[0]; }`), so this is specific to place-construction
-      through a pointer-receiver field, not address-of-slice-index in
-      general. **This directly blocks the planned `vec.peb`/`string.peb`
-      pointer-arithmetic-to-slice-indexing redesign below** — that
-      redesign's `get_by_ref`-style methods need exactly this construct
-      (`return &self.data[index];`) to return a pointer into the backing
-      slice. Not yet scoped into a dispatch brief; should probably be
-      fixed together with (or right before) the vec/string redesign work,
-      since the redesign can't be verified until this works.
+- [x] **Fixed.** `&self.data[i]` — address-of a slice-index place, reached
+      through a pointer receiver's field — previously failed with
+      `C0619`. Fixed (`3d2bc9d`), three distinct root causes in sequence:
+      (1) the deferred member-vs-generic bracket disambiguation path
+      retained a speculative generic `TypeUse` for the index operand
+      under an inactive branch, which `buildTypeUses` processed anyway
+      instead of filtering like solved-root resolution already does; (2)
+      the same deferred path retained an index record but no matching
+      expression record, which place-building required; (3) a genuine,
+      separate bug — place construction marked ANY field literally named
+      `data` as the structural slice-accessor sentinel before ever trying
+      real nominal member lookup, meaning a real user-declared `data []T`
+      field (exactly `Vec[T]`'s own field name) would have silently
+      resolved to the wrong thing. Backend also gained real support for
+      slice-typed struct fields throughout emission. Verified with a real
+      aliasing proof: mutate through a returned `&self.data[index]`,
+      read the mutation back through the original struct — exit 9.
+      Independently re-verified — full suite green. **This was the actual
+      blocker for the `vec.peb`/`string.peb` redesign below**, which can
+      now proceed.
 - [ ] Known, deliberately deferred (11 §6, "v2, deliberately deferred"):
       generational-pointer UAF/double-free tracking, `any` with real type
       erasure, ownership/borrow-checking. Not scoped, intentionally out of
