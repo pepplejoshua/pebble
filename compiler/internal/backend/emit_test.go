@@ -149,6 +149,28 @@ func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 42, false)
 }
 
+func TestEmitRuntimeAllocatorValueCompiles(t *testing.T) {
+	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; return 0; }", 0)
+}
+
+func TestEmitRuntimeAllocatorStateFieldCompiles(t *testing.T) {
+	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; let p = a.ptr; return 0; }", 0)
+}
+
+func TestEmitRuntimeAllocatorRoundTrip(t *testing.T) {
+	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = (a.alloc)(a.ptr, 4) as *i32; *p = 42; let value = *p; (a.free)(a.ptr, p as *void); return value; }", 42)
+}
+
+func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
+	t.Helper()
+	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), wantCode, false)
+}
+
 func TestEmitEmptyEntryWritesC(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer

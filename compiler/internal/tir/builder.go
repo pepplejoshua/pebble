@@ -298,6 +298,7 @@ func (b *Builder) Build() (*Unit, error) {
 	}
 	u := &Unit{
 		snapshot:       b.snapshot,
+		runtime:        b.config.Runtime,
 		modules:        append([]ModuleDecl(nil), b.modules...),
 		typeDecls:      append([]TypeDecl(nil), b.typeDecls...),
 		functions:      append([]FunctionDecl(nil), b.functions...),

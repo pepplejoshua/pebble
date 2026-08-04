@@ -23,6 +23,19 @@ type Config struct {
 	MaxIRComponents uint64
 	MaxDumpBytes    uint64
 	MaxVerifyErrors uint32
+	Runtime         RuntimeInfo
+}
+
+// RuntimeInfo identifies compiler-injected runtime declarations without
+// depending on their source spelling.
+type RuntimeInfo struct {
+	Allocator               symbol.SymbolID
+	Context                 symbol.SymbolID
+	AllocatorPtr            symbol.SymbolID
+	AllocatorAlloc          symbol.SymbolID
+	AllocatorRealloc        symbol.SymbolID
+	AllocatorFree           symbol.SymbolID
+	ContextDefaultAllocator symbol.SymbolID
 }
 
 func normalizeConfig(c Config) Config {
@@ -53,6 +66,7 @@ var (
 // solver term, InferID, layout, backend name, or specialization body.
 type Unit struct {
 	snapshot       *types.Snapshot
+	runtime        RuntimeInfo
 	modules        []ModuleDecl
 	typeDecls      []TypeDecl
 	functions      []FunctionDecl
@@ -64,6 +78,13 @@ type Unit struct {
 	regionCount    uint32
 	tempCount      uint32
 	config         Config
+}
+
+func (u *Unit) Runtime() RuntimeInfo {
+	if u == nil {
+		return RuntimeInfo{}
+	}
+	return u.runtime
 }
 
 // RegionCount returns the number of allocated regions.

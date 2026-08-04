@@ -1136,7 +1136,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// the helper's C signature even if no reachable body ever constructs a
 		// struct of that type, so its typedef must be discovered here too.
 		for _, param := range helper.decl.Parameters {
-			if isStruct(snapshot, param.Type) {
+			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 {
 				collected = append(collected, param.Type)
 			}
 			// A pointer-typed parameter whose pointee is a struct (including
@@ -1144,7 +1144,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 			// pointee's typedef in its own C signature, the same reason a
 			// plain struct parameter does above.
 			if isPointer(snapshot, param.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 {
 					collected = append(collected, pointee)
 				}
 			}
@@ -1159,11 +1159,11 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// produce a struct to return — and resolveStructInfo still needs the
 		// field types the body walk accumulates — so this closes the same class
 		// of gap 10.24's Parameters scan closed, for the return side.)
-		if isStruct(snapshot, helper.decl.ResultType) {
+		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 {
 			collected = append(collected, helper.decl.ResultType)
 		}
 		if isPointer(snapshot, helper.decl.ResultType) {
-			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) {
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 {
 				collected = append(collected, pointee)
 			}
 		}
@@ -1224,7 +1224,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 			// as a struct and resolveStructInfo would fail trying to resolve
 			// its members as fields. Enums are collected by
 			// collectEnumTypes instead.
-			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) && !isEnumType(unit, snapshot, child.Type) {
+			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) && runtimeType(unit, snapshot, child.Type) == 0 && !isEnumType(unit, snapshot, child.Type) {
 				*out = append(*out, child.Type)
 			}
 			// A pointer-typed local whose pointee is a struct (`let p *Point =
@@ -1234,7 +1234,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 			// walk above only ever inspects a node's own Type, so this case
 			// is collected separately here.
 			if child, ok := unit.Node(childID); ok && isPointer(snapshot, child.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isStruct(snapshot, pointee) && !isEnumType(unit, snapshot, pointee) {
+				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isEnumType(unit, snapshot, pointee) {
 					*out = append(*out, pointee)
 				}
 			}
@@ -1997,8 +1997,8 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				// local's Initialize does, so field reads inside the body
 				// resolve through the existing Load(FieldPlace) machinery
 				// unchanged, declared with the struct's own struct typedef name.
-				params = append(params, structTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{structType: param.Type}
+				params = append(params, runtimeTypeName(unit, snapshot, param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{structType: param.Type, runtimeType: param.Type}
 			case isSlice(snapshot, param.Type):
 				// A slice-typed parameter (10.38) seeds the callee's locals
 				// scope as a slice local (localInfo.sliceType), exactly as a
@@ -2090,7 +2090,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			returnType = tupleTypeName(helper.decl.ResultType)
 			result = resultInfo{tuple: helper.decl.ResultType}
 		case isStruct(snapshot, helper.decl.ResultType):
-			returnType = structTypeName(helper.decl.ResultType)
+			returnType = runtimeTypeName(unit, snapshot, helper.decl.ResultType)
 			result = resultInfo{structType: helper.decl.ResultType}
 		case isStr(snapshot, helper.decl.ResultType):
 			// A str-result helper (10.36) is declared with the runtime ABI's
@@ -3739,6 +3739,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			return buildEnumLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context)
 		}
 		if isStruct(snapshot, initValue.Type) {
+			if runtimeType(unit, snapshot, initValue.Type) != 0 {
+				return buildRuntimeLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			}
 			// A struct-typed local: its type is the initializer value's Type
 			// (the Initialize node carries no Type itself, confirmed against
 			// a real fixture — same as tuple/array/optional locals). The
@@ -3854,6 +3857,13 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	if !ok {
 		return "", fmt.Errorf("%s discarded-expression statement references invalid value node %d", context, statement.Children[0])
 	}
+	if expr.Kind == tir.IndirectCall {
+		callExpr, err := buildIndirectCall(unit, snapshot, fileSet, expr, scope, width)
+		if err != nil {
+			return "", err
+		}
+		return indent + callExpr + ";", nil
+	}
 	if expr.Kind != tir.DirectCall && expr.Kind != tir.MethodCall {
 		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a call to a void-returning function is)", context, expr.Kind)
 	}
@@ -3908,6 +3918,65 @@ type localInfo struct {
 	enumType    types.TypeID
 	sliceType   types.TypeID
 	pointerType types.TypeID
+	runtimeType types.TypeID
+}
+
+func buildRuntimeLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind != tir.FieldValue && initValue.Kind != tir.Load && initValue.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s declares a runtime-typed local initialized from a %s", context, initValue.Kind)
+	}
+	expr, err := buildRuntimeValue(unit, snapshot, fileSet, initValue, scope, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{runtimeType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, expr, indent, statement.Symbol), nil
+}
+
+func buildRuntimeValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if node.Kind == tir.SymbolValue {
+		if node.Symbol == unit.Runtime().Context {
+			return "(*ctx)", nil
+		}
+		if info, ok := scope[node.Symbol]; ok && info.runtimeType != 0 {
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		}
+	}
+	if node.Kind == tir.FieldValue && len(node.Children) == 1 {
+		baseNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("invalid runtime receiver")
+		}
+		base, err := buildRuntimeValueNode(unit, snapshot, fileSet, node.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		owner := baseNode.Type
+		if field, ok := runtimeFieldName(unit, owner, node.Member); ok {
+			return base + "." + field, nil
+		}
+	}
+	if node.Kind == tir.Load && len(node.Children) == 1 {
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("invalid runtime field place")
+		}
+		if place.Kind == tir.FieldPlace {
+			return buildStructFieldRead(unit, snapshot, fileSet, place, scope, width, false)
+		}
+	}
+	return "", fmt.Errorf("runtime value %s is not supported", node.Kind)
+}
+
+func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("invalid runtime value node %d", id)
+	}
+	if node.Kind == tir.ContextValue {
+		return "(*ctx)", nil
+	}
+	return buildRuntimeValue(unit, snapshot, fileSet, node, scope, width)
 }
 
 // resultInfo records what the enclosing function's tail return must produce:
@@ -5149,6 +5218,13 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		return "", fmt.Errorf("%s declares a pointer-typed local with unsupported pointee type %s", context, describeType(snapshot, pointeeTypeID))
 	}
 	switch initValue.Kind {
+	case tir.Load:
+		fieldText, err := buildRuntimeValue(unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, fieldText, indent, statement.Symbol), nil
 	case tir.AddressOf:
 		// An address-of expression: `let p *i32 = &y;`. The AddressOf node
 		// has one child (the place being addressed). The emitted C is
@@ -5179,6 +5255,13 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		// initializer of a matching pointer-typed local: `let p *i32 =
 		// helperReturningPointer();`.
 		callText, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, callText, indent, statement.Symbol), nil
+	case tir.IndirectCall:
+		callText, err := buildIndirectCall(unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -5793,6 +5876,23 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
 	}
+	if node.Kind == tir.ContextValue || runtimeType(unit, snapshot, node.Type) != 0 {
+		if node.Kind == tir.ContextValue {
+			return "(*ctx)", nil
+		}
+		if node.Kind == tir.SymbolValue {
+			if node.Symbol == unit.Runtime().Context {
+				return "(*ctx)", nil
+			}
+			if _, declared := locals[node.Symbol]; !declared {
+				return "", fmt.Errorf("runtime symbol %d is not a local", node.Symbol)
+			}
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		}
+	}
+	if node.Kind == tir.IndirectCall {
+		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
+	}
 	if node.Kind == tir.SliceFromRaw {
 		return buildRawSliceConstruction(unit, snapshot, fileSet, node, locals, width, "entry function body expression")
 	}
@@ -5829,6 +5929,14 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 				return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
 			}
 			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		case tir.Load:
+			if len(node.Children) == 1 {
+				place, ok := unit.Node(node.Children[0])
+				if ok && place.Kind == tir.FieldPlace {
+					return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+				}
+			}
+			return "", fmt.Errorf("entry function body expression contains an unsupported pointer Load")
 		case tir.DirectCall:
 			return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
 		case tir.PointerCast:
@@ -6026,6 +6134,81 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, or a call to another function", node.Kind)
 	}
+}
+
+func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if len(node.Children) < 1 || node.ContextAction != tir.ContextForward {
+		return "", fmt.Errorf("indirect call has invalid callee or context action")
+	}
+	calleeNode, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", fmt.Errorf("indirect call has invalid callee")
+	}
+	placeNode := calleeNode
+	for placeNode.Kind == tir.SourceAlias && len(placeNode.Children) == 1 {
+		placeNode, _ = unit.Node(placeNode.Children[0])
+	}
+	if placeNode.Kind == tir.Load && len(placeNode.Children) == 1 {
+		placeNode, _ = unit.Node(placeNode.Children[0])
+	}
+	var base string
+	var owner types.TypeID
+	var member symbol.SymbolID
+	if placeNode.Kind == tir.FieldPlace {
+		var err error
+		base, owner, err = buildPlaceLValue(unit, snapshot, fileSet, placeNode.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		member = placeNode.Member
+	} else if placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1 {
+		receiver, ok := unit.Node(placeNode.Children[0])
+		if !ok {
+			return "", fmt.Errorf("invalid allocator receiver")
+		}
+		var err error
+		base, err = buildRuntimeValueNode(unit, snapshot, fileSet, placeNode.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		owner, member = receiver.Type, placeNode.Member
+	} else {
+		return "", fmt.Errorf("indirect call callee is not an allocator field: %s", calleeNode.Kind)
+	}
+	field, mapped := runtimeFieldName(unit, owner, member)
+	if !mapped || (member != unit.Runtime().AllocatorAlloc && member != unit.Runtime().AllocatorRealloc && member != unit.Runtime().AllocatorFree) {
+		return "", fmt.Errorf("indirect call callee is not an allocator function field")
+	}
+	args := make([]string, 0, len(node.Children)-1)
+	for _, id := range node.Children[1:] {
+		arg, err := buildRuntimeCallArg(unit, snapshot, fileSet, id, locals, width)
+		if err != nil {
+			return "", err
+		}
+		args = append(args, arg)
+	}
+	cast := "PebbleFreeFn"
+	if member == unit.Runtime().AllocatorAlloc {
+		cast = "PebbleAllocFn"
+	}
+	if member == unit.Runtime().AllocatorRealloc {
+		cast = "PebbleReallocFn"
+	}
+	if len(args) > 0 {
+		args[0] = "(PebbleContext *)" + args[0]
+	}
+	return fmt.Sprintf("((%s)(%s.%s))(%s)", cast, base, field, strings.Join(args, ", ")), nil
+}
+
+func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("invalid indirect-call argument")
+	}
+	if node.Kind == tir.IntegerLiteral {
+		return node.Literal.IntegerNum, nil
+	}
+	return buildExpr(unit, snapshot, fileSet, id, locals, width)
 }
 
 // buildDirectCall builds the C expression text for one tir.DirectCall: a call
@@ -6266,8 +6449,19 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		return "", err
 	}
 	fieldType, ok := declaredFieldType(unit, snapshot, structType, place.Member)
+	if runtimeType(unit, snapshot, structType) != 0 {
+		fieldType = place.Type
+		ok = true
+	}
 	if !ok {
 		return "", fmt.Errorf("field %d is not declared", place.Member)
+	}
+	if runtimeType(unit, snapshot, structType) != 0 {
+		field, found := runtimeFieldName(unit, structType, place.Member)
+		if !found {
+			return "", fmt.Errorf("runtime field %d is not declared", place.Member)
+		}
+		return fmt.Sprintf("%s.%s", baseExpr, field), nil
 	}
 	if wantBool {
 		if !isBool(snapshot, fieldType) {
@@ -6338,6 +6532,8 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			typ = info.sliceType
 		case info.pointerType != 0:
 			typ = info.pointerType
+		case info.runtimeType != 0:
+			typ = info.runtimeType
 		default:
 			// A scalar local (int, bool, char, str). buildPlaceLValue is
 			// only called for address-of and aggregate field/element access;
@@ -6373,6 +6569,9 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
 		if !ok {
 			return "", 0, fmt.Errorf("field %d is not declared", n.Member)
+		}
+		if field, ok := runtimeFieldName(unit, typ, n.Member); ok {
+			return fmt.Sprintf("%s.%s", base, field), ft, nil
 		}
 		return fmt.Sprintf("%s.pebble_field_%d", base, n.Member), ft, nil
 	case tir.CheckedIndexPlace:
@@ -7370,6 +7569,63 @@ func optionalTypeName(id types.TypeID) string {
 // stable types.TypeID, mirroring the tuple naming discipline.
 func structTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_struct_%d_t", id)
+}
+
+func runtimeType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) symbol.RuntimeType {
+	if unit == nil || snapshot == nil {
+		return 0
+	}
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return 0
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return 0
+	}
+	info := unit.Runtime()
+	switch decl {
+	case info.Allocator:
+		if decl != 0 {
+			return symbol.RuntimeAllocator
+		}
+	case info.Context:
+		if decl != 0 {
+			return symbol.RuntimeContext
+		}
+	}
+	return 0
+}
+
+func runtimeTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) string {
+	switch runtimeType(unit, snapshot, id) {
+	case symbol.RuntimeAllocator:
+		return "PebbleAllocator"
+	case symbol.RuntimeContext:
+		return "PebbleContext"
+	default:
+		return structTypeName(id)
+	}
+}
+
+func runtimeFieldName(unit *tir.Unit, owner types.TypeID, member symbol.SymbolID) (string, bool) {
+	info := unit.Runtime()
+	if runtimeType(unit, unit.Snapshot(), owner) == symbol.RuntimeAllocator {
+		switch member {
+		case info.AllocatorPtr:
+			return "state", true
+		case info.AllocatorAlloc:
+			return "alloc", true
+		case info.AllocatorRealloc:
+			return "realloc", true
+		case info.AllocatorFree:
+			return "free", true
+		}
+	}
+	if runtimeType(unit, unit.Snapshot(), owner) == symbol.RuntimeContext && member == info.ContextDefaultAllocator {
+		return "allocator", true
+	}
+	return "", false
 }
 
 // sliceTypeName is the deterministic C name of one distinct slice type's

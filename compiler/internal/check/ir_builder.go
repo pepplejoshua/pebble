@@ -23,9 +23,40 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		reporter.flush()
 		return nil, false
 	}
+	resolution := handoff.Semantics.Resolution()
+	runtimeInfo := tir.RuntimeInfo{}
+	if resolution != nil {
+		runtimeInfo.Allocator, _ = resolution.Runtime(symbol.RuntimeAllocator)
+		runtimeInfo.Context, _ = resolution.Runtime(symbol.RuntimeContext)
+	}
+	if runtimeInfo.Allocator != 0 {
+		members := resolution.Members(runtimeInfo.Allocator)
+		for _, member := range members {
+			if value, ok := resolution.Symbols.Symbol(member); ok {
+				switch value.Name {
+				case "ptr":
+					runtimeInfo.AllocatorPtr = member
+				case "alloc":
+					runtimeInfo.AllocatorAlloc = member
+				case "realloc":
+					runtimeInfo.AllocatorRealloc = member
+				case "free":
+					runtimeInfo.AllocatorFree = member
+				}
+			}
+		}
+	}
+	if runtimeInfo.Context != 0 {
+		for _, member := range resolution.Members(runtimeInfo.Context) {
+			if value, ok := resolution.Symbols.Symbol(member); ok && value.Name == "default_allocator" {
+				runtimeInfo.ContextDefaultAllocator = member
+			}
+		}
+	}
 	b := tir.NewBuilder(handoff.Semantics.Types(), tir.Config{
 		MaxIRNodes: config.MaxIRNodes, MaxIRComponents: config.MaxIRComponents,
 		MaxDumpBytes: config.MaxDumpBytes,
+		Runtime:      runtimeInfo,
 	})
 	state := &irBuildState{handoff: handoff, records: records, builder: b, store: store, cache: newSpecializationCache(), irBuildScope: newIRBuildScope()}
 	steps := []struct {
