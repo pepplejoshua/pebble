@@ -563,6 +563,49 @@ func findFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, what stri
 	return tir.Node{}, fmt.Errorf("%s not found in unit: no non-generic FunctionDeclaration for symbol %d", what, symbolID)
 }
 
+func findCalledFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, typeArgs []types.TypeID) (tir.Node, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.FunctionDeclaration || node.Symbol != symbolID || len(node.TypeArgs) != len(typeArgs) {
+			continue
+		}
+		match := true
+		for i := range typeArgs {
+			match = match && node.TypeArgs[i] == typeArgs[i]
+		}
+		if match {
+			return node, nil
+		}
+	}
+	return tir.Node{}, fmt.Errorf("called function symbol %d specialization not found", symbolID)
+}
+
+func findCalledFunctionByResult(unit *tir.Unit, symbolID symbol.SymbolID, result types.TypeID) (tir.Node, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration && node.Symbol == symbolID && len(node.TypeArgs) != 0 && node.ResultType == result {
+			return node, nil
+		}
+	}
+	return tir.Node{}, fmt.Errorf("called function symbol %d concrete specialization not found", symbolID)
+}
+
+func helperCName(decl tir.Node) string {
+	if len(decl.TypeArgs) != 0 {
+		return fmt.Sprintf("pebble_fn_%d_%d", decl.Symbol, decl.Function)
+	}
+	return fmt.Sprintf("pebble_fn_%d", decl.Symbol)
+}
+
+func findCallDeclaration(unit *tir.Unit, call tir.Node) (tir.Node, error) {
+	if len(call.TypeArgs) != 0 {
+		return findCalledFunctionDeclaration(unit, call.Symbol, call.TypeArgs)
+	}
+	decl, err := findFunctionDeclaration(unit, call.Symbol, "called function")
+	if err == nil {
+		return decl, nil
+	}
+	return findCalledFunctionByResult(unit, call.Symbol, call.Type)
+}
+
 // validateEntrySignature checks the entry's calling convention, parameter
 // count, and result type against the supported shapes: a void result (empty
 // body) or an int/i32/i64 result (body under the recursive block grammar). On
@@ -640,8 +683,8 @@ type reachabilityWalk struct {
 	snapshot *types.Snapshot
 	width    types.BuiltinKind
 	entry    symbol.SymbolID
-	done     map[symbol.SymbolID]bool
-	stack    []symbol.SymbolID
+	done     map[tir.FunctionID]bool
+	stack    []tir.FunctionID
 	order    []helperInfo
 }
 
@@ -668,7 +711,7 @@ func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDec
 		snapshot: snapshot,
 		width:    width,
 		entry:    entryDecl.Symbol,
-		done:     make(map[symbol.SymbolID]bool),
+		done:     make(map[tir.FunctionID]bool),
 	}
 	if err := walk.visit(entryDecl, entryBlockID); err != nil {
 		return nil, err
@@ -685,32 +728,41 @@ func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDec
 // emitted exactly once. A callee already on the current DFS path (stack) is a
 // cycle and is rejected, naming the call chain that closes on itself.
 func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
-	if w.done[decl.Symbol] {
+	if w.done[decl.Function] {
 		return nil
 	}
-	if inStack := indexOfSymbol(w.stack, decl.Symbol); inStack >= 0 {
+	if inStack := indexOfFunction(w.stack, decl.Function); inStack >= 0 {
 		// The function is already on the current DFS path, so the call edge
 		// just followed closes a cycle: decl can reach itself through
 		// stack[inStack:] -> decl. Forward-declaration ordering for recursive
 		// calls is real future work, not this slice's problem.
-		cycle := append(append([]symbol.SymbolID(nil), w.stack[inStack:]...), decl.Symbol)
+		cycle := append(append([]tir.FunctionID(nil), w.stack[inStack:]...), decl.Function)
 		parts := make([]string, len(cycle))
 		for i, id := range cycle {
-			parts[i] = fmt.Sprintf("symbol %d", id)
+			parts[i] = fmt.Sprintf("function %d", id)
 		}
 		return fmt.Errorf("recursion is not supported yet: the call chain %s is a cycle (a function that can reach itself, directly or through others), and this backend has no forward-declaration mechanism to order recursive calls yet", strings.Join(parts, " -> "))
 	}
-	w.stack = append(w.stack, decl.Symbol)
+	w.stack = append(w.stack, decl.Function)
 	var calls []tir.Node
 	if err := collectDirectCalls(w.unit, blockID, &calls); err != nil {
 		return err
 	}
 	for _, call := range calls {
+		var calleeDecl tir.Node
+		var err error
 		if len(call.TypeArgs) != 0 {
-			return fmt.Errorf("called function symbol %d is a generic call with %d type argument(s), which this backend does not lower (generics are not supported yet)", call.Symbol, len(call.TypeArgs))
+			calleeDecl, err = findCalledFunctionDeclaration(w.unit, call.Symbol, call.TypeArgs)
+		} else {
+			calleeDecl, err = findFunctionDeclaration(w.unit, call.Symbol, "called function")
+			if err != nil {
+				calleeDecl, err = findCalledFunctionByResult(w.unit, call.Symbol, call.Type)
+			}
 		}
-		calleeDecl, err := findFunctionDeclaration(w.unit, call.Symbol, "called function")
 		if err != nil {
+			if len(call.TypeArgs) != 0 {
+				return fmt.Errorf("called function symbol %d is a generic call with %d type argument(s), which this backend cannot lower without a built specialization", call.Symbol, len(call.TypeArgs))
+			}
 			return err
 		}
 		if err := validateHelperSignature(calleeDecl, w.snapshot, w.width); err != nil {
@@ -725,7 +777,7 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 		}
 	}
 	w.stack = w.stack[:len(w.stack)-1]
-	w.done[decl.Symbol] = true
+	w.done[decl.Function] = true
 	if decl.Symbol != w.entry {
 		w.order = append(w.order, helperInfo{decl: decl, block: blockID})
 	}
@@ -1868,8 +1920,8 @@ func containsVariant(variants []symbol.SymbolID, id symbol.SymbolID) bool {
 	return false
 }
 
-// indexOfSymbol returns the position of id in ids, or -1 if absent.
-func indexOfSymbol(ids []symbol.SymbolID, id symbol.SymbolID) int {
+// indexOfFunction returns the position of id in ids, or -1 if absent.
+func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 	for i, candidate := range ids {
 		if candidate == id {
 			return i
@@ -1927,7 +1979,7 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) {
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) {
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, or a pointer type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
@@ -1986,6 +2038,9 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			case isWidth(snapshot, width, param.Type):
 				params = append(params, cType(width)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{kind: width}
+			case isUint(snapshot, param.Type):
+				params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{kind: types.Uint}
 			case isBool(snapshot, param.Type):
 				params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{kind: types.Bool}
@@ -2165,7 +2220,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if len(casts) > 0 {
 			castText = strings.Join(casts, "\n") + "\n"
 		}
-		texts = append(texts, fmt.Sprintf(helperFunction, returnType, helper.decl.Symbol, paramList, castText, statements))
+		texts = append(texts, fmt.Sprintf(helperFunction, returnType, helperCName(helper.decl), paramList, castText, statements))
 	}
 	return strings.Join(texts, "\n"), nil
 }
@@ -3895,7 +3950,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	if expr.Kind != tir.DirectCall && expr.Kind != tir.MethodCall {
 		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a call to a void-returning function is)", context, expr.Kind)
 	}
-	calleeDecl, err := findFunctionDeclaration(unit, expr.Symbol, "called function")
+	calleeDecl, err := findCallDeclaration(unit, expr)
 	if err != nil {
 		return "", err
 	}
@@ -4107,7 +4162,7 @@ func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // (pebble_struct_<typeID>_t and localInfo{structType}). Like every local, the
 // declaration is followed by a (void) cast against -Wunused-variable.
 func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, wantTuple bool) (string, error) {
-	calleeDecl, err := findFunctionDeclaration(unit, initValue.Symbol, "called function")
+	calleeDecl, err := findCallDeclaration(unit, initValue)
 	if err != nil {
 		return "", err
 	}
@@ -4434,7 +4489,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		// buildDirectCall, the same call-building machinery buildExpr's
 		// DirectCall case uses. Like every local, the declaration is followed
 		// by a (void) cast against -Wunused-variable.
-		calleeDecl, err := findFunctionDeclaration(unit, initValue.Symbol, "called function")
+		calleeDecl, err := findCallDeclaration(unit, initValue)
 		if err != nil {
 			return "", err
 		}
@@ -4489,12 +4544,77 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	} else if countNode.Kind == tir.IntegerLiteral {
 		count = countNode.Literal.IntegerNum
 	} else {
-		count, err = buildExpr(unit, snapshot, fileSet, node.Children[1], scope, width)
+		count, err = buildUintExpr(unit, snapshot, fileSet, node.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
 	}
 	return fmt.Sprintf("(%s){ .data = %s, .len = (size_t)(%s) }", sliceTypeName(node.Type), ptr, count), nil
+}
+
+func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok || !isUint(snapshot, node.Type) {
+		return "", fmt.Errorf("uint expression has invalid node or type")
+	}
+	switch node.Kind {
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint source alias has %d children", len(node.Children))
+		}
+		return buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+	case tir.IntegerLiteral:
+		return node.Literal.IntegerNum, nil
+	case tir.SizeofType:
+		if node.TypeArg == snapshot.Builtins().I32 || node.TypeArg == snapshot.Builtins().Int {
+			return "sizeof(int32_t)", nil
+		}
+		if node.TypeArg == snapshot.Builtins().I64 {
+			return "sizeof(int64_t)", nil
+		}
+		return "sizeof(uint64_t)", nil
+	case tir.SymbolValue:
+		if _, ok := locals[node.Symbol]; !ok {
+			return "", fmt.Errorf("uint expression references unknown symbol %d", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.CheckedArithmetic:
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("uint arithmetic has %d operands", len(node.Children))
+		}
+		left, err := buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildUintExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		op, ok := arithmeticOperator(node.Operator)
+		if !ok {
+			return "", fmt.Errorf("unsupported uint arithmetic operator %s", node.Operator)
+		}
+		return fmt.Sprintf("(%s %s %s)", left, op, right), nil
+	default:
+		return "", fmt.Errorf("unsupported uint expression node %s", node.Kind)
+	}
+}
+
+func arithmeticOperator(op syntax.TokenKind) (string, bool) {
+	switch op {
+	case syntax.Plus:
+		return "+", true
+	case syntax.Minus:
+		return "-", true
+	case syntax.Star:
+		return "*", true
+	case syntax.Slash:
+		return "/", true
+	case syntax.Percent:
+		return "%", true
+	default:
+		return "", false
+	}
 }
 
 // buildSliceConstruction validates one CheckedSlice node (a slice expression
@@ -5216,7 +5336,7 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		// are identical to a scalar call — only the result type differs. Like
 		// every local, the declaration is followed by a (void) cast against
 		// -Wunused-variable.
-		calleeDecl, err := findFunctionDeclaration(unit, initValue.Symbol, "called function")
+		calleeDecl, err := findCallDeclaration(unit, initValue)
 		if err != nil {
 			return "", err
 		}
@@ -6252,6 +6372,9 @@ func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	if node.Kind == tir.IntegerLiteral {
 		return node.Literal.IntegerNum, nil
 	}
+	if isUint(snapshot, node.Type) {
+		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
+	}
 	return buildExpr(unit, snapshot, fileSet, id, locals, width)
 }
 
@@ -6283,21 +6406,31 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	// discoverReachableHelpers has already resolved and validated this
 	// callee, so the checks here are defense against hand-built IR,
 	// matching the file's style).
-	calleeDecl, err := findFunctionDeclaration(unit, node.Symbol, "called function")
+	var calleeDecl tir.Node
+	var err error
+	if len(node.TypeArgs) != 0 {
+		calleeDecl, err = findCalledFunctionDeclaration(unit, node.Symbol, node.TypeArgs)
+	} else {
+		calleeDecl, err = findFunctionDeclaration(unit, node.Symbol, "called function")
+		if err != nil {
+			calleeDecl, err = findCalledFunctionByResult(unit, node.Symbol, node.Type)
+		}
+	}
 	if err != nil {
+		if len(node.TypeArgs) != 0 {
+			return "", fmt.Errorf("entry function body expression contains a generic call with no matching specialization")
+		}
 		return "", err
 	}
 	callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
 	if err != nil {
 		return "", err
 	}
-	if len(node.TypeArgs) != 0 {
-		return "", fmt.Errorf("entry function body expression contains a call to a generic function with %d type argument(s), which this backend does not lower (generics are not supported yet)", len(node.TypeArgs))
-	}
+	calleeName := helperCName(calleeDecl)
 	if callArgs == "" {
-		return fmt.Sprintf("pebble_fn_%d(ctx)", node.Symbol), nil
+		return fmt.Sprintf("%s(ctx)", calleeName), nil
 	}
-	return fmt.Sprintf("pebble_fn_%d(ctx, %s)", node.Symbol, callArgs), nil
+	return fmt.Sprintf("%s(ctx, %s)", calleeName, callArgs), nil
 }
 
 // buildTuplePlaceRead builds the C text for reading one element of a tuple
@@ -6809,6 +6942,12 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		switch {
 		case isWidth(snapshot, width, param.Type):
 			arg, err := buildExpr(unit, snapshot, fileSet, argID, locals, width)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
+		case isUint(snapshot, param.Type):
+			arg, err := buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
 			if err != nil {
 				return "", err
 			}
@@ -7425,6 +7564,10 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 		return false
 	}
 	return id == want
+}
+
+func isUint(snapshot *types.Snapshot, id types.TypeID) bool {
+	return snapshot != nil && id == snapshot.Builtins().Uint
 }
 
 // isBool reports whether id is the snapshot's bool builtin. It is the bool
@@ -8324,7 +8467,7 @@ func isNonNegativeDecimal(s string) bool {
 // discipline the (void)ctx; below applies to the context), and the last %s the
 // helper's body statements built by buildBlock at depth 0 (4-space indent,
 // exactly like the entry's own body).
-const helperFunction = `static %s pebble_fn_%d(PebbleContext *ctx%s) {
+const helperFunction = `static %s %s(PebbleContext *ctx%s) {
     (void)ctx;
 %s%s
 }`

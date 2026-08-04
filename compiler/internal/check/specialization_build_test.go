@@ -205,6 +205,16 @@ let result i32 = identity(1);
 	}
 }
 
+func TestBuildSpecializationSubstitutesPointerCastTarget(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `
+fn cast[T](value *void) *T { return value as *T; }
+let result *i32 = cast[i32](nil);
+`)
+	if !ok || unit == nil {
+		t.Fatal("generic pointer cast specialization was rejected")
+	}
+}
+
 func TestBuildUnitBuildsDistinctSpecializations(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `
 fn identity[T](value T) T { return value; }

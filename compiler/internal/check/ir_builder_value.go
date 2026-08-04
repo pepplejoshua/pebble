@@ -55,6 +55,13 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		}
 		class := classify(s.handoff.Semantics, sourceType, destination)
 		coercion := coercionFor(s.handoff.Semantics, class, sourceType, destination)
+		if coercion == coercionNone && (class == compatibleExplicit || class == compatibleForbidden) {
+			sourceKey, sourceFound := s.store.Key(sourceType)
+			destinationKey, destinationFound := s.store.Key(destination)
+			if sourceFound && destinationFound && sourceKey.Kind() == types.Pointer && destinationKey.Kind() == types.Pointer {
+				coercion = coercionPointerCast
+			}
+		}
 		coercionNode := map[coercionKind]tir.NodeKind{
 			coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
 			coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,

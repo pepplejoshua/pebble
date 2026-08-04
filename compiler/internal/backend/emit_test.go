@@ -175,6 +175,33 @@ func TestCheckStdMemImport(t *testing.T) {
 	}
 }
 
+func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
+	unit, snapshot, entryID, sources := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { var values []i32 = mem::new_slice[i32](3); values[0] = 42; return values[0]; }`, "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitGenericReachabilityUsesSpecializationIdentity(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, `fn add_one[T](x T, y T) T => x; fn main() i32 { var a i32 = add_one[i32](40, 1); let p *i32 = &a; let b *i32 = add_one[*i32](p, p); return a + *b; }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 80, false)
+}
+
+func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, `fn choose[T](x T) i32 => 7; fn main() i32 { var a i32 = choose[i32](1); var b i32 = choose[bool](true); let p *i32 = &a; var c i32 = choose[*i32](p); return a + b + c; }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 21, false)
+}
+
 func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdFixture(t, "fn main() i32 { var value i32 = 42; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }", "main")
 	var buf bytes.Buffer
