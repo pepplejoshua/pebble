@@ -1,7 +1,7 @@
 import "std:mem";
 
 fn map[T, Ret](items []T, operation fn(T) Ret) []Ret {
-    var result = (mem::new(items.len * sizeof Ret) as *Ret)[:items.len];
+    var result = mem::new_slice[Ret](items.len);
 
     loop 0..items.len : i {
         result[i] = operation(items[i]);
@@ -11,7 +11,7 @@ fn map[T, Ret](items []T, operation fn(T) Ret) []Ret {
 }
 
 fn filter[T](items []T, predicate fn(T) bool) []T {
-    var result []T = (mem::new(items.len * sizeof T) as *T)[:items.len];
+    var result []T = mem::new_slice[T](items.len);
     var count = 0;
 
     loop 0..items.len : i {
@@ -67,7 +67,7 @@ fn zip[T, U](items1 []T, items2 []U) [](T, U) {
         min_len = items2.len;
     }
 
-    var result [](T, U) = (mem::new(min_len * sizeof (T, U)) as *(T, U))[:min_len];
+    var result [](T, U) = mem::new_slice[(T, U)](min_len);
 
     loop 0..min_len : i {
         result[i] = (items1[i], items2[i]);

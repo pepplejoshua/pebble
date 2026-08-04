@@ -14,7 +14,7 @@ fn new_typed[T]() *T {
 
 fn new_slice[T](count uint) []T {
   let allocator = context.default_allocator;
-  let ptr *T = allocator.alloc(allocator.ptr, count * (sizeof T));
+  let ptr *T = allocator.alloc(allocator.ptr, count * (sizeof T)) as *T;
   return slice ptr, count;
 }
 
