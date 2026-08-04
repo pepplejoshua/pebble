@@ -222,3 +222,86 @@ still can't compile any of this to C), the checked-null-dereference runtime
 primitive, the explicit-only pointer-cast rule, and `slice`/`mem::new_slice`.
 Taking the address of a tuple/array/slice element (`&t.0`, `&a[0]`) was
 deliberately left out of scope and not investigated.
+
+## 9. Slice 2 — backend lowering: locals, address-of, checked dereference (done)
+
+Closes the remaining backend gap from §8: pointer-typed locals, `&x`, and
+`*p` (read and write) now all lower to real, correct C, plus the new
+`pebble_rt_checked_deref_ptr` runtime primitive (`void
+*pebble_rt_checked_deref_ptr(void *ptr, PebbleSourceLoc loc)`, returns the
+pointer unchanged when non-null, panics with a new `PEBBLE_PANIC_NULL_DEREFERENCE`
+kind otherwise). Investigation found the null check should run
+unconditionally, not gated by `PEBBLE_RT_MODE_SAFE`/`RELEASE`: contrary to
+this proposal's own earlier assumption, most of the runtime (`bounds.c`,
+`str.c`, `optional.c`) already runs its checks unconditionally — only
+`arith.c`'s overflow paths (not division-by-zero itself) are actually
+mode-gated — so `deref.c` matches the dominant existing convention, not a
+new one.
+
+**A first implementation attempt stalled twice with zero output** (an
+unrelated infra issue — the model was routed through a shared subscription
+that was busy elsewhere at the time, not a problem with the task). A retry
+on a different model produced a real, substantial, mostly-correct
+implementation (5 files, ~350 lines) — but adversarial review against the
+required tests found four real, confirmed bugs before landing, each fixed
+directly rather than re-dispatched, since each was small and precisely
+diagnosed once found:
+
+1. **`buildExpr`'s pointer-type width-gate bypass was incomplete.** The
+   first pass only exempted `AddressOf`/`NilPointer` (freshly-constructed
+   pointer values) from the entry-width gate, not a plain reference to an
+   existing pointer-typed local (`SymbolValue`) or a call to a
+   pointer-returning helper (`DirectCall`) — meaning the single most common
+   case, reading back a pointer local by name, failed outright. Fixed by
+   restructuring the bypass to switch on node kind for any pointer-typed
+   node, covering all four shapes.
+2. **Pointee-vs-pointer type confusion, in four separate spots**
+   (`buildDereferencePlaceRead`, `buildPlaceLValue`'s `DereferencePlace`
+   case, `buildHelperFunctions`'s pointer-parameter and pointer-result
+   cases, `buildExpr`'s `AddressOf`/`NilPointer` cases). `pointerTypeName`'s
+   contract is "takes the pointee, appends ` *`" — several call sites
+   passed the *pointer* type instead (or, for `DereferencePlace`, treated
+   an already-pointee-typed `node.Type` as if it still needed unwrapping),
+   producing malformed C (empty return types, `()(&...)`) rather than a Go
+   error, since `pointerTypeName` silently returns `""` on an unresolvable
+   kind. Each site fixed to resolve the pointee correctly.
+3. **`buildCallArguments` had no case for a pointer-typed parameter at
+   all** — `validateHelperSignature` and `buildHelperFunctions` were
+   correctly extended to accept pointer parameters, but the call-site
+   argument builder wasn't, so passing a pointer to any helper failed.
+4. **Struct/tuple typedef collection doesn't see a type reached only
+   through a pointer.** A struct type used exclusively as a pointer
+   parameter, result, or local (never directly) never got its
+   `pebble_struct_<id>_t` typedef collected, producing C that referenced
+   an undefined type name. Fixed by mirroring the existing "parameter/
+   result is a typedef source the body walk can't see" pattern (already
+   used for direct struct parameters) to also unwrap a pointer parameter/
+   result/local-initializer's pointee.
+
+Two pre-existing tests broke as an intended, correct consequence of real
+pointer support landing, not regressions: `TestEmitRejectsPointerReceiverMethodCall`
+(a pointer-receiver method call, correctly rejected before pointers
+existed, now correctly compiles and runs — rewritten into a positive proof)
+and `TestEmitRejectsStoreToNonStoragePlace` (its hand-built fixture
+specifically exercised `DereferencePlace` as an unsupported Store target,
+which is now supported by design — repointed at a `TuplePlace` target,
+which remains genuinely unsupported).
+
+**Confirmed, scoped, NOT fixed this slice**: `(*p).x` — reading a struct
+field through a dereferenced pointer — degrades to a `tir.FieldValue` node
+(field-of-a-value) rather than the expected `FieldPlace`-over-`DereferencePlace`
+place chain, because the checker's place-tracking doesn't extend through a
+dereference used as a field-access base in this position. Confirmed the
+same gap blocks even materializing the whole dereferenced struct into a
+local (`let v Point = *p;` also fails — `buildStructLocalDeclaration` only
+accepts a struct literal or struct-returning call as an initializer, not a
+general `Load`). This needs real new struct-rvalue backend support, not a
+quick fix; the one test exercising it is `t.Skip`'d with this explanation.
+
+Verified: `gofmt`/`go vet`/`go build` clean, the full backend suite (every
+new pointer test plus the two repaired pre-existing ones), full repo suite,
+the runtime smoke test compiled and run clean in both SAFE and RELEASE
+(a new item 16 added covering the null-deref panic), and independently
+outside the harness — manually compiled and ran the emitted C for a
+pointer returned from a helper call, dereferenced, producing the real
+panic report `pebble: null pointer dereference at main.peb:1:80`.
