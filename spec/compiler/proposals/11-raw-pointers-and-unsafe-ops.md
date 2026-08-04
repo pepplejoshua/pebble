@@ -305,3 +305,66 @@ the runtime smoke test compiled and run clean in both SAFE and RELEASE
 outside the harness — manually compiled and ran the emitted C for a
 pointer returned from a helper call, dereferenced, producing the real
 panic report `pebble: null pointer dereference at main.peb:1:80`.
+
+## 10. Slice 3 — explicit-only pointer casts (`x as *T`) (done)
+
+Closes §3's remaining cast rule: casting between two distinct pointer
+types (`*i32 as *void`, `*void as *i32`, etc.) is now possible, and only
+explicitly — never implicitly. `classifyComposite` gained one new case
+(`source.Kind() == types.Pointer && destination.Kind() == types.Pointer`
+→ `compatibleExplicit`, checked after the pre-existing identity check so a
+same-type pointer pair still classifies as identity, not a cast) and a
+matching `coercionPointerCast` → `tir.PointerCast` (a new node kind,
+mirroring `IntegerCast`'s exact shape — one value child) wired into both
+of `ir_builder_value.go`'s `coercionKind -> tir.NodeKind` maps. Backend
+lowering is a plain C pointer assignment/cast wherever a pointer-typed
+node already has a home (the `isPointer(snapshot, node.Type)` dispatch
+`buildExpr` gained in slice 2).
+
+Two real bugs found and fixed before landing, beyond what the dispatch
+delivered as-is:
+
+1. **A missing closing brace** in `compatibility_validation.go` — a
+   genuine Go syntax error that made the whole package fail to compile.
+   Not a design issue, just an incomplete edit; fixed directly.
+2. **The new "reject an implicit `compatibleExplicit` conversion" check
+   was scoped too broadly.** The first version made
+   `validateCompatibilityRecords` reject *every* `compatibleExplicit`
+   pair used implicitly — not just pointers. This broke four
+   pre-existing tests whose fixtures relied on integer width-widening,
+   tuple coercion, and similar `compatibleExplicit` conversions being
+   silently permitted in implicit positions (an existing, separate
+   leniency this task was never meant to touch or tighten). Fixed by
+   adding `isPointerToPointerCompatibility` and gating the new rejection
+   on it specifically — every other `compatibleExplicit` pair keeps its
+   pre-existing (permissive) behavior unchanged; only pointer-to-pointer
+   is newly explicit-only.
+3. **`pointerTypeName` didn't handle `void`, `bool`, or `char` pointees**
+   — it routed every builtin pointee through `cType`, which only maps
+   the fixed-width integer kinds (it's meant for width-typed locals, not
+   every possible pointee). `*void` is the single most common pointee in
+   this codebase (`std/libc.peb`, `std/mem.peb`) and produced malformed C
+   (an empty type name, ` * pebble_local_N`) with no compile error from
+   `Emit()` — caught only by actually compiling the emitted C with `cc`,
+   not by any Go-level check. Fixed by giving `void`/`bool`/`char`
+   explicit cases (`"void *"`, `"bool *"`, and `"int32_t *"` for `char`,
+   matching the existing char-as-`int32_t` convention).
+4. **The dispatch never ran `go test ./internal/tir/...`** — the new
+   `PointerCast` node kind broke four tests there (`TestNodeKindInventory`'s
+   exact-84-tags count, and three tests whose `validNode`/`damageNode`
+   helpers have no case for the new kind) purely because the exhaustive
+   test tables weren't updated, the same category of gap the address-of
+   slice's own dispatch got right. Fixed by mirroring the existing
+   `IntegerCast`-family shared case exactly.
+5. **The required end-to-end backend round-trip test was never added at
+   all** — confirmed by grepping for it, not assumed. Added directly
+   (`TestEmitExplicitPointerCastRoundTripCompilesAndRuns`), which is
+   what caught bug 3 above in the first place.
+
+Verified: `gofmt`/`go vet`/`go build` clean, full checker suite
+(including the pointer-cast node-shape test, the implicit-rejection
+test, and the same-type-identity regression guard), full `tir` suite,
+full backend suite (every pre-existing test, including the four this
+slice's first version broke and then fixed), full repo suite, and
+independently outside the harness — manually compiled and ran the
+emitted C for a `*i32 -> *void -> *i32` round trip, exit code 42.
