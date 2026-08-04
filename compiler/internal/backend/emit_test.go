@@ -165,6 +165,14 @@ func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 42, false)
 }
 
+func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() int => 0;", true, 0, false)
+}
+
+func TestEmitIntEntryCheckedAddCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() int { let x int = 40; let y int = 2; return x + y; }", true, 42, false)
+}
+
 func TestEmitCheckedAddReturnCompilesAndRuns(t *testing.T) {
 	// `return 1 + 2;` was rejected by 10.3; the checked arithmetic expression
 	// tree is now accepted and lowered to pebble_rt_checked_add_i32(1, 2),
@@ -3960,6 +3968,14 @@ func TestEmitArrayOutOfBoundsAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let a [2]i32 = [10, 20]; let i i32 = 2; return a[i]; }", false, 0, true)
 }
 
+func TestEmitIntEntryArrayElementReadCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() int { let a [3]int = [10, 20, 30]; return a[1]; }", true, 20, false)
+}
+
+func TestEmitIntEntryArrayOutOfBoundsAborts(t *testing.T) {
+	emitAndRun(t, "fn main() int { let a [2]int = [10, 20]; let i int = 2; return a[i]; }", true, 0, true)
+}
+
 func TestEmitCheckedArrayIndexEmitsRealSourceLoc(t *testing.T) {
 	// Since 10.44, checked array indexing carries a real, resolved Pebble
 	// source location (the CheckedIndexPlace node's own Span) as its final
@@ -5870,7 +5886,7 @@ func TestEmitRejectsEntryReturningTuple(t *testing.T) {
 	// lets a helper write. validateEntrySignature rejects the tuple result
 	// exactly as it always has, unchanged by this slice.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() (i32, i32) { return (1, 2); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "entry function result type is (i32, i32), want void, i32, or i64")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "entry function result type is (i32, i32), want void, int, i32, or i64")
 }
 
 func TestEmitTupleReturningHelperInIfArmLocalInitializerCompilesAndRuns(t *testing.T) {

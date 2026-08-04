@@ -2,7 +2,7 @@
 // runtime ABI (runtime/include/pebble_rt.h). It is deliberately narrow: the
 // current slice emits exactly two entry shapes — an empty-bodied Pebble-
 // convention void entry function, and a zero-parameter integer entry whose
-// width (i32 or i64) is decided once by the entry's own result type and never
+// width (int, i32, or i64) is decided once by the entry's own result type and never
 // mixed within a body. The body matches a single recursive block grammar: a
 // block is zero or more `let <name> <width> = <expression>;` /
 // `var <name> <width> = <expression>;` local declarations, plus
@@ -356,7 +356,7 @@ import (
 // function (identified by entrySymbol) must be Pebble-convention and take zero
 // parameters. Its result must be either void with a completely empty body (no
 // statements — only ever an ImplicitReturn, i.e. exactly what `fn main() void
-// {}` produces) or i32/i64 with a body matching the recursive block grammar: a
+// {}` produces) or int/i32/i64 with a body matching the recursive block grammar: a
 // block is zero or more `let <name> <width> = <expression>;` /
 // `var <name> <width> = <expression>;` local declarations, plus
 // `x = <expression>;` reassignments of an already-declared local (a tir.Store;
@@ -384,10 +384,11 @@ import (
 // buildComparisonOperand), or — for ==/!= — two bool values built under the
 // bool grammar (see buildComparison). Checked operations emit
 // pebble_rt_checked_*_i32 /
-// pebble_rt_checked_*_i64 calls, chosen by the entry's resolved width, so the
+// pebble_rt_checked_*_i64 calls, chosen by the entry's resolved width (with int
+// using the i32 helpers), so the
 // language's overflow and divide-by-zero semantics survive into the emitted
 // program; comparisons emit the plain C operator, which cannot overflow. The
-// entry's width — i32 or i64, from its own result type — is resolved once here
+// entry's width — int, i32, or i64, from its own result type — is resolved once here
 // and threaded through every builder below; a body that mixes widths is
 // rejected, never coerced. Any other shape returns a descriptive error and
 // writes nothing to w; this package does not yet lower arbitrary expressions
@@ -546,9 +547,9 @@ func findFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, what stri
 
 // validateEntrySignature checks the entry's calling convention, parameter
 // count, and result type against the supported shapes: a void result (empty
-// body) or an i32/i64 result (body under the recursive block grammar). On
-// success it returns the resolved result builtin (types.Void, types.I32, or
-// types.I64) — for an integer entry that returned builtin IS the width every
+// body) or an int/i32/i64 result (body under the recursive block grammar). On
+// success it returns the resolved result builtin (types.Void, types.Int,
+// types.I32, or types.I64) — for an integer entry that returned builtin IS the width every
 // builder downstream emits at, threaded through Emit rather than re-derived.
 // Whether the body actually matches the result's shape is decided by the
 // body-validation step the caller dispatches on.
@@ -564,8 +565,8 @@ func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.Buil
 		return 0, fmt.Errorf("entry function result type %d is not in the type snapshot", decl.ResultType)
 	}
 	builtin, ok := key.Builtin()
-	if !ok || (builtin != types.Void && builtin != types.I32 && builtin != types.I64) {
-		return 0, fmt.Errorf("entry function result type is %s, want void, i32, or i64", describeType(snapshot, decl.ResultType))
+	if !ok || (builtin != types.Void && builtin != types.Int && builtin != types.I32 && builtin != types.I64) {
+		return 0, fmt.Errorf("entry function result type is %s, want void, int, i32, or i64", describeType(snapshot, decl.ResultType))
 	}
 	return builtin, nil
 }
@@ -2122,7 +2123,7 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // buildSwitch; each if arm and each case body is itself a block under the
 // same grammar, so buildBlock recurses into both arms and case bodies.
 // width is the entry's
-// resolved integer width (types.I32 or types.I64), threaded through to every
+// resolved integer width (types.Int, types.I32, or types.I64), threaded through to every
 // expression and declaration built here so the emitted C type names and
 // runtime helper names follow the width. locals is the set of
 // symbols visible at the block's entry (the enclosing scopes' declarations)
@@ -5558,8 +5559,8 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 }
 
 // buildExpr builds the C expression text for an integer value node of the
-// entry's resolved width, recursing into its operands. width (types.I32 or
-// types.I64) is the width resolved once in Emit; every node in an accepted
+// entry's resolved width, recursing into its operands. width (types.Int,
+// types.I32, or types.I64) is the width resolved once in Emit; every node in an accepted
 // tree must carry exactly that width's builtin — a node carrying the other
 // width (an i32 local referenced inside an i64 entry, or vice versa) is a
 // clean width-mismatch rejection, never a coercion. locals is the set of
@@ -6792,7 +6793,7 @@ func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (stri
 }
 
 // isWidth reports whether id is the snapshot's builtin for the entry's
-// resolved integer width (types.I32 or types.I64). The checked helpers this
+// resolved integer width (types.Int, types.I32, or types.I64). The checked helpers this
 // backend emits operate on exactly one width per entry, so every node in an
 // accepted expression tree must carry exactly this type — a node carrying the
 // other width is a clean rejection, never a coercion, since there is no
@@ -6803,6 +6804,8 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 	}
 	var want types.TypeID
 	switch width {
+	case types.Int:
+		want = snapshot.Builtins().Int
 	case types.I32:
 		want = snapshot.Builtins().I32
 	case types.I64:
@@ -7505,11 +7508,13 @@ func wantName(width types.BuiltinKind) string {
 }
 
 // cType returns the C type name an integer local of the given width is
-// declared with: int32_t for an i32 entry, int64_t for an i64 entry. Only the
-// two widths this backend emits are mapped; anything else returns "" and the
+// declared with: int32_t for an int or i32 entry, int64_t for an i64 entry. Only
+// these widths this backend emits are mapped; anything else returns "" and the
 // caller's own width validation has already ruled it out.
 func cType(width types.BuiltinKind) string {
 	switch width {
+	case types.Int:
+		return "int32_t"
 	case types.I32:
 		return "int32_t"
 	case types.I64:
@@ -7519,11 +7524,13 @@ func cType(width types.BuiltinKind) string {
 }
 
 // checkedSuffix returns the pebble_rt_checked_* function-name suffix for the
-// given width: "i32" for an i32 entry, "i64" for an i64 entry. It is exactly
-// the type's name, but named for what it selects — the width-specific runtime
-// helper family — so the two lookups stay distinct.
+// given width: "i32" for an int or i32 entry, "i64" for an i64 entry. It is
+// exactly the type's name for the fixed-width entries, but named for what it
+// selects — the width-specific runtime helper family.
 func checkedSuffix(width types.BuiltinKind) string {
 	switch width {
+	case types.Int:
+		return "i32"
 	case types.I32:
 		return "i32"
 	case types.I64:
