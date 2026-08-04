@@ -1672,17 +1672,40 @@ incrementally as work proceeds.
   compiled and ran the emitted C for the value-receiver field-read
   case with `-Wall -Wextra -Werror`, exit code 41.
 
-  **Known follow-up, not fixed here (out of this task's scope —
-  `compiler/internal/check`, not `backend`)**: a real checker bug in
-  `call_validation.go` (~line 81-89) conflates `len(call.Arguments)`
-  (the call site's actual runtime argument count) with
-  `len(selection.Arguments)` (generic type-argument count, from
-  `infer.instantiate.go`) — so **any** non-generic method call with an
-  explicit argument beyond `self` (e.g. `p.add(2)` where `add(self
-  Point, delta int)`) is wrongly rejected with `C0604` before it ever
-  reaches the backend. This blocks realistic method usage broadly
-  (methods taking only `self` work; methods taking any other parameter
-  don't) and needs its own checker-side fix.
+  Left one known follow-up at the time: a real checker bug in
+  `call_validation.go` wrongly rejected any non-generic method call
+  passing an explicit argument beyond `self` — fixed immediately after
+  in 10.48 below.
+- **10.48 — fix checker rejecting method calls with explicit
+  arguments** (`compiler/internal/check`): `call_validation.go`'s
+  `callMethod` case compared `len(call.Arguments)` (the call site's
+  actual runtime argument count, which deliberately excludes the
+  receiver — `callRecord.Receiver` is a separate field) against
+  `len(selection.Arguments)`, which is `infer.MethodSelection`'s own
+  generic type-argument list (populated from `methodState.arguments`
+  in `infer/instantiate.go`, exactly analogous to `Instantiation.
+  Arguments` for a plain generic function call — confirmed by reading
+  both call sites side by side). For any non-generic method that list
+  is always empty, so **any** method call passing a real argument
+  beyond the receiver (e.g. `p.add(2)` where `fn add(self Point, delta
+  i32) i32`) was wrongly rejected with `C0604` before ever reaching
+  the backend — only `self`-only methods worked. Fixed by comparing
+  `call.Arguments` against the method's own resolved
+  `Signature.Inputs` instead (minus one slot for the receiver, which
+  occupies `Inputs[0]` exactly like `Parameters[0]` — confirmed via
+  `infer/declaration.go`, which builds `Signature.Inputs` directly
+  from the source-declared parameter list with zero special-casing for
+  methods). Verified with a new checker-level test
+  (`TestValidateCallRecordsAcceptsMethodCallWithArgument`) plus the
+  backend-level positive test 10.47's own dispatch had to omit
+  (`TestEmitMethodCallWithExplicitArgument`), the full checker suite
+  (confirming the existing arity-mismatch-rejection test for methods
+  still correctly rejects a real mismatch), the full backend suite,
+  the full repo suite, and independently outside the harness —
+  manually compiled and ran the emitted C for `p.add(2)` with `-Wall
+  -Wextra -Werror`, exit code 42 (the receiver field and the explicit
+  argument both flow correctly, and the checked addition even carries
+  a real source location per 10.44's work).
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
