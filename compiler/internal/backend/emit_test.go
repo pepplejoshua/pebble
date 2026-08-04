@@ -53,7 +53,7 @@ func (p fixtureProvider) ReadFile(path module.CanonicalPath) ([]byte, error) {
 // without it, no entry validation runs, so fixtures with shapes the checker
 // itself would reject as entries (parameters, non-void results) still build
 // and let Emit's own validation be exercised directly.
-func buildFixture(t *testing.T, sourceText, entryName string, requireEntry bool) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+func buildFixture(t *testing.T, sourceText, entryName string, requireEntry bool) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet) {
 	t.Helper()
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
@@ -87,13 +87,13 @@ func buildFixture(t *testing.T, sourceText, entryName string, requireEntry bool)
 	if unit == nil {
 		t.Fatal("check succeeded without an IR unit")
 	}
-	return unit, unit.Snapshot(), entryID
+	return unit, unit.Snapshot(), entryID, sources
 }
 
 func TestEmitEmptyEntryWritesC(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() void {}", "main", true)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -105,18 +105,18 @@ func TestEmitEmptyEntryWritesC(t *testing.T) {
 }
 
 func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() void {}", "main", true)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
 func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -131,9 +131,9 @@ func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
 }
 
 func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { return 42; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 42; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
@@ -181,6 +181,31 @@ func TestEmitCheckedArithmeticOverflowAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { return 2147483647 + 1; }", false, 0, true)
 }
 
+func TestEmitCheckedArithmeticOverflowEmitsRealSourceLoc(t *testing.T) {
+	// The overflow behavior is unchanged (the process still aborts via
+	// pebble_rt_panic), and — new for this slice — the emitted
+	// pebble_rt_checked_add_i32 call now carries the checked expression's own
+	// resolved Pebble source location as its final argument, not the
+	// zero-valued placeholder: (PebbleSourceLoc){"main.peb", 1, 24} for the
+	// `2147483647 + 1` expression on the fixture's single line. Both halves
+	// are proved here: the emitted C text is inspected directly for the
+	// non-placeholder compound literal, and the compiled binary is run to
+	// confirm the overflow still panics.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 2147483647 + 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `pebble_rt_checked_add_i32(2147483647, 1, (PebbleSourceLoc){"main.peb", 1, 24})`) {
+		t.Errorf("emitted C lacks a real source location on the checked-add call:\n%s", out)
+	}
+	if strings.Contains(out, "(PebbleSourceLoc){0}") {
+		t.Errorf("emitted C still uses the zero-valued source-location placeholder:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, true)
+}
+
 func TestEmitCheckedDivideByZeroAborts(t *testing.T) {
 	// 1 / 0 divides by zero. The emitted pebble_rt_checked_div_i32 call must
 	// panic through pebble_rt_panic (divide-by-zero is a fault in every
@@ -215,9 +240,9 @@ func TestEmitLocalOverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitIfElseEntryWritesC(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { return 10; } else { return 20; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if 1 < 2 { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -353,9 +378,9 @@ func TestEmitLogicalAndWritesC(t *testing.T) {
 	// parenthesized (pebble_local_25 < 10 && 1 < 2), the local reference
 	// resolved to its pebble_local name. Symbol 25 is the x local, confirmed
 	// against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 7; if x < 10 && 1 < 2 { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var x i32 = 7; if x < 10 && 1 < 2 { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -376,9 +401,9 @@ func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
 	// carry the comparison directly inside the parenthesized &&, with the bool
 	// local referenced by name: (pebble_local_25 && 1 < 2). Symbol 25 is the
 	// flag local.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var flag bool = true; if flag && (1 < 2) { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var flag bool = true; if flag && (1 < 2) { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -424,9 +449,9 @@ func TestEmitNestedIfEntryWritesC(t *testing.T) {
 	// spaces), and its returns two levels deep (12 spaces). Asserting the
 	// literal indentation is what stops the recursive build from quietly
 	// collapsing all levels onto one.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if 1 < 2 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if 1 < 2 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -486,9 +511,9 @@ func TestEmitRejectsLocalLeakingBetweenArms(t *testing.T) {
 // any specific code.
 func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) {
 	t.Helper()
-	unit, snapshot, entryID := buildFixture(t, sourceText, "main", requireEntry)
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), wantCode, wantAbnormal)
@@ -501,9 +526,9 @@ func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int
 // fails the test loudly and quickly instead of hanging the whole test run.
 func emitAndRunBounded(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) {
 	t.Helper()
-	unit, snapshot, entryID := buildFixture(t, sourceText, "main", requireEntry)
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRunBounded(t, buf.Bytes(), wantCode, wantAbnormal)
@@ -643,7 +668,7 @@ func runCompiledBinary(t *testing.T, binary string, wantCode int, wantAbnormal, 
 // every TypeID the hand-built nodes reference is owned by the snapshot.
 func buildI32EmptyBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 
 	region, err := builder.AddRegion()
@@ -693,7 +718,7 @@ func buildI32EmptyBodyUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sym
 // bool-typed reference in the integer return position.
 func buildBoolLocalReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 
 	initValue, err := builder.AddNode(tir.Node{
@@ -748,7 +773,7 @@ func buildBoolLocalReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.
 // tree is typed i32.
 func buildNonI32ReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 
 	region, err := builder.AddRegion()
@@ -815,7 +840,7 @@ func buildNonI32ReturnUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sym
 // TypeID the hand-built nodes reference is owned by the snapshot.
 func buildUnsupportedArithmeticOperatorUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -907,7 +932,7 @@ func buildUnsupportedArithmeticOperatorUnit(t *testing.T) (*tir.Unit, *types.Sna
 // owned by the snapshot.
 func buildUndeclaredLocalReferenceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -1054,7 +1079,7 @@ func addI32Literal(t *testing.T, builder *tir.Builder, i32 types.TypeID, num str
 // declared earlier in the entry body.
 func buildStoreToUndeclaredSymbolUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -1120,7 +1145,7 @@ func buildStoreToUndeclaredSymbolUnit(t *testing.T) (*tir.Unit, *types.Snapshot,
 // requirement that a reassignment's new value is a valid i32 expression.
 func buildNonI32StoreValueUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -1185,7 +1210,7 @@ func buildNonI32StoreValueUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol
 // place is a plain StoragePlace naming a local.
 func buildStoreToNonStoragePlaceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -1260,7 +1285,7 @@ func buildStoreToNonStoragePlaceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, 
 // is owned by the snapshot.
 func buildIfWithoutElseUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -1383,7 +1408,7 @@ func buildIfWithoutElseUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sy
 // every TypeID the hand-built nodes reference is owned by the snapshot.
 func buildWhileAsTailUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -1485,7 +1510,7 @@ func buildWhileAsTailUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Symb
 // hand-built nodes reference is owned by the snapshot.
 func buildSiblingArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 	boolT := snapshot.Builtins().Bool
@@ -1656,7 +1681,7 @@ func buildSiblingArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 // by the snapshot.
 func buildLoopIfArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 	boolT := snapshot.Builtins().Bool
@@ -1829,7 +1854,7 @@ func buildLoopIfArmLocalLeakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symb
 // fresh function type.
 func buildCallArgumentCountMismatchUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	realUnit, snapshot, entryID := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
+	realUnit, snapshot, entryID, _ := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
 	var fnType types.TypeID
 	for _, n := range realUnit.Nodes() {
 		if n.Kind == tir.DirectCall {
@@ -1947,7 +1972,7 @@ func runtimeSourceRoot(t *testing.T) string {
 func assertEmitRejects(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, entryID symbol.SymbolID) {
 	t.Helper()
 	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, &buf)
+	err := Emit(unit, snapshot, entryID, nil, &buf)
 	if err == nil {
 		t.Fatal("Emit succeeded for an unsupported entry shape")
 	}
@@ -1957,7 +1982,7 @@ func assertEmitRejects(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, e
 }
 
 func TestEmitRejectsNonEmptyBody(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() void { let x i32 = 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() void { let x i32 = 1; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
@@ -2117,7 +2142,7 @@ func TestEmitRejectsPrintInsideWhileBody(t *testing.T) {
 	// rejection naming what was found, not a guessed lowering. This keeps
 	// rejection coverage for a genuinely-unsupported statement kind after the
 	// if-in-loop-body shape became a positive case above.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { print(\"hi\"); i = i + 1; } return i; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { print(\"hi\"); i = i + 1; } return i; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
@@ -2137,16 +2162,16 @@ func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
 	// level deeper (8 spaces), its store two levels deep (12 spaces), and the
 	// if closed with no `else`. Asserting the literal indentation is what stops
 	// the recursive build from quietly collapsing all levels onto one.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i < 5 { sum = sum + i; } i = i + 1; } return sum; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i < 5 { sum = sum + i; } i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"    while (pebble_local_25 < 10) {\n",
 		"        if (pebble_local_25 < 5) {\n",
-		"            pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, pebble_local_25);",
+		"            pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, pebble_local_25, (PebbleSourceLoc){\"main.peb\", 1, 81});",
 		"        }",
 	} {
 		if !strings.Contains(out, want) {
@@ -2245,9 +2270,9 @@ func TestEmitBoolLocalIfWritesC(t *testing.T) {
 	// the C bool keyword (backed by #include <stdbool.h>) and referenced
 	// directly in the if condition, with the arms' returns indented one level.
 	// Symbol 25 is the flag local, confirmed against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var flag bool = true; if flag { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var flag bool = true; if flag { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -2283,9 +2308,9 @@ func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
 	// with plain C ! in the while condition, and reassign it with a plain bool
 	// literal inside the loop-body if. Symbols 25 (done), 26 (i), and 27 (sum)
 	// come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var done bool = false; var i i32 = 0; var sum i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } return sum; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var done bool = false; var i i32 = 0; var sum i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -2399,9 +2424,9 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 	// associatively with the outer operator — with the arms' returns indented
 	// one level. Symbol-level operands emit parenthesized too, as
 	// (pebble_local_<id>), matching the same rule.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { if (1 < 2) == (3 < 4) { return 1; } else { return 2; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if (1 < 2) == (3 < 4) { return 1; } else { return 2; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -2414,9 +2439,9 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
 	}
-	unit, snapshot, entryID = buildFixture(t, "fn main() i32 { var a bool = true; var b bool = false; if a == b { return 1; } else { return 2; } }", "main", false)
+	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var a bool = true; var b bool = false; if a == b { return 1; } else { return 2; } }", "main", false)
 	buf.Reset()
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
@@ -2441,15 +2466,15 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 	// and the comparison in the while condition, with the SourceAlias unwrapped
 	// into a plain C comparison: while (!(pebble_local_25 >= 5)). Symbol 25 is
 	// the i local, confirmed against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while !(i >= 5) { i = i + 1; } return i; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; while !(i >= 5) { i = i + 1; } return i; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"    while (!(pebble_local_25 >= 5)) {\n",
-		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, 1);",
+		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, 1, (PebbleSourceLoc){\"main.peb\", 1, 54});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2460,7 +2485,7 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 func TestEmitRejectsVariableReturn(t *testing.T) {
 	// A variable reference lowers to a SymbolValue, which is not a supported
 	// expression node for the i32 entry's return value.
-	unit, snapshot, entryID := buildFixture(t, "let x i32 = 1; fn main() i32 { return x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "let x i32 = 1; fn main() i32 { return x; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
@@ -2483,35 +2508,35 @@ func TestEmitRejectsStatementBeforeReturn(t *testing.T) {
 	// before the final Return. Only Initialize declarations (and, since 10.9,
 	// Store reassignments of an in-scope local) followed by one Return are
 	// accepted in the i32 entry body.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { print(\"hi\"); return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { print(\"hi\"); return 1; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
 func TestEmitRejectsParameters(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main(args []str) void {}", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main(args []str) void {}", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
 func TestEmitRejectsUnsupportedResultType(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() u32 { return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() u32 { return 0; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
 func TestEmitRejectsUnknownEntrySymbol(t *testing.T) {
-	unit, snapshot, _ := buildFixture(t, "fn main() void {}", "main", true)
+	unit, snapshot, _, _ := buildFixture(t, "fn main() void {}", "main", true)
 	assertEmitRejects(t, unit, snapshot, symbol.SymbolID(0x7FFFFFFF))
 }
 
 func TestEmitNilArguments(t *testing.T) {
 	empty := &tir.Unit{}
 	snapshot := &types.Snapshot{}
-	if err := Emit(nil, snapshot, 0, &bytes.Buffer{}); err == nil {
+	if err := Emit(nil, snapshot, 0, nil, &bytes.Buffer{}); err == nil {
 		t.Fatal("Emit accepted nil unit")
 	}
-	if err := Emit(empty, nil, 0, &bytes.Buffer{}); err == nil {
+	if err := Emit(empty, nil, 0, nil, &bytes.Buffer{}); err == nil {
 		t.Fatal("Emit accepted nil snapshot")
 	}
-	if err := Emit(empty, snapshot, 0, nil); err == nil {
+	if err := Emit(empty, snapshot, 0, nil, nil); err == nil {
 		t.Fatal("Emit accepted nil writer")
 	}
 }
@@ -2571,9 +2596,9 @@ func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
 	// levels deep (12), and no else. Asserting the literal indentation is what
 	// stops the recursive build from quietly collapsing levels or emitting the
 	// jump at the wrong depth.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i == 5 { break; } sum = sum + i; i = i + 1; } return sum; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i == 5 { break; } sum = sum + i; i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -2593,9 +2618,9 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 	// The emitted C for the continue-inside-if fixture must carry a literal
 	// `continue;` at the arm's indentation (12 spaces), mirroring the break
 	// fixture's indentation.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { i = i + 1; if i == 3 { continue; } sum = sum + i; } return sum; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { i = i + 1; if i == 3 { continue; } sum = sum + i; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -2615,7 +2640,7 @@ func TestEmitRejectsBreakWithUnsupportedDeferStatement(t *testing.T) {
 	// DeferChain references a Print node. The backend now attempts to emit
 	// deferred statements but correctly rejects Print as an unsupported
 	// deferred statement kind (only Store reassignment is currently supported).
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "not a supported deferred statement kind")
 }
 
@@ -2623,7 +2648,7 @@ func TestEmitRejectsContinueWithUnsupportedDeferStatement(t *testing.T) {
 	// Same unsupported deferred statement rejection for Continue: a defer with
 	// a Print node is correctly rejected as an unsupported deferred statement
 	// kind, rather than being silently dropped or rejected for DeferChain.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "not a supported deferred statement kind")
 }
 
@@ -2781,23 +2806,23 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	// the real fixture dump. The inclusive form's condition must instead be
 	// `<=` (RangeLoop.RangeInclusive), so the two operators are distinguishable
 	// in the emitted text.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26++) {\n",
-		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26);",
+		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26, (PebbleSourceLoc){\"main.peb\", 1, 56});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
 	}
-	unit, snapshot, entryID = buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..=3 : i { sum = sum + i; } return sum; }", "main", false)
+	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..=3 : i { sum = sum + i; } return sum; }", "main", false)
 	buf.Reset()
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
@@ -2813,7 +2838,7 @@ func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
 	// such a loop's iteration count from inside the body, so it is rejected
 	// cleanly rather than lowered with a synthetic counter the source never
 	// names.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 { sum = sum + 1; } return sum; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 { sum = sum + 1; } return sum; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unbound range loop")
 }
 
@@ -2823,7 +2848,7 @@ func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
 func assertEmitRejectsContaining(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, entryID symbol.SymbolID, wantSubstring string) {
 	t.Helper()
 	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, &buf)
+	err := Emit(unit, snapshot, entryID, nil, &buf)
 	if err == nil {
 		t.Fatalf("Emit succeeded for an unsupported entry shape, want rejection containing %q", wantSubstring)
 	}
@@ -2994,16 +3019,16 @@ func TestEmitForLoopWritesC(t *testing.T) {
 	// -Wunused-variable (void) cast as the body's first statement, since its C
 	// declaration lives in the header where a cast cannot go. Symbols 25
 	// (total) and 26 (step) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step = step + 1 { total = total + step; } return total; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step = step + 1 { total = total + step; } return total; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, 1)) {\n",
+		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, 1, (PebbleSourceLoc){\"main.peb\", 1, 75})) {\n",
 		"        (void)pebble_local_26;",
-		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26);",
+		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26, (PebbleSourceLoc){\"main.peb\", 1, 94});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3016,7 +3041,7 @@ func TestEmitForLoopRejectsStoreInitializer(t *testing.T) {
 	// reachable from real source but out of scope: the initializer must be a
 	// single local declaration, matching the backend's rule that only an
 	// Initialize declares a local.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var step i32 = 0; for step = 0; step < 3; step = step + 1 { } return step; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var step i32 = 0; for step = 0; step < 3; step = step + 1 { } return step; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop initializer is a Store")
 }
 
@@ -3024,7 +3049,7 @@ func TestEmitForLoopRejectsCompoundStoreInitializer(t *testing.T) {
 	// A compound-assignment as the for-loop initializer (for x += 1; ...) is
 	// reachable from real source but out of scope: the initializer must be a
 	// single local declaration.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 0; for x += 1; x < 3; { } return x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var x i32 = 0; for x += 1; x < 3; { } return x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop initializer is a CompoundStore")
 }
 
@@ -3033,7 +3058,7 @@ func TestEmitForLoopRejectsCompoundStoreUpdate(t *testing.T) {
 	// from real source but out of scope: the update must be a single Store
 	// (a reassignment), matching the backend's rule that a reassignment
 	// lowers through buildStoreCore.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step += 1 { total = total + step; } return total; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step += 1 { total = total + step; } return total; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop update is a CompoundStore")
 }
 
@@ -3043,9 +3068,9 @@ func TestEmitForLoopRejectsExpressionStatementClause(t *testing.T) {
 	// only clause is an ExpressionStatement is ambiguous (expression
 	// initializer or expression update — both out of scope, so the rejection
 	// is unambiguous in outcome).
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 0; for x + 1; ; { break; } return x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var x i32 = 0; for x + 1; ; { break; } return x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "with no condition has a ExpressionStatement clause")
-	unit, snapshot, entryID = buildFixture(t, "fn main() i32 { var x i32 = 0; for ; ; x + 1 { break; } return x; }", "main", false)
+	unit, snapshot, entryID, _ = buildFixture(t, "fn main() i32 { var x i32 = 0; for ; ; x + 1 { break; } return x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "with no condition has a ExpressionStatement clause")
 }
 
@@ -3063,7 +3088,7 @@ func TestEmitForLoopRejectsExpressionStatementClause(t *testing.T) {
 // by the snapshot.
 func buildTopLevelBreakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	_, snapshot, entryID := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	builder := tir.NewBuilder(snapshot, tir.Config{})
 	i32 := snapshot.Builtins().I32
 
@@ -3108,9 +3133,9 @@ func TestEmitI64ReturnEntryWritesC(t *testing.T) {
 	// Mirror of TestEmitIntegerReturnEntryWritesC at the wider width: the
 	// pebble_user_main adapter must be declared with the 64-bit return type so
 	// a wide return value is not truncated, not the i32 entry's "int".
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { return 42; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { return 42; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3138,14 +3163,14 @@ func TestEmitI64CheckedAddWritesC(t *testing.T) {
 	// Assert the exact helper name: an i64 entry's CheckedArithmetic must lower
 	// to pebble_rt_checked_add_i64, proving the resolved width really reaches
 	// the runtime function-name selection rather than staying hardcoded _i32.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { return 1 + 2; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { return 1 + 2; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"pebble_rt_checked_add_i64(1, 2)",
+		"pebble_rt_checked_add_i64(1, 2, (PebbleSourceLoc){\"main.peb\", 1, 24})",
 		"static int64_t pebble_user_main(PebbleContext *ctx)",
 	} {
 		if !strings.Contains(out, want) {
@@ -3187,9 +3212,9 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	// through declarations, loop conditions, and arithmetic together. The
 	// symbol IDs 25 (i) and 26 (sum) are the same ones the i32 fixture dump
 	// established, so the assertions are exact.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { var i i64 = 0; var sum i64 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { var i i64 = 0; var sum i64 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3197,7 +3222,7 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 		"int64_t pebble_local_25 = 0;",
 		"int64_t pebble_local_26 = 0;",
 		"    while (pebble_local_25 < 5) {\n",
-		"        pebble_local_26 = pebble_rt_checked_add_i64(pebble_local_26, pebble_local_25);",
+		"        pebble_local_26 = pebble_rt_checked_add_i64(pebble_local_26, pebble_local_25, (PebbleSourceLoc){\"main.peb\", 1, 69});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3214,7 +3239,7 @@ func TestEmitI64RejectsI32Local(t *testing.T) {
 	// emits exactly one width per entry and has no cast/coercion lowering, so
 	// it must be rejected with a clear width-mismatch error naming the wanted
 	// width — never crashed on, and never silently emitted as an i64 local.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let x i32 = 1; return 2; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i64 { let x i32 = 1; return 2; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i64")
 }
 
@@ -3222,7 +3247,7 @@ func TestEmitI32RejectsI64Local(t *testing.T) {
 	// The reverse direction: an i64 local inside an i32 entry is likewise a
 	// legal program the checker builds and a clean width-mismatch rejection
 	// for this backend.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i64 = 1; return 2; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let x i64 = 1; return 2; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
 }
 
@@ -3244,9 +3269,9 @@ func TestEmitHelperPlusHelperWritesC(t *testing.T) {
 	// declaration mechanism), and each call site must lower to
 	// pebble_fn_24(ctx) inside the entry's checked add. Symbols 24 (helper)
 	// and 25 (main) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return 21; } fn main() i32 { return helper() + helper(); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i32 { return 21; } fn main() i32 { return helper() + helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3254,7 +3279,7 @@ func TestEmitHelperPlusHelperWritesC(t *testing.T) {
 		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
 		"    return 21;",
 		"static int pebble_user_main(PebbleContext *ctx)",
-		"return pebble_rt_checked_add_i32(pebble_fn_24(ctx), pebble_fn_24(ctx));",
+		"return pebble_rt_checked_add_i32(pebble_fn_24(ctx), pebble_fn_24(ctx), (PebbleSourceLoc){\"main.peb\", 1, 55});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3282,9 +3307,9 @@ func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
 	// body is built as its own block with its own fresh scope, not interleaved
 	// into pebble_user_main. Symbols 24 (helper) and 25 (main) come from the
 	// real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { var done bool = false; var sum i32 = 0; var i i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } if sum > 3 { return sum; } else { return sum + 1; } } fn main() i32 { return helper(); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i32 { var done bool = false; var sum i32 = 0; var i i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } if sum > 3 { return sum; } else { return sum + 1; } } fn main() i32 { return helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3319,9 +3344,9 @@ func TestEmitTwoLevelCallChainWritesC(t *testing.T) {
 	// called first in the post-order walk) before helper1 (symbol 24) before
 	// pebble_user_main, despite the source declaring helper1 first — the
 	// forward-definition requirement. Symbols come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn helper1() i32 { return helper2(); } fn helper2() i32 { return 20; } fn main() i32 { return helper1(); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper1() i32 { return helper2(); } fn helper2() i32 { return 20; } fn main() i32 { return helper1(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3348,15 +3373,15 @@ func TestEmitI64HelperCompilesAndRuns(t *testing.T) {
 func TestEmitI64HelperWritesC(t *testing.T) {
 	// The emitted C for an i64 helper must declare it int64_t and call it with
 	// the i64 checked helper, mirroring the entry-width threading.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i64 { return 21; } fn main() i64 { return helper() + helper(); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i64 { return 21; } fn main() i64 { return helper() + helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"static int64_t pebble_fn_24(PebbleContext *ctx) {",
-		"pebble_rt_checked_add_i64(pebble_fn_24(ctx), pebble_fn_24(ctx));",
+		"pebble_rt_checked_add_i64(pebble_fn_24(ctx), pebble_fn_24(ctx), (PebbleSourceLoc){\"main.peb\", 1, 55});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3373,14 +3398,14 @@ func TestEmitRejectsI64MainCallsI32Helper(t *testing.T) {
 	// locals. An i64 entry calling an i32 helper is a legal, checker-accepted
 	// program, so this is a genuine backend-scope rejection naming the width
 	// mismatch.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return 21; } fn main() i64 { return helper(); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i32 { return 21; } fn main() i64 { return helper(); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i64")
 }
 
 func TestEmitRejectsI32MainCallsI64Helper(t *testing.T) {
 	// The reverse direction: an i32 entry calling an i64 helper is likewise a
 	// clean width-mismatch rejection.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i64 { return 21; } fn main() i32 { return helper(); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i64 { return 21; } fn main() i32 { return helper(); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
 }
 
@@ -3390,7 +3415,7 @@ func TestEmitRejectsSelfRecursion(t *testing.T) {
 	// walk follows helper's call back to helper and must reject the cycle
 	// cleanly, naming the chain, rather than emit a C definition that calls
 	// itself before it is defined (there's no forward-declaration mechanism).
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return helper(); } fn main() i32 { return helper(); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i32 { return helper(); } fn main() i32 { return helper(); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
 }
 
@@ -3398,7 +3423,7 @@ func TestEmitRejectsMutualRecursion(t *testing.T) {
 	// Two functions that call each other: a calls b and b calls a, so a can
 	// reach itself through b. The walk must reject the cycle naming the chain
 	// (symbol 24 -> symbol 25 -> symbol 24), not emit either function.
-	unit, snapshot, entryID := buildFixture(t, "fn a() i32 { return b(); } fn b() i32 { return a(); } fn main() i32 { return a(); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn a() i32 { return b(); } fn b() i32 { return a(); } fn main() i32 { return a(); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
 }
 
@@ -3406,7 +3431,7 @@ func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
 	// The cycle can close through the entry itself: main calls helper, helper
 	// calls main back. main is on the walk's DFS path, so the walk must reject
 	// the cycle rather than re-emit the entry as a helper.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return main(); } fn main() i32 { return helper(); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i32 { return main(); } fn main() i32 { return helper(); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
 }
 
@@ -3460,9 +3485,9 @@ func TestEmitVoidHelperWritesC(t *testing.T) {
 	// fixture), and the call statement appears as a bare
 	// `pebble_fn_24(ctx);` — a statement, not a value expression — at the
 	// call's own position in program order.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3484,7 +3509,7 @@ func TestEmitRejectsNonVoidDiscardedCallStatement(t *testing.T) {
 	// cleanly, naming the callee and its result type, rather than guessing
 	// how a discarded non-void result would be dropped (a real future gap,
 	// out of this slice's void-only scope).
-	unit, snapshot, entryID := buildFixture(t, "fn f() i32 { return 5; } fn main() i32 { f(); return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn f() i32 { return 5; } fn main() i32 { f(); return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "result type is i32, want a call to a void-returning function")
 }
 
@@ -3494,9 +3519,9 @@ func TestEmitUnreachableFunctionNotEmitted(t *testing.T) {
 	// the unused function), so the -Wall -Wextra -Werror build cannot warn
 	// about an unused static function. Only the reachable helper (symbol 24)
 	// is emitted, and the program runs to exit 21.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() i32 { return 21; } fn unused() i32 { return 99; } fn main() i32 { return helper(); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i32 { return 21; } fn unused() i32 { return 99; } fn main() i32 { return helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3542,9 +3567,9 @@ func TestEmitAddParametersWritesC(t *testing.T) {
 	// each parameter gets a (void) cast against -Wunused-parameter, and the
 	// call site passes the argument expressions after ctx. Symbol 24 is the
 	// helper, 25 is main, matching the other 10.17/10.18 fixtures.
-	unit, snapshot, entryID := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { return add(20, 22); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { return add(20, 22); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3552,7 +3577,7 @@ func TestEmitAddParametersWritesC(t *testing.T) {
 		"static int32_t pebble_fn_24(PebbleContext *ctx, int32_t pebble_local_25, int32_t pebble_local_26) {",
 		"    (void)pebble_local_25;",
 		"    (void)pebble_local_26;",
-		"    return pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26);",
+		"    return pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26, (PebbleSourceLoc){\"main.peb\", 1, 35});",
 		"return pebble_fn_24(ctx, 20, 22);",
 	} {
 		if !strings.Contains(out, want) {
@@ -3579,9 +3604,9 @@ func TestEmitBoolParameterWritesC(t *testing.T) {
 	// (symbols 26 and 27) are int32_t, and the call site passes the bool
 	// literal and the two integer literals after ctx. Symbols come from the
 	// real fixture dump (choose=24, flag=25, x=26, y=27, main=28).
-	unit, snapshot, entryID := buildFixture(t, "fn choose(flag bool, x i32, y i32) i32 { if flag { return x; } else { return y; } } fn main() i32 { return choose(true, 10, 20); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn choose(flag bool, x i32, y i32) i32 { if flag { return x; } else { return y; } } fn main() i32 { return choose(true, 10, 20); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3651,7 +3676,7 @@ func TestEmitRejectsUnsupportedParameterType(t *testing.T) {
 	// validateHelperSignature must reject the parameter because its type is
 	// neither the entry's width, bool, char, str, nor a tuple/struct type,
 	// naming the parameter position.
-	unit, snapshot, entryID := buildFixture(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, char, or str")
 }
 
@@ -3660,7 +3685,7 @@ func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
 	// rule 10.13 established for locals: an i64 parameter in an i32 entry (and
 	// its result, here also i64) must be a clean rejection naming the width,
 	// never a coercion. The parameter check fires before the result check.
-	unit, snapshot, entryID := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, char, or str")
 }
 
@@ -3713,9 +3738,9 @@ func TestEmitTupleThreeElementWritesC(t *testing.T) {
 	// pebble_local_<id>._1 / ._2 inside the checked add. Symbol 25 is the t
 	// local and tuple type 23 its (i32, i32, i32) type, confirmed against the
 	// real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3723,7 +3748,7 @@ func TestEmitTupleThreeElementWritesC(t *testing.T) {
 		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n    int32_t _2;\n} pebble_tuple_23_t;",
 		"pebble_tuple_23_t pebble_local_25 = { 10, 20, 30 };",
 		"    (void)pebble_local_25;",
-		"return pebble_rt_checked_add_i32(pebble_local_25._1, pebble_local_25._2);",
+		"return pebble_rt_checked_add_i32(pebble_local_25._1, pebble_local_25._2, (PebbleSourceLoc){\"main.peb\", 1, 62});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3762,9 +3787,9 @@ func TestEmitTupleBoolElementDrivesIfWritesC(t *testing.T) {
 	// literals in order, and the if condition is the raw field read
 	// pebble_local_<id>._1 (a C bool needs no comparison). Symbol 25 is the t
 	// local, confirmed against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let t (i32, bool) = (1, true); if t.1 { return 10; } else { return 20; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let t (i32, bool) = (1, true); if t.1 { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3796,9 +3821,9 @@ func TestEmitTupleElementAsCallArgumentWritesC(t *testing.T) {
 	// both the helper and the entry, the local initializes to { 20, 22 }, and
 	// the call site passes the two element reads after ctx. Symbols 24 (add),
 	// 25/26 (its parameters), and 28 (t) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let t (i32, i32) = (20, 22); return add(t.1, t.1); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let t (i32, i32) = (20, 22); return add(t.1, t.1); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3839,9 +3864,9 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 	// The emitted C for the i64 tuple must use int64_t for both typedef fields
 	// and for the pebble_user_main return type, proving the entry's width
 	// threads into the tuple layout, not just the scalar declarations.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let t (i64, i64) = (20, 22); return t.1; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { let t (i64, i64) = (20, 22); return t.1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3876,6 +3901,27 @@ func TestEmitArrayOutOfBoundsAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let a [2]i32 = [10, 20]; let i i32 = 2; return a[i]; }", false, 0, true)
 }
 
+func TestEmitCheckedArrayIndexEmitsPlaceholderSourceLoc(t *testing.T) {
+	// Deliberately-out-of-scope for this slice: checked array indexing is a
+	// placeholder-location category (real locations for checked_index are the
+	// next slice's job), so its emitted pebble_rt_checked_index_i32 call must
+	// carry the zero-valued (PebbleSourceLoc){0} compound literal — not a
+	// resolved location — and the fixture must still compile and run
+	// correctly end to end. This proves the slice's own two real-location
+	// categories didn't silently change (or break) a call category outside
+	// its scope.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){0})") {
+		t.Errorf("emitted C lacks the placeholder source location on the checked-index call:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 10, false)
+}
+
 func TestEmitArrayElementAsCallArgument(t *testing.T) {
 	emitAndRun(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let a [2]i32 = [20, 22]; return add(a[0], a[1]); }", false, 42, false)
 }
@@ -3885,15 +3931,15 @@ func TestEmitI64ArrayCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayWritesC(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"int32_t pebble_local_25[3] = { 10, 20, 30 };",
-		"return pebble_local_25[pebble_rt_checked_index_i32(1, 3)];",
+		"return pebble_local_25[pebble_rt_checked_index_i32(1, 3, (PebbleSourceLoc){0})];",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3945,15 +3991,15 @@ func TestEmitArrayRepeatWritesC(t *testing.T) {
 	// followed by the (void) cast every array local gets. Both synthetic names
 	// derive from the local's own symbol (25, confirmed against the real
 	// fixture dump). The element reads are unchanged from 10.20.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a [3]i32 = [5; 3]; return a[0] + a[1] + a[2]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [5; 3]; return a[0] + a[1] + a[2]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"    int32_t pebble_local_25[3];\n    int32_t pebble_repeat_25 = 5;\n    for (size_t pebble_i_25 = 0; pebble_i_25 < 3; pebble_i_25++) {\n        pebble_local_25[pebble_i_25] = pebble_repeat_25;\n    }\n    (void)pebble_local_25;",
-		"pebble_rt_checked_index_i32(0, 3)",
+		"pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){0})",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3972,9 +4018,9 @@ func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
 	// available without mutable global state to observe call count; the
 	// end-to-end run confirms the resulting values are still correct
 	// (5 + 5 + 5 = 15).
-	unit, snapshot, entryID := buildFixture(t, "fn five() i32 { return 5; } fn main() i32 { let a [3]i32 = [five(); 3]; return a[0] + a[1] + a[2]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn five() i32 { return 5; } fn main() i32 { let a [3]i32 = [five(); 3]; return a[0] + a[1] + a[2]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3996,7 +4042,7 @@ func TestEmitRejectsTupleWithUnsupportedElementType(t *testing.T) {
 	// declaration fine), so this is a genuine backend-scope rejection. The
 	// tuple typedef pass inspects the element types first and rejects the str
 	// field with a clear error naming the wanted types, so no C is written.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
 
@@ -4005,7 +4051,7 @@ func TestEmitNestedTupleElementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRejectsTupleNestedMoreThanOneLevel(t *testing.T) {
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let a (i32, i32) = (1, 2); let b ((i32, i32), i32) = (a, 3); let c (((i32, i32), i32), i32) = (b, 4); return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let a (i32, i32) = (1, 2); let b ((i32, i32), i32) = (a, 3); let c (((i32, i32), i32), i32) = (b, 4); return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported")
 }
 
@@ -4016,7 +4062,7 @@ func TestEmitRejectsWholeTupleStore(t *testing.T) {
 	// assignment into or reassignment of one. The Store's place names a
 	// tuple-typed local, so buildLeadingStatement rejects it with a clear
 	// error naming the reassignment, not a guessed lowering.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var t (i32, i32) = (1, 2); t = (3, 4); return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var t (i32, i32) = (1, 2); t = (3, 4); return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole tuple is not supported")
 }
 
@@ -4036,10 +4082,10 @@ func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {
 	// TestEmitInlineTupleArgumentCompilesAndRuns /
 	// TestEmitInlineStructArgumentCompilesAndRuns — and this test is their
 	// replacement.)
-	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f(((1, 2))); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f(((1, 2))); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a reference to a tuple-typed local in scope or a tuple literal")
 
-	unit, snapshot, entryID = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f((Point.{ x = 1, y = 2 })); }", "main", false)
+	unit, snapshot, entryID, _ = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f((Point.{ x = 1, y = 2 })); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a reference to a struct-typed local in scope or a struct literal")
 }
 
@@ -4051,7 +4097,7 @@ func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
 	// tuple's int element is not the entry's width, so the tuple typedef pass
 	// rejects it cleanly; this keeps the only supported element read exactly
 	// the tuple-local Load(TuplePlace) shape.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x i32 = (1, 2).1; return x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let x i32 = (1, 2).1; return x; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
@@ -4077,9 +4123,9 @@ func TestEmitTupleParameterWritesC(t *testing.T) {
 	// local pebble_local_27 directly (no construction at the call site).
 	// Symbols 24 (sumT), 25 (t param), 26 (main), 27 (t local), and tuple type
 	// 23 come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4087,7 +4133,7 @@ func TestEmitTupleParameterWritesC(t *testing.T) {
 		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
 		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_tuple_23_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
-		"    return pebble_rt_checked_add_i32(pebble_local_25._0, pebble_local_25._1);",
+		"    return pebble_rt_checked_add_i32(pebble_local_25._0, pebble_local_25._1, (PebbleSourceLoc){\"main.peb\", 1, 36});",
 		"pebble_tuple_23_t pebble_local_27 = { 20, 22 };",
 		"return pebble_fn_24(ctx, pebble_local_27);",
 	} {
@@ -4121,7 +4167,7 @@ func TestEmitTupleParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 	// collectTupleTypes directly with a hand-built reachable-helper slice, so
 	// it fails if the discovery stops being tied to a construction site. (The
 	// concrete type ID 23 is confirmed from the fixture dump.)
-	unit, snapshot, entryID := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return 0; }", "main", false)
 	entryDecl, err := findFunctionDeclaration(unit, entryID, "entry function")
 	if err != nil {
 		t.Fatalf("entry declaration: %v", err)
@@ -4169,6 +4215,29 @@ func TestEmitOptionalUnwrapNoneAborts(t *testing.T) {
 	// Force-unwrapping a none-initialized local panics via
 	// pebble_rt_checked_unwrap_i32, aborting the process.
 	emitAndRun(t, "fn main() i32 { let x ?i32 = none; return x!; }", false, 0, true)
+}
+
+func TestEmitOptionalUnwrapNoneEmitsRealSourceLoc(t *testing.T) {
+	// The absent-optional unwrap still panics (the process aborts via
+	// pebble_rt_checked_unwrap_i32), and — new for this slice — the emitted
+	// unwrap call now carries the CheckedOptionalUnwrap node's own resolved
+	// Pebble source location as its final argument, not the zero-valued
+	// placeholder. The emitted C is inspected for the non-placeholder
+	// compound literal, and the compiled binary is run to confirm the unwrap
+	// of `none` still aborts.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?i32 = none; return x!; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `pebble_rt_checked_unwrap_i32(pebble_local_25.has_value, pebble_local_25.value, (PebbleSourceLoc){"main.peb", 1, `) {
+		t.Errorf("emitted C lacks a real source location on the checked-unwrap call:\n%s", out)
+	}
+	if strings.Contains(out, "(PebbleSourceLoc){0}") {
+		t.Errorf("emitted C still uses the zero-valued source-location placeholder:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, true)
 }
 
 func TestEmitOptionalSomeUnwrapCompilesAndRuns(t *testing.T) {
@@ -4220,9 +4289,9 @@ func TestEmitOptionalSomeUnwrapWritesC(t *testing.T) {
 	// has_value/value fields, the local initialized with the struct literal
 	// initializer, and the unwrap call site using pebble_rt_checked_unwrap_i32.
 	// Symbol IDs come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?i32 = some 42; return x!; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?i32 = some 42; return x!; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4246,9 +4315,9 @@ func TestEmitOptionalI64WritesC(t *testing.T) {
 	// The emitted C for the i64 optional must use int64_t for the typedef
 	// value field and int64_t for pebble_user_main's return type, proving the
 	// entry's width threads into the optional layout.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let x ?i64 = some 22; return x!; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { let x ?i64 = some 22; return x!; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4268,9 +4337,9 @@ func TestEmitOptionalI64WritesC(t *testing.T) {
 func TestEmitOptionalBoolWritesC(t *testing.T) {
 	// The emitted C for the bool optional must use bool for the typedef value
 	// field and the unwrap must use pebble_rt_checked_unwrap_bool.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?bool = some true; if x! { return 10; } else { return 20; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?bool = some true; if x! { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4299,7 +4368,7 @@ func TestEmitRejectsOptionalLocalStore(t *testing.T) {
 	// slice. The Store's place names an optional-typed local, so
 	// buildLeadingStatement rejects it with a clear error naming the
 	// reassignment, not a guessed lowering.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x ?i32 = some 1; x = some 2; return x!; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var x ?i32 = some 1; x = some 2; return x!; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning an optional is not supported")
 }
 
@@ -4309,7 +4378,7 @@ func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
 	// the declaration fine), so this is a genuine backend-scope rejection. The
 	// optional typedef pass inspects the payload type first and rejects the
 	// str field with a clear error naming the wanted types, so no C is written.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let x ?str = some \"hi\"; return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let x ?str = some \"hi\"; return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
 
@@ -4426,9 +4495,9 @@ func TestEmitStructContainingOptionalCompilesAndRuns(t *testing.T) {
 
 func TestEmitNestedTypedefOrderWritesAndCompiles(t *testing.T) {
 	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let t (Point, i32) = (p, 1); return t.0.x + t.0.y; }"
-	unit, snapshot, entryID := buildFixture(t, src, "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -4453,9 +4522,9 @@ func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 	// field read lowers to pebble_local_<id>.pebble_field_<member>. Symbols
 	// 24 (Point), 25 (x), 26 (y), 28 (point), and struct type 23 come from the
 	// real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 2, x = 1 }; return point.x; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 2, x = 1 }; return point.x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4483,9 +4552,9 @@ func TestEmitStructBoolFieldWritesC(t *testing.T) {
 	// raw field read pebble_local_<id>.pebble_field_<b> (a C bool needs no
 	// comparison). Symbols 25 (a), 26 (b), 28 (p), and struct type 23 come
 	// from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = true }; if p.b { return 10; } else { return 20; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = true }; if p.b { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4506,9 +4575,9 @@ func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
 	// struct literal, and the call site passes the two field reads after ctx.
 	// Symbols 24 (Point), 25/26 (x/y), 27 (add), 28/29 (its parameters), and
 	// 31 (p) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return add(p.x, p.y); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return add(p.x, p.y); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4532,9 +4601,9 @@ func TestEmitI64StructWritesC(t *testing.T) {
 	// The emitted C for the i64 struct must use int64_t for both typedef
 	// fields and for the pebble_user_main return type, proving the entry's
 	// width threads into the struct layout, not just the scalar declarations.
-	unit, snapshot, entryID := buildFixture(t, "type T = struct { a i64; b i64; };\nfn main() i64 { let t T = T.{ a = 20, b = 22 }; return t.b; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type T = struct { a i64; b i64; };\nfn main() i64 { let t T = T.{ a = 20, b = 22 }; return t.b; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4560,7 +4629,7 @@ func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {
 	// rejection. The struct typedef pass inspects each field's resolved type
 	// first and rejects the str field with a clear error naming the wanted
 	// types, so no C is written.
-	unit, snapshot, entryID := buildFixture(t, "type S = struct { s str; };\nfn main() i32 { let x S = S.{ s = \"hi\" }; return 1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type S = struct { s str; };\nfn main() i32 { let x S = S.{ s = \"hi\" }; return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
 }
 
@@ -4569,7 +4638,7 @@ func TestEmitRejectsStructWholeReassignment(t *testing.T) {
 	// scope this slice. The Store's place names a struct-typed local, so
 	// buildLeadingStatement rejects it with a clear error naming the
 	// reassignment, not a guessed lowering.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var p Point = Point.{ x = 1, y = 2 }; p = Point.{ x = 3, y = 4 }; return p.x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var p Point = Point.{ x = 1, y = 2 }; p = Point.{ x = 3, y = 4 }; return p.x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole struct is not supported")
 }
 
@@ -4578,7 +4647,7 @@ func TestEmitRejectsStructFieldAssignment(t *testing.T) {
 	// scope this slice. The Store's place is a FieldPlace (confirmed against a
 	// real fixture), which the existing Store handling rejects as not being a
 	// plain StoragePlace — a clear error, not a guessed lowering.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a plain StoragePlace")
 }
 
@@ -4589,7 +4658,7 @@ func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
 	// value-category shape out of scope this slice (only Load(FieldPlace) of a
 	// struct local is supported). The integer expression builder rejects the
 	// FieldValue cleanly rather than guessing.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { return Point.{ x = 1, y = 2 }.x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { return Point.{ x = 1, y = 2 }.x; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
@@ -4654,9 +4723,9 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 	// (pebble_struct_23_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 }.
 	// Symbols and type IDs come from the real fixture dumps (tuple: f=24,
 	// tuple type 23; struct: Point=24, x=25, y=26, f=27, struct type 23).
-	unit, snapshot, entryID := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f((20, 22)); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f((20, 22)); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4664,9 +4733,9 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 		t.Errorf("emitted C missing the tuple compound-literal argument:\n%s", out)
 	}
 
-	unit, snapshot, entryID = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(Point.{ y = 22, x = 20 }); }", "main", false)
+	unit, snapshot, entryID, sources = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(Point.{ y = 22, x = 20 }); }", "main", false)
 	buf.Reset()
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
@@ -4697,9 +4766,9 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 	// at the call site). Symbols 24 (Point), 25 (x), 26 (y), 27 (f), 28 (p
 	// param), 29 (main), 30 (p local), and struct type 23 come from the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4707,7 +4776,7 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
 		"static int32_t pebble_fn_27(PebbleContext *ctx, pebble_struct_23_t pebble_local_28) {",
 		"    (void)pebble_local_28;",
-		"    return pebble_rt_checked_add_i32(pebble_local_28.pebble_field_25, pebble_local_28.pebble_field_26);",
+		"    return pebble_rt_checked_add_i32(pebble_local_28.pebble_field_25, pebble_local_28.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 28});",
 		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
 		"return pebble_fn_27(ctx, pebble_local_30);",
 	} {
@@ -4742,7 +4811,7 @@ func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 	// it fails if the discovery stops being tied to a construction site. (The
 	// concrete type ID 23 is confirmed from the fixture dump; the callee reads
 	// both fields, so resolveStructInfo has every field's type available.)
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return 0; }", "main", false)
 	entryDecl, err := findFunctionDeclaration(unit, entryID, "entry function")
 	if err != nil {
 		t.Fatalf("entry declaration: %v", err)
@@ -4901,9 +4970,9 @@ func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
 	// exactly a\\0121\\011b\\"c\\\\d. The .len field must carry the decoded
 	// byte length 9. Symbol 25 is the s local, confirmed against the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4926,9 +4995,9 @@ func TestEmitStrWritesC(t *testing.T) {
 	// operand needs no declared local, so it is built inline as a PebbleStr
 	// compound literal. Symbol 25 is the s local, confirmed against the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; if s == \"hi\" { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; if s == \"hi\" { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4948,9 +5017,9 @@ func TestEmitStrNotEqualWritesC(t *testing.T) {
 	// !pebble_rt_str_eq(pebble_local_25, pebble_local_26), not a comparison of
 	// the two strings some other way. Symbols 25/26 are the s and t locals,
 	// confirmed against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s != t { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s != t { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5038,9 +5107,9 @@ func TestEmitStrOrderingWritesC(t *testing.T) {
 	// translated to its C spelling, compared against 0. The ==/!= path is
 	// still pebble_rt_str_eq-based (verified below). Symbols 25/26 are the
 	// s and t locals, confirmed against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s < t { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s < t { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5059,9 +5128,9 @@ func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
 	// Regression check: the ==/!= path must still use pebble_rt_str_eq,
 	// not pebble_rt_str_cmp. This confirms this slice didn't disturb the
 	// existing equality lowering.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s == t { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s == t { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5105,9 +5174,9 @@ func TestEmitStrReassignmentWritesC(t *testing.T) {
 	// "ho", .len = 2 };` — the (PebbleStr) compound-literal cast being what
 	// makes the shared brace text a valid C assignment expression. Symbol 25 is
 	// the s local, confirmed against the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; if s != \"hi\" && s == \"ho\" { return 7; } else { return 3; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; if s != \"hi\" && s == \"ho\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5128,7 +5197,7 @@ func TestEmitRejectsStrReassignmentFromLocal(t *testing.T) {
 	// child is a SymbolValue) but out of scope — this slice is deliberately
 	// literal-to-literal only — so it is a clean rejection naming what was
 	// found.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; var t str = \"ho\"; s = t; return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var s str = \"hi\"; var t str = \"ho\"; s = t; return 0; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a SymbolValue")
 }
 
@@ -5137,7 +5206,7 @@ func TestEmitRejectsStrReassignmentFromCall(t *testing.T) {
 	// from real source (confirmed against a real fixture dump: the Store's
 	// value child is a DirectCall) but out of scope — literal-to-literal only —
 	// so it is a clean rejection naming what was found.
-	unit, snapshot, entryID := buildFixture(t, "fn g() str { return \"ho\"; } fn main() i32 { var s str = \"hi\"; s = g(); return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn g() str { return \"ho\"; } fn main() i32 { var s str = \"hi\"; s = g(); return 0; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a DirectCall")
 }
 
@@ -5149,7 +5218,7 @@ func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
 	// InterpolatedString node) but out of scope — concatenation/interpolation
 	// needs runtime primitives this backend has none of — so it is a clean
 	// rejection naming what was found.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"h\" + \"i\"; return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"h\" + \"i\"; return 0; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a BinaryValue")
 }
 
@@ -5201,9 +5270,9 @@ func TestEmitStrParameterWritesC(t *testing.T) {
 	// pebble_local_<symbol> naming every parameter uses, plus the (void) cast
 	// every parameter gets. Symbols 24 (f), 25 (the s parameter), and 26 (main)
 	// come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"hi\"); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"hi\"); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5281,9 +5350,9 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 	// passes the literal as a PebbleStr compound literal and declares the
 	// entry's local from the call. Symbols 24 (greet), 25 (the name
 	// parameter), and 27 (the entry's s local) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn greet(name str) str { return name; } fn main() i32 { let s str = greet(\"hi\"); if s == \"hi\" { return 7; } else { return 3; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn greet(name str) str { return name; } fn main() i32 { let s str = greet(\"hi\"); if s == \"hi\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5321,14 +5390,14 @@ func TestEmitStrIndexWritesC(t *testing.T) {
 	// PebbleStr local's own C name (built by buildStrOperand's SymbolValue
 	// case) and the literal index is emitted as its decimal text. Symbols 25
 	// (s) and 26 (c) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_26 = pebble_rt_str_char_at_i32(pebble_local_25, 0);",
+		"int32_t pebble_local_26 = pebble_rt_str_char_at_i32(pebble_local_25, 0, (PebbleSourceLoc){0});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5348,14 +5417,14 @@ func TestEmitStrIndexLiteralBaseCompilesAndRuns(t *testing.T) {
 func TestEmitStrIndexLiteralBaseWritesC(t *testing.T) {
 	// The emitted call for the literal-base shape: the base argument is the
 	// inline PebbleStr compound literal, not a local reference.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let c char = \"hi\"[0]; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let c char = \"hi\"[0]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		`pebble_rt_str_char_at_i32((PebbleStr){ .data = (const uint8_t *)"hi", .len = 2 }, 0)`,
+		`pebble_rt_str_char_at_i32((PebbleStr){ .data = (const uint8_t *)"hi", .len = 2 }, 0, (PebbleSourceLoc){0})`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5434,14 +5503,14 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 	// index parameter is int64_t), and the base local is still the PebbleStr
 	// local's own C name. Symbols 25 (s) and 26 (c) come from the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_26 = pebble_rt_str_char_at_i64(pebble_local_25, 0);",
+		"int32_t pebble_local_26 = pebble_rt_str_char_at_i64(pebble_local_25, 0, (PebbleSourceLoc){0});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5527,9 +5596,9 @@ func TestEmitTupleReturningHelperWritesC(t *testing.T) {
 	// (pebble_tuple_23_t){ 20, 22 }, and the call site initializes the local
 	// directly from pebble_fn_24(ctx). Symbols 24 (makeT), 25 (main), 26 (t
 	// local), and tuple type 23 come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5539,7 +5608,7 @@ func TestEmitTupleReturningHelperWritesC(t *testing.T) {
 		"    return (pebble_tuple_23_t){ 20, 22 };",
 		"pebble_tuple_23_t pebble_local_26 = pebble_fn_24(ctx);",
 		"    (void)pebble_local_26;",
-		"return pebble_rt_checked_add_i32(pebble_local_26._0, pebble_local_26._1);",
+		"return pebble_rt_checked_add_i32(pebble_local_26._0, pebble_local_26._1, (PebbleSourceLoc){\"main.peb\", 1, 95});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5560,9 +5629,9 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 	// the local from pebble_fn_27(ctx). Symbols 24 (Point), 25 (x), 26 (y), 27
 	// (makeP), 28 (main), 29 (p local), and struct type 23 come from the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5571,7 +5640,7 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 		"static pebble_struct_23_t pebble_fn_27(PebbleContext *ctx) {",
 		"    return (pebble_struct_23_t){ .pebble_field_25 = 20, .pebble_field_26 = 22 };",
 		"pebble_struct_23_t pebble_local_29 = pebble_fn_27(ctx);",
-		"return pebble_rt_checked_add_i32(pebble_local_29.pebble_field_25, pebble_local_29.pebble_field_26);",
+		"return pebble_rt_checked_add_i32(pebble_local_29.pebble_field_25, pebble_local_29.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 101});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5589,9 +5658,9 @@ func TestEmitTupleReturningHelperForwardsLocalWritesC(t *testing.T) {
 	// statement emits `return pebble_local_<x>;` (the already-declared local's
 	// own C name, no re-construction). Symbols 24 (makeT), 25 (main), 26 (x
 	// local), 27 (t local), and tuple type 23 come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { let x (i32, i32) = (20, 22); return x; } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn makeT() (i32, i32) { let x (i32, i32) = (20, 22); return x; } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5637,7 +5706,7 @@ func TestEmitTupleResultTypeScanGetsTypedef(t *testing.T) {
 	// path by which collectTupleTypes can discover type 23 is the helper's own
 	// ResultType; without 10.26's ResultType scan this returns nothing and the
 	// test fails. (The concrete type ID 23 is confirmed from the fixture dump.)
-	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { return 0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { return 0; }", "main", false)
 	entryDecl, err := findFunctionDeclaration(unit, entryID, "entry function")
 	if err != nil {
 		t.Fatalf("entry declaration: %v", err)
@@ -5674,7 +5743,7 @@ func TestEmitRejectsTupleReturningHelperAsArgument(t *testing.T) {
 	// source: the outer DirectCall's argument is the inner DirectCall. The
 	// aggregate-argument builder rejects it cleanly, naming what was found,
 	// never a guessed lowering.
-	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
 }
 
@@ -5682,7 +5751,7 @@ func TestEmitRejectsStructReturningHelperAsArgument(t *testing.T) {
 	// The struct side of the argument-position rejection: f(makeP()) passes a
 	// struct-returning call as an argument, which the aggregate-argument
 	// builder rejects naming what was found.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
 }
 
@@ -5692,7 +5761,7 @@ func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
 	// TupleElementValue whose child is the DirectCall, not a SymbolValue naming
 	// a tuple-typed local. The integer expression builder rejects the
 	// non-local base cleanly.
-	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { return makeT().0; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { return makeT().0; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "of a DirectCall")
 }
 
@@ -5704,7 +5773,7 @@ func TestEmitRejectsTupleReturningHelperInAnotherHelpersReturn(t *testing.T) {
 	// tuple-returning helper's own tail Return routes through
 	// buildAggregateReturnValue, which rejects the DirectCall value cleanly,
 	// naming what was found.
-	unit, snapshot, entryID := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn makeT2() (i32, i32) { return makeT(); } fn main() i32 { let t (i32, i32) = makeT2(); return t.0 + t.1; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn makeT2() (i32, i32) { return makeT(); } fn main() i32 { let t (i32, i32) = makeT2(); return t.0 + t.1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
 }
 
@@ -5712,7 +5781,7 @@ func TestEmitRejectsStructReturningHelperInAnotherHelpersReturn(t *testing.T) {
 	// The struct side of the return-forwarding rejection: `return makeP();`
 	// from another struct-returning helper is a DirectCall return value,
 	// rejected by buildAggregateReturnValue naming what was found.
-	unit, snapshot, entryID := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn makeP2() Point { return makeP(); } fn main() i32 { let p Point = makeP2(); return p.x; }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn makeP2() Point { return makeP(); } fn main() i32 { let p Point = makeP2(); return p.x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
 }
 
@@ -5721,7 +5790,7 @@ func TestEmitRejectsEntryReturningTuple(t *testing.T) {
 	// type stays the integer entryReturnType regardless of what the language
 	// lets a helper write. validateEntrySignature rejects the tuple result
 	// exactly as it always has, unchanged by this slice.
-	unit, snapshot, entryID := buildFixture(t, "fn main() (i32, i32) { return (1, 2); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() (i32, i32) { return (1, 2); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "entry function result type is (i32, i32), want void, i32, or i64")
 }
 
@@ -5817,9 +5886,9 @@ func TestEmitSwitchWithHelperCallInSubjectCompilesAndRuns(t *testing.T) {
 func TestEmitSwitchWritesC(t *testing.T) {
 	// Confirm the emitted C for a switch fixture contains the expected
 	// stacked case labels and body structure.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5842,9 +5911,9 @@ func TestEmitSwitchWritesC(t *testing.T) {
 func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
 	// The emitted C for a switch must compile under -Wall -Wextra -Werror
 	// with no warnings. This exercises the full cc compilation path.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 10, false)
@@ -5864,7 +5933,7 @@ func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
 	// every reachable path returns. The checker is expected to reject this
 	// shape (no else means some paths fall through without returning), so
 	// the fixture should fail at check time.
-	_, _, _, err := buildFixtureMaybeFailing(t, "fn main() i32 { switch 1 { case 1: return 10; } }", "main", false)
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn main() i32 { switch 1 { case 1: return 10; } }", "main", false)
 	if err == nil {
 		t.Log("checker accepted non-exhaustive switch without else — this may be a checker gap worth investigating")
 	}
@@ -5872,7 +5941,7 @@ func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
 
 // buildFixtureMaybeFailing is like buildFixture but returns an error instead of
 // calling t.Fatal, for tests that expect the checker to reject a fixture.
-func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requireEntry bool) (*tir.Unit, *types.Snapshot, symbol.SymbolID, error) {
+func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requireEntry bool) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet, error) {
 	t.Helper()
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
@@ -5880,7 +5949,7 @@ func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requir
 	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
 	store, err := types.New(types.Config{})
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, nil, err
 	}
 	inputs := check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}
 
@@ -5891,7 +5960,7 @@ func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requir
 		}
 	}
 	if entryID == 0 {
-		return nil, nil, 0, fmt.Errorf("missing symbol %q", entryName)
+		return nil, nil, 0, nil, fmt.Errorf("missing symbol %q", entryName)
 	}
 
 	config := check.Config{}
@@ -5900,13 +5969,13 @@ func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requir
 	}
 	result := check.Check(inputs, diagnostics, config)
 	if !result.Successful() {
-		return nil, nil, 0, fmt.Errorf("check failed: %+v", diagnostics.Items())
+		return nil, nil, 0, nil, fmt.Errorf("check failed: %+v", diagnostics.Items())
 	}
 	unit := result.IR()
 	if unit == nil {
-		return nil, nil, 0, fmt.Errorf("check succeeded without an IR unit")
+		return nil, nil, 0, nil, fmt.Errorf("check succeeded without an IR unit")
 	}
-	return unit, unit.Snapshot(), entryID, nil
+	return unit, unit.Snapshot(), entryID, sources, nil
 }
 
 func TestEmitSwitchMultipleCasesWithLocalsCompilesAndRuns(t *testing.T) {
@@ -6010,9 +6079,9 @@ func TestEmitDeferredStoreCOutput(t *testing.T) {
 	// Confirm the emitted C for a fixture: the deferred statement's text
 	// appears immediately before the return, and nothing is emitted at the
 	// defer statement's own position in program order.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var x i32 = 0; defer x = x + 1; return x; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var x i32 = 0; defer x = x + 1; return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6063,9 +6132,9 @@ func TestEmitDeferredVoidCallOutsideLoopDoesNotFireCompilesAndRuns(t *testing.T)
 	// all (emitting it would trip -Wunused-function under the mandated -Wall
 	// -Wextra -Werror build). The program still compiles and runs to its own
 	// exit code with no trace of the helper in the emitted C.
-	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { var x i32 = 0; var i i32 = 0; while i < 5 { if i == 0 { defer helper(); } i = i + 1; } return x; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() void {} fn main() i32 { var x i32 = 0; var i i32 = 0; while i < 5 { if i == 0 { defer helper(); } i = i + 1; } return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6080,9 +6149,9 @@ func TestEmitDeferredVoidCallCOutput(t *testing.T) {
 	// statement's text appears immediately before the return, and nothing is
 	// emitted at the defer statement's own position in program order (the
 	// DeferRegister is a pure registration marker).
-	unit, snapshot, entryID := buildFixture(t, "fn helper() void {} fn main() i32 { defer helper(); return 1; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() void {} fn main() i32 { defer helper(); return 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6106,9 +6175,9 @@ func TestEmitDeferredVoidCallCOutput(t *testing.T) {
 // fixture's symbol IDs where the existing suite does, but the C-emission test
 // and the tagged-union rejection test resolve IDs from the unit so they stay
 // robust to renumbering.
-func enumFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, types.TypeID, []symbol.SymbolID) {
+func enumFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, types.TypeID, []symbol.SymbolID, *source.FileSet) {
 	t.Helper()
-	unit, snapshot, entryID := buildFixture(t, sourceText, "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", false)
 	var decl symbol.SymbolID
 	var members []symbol.SymbolID
 	for _, td := range unit.TypeDeclarations() {
@@ -6130,7 +6199,7 @@ func enumFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, s
 	if enumType == 0 {
 		t.Fatalf("fixture declares no enum type")
 	}
-	return unit, snapshot, entryID, enumType, members
+	return unit, snapshot, entryID, enumType, members, sources
 }
 
 func TestEmitEnumLocalSwitchGreenCompilesAndRuns(t *testing.T) {
@@ -6263,12 +6332,12 @@ func TestEmitEnumWritesC(t *testing.T) {
 	// variant's symbol ID; the typedef named from the enum's type ID), the
 	// enum-typed local's declaration initializing from the variant's constant,
 	// and the switch's case labels naming the same constants.
-	unit, snapshot, entryID, enumType, variants := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}")
+	unit, snapshot, entryID, enumType, variants, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}")
 	if len(variants) != 3 {
 		t.Fatalf("fixture has %d variants, want 3 (red, green, blue)", len(variants))
 	}
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6299,7 +6368,7 @@ func TestEmitEnumWritesC(t *testing.T) {
 // order, reusing enumFixture's exact type-resolution mechanism (a tagged union
 // is a Nominal type exactly like a plain enum, so a TypeUse carries its
 // TypeID the same way).
-func unionFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, types.TypeID, []symbol.SymbolID) {
+func unionFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, types.TypeID, []symbol.SymbolID, *source.FileSet) {
 	t.Helper()
 	return enumFixture(t, sourceText)
 }
@@ -6426,12 +6495,12 @@ func TestEmitUnionWritesC(t *testing.T) {
 	// constructed variant's symbol, the local declaration initializing from
 	// the construction's compound literal (tag + designated payload member),
 	// and the switch subject reading the .tag field.
-	unit, snapshot, entryID, unionType, variants := unionFixture(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}")
+	unit, snapshot, entryID, unionType, variants, sources := unionFixture(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty: return 0; case Choice.value: return 1; }\n}")
 	if len(variants) != 2 {
 		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(variants))
 	}
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6478,7 +6547,7 @@ func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
 
 func emitAndRunRejects(t *testing.T, sourceText, wantSubstring string) {
 	t.Helper()
-	unit, snapshot, entryID := buildFixture(t, sourceText, "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, sourceText, "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, wantSubstring)
 }
 
@@ -6556,9 +6625,9 @@ func TestEmitSliceEmittedCDirectly(t *testing.T) {
 	// Confirm the emitted C directly: slice typedef shape, construction
 	// compound-literal text (including inline checked-start call), and
 	// indexing expression (including inline checked-index call and .len cast).
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[0]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6689,19 +6758,19 @@ func TestEmitSliceReturningHelperWritesC(t *testing.T) {
 	// slice local directly from the call. Symbols 24 (view), 26 (its a array
 	// local), 27 (the entry's s local), return value node 18, and slice type 23
 	// come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn view() []i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return a[1:3]; } fn main() i32 { var s []i32 = view(); return s[0]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn view() []i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return a[1:3]; } fn main() i32 { var s []i32 = view(); return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_23_t;",
 		"static pebble_slice_23_t pebble_fn_24(PebbleContext *ctx) {",
-		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5);",
+		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){0});",
 		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
 		"pebble_slice_23_t pebble_local_27 = pebble_fn_24(ctx);",
-		"return pebble_local_27.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_27.len)];",
+		"return pebble_local_27.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_27.len, (PebbleSourceLoc){0})];",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6715,15 +6784,15 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	// that the return-side temp is declared at int64_t (the exact spot where a
 	// width bug was found and fixed during 10.37's review) and then running the
 	// emitted C end-to-end.
-	unit, snapshot, entryID := buildFixture(t, "fn view() []i64 { var a [5]i64 = [100, 200, 300, 400, 500]; return a[1:3]; } fn main() i64 { var s []i64 = view(); return s[0]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn view() []i64 { var a [5]i64 = [100, 200, 300, 400, 500]; return a[1:3]; } fn main() i64 { var s []i64 = view(); return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"int64_t *data;",
-		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5);",
+		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){0});",
 		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
 	} {
 		if !strings.Contains(out, want) {
@@ -6742,16 +6811,16 @@ func TestEmitSliceParameterWritesC(t *testing.T) {
 	// slice-typed local's own C name. Symbols 24 (first), 25 (its s parameter),
 	// 28 (the entry's s local), and slice type 23 come from the real fixture
 	// dump.
-	unit, snapshot, entryID := buildFixture(t, "fn first(s []i32) i32 { return s[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return first(s); }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn first(s []i32) i32 { return s[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return first(s); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_slice_23_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
-		"return pebble_local_25.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_25.len)];",
+		"return pebble_local_25.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_25.len, (PebbleSourceLoc){0})];",
 		"return pebble_fn_24(ctx, pebble_local_28);",
 	} {
 		if !strings.Contains(out, want) {
@@ -6768,7 +6837,7 @@ func TestEmitRejectsSliceConstructionAsCallArgument(t *testing.T) {
 	// pure expression position with nowhere to place the temp-declaration
 	// statement the construction needs, so it is a clean rejection naming what
 	// was found — not a GNU statement-expression workaround.
-	unit, snapshot, entryID := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return f(a[1:3]); }", "main", false)
+	unit, snapshot, entryID, _ := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return f(a[1:3]); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline slice construction")
 }
 
@@ -6794,7 +6863,7 @@ func TestEmitRejectsSliceParameterUnsupportedElementType(t *testing.T) {
 // rejects the unsupported element type before building any body.
 func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	realUnit, snapshot, entryID := buildFixture(t, "fn f(x []str) i32 { return 0; } fn main() i32 { return 0; }", "main", false)
+	realUnit, snapshot, entryID, _ := buildFixture(t, "fn f(x []str) i32 { return 0; } fn main() i32 { return 0; }", "main", false)
 	var strSlice types.TypeID
 	for _, n := range realUnit.Nodes() {
 		if n.Kind == tir.FunctionDeclaration && len(n.Parameters) == 1 {
@@ -6806,7 +6875,7 @@ func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 		t.Fatal("checker-built fixture has no []str parameter to borrow its type from")
 	}
 	i32 := snapshot.Builtins().I32
-	callUnit, _, _ := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
+	callUnit, _, _, _ := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
 	var fnType types.TypeID
 	for _, n := range callUnit.Nodes() {
 		if n.Kind == tir.DirectCall {
@@ -6965,16 +7034,16 @@ func TestEmitArrayElementWriteWritesC(t *testing.T) {
 	// pebble_local_25[pebble_rt_checked_index_i32(0, 5)] = 9; — with no new
 	// bounds-check call site. Symbols 25 (the array local a) come from the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; a[0] = 9; return a[0]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; a[0] = 9; return a[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
 		"int32_t pebble_local_25[5] = { 1, 2, 3, 4, 5 };",
-		"pebble_local_25[pebble_rt_checked_index_i32(0, 5)] = 9;",
-		"return pebble_local_25[pebble_rt_checked_index_i32(0, 5)];",
+		"pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){0})] = 9;",
+		"return pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){0})];",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6991,16 +7060,16 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 	// (int32_t)pebble_local_26.len)] = 9; — the .len bound checked against the
 	// slice's own length. Symbols 25 (array a), 26 (slice s) come from the real
 	// fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; s[0] = 9; return s[0]; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; s[0] = 9; return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_start_26 = pebble_rt_checked_slice_start_i32(1, 3, 5);",
-		"pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len)] = 9;",
-		"return pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len)];",
+		"int32_t pebble_slice_start_26 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){0});",
+		"pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){0})] = 9;",
+		"return pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){0})];",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7157,9 +7226,9 @@ func TestEmitCharWritesC(t *testing.T) {
 	// and the comparison emits the plain C == operator between the two
 	// int32_t operands. Symbols 24 (f), 25 (f's c parameter), 26 (main), 27
 	// (main's c local) come from the real fixture dump.
-	unit, snapshot, entryID := buildFixture(t, "fn f(c char) char { return c; } fn main() i32 { var c char = 'a'; c = f('b'); if c == 'b' { return 1; } else { return 0; } }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn f(c char) char { return c; } fn main() i32 { var c char = 'a'; c = f('b'); if c == 'b' { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()

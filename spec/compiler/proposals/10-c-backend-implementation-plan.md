@@ -1528,6 +1528,39 @@ incrementally as work proceeds.
   parameters/results, and indexing; `char` as a first-class scalar;
   and slices — locals, indexed reads and writes, parameters, and
   returns.
+- **10.43 — thread real source location into panic diagnostics, part
+  1 of 2** (`compiler/internal/backend`, on top of the runtime half
+  landed in commit `3d949d4`): the old backend embedded the *Pebble*
+  source file and line at every generated safety-check call site
+  (`expr->span.file`/`expr->span.start_line`); the new one never has —
+  every `pebble_rt_checked_*` call this backend has ever emitted,
+  across every slice this whole phase, has always passed nothing,
+  reporting only the panic kind and never where. `Emit()` gains a
+  `*source.FileSet` parameter (the checker's own `check.Inputs.Sources`
+  the caller already builds and previously discarded after `Check()`
+  — nothing new needed synthesizing), threaded through the ~53
+  builder functions in `buildExpr`/`buildBoolExpr`'s transitive
+  closure, and a new `buildSourceLoc(fileSet, span)` resolves one
+  node's `Span` to a `(PebbleSourceLoc){"file", line, col}` C
+  compound literal (`FileSet.File` → `File.Position`, both already
+  real, precise APIs — confirmed nothing needed inventing here
+  either). This slice wires real locations into checked arithmetic
+  (`CheckedArithmetic`/`CheckedNegate`, using the node's own `Span`)
+  and checked optional unwrap (all four call sites); every other
+  checked-call category (array/slice indexing, checked slice range,
+  str indexing) gets a placeholder `(PebbleSourceLoc){0}` so the
+  emitted C stays valid against the runtime's new signatures, with
+  real locations for those deferred to a second slice. Verified
+  end-to-end (an arithmetic overflow and an absent-optional unwrap,
+  each still panicking correctly and each confirmed via the emitted
+  C text to carry a real, non-placeholder location; a placeholder
+  category — checked array indexing — confirmed to still emit `{0}`
+  and still compile/run correctly, proving this slice didn't disturb
+  anything outside its own scope) and independently outside the
+  harness — manually compiled and ran the emitted C for an
+  absent-optional unwrap with `-Wall -Wextra -Werror`, producing the
+  real panic report `pebble: unwrap of empty optional at
+  main.peb:1:43`.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
