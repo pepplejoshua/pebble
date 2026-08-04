@@ -463,6 +463,9 @@ func (s *irBuildState) buildTypeUses() bool {
 		if retained.TypeUse == nil {
 			continue
 		}
+		if !activeOperatorRecord(s.handoff, retained.Header) {
+			continue
+		}
 		typ, ok := s.resolveType(retained.TypeUse.Type)
 		if !ok {
 			return false

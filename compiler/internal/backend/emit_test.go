@@ -7499,6 +7499,14 @@ func TestEmitWriteThroughPointerCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var y i32 = 5; let p *i32 = &y; *p = 9; return y; }", false, 9, false)
 }
 
+func TestEmitPointerReceiverSliceIndexAddressOfCompilesAndRuns(t *testing.T) {
+	// The returned pointer must alias the backing slice in the original struct:
+	// get(1) returns &self.data[1], and the caller mutates that element through
+	// the returned pointer before reading it back through the struct field.
+	source := "type V = struct { data []i32; fn get(self *V, index i32) *i32 { return &self.data[index]; } }; fn main() i32 { var values [3]i32 = [1, 2, 3]; let data []i32 = values[:]; var v V = V.{ data = data }; let pointer *V = &v; let p *i32 = pointer.get(1); *p = 9; return v.data[1]; }"
+	emitAndRun(t, source, false, 9, false)
+}
+
 func TestEmitPointerReturnFromHelperCompilesAndRuns(t *testing.T) {
 	// A helper accepts a pointer and returns it unchanged; the entry passes
 	// the address of its own local (which stays live for the whole call) and

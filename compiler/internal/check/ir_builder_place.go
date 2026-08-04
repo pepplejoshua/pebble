@@ -67,6 +67,9 @@ func (s *irBuildState) buildPlace(ref symbol.SyntaxRef) (tir.NodeID, bool) {
 				structuralName = member.Name
 				if memberID == 0 {
 					memberID = s.memberSymbol(projection.Base, member.Name)
+					if memberID != 0 {
+						structuralName = ""
+					}
 				}
 			}
 			if memberID == 0 && structuralName == "" {
@@ -120,7 +123,11 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 	}
 	record, ok := s.expressionsByResult[id]
 	if !ok {
-		return 0, false
+		if index := s.indexForValue(id, symbol.SyntaxRef{}); index != nil {
+			record = &expressionRecord{Header: index.Header, Kind: expressionBracket, Result: id}
+		} else {
+			return 0, false
+		}
 	}
 	typ, ok := s.resolveType(id)
 	if !ok {
@@ -175,6 +182,9 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 			if member.Kind == memberField {
 				n.Kind, n.Member = tir.FieldPlace, member.Member
 				if n.Member == 0 {
+					n.Member = s.memberSymbol(record.Children[0], member.Name)
+				}
+				if n.Member == 0 {
 					if member.Name == "len" {
 						n.Member = tir.StructuralFieldLen
 					} else if member.Name == "data" {
@@ -182,9 +192,6 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 					}
 					n.SyntheticRole = "structural-field"
 					n.Origin = record.Header.Span
-				}
-				if n.Member == 0 {
-					n.Member = s.memberSymbol(record.Children[0], member.Name)
 				}
 			} else if member.Kind == memberTuple {
 				n.Kind, n.Ordinal = tir.TuplePlace, member.TupleOrdinal

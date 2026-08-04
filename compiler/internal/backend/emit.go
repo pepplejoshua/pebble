@@ -475,6 +475,24 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	for _, structInfo := range structInfos {
+		for _, field := range structInfo.fields {
+			if !isSlice(snapshot, field.typ) {
+				continue
+			}
+			known := false
+			for _, sliceInfo := range sliceInfos {
+				known = known || sliceInfo.typ == field.typ
+			}
+			if !known {
+				info, resolveErr := resolveSliceInfo(snapshot, field.typ)
+				if resolveErr != nil {
+					return resolveErr
+				}
+				sliceInfos = append(sliceInfos, info)
+			}
+		}
+	}
 	ordered, err := orderAggregateTypes(unit, snapshot, tupleTypes, optionalTypes, structInfos)
 	if err != nil {
 		return err
@@ -497,7 +515,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs = appendTypedefBlock(typedefs, sliceTypedefs)
+	typedefs = appendTypedefBlock(sliceTypedefs, typedefs)
 	helpersText, err := buildHelperFunctions(unit, snapshot, fileSet, helpers, result, unions)
 	if err != nil {
 		return err
@@ -1013,6 +1031,9 @@ func collectSliceTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 		return fmt.Errorf("slice-type walk references invalid node %d", nodeID)
 	}
 	if (node.Kind == tir.CheckedSlice || node.Kind == tir.SliceFromRaw) && isSlice(snapshot, node.Type) {
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.FieldPlace && isSlice(snapshot, node.Type) {
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.Initialize {
@@ -4895,6 +4916,16 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				return "", err
 			}
 			expr = built
+		case isSlice(snapshot, fieldType):
+			fieldValue, ok := unit.Node(field.Value)
+			if !ok || fieldValue.Kind != tir.SymbolValue {
+				return "", fmt.Errorf("%s contains a slice field %d initialized from a %s, want a slice local", context, field.Field, fieldValue.Kind)
+			}
+			local, declared := scope[fieldValue.Symbol]
+			if !declared || local.sliceType != fieldType {
+				return "", fmt.Errorf("%s contains a slice field %d initialized from a nonmatching local", context, field.Field)
+			}
+			expr = fmt.Sprintf("pebble_local_%d", fieldValue.Symbol)
 		case isPointer(snapshot, fieldType):
 			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
@@ -5263,7 +5294,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		// A nil literal: `let p *i32 = nil;`. The emitted C uses NULL.
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
 		return fmt.Sprintf("%s%s pebble_local_%d = NULL;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, indent, statement.Symbol), nil
-	case tir.DirectCall:
+	case tir.DirectCall, tir.MethodCall:
 		// A call to a pointer-returning helper used as the direct
 		// initializer of a matching pointer-typed local: `let p *i32 =
 		// helperReturningPointer();`.
@@ -6318,12 +6349,16 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	}
 	// Check if the base is a slice-typed local.
 	baseNode, ok := unit.Node(place.Children[0])
-	if ok && baseNode.Kind == tir.StoragePlace {
-		if info, declared := locals[baseNode.Symbol]; declared && info.sliceType != 0 {
+	if ok && (baseNode.Kind == tir.StoragePlace || isSlice(snapshot, arrayType)) {
+		if info, declared := locals[baseNode.Symbol]; isSlice(snapshot, arrayType) || (declared && info.sliceType != 0) {
+			sliceType := arrayType
+			if sliceType == 0 {
+				sliceType = info.sliceType
+			}
 			// Slice-typed base: use .data[checked_index(idx, (width_type).len)].
-			sliceKey, ok := snapshot.Key(info.sliceType)
+			sliceKey, ok := snapshot.Key(sliceType)
 			if !ok {
-				return "", fmt.Errorf("slice type %d is not in the type snapshot", info.sliceType)
+				return "", fmt.Errorf("slice type %d is not in the type snapshot", sliceType)
 			}
 			element, ok := sliceKey.Child()
 			if !ok {
@@ -7961,6 +7996,9 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 		if name := pointerTypeName(snapshot, pointee); name != "" {
 			return name, nil
 		}
+	}
+	if isSlice(snapshot, id) {
+		return sliceTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {

@@ -147,7 +147,7 @@ func (w *walker) prepareDeferredBracket(ref symbol.SyntaxRef, node syntax.Node, 
 	p.genericBranch = &branchFacts{index: 0}
 	p.runtimeBranch = &branchFacts{index: 1, typeSibling: p.genericBranch, typeOwner: ctx.typeOwner, genericOwner: ctx.genericOwner}
 	common := w.reserveExpression(ref, w.origin(ref, node, "deferred bracket result", ctx.typeOwner, ctx.genericOwner))
-	p.result = w.newValue(common.Term, w.origin(ref, node, "deferred runtime result", ctx.typeOwner, ctx.genericOwner))
+	p.result = common
 	p.genericResult = w.newValue(common.Term, w.origin(ref, node, "deferred generic result", ctx.typeOwner, ctx.genericOwner))
 	p.memberValue = w.newValue(w.session.Variable(w.originForRef(p.base, "deferred runtime member", ctx.typeOwner, ctx.genericOwner)), w.originForRef(p.base, "deferred runtime member", ctx.typeOwner, ctx.genericOwner))
 	p.typeArgument = w.newValue(w.session.Variable(w.originForRef(p.arguments[0], "deferred type argument", ctx.typeOwner, ctx.genericOwner)), w.originForRef(p.arguments[0], "deferred type argument", ctx.typeOwner, ctx.genericOwner))

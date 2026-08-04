@@ -77,6 +77,36 @@ func TestBuildUnitDeclarations(t *testing.T) {
 	}
 }
 
+func TestBuildUnitPointerReceiverSliceIndexAddressOf(t *testing.T) {
+	_, ok := buildUnitFixture(t, `type V = struct {
+    data []i32;
+    fn get(self *V, i uint) *i32 { return &self.data[i]; }
+
+
+};`)
+	if !ok {
+		t.Fatal("pointer-receiver slice index address-of was not buildable")
+	}
+}
+
+func TestBuildUnitSliceIndexPlaceRegressions(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"plain local", `fn f(s []i32) *i32 { var v = s; return &v[0]; }`},
+		{"pointer receiver read", `type V = struct { data []i32; fn get(self *V, i uint) i32 { return self.data[i]; } };`},
+		{"write through result", `type V = struct { data []i32; fn set(self *V, i uint, value i32) void { let p = &self.data[i]; *p = value; } };`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := buildUnitFixture(t, test.source); !ok {
+				t.Fatal("slice-index place fixture was not buildable")
+			}
+		})
+	}
+}
+
 func TestBuildUnitExternBindingDeclarations(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `extern "C" { let external i32; var mutable i32; }`)
 	if !ok || unit == nil {
