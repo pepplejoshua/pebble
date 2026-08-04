@@ -325,6 +325,8 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 		if err := d.cw.printf(" explicitCast=%t", n.ExplicitCast); err != nil {
 			return err
 		}
+	case AddressOf:
+		// payload printed via children
 	case StoragePlace:
 		if err := d.cw.printf(" symbol=%d writable=%t", n.Symbol, n.Writable); err != nil {
 			return err

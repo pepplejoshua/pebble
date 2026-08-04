@@ -6,6 +6,7 @@ import (
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 // TestCheckPublishesTypedIRForValidProgram drives a real, non-trivial program
@@ -27,6 +28,7 @@ fn main() void {
     let total = helper(true);
     print total;
 }
+
 `
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
 	result := Check(inputs, diagnostics, Config{})
@@ -57,6 +59,78 @@ fn main() void {
 	if ifNodes := nodesOfKind(unit, tir.If); len(ifNodes) != 1 {
 		t.Fatalf("If nodes = %d, want 1", len(ifNodes))
 	}
+}
+
+func TestCheckBuildsAddressOfAndDereferenceRoundTrip(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn main() i32 {
+    var y i32 = 5;
+    let p *i32 = &y;
+    return *p;
+}
+`)})
+	result := Check(inputs, diagnostics, Config{})
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("address round-trip failed: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	var address tir.Node
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.AddressOf {
+			address = node
+			break
+		}
+	}
+	if address.Kind != tir.AddressOf || len(address.Children) != 1 {
+		t.Fatalf("address node = %+v, want AddressOf with one place child", address)
+	}
+	pointerKey, ok := inputs.Types.Key(address.Type)
+	_, childOK := pointerKey.Child()
+	if !ok || pointerKey.Kind() != types.Pointer || !childOK {
+		t.Fatalf("address type = %d, want pointer type", address.Type)
+	}
+	place := unit.Nodes()[address.Children[0]-1]
+	if place.Kind != tir.StoragePlace || !place.Writable {
+		t.Fatalf("address place = %+v, want writable StoragePlace", place)
+	}
+	var load tir.Node
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.Load && len(node.Children) == 1 && unit.Nodes()[node.Children[0]-1].Kind == tir.DereferencePlace {
+			load = node
+			break
+		}
+	}
+	if load.Kind != tir.Load || len(load.Children) != 1 {
+		t.Fatalf("dereference load = %+v, want Load over DereferencePlace", load)
+	}
+	deref := unit.Nodes()[load.Children[0]-1]
+	if len(deref.Children) != 1 || unit.Nodes()[deref.Children[0]-1].Kind != tir.SymbolValue {
+		t.Fatalf("dereference place = %+v, want pointer symbol child", deref)
+	}
+}
+
+func TestCheckBuildsAddressOfStructLocal(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Point = struct { x i32; };
+fn main() void {
+    var point Point = Point.{ x = 5 };
+    let pointer *Point = &point;
+}
+`)})
+	result := Check(inputs, diagnostics, Config{})
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("struct address failed: %+v", diagnostics.Items())
+	}
+	for _, node := range result.IR().Nodes() {
+		if node.Kind == tir.AddressOf {
+			key, ok := inputs.Types.Key(node.Type)
+			if !ok || key.Kind() != types.Pointer {
+				t.Fatalf("struct address type = %d, want pointer", node.Type)
+			}
+			return
+		}
+	}
+	t.Fatal("struct address node missing")
 }
 
 // TestCheckFailsEarlyValidationPublishesNoIR asserts that a program rejected

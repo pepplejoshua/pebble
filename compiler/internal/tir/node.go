@@ -14,7 +14,7 @@ import (
 // one contiguous nonzero range; maxNodeKind is the private exclusive bound.
 type NodeKind uint8
 
-// The exact 82-tag inventory, in the written order of the seven category
+// The exact 83-tag inventory, in the written order of the seven category
 // blocks from the accepted 06b specification.
 const (
 	// Declarations and nonvalue structure.
@@ -76,6 +76,7 @@ const (
 	TupleElementValue
 	GenericFunctionValue
 	SourceAlias
+	AddressOf
 
 	// Places and loads.
 	StoragePlace
@@ -501,6 +502,7 @@ var nodeMetas = [nodeKindCount]nodeMeta{
 	{TupleElementValue, "TupleElementValue", CategoryValue},
 	{GenericFunctionValue, "GenericFunctionValue", CategoryValue},
 	{SourceAlias, "SourceAlias", CategoryValue},
+	{AddressOf, "AddressOf", CategoryValue},
 
 	{StoragePlace, "StoragePlace", CategoryPlace},
 	{DereferencePlace, "DereferencePlace", CategoryPlace},

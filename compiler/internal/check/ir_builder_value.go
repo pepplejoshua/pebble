@@ -194,7 +194,16 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		if op == nil {
 			op = s.operatorsBySyntax[record.Header.Syntax]
 		}
-		if op != nil && op.Family == operatorDereference {
+		if op != nil && op.Family == operatorAddress {
+			if len(op.Operands) != 1 {
+				return 0, false
+			}
+			if place, ok := s.buildPlaceForValue(op.Operands[0]); ok {
+				node.Kind, node.Children = tir.AddressOf, []tir.NodeID{place}
+			} else {
+				return 0, false
+			}
+		} else if op != nil && op.Family == operatorDereference {
 			if place, ok := s.buildPlaceForValue(id); ok {
 				node.Kind, node.Children = tir.Load, []tir.NodeID{place}
 			} else {

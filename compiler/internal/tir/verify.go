@@ -672,6 +672,10 @@ func (v *verifier) verifyNode(id NodeID) {
 		if len(n.Children) > 0 {
 			v.expectChildCategory(id, n, 0, CategoryValue)
 		}
+	case AddressOf:
+		v.allowOnly(id, n, "Children")
+		v.expectChildCount(id, n, 1, 1)
+		v.expectChildCategory(id, n, 0, CategoryPlace)
 
 	case StoragePlace:
 		v.allowOnly(id, n, "Symbol", "Writable")

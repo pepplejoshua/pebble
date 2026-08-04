@@ -1103,6 +1103,20 @@ func TestBuildValueTuple(t *testing.T) {
 	}
 }
 
+func TestBuildUnitAddressOfCoverage(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn main() i32 {
+    var value i32 = 5;
+    let pointer *i32 = &value;
+    return *pointer;
+}`)
+	if !ok || unit == nil {
+		t.Fatal("address-of fixture was not buildable")
+	}
+	if len(nodesOfKind(unit, tir.AddressOf)) != 1 {
+		t.Fatal("address-of node missing")
+	}
+}
+
 func TestBuildValueArray(t *testing.T) {
 	state, records := testBuildValue(t, "let inferred = [1, 2, 3];")
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionArray })
