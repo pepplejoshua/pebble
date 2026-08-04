@@ -242,6 +242,15 @@ typedef struct PebbleStr {
  */
 bool pebble_rt_str_eq(PebbleStr a, PebbleStr b);
 
+/* Lexicographic byte comparison, the same contract as C's memcmp/strcmp:
+ * negative if a sorts before b, zero if equal, positive if a sorts after b.
+ * Compares byte-for-byte over the shared length first; if that prefix is
+ * equal, the shorter string sorts first (matching strcmp's own convention
+ * for one string being a prefix of the other). Not NUL-terminated-dependent,
+ * per this type's own contract above.
+ */
+int pebble_rt_str_cmp(PebbleStr a, PebbleStr b);
+
 #ifndef PEBBLE_RT_FREESTANDING
 /* ---- hosted argument adaptation --------------------------------------------
  * Adapts host argc/argv into a slice of PebbleStr. The returned slice's

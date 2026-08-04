@@ -43,6 +43,9 @@
  *      invalid range (start negative, start after end, or end past length)
  *      panics in EVERY configuration (RELEASE included) — same reasoning as
  *      checked array indexing above.
+ *  13. Str comparison: equal strings compare zero, a byte difference decides
+ *      the sign at the first differing position, a shorter prefix sorts
+ *      first, and two empty strs compare equal.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -205,6 +208,26 @@ static void test_str_eq(void) {
     assert(pebble_rt_str_eq(a, c) == false);
     assert(pebble_rt_str_eq(a, shorter) == false);
     assert(pebble_rt_str_eq(empty1, empty2) == true);
+}
+
+/* Lexicographic byte comparison: equal strings compare zero; a byte
+ * difference decides the sign at the first differing position; when one
+ * string is a prefix of the other, the shorter one sorts first (matching
+ * strcmp's own convention); two empty strings compare equal.
+ */
+static void test_str_cmp(void) {
+    PebbleStr a = {(const uint8_t *)"hi", 2};
+    PebbleStr b = {(const uint8_t *)"hi", 2};
+    PebbleStr c = {(const uint8_t *)"ho", 2};
+    PebbleStr shorter = {(const uint8_t *)"h", 1};
+    PebbleStr empty1 = {(const uint8_t *)"", 0};
+    PebbleStr empty2 = {(const uint8_t *)"", 0};
+    assert(pebble_rt_str_cmp(a, b) == 0);
+    assert(pebble_rt_str_cmp(a, c) < 0);
+    assert(pebble_rt_str_cmp(c, a) > 0);
+    assert(pebble_rt_str_cmp(shorter, a) < 0);
+    assert(pebble_rt_str_cmp(a, shorter) > 0);
+    assert(pebble_rt_str_cmp(empty1, empty2) == 0);
 }
 
 static void test_checked_index_normal(void) {
@@ -494,6 +517,9 @@ int main(void) {
 
     test_str_eq();
     printf("ok: str equality\n");
+
+    test_str_cmp();
+    printf("ok: str comparison\n");
 
     if (verify_panic_aborts() != 0) {
         fprintf(stderr, "smoke_test: panic subprocess check FAILED\n");
