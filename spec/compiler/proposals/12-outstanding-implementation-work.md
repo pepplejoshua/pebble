@@ -74,6 +74,43 @@ emission, not missing symbol registration. Fix this note when writing the
       taken). Committed `f7f92d7`, independently re-verified (gofmt/vet/
       build/full suite all clean, no `std/` files touched).
 
+## CRITICAL — pointer-receiver `self.field` access has never worked
+
+**Confirmed via direct testing, independent of every other fix in this
+doc** (identical failure with and without the slice/array/str `.len` fix
+below — not a regression from it, a pre-existing gap): a method with a
+pointer receiver (`fn get(self *P) uint => self.cap;`, exactly the
+declared shape every method in `std/vec.peb`/`std/string.peb`/
+`std/hmap.peb`/`std/set.peb` uses) fails reading its own field with
+`T0507 field receiver is not a nominal type` (or, after the structural-
+field fix, `T0507 type has no structural field named cap`). Confirmed
+this is **not** limited to methods — an ordinary plain function taking a
+pointer parameter (`fn f(p *P) uint { return p.cap; }`) fails identically.
+The checker's field-resolution constraint (`hasField`) never auto-derefs
+a pointer receiver; something else in this codebase must have been doing
+that for every previously-confirmed-working pointer-receiver test
+(10.47's own summary explicitly lists "a pointer-receiver method cleanly
+rejected" as one of its four passing tests — meaning pointer receivers
+were deliberately unsupported as of that point), and it appears nothing
+has closed that gap since, despite the entire raw-pointers-and-unsafe-ops
+arc (11) being explicitly motivated by exactly this: 11's own §1
+Motivation says outright, "raw pointers... are the one prerequisite
+`std/string.peb` actually needs — every mutating method on `String`
+takes `self *String`."
+
+**This means the raw-pointers arc's own stated goal isn't actually
+delivered yet, despite all 4 of its slices being done and committed.**
+This is very likely the single highest-leverage remaining item on this
+entire list — every pointer-receiver method in the standard library is
+blocked by it, independent of `.len`, `usize`, pointer arithmetic, or
+anything else already fixed or still open. Not yet scoped into a dispatch
+brief; needs its own investigation into exactly where a fix belongs (the
+member-facts/hasField/structuralField layer most likely, possibly needing
+an explicit pointer-deref step on the receiver term before field
+resolution runs, mirroring how `receiverNominal` — used for method
+*selection* — already handles a pointer receiver by dereffing it, per
+`internal/infer/instantiate.go`).
+
 ## Standard-library correctness audit (user request: "inspect all lib files
 for now wrong/illegal behaviour and correct them")
 
@@ -91,31 +128,19 @@ is illegal per 11 §4's decision.
       missing an explicit `*void` → `*T` cast — fixed directly
       (`return new(sizeof T) as *T;`), confirmed the resulting error is
       gone from a real check of the file.
-- [ ] **Root-caused, not yet fixed — much bigger than originally scoped**:
-      `.len`/`.data` field access on a slice value from Pebble source does
-      not work AT ALL, in any context. Confirmed via direct probes: fails
-      identically for a plain concrete `[]i32` parameter, a slice freshly
-      cut from an array, a slice already used elsewhere first, and inside
-      a `loop 0..items.len` bound (the exact pattern `std/func.peb` uses
-      everywhere) — always `T0507 field receiver is not a nominal type`.
-      Root cause: `internal/infer/instantiate.go`'s `hasField` only
-      resolves fields on nominal (struct) types; a slice is a distinct
-      structural `SliceShape`, and there is zero special-casing anywhere in
-      `member_facts.go`/`expression_facts.go`/`bracket_facts.go` that
-      routes `.len`/`.data` to a slice instead. The backend's
-      `.data`/`.len` (`pebble_slice_<id>_t`) are internal C field names
-      used only during lowering (e.g. `s[i]` indexing already reads them
-      internally) — never exposed as Pebble-source-accessible fields at
-      the checker level. **Confirmed to also affect**:
-  - `[N]T` fixed arrays' `.len` — same `T0507`, same root cause. Note:
-    unlike a slice, an array's length is a compile-time constant already
-    carried on its type shape (`infer.ArrayShape`'s own `length` field,
-    confirmed by reading `internal/infer/shape.go`) — so the correct fix
-    for `array.len` is resolving it to that constant, NOT a runtime
-    struct-field read the way slice/str's `.len` needs to be.
-  - `str`'s `.len` — same `T0507`, same root cause (`str` is also a
-    non-nominal builtin shape, backed by the same
-    `PebbleStr { .data; .len; }` C representation slices use).
+- [x] `.len`/`.data` field access on a slice, fixed-array, or `str` VALUE
+      (not through a pointer — see the CRITICAL section above for that
+      separate, bigger gap) from Pebble source. New
+      `constraintStructuralField` resolves slice `.len`/`.data`, array
+      `.len` as a genuine compile-time constant (an `IntegerLiteral`, not
+      a runtime field — array length is already carried on the type
+      shape), and `str.len`; falls back to the unchanged, existing
+      `hasField` for real nominal structs (confirmed no regression via a
+      dedicated test: a struct declaring its own fields literally named
+      `len`/`data` still resolves via nominal lookup). Committed `b4f0eb9`,
+      independently re-verified (gofmt/vet/build/full suite all clean).
+  - `[N]T` fixed arrays' `.len` and `str`'s `.len` were also confirmed
+    affected by the same root cause and are fixed by the same commit.
   - **Not yet confirmed either way** (my own test syntax may have been
     wrong, not a confirmed checker gap): plain `union` field access failed
     with a different, unrelated-looking error (`C0605 member operation is
@@ -126,11 +151,21 @@ is illegal per 11 §4's decision.
     syntax looked up before testing.
   - **Confirmed unaffected**: tuple `.0`/`.1` component access already
     works (`memberTuple` has its own dedicated path in `member_facts.go`).
-  - This blocks essentially every function in `std/func.peb`,
-    `std/vec.peb`, `std/string.peb`, `std/hmap.peb`, `std/set.peb` that
-    reads `.len` (nearly all of them), independent of every other fix so
-    far — likely the single highest-leverage remaining checker fix for
-    unblocking the standard library. Not yet scoped into a dispatch brief.
+  - **Newly discovered while verifying this fix, unrelated, tracked
+    separately**: primitive integer casts (`as i32`, `as uint`, etc.,
+    distinct from pointer casts `as *T` which already work) are not
+    supported ANYWHERE in the C backend — confirmed via direct probe, and
+    via zero existing passing tests anywhere in `emit_test.go` exercising
+    one. Fails even as a plain helper function's tail-return expression,
+    not just inside the entry. This is why the dispatch for this fix
+    couldn't add its required executable backend round-trip test (the
+    natural fixture needed a `uint` → `i32` cast to produce an entry-
+    compatible return type) — correctly left out rather than worked
+    around. Not yet scoped into its own dispatch brief.
+  - This fix unblocks `.len`/`.data` for VALUE receivers; the CRITICAL
+    pointer-receiver gap above still blocks the same std-library files'
+    actual methods (which all use pointer receivers), independent of this
+    fix.
 - [ ] `std/libc.peb` — `usize` → `uint` sweep (mechanical; extern
       declarations only, no pointer arithmetic present).
 - [ ] `std/hash.peb` — `usize` → `uint` sweep (mechanical).
