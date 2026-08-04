@@ -733,7 +733,7 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 	if !ok {
 		return fmt.Errorf("reachability walk references invalid node %d", nodeID)
 	}
-	if node.Kind == tir.DirectCall {
+	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
 		*out = append(*out, node)
 	}
 	for _, childID := range node.Children {
@@ -3780,7 +3780,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	if !ok {
 		return "", fmt.Errorf("%s discarded-expression statement references invalid value node %d", context, statement.Children[0])
 	}
-	if expr.Kind != tir.DirectCall {
+	if expr.Kind != tir.DirectCall && expr.Kind != tir.MethodCall {
 		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a call to a void-returning function is)", context, expr.Kind)
 	}
 	calleeDecl, err := findFunctionDeclaration(unit, expr.Symbol, "called function")
@@ -3898,7 +3898,7 @@ func cloneLocals(locals map[symbol.SymbolID]localInfo) map[symbol.SymbolID]local
 // anything else — is a clean rejection. Like every scalar local, the
 // declaration is followed by a (void) cast against -Wunused-variable.
 func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind == tir.DirectCall {
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a tuple-returning helper used as the direct initializer of
 		// a matching tuple-typed local — `let t (i32, i32) =
 		// helperReturningTuple();` — the one position (10.26) in which calling
@@ -4247,7 +4247,7 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 // the slice struct using the temp for both the pointer offset and the length
 // computation.
 func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind == tir.DirectCall {
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a slice-returning helper used as the direct initializer of a
 		// matching slice-typed local — `let s []i32 = helperReturningSlice();` —
 		// the position (10.38) in which a slice-returning helper's result lands
@@ -4600,7 +4600,7 @@ func mustNode(unit *tir.Unit, id tir.NodeID) tir.Node { n, _ := unit.Node(id); r
 // every scalar local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
 func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind == tir.DirectCall {
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a struct-returning helper used as the direct initializer of
 		// a matching struct-typed local — `let p Point =
 		// helperReturningPoint();` — the one position (10.26) in which calling
@@ -4975,7 +4975,7 @@ func unionMemberType(members []unionMemberInfo, member symbol.SymbolID) (types.T
 // str local. Like every scalar local, the declaration is followed by a (void)
 // cast against -Wunused-variable.
 func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind == tir.DirectCall {
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a str-returning helper used as the direct initializer of a
 		// matching str-typed local — `let s str = helperReturningStr();` — the
 		// one position (10.36) in which calling a str-returning helper is
@@ -5387,7 +5387,7 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 			return "", err
 		}
 		return "(PebbleStr)" + valueText, nil
-	case tir.DirectCall:
+	case tir.DirectCall, tir.MethodCall:
 		// A call to a str-returning helper used directly as a str value. The
 		// DirectCall's own Type is the callee's resolved result type, which
 		// the reachability walk has already validated as str for a reachable
@@ -5445,7 +5445,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a char-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
-	case tir.DirectCall:
+	case tir.DirectCall, tir.MethodCall:
 		// A call to a char-returning helper used directly as a char value. The
 		// DirectCall's own Type is the callee's resolved result type, which
 		// the reachability walk has already validated as char for a reachable
@@ -5766,7 +5766,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			}
 		}
 		return "", fmt.Errorf("entry function body expression contains a SourceAlias, which is not supported")
-	case tir.DirectCall:
+	case tir.DirectCall, tir.MethodCall:
 		// A call to another Pebble-convention function whose result is the
 		// entry's own width. The width gate above already
 		// checked node.Type (the call's result type, which is the callee's

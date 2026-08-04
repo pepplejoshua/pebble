@@ -165,6 +165,38 @@ func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 42, false)
 }
 
+func TestEmitValueMethodCallReadsReceiverField(t *testing.T) {
+	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn main() i32 { let p Point = Point.{ x = 41 }; return p.get(); }`, false, 41, false)
+}
+
+func TestEmitIndirectlyReachedMethodCall(t *testing.T) {
+	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn read(p Point) i32 { return p.get(); } fn main() i32 { let p Point = Point.{ x = 42 }; return read(p); }`, false, 42, false)
+}
+
+func TestEmitRejectsPointerReceiverMethodCall(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, `type Point = struct { fn get(self *Point) i32 => 1; }; fn main() i32 { let p *Point = nil; return p.get(); }`, "main", false)
+	var buf bytes.Buffer
+	err := Emit(unit, snapshot, entryID, sources, &buf)
+	if err == nil {
+		t.Fatal("Emit accepted a pointer-receiver method, want unsupported parameter type rejection")
+	}
+	if !strings.Contains(err.Error(), "parameter 0") || !strings.Contains(err.Error(), "unsupported") && !strings.Contains(err.Error(), "want") {
+		t.Fatalf("pointer-receiver rejection is not descriptive: %v", err)
+	}
+}
+
+func TestEmitRejectsGenericMethodCall(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, `type Box = struct { fn echo[T](self Box, value T) T => value; }; fn main() i32 { let box Box = Box.{}; return box.echo(42); }`, "main", false)
+	var buf bytes.Buffer
+	err := Emit(unit, snapshot, entryID, sources, &buf)
+	if err == nil {
+		t.Fatal("Emit accepted a generic method call, want the existing generic-call rejection")
+	}
+	if !strings.Contains(err.Error(), "generic") || !strings.Contains(err.Error(), "type argument") {
+		t.Fatalf("generic-method rejection is not descriptive: %v", err)
+	}
+}
+
 func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int => 0;", true, 0, false)
 }
