@@ -1482,6 +1482,52 @@ incrementally as work proceeds.
   comes from `buildCharOperand` refusing the `CheckedIndex` initializer
   shape rather than from char itself being unsupported — str indexing
   remains rejected, unchanged, pending 10.42.
+- **10.42 — str indexing (`s[i]` returning `char`)**
+  (`compiler/internal/backend`): closes Phase 4's last real gap, using
+  both prerequisites landed for exactly this purpose (10.41's `char`
+  scalar type, commit `09ab763`; the `pebble_rt_str_char_at_i32`/`_i64`
+  UTF-8 decoder, commit `8fb8b21`). `s[i]` lowers to a bare
+  `tir.CheckedIndex` value node — not `Load(CheckedIndexPlace)`, the
+  shape array/slice indexing uses — because a str's byte-level content
+  is not addressable as a place, so the read is a pure
+  decode-to-value operation. Added as a fourth shape to the existing
+  `buildCharOperand` (alongside its `CharLiteral`/`SymbolValue`/
+  `DirectCall` cases), reusing `buildStrOperand` for the base
+  (confirmed reachable: a str-typed local reference, a bare string
+  literal directly, or a call to a str-returning helper — the same
+  three shapes `buildStrOperand` already builds unchanged) and the
+  same int-literal/int-`SymbolValue`/`buildExpr` index dispatch
+  `buildArrayPlaceRead` already established. A real edge case was
+  confirmed and correctly handled rather than assumed away: indexing
+  an array literal directly (`['h', 'i'][0]`) *also* produces a bare
+  `CheckedIndex` with a `char`-typed result (an array literal has no
+  addressable place either), so a non-str base is confirmed
+  checker-reachable and is a clean rejection naming what was found,
+  not silently routed through the str decoder. Verified end-to-end
+  (ASCII indexing compared against a char literal; a bare string
+  literal base; a multi-byte fixture proving the Unicode-scalar-value
+  index semantics — indexing past a 2-byte character lands on the
+  *next* codepoint, not partway through the first one's bytes; the
+  same proof at 4-byte-sequence scale with an emoji; a
+  runtime-computed index via checked arithmetic; a plain width-typed
+  local-reference index; a range-loop iterator used directly as the
+  index; an out-of-range index and a negative index each aborting at
+  runtime; the i64-entry width-generic path; the non-str-base
+  rejection) and independently outside the harness — manually
+  compiled and ran the emitted C for a fixture indexing both the
+  emoji and the character immediately after it in `"a😀b"` with
+  `-Wall -Wextra -Werror`, confirming exit code 1 (both codepoints
+  decoded correctly, proving the decoder walks codepoints, not bytes).
+
+  **Phase 4 (strings/slices) is now complete.** Concatenation and
+  interpolation remain deliberately deferred to a user-level `String`
+  type (the documented decision after 10.36), pending methods,
+  pointers, and multi-module imports landing as their own phases —
+  everything else scoped for `str`, `char`, and `[]T` is done: str
+  literals, comparison (equality and ordering), reassignment,
+  parameters/results, and indexing; `char` as a first-class scalar;
+  and slices — locals, indexed reads and writes, parameters, and
+  returns.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

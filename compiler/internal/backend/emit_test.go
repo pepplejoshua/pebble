@@ -5301,21 +5301,162 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsStrIndexing(t *testing.T) {
-	// String indexing (s[0]) is reachable from real source — confirmed
-	// against a real fixture dump: `let c char = s[0];` lowers the read to a
-	// tir.CheckedIndex node whose result type is char, a separate mechanism
-	// this backend does not build for str (that is slice 10.42, dispatched
-	// separately). The declaration is therefore still a clean rejection — but
-	// since 10.41, char IS a supported local type, so the rejection now comes
-	// from buildCharOperand refusing the CheckedIndex as a char initializer
-	// shape rather than from char being an unsupported local type; the
-	// substring below names the newly-accurate rejection. (The exact shape
-	// `s[0] as i32` is rejected by the checker itself before typed IR — typed
-	// IR construction failed — so the reachable form here is the char-typed
-	// read.)
+func TestEmitStrIndexCompilesAndRuns(t *testing.T) {
+	// String indexing (s[0]) is reachable from real source and lowers to a
+	// bare tir.CheckedIndex whose result type is char (confirmed against a
+	// real fixture dump: Children = [SymbolValue s, IntegerLiteral 0]); this
+	// was 10.41's rejection fixture and is now the positive case —
+	// buildCharOperand builds the read as the runtime's UTF-8 decoder
+	// pebble_rt_str_char_at_i32. s = "hi", so s[0] decodes to 'h'; comparing
+	// against the char literal proves the decoded value is correct
+	// end-to-end, not just that it compiles.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; if c == 'h' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+// 10.42 — str indexing (s[i] returning char)
+
+func TestEmitStrIndexWritesC(t *testing.T) {
+	// The exact emitted call for a str-typed local base: s[0] emits
+	// pebble_rt_str_char_at_i32(pebble_local_<s>, 0) — the base is the
+	// PebbleStr local's own C name (built by buildStrOperand's SymbolValue
+	// case) and the literal index is emitted as its decimal text. Symbols 25
+	// (s) and 26 (c) come from the real fixture dump.
 	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a char literal")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_local_26 = pebble_rt_str_char_at_i32(pebble_local_25, 0);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrIndexLiteralBaseCompilesAndRuns(t *testing.T) {
+	// A bare string literal base ("hi"[0]) is checker-reachable (confirmed
+	// against a real fixture dump — the CheckedIndex base is a StringLiteral
+	// node) and buildStrOperand already builds it unchanged as a PebbleStr
+	// compound literal, so the decoder call takes the inline literal as its
+	// base argument. "hi"[0] = 'h', exit 1.
+	emitAndRun(t, "fn main() i32 { let c char = \"hi\"[0]; if c == 'h' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrIndexLiteralBaseWritesC(t *testing.T) {
+	// The emitted call for the literal-base shape: the base argument is the
+	// inline PebbleStr compound literal, not a local reference.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let c char = \"hi\"[0]; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`pebble_rt_str_char_at_i32((PebbleStr){ .data = (const uint8_t *)"hi", .len = 2 }, 0)`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrIndexMultiByteCompilesAndRuns(t *testing.T) {
+	// s[i] is a Unicode-scalar-value index, not a byte offset: "aéb" is a (1
+	// byte) + é (U+00E9, 2 bytes) + b (1 byte), so codepoint 1 is é and
+	// codepoint 2 is b — byte offset 2 would land in the middle of é's
+	// UTF-8 sequence. Both reads round-trip through equality against the char
+	// literals, proving the decoder walks codepoints, not bytes.
+	emitAndRun(t, "fn main() i32 { let s str = \"a\u00e9b\"; let c char = s[1]; if c == '\u00e9' { let d char = s[2]; if d == 'b' { return 1; } else { return 0; } } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrIndexEmojiCompilesAndRuns(t *testing.T) {
+	// The strongest multi-byte proof: "a😀b" is a (1 byte) + 😀 (U+1F600, 4
+	// bytes) + b (1 byte), so codepoint 1 is the full 21-bit scalar value
+	// 128512 — a 4-byte sequence — compared against the emoji char literal,
+	// proving the index lands on the second codepoint and not partway through
+	// the first one's bytes.
+	emitAndRun(t, "fn main() i32 { let s str = \"a\U0001F600b\"; let c char = s[1]; if c == '\U0001F600' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrIndexRuntimeLocalCompilesAndRuns(t *testing.T) {
+	// The index is a runtime-computed width-typed local, not a literal: i is
+	// declared i32 and computed by checked arithmetic (1 + 1 = 2), so the
+	// CheckedIndex's index child is a CheckedArithmetic node built by
+	// buildExpr. s = "abc", s[i] = s[2] = 'c', exit 1.
+	emitAndRun(t, "fn main() i32 { let s str = \"abc\"; let i i32 = 1 + 1; let c char = s[i]; if c == 'c' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrIndexLocalReferenceCompilesAndRuns(t *testing.T) {
+	// The index is a plain width-typed local reference (a SymbolValue built by
+	// buildExpr), reaching s[i] at a runtime-computed position: i = 1, so
+	// s[1] = 'i'. Proves the width-typed SymbolValue index path, distinct from
+	// the literal and arithmetic shapes.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let i i32 = 1; let c char = s[i]; if c == 'i' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrIndexRangeLoopIteratorCompilesAndRuns(t *testing.T) {
+	// A range loop's iterator used directly as a str index arrives as an
+	// int-typed SymbolValue (the unanchored-int case, the same shortcut
+	// buildArrayPlaceRead handles), confirmed against a real fixture dump.
+	// Iterating 0..2 over "hi" and counting each match of 'h' (only index 0)
+	// proves the iterator's C name is the correct index lvalue.
+	emitAndRunBounded(t, "fn main() i32 { let s str = \"hi\"; var n i32 = 0; loop 0..2 : i { if s[i] == 'h' { n = n + 1; } } return n; }", false, 1, false)
+}
+
+func TestEmitStrIndexOutOfRangePanics(t *testing.T) {
+	// s = "hi" has 2 codepoints; s[2] is past the last codepoint, so the
+	// runtime's UTF-8 decoder panics (abort) instead of reading past the end.
+	// The process must terminate abnormally, not exit cleanly.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let c char = s[2]; return 0; }", false, 0, true)
+}
+
+func TestEmitStrIndexNegativePanics(t *testing.T) {
+	// A negative index — i = 0 - 1 = -1 computed by checked arithmetic (which
+	// itself does not overflow) — panics the decoder. The process must
+	// terminate abnormally.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let i i32 = 0; let j i32 = i - 1; let c char = s[j]; return 0; }", false, 0, true)
+}
+
+func TestEmitStrIndexI64EntryCompilesAndRuns(t *testing.T) {
+	// The width-generic path: an i64 entry's str index emits
+	// pebble_rt_str_char_at_i64 — only the index parameter's width varies by
+	// the entry's; the result type is still the fixed int32_t char either
+	// way. The index here is an i64-typed local reference, so the whole
+	// i64 index path is exercised. s = "hi", i = 1, s[1] = 'i', exit 1.
+	emitAndRun(t, "fn main() i64 { let s str = \"hi\"; let i i64 = 1; let c char = s[i]; if c == 'i' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
+	// The emitted call for an i64 entry: the helper is the _i64 variant (the
+	// index parameter is int64_t), and the base local is still the PebbleStr
+	// local's own C name. Symbols 25 (s) and 26 (c) come from the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i64 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_local_26 = pebble_rt_str_char_at_i64(pebble_local_25, 0);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRejectsNonStrCheckedIndex(t *testing.T) {
+	// Indexing an array literal directly (['h', 'i'][0]) is reachable from
+	// real source and lowers to a bare CheckedIndex too — an array literal
+	// has no addressable place, so it cannot form a Load(CheckedIndexPlace) —
+	// but this slice only lowers a str base. It is therefore a clean
+	// rejection naming what was found (the ArrayValue base and its [2]char
+	// type), never a guessed lowering.
+	emitAndRunRejects(t, "fn main() i32 { let c char = ['h', 'i'][0]; return 0; }", "indexes a ArrayValue of type [2]char, want str")
 }
 
 // 10.26 — tuple- and struct-typed function return types

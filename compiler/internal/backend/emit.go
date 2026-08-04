@@ -159,13 +159,23 @@
 // negative/zero/positive like C's memcmp/strcmp and <op> is the C translation
 // of the source operator. A str comparison lowers to a plain tir.BinaryValue
 // with two un-wrapped operand nodes (confirmed against a real fixture), handled
-// in buildComparison alongside the integer and bool comparison paths. Everything
-// else str-shaped is out of scope and a clean rejection: str fields/elements
-// inside a tuple, array, optional, or struct, concatenation and interpolation
-// (InterpolatedString), and str indexing (a tir.CheckedIndex, reachable from
-// real source via e.g. `let c char = s[0];` — a separate mechanism this
-// backend does not build for str, rejected because its char result is not a
-// supported local type).
+// in buildComparison alongside the integer and bool comparison paths. Since
+// 10.42, a char value may also be produced by str indexing — s[i] (a
+// tir.CheckedIndex, reachable from real source via e.g. `let c char = s[0];`).
+// The checker lowers a str's bracket read to a bare CheckedIndex — not
+// Load(CheckedIndexPlace), the node array/slice indexing uses — because a
+// str's byte-level content is not addressable as a place, so the read is a
+// pure decode-to-value operation, emitted as the runtime's UTF-8 decoder
+// pebble_rt_str_char_at_i32/i64(<base>, <index>): the base is a str value (a
+// str-typed local reference, a bare string literal, or a call to a
+// str-returning helper) built by buildStrOperand, and the index is an
+// integer expression built by buildExpr or by the int-literal/SymbolValue
+// shortcut buildArrayPlaceRead uses. s[i] is a Unicode-scalar-value index
+// (the i'th codepoint, not the i'th byte), and the runtime panics on a
+// negative or out-of-range index or on malformed UTF-8 encountered along the
+// way. Everything else str-shaped remains out of scope and a clean rejection:
+// str fields/elements inside a tuple, array, optional, or struct, and
+// concatenation and interpolation (InterpolatedString).
 //
 // Since 10.36, a str-typed local may also be reassigned (a tir.Store whose
 // place names a str local), and a helper function may declare str-typed
@@ -5367,15 +5377,19 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 }
 
 // buildCharOperand builds one char value in a position that accepts a char
-// expression, which is exactly three shapes (each confirmed against a real
+// expression, which is exactly four shapes (each confirmed against a real
 // fixture): a CharLiteral (a char value with no local behind it, emitted as an
 // int32_t decimal literal), a SymbolValue naming an in-scope char-typed local
-// (emitted as its pebble_local_<symbolID> C name — an int32_t lvalue), or a
+// (emitted as its pebble_local_<symbolID> C name — an int32_t lvalue), a
 // DirectCall to a char-returning helper (emitted as
 // pebble_fn_<calleeSymbolID>(ctx, <args>) by buildDirectCall, the same
 // call-building machinery buildExpr's DirectCall case uses), so a
 // char-returning helper's result can be compared directly (g() == 'a') or
-// passed to a char parameter (f(g())) without an intermediate local. width is
+// passed to a char parameter (f(g())) without an intermediate local, and —
+// since 10.42 — a tir.CheckedIndex, str indexing s[i], whose Children are
+// [base, index]: the base is a str value built by buildStrOperand and the
+// read is emitted as the runtime's UTF-8 decoder
+// pebble_rt_str_char_at_<suffix>(<base>, <index>). width is
 // the entry's resolved integer width, threaded through to buildDirectCall so a
 // call's arguments are built at the width the callee's other parameters
 // expect. Anything else — a reference to a non-char local, any other node — is
@@ -5415,8 +5429,81 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, l
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want char", node.Symbol, describeType(snapshot, node.Type))
 		}
 		return buildDirectCall(unit, snapshot, node, locals, width)
+	case tir.CheckedIndex:
+		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —
+		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
+		// exactly when the indexed value has no addressable place: a str's
+		// byte-level content is not addressable the way array/slice element
+		// storage is, so str indexing is a pure decode-to-value operation
+		// (confirmed against a real fixture: the node's Children are [base,
+		// index] and its Type is the snapshot's char builtin). The base is a
+		// str value built by buildStrOperand — a reference to an in-scope str
+		// local, a bare string literal, or a call to a str-returning helper,
+		// all three confirmed reachable against real fixtures ("hi"[0] and
+		// g()[0] both lower to this exact shape) — and the index is built by
+		// the same dispatch buildArrayPlaceRead uses: an int-typed
+		// IntegerLiteral (a literal index is the unanchored int builtin even
+		// in an i64 entry, confirmed against a real fixture) or int-typed
+		// SymbolValue (a range loop's iterator used directly as the index, the
+		// same unanchored-int case) lowered directly, anything else (a
+		// width-typed local reference, checked arithmetic) via buildExpr. The
+		// read is emitted as the runtime's UTF-8 decoder
+		// pebble_rt_str_char_at_<suffix>(<base>, <index>): s[i] is a
+		// Unicode-scalar-value index, not a byte offset, so the runtime walks
+		// and decodes the variable-width UTF-8 byte sequence from the start,
+		// panicking on a negative or out-of-range index or on malformed UTF-8
+		// (pebble_rt.h declares _i32 and _i64 variants; the index parameter's
+		// width varies by the entry's, the int32_t result does not — a char
+		// always fits in 32 bits, so the width-selected helper returns a char
+		// either way). A CheckedIndex whose base does not resolve to a str
+		// value is confirmed reachable from real source too — indexing an
+		// array literal directly (['h', 'i'][0]) lowers to a bare CheckedIndex
+		// with an ArrayValue base, since the literal has no place to address —
+		// and is a clean rejection naming what was found, never a guessed
+		// lowering.
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedIndex with %d child(ren), want exactly two (the str value being indexed and the index)", len(node.Children))
+		}
+		baseNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
+		}
+		if !isStr(snapshot, baseNode.Type) {
+			return "", fmt.Errorf("entry function body expression indexes a %s of type %s, want str (only str indexing is supported; indexing an array literal directly is not lowered)", baseNode.Kind, describeType(snapshot, baseNode.Type))
+		}
+		base, err := buildStrOperand(unit, snapshot, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		indexNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid index node %d", node.Children[1])
+		}
+		var index string
+		if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
+			if !isNonNegativeDecimal(indexNode.Literal.IntegerNum) {
+				return "", fmt.Errorf("str index contains an integer literal with malformed text %q", indexNode.Literal.IntegerNum)
+			}
+			index = indexNode.Literal.IntegerNum
+		} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
+			// An int-typed SymbolValue index is a range loop's iterator
+			// referenced directly (the same unanchored-int case
+			// buildComparisonOperand and buildArrayPlaceRead handle), and the
+			// iterator is always declared in C at the entry's width, so its
+			// name is the correct C lvalue for the index.
+			if _, declared := locals[indexNode.Symbol]; !declared {
+				return "", fmt.Errorf("str index references symbol %d, which is not a local in scope", indexNode.Symbol)
+			}
+			index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
+		} else {
+			index, err = buildExpr(unit, snapshot, node.Children[1], locals, width)
+			if err != nil {
+				return "", fmt.Errorf("str index: %v", err)
+			}
+		}
+		return "pebble_rt_str_char_at_" + checkedSuffix(width) + "(" + base + ", " + index + ")", nil
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want a char literal, a reference to a char-typed local declared earlier in the body, or a call to a char-returning function", node.Kind)
+		return "", fmt.Errorf("entry function body expression contains a %s, want a char literal, a reference to a char-typed local declared earlier in the body, a call to a char-returning function, or a str index", node.Kind)
 	}
 }
 
