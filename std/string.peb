@@ -2,13 +2,11 @@
 import "std:mem";
 
 extern {
-    fn strlen(s str) uint;
-    fn strcmp(a str, b str) int;
     fn memcmp(a *void, b *void, n uint) int;
 }
 
 type String = struct {
-    data *char;
+    data []char;
     len uint;
     capacity uint;
 
@@ -16,7 +14,8 @@ type String = struct {
         if new_cap == 0 {
             new_cap = 16; // Minimum capacity
         }
-        self.data = mem::realloc(self.data, (sizeof char) * new_cap);
+        let ptr *char = mem::realloc(self.data.data as *void, (sizeof char) * new_cap) as *char;
+        self.data = slice ptr, new_cap;
         self.capacity = new_cap;
     }
 
@@ -31,13 +30,13 @@ type String = struct {
             self.grow(new_cap);
         }
 
-        *(self.data + self.len) = c;
+        self.data[self.len] = c;
         self.len++;
-        *(self.data + self.len) = '\0';
+        self.data[self.len] = '\0';
     }
 
     fn push_str(self *String, new_str str) void {
-        var len = strlen(new_str);
+        var len = new_str.len;
         if (len == 0) {
             return; // Nothing to append
         }
@@ -45,14 +44,15 @@ type String = struct {
         // Reserve space for the new string plus null terminator
         self.reserve(len);
 
-        // Copy the new string
-        var dst = self.data + self.len;
-        var src = new_str;
-        mem::copy(dst, src, len);
+        // Copy the new string, one char at a time -- str has no legal
+        // conversion to a raw pointer, so a bulk memcpy isn't available here.
+        loop 0..len : i {
+            self.data[self.len + i] = new_str[i];
+        }
 
         // Update length and null-terminate
         self.len += len;
-        *(self.data + self.len) = '\0';
+        self.data[self.len] = '\0';
     }
 
     fn reserve(self *String, additional uint) void {
@@ -69,12 +69,13 @@ type String = struct {
         }
     }
 
-    fn as_str(self String) str {
-        if self.data == nil {
-            return "";
-        }
-        return self.data as str;
-    }
+    // NOTE: there is deliberately no as_str() here. Constructing a real str
+    // value from arbitrary runtime buffer data has no legal conversion in
+    // this language today (str's only legal conversion is identity; str/
+    // pointer casts are forbidden by design, not just unimplemented). That
+    // needs a dedicated C-interop constructor (an extern-declared function
+    // backed by a real runtime implementation), which is out of scope for
+    // this pointer-arithmetic redesign. Tracked as a follow-up.
 
     fn as_slice(self String) []char {
         return self.data[:self.len];
@@ -86,21 +87,23 @@ type String = struct {
 
     fn clear(self *String) void {
         self.len = 0;
-        if (self.data != nil) {
-            *self.data = '\0';
+        if (self.capacity != 0) {
+            self.data[0] = '\0';
         }
     }
 
     fn shrink_to_fit(self *String) void {
         if (self.capacity > self.len + 1) {
             if (self.len == 0) {
-                if (self.data != nil) {
-                    mem::delete(self.data);
-                    self.data = nil;
+                if (self.capacity != 0) {
+                    mem::delete(self.data.data as *void);
+                    let empty *char = nil;
+                    self.data = slice empty, 0;
                 }
                 self.capacity = 0;
             } else {
-                self.data = mem::realloc(self.data, self.len + 1);
+                let ptr *char = mem::realloc(self.data.data as *void, self.len + 1) as *char;
+                self.data = slice ptr, self.len + 1;
                 self.capacity = self.len + 1;
             }
         }
@@ -113,28 +116,38 @@ type String = struct {
         if (self.len == 0) {
             return true; // Both empty
         }
-        return memcmp(self.data, b.data, self.len) == 0;
+        return memcmp(self.data.data as *void, b.data.data as *void, self.len) == 0;
     }
 
     fn starts_with(self String, prefix str) bool {
-        var prefix_len = strlen(prefix);
+        var prefix_len = prefix.len;
         if (prefix_len > self.len) {
             return false;
         }
-        return memcmp(self.data, prefix, prefix_len) == 0;
+        loop 0..prefix_len : i {
+            if self.data[i] != prefix[i] {
+                return false;
+            }
+        }
+        return true;
     }
 
     fn ends_with(self String, suffix str) bool {
-        var suffix_len = strlen(suffix);
+        var suffix_len = suffix.len;
         if (suffix_len > self.len) {
             return false;
         }
         var start_pos = self.len - suffix_len;
-        return memcmp((self.data + start_pos), suffix, suffix_len) == 0;
+        loop 0..suffix_len : i {
+            if self.data[start_pos + i] != suffix[i] {
+                return false;
+            }
+        }
+        return true;
     }
 
-    fn find(self String, needle str) ?int {
-        var needle_len = strlen(needle);
+    fn find(self String, needle str) ?uint {
+        var needle_len = needle.len;
         if (needle_len == 0) {
             return some 0;
         }
@@ -144,7 +157,13 @@ type String = struct {
 
         var i = 0;
         while (i <= self.len - needle_len) {
-            if (memcmp((self.data + i), needle, needle_len) == 0) {
+            var matched = true;
+            loop 0..needle_len : j {
+                if self.data[i + j] != needle[j] {
+                    matched = false;
+                }
+            }
+            if matched {
                 return some i;
             }
             i++;
@@ -165,16 +184,16 @@ type String = struct {
         result.reserve(actual_count);
 
         if (actual_count > 0) {
-            mem::copy(result.data, (self.data + start), actual_count);
+            mem::copy(result.data.data as *void, &self.data[start] as *void, actual_count);
             result.len = actual_count;
-            *(result.data + result.len) = '\0';
+            result.data[result.len] = '\0';
         }
 
         return result;
     }
 
     fn insert(self *String, pos uint, new_str str) void {
-        var insert_len = strlen(new_str);
+        var insert_len = new_str.len;
         if (insert_len == 0) {
             return; // Nothing to insert
         }
@@ -187,13 +206,16 @@ type String = struct {
 
         // Shift existing data
         if (pos < self.len) {
-            mem::copy((self.data + pos + insert_len), (self.data + pos), self.len - pos);
+            mem::copy(&self.data[pos + insert_len] as *void, &self.data[pos] as *void, self.len - pos);
         }
 
-        // Insert new data
-        mem::copy((self.data + pos), new_str, insert_len);
+        // Insert new data, one char at a time -- new_str has no legal
+        // conversion to a raw pointer.
+        loop 0..insert_len : i {
+            self.data[pos + i] = new_str[i];
+        }
         self.len += insert_len;
-        *(self.data + self.len) = '\0';
+        self.data[self.len] = '\0';
     }
 
     fn remove(self *String, pos uint, count uint) void {
@@ -207,27 +229,29 @@ type String = struct {
         }
 
         if (pos + actual_count < self.len) {
-            mem::copy((self.data + pos), (self.data + pos + actual_count), self.len - pos - actual_count);
+            mem::copy(&self.data[pos] as *void, &self.data[pos + actual_count] as *void, self.len - pos - actual_count);
         }
 
         self.len -= actual_count;
-        *(self.data + self.len) = '\0';
+        self.data[self.len] = '\0';
     }
 };
 
 fn new() String {
+    let empty *char = nil;
     return String.{
-        data = nil,
+        data = slice empty, 0,
         capacity = 0,
         len = 0,
     };
 }
 
 fn delete(s *String) void {
-    if (s.data != nil) {
-        mem::delete(s.data);
+    if (s.capacity != 0) {
+        mem::delete(s.data.data as *void);
     }
-    s.data = nil;
+    let empty *char = nil;
+    s.data = slice empty, 0;
     s.len = 0;
     s.capacity = 0;
 }
