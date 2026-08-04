@@ -32,9 +32,10 @@ const (
 )
 
 type expectedType struct {
-	Kind        expectedKind
-	Destination valueID
-	Role        compatibilityRole
+	Kind         expectedKind
+	Destination  valueID
+	Role         compatibilityRole
+	ShapeLiteral bool
 }
 
 type compatibilityRecord struct {
@@ -75,7 +76,7 @@ func (w *walker) expectationFor(ref symbol.SyntaxRef, destination valueID, role 
 			return expectedType{Kind: expectLiteral, Destination: destination, Role: role}
 		}
 		if node.Token() == syntax.KwNil || node.Token() == syntax.KwNone {
-			return expectedType{Kind: expectShape, Destination: destination, Role: role}
+			return expectedType{Kind: expectShape, Destination: destination, Role: role, ShapeLiteral: true}
 		}
 		return expectedType{Kind: expectIdentity, Destination: destination, Role: role}
 	case syntax.SomeExpr, syntax.TupleTerm, syntax.ArrayExpr, syntax.ArrayRepeatExpr,
@@ -110,6 +111,14 @@ func (w *walker) applyExpected(actual typedValue, exactLiteral infer.Term, expec
 	destination := w.generation.values[expected.Destination-1]
 	switch expected.Kind {
 	case expectIdentity:
+		w.addConstraint(infer.Equal(actual.Term, destination.Term, origin))
+	case expectShape:
+		if !expected.ShapeLiteral {
+			return
+		}
+		// Shape literals such as nil may be walked before a member place's
+		// field constraint resolves its type. Keep the literal's shape tied to
+		// the destination term so that later constraint solving can ground it.
 		w.addConstraint(infer.Equal(actual.Term, destination.Term, origin))
 	case expectLiteral:
 		if exactLiteral == (infer.Term{}) {

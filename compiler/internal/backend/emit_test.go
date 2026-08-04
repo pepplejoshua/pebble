@@ -249,6 +249,10 @@ func TestEmitPointerReceiverMethodCallCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, `type Point = struct { fn get(self *Point) i32 => 1; }; fn main() i32 { let p *Point = nil; return p.get(); }`, false, 1, false)
 }
 
+func TestEmitFieldNilAssignmentRoundTripCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `type P = struct { d *i32; }; fn main() i32 { var value i32 = 7; var p P = P.{ d = &value }; p.d = nil; if p.d == nil { return 1; } else { return 0; } }`, false, 1, false)
+}
+
 func TestEmitRejectsGenericMethodCall(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, `type Box = struct { fn echo[T](self Box, value T) T => value; }; fn main() i32 { let box Box = Box.{}; return box.echo(42); }`, "main", false)
 	var buf bytes.Buffer

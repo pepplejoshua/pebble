@@ -56,6 +56,48 @@ func TestValidateAssignmentRecords(t *testing.T) {
 	}
 }
 
+func TestFieldAssignmentLiteralGrounding(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "value receiver field nil",
+			source: `type P = struct { d *i32; };
+fn check(p P) void { var pp P = p; pp.d = nil; }`,
+		},
+		{
+			name:   "pointer receiver field nil",
+			source: `type P = struct { d *i32; fn clear(self *P) void { self.d = nil; } };`,
+		},
+		{
+			name:   "slice data field nil",
+			source: `fn check(s *[]i32) void { s.data = nil; }`,
+		},
+		{
+			name: "field integer literal",
+			source: `type P = struct { count i32; };
+fn check(p P) void { var pp P = p; pp.count = 0; }`,
+		},
+		{
+			name:   "local nil reassignment",
+			source: `fn check() void { var p *i32 = nil; p = nil; }`,
+		},
+		{
+			name: "named field value",
+			source: `type P = struct { d *i32; };
+fn check(p P, other *i32) void { var pp P = p; pp.d = other; }`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			diagnostics, _, _ := runPlaceValidation(t, test.source)
+			if diagnostics.HasErrors() {
+				t.Fatalf("field literal grounding fixture rejected: %+v", diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestValidateAssignmentRecordsAllowsParameterMutationAcrossRegions(t *testing.T) {
 	for _, source := range []string{
 		`fn nested(flag bool, value i32) void {

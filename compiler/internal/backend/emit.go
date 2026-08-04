@@ -3275,6 +3275,13 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
+		if isPointer(snapshot, elementType) {
+			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want %s or bool", context, describeType(snapshot, elementType), wantName(width))
 	}
 	targetInfo, declared := scope[place.Symbol]
@@ -4888,6 +4895,12 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				return "", err
 			}
 			expr = built
+		case isPointer(snapshot, fieldType):
+			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", err
+			}
+			expr = built
 		default:
 			return "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType), wantName(width))
 		}
@@ -6495,7 +6508,7 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if !isBool(snapshot, fieldType) {
 			return "", fmt.Errorf("field %d has type %s, want bool", place.Member, describeType(snapshot, fieldType))
 		}
-	} else if !isWidth(snapshot, width, fieldType) {
+	} else if !isWidth(snapshot, width, fieldType) && !isPointer(snapshot, fieldType) {
 		return "", fmt.Errorf("field %d has type %s, want %s", place.Member, describeType(snapshot, fieldType), wantName(width))
 	}
 	return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
@@ -7939,6 +7952,15 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 			return "", fmt.Errorf("field type %s is an enum type; enum-typed struct fields are not supported yet", enumTypeName(id))
 		}
 		return structTypeName(id), nil
+	}
+	if isPointer(snapshot, id) {
+		pointee, ok := pointerPointeeType(snapshot, id)
+		if !ok {
+			return "", fmt.Errorf("field type %s has no pointer pointee", describeType(snapshot, id))
+		}
+		if name := pointerTypeName(snapshot, pointee); name != "" {
+			return name, nil
+		}
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
