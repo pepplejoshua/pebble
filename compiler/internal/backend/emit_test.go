@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,31 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
+
+var (
+	runtimeObjectsOnce sync.Once
+	runtimeObjectsDir  string
+	runtimeObjectsErr  error
+	runtimeCCMissing   bool
+)
+
+var runtimeSourceFiles = []string{
+	"context.c",
+	"panic.c",
+	"platform_host.c",
+	"arith.c",
+	"bounds.c",
+	"optional.c",
+	"str.c",
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if runtimeObjectsDir != "" {
+		_ = os.RemoveAll(runtimeObjectsDir)
+	}
+	os.Exit(code)
+}
 
 // fixtureProvider serves module source from an in-memory map, mirroring the
 // check package's own checkProvider test double so a .peb source string can
@@ -572,6 +598,13 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 	}
 	binary := filepath.Join(dir, "program")
 	runtimeRoot := runtimeSourceRoot(t)
+	objectsDir, err := cachedRuntimeObjects(cc, runtimeRoot)
+	if err != nil {
+		if runtimeCCMissing {
+			t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
+		}
+		t.Fatalf("compiling cached runtime objects: %v", err)
+	}
 
 	compileArgs := []string{
 		"-std=c11",
@@ -579,20 +612,46 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 		"-DPEBBLE_RT_MODE_SAFE",
 		"-I", filepath.Join(runtimeRoot, "include"),
 		program,
-		filepath.Join(runtimeRoot, "src", "context.c"),
-		filepath.Join(runtimeRoot, "src", "panic.c"),
-		filepath.Join(runtimeRoot, "src", "platform_host.c"),
-		filepath.Join(runtimeRoot, "src", "arith.c"),
-		filepath.Join(runtimeRoot, "src", "bounds.c"),
-		filepath.Join(runtimeRoot, "src", "optional.c"),
-		filepath.Join(runtimeRoot, "src", "str.c"),
-		"-o", binary,
 	}
+	for _, sourceFile := range runtimeSourceFiles {
+		compileArgs = append(compileArgs, filepath.Join(objectsDir, strings.TrimSuffix(sourceFile, ".c")+".o"))
+	}
+	compileArgs = append(compileArgs, "-o", binary)
 	compile := exec.Command(cc, compileArgs...)
 	if output, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc compilation failed: %v\n%s", err, output)
 	}
 	return binary
+}
+
+func cachedRuntimeObjects(cc, runtimeRoot string) (string, error) {
+	runtimeObjectsOnce.Do(func() {
+		if _, err := exec.LookPath("cc"); err != nil {
+			runtimeCCMissing = true
+			runtimeObjectsErr = err
+			return
+		}
+		runtimeObjectsDir, runtimeObjectsErr = os.MkdirTemp("", "pebble-backend-runtime-")
+		if runtimeObjectsErr != nil {
+			return
+		}
+		for _, sourceFile := range runtimeSourceFiles {
+			objectFile := filepath.Join(runtimeObjectsDir, strings.TrimSuffix(sourceFile, ".c")+".o")
+			compile := exec.Command(cc,
+				"-std=c11",
+				"-Wall", "-Wextra", "-Werror",
+				"-DPEBBLE_RT_MODE_SAFE",
+				"-I", filepath.Join(runtimeRoot, "include"),
+				"-c", filepath.Join(runtimeRoot, "src", sourceFile),
+				"-o", objectFile,
+			)
+			if output, err := compile.CombinedOutput(); err != nil {
+				runtimeObjectsErr = fmt.Errorf("%s: %w\n%s", sourceFile, err, output)
+				return
+			}
+		}
+	})
+	return runtimeObjectsDir, runtimeObjectsErr
 }
 
 // compileAndRunBounded is compileAndRun for programs whose execution is not
