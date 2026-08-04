@@ -244,22 +244,28 @@ is illegal per 11 §4's decision.
       form works (switched to the explicit form). Also fixed an unrelated
       pre-existing bug in `sort()`: `push(&stack, ...)`/`pop(&stack)` used
       free-function syntax for what are actually methods.
-  - **Root-caused (not fixed yet — dispatch in flight)**: the further
-    `T0501`/`T0505`/`T0510` failure that only reproduces with the file's
-    full declaration set is almost certainly the auto-reference gap
-    tracked in the new section directly below — `sort()` calls
-    `stack.push(...)`/`stack.pop()` on `var stack = with_capacity[...](...)`,
-    exactly the broken pattern (a pointer-receiver method called
-    directly on a value-typed local). Confirmed the `mem.peb`
-    `buildDeclarations` bug this note used to compare against was
-    actually unrelated (different, already-fixed root cause — a
-    grouped-parameter source-map bug) — don't conflate the two anymore.
-- [ ] `std/string.peb` — redesign started (in progress, not committed):
-      `data []char` instead of `*char`, indexing instead of pointer
-      arithmetic. Also found and worked around, mid-redesign, a THIRD
-      real category of gap (beyond `vec.peb`'s two): `str`↔pointer casts
-      (`s as *char`, `self.data as str`, etc.) are correctly, deliberately
-      FORBIDDEN by this compiler's own spec (`06b-validation-and-typed-ir.md`'s
+  - **Progress: the auto-ref bugs (both the original gap and the
+    regression it caused) are fixed** (`ea5aecb`, `506651a` — see the
+    dedicated section below). Confirmed directly: the `T0505`
+    shape-mismatch class is gone. **One narrower residual remains**: a
+    `T0501`/`T0510` cascade that — like every other "fails only with the
+    full file" bug this session has hit — is NOT reproduced by any
+    isolated snippet tried (including the exact `push`+`reserve` pair
+    that used to fail). Not yet bisected further, not yet scoped into a
+    dispatch brief. Confirmed the `mem.peb` `buildDeclarations` bug this
+    note used to compare against was actually unrelated (different,
+    already-fixed root cause — a grouped-parameter source-map bug) —
+    don't conflate the two.
+- [x] `std/string.peb` — **fully redesigned and verified, checks
+      completely clean (0 diagnostics)**, `1a25b64`/`ea5aecb` (the
+      redesign itself plus the auto-ref fix it also needed —
+      `substr()` calls `result.reserve(...)` on a value-typed local,
+      exactly the auto-ref pattern). `data []char` instead of `*char`,
+      indexing instead of pointer arithmetic. Also found and worked
+      around, mid-redesign, a THIRD real category of gap (beyond
+      `vec.peb`'s two): `str`↔pointer casts (`s as *char`, `self.data as
+      str`, etc.) are correctly, deliberately FORBIDDEN by this
+      compiler's own spec (`06b-validation-and-typed-ir.md`'s
       primitive matrix — `str`'s only legal conversion is identity), not
       merely unimplemented — confirmed via the user directly ("We should
       not allow str to *char"). The real fix, per direct user guidance:
@@ -293,29 +299,13 @@ is illegal per 11 §4's decision.
       green, and confirmed `std/string.peb` (which needed exactly this
       pattern in `substr()`) now checks completely clean end to end
       (0 diagnostics).
-- [ ] **Regression found in the same commit, confirmed via `git worktree`
-      against the pre-fix commit (not pre-existing) — dispatch in
-      flight.** Calling a pointer-receiver method from INSIDE another
-      pointer-receiver method on an already-pointer `self`, when both
-      methods belong to the same GENERIC type, now fails:
-      ```
-      fn push[T](self *Vec[T], value T) void {
-          self.reserve(1);   // regressed by ea5aecb
-          ...
-      }
-      ```
-      This worked before `ea5aecb` and must keep working — it's the
-      exact pattern `std/vec.peb` uses throughout (`push`/`insert`/
-      `resize`/etc. all call `self.reserve(...)` from inside other
-      pointer-receiver methods) and is very likely why `vec.peb` still
-      doesn't fully check even after the auto-ref fix landed. Root-cause
-      hypothesis, not yet confirmed by the fix itself: `callMember`'s new
-      `receiverPointer` check only handles a fully-concrete resolved
-      type, not a still-generic (shape-based, unspecialized) one — so
-      inside a still-generic method body, an already-pointer `self` gets
-      misdetected as "not a pointer" and wrongly double-wrapped. Needs
-      the same two-case treatment `receiverNominal` (used for method
-      *selection*, elsewhere in the same file) already has.
+- [x] **Regression fixed.** Committed `506651a`. Confirmed hypothesis
+      exactly: `callMember`'s `receiverPointer` check needed the same
+      two-case (`resolvedType` for concrete, shape-inspection fallback
+      for still-generic) treatment `receiverNominal` already had.
+      Independently re-verified — full suite green, and confirmed
+      directly against `std/vec.peb` that the specific `T0505`
+      shape-mismatch class this regression caused is gone.
 
 **Original bug this fixed, for reference:**
 Calling a pointer-receiver method (`fn method(self *T, ...) ...`)
