@@ -1616,9 +1616,9 @@ incrementally as work proceeds.
   this time), the full pre-existing backend suite (one stale
   hardcoded-error-message assertion updated to include `int` in its
   expected text), and the full repo suite.
-- **10.46 — `pebblec`, the first real CLI driver (Phase 6)**
-  (new `compiler/cmd/pebblec` package): `backend.Emit` had never been
-  called from anywhere except Go tests until this slice. `pebblec
+- **10.46 — `pebc`, the first real CLI driver (Phase 6)**
+  (new `compiler/cmd/pebc` package): `backend.Emit` had never been
+  called from anywhere except Go tests until this slice. `pebc
   [-o path] <entry.peb>` runs the real pipeline —
   `module.FileSystemProvider` (already existed, unused until now) →
   `symbol.Resolve` → `types.New` → `check.Check` with
@@ -1632,13 +1632,13 @@ incrementally as work proceeds.
   `Emit` ever sees it — nobody had ever actually run a multi-module
   program through the C backend before, though, since every existing
   backend fixture was single-file. A real two-file `import "./helper";`
-  fixture, run end-to-end through `pebblec` and compiled/run for real,
+  fixture, run end-to-end through `pebc` and compiled/run for real,
   confirms **multi-module import already works through this backend**
   — no additional lowering work needed for that specific gap. Verified
   with four tests (single-file happy path, a real type error reported
   on stderr, a missing-entry-point error, and the multi-module proof),
   the full repo suite, and independently outside the harness — built
-  the actual `pebblec` binary, ran it against a real `.peb` file on
+  the actual `pebc` binary, ran it against a real `.peb` file on
   disk (`fn main() int { let a int = 19; let b int = 23; return a +
   b; }`), and compiled/ran its emitted C standalone, producing exit
   code 42.
