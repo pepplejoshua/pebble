@@ -408,6 +408,11 @@ func (s *Session) callMember(value Constraint) (bool, bool, bool) {
 			if key, found := s.program.typeKey(receiverType); found {
 				receiverPointer = key.Kind() == types.Pointer
 			}
+		} else if value.a.kind != termKnown {
+			root := s.find(value.a.id)
+			if root != 0 && !s.cells[root-1].error && s.cells[root-1].shape != nil {
+				receiverPointer = s.cells[root-1].shape.kind == shapePointer
+			}
 		}
 		if s.methodPointerReceivers[value.site] && !receiverPointer {
 			receiverShape = PointerShape(receiverShape)

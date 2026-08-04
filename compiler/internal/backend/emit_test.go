@@ -175,6 +175,37 @@ func TestCheckStdMemImport(t *testing.T) {
 	}
 }
 
+func TestCheckStdVecHasNoGenericPointerReceiverShapeErrors(t *testing.T) {
+	vec, err := os.ReadFile("../../../std/vec.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := os.ReadFile("../../../std/mem.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{
+		"main.peb":    []byte(`import "std:vec"; fn main() void {}`),
+		"std/vec.peb": vec,
+		"std/mem.peb": mem,
+	}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	for _, item := range diagnostics.Items() {
+		text := fmt.Sprint(item)
+		if strings.Contains(text, "T0505") {
+			t.Fatalf("std:vec still has generic pointer receiver diagnostics: %v", diagnostics.Items())
+		}
+	}
+}
+
 func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { var values []i32 = mem::new_slice[i32](3); values[0] = 42; return values[0]; }`, "main")
 	var buf bytes.Buffer
@@ -313,6 +344,10 @@ func TestEmitPointerReceiverMethodCallCompilesAndRuns(t *testing.T) {
 
 func TestEmitAutoReferencesValueForPointerReceiver(t *testing.T) {
 	emitAndRun(t, `type S = struct { n i32; fn set(self *S, value i32) void { self.n = value; } }; fn main() i32 { var s = S.{ n = 0 }; s.set(9); return s.n; }`, false, 9, false)
+}
+
+func TestEmitGenericPointerReceiverCallsSiblingMethod(t *testing.T) {
+	emitAndRun(t, `type Vec[T] = struct { value i32; fn reserve(self *Vec[i32], amount i32) void { self.value = amount; } fn push(self *Vec[i32], value i32) void { self.reserve(value); } }; fn main() i32 { var v = Vec[i32].{ value = 0 }; v.push(7); return v.value; }`, false, 7, false)
 }
 
 func TestEmitOptionalHasValueCompilesAndRuns(t *testing.T) {

@@ -95,6 +95,21 @@ fn use() void {
 	}
 }
 
+func TestCallFactsGenericPointerReceiverCallsSiblingMethod(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Vec[T] = struct {
+    value T;
+    fn reserve[T](self *Vec[T], amount T) void { self.value = amount; }
+    fn push[T](self *Vec[T], value T) void { self.reserve(value); }
+};
+fn use() void { var v = Vec[i32].{ value = 0 }; v.push(1); }
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	if solution := facts.Session.Solve(); !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("diagnostics=%+v", diagnostics.Items())
+	}
+}
+
 func TestCallFactsValueReceiverStillWorks(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 type S = struct { n i32; fn read(self S) i32 => self.n; };
