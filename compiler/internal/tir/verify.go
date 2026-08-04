@@ -777,6 +777,11 @@ func (v *verifier) verifyNode(id NodeID) {
 		v.expectChildCount(id, n, 2, 2)
 		v.expectChildCategory(id, n, 0, CategoryValue)
 		v.expectChildCategory(id, n, 1, CategoryValue)
+	case SliceFromRaw:
+		v.allowOnly(id, n, "Children")
+		v.expectChildCount(id, n, 2, 2)
+		v.expectChildCategory(id, n, 0, CategoryValue)
+		v.expectChildCategory(id, n, 1, CategoryValue)
 	case CheckedSlice:
 		v.allowOnly(id, n, "Children", "SliceStartPresent", "SliceEndPresent")
 		if v.expectChildCount(id, n, 1, 3) {

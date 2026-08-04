@@ -1,12 +1,12 @@
 unit nodes=78 components=202 snapshot=27 regions=5 functions=3 temps=0
-module id=1 package="facts" path="main.peb" source=0 span=0[0,422)
+module id=1 package="facts" path="main.peb" source=0 span=0[0,420)
   decl symbol=24
   decl symbol=27
   decl symbol=28
 funcdecl symbol=24 fid=1 node=31 span=0[3,6)
 funcdecl symbol=27 fid=2 node=33 span=0[52,58)
 funcdecl symbol=28 fid=3 node=75 span=0[73,83)
-node 1 Module type=0 span=0[0,422) syntax=0:0 symbol=1
+node 1 Module type=0 span=0[0,420) syntax=0:0 symbol=1
 node 2 ParameterDeclaration type=0 span=0[7,11) syntax=1:4 symbol=25
 node 3 ParameterDeclaration type=0 span=0[17,22) syntax=1:7 symbol=26
 node 4 ParameterDeclaration type=0 span=0[84,89) syntax=1:22 symbol=29
@@ -15,9 +15,9 @@ node 6 ParameterDeclaration type=0 span=0[112,117) syntax=1:29 symbol=31
 node 7 ParameterDeclaration type=0 span=0[123,127) syntax=1:32 symbol=32
 node 8 LocalDeclaration type=0 span=0[149,154) syntax=1:37 symbol=33
 node 9 LocalDeclaration type=0 span=0[224,229) syntax=1:55 symbol=34
-node 10 LocalDeclaration type=0 span=0[258,263) syntax=1:62 symbol=35
-node 11 LocalDeclaration type=0 span=0[296,303) syntax=1:69 symbol=36
-node 12 LocalDeclaration type=0 span=0[330,338) syntax=1:78 symbol=37
+node 10 LocalDeclaration type=0 span=0[258,261) syntax=1:62 symbol=35
+node 11 LocalDeclaration type=0 span=0[294,301) syntax=1:69 symbol=36
+node 12 LocalDeclaration type=0 span=0[328,336) syntax=1:78 symbol=37
 node 13 TypeUse type=0 span=0[12,15) syntax=1:3 typearg=9
 node 14 TypeUse type=0 span=0[23,26) syntax=1:6 typearg=9
 node 15 TypeUse type=0 span=0[28,31) syntax=1:8 typearg=9
@@ -29,9 +29,9 @@ node 20 TypeUse type=0 span=0[128,132) syntax=1:31 typearg=1
 node 21 TypeUse type=0 span=0[134,138) syntax=1:33 typearg=4
 node 22 TypeUse type=0 span=0[155,158) syntax=1:35 typearg=9
 node 23 TypeUse type=0 span=0[230,233) syntax=1:51 typearg=9
-node 24 TypeUse type=0 span=0[264,269) syntax=1:58 typearg=24
-node 25 TypeUse type=0 span=0[304,307) syntax=1:64 typearg=9
-node 26 TypeUse type=0 span=0[339,343) syntax=1:71 typearg=1
+node 24 TypeUse type=0 span=0[262,267) syntax=1:58 typearg=24
+node 25 TypeUse type=0 span=0[302,305) syntax=1:64 typearg=9
+node 26 TypeUse type=0 span=0[337,341) syntax=1:71 typearg=1
 node 27 SymbolValue type=9 span=0[35,39) syntax=1:9 symbol=25
 node 28 SymbolValue type=9 span=0[42,47) syntax=1:10 symbol=26
 node 29 CheckedArithmetic type=9 span=0[35,47) syntax=1:11 operator=57 children=[27 28]
@@ -57,30 +57,30 @@ node 48 SymbolValue type=9 span=0[242,247) syntax=1:53 symbol=31
 node 49 CheckedIndexPlace type=9 span=0[236,248) syntax=0:0 children=[47 48]
 node 50 Load type=9 span=0[236,248) syntax=1:54 children=[49]
 node 51 Initialize type=0 span=0[220,249) syntax=0:0 symbol=34 children=[50]
-node 52 SymbolValue type=24 span=0[272,278) syntax=1:59 symbol=30
-node 53 SymbolValue type=9 span=0[279,284) syntax=1:60 symbol=31
-node 54 CheckedSlice type=24 span=0[272,286) syntax=1:61 children=[52 53]
-node 55 Initialize type=0 span=0[254,287) syntax=0:0 symbol=35 children=[54]
-node 56 SymbolValue type=9 span=0[311,316) syntax=1:65 symbol=34
-node 57 CheckedNegate type=9 span=0[310,316) syntax=1:66 operator=58 children=[56]
-node 58 IntegerLiteral type=9 span=0[319,320) syntax=1:67 int=2/1
-node 59 CheckedArithmetic type=9 span=0[310,320) syntax=1:68 operator=59 children=[57 58]
-node 60 Initialize type=0 span=0[292,321) syntax=0:0 symbol=36 children=[59]
-node 61 SymbolValue type=1 span=0[346,350) syntax=1:72 symbol=32
-node 62 SymbolValue type=9 span=0[355,360) syntax=1:73 symbol=33
-node 63 IntegerLiteral type=9 span=0[363,364) syntax=1:74 int=0/1
-node 64 BinaryValue type=1 span=0[355,364) syntax=1:75 operator=74 children=[62 63]
-node 65 SourceAlias type=1 span=0[354,365) syntax=1:76 explicitCast=false children=[64]
-node 66 ShortCircuitValue type=1 span=0[346,365) syntax=1:77 operator=76 children=[61 65]
-node 67 Initialize type=0 span=0[326,366) syntax=0:0 symbol=37 children=[66]
-node 68 DirectCall type=4 span=0[371,379) syntax=1:80 convention=1 context=ForwardCurrentContext symbol=27 member=0
-node 69 ExpressionStatement type=0 span=0[371,380) syntax=1:81 children=[68]
-node 70 SymbolValue type=9 span=0[391,398) syntax=1:82 symbol=36
-node 71 Print type=0 span=0[385,399) syntax=1:83 children=[70]
-node 72 SymbolValue type=1 span=0[410,418) syntax=1:84 symbol=37
-node 73 Print type=0 span=0[404,419) syntax=1:85 children=[72]
-node 74 ImplicitReturn type=0 span=origin=0[139,421) role=implicit-return syntax=0:0 function=3 defer=[]
-node 75 Block type=0 span=0[139,421) syntax=0:0 region=5 children=[35 40 43 46 51 55 60 67 69 71 73 74]
+node 52 SymbolValue type=24 span=0[270,276) syntax=1:59 symbol=30
+node 53 SymbolValue type=9 span=0[277,282) syntax=1:60 symbol=31
+node 54 CheckedSlice type=24 span=0[270,284) syntax=1:61 children=[52 53]
+node 55 Initialize type=0 span=0[254,285) syntax=0:0 symbol=35 children=[54]
+node 56 SymbolValue type=9 span=0[309,314) syntax=1:65 symbol=34
+node 57 CheckedNegate type=9 span=0[308,314) syntax=1:66 operator=58 children=[56]
+node 58 IntegerLiteral type=9 span=0[317,318) syntax=1:67 int=2/1
+node 59 CheckedArithmetic type=9 span=0[308,318) syntax=1:68 operator=59 children=[57 58]
+node 60 Initialize type=0 span=0[290,319) syntax=0:0 symbol=36 children=[59]
+node 61 SymbolValue type=1 span=0[344,348) syntax=1:72 symbol=32
+node 62 SymbolValue type=9 span=0[353,358) syntax=1:73 symbol=33
+node 63 IntegerLiteral type=9 span=0[361,362) syntax=1:74 int=0/1
+node 64 BinaryValue type=1 span=0[353,362) syntax=1:75 operator=74 children=[62 63]
+node 65 SourceAlias type=1 span=0[352,363) syntax=1:76 explicitCast=false children=[64]
+node 66 ShortCircuitValue type=1 span=0[344,363) syntax=1:77 operator=76 children=[61 65]
+node 67 Initialize type=0 span=0[324,364) syntax=0:0 symbol=37 children=[66]
+node 68 DirectCall type=4 span=0[369,377) syntax=1:80 convention=1 context=ForwardCurrentContext symbol=27 member=0
+node 69 ExpressionStatement type=0 span=0[369,378) syntax=1:81 children=[68]
+node 70 SymbolValue type=9 span=0[389,396) syntax=1:82 symbol=36
+node 71 Print type=0 span=0[383,397) syntax=1:83 children=[70]
+node 72 SymbolValue type=1 span=0[408,416) syntax=1:84 symbol=37
+node 73 Print type=0 span=0[402,417) syntax=1:85 children=[72]
+node 74 ImplicitReturn type=0 span=origin=0[139,419) role=implicit-return syntax=0:0 function=3 defer=[]
+node 75 Block type=0 span=0[139,419) syntax=0:0 region=5 children=[35 40 43 46 51 55 60 67 69 71 73 74]
 node 76 FunctionDeclaration type=0 span=0[3,6) syntax=1:12 symbol=24 function=1 convention=1 variadic=false inline=false hasBody=true params=[25:9 26:9]
 node 77 FunctionDeclaration type=0 span=0[52,58) syntax=1:16 symbol=27 function=2 convention=1 variadic=false inline=false hasBody=true
 node 78 FunctionDeclaration type=0 span=0[73,83) syntax=1:87 symbol=28 function=3 convention=1 variadic=false inline=false hasBody=true params=[29:23 30:24 31:9 32:1]

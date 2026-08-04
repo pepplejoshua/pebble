@@ -139,6 +139,12 @@ func (p *parser) parsePrimary() NodeID {
 		p.cursor.advance()
 		value := p.parseExpression()
 		return p.tree.add(SomeExpr, source.NewSpan(p.file.ID(), token.Span.Start, p.nodeSpan(value).End), token.Kind, "", value)
+	case KwSlice:
+		p.cursor.advance()
+		pointer := p.parseExpression()
+		p.expect(Comma, "between slice pointer and count")
+		count := p.parseExpression()
+		return p.tree.add(SliceFromExpr, source.NewSpan(p.file.ID(), token.Span.Start, p.nodeSpan(count).End), token.Kind, "", pointer, count)
 	case KwSizeof:
 		p.cursor.advance()
 		typeNode := p.parseType()

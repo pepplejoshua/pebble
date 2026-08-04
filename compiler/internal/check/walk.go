@@ -336,7 +336,7 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 	case syntax.SliceExpr:
 		return w.prepareSlice(ref, node, ctx, tree)
 	case syntax.Name, syntax.Path, syntax.Literal, syntax.InterpolatedString,
-		syntax.SomeExpr, syntax.SizeofExpr, syntax.GroupedTerm, syntax.TupleTerm,
+		syntax.SomeExpr, syntax.SliceFromExpr, syntax.SizeofExpr, syntax.GroupedTerm, syntax.TupleTerm,
 		syntax.ArrayExpr, syntax.ArrayRepeatExpr, syntax.RecordExpr, syntax.RecordField,
 		syntax.PartialMemberExpr:
 		return w.prepareExpression(ref, node, ctx, tree)
@@ -534,7 +534,7 @@ func dispatchedNodeKind(kind syntax.NodeKind) bool {
 		syntax.SwitchStmt, syntax.SwitchCase, syntax.DeferStmt, syntax.PrintStmt,
 		syntax.BreakStmt, syntax.ContinueStmt, syntax.AssignmentStmt, syntax.ExpressionStmt,
 		syntax.Name, syntax.Path, syntax.Literal, syntax.InterpolatedString,
-		syntax.ContextExpr, syntax.SomeExpr, syntax.SizeofExpr, syntax.PrefixTerm,
+		syntax.ContextExpr, syntax.SomeExpr, syntax.SliceFromExpr, syntax.SizeofExpr, syntax.PrefixTerm,
 		syntax.PostfixExpr, syntax.BinaryExpr, syntax.CastExpr, syntax.CallExpr,
 		syntax.BracketApply, syntax.SliceExpr, syntax.MemberExpr, syntax.GroupedTerm,
 		syntax.TupleTerm, syntax.ArrayExpr, syntax.ArrayRepeatExpr, syntax.RecordExpr,

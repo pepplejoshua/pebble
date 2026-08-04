@@ -17,7 +17,7 @@ fn main(array [2]i32) void {
  value += 3;
  array[0] = value;
  box.value++;
- let slice []i32 = array[:1];
+ let sub []i32 = array[:1];
 }
 `)})
 	facts := run06a3(inputs, diagnostics, Config{})

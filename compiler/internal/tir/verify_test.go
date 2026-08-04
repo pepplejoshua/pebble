@@ -144,6 +144,8 @@ func validNode(t *testing.T, b *Builder, kind NodeKind, refs map[NodeID]struct{}
 		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(BoolLiteral)}}
 	case AddressOf:
 		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(StoragePlace)}}
+	case SliceFromRaw:
+		return Node{Kind: kind, Type: intType, Span: span, Children: []NodeID{ensureChild(IntegerLiteral), ensureChild(IntegerLiteral)}}
 	case StoragePlace:
 		return Node{Kind: kind, Type: intType, Span: span, Symbol: 1}
 	case DereferencePlace:
@@ -451,6 +453,8 @@ func damageNode(t *testing.T, b *Builder, kind NodeKind, n Node, refs map[NodeID
 		n.Children = nil
 	case AddressOf:
 		n.Children = nil
+	case SliceFromRaw:
+		n.Children = n.Children[:1]
 	case StoragePlace:
 		n.Symbol = 0
 	case DereferencePlace:

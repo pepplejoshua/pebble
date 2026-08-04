@@ -117,6 +117,38 @@ func buildFixture(t *testing.T, sourceText, entryName string, requireEntry bool)
 	return unit, unit.Snapshot(), entryID, sources
 }
 
+func buildStdFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet) {
+	t.Helper()
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: module.StandardPackage}, fixtureProvider{"main.peb": []byte(sourceText)}, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == entryName {
+			entryID = candidate.ID
+		}
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed: %+v", diagnostics.Items())
+	}
+	return result.IR(), result.IR().Snapshot(), entryID, sources
+}
+
+func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
+	unit, snapshot, entryID, sources := buildStdFixture(t, "fn main() i32 { var value i32 = 42; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }", "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
 func TestEmitEmptyEntryWritesC(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer

@@ -88,6 +88,27 @@ func TestParserFragmentCorpus(t *testing.T) {
 	}
 }
 
+func TestParserSliceFromExpression(t *testing.T) {
+	tree, diagnostics, sources := parseFragmentText(t, "slice.peb", "slice ptr, count", parseExpressionFragment)
+	if diagnostics.Len() != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diagnostics.Items())
+	}
+	root, ok := tree.Node(tree.Root())
+	if !ok || root.Kind() != SliceFromExpr || len(root.Children()) != 2 {
+		t.Fatalf("root = %v with %d children, want SliceFromExpr with 2", root.Kind(), len(root.Children()))
+	}
+	for i, want := range []string{"ptr", "count"} {
+		child, _ := tree.Node(root.Children()[i])
+		if child.Kind() != Name {
+			t.Fatalf("child %d = %s, want Name", i, child.Kind())
+		}
+		file, _ := sources.File(child.Span().Source)
+		if string(file.Slice(child.Span())) != want {
+			t.Fatalf("child %d spelling = %q, want %q", i, file.Slice(child.Span()), want)
+		}
+	}
+}
+
 func TestExpressionPrecedenceAndAssociativity(t *testing.T) {
 	tree, diagnostics, _ := parseFragmentText(t, "precedence.peb", "a + b * c as T - d - e", parseExpressionFragment)
 	if diagnostics.HasErrors() {

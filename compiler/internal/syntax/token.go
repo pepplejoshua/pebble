@@ -95,6 +95,7 @@ const (
 	Tilde
 	ShiftLeft
 	ShiftRight
+	KwSlice
 )
 
 var tokenKindNames = [...]string{
@@ -131,6 +132,7 @@ var tokenKindNames = [...]string{
 	KwNone:                 "none",
 	KwPrint:                "print",
 	KwReturn:               "return",
+	KwSlice:                "slice",
 	KwSizeof:               "sizeof",
 	KwSome:                 "some",
 	KwStruct:               "struct",

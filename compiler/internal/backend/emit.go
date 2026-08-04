@@ -1012,7 +1012,7 @@ func collectSliceTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 	if !ok {
 		return fmt.Errorf("slice-type walk references invalid node %d", nodeID)
 	}
-	if node.Kind == tir.CheckedSlice && isSlice(snapshot, node.Type) {
+	if (node.Kind == tir.CheckedSlice || node.Kind == tir.SliceFromRaw) && isSlice(snapshot, node.Type) {
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.Initialize {
@@ -4351,6 +4351,14 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.SliceFromRaw {
+		construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, initValue, scope, width, context)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, construction, indent, statement.Symbol), nil
+	}
 	tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol))
 	if err != nil {
 		return "", err
@@ -4361,6 +4369,35 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		fmt.Sprintf("%s%s pebble_local_%d = %s;", indent, sliceTypeName(initValue.Type), statement.Symbol, constructionExpr),
 		fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
 	}, "\n"), nil
+}
+
+func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, error) {
+	if len(node.Children) != 2 {
+		return "", fmt.Errorf("%s SliceFromRaw has %d children, want two", context, len(node.Children))
+	}
+	ptr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+	if err != nil {
+		return "", err
+	}
+	countNode, ok := unit.Node(node.Children[1])
+	if !ok {
+		return "", fmt.Errorf("%s SliceFromRaw references invalid count node", context)
+	}
+	var count string
+	if countNode.Kind == tir.SymbolValue {
+		if _, declared := scope[countNode.Symbol]; !declared {
+			return "", fmt.Errorf("%s slice count references symbol %d outside the current scope", context, countNode.Symbol)
+		}
+		count = fmt.Sprintf("pebble_local_%d", countNode.Symbol)
+	} else if countNode.Kind == tir.IntegerLiteral {
+		count = countNode.Literal.IntegerNum
+	} else {
+		count, err = buildExpr(unit, snapshot, fileSet, node.Children[1], scope, width)
+		if err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("(%s){ .data = %s, .len = (size_t)(%s) }", sliceTypeName(node.Type), ptr, count), nil
 }
 
 // buildSliceConstruction validates one CheckedSlice node (a slice expression
@@ -5756,6 +5793,9 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
 	}
+	if node.Kind == tir.SliceFromRaw {
+		return buildRawSliceConstruction(unit, snapshot, fileSet, node, locals, width, "entry function body expression")
+	}
 	// A pointer-typed node's Type is never the entry's width, so it must
 	// bypass the width gate below. This covers every shape a pointer value
 	// can take: freshly constructed (AddressOf, NilPointer), a reference to
@@ -6811,6 +6851,13 @@ func buildSliceReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			return "", "", err
 		}
 		return tempDecl, constructionExpr, nil
+	}
+	if node.Kind == tir.SliceFromRaw {
+		if node.Type != result.sliceType {
+			return "", "", fmt.Errorf("%s returns a SliceFromRaw of type %s, not %s", context, describeType(snapshot, node.Type), sliceTypeName(result.sliceType))
+		}
+		construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, node, locals, width, context)
+		return "", construction, err
 	}
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a slice-typed local in scope or a fresh slice construction (a CheckedSlice); only returning an already-declared slice-typed local or constructing a fresh slice from an array inline is supported", context, node.Kind)
 }

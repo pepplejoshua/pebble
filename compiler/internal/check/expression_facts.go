@@ -4,6 +4,7 @@ import (
 	"bytes"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
@@ -38,6 +39,7 @@ const (
 	expressionInterpolated
 	expressionContext
 	expressionSome
+	expressionSliceFrom
 	expressionSizeof
 	expressionGrouped
 	expressionTuple
@@ -95,6 +97,8 @@ type expressionPlan struct {
 	arrayLength  uint64
 	arrayKnown   bool
 	typeValue    typedValue
+	slicePointer symbol.SyntaxRef
+	sliceCount   symbol.SyntaxRef
 	record       *recordPlan
 }
 
@@ -188,6 +192,16 @@ func (w *walker) prepareExpression(ref symbol.SyntaxRef, node syntax.Node, ctx w
 				plan.typeValue = w.resolveTypeUse(symbol.SyntaxRef{Module: ref.Module, Node: id}, ctx.typeOwner, ctx.genericOwner, "sizeof type", typeUseSizeof)
 				break
 			}
+		}
+	case syntax.SliceFromExpr:
+		for _, item := range items {
+			child, _ := tree.Node(item.ref.Node)
+			if child.Kind() != syntax.Missing && child.Kind() != syntax.Error {
+				plan.children = append(plan.children, item.ref)
+			}
+		}
+		if len(plan.children) >= 2 {
+			plan.slicePointer, plan.sliceCount = plan.children[0], plan.children[1]
 		}
 	case syntax.TupleTerm:
 		w.prepareTuple(ref, node, ctx, tree, items, plan)
@@ -303,6 +317,30 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 	case syntax.SizeofExpr:
 		kind = expressionSizeof
 		value = w.expressionResult(ref, w.session.Known(w.generation.inputs.Types.Builtins().Uint), origin)
+	case syntax.SliceFromExpr:
+		kind = expressionSliceFrom
+		if plan.slicePointer == (symbol.SyntaxRef{}) || plan.sliceCount == (symbol.SyntaxRef{}) {
+			w.failExpression(ref, origin)
+			return
+		}
+		pointer := w.valuesBySyntax[plan.slicePointer]
+		count := w.valuesBySyntax[plan.sliceCount]
+		if pointer.ID == 0 || count.ID == 0 || !w.successfulExpressions[plan.slicePointer] || !w.successfulExpressions[plan.sliceCount] {
+			w.failExpression(ref, origin)
+			return
+		}
+		item, ok := w.generation.inputs.Graph.Module(ref.Module)
+		if !ok || item.Key.Package != module.StandardPackage {
+			w.generation.report("slice is restricted to the standard library package", node.Span())
+			w.failExpression(ref, origin)
+			return
+		}
+		pointee := w.session.Variable(origin)
+		w.addConstraint(infer.ConstrainShape(pointer.Term, infer.PointerShape(infer.Leaf(pointee)), origin))
+		w.addConstraint(infer.Integral(count.Term, w.originForRef(plan.sliceCount, "slice count", ctx.typeOwner, ctx.genericOwner)))
+		result := w.session.Variable(origin)
+		w.addConstraint(infer.ConstrainShape(result, infer.SliceShape(infer.Leaf(pointee)), origin))
+		value = w.expressionResult(ref, result, origin)
 	case syntax.GroupedTerm:
 		kind = expressionGrouped
 		child := w.firstChildValue(plan)

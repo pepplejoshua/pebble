@@ -364,8 +364,8 @@ fn partition[T](self *Vec[T], low usize, high usize, cmp fn(T, T) Ordering) usiz
 }
 
 // Create vector from slice by copying.
-fn from_slice[T](slice []T) Vec[T] {
-    var v = with_capacity[T](slice.len);
-    v.push_slice(slice);
+fn from_slice[T](s []T) Vec[T] {
+    var v = with_capacity[T](s.len);
+    v.push_slice(s);
     return v;
 }

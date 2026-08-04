@@ -7,7 +7,7 @@ fn operations(array [3]i32, values []i32, index i32, flag bool) void {
     local += 1;
     local++;
     let value i32 = array[index];
-    let slice []i32 = values[index:];
+    let sub []i32 = values[index:];
     let product i32 = -value * 2;
     let selected bool = flag && (local > 0);
     helper();

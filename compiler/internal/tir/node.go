@@ -14,7 +14,7 @@ import (
 // one contiguous nonzero range; maxNodeKind is the private exclusive bound.
 type NodeKind uint8
 
-// The exact 84-tag inventory, in the written order of the seven category
+// The exact 85-tag inventory, in the written order of the seven category
 // blocks from the accepted 06b specification.
 const (
 	// Declarations and nonvalue structure.
@@ -114,6 +114,7 @@ const (
 	TempBind
 	TempRead
 	Sequence
+	SliceFromRaw
 
 	maxNodeKind // private exclusive upper bound
 )
@@ -122,7 +123,7 @@ const (
 // dispatch tables. They are derived directly from the iota block above.
 const (
 	FirstNodeKind = Module
-	LastNodeKind  = Sequence
+	LastNodeKind  = SliceFromRaw
 )
 
 // nodeKindCount is the exact number of valid tags.
@@ -537,6 +538,7 @@ var nodeMetas = [nodeKindCount]nodeMeta{
 	{TempBind, "TempBind", CategoryNonvalue},
 	{TempRead, "TempRead", CategoryValue},
 	{Sequence, "Sequence", CategoryValue},
+	{SliceFromRaw, "SliceFromRaw", CategoryValue},
 }
 
 // CategoryOf returns the category for a valid kind, or false for zero or

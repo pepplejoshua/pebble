@@ -627,6 +627,7 @@ var keywords = map[string]TokenKind{
 	"none":     KwNone,
 	"print":    KwPrint,
 	"return":   KwReturn,
+	"slice":    KwSlice,
 	"sizeof":   KwSizeof,
 	"some":     KwSome,
 	"struct":   KwStruct,

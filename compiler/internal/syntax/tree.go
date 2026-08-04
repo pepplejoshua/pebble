@@ -69,6 +69,7 @@ const (
 	InterpolatedString
 	ContextExpr
 	SomeExpr
+	SliceFromExpr
 	SizeofExpr
 	PrefixTerm
 	PostfixExpr
@@ -132,6 +133,7 @@ var nodeKindNames = [...]string{
 	InterpolatedString: "InterpolatedString",
 	ContextExpr:        "ContextExpr",
 	SomeExpr:           "SomeExpr",
+	SliceFromExpr:      "SliceFromExpr",
 	SizeofExpr:         "SizeofExpr",
 	PrefixTerm:         "PrefixTerm",
 	PostfixExpr:        "PostfixExpr",

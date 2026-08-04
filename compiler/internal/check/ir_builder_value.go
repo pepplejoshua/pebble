@@ -113,6 +113,11 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		if !s.buildSizeof(record, &node) {
 			return 0, false
 		}
+	case expressionSliceFrom:
+		if len(record.Children) != 2 || !s.buildChildren(record, &node) {
+			return 0, false
+		}
+		node.Kind = tir.SliceFromRaw
 	case expressionTuple:
 		node.Kind = tir.TupleValue
 		if !s.buildChildren(record, &node) {

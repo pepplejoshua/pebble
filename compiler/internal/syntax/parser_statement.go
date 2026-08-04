@@ -59,7 +59,7 @@ func startsExpression(kind TokenKind) bool {
 	switch kind {
 	case Identifier, IntegerLiteral, FloatLiteral, StringLiteral, CharacterLiteral,
 		InterpolationStart, KwTrue, KwFalse, KwContext, KwNil, KwNone, KwSome,
-		KwSizeof, LeftParen, LeftBracket, KwFn, Dot, Minus, Bang, Ampersand, Star, Tilde:
+		KwSizeof, KwSlice, LeftParen, LeftBracket, KwFn, Dot, Minus, Bang, Ampersand, Star, Tilde:
 		return true
 	default:
 		return false

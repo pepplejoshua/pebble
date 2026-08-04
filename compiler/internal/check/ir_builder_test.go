@@ -2371,10 +2371,10 @@ func TestBuildValueCheckedSlice(t *testing.T) {
 		wantStart bool
 		wantEnd   bool
 	}{
-		{"both bounds", "fn slice(arr []i32) []i32 => arr[1:3];", 3, true, true},
-		{"start omitted", "fn slice(arr []i32) []i32 => arr[:3];", 2, false, true},
-		{"end omitted", "fn slice(arr []i32) []i32 => arr[1:];", 2, true, false},
-		{"both omitted", "fn slice(arr []i32) []i32 => arr[:];", 1, false, false},
+		{"both bounds", "fn sub(arr []i32) []i32 => arr[1:3];", 3, true, true},
+		{"start omitted", "fn sub(arr []i32) []i32 => arr[:3];", 2, false, true},
+		{"end omitted", "fn sub(arr []i32) []i32 => arr[1:];", 2, true, false},
+		{"both omitted", "fn sub(arr []i32) []i32 => arr[:];", 1, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3184,9 +3184,10 @@ func TestIRBuilderNodeKindCoverage(t *testing.T) {
 	// These kinds are therefore architecturally unneeded for this specific
 	// language's semantics, not an oversight.
 	knownUnimplementedNodeKinds := map[tir.NodeKind]bool{
-		tir.TempBind: true,
-		tir.TempRead: true,
-		tir.Sequence: true,
+		tir.TempBind:     true,
+		tir.TempRead:     true,
+		tir.Sequence:     true,
+		tir.SliceFromRaw: true,
 	}
 	for kind := tir.FirstNodeKind; kind <= tir.LastNodeKind; kind++ {
 		if knownUnimplementedNodeKinds[kind] {

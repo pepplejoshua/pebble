@@ -1,9 +1,9 @@
 extern {
-  fn alloca(sz usize) *void;
-  fn memcpy(dst *void, src *void, sz usize) void;
+  fn alloca(sz uint) *void;
+  fn memcpy(dst *void, src *void, sz uint) void;
 }
 
-fn new(size usize) *void {
+fn new(size uint) *void {
     let allocator = context.default_allocator;
     return allocator.alloc(allocator.ptr, size);
 }
@@ -12,22 +12,22 @@ fn new_typed[T]() *T {
   return new(sizeof T);
 }
 
-fn new_slice[T](count usize) []T {
+fn new_slice[T](count uint) []T {
   let allocator = context.default_allocator;
   let ptr *T = allocator.alloc(allocator.ptr, count * (sizeof T));
-  return ptr[:count];
+  return slice ptr, count;
 }
 
-fn delete_slice[T](slice *[]T) void {
-  delete(slice.data);
-  slice.data = nil;
+fn delete_slice[T](s *[]T) void {
+  delete(s.data);
+  s.data = nil;
 }
 
-fn stack_new(size usize) *void {
+fn stack_new(size uint) *void {
   return alloca(size);
 }
 
-fn realloc(data *void, size usize) *void {
+fn realloc(data *void, size uint) *void {
     let allocator = context.default_allocator;
     return allocator.realloc(allocator.ptr, data, size);
 }
@@ -37,10 +37,10 @@ fn delete(ptr *void) void {
     allocator.free(allocator.ptr, ptr);
 }
 
-fn copy(dst *void, src *void, sz usize) void {
+fn copy(dst *void, src *void, sz uint) void {
     memcpy(dst, src, sz);
 }
 
-fn align_up(value, alignment usize) usize {
+fn align_up(value, alignment uint) uint {
   return (value + alignment - 1) & ~(alignment - 1);
 }

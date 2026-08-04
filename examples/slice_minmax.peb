@@ -1,18 +1,18 @@
-fn find_min(slice []int) int {
-    var min_val = slice[0];
-    loop 1..slice.len {
-        if slice[iter] < min_val {
-            min_val = slice[iter];
+fn find_min(items []int) int {
+    var min_val = items[0];
+    loop 1..items.len {
+        if items[iter] < min_val {
+            min_val = items[iter];
         }
     }
     return min_val;
 }
 
-fn find_max(slice []int) int {
-    var max_val = slice[0];
-    loop 1..slice.len {
-        if slice[iter] > max_val {
-            max_val = slice[iter];
+fn find_max(items []int) int {
+    var max_val = items[0];
+    loop 1..items.len {
+        if items[iter] > max_val {
+            max_val = items[iter];
         }
     }
     return max_val;
