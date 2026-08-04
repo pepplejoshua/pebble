@@ -1139,6 +1139,15 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 			if isStruct(snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
+			// A pointer-typed parameter whose pointee is a struct (including
+			// a pointer-receiver method's self parameter) references the
+			// pointee's typedef in its own C signature, the same reason a
+			// plain struct parameter does above.
+			if isPointer(snapshot, param.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) {
+					collected = append(collected, pointee)
+				}
+			}
 		}
 		// A reachable helper's own result type is the same kind of source for
 		// the typedef its C signature names as its return type (10.26): a
@@ -1152,6 +1161,11 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// of gap 10.24's Parameters scan closed, for the return side.)
 		if isStruct(snapshot, helper.decl.ResultType) {
 			collected = append(collected, helper.decl.ResultType)
+		}
+		if isPointer(snapshot, helper.decl.ResultType) {
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) {
+				collected = append(collected, pointee)
+			}
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -1212,6 +1226,17 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 			// collectEnumTypes instead.
 			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) && !isEnumType(unit, snapshot, child.Type) {
 				*out = append(*out, child.Type)
+			}
+			// A pointer-typed local whose pointee is a struct (`let p *Point =
+			// ...;`) references the pointee's typedef in its own C
+			// declaration (`pebble_struct_<id>_t *`), even though the local's
+			// own Type is the pointer type, not the struct type — the body
+			// walk above only ever inspects a node's own Type, so this case
+			// is collected separately here.
+			if child, ok := unit.Node(childID); ok && isPointer(snapshot, child.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isStruct(snapshot, pointee) && !isEnumType(unit, snapshot, pointee) {
+					*out = append(*out, pointee)
+				}
 			}
 		}
 	}
@@ -1881,8 +1906,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, or a slice type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, or a slice type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, or a pointer type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
@@ -1890,8 +1915,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 			}
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want %s, char, str, a tuple/struct result type, a slice result type, or void (a called function may resolve to the entry's integer width, char, str, a tuple/struct type, a slice type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	if !isWidth(snapshot, width, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want %s, char, str, a tuple/struct result type, a slice result type, a pointer result type, or void (a called function may resolve to the entry's integer width, char, str, a tuple/struct type, a slice type, a pointer type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
@@ -2000,11 +2025,29 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				// trivially valid C.
 				params = append(params, "PebbleStr"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{isStr: true}
+			case isPointer(snapshot, param.Type):
+				// A pointer-typed parameter seeds the callee's locals scope
+				// as a pointer local (localInfo.pointerType). The C parameter
+				// is declared with the pointer type's own C type name
+				// (pointee_c_type *), so passing a pointer by value is
+				// trivially valid C. pointerTypeName takes the pointee, not
+				// the pointer type itself, so the pointee must be extracted
+				// first.
+				paramPointeeTypeID, paramPointeeOK := pointerPointeeType(snapshot, param.Type)
+				ctypeName := ""
+				if paramPointeeOK {
+					ctypeName = pointerTypeName(snapshot, paramPointeeTypeID)
+				}
+				if ctypeName == "" {
+					return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has unsupported pointer type %s", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type))
+				}
+				params = append(params, ctypeName+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{pointerType: param.Type}
 			default:
 				// validateHelperSignature rules any unsupported parameter out
 				// before a reachable helper is ever built, so this branch is
 				// defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, or a slice type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
@@ -2072,6 +2115,22 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// validateHelperSignature, so the typedef always builds.
 			returnType = sliceTypeName(helper.decl.ResultType)
 			result = resultInfo{sliceType: helper.decl.ResultType}
+		case isPointer(snapshot, helper.decl.ResultType):
+			// A pointer-result helper is declared with the pointer type's own
+			// C type name as its return type. pointerTypeName takes the
+			// pointee, not the pointer type itself (it appends " *" to the
+			// pointee's own C type), so the pointee must be extracted first.
+			// The body's tail-position Return builds its value via buildExpr
+			// (which now handles pointer-typed nodes: AddressOf, SymbolValue,
+			// NilPointer, DirectCall). resultInfo records the pointer shape
+			// so buildBlock's tail-position Return can build the value
+			// correctly.
+			pointeeTypeID, ok := pointerPointeeType(snapshot, helper.decl.ResultType)
+			if !ok {
+				return "", fmt.Errorf("called function symbol %d has unsupported pointer result type %s", helper.decl.Symbol, describeType(snapshot, helper.decl.ResultType))
+			}
+			returnType = pointerTypeName(snapshot, pointeeTypeID)
+			result = resultInfo{pointerType: helper.decl.ResultType}
 		}
 		statements, err := buildBlock(unit, snapshot, fileSet, helper.block, scope, 0, width, result, unions)
 		if err != nil {
@@ -3187,23 +3246,17 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	if !ok {
 		return "", fmt.Errorf("%s reassignment references invalid place node %d", context, statement.Children[0])
 	}
-	if place.Kind != tir.StoragePlace && place.Kind != tir.CheckedIndexPlace {
-		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope or a CheckedIndexPlace naming an element of an array or slice local", context, place.Kind)
+	if place.Kind != tir.StoragePlace && place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace {
+		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope, a CheckedIndexPlace naming an element of an array or slice local, or a DereferencePlace for a write through a pointer", context, place.Kind)
 	}
-	if place.Kind == tir.CheckedIndexPlace {
-		// An indexed element write — `arr[i] = v;` or `s[i] = v;` (10.39).
-		// The left-hand lvalue text is built entirely by buildPlaceLValue, the
-		// same bounds-checked lvalue builder the read side
-		// (Load(CheckedIndexPlace) via buildArrayPlaceRead) already uses, which
-		// handles both an array base
-		// (`arr[pebble_rt_checked_index_<w>(i, N)]`) and a slice base
-		// (`s.data[pebble_rt_checked_index_<w>(i, (<cType>)s.len)]`) and
-		// returns the resolved element type as its second value. The new value
-		// is built against that resolved element type: buildExpr for the
-		// entry's width, buildBoolExpr for bool — the same dispatch every
-		// scalar value position uses. Any other element type (a tuple element
-		// of an array/slice, confirmed checker-reachable) is a clean rejection
-		// naming the element type.
+	if place.Kind == tir.CheckedIndexPlace || place.Kind == tir.DereferencePlace {
+		// An indexed element write (`arr[i] = v;` / `s[i] = v;`) or a
+		// write-through-pointer (`*p = v;`). The left-hand lvalue text is
+		// built entirely by buildPlaceLValue, which handles both CheckedIndex
+		// (bounds-checked array/slice element) and DereferencePlace (null-
+		// checked pointer dereference). The new value is built against the
+		// resolved target type: buildExpr for the entry's width, buildBoolExpr
+		// for bool.
 		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
 			return "", err
@@ -3335,6 +3388,17 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		}
 		if targetInfo.structType != 0 {
 			return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
+		}
+		if targetInfo.pointerType != 0 {
+			// A Store whose place names a pointer-typed local is a pointer
+			// reassignment — `p = q;` or `p = nil;`. The new value is a
+			// pointer expression built by buildExpr which now handles
+			// pointer-typed nodes (AddressOf, SymbolValue, NilPointer).
+			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
 		}
 		return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 	}
@@ -3704,6 +3768,15 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// shape is a clean rejection.
 			return buildSliceLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
+		if isPointer(snapshot, initValue.Type) {
+			// A pointer-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself, same as every other
+			// compound local). The supported initializers are an AddressOf
+			// expression (`let p *i32 = &y;`), another pointer-typed local
+			// (pointer-to-pointer copy), or a nil literal; every other
+			// pointer initializer shape is a clean rejection.
+			return buildPointerLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+		}
 		core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, context, width)
 		if err != nil {
 			return "", err
@@ -3824,15 +3897,16 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // so no call site needed a second argument, the option that changes the fewest
 // existing call sites correctly.
 type localInfo struct {
-	kind       types.BuiltinKind
-	isStr      bool
-	isChar     bool
-	tuple      types.TypeID
-	array      types.TypeID
-	optional   types.TypeID
-	structType types.TypeID
-	enumType   types.TypeID
-	sliceType  types.TypeID
+	kind        types.BuiltinKind
+	isStr       bool
+	isChar      bool
+	tuple       types.TypeID
+	array       types.TypeID
+	optional    types.TypeID
+	structType  types.TypeID
+	enumType    types.TypeID
+	sliceType   types.TypeID
+	pointerType types.TypeID
 }
 
 // resultInfo records what the enclosing function's tail return must produce:
@@ -3859,12 +3933,13 @@ type localInfo struct {
 // the entry's C return type stays the integer entryReturnType regardless of
 // what a helper may return.
 type resultInfo struct {
-	kind       types.BuiltinKind
-	isStr      bool
-	isChar     bool
-	tuple      types.TypeID
-	structType types.TypeID
-	sliceType  types.TypeID
+	kind        types.BuiltinKind
+	isStr       bool
+	isChar      bool
+	tuple       types.TypeID
+	structType  types.TypeID
+	sliceType   types.TypeID
+	pointerType types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -5015,6 +5090,67 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, valueText, indent, statement.Symbol), nil
 }
 
+// buildPointerLocalDeclaration builds one pointer-typed local's declaration: a
+// `<pointee_c_type> * pebble_local_<symbol> = <init_expr>;` whose initializer
+// is an AddressOf expression (`let p *i32 = &y;`), another pointer-typed local
+// (pointer copy), or a nil literal. The local's C type is the pointee's own
+// C type name followed by ` *` (int32_t * for *i32, pebble_struct_<id>_t *
+// for *Point, etc.), resolved by pointerTypeName from the pointer type's
+// pointee. The scope entry records pointerType so a later dereference
+// (*p) or address-of (&y) resolves the pointer type correctly. Like every
+// scalar local, the declaration is followed by a (void) cast against
+// -Wunused-variable.
+func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	pointerTypeID := initValue.Type
+	pointeeTypeID, ok := pointerPointeeType(snapshot, pointerTypeID)
+	if !ok {
+		return "", fmt.Errorf("%s declares a pointer-typed local with invalid pointer type", context)
+	}
+	ctypeName := pointerTypeName(snapshot, pointeeTypeID)
+	if ctypeName == "" {
+		return "", fmt.Errorf("%s declares a pointer-typed local with unsupported pointee type %s", context, describeType(snapshot, pointeeTypeID))
+	}
+	switch initValue.Kind {
+	case tir.AddressOf:
+		// An address-of expression: `let p *i32 = &y;`. The AddressOf node
+		// has one child (the place being addressed). The emitted C is
+		// `<ctype> pebble_local_<sym> = &<place_lvalue>;`.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s address-of initializer has %d children, want exactly one", context, len(initValue.Children))
+		}
+		placeLValue, _, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s address-of place: %v", context, err)
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = &%s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, placeLValue, indent, statement.Symbol), nil
+	case tir.SymbolValue:
+		// A reference to another pointer-typed local: `let q *i32 = p;`.
+		// The emitted C is a plain assignment.
+		if _, declared := scope[initValue.Symbol]; !declared {
+			return "", fmt.Errorf("%s references symbol %d, which is not a local in scope", context, initValue.Symbol)
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	case tir.NilPointer:
+		// A nil literal: `let p *i32 = nil;`. The emitted C uses NULL.
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = NULL;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, indent, statement.Symbol), nil
+	case tir.DirectCall:
+		// A call to a pointer-returning helper used as the direct
+		// initializer of a matching pointer-typed local: `let p *i32 =
+		// helperReturningPointer();`.
+		callText, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, callText, indent, statement.Symbol), nil
+	default:
+		return "", fmt.Errorf("%s declares a pointer-typed local initialized from a %s, want an AddressOf expression, another pointer local, a pointer-returning call, or nil", context, initValue.Kind)
+	}
+}
+
 // buildStrLiteralValue builds the C text constructing a PebbleStr value from a
 // StringLiteral node's decoded bytes: the `{ .data = (const uint8_t *)
 // "<escaped>", .len = <N> }` brace text every str value is built from. It is
@@ -5605,6 +5741,45 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
 	}
+	// A pointer-typed node's Type is never the entry's width, so it must
+	// bypass the width gate below. This covers every shape a pointer value
+	// can take: freshly constructed (AddressOf, NilPointer), a reference to
+	// an existing pointer-typed local (SymbolValue), or the result of a
+	// pointer-returning helper call (DirectCall) — not just the construction
+	// forms, since a pointer local is very commonly read back by name rather
+	// than always rebuilt at each use site.
+	if isPointer(snapshot, node.Type) {
+		switch node.Kind {
+		case tir.AddressOf:
+			if len(node.Children) != 1 {
+				return "", fmt.Errorf("entry function body expression contains an AddressOf with %d children, want exactly one", len(node.Children))
+			}
+			placeLValue, _, err := buildPlaceLValue(unit, snapshot, fileSet, node.Children[0], locals, width)
+			if err != nil {
+				return "", fmt.Errorf("entry function body address-of place: %v", err)
+			}
+			pointeeTypeID, ok := pointerPointeeType(snapshot, node.Type)
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains an AddressOf with unsupported pointer type %s", describeType(snapshot, node.Type))
+			}
+			return "(" + pointerTypeName(snapshot, pointeeTypeID) + ")(&" + placeLValue + ")", nil
+		case tir.NilPointer:
+			pointeeTypeID, ok := pointerPointeeType(snapshot, node.Type)
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a NilPointer with unsupported pointer type %s", describeType(snapshot, node.Type))
+			}
+			return "(" + pointerTypeName(snapshot, pointeeTypeID) + ")(NULL)", nil
+		case tir.SymbolValue:
+			if _, declared := locals[node.Symbol]; !declared {
+				return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
+			}
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		case tir.DirectCall:
+			return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		default:
+			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
+		}
+	}
 	if !isWidth(snapshot, width, node.Type) {
 		wantName, _ := builtinName(width)
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
@@ -5712,7 +5887,10 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if place.Kind == tir.FieldPlace {
 				return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
 			}
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, or FieldPlace", place.Kind)
+			if place.Kind == tir.DereferencePlace {
+				return buildDereferencePlaceRead(unit, snapshot, fileSet, place, locals, width, node.Span, false)
+			}
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, FieldPlace, or DereferencePlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, fileSet, place, locals, width, false)
 	case tir.TupleElementValue:
@@ -6033,6 +6211,40 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	return fmt.Sprintf("%s.pebble_field_%d", baseExpr, place.Member), nil
 }
 
+// buildDereferencePlaceRead builds the C text for reading through a
+// DereferencePlace: `*pebble_rt_checked_deref_ptr(<ptr_expr>, <loc>)`. The
+// pointer expression is built by buildExpr, the null check is performed by the
+// runtime primitive, and the dereference produces the pointee value. wantBool
+// controls whether the caller expects a bool-typed result (for an `if *b` where
+// b is *bool) — the C dereference of a bool pointer yields a C bool directly.
+func buildDereferencePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, loadSpan source.Span, wantBool bool) (string, error) {
+	if len(place.Children) != 1 {
+		return "", fmt.Errorf("dereference place wants one child")
+	}
+	ptrExpr, err := buildExpr(unit, snapshot, fileSet, place.Children[0], locals, width)
+	if err != nil {
+		return "", fmt.Errorf("dereference pointer expression: %v", err)
+	}
+	checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, loadSpan))
+	// place.Type is already the pointee type, not the pointer type — a
+	// DereferencePlace's own Type is what dereferencing produces (confirmed
+	// via place_facts.go's deriveDereferencePlace, whose result is the
+	// dereferenced value), the same reason it passes buildExpr's width gate
+	// unmodified for a width-typed pointee.
+	pointeeTypeID := place.Type
+	pointeeCType := pointerTypeName(snapshot, pointeeTypeID)
+	if pointeeCType == "" {
+		return "", fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
+	}
+	castExpr := fmt.Sprintf("*(%s)(%s)", pointeeCType, checkedPtr)
+	if wantBool {
+		if !isBool(snapshot, pointeeTypeID) {
+			return "", fmt.Errorf("dereference read wants bool but pointee is %s", describeType(snapshot, pointeeTypeID))
+		}
+	}
+	return castExpr, nil
+}
+
 func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, types.TypeID, error) {
 	n, ok := unit.Node(id)
 	if !ok {
@@ -6056,8 +6268,13 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			typ = info.structType
 		case info.sliceType != 0:
 			typ = info.sliceType
+		case info.pointerType != 0:
+			typ = info.pointerType
 		default:
-			return "", 0, fmt.Errorf("symbol %d is not an aggregate local", n.Symbol)
+			// A scalar local (int, bool, char, str). buildPlaceLValue is
+			// only called for address-of and aggregate field/element access;
+			// for scalars the node's own Type is the correct types.TypeID.
+			typ = n.Type
 		}
 		return fmt.Sprintf("pebble_local_%d", n.Symbol), typ, nil
 	case tir.TuplePlace:
@@ -6138,6 +6355,28 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		}
 		lit, _ := arrayLengthLiteral(length, width)
 		return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, %s)]", base, checkedSuffix(width), idx, lit, buildSourceLoc(fileSet, n.Span)), elem, nil
+	case tir.DereferencePlace:
+		// A dereference place: `*p` used as a write target (`*p = x;`). The
+		// child is the pointer expression. The emitted C builds the pointer,
+		// runs it through pebble_rt_checked_deref_ptr for null checking, and
+		// produces `(*<checked_ptr>)` as the lvalue.
+		if len(n.Children) != 1 {
+			return "", 0, fmt.Errorf("dereference place wants one child")
+		}
+		ptrExpr, err := buildExpr(unit, snapshot, fileSet, n.Children[0], locals, width)
+		if err != nil {
+			return "", 0, fmt.Errorf("dereference pointer expression: %v", err)
+		}
+		checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, n.Span))
+		// n.Type is already the pointee type, not the pointer type (see the
+		// matching comment in buildDereferencePlaceRead).
+		pointeeTypeID := n.Type
+		pointeeCType := pointerTypeName(snapshot, pointeeTypeID)
+		if pointeeCType == "" {
+			return "", 0, fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
+		}
+		castExpr := fmt.Sprintf("*(%s)(%s)", pointeeCType, checkedPtr)
+		return castExpr, pointeeTypeID, nil
 	}
 	return "", 0, fmt.Errorf("place base %s is unsupported", n.Kind)
 }
@@ -6283,11 +6522,21 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 				return "", err
 			}
 			args[i] = arg
+		case isPointer(snapshot, param.Type):
+			// A pointer parameter: the argument is a pointer value built by
+			// buildExpr, which handles every pointer-value shape (AddressOf,
+			// a reference to a pointer-typed local, nil, or a call to a
+			// pointer-returning helper).
+			arg, err := buildExpr(unit, snapshot, fileSet, argID, locals, width)
+			if err != nil {
+				return "", err
+			}
+			args[i] = arg
 		default:
 			// validateHelperSignature rules any unsupported parameter out
 			// before a reachable helper is ever built, so this branch is
 			// defense for hand-built IR only.
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, or a tuple/struct type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	return strings.Join(args, ", "), nil
@@ -6678,7 +6927,10 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			if place.Kind == tir.FieldPlace {
 				return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, true)
 			}
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, or FieldPlace", place.Kind)
+			if place.Kind == tir.DereferencePlace {
+				return buildDereferencePlaceRead(unit, snapshot, fileSet, place, locals, width, node.Span, true)
+			}
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, FieldPlace, or DereferencePlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, fileSet, place, locals, width, true)
 	case tir.TupleElementValue:
@@ -6931,6 +7183,63 @@ func isStruct(snapshot *types.Snapshot, id types.TypeID) bool {
 	}
 	key, ok := snapshot.Key(id)
 	return ok && key.Kind() == types.Nominal
+}
+
+// isPointer reports whether id resolves to a pointer type in the snapshot. A
+// pointer-typed local is declared with the pointee's own C type followed by
+// ` *`, and its initializer is most commonly an AddressOf expression. The
+// pointer type is recognized by this distinct predicate rather than by a
+// shared scalar-builder switch, since a pointer is not a types.BuiltinKind.
+func isPointer(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.Pointer
+}
+
+// pointerPointeeType returns the pointee type of a pointer type. It is the
+// single way to extract the child of a pointer type, mirroring how
+// key.Child() works for Slice/Optional but restricted to Pointer kinds for
+// clarity at call sites.
+func pointerPointeeType(snapshot *types.Snapshot, pointerType types.TypeID) (types.TypeID, bool) {
+	key, ok := snapshot.Key(pointerType)
+	if !ok {
+		return 0, false
+	}
+	if key.Kind() != types.Pointer {
+		return 0, false
+	}
+	return key.Child()
+}
+
+// pointerTypeName returns the full C type name for a pointer to the given
+// pointee type: `int32_t *` for *i32, `bool *` for *bool, `pebble_struct_<id>_t *`
+// for *Point, `pebble_tuple_<id>_t *` for a tuple pointer, etc. The pointee
+// type must be a valid type in the snapshot. Returns "" for any unsupported
+// pointee kind (defense for hand-built IR).
+func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
+	if snapshot == nil {
+		return ""
+	}
+	if builtin, ok := snapshot.Key(pointee); ok {
+		if bk, ok := builtin.Builtin(); ok {
+			return cType(bk) + " *"
+		}
+	}
+	if isStr(snapshot, pointee) {
+		return "PebbleStr *"
+	}
+	if isTuple(snapshot, pointee) {
+		return tupleTypeName(pointee) + " *"
+	}
+	if isStruct(snapshot, pointee) {
+		return structTypeName(pointee) + " *"
+	}
+	if isSlice(snapshot, pointee) {
+		return sliceTypeName(pointee) + " *"
+	}
+	return ""
 }
 
 // arrayLengthLiteral validates that the compile-time length can be passed to

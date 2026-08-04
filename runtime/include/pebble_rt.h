@@ -103,6 +103,7 @@ typedef enum PebblePanicKind {
     PEBBLE_PANIC_TAG_MISMATCH,
     PEBBLE_PANIC_ARITHMETIC_OVERFLOW,
     PEBBLE_PANIC_DIVIDE_BY_ZERO,
+    PEBBLE_PANIC_NULL_DEREFERENCE,
     PEBBLE_PANIC_GENERIC
 } PebblePanicKind;
 
@@ -232,6 +233,17 @@ int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length, PebbleSourceL
  */
 int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length, PebbleSourceLoc loc);
+
+/* ---- checked pointer dereference --------------------------------------------
+ * A dereference of a raw pointer is null-checked: a NULL pointer panics with
+ * PEBBLE_PANIC_NULL_DEREFERENCE. Like array bounds and division by zero, this
+ * is not gated by PEBBLE_RT_MODE_SAFE/RELEASE — dereferencing NULL is
+ * undefined behavior in C with no defined "wrapped" fallback, so the check
+ * runs in every configuration. Returns ptr unchanged when non-NULL, so a call
+ * site can be used directly as the dereferenced value:
+ * *pebble_rt_checked_deref_ptr(ptr, loc).
+ */
+void *pebble_rt_checked_deref_ptr(void *ptr, PebbleSourceLoc loc);
 
 /* ---- checked optional unwrap -----------------------------------------------
  * An optional's force-unwrap (`value!`) panics with PEBBLE_PANIC_UNWRAP_FAILED

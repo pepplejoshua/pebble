@@ -20,6 +20,8 @@ static const char *panic_kind_label(PebblePanicKind kind) {
         return "arithmetic overflow";
     case PEBBLE_PANIC_DIVIDE_BY_ZERO:
         return "division by zero";
+    case PEBBLE_PANIC_NULL_DEREFERENCE:
+        return "null pointer dereference";
     case PEBBLE_PANIC_GENERIC:
         return "panic";
     }

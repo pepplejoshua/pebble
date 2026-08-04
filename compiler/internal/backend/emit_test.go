@@ -41,6 +41,7 @@ var runtimeSourceFiles = []string{
 	"bounds.c",
 	"optional.c",
 	"str.c",
+	"deref.c",
 }
 
 func TestMain(m *testing.M) {
@@ -182,16 +183,12 @@ func TestEmitMethodCallWithExplicitArgument(t *testing.T) {
 	emitAndRun(t, `type Point = struct { x i32; fn add(self Point, delta i32) i32 => self.x + delta; }; fn main() i32 { let p Point = Point.{ x = 40 }; return p.add(2); }`, false, 42, false)
 }
 
-func TestEmitRejectsPointerReceiverMethodCall(t *testing.T) {
-	unit, snapshot, entryID, sources := buildFixture(t, `type Point = struct { fn get(self *Point) i32 => 1; }; fn main() i32 { let p *Point = nil; return p.get(); }`, "main", false)
-	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, sources, &buf)
-	if err == nil {
-		t.Fatal("Emit accepted a pointer-receiver method, want unsupported parameter type rejection")
-	}
-	if !strings.Contains(err.Error(), "parameter 0") || !strings.Contains(err.Error(), "unsupported") && !strings.Contains(err.Error(), "want") {
-		t.Fatalf("pointer-receiver rejection is not descriptive: %v", err)
-	}
+func TestEmitPointerReceiverMethodCallCompilesAndRuns(t *testing.T) {
+	// Was rejected before raw pointers landed (a pointer receiver's self
+	// parameter has no backend representation until then) — since the
+	// pointer backend-lowering slice, a pointer receiver is just an ordinary
+	// pointer-typed parameter, so this now compiles and runs correctly.
+	emitAndRun(t, `type Point = struct { fn get(self *Point) i32 => 1; }; fn main() i32 { let p *Point = nil; return p.get(); }`, false, 1, false)
 }
 
 func TestEmitRejectsGenericMethodCall(t *testing.T) {
@@ -1311,11 +1308,13 @@ func buildNonI32StoreValueUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol
 
 // buildStoreToNonStoragePlaceUnit hand-builds a unit whose i32 entry body is
 // an Initialize (symbol 25 bound to 1), a Store whose first child is a
-// DereferencePlace rather than a plain StoragePlace, and the final Return of
-// 1. Real source can never produce this shape for an i32 local — a writable
-// i32 place is always a plain StoragePlace — so it is constructed directly
-// through the IR builder to exercise Emit's own requirement that a Store's
-// place is a plain StoragePlace naming a local.
+// TuplePlace rather than a plain StoragePlace, and the final Return of 1.
+// Real source can never produce this shape for an i32 local — reassigning a
+// whole tuple/struct element in place is not supported (only
+// StoragePlace/CheckedIndexPlace/DereferencePlace are accepted Store
+// targets, since pointers landed) — so it is constructed directly through
+// the IR builder to exercise Emit's own requirement that a Store's place is
+// one of those three kinds.
 func buildStoreToNonStoragePlaceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
 	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
@@ -1340,20 +1339,21 @@ func buildStoreToNonStoragePlaceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	derefBase, err := builder.AddNode(tir.Node{
-		Kind:   tir.SymbolValue,
-		Type:   i32,
-		Symbol: 25,
-		Span:   source.NewSpan(0, 0, 1),
+	tupleBase, err := builder.AddNode(tir.Node{
+		Kind:     tir.StoragePlace,
+		Type:     i32,
+		Symbol:   25,
+		Writable: true,
+		Span:     source.NewSpan(0, 0, 1),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	place, err := builder.AddNode(tir.Node{
-		Kind:     tir.DereferencePlace,
+		Kind:     tir.TuplePlace,
 		Type:     i32,
 		Writable: true,
-		Children: []tir.NodeID{derefBase},
+		Children: []tir.NodeID{tupleBase},
 		Span:     source.NewSpan(0, 0, 1),
 	})
 	if err != nil {
@@ -2173,11 +2173,11 @@ func TestEmitRejectsNonI32StoreValue(t *testing.T) {
 }
 
 func TestEmitRejectsStoreToNonStoragePlace(t *testing.T) {
-	// A Store's place must be a plain StoragePlace naming a local. Real source
-	// never produces a non-StoragePlace writable place for an i32 local, so
-	// this shape — a Store whose first child is a DereferencePlace — is
-	// hand-built through the IR builder to exercise Emit's own place-kind
-	// requirement.
+	// A Store's place must be StoragePlace, CheckedIndexPlace, or
+	// DereferencePlace. Real source never produces a TuplePlace as a Store's
+	// writable target (reassigning a whole tuple element in place is not
+	// supported), so this shape is hand-built through the IR builder to
+	// exercise Emit's own place-kind requirement.
 	unit, snapshot, entryID := buildStoreToNonStoragePlaceUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
@@ -7420,4 +7420,87 @@ func TestEmitCharWritesC(t *testing.T) {
 		}
 	}
 	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitPointerAddressOfAndDerefCompilesAndRuns(t *testing.T) {
+	// var y i32 = 5; let p *i32 = &y; return *p;
+	// Takes the address of a local and dereferences it, proving the pointer
+	// round-trip works end-to-end.
+	emitAndRun(t, "fn main() i32 { var y i32 = 5; let p *i32 = &y; return *p; }", false, 5, false)
+}
+
+func TestEmitWriteThroughPointerCompilesAndRuns(t *testing.T) {
+	// var y i32 = 5; let p *i32 = &y; *p = 9; return y;
+	// Writes through a pointer and reads back through the original variable,
+	// proving the pointer genuinely aliases y, not a copy.
+	emitAndRun(t, "fn main() i32 { var y i32 = 5; let p *i32 = &y; *p = 9; return y; }", false, 9, false)
+}
+
+func TestEmitPointerReturnFromHelperCompilesAndRuns(t *testing.T) {
+	// A helper accepts a pointer and returns it unchanged; the entry passes
+	// the address of its own local (which stays live for the whole call) and
+	// reads through the returned pointer. Proves both pointer-typed
+	// parameters and pointer-typed helper results lower correctly.
+	// fn identity(p *i32) *i32 { return p; }
+	// fn main() i32 { var x i32 = 42; let p *i32 = identity(&x); return *p; }
+	emitAndRun(t, "fn identity(p *i32) *i32 { return p; } fn main() i32 { var x i32 = 42; let p *i32 = identity(&x); return *p; }", false, 42, false)
+}
+
+func TestEmitPointerToPointerCompilesAndRuns(t *testing.T) {
+	// var y i32 = 7; let p *i32 = &y; let q *i32 = p; return *q;
+	// Pointer-to-pointer copy, then dereference through the copy.
+	emitAndRun(t, "fn main() i32 { var y i32 = 7; let p *i32 = &y; let q *i32 = p; return *q; }", false, 7, false)
+}
+
+func TestEmitNilPointerLocalCompilesAndRuns(t *testing.T) {
+	// let p *i32 = nil; return 0;
+	// Declaring a nil pointer local is valid; we just don't dereference it.
+	emitAndRun(t, "fn main() i32 { let p *i32 = nil; return 0; }", false, 0, false)
+}
+
+func TestEmitPointerReassignCompilesAndRuns(t *testing.T) {
+	// var y i32 = 5; var p *i32 = &y; var z i32 = 10; p = &z; return *p;
+	// Reassigning a pointer local to point at a different variable.
+	emitAndRun(t, "fn main() i32 { var y i32 = 5; var p *i32 = &y; var z i32 = 10; p = &z; return *p; }", false, 10, false)
+}
+
+func TestEmitPointerEmittedCContainsCheckedDeref(t *testing.T) {
+	// Verify the emitted C contains pebble_rt_checked_deref_ptr calls for
+	// dereference operations, not raw C dereferences.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y i32 = 5; let p *i32 = &y; return *p; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_deref_ptr") {
+		t.Errorf("emitted C missing pebble_rt_checked_deref_ptr call:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 5, false)
+}
+
+func TestEmitStructPointerRoundTripCompilesAndRuns(t *testing.T) {
+	t.Skip("blocked: (*p).x on a struct pointer degrades to a tir.FieldValue node (field-of-value, not field-of-place) because the checker's place-tracking doesn't extend a DereferencePlace through a field-access base in this position — confirmed the same gap blocks even materializing the whole dereferenced struct into a local (`let v Point = *p;` also fails). Needs new struct-rvalue backend support, scoped as its own follow-up in spec/compiler/proposals/11-raw-pointers-and-unsafe-ops.md.")
+	// Takes the address of a struct local, dereferences the pointer, and reads
+	// a field through the dereferenced result.
+	// type Point = struct { x i32; y i32; }
+	// fn main() i32 { var point Point = Point.{ x = 3, y = 4 }; let p *Point = &point; return (*p).x; }
+	emitAndRun(t, "type Point = struct { x i32; y i32; }; fn main() i32 { var point Point = Point.{ x = 3, y = 4 }; let p *Point = &point; return (*p).x; }", false, 3, false)
+}
+
+func TestEmitNullDerefReadPanics(t *testing.T) {
+	// A pointer whose value is nil at runtime, dereferenced on the read side.
+	// The null value is produced indirectly so the checker cannot reject it at
+	// compile time: a helper stores nil in a local and returns it.
+	// fn getNullPtr() *i32 { let p *i32 = nil; return p; }
+	// fn main() i32 { let p *i32 = getNullPtr(); return *p; }
+	// The dereference must panic with PEBBLE_PANIC_NULL_DEREFERENCE.
+	emitAndRun(t, "fn getNullPtr() *i32 { let p *i32 = nil; return p; } fn main() i32 { let p *i32 = getNullPtr(); return *p; }", false, 0, true)
+}
+
+func TestEmitNullDerefWritePanics(t *testing.T) {
+	// Same shape but assigning through the null pointer.
+	// fn getNullPtr() *i32 { let p *i32 = nil; return p; }
+	// fn main() i32 { let p *i32 = getNullPtr(); *p = 42; return 0; }
+	emitAndRun(t, "fn getNullPtr() *i32 { let p *i32 = nil; return p; } fn main() i32 { let p *i32 = getNullPtr(); *p = 42; return 0; }", false, 0, true)
 }

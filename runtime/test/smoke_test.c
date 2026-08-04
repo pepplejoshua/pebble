@@ -57,6 +57,10 @@
  *      (non-zero) location is confirmed to actually appear in the
  *      formatted output ("<file>:<line>:<column>"), not just accepted at
  *      the call site.
+ *  16. Checked pointer dereference: dereferencing NULL panics in EVERY
+ *      configuration (RELEASE included) — same reasoning as division by
+ *      zero and checked indexing, since there is no defined fallback for a
+ *      null dereference in C.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -269,6 +273,14 @@ static void trigger_div_by_zero(void) {
 
 static void trigger_div_by_zero_i64(void) {
     (void)pebble_rt_checked_div_i64(1, 0, (PebbleSourceLoc){0});
+}
+
+/* A null dereference must abort in EVERY configuration too — dereferencing
+ * NULL is undefined behavior in C with no defined fallback result, so this
+ * check runs unconditionally, same reasoning as division by zero.
+ */
+static void trigger_null_deref(void) {
+    (void)pebble_rt_checked_deref_ptr(NULL, (PebbleSourceLoc){0});
 }
 
 /* Checked array indexing: in-bounds returns the index unchanged at both
@@ -708,6 +720,15 @@ int main(void) {
         return 1;
     }
     printf("ok: division by zero panics in subprocess\n");
+
+    /* Null dereference panics in EVERY configuration — including RELEASE —
+     * same reasoning as division by zero.
+     */
+    if (verify_checked_overflow_panics("null pointer dereference", trigger_null_deref) != 0) {
+        fprintf(stderr, "smoke_test: null dereference subprocess check FAILED\n");
+        return 1;
+    }
+    printf("ok: null dereference panics in subprocess\n");
 
     test_checked_index_normal();
     printf("ok: checked index normal results\n");
