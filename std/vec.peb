@@ -1,7 +1,7 @@
 import "std:mem";
 
 type Vec[T] = struct {
-    data *T;
+    data []T;
     len uint;
     cap uint;
     backing Allocator;
@@ -21,14 +21,16 @@ type Vec[T] = struct {
             }
 
             let new_size = new_cap * (sizeof T);
-            if self.data == nil {
+            if self.cap == 0 {
                 // First allocation
                 let allocator = context.default_allocator;
                 self.backing = allocator;
-                self.data = self.backing.alloc(self.backing.ptr, new_size) as *T;
+                let ptr *T = self.backing.alloc(self.backing.ptr, new_size) as *T;
+                self.data = slice ptr, new_cap;
             } else {
                 // Reallocation
-                self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
+                let ptr *T = self.backing.realloc(self.backing.ptr, self.data.data as *void, new_size) as *T;
+                self.data = slice ptr, new_cap;
             }
             self.cap = new_cap;
         }
@@ -37,7 +39,7 @@ type Vec[T] = struct {
     // Adds an element to the end of the vector.
     fn push[T](self *Vec[T], value T) void {
         self.reserve(1);
-        *(self.data + self.len) = value;
+        self.data[self.len] = value;
         self.len++;
     }
 
@@ -48,7 +50,7 @@ type Vec[T] = struct {
         }
         self.reserve(items.len);
         // Directly copy the memory from the slice to the vector's data
-        mem::copy(self.data + self.len, items.data, items.len * (sizeof T));
+        mem::copy(&self.data[self.len] as *void, items.data as *void, items.len * (sizeof T));
         self.len += items.len;
     }
 
@@ -57,14 +59,14 @@ type Vec[T] = struct {
         if index >= self.len {
             return none;
         }
-        return some self.data + index;
+        return some &self.data[index];
     }
 
     fn get[T](self *Vec[T], index uint) ?T {
         if index >= self.len {
             return none;
         }
-        return some *(self.data + index);
+        return some self.data[index];
     }
 
     // Safe indexed mutation. Returns true if set, false if out of bounds.
@@ -72,7 +74,7 @@ type Vec[T] = struct {
         if index >= self.len {
             return false;
         }
-        *(self.data + index) = value;
+        self.data[index] = value;
         return true;
     }
 
@@ -84,9 +86,9 @@ type Vec[T] = struct {
         self.reserve(1);
         if index < self.len {
             // Shift elements right
-            mem::copy((self.data + index + 1), (self.data + index), (self.len - index) * (sizeof T));
+            mem::copy(&self.data[index + 1] as *void, &self.data[index] as *void, (self.len - index) * (sizeof T));
         }
-        *(self.data + index) = value;
+        self.data[index] = value;
         self.len++;
     }
 
@@ -95,10 +97,10 @@ type Vec[T] = struct {
         if index >= self.len {
             return none;
         }
-        let value = *(self.data + index);
+        let value = self.data[index];
         if index < self.len - 1 {
             // Shift elements left
-            mem::copy((self.data + index), (self.data + index + 1), (self.len - index - 1) * (sizeof T));
+            mem::copy(&self.data[index] as *void, &self.data[index + 1] as *void, (self.len - index - 1) * (sizeof T));
         }
         self.len--;
         return some value;
@@ -109,10 +111,10 @@ type Vec[T] = struct {
         if index >= self.len {
             return none;
         }
-        let value = *(self.data + index);
+        let value = self.data[index];
         if index < self.len - 1 {
             // Swap with last element
-            *(self.data + index) = *(self.data + self.len - 1);
+            self.data[index] = self.data[self.len - 1];
         }
         self.len--;
         return some value;
@@ -127,11 +129,13 @@ type Vec[T] = struct {
     fn shrink_to_fit[T](self *Vec[T]) void {
         if self.cap > self.len && self.len > 0 {
             let new_size = self.len * (sizeof T);
-            self.data = self.backing.realloc(self.backing.ptr, self.data, new_size) as *T;
+            let ptr *T = self.backing.realloc(self.backing.ptr, self.data.data as *void, new_size) as *T;
+            self.data = slice ptr, self.len;
             self.cap = self.len;
         } else if self.len == 0 && self.cap > 0 {
-            self.backing.free(self.backing.ptr, self.data);
-            self.data = nil;
+            self.backing.free(self.backing.ptr, self.data.data as *void);
+            let empty *T = nil;
+            self.data = slice empty, 0;
             self.cap = 0;
         }
     }
@@ -141,7 +145,7 @@ type Vec[T] = struct {
         if new_len > self.len {
             self.reserve(new_len - self.len);
             loop self.len..new_len : i {
-                *(self.data + i) = fill;
+                self.data[i] = fill;
             }
         }
         self.len = new_len;
@@ -158,9 +162,9 @@ type Vec[T] = struct {
     fn retain[T](self *Vec[T], predicate fn(T) bool) void {
         var write = 0;
         loop 0..self.len : read {
-            if predicate(*(self.data + read)) {
+            if predicate(self.data[read]) {
                 if write != read {
-                    *(self.data + write) = *(self.data + read);
+                    self.data[write] = self.data[read];
                 }
                 write++;
             }
@@ -171,7 +175,7 @@ type Vec[T] = struct {
     // Check if vector contains value.
     fn contains[T](self *Vec[T], value T) bool {
         loop 0..self.len : i {
-            if *(self.data + i) == value {
+            if self.data[i] == value {
                 return true;
             }
         }
@@ -181,7 +185,7 @@ type Vec[T] = struct {
     // Return index of first element matching predicate.
     fn find[T](self *Vec[T], predicate fn(T) bool) ?uint {
         loop 0..self.len : i {
-            if predicate(*(self.data + i)) {
+            if predicate(self.data[i]) {
                 return some i;
             }
         }
@@ -192,7 +196,7 @@ type Vec[T] = struct {
     fn find_all[T](self *Vec[T], predicate fn(T) bool) Vec[uint] {
         var result = new[uint]();
         loop 0..self.len : i {
-            if predicate(*(self.data + i)) {
+            if predicate(self.data[i]) {
                 result.push(i as uint);
             }
         }
@@ -205,7 +209,7 @@ type Vec[T] = struct {
             return false;
         }
         loop 0..self.len : i {
-            if *(self.data + i) != *(b.data + i) {
+            if self.data[i] != b.data[i] {
                 return true;  // Wait, should be != for inequality
             }
         }
@@ -217,9 +221,9 @@ type Vec[T] = struct {
         var start = 0;
         var end = self.len - 1;
         while start < end {
-            let temp = *(self.data + start);
-            *(self.data + start) = *(self.data + end);
-            *(self.data + end) = temp;
+            let temp = self.data[start];
+            self.data[start] = self.data[end];
+            self.data[end] = temp;
             start++;
             end--;
         }
@@ -237,14 +241,15 @@ type Vec[T] = struct {
             return none;
         }
         self.len--;
-        return some *(self.data + self.len);
+        return some self.data[self.len];
     }
 };
 
 // Creates a new, empty vector.
 fn new[T]() Vec[T] {
-    return .{
-        data = nil,
+    let empty *T = nil;
+    return Vec[T].{
+        data = slice empty, 0,
         len = 0,
         cap = 0,
         backing = context.default_allocator,
@@ -259,10 +264,10 @@ fn with_capacity[T](cap uint) Vec[T] {
 
     let allocator = context.default_allocator;
     let size = cap * (sizeof T);
-    let data *T = allocator.alloc(allocator.ptr, size);
+    let ptr *T = allocator.alloc(allocator.ptr, size) as *T;
 
-    return .{
-        data = data,
+    return Vec[T].{
+        data = slice ptr, cap,
         len = 0,
         cap = cap,
         backing = allocator,
@@ -271,9 +276,10 @@ fn with_capacity[T](cap uint) Vec[T] {
 
 // Frees the memory used by the vector.
 fn delete[T](self *Vec[T]) void {
-    if self.data != nil {
-        self.backing.free(self.backing.ptr, self.data);
-        self.data = nil;
+    if self.cap != 0 {
+        self.backing.free(self.backing.ptr, self.data.data as *void);
+        let empty *T = nil;
+        self.data = slice empty, 0;
     }
     self.len = 0;
     self.cap = 0;
@@ -300,10 +306,10 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
     // Use a stack for iterative partitioning
     var stack = with_capacity[(uint, uint)](self.len);  // Estimate stack size
     defer delete(&stack);
-    push(&stack, (0 as uint, self.len - 1));
+    stack.push((0 as uint, self.len - 1));
 
     while !(stack.len == 0) {
-        let stack_val = pop(&stack);
+        let stack_val = stack.pop();
         let low = stack_val!.0;
         let high = stack_val!.1;
         if low < high {
@@ -323,9 +329,9 @@ fn sort[T](self *Vec[T], cmp fn(T, T) Ordering) void {
 fn partition[T](self *Vec[T], low uint, high uint, cmp fn(T, T) Ordering) uint {
     // Median-of-three: compare low, mid, high
     let mid = low + (high - low) / 2;
-    let a = *(self.data + low);
-    let b = *(self.data + mid);
-    let c = *(self.data + high);
+    let a = self.data[low];
+    let b = self.data[mid];
+    let c = self.data[high];
 
     var pivot_idx = high;  // Default to high
     if cmp(a, b) != .Greater && cmp(b, c) != .Greater {
@@ -338,27 +344,27 @@ fn partition[T](self *Vec[T], low uint, high uint, cmp fn(T, T) Ordering) uint {
 
     // Swap pivot to end
     if pivot_idx != high {
-        let temp = *(self.data + pivot_idx);
-        *(self.data + pivot_idx) = *(self.data + high);
-        *(self.data + high) = temp;
+        let temp = self.data[pivot_idx];
+        self.data[pivot_idx] = self.data[high];
+        self.data[high] = temp;
     }
 
-    let pivot = *(self.data + high);
+    let pivot = self.data[high];
     var i = low - 1;
 
     loop low..high : j {
-        if cmp(*(self.data + j), pivot) == .Less {
+        if cmp(self.data[j], pivot) == .Less {
             i++;
-            let temp = *(self.data + i);
-            *(self.data + i) = *(self.data + j);
-            *(self.data + j) = temp;
+            let temp = self.data[i];
+            self.data[i] = self.data[j];
+            self.data[j] = temp;
         }
     }
 
     // Swap pivot into place
-    let temp = *(self.data + i + 1);
-    *(self.data + i + 1) = *(self.data + high);
-    *(self.data + high) = temp;
+    let temp = self.data[i + 1];
+    self.data[i + 1] = self.data[high];
+    self.data[high] = temp;
 
     return i + 1;
 }
