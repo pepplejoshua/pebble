@@ -3901,23 +3901,23 @@ func TestEmitArrayOutOfBoundsAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let a [2]i32 = [10, 20]; let i i32 = 2; return a[i]; }", false, 0, true)
 }
 
-func TestEmitCheckedArrayIndexEmitsPlaceholderSourceLoc(t *testing.T) {
-	// Deliberately-out-of-scope for this slice: checked array indexing is a
-	// placeholder-location category (real locations for checked_index are the
-	// next slice's job), so its emitted pebble_rt_checked_index_i32 call must
-	// carry the zero-valued (PebbleSourceLoc){0} compound literal — not a
-	// resolved location — and the fixture must still compile and run
-	// correctly end to end. This proves the slice's own two real-location
-	// categories didn't silently change (or break) a call category outside
-	// its scope.
+func TestEmitCheckedArrayIndexEmitsRealSourceLoc(t *testing.T) {
+	// Since 10.44, checked array indexing carries a real, resolved Pebble
+	// source location (the CheckedIndexPlace node's own Span) as its final
+	// argument, not the zero-valued placeholder 10.43 deliberately left here
+	// — this is one of the three checked-call categories 10.44 finished. The
+	// fixture must still compile and run correctly end to end.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[0]; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){0})") {
-		t.Errorf("emitted C lacks the placeholder source location on the checked-index call:\n%s", out)
+	if !strings.Contains(out, `pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){"main.peb", 1,`) {
+		t.Errorf("emitted C lacks a real source location on the checked-index call:\n%s", out)
+	}
+	if strings.Contains(out, "(PebbleSourceLoc){0}") {
+		t.Errorf("emitted C still uses the zero-valued source-location placeholder:\n%s", out)
 	}
 	compileAndRun(t, buf.Bytes(), 10, false)
 }
@@ -3939,7 +3939,7 @@ func TestEmitArrayWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"int32_t pebble_local_25[3] = { 10, 20, 30 };",
-		"return pebble_local_25[pebble_rt_checked_index_i32(1, 3, (PebbleSourceLoc){0})];",
+		"return pebble_local_25[pebble_rt_checked_index_i32(1, 3, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3999,7 +3999,7 @@ func TestEmitArrayRepeatWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"    int32_t pebble_local_25[3];\n    int32_t pebble_repeat_25 = 5;\n    for (size_t pebble_i_25 = 0; pebble_i_25 < 3; pebble_i_25++) {\n        pebble_local_25[pebble_i_25] = pebble_repeat_25;\n    }\n    (void)pebble_local_25;",
-		"pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){0})",
+		"pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5397,12 +5397,32 @@ func TestEmitStrIndexWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_26 = pebble_rt_str_char_at_i32(pebble_local_25, 0, (PebbleSourceLoc){0});",
+		"int32_t pebble_local_26 = pebble_rt_str_char_at_i32(pebble_local_25, 0, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
 	}
+}
+
+func TestEmitStrIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
+	// Out-of-range str indexing (s = "hi" has 2 codepoints; s[5] is out of
+	// bounds) still aborts via pebble_rt_str_char_at_i32, and since 10.44 the
+	// call carries a real, resolved Pebble source location instead of the
+	// zero-valued placeholder.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[5]; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_str_char_at_i32(") {
+		t.Errorf("emitted C missing the str char-at call:\n%s", out)
+	}
+	if strings.Contains(out, "(PebbleSourceLoc){0}") {
+		t.Errorf("emitted C still uses the zero-valued source-location placeholder:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, true)
 }
 
 func TestEmitStrIndexLiteralBaseCompilesAndRuns(t *testing.T) {
@@ -5424,7 +5444,7 @@ func TestEmitStrIndexLiteralBaseWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		`pebble_rt_str_char_at_i32((PebbleStr){ .data = (const uint8_t *)"hi", .len = 2 }, 0, (PebbleSourceLoc){0})`,
+		`pebble_rt_str_char_at_i32((PebbleStr){ .data = (const uint8_t *)"hi", .len = 2 }, 0, (PebbleSourceLoc){"main.peb"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5510,7 +5530,7 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_26 = pebble_rt_str_char_at_i64(pebble_local_25, 0, (PebbleSourceLoc){0});",
+		"int32_t pebble_local_26 = pebble_rt_str_char_at_i64(pebble_local_25, 0, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6621,6 +6641,46 @@ func TestEmitSliceIndexOutOfBoundsAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[5]; }", false, 0, true)
 }
 
+func TestEmitSliceRangeOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
+	// Since 10.44, the checked slice-range construction call also carries a
+	// real, resolved Pebble source location (the CheckedSlice node's own
+	// Span) instead of the zero-valued placeholder. This proves both that the
+	// emitted C no longer uses the placeholder anywhere and that the runtime
+	// still aborts on an invalid range (end bound past the array length).
+	unit, snapshot, entryID, sources := buildFixture(t, "fn getEnd() i32 { return 10; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var e i32 = getEnd(); var s []i32 = a[0:e]; return s[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_slice_start_i32(") {
+		t.Errorf("emitted C missing the checked slice-start call:\n%s", out)
+	}
+	if strings.Contains(out, "(PebbleSourceLoc){0}") {
+		t.Errorf("emitted C still uses the zero-valued source-location placeholder:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, true)
+}
+
+func TestEmitSliceIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
+	// Since 10.44, an out-of-bounds read through a slice (s[5] on a 2-element
+	// slice) also carries a real, resolved Pebble source location on its
+	// checked-index call instead of the zero-valued placeholder.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[5]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_index_i32(") {
+		t.Errorf("emitted C missing the checked-index call:\n%s", out)
+	}
+	if strings.Contains(out, "(PebbleSourceLoc){0}") {
+		t.Errorf("emitted C still uses the zero-valued source-location placeholder:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, true)
+}
+
 func TestEmitSliceEmittedCDirectly(t *testing.T) {
 	// Confirm the emitted C directly: slice typedef shape, construction
 	// compound-literal text (including inline checked-start call), and
@@ -6767,10 +6827,10 @@ func TestEmitSliceReturningHelperWritesC(t *testing.T) {
 	for _, want := range []string{
 		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_23_t;",
 		"static pebble_slice_23_t pebble_fn_24(PebbleContext *ctx) {",
-		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){0});",
+		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
 		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
 		"pebble_slice_23_t pebble_local_27 = pebble_fn_24(ctx);",
-		"return pebble_local_27.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_27.len, (PebbleSourceLoc){0})];",
+		"return pebble_local_27.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_27.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6792,7 +6852,7 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"int64_t *data;",
-		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){0});",
+		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
 		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
 	} {
 		if !strings.Contains(out, want) {
@@ -6820,7 +6880,7 @@ func TestEmitSliceParameterWritesC(t *testing.T) {
 	for _, want := range []string{
 		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_slice_23_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
-		"return pebble_local_25.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_25.len, (PebbleSourceLoc){0})];",
+		"return pebble_local_25.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_25.len, (PebbleSourceLoc){\"main.peb\"",
 		"return pebble_fn_24(ctx, pebble_local_28);",
 	} {
 		if !strings.Contains(out, want) {
@@ -7042,8 +7102,8 @@ func TestEmitArrayElementWriteWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"int32_t pebble_local_25[5] = { 1, 2, 3, 4, 5 };",
-		"pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){0})] = 9;",
-		"return pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){0})];",
+		"pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){\"main.peb\"",
+		"return pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7067,9 +7127,9 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_start_26 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){0});",
-		"pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){0})] = 9;",
-		"return pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){0})];",
+		"int32_t pebble_slice_start_26 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
+		"pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){\"main.peb\"",
+		"return pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

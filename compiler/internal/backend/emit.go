@@ -4404,7 +4404,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	// pebble_rt_checked_slice_start_i32/_i64 checkedSuffix(width) selects —
 	// declaring it as a fixed int32_t regardless of width would silently
 	// narrow an i64 entry's checked-start result.
-	tempDecl := fmt.Sprintf("%s%s %s = pebble_rt_checked_slice_start_%s(%s, %s, %s, (PebbleSourceLoc){0});", indent, cType(width), tempName, checkedSuffix(width), startArg, endArg, lengthLiteral)
+	tempDecl := fmt.Sprintf("%s%s %s = pebble_rt_checked_slice_start_%s(%s, %s, %s, %s);", indent, cType(width), tempName, checkedSuffix(width), startArg, endArg, lengthLiteral, buildSourceLoc(fileSet, initValue.Span))
 	constructionExpr := fmt.Sprintf("(%s){ .data = pebble_local_%d + %s, .len = (size_t)(%s - %s) }", sliceCType, baseNode.Symbol, tempName, endExpr, tempName)
 	return tempDecl, constructionExpr, nil
 }
@@ -5527,7 +5527,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 				return "", fmt.Errorf("str index: %v", err)
 			}
 		}
-		return "pebble_rt_str_char_at_" + checkedSuffix(width) + "(" + base + ", " + index + ", (PebbleSourceLoc){0})", nil
+		return "pebble_rt_str_char_at_" + checkedSuffix(width) + "(" + base + ", " + index + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a char literal, a reference to a char-typed local declared earlier in the body, a call to a char-returning function, or a str index", node.Kind)
 	}
@@ -5914,7 +5914,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 					return "", fmt.Errorf("slice index: %v", err)
 				}
 			}
-			return fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len, (PebbleSourceLoc){0})]", baseExpr, checkedSuffix(width), index, cType(width), baseExpr), nil
+			return fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len, %s)]", baseExpr, checkedSuffix(width), index, cType(width), baseExpr, buildSourceLoc(fileSet, place.Span)), nil
 		}
 	}
 	// Array-typed base: original path.
@@ -5965,7 +5965,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		}
 	}
 	literal, _ := arrayLengthLiteral(length, width)
-	return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, (PebbleSourceLoc){0})]", baseExpr, checkedSuffix(width), index, literal), nil
+	return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, %s)]", baseExpr, checkedSuffix(width), index, literal, buildSourceLoc(fileSet, place.Span)), nil
 }
 
 // buildTupleElement builds the C text for reading one element of a tuple local
@@ -6125,7 +6125,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			if !ok {
 				return "", 0, fmt.Errorf("slice type has no element type")
 			}
-			return fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len, (PebbleSourceLoc){0})]", base, checkedSuffix(width), idx, cType(width), base), elem, nil
+			return fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len, %s)]", base, checkedSuffix(width), idx, cType(width), base, buildSourceLoc(fileSet, n.Span)), elem, nil
 		}
 		key, ok := snapshot.Key(typ)
 		if !ok {
@@ -6136,7 +6136,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			return "", 0, fmt.Errorf("index base is not an array")
 		}
 		lit, _ := arrayLengthLiteral(length, width)
-		return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, (PebbleSourceLoc){0})]", base, checkedSuffix(width), idx, lit), elem, nil
+		return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, %s)]", base, checkedSuffix(width), idx, lit, buildSourceLoc(fileSet, n.Span)), elem, nil
 	}
 	return "", 0, fmt.Errorf("place base %s is unsupported", n.Kind)
 }

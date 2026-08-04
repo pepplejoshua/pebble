@@ -1561,6 +1561,31 @@ incrementally as work proceeds.
   absent-optional unwrap with `-Wall -Wextra -Werror`, producing the
   real panic report `pebble: unwrap of empty optional at
   main.peb:1:43`.
+- **10.44 — thread real source location into panic diagnostics, part
+  2 of 2** (`compiler/internal/backend`, on top of 10.43): replaces
+  every remaining placeholder `(PebbleSourceLoc){0}` call site with a
+  real, resolved location, reusing `buildSourceLoc` and the `fileSet`
+  plumbing 10.43 already threaded — no new helper, no new parameter
+  wiring. Checked array/slice indexing (`buildArrayPlaceRead`, both
+  the array- and slice-base call sites, and `buildPlaceLValue`'s
+  `CheckedIndexPlace` write-side case) now use the `CheckedIndexPlace`
+  node's own `Span`; checked slice-range construction
+  (`buildSliceConstruction`) now uses the `CheckedSlice` node's own
+  `Span`; str indexing (`buildCharOperand`'s `tir.CheckedIndex` case)
+  now uses the `CheckedIndex` node's own `Span`. Every checked-call
+  category this backend emits now carries a real Pebble source
+  location — the placeholder is gone. Verified end-to-end with four
+  new proof tests (out-of-bounds array index, out-of-bounds slice
+  element index, an invalid slice-construction range, and an
+  out-of-range str index — each panicking correctly and each confirmed
+  via the emitted C text to no longer contain
+  `(PebbleSourceLoc){0}` anywhere), the full pre-existing backend
+  suite (10.1 through 10.43, all passing unmodified except for ~14
+  hardcoded-placeholder string assertions updated to match the new
+  real-location text), and independently outside the harness —
+  manually compiled and ran the emitted C for an out-of-bounds array
+  index with `-Wall -Wextra -Werror`, producing the real panic report
+  `pebble: index out of bounds at main.peb:1:68`.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
