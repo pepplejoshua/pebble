@@ -343,6 +343,7 @@ func (s *irBuildState) resolveType(id valueID) (types.TypeID, bool) {
 func (s *irBuildState) buildDeclarations() bool {
 	s.functionRegions = make(map[symbol.SymbolID]controlID)
 	s.functionDecls = nil
+	mappedParameterRefs := make(map[symbol.SyntaxRef]struct{})
 	for _, retained := range s.handoff.Records.Records() {
 		if retained.Callable != nil {
 			c := retained.Callable
@@ -361,7 +362,13 @@ func (s *irBuildState) buildDeclarations() bool {
 					return false
 				}
 				params[i] = tir.Parameter{Symbol: ps.ID, Type: typ}
-				if _, ok := s.addNode(tir.Node{Kind: tir.ParameterDeclaration, Span: ps.Span, Symbol: ps.ID}, ps.Declaration); !ok {
+				parameterRef := ps.Declaration
+				if _, exists := mappedParameterRefs[parameterRef]; exists {
+					parameterRef = symbol.SyntaxRef{}
+				} else {
+					mappedParameterRefs[parameterRef] = struct{}{}
+				}
+				if _, ok := s.addNode(tir.Node{Kind: tir.ParameterDeclaration, Span: ps.Span, Symbol: ps.ID}, parameterRef); !ok {
 					return false
 				}
 			}

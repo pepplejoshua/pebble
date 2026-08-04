@@ -140,6 +140,41 @@ func buildStdFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, *ty
 	return result.IR(), result.IR().Snapshot(), entryID, sources
 }
 
+func buildStdMemFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet) {
+	t.Helper()
+	mem, err := os.ReadFile("../../../std/mem.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{"main.peb": []byte(sourceText), "std/mem.peb": mem}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == entryName {
+			entryID = candidate.ID
+		}
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed: %+v", diagnostics.Items())
+	}
+	return result.IR(), result.IR().Snapshot(), entryID, sources
+}
+
+func TestCheckStdMemImport(t *testing.T) {
+	unit, _, _, _ := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { return 0; }`, "main")
+	if unit == nil {
+		t.Fatal("std:mem import produced no IR")
+	}
+}
+
 func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdFixture(t, "fn main() i32 { var value i32 = 42; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }", "main")
 	var buf bytes.Buffer

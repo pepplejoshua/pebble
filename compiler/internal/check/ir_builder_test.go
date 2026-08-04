@@ -228,6 +228,13 @@ func buildUnitFixtureWithConfig(t *testing.T, source string, config Config) (*ti
 	return unit, ok
 }
 
+func TestBuildUnitGroupedParameterDeclarations(t *testing.T) {
+	unit, ok := buildUnitFixture(t, `fn grouped(value, alignment uint) uint { return value; }`)
+	if !ok || unit == nil {
+		t.Fatal("grouped parameter declaration fixture was not buildable")
+	}
+}
+
 func nodesOfKind(unit *tir.Unit, kind tir.NodeKind) []tir.NodeID {
 	var out []tir.NodeID
 	for i, node := range unit.Nodes() {
