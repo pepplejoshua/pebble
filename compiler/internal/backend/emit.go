@@ -3099,12 +3099,16 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, stateme
 // where the for statement's own syntax supplies the `;`), so the
 // place-validation and the buildExpr/buildBoolExpr dispatch live in exactly
 // one place. The place must be a plain StoragePlace naming a local in scope,
-// and the new value is validated and emitted against the local's own declared
-// type — the entry's width (buildExpr), bool (buildBoolExpr), or, since 10.36,
-// str (a new value that must be a string literal, emitted as a whole-struct
-// PebbleStr reassignment; see the isStr branch below), mirroring
-// buildLeadingStatement's Store case exactly, including its rejections of a
-// Store targeting a tuple/array/optional/struct local.
+// or, since 10.39, a CheckedIndexPlace naming an element of an array or
+// slice local (`arr[i] = v;` / `s[i] = v;`), and the new value is validated
+// and emitted against the resolved place type — the local's own declared type
+// for a StoragePlace (the entry's width via buildExpr, bool via buildBoolExpr,
+// or, since 10.36, str — a new value that must be a string literal, emitted
+// as a whole-struct PebbleStr reassignment; see the isStr branch below), or
+// the resolved element type for a CheckedIndexPlace (the entry's width via
+// buildExpr or bool via buildBoolExpr, exactly as a scalar value position
+// dispatches), mirroring buildLeadingStatement's Store case exactly, including
+// its rejections of a Store targeting a tuple/array/optional/struct local.
 func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(statement.Children) != 2 {
 		return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
@@ -3113,8 +3117,42 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node
 	if !ok {
 		return "", fmt.Errorf("%s reassignment references invalid place node %d", context, statement.Children[0])
 	}
-	if place.Kind != tir.StoragePlace {
-		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope", context, place.Kind)
+	if place.Kind != tir.StoragePlace && place.Kind != tir.CheckedIndexPlace {
+		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope or a CheckedIndexPlace naming an element of an array or slice local", context, place.Kind)
+	}
+	if place.Kind == tir.CheckedIndexPlace {
+		// An indexed element write — `arr[i] = v;` or `s[i] = v;` (10.39).
+		// The left-hand lvalue text is built entirely by buildPlaceLValue, the
+		// same bounds-checked lvalue builder the read side
+		// (Load(CheckedIndexPlace) via buildArrayPlaceRead) already uses, which
+		// handles both an array base
+		// (`arr[pebble_rt_checked_index_<w>(i, N)]`) and a slice base
+		// (`s.data[pebble_rt_checked_index_<w>(i, (<cType>)s.len)]`) and
+		// returns the resolved element type as its second value. The new value
+		// is built against that resolved element type: buildExpr for the
+		// entry's width, buildBoolExpr for bool — the same dispatch every
+		// scalar value position uses. Any other element type (a tuple element
+		// of an array/slice, confirmed checker-reachable) is a clean rejection
+		// naming the element type.
+		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, statement.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if isWidth(snapshot, width, elementType) {
+			storeValue, err := buildExpr(unit, snapshot, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
+		if isBool(snapshot, elementType) {
+			storeValue, err := buildBoolExpr(unit, snapshot, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
+		return "", fmt.Errorf("%s reassigns an element of type %s, want %s or bool", context, describeType(snapshot, elementType), wantName(width))
 	}
 	targetInfo, declared := scope[place.Symbol]
 	if !declared {

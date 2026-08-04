@@ -6649,3 +6649,121 @@ func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 	}
 	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{ret})
 }
+
+// 10.39 — indexed element writes for arrays and slices
+
+func TestEmitArrayElementWriteCompilesAndRuns(t *testing.T) {
+	// The flagship array element write: a[2] = 99 replaces the middle slot of
+	// [1,2,3,4,5], and the sum of all five slots read back (1 + 2 + 99 + 4 + 5
+	// = 111) confirms the write landed at exactly the indexed slot and
+	// clobbered nothing else — not just that the program compiled.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; a[2] = 99; return a[0] + a[1] + a[2] + a[3] + a[4]; }", false, 111, false)
+}
+
+func TestEmitSliceElementWriteCompilesAndRuns(t *testing.T) {
+	// The flagship slice element write: s = a[1:3] = [2, 3], s[0] = 9 replaces
+	// the first slot of the slice's view, and s[0] + s[1] = 9 + 3 = 12 read
+	// back confirms the write through the slice actually changed the underlying
+	// element the slice views.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; s[0] = 9; return s[0] + s[1]; }", false, 12, false)
+}
+
+func TestEmitSliceParameterElementWriteObservedByCaller(t *testing.T) {
+	// A slice-typed parameter's element written inside the helper, observed by
+	// the caller after the call returns: set writes s[0] = 9 where the caller
+	// passed s = a[1:3], so the write lands in a[1] (the slice's first slot is
+	// the caller's array's second slot — a slice is a non-owning view). The
+	// caller then reads its OWN array local a[1] and sees 9. This is the real
+	// proof the write machinery is correct — the mutation reached the same
+	// backing array the caller owns, not just some helper-local copy.
+	emitAndRun(t, "fn set(s []i32) void { s[0] = 9; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; set(s); return a[1]; }", false, 9, false)
+}
+
+func TestEmitArrayBoolElementWriteCompilesAndRuns(t *testing.T) {
+	// A bool-element array write: a[0] = true replaces a false slot, and the
+	// element read back drives an if condition — exit 1 proves the bool write
+	// landed and read back correctly (not just that it compiled).
+	emitAndRun(t, "fn main() i32 { var a [2]bool = [false, false]; a[0] = true; if a[0] { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitSliceBoolElementWriteCompilesAndRuns(t *testing.T) {
+	// A bool-element slice write: s = a[1:3] = [false, true], s[0] = true
+	// replaces the view's first (false) slot, and reading s[0] back drives an
+	// if condition — exit 1 proves the bool write through the slice landed.
+	emitAndRun(t, "fn main() i32 { var a [4]bool = [true, false, true, false]; var s []bool = a[1:3]; s[0] = true; if s[0] { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitI64ArrayElementWriteCompilesAndRuns(t *testing.T) {
+	// The width-generic path holds for writes too: an i64 entry writes an i64
+	// array element (the lvalue lowers through pebble_rt_checked_index_i64 and
+	// the RHS through buildExpr at i64), and a[1] = 21 read back is the exit
+	// code.
+	emitAndRun(t, "fn main() i64 { var a [2]i64 = [20, 22]; a[1] = 21; return a[1]; }", false, 21, false)
+}
+
+func TestEmitArrayElementWriteOutOfBoundsAborts(t *testing.T) {
+	// An out-of-bounds array element WRITE: a[i] = 9 with a runtime i = 5 on a
+	// [2]i32 array must panic through the exact same pebble_rt_checked_index_i32
+	// call the read side uses — the lvalue text is identical either way, so
+	// the write's bounds check fires at runtime (the runtime index bypasses the
+	// checker's compile-time validation), not just a compile-time rejection.
+	emitAndRun(t, "fn main() i32 { var a [2]i32 = [10, 20]; var i i32 = 5; a[i] = 9; return a[0]; }", false, 0, true)
+}
+
+func TestEmitSliceElementWriteOutOfBoundsAborts(t *testing.T) {
+	// An out-of-bounds slice element WRITE: s = a[1:3] has len 2, and s[i] = 9
+	// with a runtime i = 5 must panic through
+	// pebble_rt_checked_index_i32(i, (int32_t)s.len) at runtime.
+	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; var i i32 = 5; s[i] = 9; return s[0]; }", false, 0, true)
+}
+
+func TestEmitArrayElementWriteWritesC(t *testing.T) {
+	// The emitted C for an array element write: the Store lowers to a plain
+	// assignment expression whose lvalue is the exact bounds-checked subscript
+	// buildPlaceLValue's CheckedIndexPlace case produces for an array base —
+	// pebble_local_25[pebble_rt_checked_index_i32(0, 5)] = 9; — with no new
+	// bounds-check call site. Symbols 25 (the array local a) come from the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; a[0] = 9; return a[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_local_25[5] = { 1, 2, 3, 4, 5 };",
+		"pebble_local_25[pebble_rt_checked_index_i32(0, 5)] = 9;",
+		"return pebble_local_25[pebble_rt_checked_index_i32(0, 5)];",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 9, false)
+}
+
+func TestEmitSliceElementWriteWritesC(t *testing.T) {
+	// The emitted C for a slice element write: the Store lowers to a plain
+	// assignment expression whose lvalue is the exact bounds-checked .data
+	// subscript buildPlaceLValue's CheckedIndexPlace case produces for a slice
+	// base — pebble_local_26.data[pebble_rt_checked_index_i32(0,
+	// (int32_t)pebble_local_26.len)] = 9; — the .len bound checked against the
+	// slice's own length. Symbols 25 (array a), 26 (slice s) come from the real
+	// fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; s[0] = 9; return s[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_slice_start_26 = pebble_rt_checked_slice_start_i32(1, 3, 5);",
+		"pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len)] = 9;",
+		"return pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len)];",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 9, false)
+}

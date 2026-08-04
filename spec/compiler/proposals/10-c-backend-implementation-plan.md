@@ -1348,6 +1348,55 @@ incrementally as work proceeds.
   exit code 2 and that all three case-local temps
   (`pebble_slice_ret_19`/`_25`/`_31`) are distinct and correctly
   scoped inside their own case braces.
+- **10.39 — indexed element writes for arrays and slices**
+  (`compiler/internal/backend`): while scoping "slice element writes"
+  as a follow-up to 10.37/10.38, a real fixture revealed the gap was
+  bigger and the fix simpler than expected — **array element writes
+  were also unsupported**, not just slice ones (`buildStoreCore`
+  unconditionally rejected any `Store` whose place wasn't a plain
+  `StoragePlace`, confirmed via `a[0] = 9;` failing on a plain array
+  with no slices involved). The fix is small because the hard part
+  was already built: `buildPlaceLValue`'s own `CheckedIndexPlace` case
+  (used, until now, only by the read side —
+  `Load(CheckedIndexPlace)`) already built the correct bounds-checked
+  lvalue text for *both* an array base and a slice base. This slice
+  just routes a `CheckedIndexPlace` `Store` target through that same
+  builder — unchanged — then dispatches the right-hand value against
+  the resolved element type (the entry's width or bool), reusing
+  every existing bounds-check call site rather than hand-building a
+  new one. Confirmed reachable and correctly handled: writing to an
+  element of a slice-typed *parameter* (not just a local) resolves
+  identically to a local, since 10.38 already seeds a parameter into
+  the same scope a local uses. Confirmed out of scope and left
+  unchanged: compound assignment to an indexed place (`arr[i] += 1;`,
+  a `tir.CompoundStore` the leading-statement dispatch already
+  rejects). The non-width/bool element rejection branch is real
+  (confirmed reachable via a tuple-element array write) but is
+  currently caught earlier, at typedef-build time, before the store
+  is ever reached — retained as defense, not dead code. Verified
+  end-to-end (an array write and a slice write, each read back to
+  confirm the value actually changed, not just that it compiled; a
+  slice-typed parameter's element written inside a helper and
+  observed by the caller reading its own array afterward — the real
+  proof a slice's write reaches the same backing storage the caller
+  owns, since a slice is a non-owning view; bool-element writes for
+  both array and slice; an i64-entry write; an out-of-bounds array
+  write and an out-of-bounds slice write, both aborting at runtime
+  through the same `pebble_rt_checked_index_i32`/`_i64` calls the read
+  side already uses) and independently outside the harness — manually
+  compiled and ran the emitted C for the slice-parameter-write fixture
+  with `-Wall -Wextra -Werror`, confirming the write inside the helper
+  (`pebble_local_25.data[...] = 9;`) correctly mutated the caller's
+  own array, read back as exit code 9 after the call returned.
+
+  **Prerequisite runtime primitive** (commit `f79166f`, landed just
+  before this slice, for the *next* piece of this batch — str ordering
+  comparisons, not yet dispatched at the time 10.39 was written):
+  `pebble_rt_str_cmp` in `runtime/include/pebble_rt.h` /
+  `runtime/src/str.c`, the same `memcmp`/`strcmp` contract
+  (negative/zero/positive; a shared-prefix tie breaks toward the
+  shorter string). Verified independently via the existing
+  `runtime/test/smoke_test.c` harness in both SAFE and RELEASE modes.
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07
