@@ -22,6 +22,13 @@ func (s *Session) structuralField(receiver Term, name string, field Term, origin
 		if !ok {
 			return s.failStructural("field receiver is not a store-owned type", origin, []Term{field})
 		}
+		if key.Kind() == types.Pointer {
+			known, _ = key.Child()
+			key, ok = s.program.typeKey(known)
+			if !ok {
+				return s.failStructural("field receiver pointee is not a store-owned type", origin, []Term{field})
+			}
+		}
 		if _, _, nominal := key.Nominal(); nominal {
 			return s.hasField(receiver, name, field, origin)
 		}
@@ -52,6 +59,9 @@ func (s *Session) structuralField(receiver Term, name string, field Term, origin
 	case structuralShape:
 		if shape.kind == shapeLeaf {
 			return false, true, true
+		}
+		if shape.kind == shapePointer && len(shape.children) == 1 {
+			shape = shape.children[0]
 		}
 		if shape.kind == shapeNominal {
 			return s.hasField(receiver, name, field, origin)
@@ -173,6 +183,10 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 	var arguments []Term
 	if id, known := s.resolvedType(receiver); known {
 		key, _ := s.program.typeKey(id)
+		if key.Kind() == types.Pointer {
+			id, _ = key.Child()
+			key, _ = s.program.typeKey(id)
+		}
 		decl, ids, nominal := key.Nominal()
 		if !nominal {
 			return false, s.conflict(CodeCapability, "field receiver is not a nominal type", origin), false
@@ -187,7 +201,13 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 			return false, true, false
 		}
 		shape := s.cells[root-1].shape
-		if shape == nil || shape.kind != shapeNominal {
+		if shape == nil {
+			return false, true, true
+		}
+		if shape.kind == shapePointer && len(shape.children) == 1 {
+			shape = &shape.children[0]
+		}
+		if shape.kind != shapeNominal {
 			return false, true, true
 		}
 		declaration = shape.declaration

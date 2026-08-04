@@ -3246,10 +3246,10 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	if !ok {
 		return "", fmt.Errorf("%s reassignment references invalid place node %d", context, statement.Children[0])
 	}
-	if place.Kind != tir.StoragePlace && place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace {
-		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope, a CheckedIndexPlace naming an element of an array or slice local, or a DereferencePlace for a write through a pointer", context, place.Kind)
+	if place.Kind != tir.StoragePlace && place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace && place.Kind != tir.FieldPlace {
+		return "", fmt.Errorf("%s reassignment targets a %s, want a plain StoragePlace naming a local in scope, a CheckedIndexPlace naming an element of an array or slice local, a FieldPlace, or a DereferencePlace for a write through a pointer", context, place.Kind)
 	}
-	if place.Kind == tir.CheckedIndexPlace || place.Kind == tir.DereferencePlace {
+	if place.Kind == tir.CheckedIndexPlace || place.Kind == tir.DereferencePlace || place.Kind == tir.FieldPlace {
 		// An indexed element write (`arr[i] = v;` / `s[i] = v;`) or a
 		// write-through-pointer (`*p = v;`). The left-hand lvalue text is
 		// built entirely by buildPlaceLValue, which handles both CheckedIndex
@@ -6448,6 +6448,15 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	if err != nil {
 		return "", err
 	}
+	access := "."
+	if key, found := snapshot.Key(structType); found && key.Kind() == types.Pointer {
+		pointee, childOK := key.Child()
+		if !childOK {
+			return "", fmt.Errorf("field read pointer has no pointee")
+		}
+		structType = pointee
+		access = "->"
+	}
 	if place.Member == tir.StructuralFieldLen || place.Member == tir.StructuralFieldData {
 		name := "len"
 		if place.Member == tir.StructuralFieldData {
@@ -6458,11 +6467,11 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			return "", fmt.Errorf("structural field receiver type %d is not in the type snapshot", structType)
 		}
 		if key.Kind() == types.Slice && (name == "len" || name == "data") {
-			return baseExpr + "." + name, nil
+			return baseExpr + access + name, nil
 		}
 		if name == "len" {
 			if builtin, ok := key.Builtin(); ok && builtin == types.Str {
-				return baseExpr + ".len", nil
+				return baseExpr + access + "len", nil
 			}
 		}
 		return "", fmt.Errorf("unsupported structural field %s", name)
@@ -6480,7 +6489,7 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if !found {
 			return "", fmt.Errorf("runtime field %d is not declared", place.Member)
 		}
-		return fmt.Sprintf("%s.%s", baseExpr, field), nil
+		return fmt.Sprintf("%s%s%s", baseExpr, access, field), nil
 	}
 	if wantBool {
 		if !isBool(snapshot, fieldType) {
@@ -6489,7 +6498,7 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	} else if !isWidth(snapshot, width, fieldType) {
 		return "", fmt.Errorf("field %d has type %s, want %s", place.Member, describeType(snapshot, fieldType), wantName(width))
 	}
-	return fmt.Sprintf("%s.pebble_field_%d", baseExpr, place.Member), nil
+	return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
 }
 
 // buildDereferencePlaceRead builds the C text for reading through a
@@ -6585,14 +6594,23 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if err != nil {
 			return "", 0, err
 		}
+		access := "."
+		if key, found := snapshot.Key(typ); found && key.Kind() == types.Pointer {
+			pointee, childOK := key.Child()
+			if !childOK {
+				return "", 0, fmt.Errorf("field place pointer has no pointee")
+			}
+			typ = pointee
+			access = "->"
+		}
 		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
 		if !ok {
 			return "", 0, fmt.Errorf("field %d is not declared", n.Member)
 		}
 		if field, ok := runtimeFieldName(unit, typ, n.Member); ok {
-			return fmt.Sprintf("%s.%s", base, field), ft, nil
+			return fmt.Sprintf("%s%s%s", base, access, field), ft, nil
 		}
-		return fmt.Sprintf("%s.pebble_field_%d", base, n.Member), ft, nil
+		return fmt.Sprintf("%s%spebble_field_%d", base, access, n.Member), ft, nil
 	case tir.CheckedIndexPlace:
 		if len(n.Children) != 2 {
 			return "", 0, fmt.Errorf("index place wants two children")

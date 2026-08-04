@@ -4817,12 +4817,9 @@ func TestEmitRejectsStructWholeReassignment(t *testing.T) {
 }
 
 func TestEmitRejectsStructFieldAssignment(t *testing.T) {
-	// Assigning into a struct field after construction (point.x = 5) is out of
-	// scope this slice. The Store's place is a FieldPlace (confirmed against a
-	// real fixture), which the existing Store handling rejects as not being a
-	// plain StoragePlace — a clear error, not a guessed lowering.
-	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a plain StoragePlace")
+	// FieldPlace stores lower through the same lvalue machinery as pointer and
+	// indexed writes, preserving the mutation for the following read.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", false, 5, false)
 }
 
 func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
@@ -4928,6 +4925,10 @@ func TestEmitStructParameterCompilesAndRuns(t *testing.T) {
 	// same Load(FieldPlace) machinery a struct local uses. 20 + 22 = 42 is the
 	// process exit code.
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", false, 42, false)
+}
+
+func TestEmitPointerStructFieldReadWriteCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "type P = struct { cap i32; }; fn mutate(p *P) void { p.cap = 9; } fn main() i32 { var p P = P.{ cap = 1 }; let pointer *P = &p; mutate(pointer); return p.cap; }", false, 9, false)
 }
 
 func TestEmitStructParameterWritesC(t *testing.T) {

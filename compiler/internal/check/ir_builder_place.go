@@ -252,6 +252,16 @@ func (s *irBuildState) memberSymbol(base valueID, name string) symbol.SymbolID {
 	if !ok {
 		return 0
 	}
+	if key.Kind() == types.Pointer {
+		pointee, childOK := key.Child()
+		if !childOK {
+			return 0
+		}
+		key, ok = s.handoff.Semantics.Types().Key(pointee)
+		if !ok {
+			return 0
+		}
+	}
 	decl, _, ok := key.Nominal()
 	if !ok {
 		return 0

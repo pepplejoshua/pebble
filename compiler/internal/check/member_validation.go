@@ -61,6 +61,18 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 			if !ok {
 				continue
 			}
+			if key.Kind() == types.Pointer {
+				pointee, childOK := key.Child()
+				if !childOK {
+					report(member.Header)
+					continue
+				}
+				key, childOK = typeSnapshot.Key(pointee)
+				if !childOK {
+					report(member.Header)
+					continue
+				}
+			}
 			declaration, _, ok := key.Nominal()
 			if !ok {
 				valid := member.Name == "len" && (key.Kind() == types.Array || (key.Kind() == types.Builtin && func() bool { builtin, ok := key.Builtin(); return ok && builtin == types.Str }()))

@@ -43,6 +43,37 @@ func TestValidateMemberRecordsAcceptsFieldsTuplesVariantsAndMethods(t *testing.T
 	}
 }
 
+func TestValidateMemberRecordsAcceptsPointerFieldAccessAndWrites(t *testing.T) {
+	source := `
+type P = struct {
+    cap i32;
+    fn get(self *P) i32 => self.cap;
+    fn other(self *P) i32 => self.cap;
+};
+fn read(p *P) i32 { return p.cap; }
+fn check() i32 {
+    var p P = P.{ cap = 1 };
+    let pointer *P = &p;
+    pointer.cap = 2;
+    return pointer.get() + pointer.other() + p.cap;
+}
+`
+	diagnostics, _, _ := runMemberValidation(t, source)
+	if diagnostics.HasErrors() {
+		t.Fatalf("pointer field access was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsAcceptsPointerSliceStructuralFields(t *testing.T) {
+	source := `
+fn read[T](s *[]T) uint { return s.len; }
+`
+	diagnostics, _, _ := runMemberValidation(t, source)
+	if diagnostics.HasErrors() {
+		t.Fatalf("pointer slice structural field was rejected: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateMemberRecordsRejectsUnknownField(t *testing.T) {
 	diagnostics, handoff, records := runMemberValidation(t, memberValidationSource)
 	for _, retained := range handoff.Records.values {

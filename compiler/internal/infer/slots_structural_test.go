@@ -283,6 +283,27 @@ func TestStructuralFieldRelations(t *testing.T) {
 	assertSlotType(t, solution, arraySlot, b.Uint)
 }
 
+func TestStructuralFieldRelationsThroughPointer(t *testing.T) {
+	program, store := testProgram(t)
+	b := store.Builtins()
+	slice := mustType(t, store, types.SliceKey(b.I32))
+	pointerSlice := mustType(t, store, types.PointerKey(slice))
+	data := mustType(t, store, types.PointerKey(b.I32))
+	session := NewSession(program, diagnostic.NewDiagnosticSet(), Config{})
+	length := session.Variable(Origin{})
+	dataValue := session.Variable(Origin{})
+	session.Add(StructuralField(session.Known(pointerSlice), "len", length, Origin{}))
+	session.Add(StructuralField(session.Known(pointerSlice), "data", dataValue, Origin{}))
+	lengthSlot := session.PublishSlot(length)
+	dataSlot := session.PublishSlot(dataValue)
+	solution := session.Solve()
+	if !solution.Successful() {
+		t.Fatalf("pointer structural fields did not solve")
+	}
+	assertSlotType(t, solution, lengthSlot, b.Uint)
+	assertSlotType(t, solution, dataSlot, data)
+}
+
 func TestStructuralFailuresCrossSessionAndRigidRecovery(t *testing.T) {
 	program, store := testProgram(t)
 	b := store.Builtins()
