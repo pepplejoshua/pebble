@@ -6,7 +6,10 @@
  * CheckedArithmetic/CheckedNegate nodes (spec 06b leaves "release-mode
  * response to phase 10"; this file is that decision). Each public function
  * exists twice, at i32 and i64 width (matching the header's declarations);
- * the i64 variants are the exact same contract at the wider width.
+ * the i64 variants are the exact same contract at the wider width. Every
+ * function also takes a PebbleSourceLoc (see pebble_rt.h), the Pebble
+ * source location of the checked expression, threaded into a panic report
+ * so it names where in the user's own program the fault happened.
  *
  * Two modes, selected by the same macro the header guards on:
  *
@@ -18,7 +21,9 @@
  *                           undefined behavior in C, so the release path
  *                           never uses plain signed + - * ; it casts to
  *                           uint32_t/uint64_t, does the operation unsigned
- *                           (defined wraparound), and casts back.
+ *                           (defined wraparound), and casts back. loc is
+ *                           accepted but unused on this path (no panic is
+ *                           ever raised), silenced with (void)loc.
  *
  * The SAFE path detects overflow with the compiler's own overflow-checking
  * builtins (__builtin_*_overflow), which report overflow without the code
@@ -36,35 +41,36 @@
 
 #if defined(PEBBLE_RT_MODE_SAFE)
 
-static void pebble_rt_overflow_panic(const char *message) {
+static void pebble_rt_overflow_panic(const char *message, PebbleSourceLoc loc) {
     PebblePanicInfo info;
     info.kind = PEBBLE_PANIC_ARITHMETIC_OVERFLOW;
     info.message = message;
-    info.file = NULL;
-    info.line = 0;
+    info.file = loc.file;
+    info.line = loc.line;
+    info.column = loc.column;
     pebble_rt_panic(&info);
 }
 
-int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     int32_t result;
     if (__builtin_add_overflow(a, b, &result)) {
-        pebble_rt_overflow_panic("i32 addition overflow");
+        pebble_rt_overflow_panic("i32 addition overflow", loc);
     }
     return result;
 }
 
-int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     int32_t result;
     if (__builtin_sub_overflow(a, b, &result)) {
-        pebble_rt_overflow_panic("i32 subtraction overflow");
+        pebble_rt_overflow_panic("i32 subtraction overflow", loc);
     }
     return result;
 }
 
-int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     int32_t result;
     if (__builtin_mul_overflow(a, b, &result)) {
-        pebble_rt_overflow_panic("i32 multiplication overflow");
+        pebble_rt_overflow_panic("i32 multiplication overflow", loc);
     }
     return result;
 }
@@ -73,10 +79,10 @@ int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b) {
  * representable in i32. __builtin_sub_overflow(0, a, ...) reports exactly
  * that case.
  */
-int32_t pebble_rt_checked_neg_i32(int32_t a) {
+int32_t pebble_rt_checked_neg_i32(int32_t a, PebbleSourceLoc loc) {
     int32_t result;
     if (__builtin_sub_overflow(0, a, &result)) {
-        pebble_rt_overflow_panic("i32 negation overflow");
+        pebble_rt_overflow_panic("i32 negation overflow", loc);
     }
     return result;
 }
@@ -88,26 +94,26 @@ int32_t pebble_rt_checked_neg_i32(int32_t a) {
  * path wraps via uint64_t arithmetic the same way the i32 path wraps via
  * uint32_t.
  */
-int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     int64_t result;
     if (__builtin_add_overflow(a, b, &result)) {
-        pebble_rt_overflow_panic("i64 addition overflow");
+        pebble_rt_overflow_panic("i64 addition overflow", loc);
     }
     return result;
 }
 
-int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     int64_t result;
     if (__builtin_sub_overflow(a, b, &result)) {
-        pebble_rt_overflow_panic("i64 subtraction overflow");
+        pebble_rt_overflow_panic("i64 subtraction overflow", loc);
     }
     return result;
 }
 
-int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     int64_t result;
     if (__builtin_mul_overflow(a, b, &result)) {
-        pebble_rt_overflow_panic("i64 multiplication overflow");
+        pebble_rt_overflow_panic("i64 multiplication overflow", loc);
     }
     return result;
 }
@@ -116,45 +122,53 @@ int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b) {
  * representable in i64. __builtin_sub_overflow(0, a, ...) reports exactly
  * that case.
  */
-int64_t pebble_rt_checked_neg_i64(int64_t a) {
+int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
     int64_t result;
     if (__builtin_sub_overflow(0, a, &result)) {
-        pebble_rt_overflow_panic("i64 negation overflow");
+        pebble_rt_overflow_panic("i64 negation overflow", loc);
     }
     return result;
 }
 
 #else /* PEBBLE_RT_MODE_RELEASE */
 
-int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
+    (void)loc;
     return (int32_t)((uint32_t)a + (uint32_t)b);
 }
 
-int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
+    (void)loc;
     return (int32_t)((uint32_t)a - (uint32_t)b);
 }
 
-int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
+    (void)loc;
     return (int32_t)((uint32_t)a * (uint32_t)b);
 }
 
-int32_t pebble_rt_checked_neg_i32(int32_t a) {
+int32_t pebble_rt_checked_neg_i32(int32_t a, PebbleSourceLoc loc) {
+    (void)loc;
     return (int32_t)(0u - (uint32_t)a);
 }
 
-int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
+    (void)loc;
     return (int64_t)((uint64_t)a + (uint64_t)b);
 }
 
-int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
+    (void)loc;
     return (int64_t)((uint64_t)a - (uint64_t)b);
 }
 
-int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
+    (void)loc;
     return (int64_t)((uint64_t)a * (uint64_t)b);
 }
 
-int64_t pebble_rt_checked_neg_i64(int64_t a) {
+int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
+    (void)loc;
     return (int64_t)(0u - (uint64_t)a);
 }
 
@@ -187,12 +201,13 @@ int64_t pebble_rt_checked_neg_i64(int64_t a) {
  * no invented division algorithm.
  */
 
-static void pebble_rt_div_by_zero_panic(const char *message) {
+static void pebble_rt_div_by_zero_panic(const char *message, PebbleSourceLoc loc) {
     PebblePanicInfo info;
     info.kind = PEBBLE_PANIC_DIVIDE_BY_ZERO;
     info.message = message;
-    info.file = NULL;
-    info.line = 0;
+    info.file = loc.file;
+    info.line = loc.line;
+    info.column = loc.column;
     pebble_rt_panic(&info);
 }
 
@@ -203,28 +218,29 @@ static void pebble_rt_div_by_zero_panic(const char *message) {
  * release handles +, -, *). Shared by both widths, which differ only in the
  * boundary value and the panic message.
  */
-static int64_t pebble_rt_min_div_minus_one(int64_t min, const char *message) {
+static int64_t pebble_rt_min_div_minus_one(int64_t min, const char *message, PebbleSourceLoc loc) {
 #if defined(PEBBLE_RT_MODE_SAFE)
-    pebble_rt_overflow_panic(message);
+    pebble_rt_overflow_panic(message, loc);
 #else
     (void)message;
+    (void)loc;
 #endif
     return min;
 }
 
-int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     if (b == 0) {
-        pebble_rt_div_by_zero_panic("i32 division by zero");
+        pebble_rt_div_by_zero_panic("i32 division by zero", loc);
     }
     if (a == INT32_MIN && b == -1) {
-        return (int32_t)pebble_rt_min_div_minus_one(INT32_MIN, "i32 division overflow");
+        return (int32_t)pebble_rt_min_div_minus_one(INT32_MIN, "i32 division overflow", loc);
     }
     return a / b;
 }
 
-int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b) {
+int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     if (b == 0) {
-        pebble_rt_div_by_zero_panic("i32 division by zero");
+        pebble_rt_div_by_zero_panic("i32 division by zero", loc);
     }
     if (a == INT32_MIN && b == -1) {
         return 0;
@@ -232,19 +248,19 @@ int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b) {
     return a % b;
 }
 
-int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     if (b == 0) {
-        pebble_rt_div_by_zero_panic("i64 division by zero");
+        pebble_rt_div_by_zero_panic("i64 division by zero", loc);
     }
     if (a == INT64_MIN && b == -1) {
-        return pebble_rt_min_div_minus_one(INT64_MIN, "i64 division overflow");
+        return pebble_rt_min_div_minus_one(INT64_MIN, "i64 division overflow", loc);
     }
     return a / b;
 }
 
-int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b) {
+int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     if (b == 0) {
-        pebble_rt_div_by_zero_panic("i64 division by zero");
+        pebble_rt_div_by_zero_panic("i64 division by zero", loc);
     }
     if (a == INT64_MIN && b == -1) {
         return 0;

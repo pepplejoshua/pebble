@@ -111,6 +111,8 @@ typedef struct PebblePanicInfo {
     const char *message; /* non-owning, must outlive the call */
     const char *file;    /* non-owning; NULL if unavailable */
     size_t line;         /* 0 if unavailable */
+    size_t column;       /* 0 if unavailable (1-based Unicode-scalar column,
+                           * meaningless without a nonzero line) */
 } PebblePanicInfo;
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -120,6 +122,27 @@ typedef struct PebblePanicInfo {
 #endif
 
 PEBBLE_RT_NORETURN void pebble_rt_panic(const PebblePanicInfo *info);
+
+/* ---- checked-operation source location -------------------------------------
+ * Every pebble_rt_checked_* function below takes one of these as its final
+ * argument: the Pebble *source* location (not the generated C's) of the
+ * expression the check guards, so a panic report names where the fault is in
+ * the program the user actually wrote, not a line in this backend's
+ * generated C. The compiler resolves this at each call site from the typed
+ * IR node's own Span (compiler/internal/source.Span, via
+ * File.Position(offset)) and emits it as a compound-literal argument,
+ * e.g. pebble_rt_checked_add_i32(x, y, (PebbleSourceLoc){"main.peb", 12, 5}).
+ * file is non-owning and must be a string literal or otherwise outlive the
+ * call (the compiler always emits a C string literal here); line and column
+ * are 0 when genuinely unavailable (e.g. a hand-built IR node with no
+ * authored span), in which case the resulting panic report omits location
+ * entirely, the same as before this field existed.
+ */
+typedef struct PebbleSourceLoc {
+    const char *file;
+    size_t line;
+    size_t column;
+} PebbleSourceLoc;
 
 /* ---- checked arithmetic ----------------------------------------------------
  * The compiler's typed IR retains CheckedArithmetic/CheckedNegate nodes with
@@ -137,15 +160,15 @@ PEBBLE_RT_NORETURN void pebble_rt_panic(const PebblePanicInfo *info);
  * width — same overflow-panic-in-SAFE / wrap-in-RELEASE split, same
  * two's-complement wraparound computed via unsigned arithmetic.
  */
-int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b);
-int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b);
-int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b);
-int32_t pebble_rt_checked_neg_i32(int32_t a);
+int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
+int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
+int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
+int32_t pebble_rt_checked_neg_i32(int32_t a, PebbleSourceLoc loc);
 
-int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b);
-int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b);
-int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b);
-int64_t pebble_rt_checked_neg_i64(int64_t a);
+int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc);
 
 /* ---- checked division and modulo -------------------------------------------
  * Division and modulo have a fault case wraparound cannot fix: b == 0 has no
@@ -173,11 +196,11 @@ int64_t pebble_rt_checked_neg_i64(int64_t a);
  * RELEASE-wraps-to-INT64_MIN convention, and INT64_MIN % -1 is 0 in both
  * modes, never evaluated directly.
  */
-int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b);
-int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b);
+int32_t pebble_rt_checked_div_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
+int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
 
-int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b);
-int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b);
+int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 
 /* ---- checked array indexing -------------------------------------------------
  * A fixed-length array's element access is bounds-checked: an index outside
@@ -193,8 +216,8 @@ int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b);
  * bounds, so a call site can be used directly as the emitted array subscript:
  * arr[pebble_rt_checked_index_i32(idx, N)].
  */
-int32_t pebble_rt_checked_index_i32(int32_t index, int32_t length);
-int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length);
+int32_t pebble_rt_checked_index_i32(int32_t index, int32_t length, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length, PebbleSourceLoc loc);
 
 /* ---- checked slice range ---------------------------------------------------
  * A slice expression (arr[start:end]) validates 0 <= start <= end <= length
@@ -207,8 +230,8 @@ int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length);
  * (the slice's own length is then simply end - start, itself already proven
  * non-negative by this check, so no separate helper computes it).
  */
-int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length);
-int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length);
+int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length, PebbleSourceLoc loc);
 
 /* ---- checked optional unwrap -----------------------------------------------
  * An optional's force-unwrap (`value!`) panics with PEBBLE_PANIC_UNWRAP_FAILED
@@ -221,9 +244,9 @@ int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t le
  * return the payload unchanged", one function per payload width/type this
  * backend supports.
  */
-int32_t pebble_rt_checked_unwrap_i32(bool has_value, int32_t value);
-int64_t pebble_rt_checked_unwrap_i64(bool has_value, int64_t value);
-bool pebble_rt_checked_unwrap_bool(bool has_value, bool value);
+int32_t pebble_rt_checked_unwrap_i32(bool has_value, int32_t value, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_unwrap_i64(bool has_value, int64_t value, PebbleSourceLoc loc);
+bool pebble_rt_checked_unwrap_bool(bool has_value, bool value, PebbleSourceLoc loc);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend
@@ -271,8 +294,8 @@ int pebble_rt_str_cmp(PebbleStr a, PebbleStr b);
  * is a full Unicode scalar value, not a single byte, matching tir.Literal's
  * own `Char rune` field, Go's rune being an int32 alias).
  */
-int32_t pebble_rt_str_char_at_i32(PebbleStr s, int32_t index);
-int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index);
+int32_t pebble_rt_str_char_at_i32(PebbleStr s, int32_t index, PebbleSourceLoc loc);
+int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index, PebbleSourceLoc loc);
 
 #ifndef PEBBLE_RT_FREESTANDING
 /* ---- hosted argument adaptation --------------------------------------------

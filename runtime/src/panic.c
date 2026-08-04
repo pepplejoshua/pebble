@@ -51,7 +51,9 @@ PEBBLE_RT_NORETURN void pebble_rt_panic(const PebblePanicInfo *info) {
         fprintf(stderr, ": %s", info->message);
     }
     if (info->file != NULL) {
-        if (info->line != 0) {
+        if (info->line != 0 && info->column != 0) {
+            fprintf(stderr, " at %s:%zu:%zu", info->file, info->line, info->column);
+        } else if (info->line != 0) {
             fprintf(stderr, " at %s:%zu", info->file, info->line);
         } else {
             fprintf(stderr, " at %s", info->file);
