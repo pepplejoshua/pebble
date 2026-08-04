@@ -51,6 +51,13 @@ func (s *Session) structuralField(receiver Term, name string, field Term, origin
 				return s.failStructural("slice type has no field named "+name, origin, []Term{field})
 			}
 		}
+		if key.Kind() == types.Optional {
+			if name != "has_value" {
+				return s.failStructural("optional type has no field named "+name, origin, []Term{field})
+			}
+			changed, success := s.unify(field, s.Known(s.program.builtins().Bool), origin)
+			return changed, success, false
+		}
 		if known == s.program.builtins().Str && name == "len" {
 			changed, success := s.unify(field, s.Known(s.program.builtins().Uint), origin)
 			return changed, success, false
@@ -86,6 +93,12 @@ func (s *Session) structuralField(receiver Term, name string, field Term, origin
 			default:
 				return s.failStructural("slice type has no field named "+name, origin, []Term{field})
 			}
+		case shapeOptional:
+			if name != "has_value" {
+				return s.failStructural("optional type has no field named "+name, origin, []Term{field})
+			}
+			changed, success := s.unify(field, s.Known(s.program.builtins().Bool), origin)
+			return changed, success, false
 		default:
 			return s.failStructural("type has no structural field named "+name, origin, []Term{field})
 		}

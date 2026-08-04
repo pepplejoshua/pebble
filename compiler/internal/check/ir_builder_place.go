@@ -81,6 +81,8 @@ func (s *irBuildState) buildPlace(ref symbol.SyntaxRef) (tir.NodeID, bool) {
 					memberID = tir.StructuralFieldLen
 				} else if structuralName == "data" {
 					memberID = tir.StructuralFieldData
+				} else if structuralName == "has_value" {
+					memberID = tir.StructuralFieldHasValue
 				}
 				n.SyntheticRole = "structural-field"
 				n.Origin = record.Header.Span
@@ -189,6 +191,8 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 						n.Member = tir.StructuralFieldLen
 					} else if member.Name == "data" {
 						n.Member = tir.StructuralFieldData
+					} else if member.Name == "has_value" {
+						n.Member = tir.StructuralFieldHasValue
 					}
 					n.SyntheticRole = "structural-field"
 					n.Origin = record.Header.Span

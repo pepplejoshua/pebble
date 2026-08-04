@@ -79,6 +79,9 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 				if key.Kind() == types.Slice {
 					valid = member.Name == "len" || member.Name == "data"
 				}
+				if key.Kind() == types.Optional {
+					valid = member.Name == "has_value"
+				}
 				if !valid {
 					report(member.Header)
 				}

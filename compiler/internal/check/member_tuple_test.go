@@ -47,6 +47,29 @@ fn f(s []i32) uint => s.missing;
 	}
 }
 
+func TestOptionalHasValueAndNominalCollisionAccessClean(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Own = struct { has_value i32; };
+fn optional(o ?i32) bool => o.has_value;
+fn nominal(o Own) i32 => o.has_value;
+type Box = struct { value ?i32; fn check(self *Box) bool => self.value.has_value; };
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors || !handoff.Solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("optional or nominal structural field rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestOptionalUnknownFieldRejected(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn f(o ?i32) i32 => o.foo;
+`)})
+	run06a(inputs, diagnostics, Config{})
+	if !diagnostics.HasErrors() {
+		t.Fatal("unknown optional field was accepted")
+	}
+}
+
 func TestTupleComponentAccessOutOfRange(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 fn f() void {

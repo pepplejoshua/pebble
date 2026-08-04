@@ -304,6 +304,40 @@ func TestStructuralFieldRelationsThroughPointer(t *testing.T) {
 	assertSlotType(t, solution, dataSlot, data)
 }
 
+func TestOptionalHasValueStructuralFieldRelations(t *testing.T) {
+	program, store := testProgram(t)
+	b := store.Builtins()
+	optional := mustType(t, store, types.OptionalKey(b.I32))
+	pointerOptional := mustType(t, store, types.PointerKey(optional))
+	session := NewSession(program, diagnostic.NewDiagnosticSet(), Config{})
+	hasValue := session.Variable(Origin{})
+	pointerHasValue := session.Variable(Origin{})
+	session.Add(StructuralField(session.Known(optional), "has_value", hasValue, Origin{}))
+	session.Add(StructuralField(session.Known(pointerOptional), "has_value", pointerHasValue, Origin{}))
+	hasValueSlot := session.PublishSlot(hasValue)
+	pointerHasValueSlot := session.PublishSlot(pointerHasValue)
+	solution := session.Solve()
+	if !solution.Successful() {
+		t.Fatal("optional structural field did not solve")
+	}
+	assertSlotType(t, solution, hasValueSlot, b.Bool)
+	assertSlotType(t, solution, pointerHasValueSlot, b.Bool)
+}
+
+func TestOptionalUnknownStructuralFieldRejected(t *testing.T) {
+	program, store := testProgram(t)
+	optional := mustType(t, store, types.OptionalKey(store.Builtins().I32))
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+	field := session.Variable(Origin{})
+	session.Add(StructuralField(session.Known(optional), "foo", field, Origin{}))
+	session.PublishSlot(field)
+	session.Solve()
+	if !hasDiagnostic(diagnostics, CodeCapability) {
+		t.Fatalf("unknown optional field diagnostics=%+v", diagnostics.Items())
+	}
+}
+
 func TestStructuralFailuresCrossSessionAndRigidRecovery(t *testing.T) {
 	program, store := testProgram(t)
 	b := store.Builtins()

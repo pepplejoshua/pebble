@@ -115,6 +115,16 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 				if memberID == 0 {
 					memberID = s.memberSymbol(record.Children[0], member.Name)
 				}
+				if memberID == 0 && member.Kind == memberField {
+					switch member.Name {
+					case "len":
+						memberID = tir.StructuralFieldLen
+					case "data":
+						memberID = tir.StructuralFieldData
+					case "has_value":
+						memberID = tir.StructuralFieldHasValue
+					}
+				}
 				if member.Kind == memberField || member.Kind == memberMethod {
 					node.Kind, node.Member, node.Children = tir.FieldValue, memberID, []tir.NodeID{base}
 				} else {

@@ -15,10 +15,11 @@ import (
 type NodeKind uint8
 
 // Structural field identities are reserved from source symbol IDs and are
-// used only for slice/string field lowering in typed IR.
+// used only for structural field lowering in typed IR.
 const (
-	StructuralFieldLen  symbol.SymbolID = ^symbol.SymbolID(0)
-	StructuralFieldData symbol.SymbolID = ^symbol.SymbolID(0) - 1
+	StructuralFieldLen      symbol.SymbolID = ^symbol.SymbolID(0)
+	StructuralFieldData     symbol.SymbolID = ^symbol.SymbolID(0) - 1
+	StructuralFieldHasValue symbol.SymbolID = ^symbol.SymbolID(0) - 2
 )
 
 // The exact 85-tag inventory, in the written order of the seven category

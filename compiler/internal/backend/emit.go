@@ -6638,10 +6638,12 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		structType = pointee
 		access = "->"
 	}
-	if place.Member == tir.StructuralFieldLen || place.Member == tir.StructuralFieldData {
+	if place.Member == tir.StructuralFieldLen || place.Member == tir.StructuralFieldData || place.Member == tir.StructuralFieldHasValue {
 		name := "len"
 		if place.Member == tir.StructuralFieldData {
 			name = "data"
+		} else if place.Member == tir.StructuralFieldHasValue {
+			name = "has_value"
 		}
 		key, found := snapshot.Key(structType)
 		if !found {
@@ -6654,6 +6656,9 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			if builtin, ok := key.Builtin(); ok && builtin == types.Str {
 				return baseExpr + access + "len", nil
 			}
+		}
+		if name == "has_value" && key.Kind() == types.Optional {
+			return baseExpr + access + name, nil
 		}
 		return "", fmt.Errorf("unsupported structural field %s", name)
 	}
@@ -6783,6 +6788,13 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			}
 			typ = pointee
 			access = "->"
+		}
+		if n.Member == tir.StructuralFieldHasValue {
+			key, found := snapshot.Key(typ)
+			if !found || key.Kind() != types.Optional {
+				return "", 0, fmt.Errorf("unsupported structural field has_value")
+			}
+			return fmt.Sprintf("%s%shas_value", base, access), snapshot.Builtins().Bool, nil
 		}
 		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
 		if !ok {
