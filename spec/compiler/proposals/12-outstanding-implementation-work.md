@@ -156,22 +156,64 @@ is illegal per 11 §4's decision.
     around. Not yet scoped into its own dispatch brief.
   - Combined with the pointer-receiver fix above, `.len`/`.data` now
     resolves through both value and pointer receivers.
-- [ ] `std/libc.peb` — `usize` → `uint` sweep (mechanical; extern
-      declarations only, no pointer arithmetic present).
-- [ ] `std/hash.peb` — `usize` → `uint` sweep (mechanical).
-- [ ] `std/io.peb` — `usize` → `uint` sweep (mechanical).
-- [ ] `std/hmap.peb` — `usize` → `uint` sweep, plus check for pointer
-      arithmetic beyond the hash-index computation already scanned (not
-      fully audited yet).
-- [ ] `std/set.peb` — same as `hmap.peb`.
-- [ ] `std/vec.peb` — `usize` → `uint` sweep, plus a real redesign: `data`
-      needs to be backed by a `mem::new_slice`d slice (capacity-sized) and
-      indexed via `data[i]` instead of pointer arithmetic
-      (`*(self.data + i)`). Not mechanical — a structural change.
+- [x] `std/libc.peb` — `usize` → `uint` sweep (`8913cd4`). Confirmed via
+      direct checking: this file now type-checks cleanly, end to end,
+      standalone.
+- [x] `std/hash.peb`, `std/io.peb`, `std/hmap.peb`, `std/set.peb`,
+      `std/vec.peb`, `std/string.peb` — `usize`/`isize` → `uint`/`int`
+      swept mechanically (`8913cd4`; the naive `sed -i '' 's/\busize\b/.../'`
+      silently did nothing on macOS's BSD `sed`, which doesn't support
+      `\b` — redone with a portable bracket-class pattern and verified
+      function names like `hash_usize`/`hash_isize` were correctly left
+      alone, only real type positions replaced). This does not mean these
+      files fully check yet — pointer arithmetic (`std/vec.peb`,
+      `std/string.peb`, `std/hmap.peb`, `std/set.peb`) and an invalid
+      `.is_some` field accessor (`std/hmap.peb`, `std/set.peb`) remain,
+      see below.
+- [x] `std/func.peb` — replaced all three inlined pointer-slicing sites
+      (`map`/`filter`/`zip`) with `mem::new_slice[T]`/`mem::new_slice[Ret]`/
+      `mem::new_slice[(T, U)]` calls (`4d1a8e5`). Confirmed the specific
+      `T0507 type is not structurally sliceable` errors are gone from a
+      real check of the file; one shared, separate, newly-found gap
+      remains (next item).
+- [x] `std/mem.peb`'s `new_slice[T]` had a second missing explicit cast
+      (`allocator.alloc` returns `*void`, assigned directly to a `*T`
+      local) — fixed (`4d1a8e5`).
+- [ ] **Newly discovered, real, separate from everything above**:
+      assigning `nil` through ANY field place (`p.field = nil;`) fails
+      with `T0510 inference variable has no unique semantic type` —
+      confirmed this is not specific to pointers, slices, or generics: a
+      plain, non-generic, value-receiver nominal struct field
+      (`type P = struct { d *i32; }; fn f(p P) void { var pp P = p; pp.d
+      = nil; }`) fails identically. Confirmed pre-existing (identical
+      failure on the commit before today's pointer-receiver fix, not a
+      regression from it). A plain local (`var p *i32 = nil; p = nil;`)
+      works fine — the gap is specific to field-place targets, meaning
+      whatever propagates the assignment target's expected type down to
+      ground `nil`'s literal type doesn't handle `FieldPlace`. This
+      directly blocks `std/mem.peb`'s `delete_slice` (`s.data = nil;`)
+      and is likely present throughout `std/vec.peb`/`std/string.peb`
+      wherever a field is reset to `nil` after freeing. Not yet scoped
+      into a dispatch brief.
+- [ ] `std/vec.peb` — real redesign needed beyond the `usize` sweep:
+      `data` needs to be backed by a `mem::new_slice`d slice
+      (capacity-sized) and indexed via `data[i]` instead of pointer
+      arithmetic (`*(self.data + i)`, confirmed still present and still
+      illegal). Not mechanical — a structural change.
 - [ ] `std/string.peb` — same redesign as `vec.peb` for its buffer (this is
-      also 11 §6's tracked follow-up above — one item, not two).
-- [ ] `std/func.peb` — replace inlined pointer-slicing with
-      `mem::new_slice[T]` calls (also 11 §6's tracked follow-up above).
+      also 11 §6's tracked follow-up — one item, not two).
+- [ ] `std/hmap.peb`, `std/set.peb` — confirmed via direct checking (not
+      previously known) to need the same pointer-arithmetic-to-slice-
+      indexing redesign as `vec.peb`/`string.peb` (e.g.
+      `(new_entries + i).state = .Empty;`), **plus** a separate, genuine
+      bug: both call `.is_some` as a field on an Optional value
+      (`tombstone_index.is_some`) — confirmed via checking every other
+      `?T`-consuming pattern in `std/` that `.is_some` is not a real
+      accessor anywhere else in this language (no hits in the grammar
+      doc, no other file uses it); the likely correct form is a direct
+      comparison against `none` (`tombstone_index != none`), but this
+      needs confirming against how Optionals are actually queried
+      elsewhere before rewriting — not yet done.
 
 ## Backend generic function-call lowering
 
