@@ -63,14 +63,16 @@ emission, not missing symbol registration. Fix this note when writing the
       method) — general fix, not `Allocator`-specific. Committed `33a4880`.
       This removed the need for the `(a.alloc)(...)` parenthesization
       workaround; `std/mem.peb` uses the plain unparenthesized form.
-- [~] `sizeof T` inside a generic function body incorrectly rejected at the
+- [x] `sizeof T` inside a generic function body incorrectly rejected at the
       template level (`C0615`) even when every concrete instantiation is
-      valid. Fix implemented by an orc dispatch (defers validation to
-      instantiation time, validates each substituted concrete type for
-      real). **Reviewed but not yet independently re-verified/committed by
-      me** — this was mid-review when the generic-backend-lowering
-      discussion interrupted it. Next action: finish verification (gofmt/
-      vet/build/full test suite), confirm no `std/` files touched, commit.
+      valid. `validateSizeof` now defers `TypeParameter` at the template
+      pass; a new `validateSpecializedSizeof` re-checks each concrete
+      instantiation's substituted target for real, preserving `C0615` for
+      genuinely invalid concrete types. Also fixed a related IR-snapshot
+      timing bug (specialization substitution was interning composite
+      `sizeof` targets after the immutable type snapshot had already been
+      taken). Committed `f7f92d7`, independently re-verified (gofmt/vet/
+      build/full suite all clean, no `std/` files touched).
 
 ## Standard-library correctness audit (user request: "inspect all lib files
 for now wrong/illegal behaviour and correct them")
@@ -90,10 +92,16 @@ is illegal per 11 §4's decision.
       `s.data` (a field access through a pointer-to-slice) fails
       type-checking with `T0507 field receiver is not a nominal type`.
       Confirmed via direct probe against the real file (not a synthetic
-      repro) after the allocator and method-call fixes landed — this is
-      the next real blocker in `mem.peb`, distinct from everything fixed so
-      far. Not yet root-caused; needs its own investigation before a fix
-      brief can be written.
+      repro) after the allocator and method-call fixes landed. Not yet
+      root-caused; needs its own investigation before a fix brief can be
+      written.
+- [ ] **Newly discovered, not yet scoped**: `std/mem.peb`'s `new_typed[T]()
+      *T { return new(sizeof T); }` is missing an explicit `*void` → `*T`
+      cast — `new` returns `*void`, and this compiler has no implicit
+      pointer conversions (11 §3: "casts between differently-typed
+      pointers are explicit-only"). Surfaced by the `sizeof T` fix's own
+      commit message while confirming `mem.peb` checks cleanly past the
+      `sizeof`/allocator layers; mechanical fix (`as *T`), not yet applied.
 - [ ] `std/libc.peb` — `usize` → `uint` sweep (mechanical; extern
       declarations only, no pointer arithmetic present).
 - [ ] `std/hash.peb` — `usize` → `uint` sweep (mechanical).
