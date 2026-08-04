@@ -1397,6 +1397,28 @@ incrementally as work proceeds.
   (negative/zero/positive; a shared-prefix tie breaks toward the
   shorter string). Verified independently via the existing
   `runtime/test/smoke_test.c` harness in both SAFE and RELEASE modes.
+- **10.40 — ordering comparisons between str values**
+  (`compiler/internal/backend`): the second piece of the batch above,
+  using `pebble_rt_str_cmp` (commit `f79166f`). `buildComparison`'s
+  str branch previously accepted only `==`/`!=`, explicitly rejecting
+  an ordering comparison (`<`, `<=`, `>`, `>=`) even though the
+  checker accepts it — the existing doc comment already flagged this
+  as a real, confirmed-reachable gap. The fix reuses everything
+  already in place: `op` (the operator's C spelling) is already
+  validated up front by the shared `comparisonOperator` helper before
+  any type-specific branch runs, so removing the str-specific
+  ordering rejection was sufficient — `==`/`!=` keep their existing
+  `pebble_rt_str_eq`-based lowering unchanged, and the four ordering
+  operators now emit `pebble_rt_str_cmp(<left>, <right>) <op> 0`.
+  Verified end-to-end (all four ordering operators, each proving both
+  a true and a false outcome, not just that it compiles; a literal
+  operand; a regression check confirming `==`/`!=` still use
+  `pebble_rt_str_eq` and never `pebble_rt_str_cmp`) and independently
+  outside the harness — manually compiled and ran the emitted C for
+  the prefix-tie-break edge case (`"hi" < "hi!"`, the one case a naive
+  comparison could get backwards) with `-Wall -Wextra -Werror`,
+  confirming exit code 10 (true — the shorter string correctly sorts
+  first).
 
 **Baseline.** `main` at `4b1be4d` ("compiler: render Related labels in text
 output, add JSON diagnostic renderer"). Phases 01–09 are complete and 07

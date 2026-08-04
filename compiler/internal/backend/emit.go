@@ -151,15 +151,17 @@
 // fixed-width octal escape for every non-printable byte, so C's maximal-munch
 // escape rules can never swallow a following digit) and its compile-time
 // decoded byte length, so no runtime strlen is involved. Two str values may be
-// compared with ==/!= — each operand either a str-typed local (a SymbolValue,
-// built by buildStrOperand) or another string literal directly — emitting the
-// runtime helper pebble_rt_str_eq(<a>, <b>) (==) or its negation (!=); a str
-// comparison lowers to a plain tir.BinaryValue with two un-wrapped operand
-// nodes (confirmed against a real fixture), handled in buildComparison
-// alongside the integer and bool comparison paths. Everything else str-shaped
-// is out of scope and a clean rejection: str fields/elements inside a tuple,
-// array, optional, or struct, ordering comparisons between strs (reachable from
-// real source but rejected), concatenation and interpolation
+// compared with ==, !=, <, <=, >, or >= — each operand either a str-typed local
+// (a SymbolValue, built by buildStrOperand) or another string literal directly.
+// Equality and inequality emit the runtime helper pebble_rt_str_eq(<a>, <b>)
+// (==) or its negation (!=); ordering comparisons emit
+// pebble_rt_str_cmp(<a>, <b>) <op> 0, where the runtime helper returns
+// negative/zero/positive like C's memcmp/strcmp and <op> is the C translation
+// of the source operator. A str comparison lowers to a plain tir.BinaryValue
+// with two un-wrapped operand nodes (confirmed against a real fixture), handled
+// in buildComparison alongside the integer and bool comparison paths. Everything
+// else str-shaped is out of scope and a clean rejection: str fields/elements
+// inside a tuple, array, optional, or struct, concatenation and interpolation
 // (InterpolatedString), and str indexing (a tir.CheckedIndex, reachable from
 // real source via e.g. `let c char = s[0];` — a separate mechanism this
 // backend does not build for str, rejected because its char result is not a
@@ -5052,22 +5054,17 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", node.Children[1])
 	}
 	if isStr(snapshot, leftOperand.Type) && isStr(snapshot, rightOperand.Type) {
-		// An equality between two str values — s == t, s == "hi",
-		// "hi" == "ho", and so on. Only ==/!= make sense for str operands;
-		// an ordering comparison between strs (s < t) is reachable from real
-		// source (confirmed against a real fixture — the checker does not
-		// reject it), so it is rejected cleanly here, never guessed. The
-		// comparison is built via the runtime helper
-		// pebble_rt_str_eq(<left>, <right>), which is byte-for-byte and
-		// length-prefixed (no strlen, no NUL-termination dependence): ==
-		// emits the call directly and != emits its negation. Each operand is
-		// built by buildStrOperand — a reference to an in-scope str local, or
-		// a string literal embedded as a PebbleStr compound literal — so a
-		// literal operand participates in a comparison without needing a
-		// declared local.
-		if node.Operator != syntax.Equal && node.Operator != syntax.NotEqual {
-			return "", fmt.Errorf("entry function body if condition compares two str operands with operator %s, want == or !=", node.Operator)
-		}
+		// A comparison between two str values: ==, !=, <, <=, >, >=. Equality
+		// and inequality are lowered via the runtime helper pebble_rt_str_eq
+		// (byte-for-byte, length-prefixed — no strlen, no NUL-termination
+		// dependence): == emits the call directly and != emits its negation.
+		// Ordering comparisons are lowered via pebble_rt_str_cmp, which
+		// returns negative/zero/positive like C's memcmp/strcmp, and the result
+		// is compared against 0 using the source operator translated to its C
+		// spelling. Each operand is built by buildStrOperand — a reference to
+		// an in-scope str local, or a string literal embedded as a PebbleStr
+		// compound literal — so a literal operand participates in a comparison
+		// without needing a declared local.
 		left, err := buildStrOperand(unit, snapshot, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
@@ -5079,7 +5076,14 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, lo
 		if node.Operator == syntax.Equal {
 			return "pebble_rt_str_eq(" + left + ", " + right + ")", nil
 		}
-		return "!pebble_rt_str_eq(" + left + ", " + right + ")", nil
+		if node.Operator == syntax.NotEqual {
+			return "!pebble_rt_str_eq(" + left + ", " + right + ")", nil
+		}
+		// Ordering operators: <, <=, >, >= — the runtime helper
+		// pebble_rt_str_cmp returns negative/zero/positive and the source
+		// operator is translated to its C spelling by comparisonOperator,
+		// which has already validated the token kind above.
+		return "pebble_rt_str_cmp(" + left + ", " + right + ") " + op + " 0", nil
 	}
 	if isBool(snapshot, leftOperand.Type) && isBool(snapshot, rightOperand.Type) {
 		// Both operands are bool values, so this is an equality between bools

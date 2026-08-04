@@ -4965,15 +4965,112 @@ func TestEmitStrNotEqualWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsStrOrderingComparison(t *testing.T) {
-	// An ordering comparison between two str values (s < "ho") is reachable
-	// from real source — the checker does not reject it, confirmed against a
-	// real fixture dump (a BinaryValue with operator Less and two str
-	// operands) — so it is a genuine backend-scope rejection, not a
-	// hand-built-IR shape. buildComparison's str path rejects any operator
-	// other than ==/!= with a clear error.
-	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; if s < \"ho\" { return 1; } else { return 0; } }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "compares two str operands")
+// 10.40 — ordering comparisons between str values
+
+func TestEmitStrOrderingLessCompilesAndRuns(t *testing.T) {
+	// s < t where "hi" < "ho" is true (lexicographic byte comparison: 'i' <
+	// 'o'), so the then-arm runs and the process exits 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrOrderingLessFalseCompilesAndRuns(t *testing.T) {
+	// s < t where "ho" < "hi" is false ('o' > 'i'), so the else-arm runs
+	// and the process exits 20.
+	emitAndRun(t, "fn main() i32 { let s str = \"ho\"; let t str = \"hi\"; if s < t { return 10; } else { return 20; } }", false, 20, false)
+}
+
+func TestEmitStrOrderingLessEqualCompilesAndRuns(t *testing.T) {
+	// s <= t where "hi" <= "hi" is true (equal counts), so the then-arm
+	// runs and the process exits 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s <= t { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrOrderingLessEqualFalseCompilesAndRuns(t *testing.T) {
+	// s <= t where "hi" <= "ha" is false ('i' > 'a'), so the else-arm runs
+	// and the process exits 20.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ha\"; if s <= t { return 10; } else { return 20; } }", false, 20, false)
+}
+
+func TestEmitStrOrderingGreaterCompilesAndRuns(t *testing.T) {
+	// s > t where "ho" > "hi" is true ('o' > 'i'), so the then-arm runs
+	// and the process exits 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"ho\"; let t str = \"hi\"; if s > t { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrOrderingGreaterFalseCompilesAndRuns(t *testing.T) {
+	// s > t where "hi" > "ho" is false ('i' < 'o'), so the else-arm runs
+	// and the process exits 20.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s > t { return 10; } else { return 20; } }", false, 20, false)
+}
+
+func TestEmitStrOrderingGreaterEqualCompilesAndRuns(t *testing.T) {
+	// s >= t where "hi" >= "hi" is true (equal counts), so the then-arm
+	// runs and the process exits 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s >= t { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrOrderingGreaterEqualFalseCompilesAndRuns(t *testing.T) {
+	// s >= t where "ha" >= "hi" is false ('a' < 'i'), so the else-arm runs
+	// and the process exits 20.
+	emitAndRun(t, "fn main() i32 { let s str = \"ha\"; let t str = \"hi\"; if s >= t { return 10; } else { return 20; } }", false, 20, false)
+}
+
+func TestEmitStrOrderingLiteralOperandCompilesAndRuns(t *testing.T) {
+	// An ordering comparison where one operand is a string literal directly
+	// (not a local), confirming buildStrOperand's existing literal path works
+	// unchanged in this new position. "hi" < "ho" is true, so the
+	// then-arm runs and the process exits 10.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; if s < \"ho\" { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrOrderingPrefixTieBreakCompilesAndRuns(t *testing.T) {
+	// Two strings that share a prefix but differ in length: "hi" vs "hi!".
+	// The shorter string must sort first (matching strcmp's convention for a
+	// prefix — the shorter one is "less"), so "hi" < "hi!" is true and the
+	// then-arm runs, exiting 10. This proves the shorter-string-sorts-first
+	// tie-break behaves correctly at runtime.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi!\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrOrderingWritesC(t *testing.T) {
+	// The emitted C for an ordering comparison between two str locals: the
+	// comparison must use pebble_rt_str_cmp with the source operator
+	// translated to its C spelling, compared against 0. The ==/!= path is
+	// still pebble_rt_str_eq-based (verified below). Symbols 25/26 are the
+	// s and t locals, confirmed against the real fixture dump.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s < t { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"PebbleStr pebble_local_26 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"if (pebble_rt_str_cmp(pebble_local_25, pebble_local_26) < 0) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
+	// Regression check: the ==/!= path must still use pebble_rt_str_eq,
+	// not pebble_rt_str_cmp. This confirms this slice didn't disturb the
+	// existing equality lowering.
+	unit, snapshot, entryID := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s == t { return 1; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_25, pebble_local_26)) {") {
+		t.Errorf("expected pebble_rt_str_eq for ==, got:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_rt_str_cmp") {
+		t.Errorf("== path must not use pebble_rt_str_cmp:\n%s", out)
+	}
 }
 
 // 10.36 — str reassignment and str-typed parameters/results
