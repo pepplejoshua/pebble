@@ -212,23 +212,22 @@ is illegal per 11 §4's decision.
       stores, or C-type declaration (no prior test in this repo ever
       constructed/read/wrote a struct field of pointer type through the
       backend). Independently re-verified — full suite green.
-  - **Residual, smaller, separate finding, now with a clean minimal
-    repro**: the file is down to a single different error (`C0619 typed-IR
-    construction failed during buildDeclarations`, not the `T0510` this
-    fix targeted). Confirmed NOT reproduced by `delete_slice` alone, nor
-    several individual function-pair combinations tried standalone — but
-    IS reproduced by the ENTIRE file's declarations coexisting, and
-    critically, **reproduces from a real cross-module import alone, with
-    zero usage**: `import "std:mem"; fn main() i32 { return 0; }` fails
-    checking with this exact error the moment `std:mem` is imported at
-    all (confirmed directly — not a call-site interaction, not specific
-    to `mem::new_slice`, purely a property of building typed IR for
-    `mem.peb`'s own full declaration set). This is the actual current
-    blocker for a genuine `mem::new_slice[T]` end-to-end backend test
-    (referenced as still-missing in `11-raw-pointers-and-unsafe-ops.md`'s
-    now-corrected Slice 4 entry). Not yet bisected to a specific pair of
-    declarations within the full set, not yet scoped into a dispatch
-    brief.
+  - **`buildDeclarations` residual: fixed (`7540011`).** Root cause:
+    grouped-parameter syntax (`fn align_up(value, alignment uint) uint` —
+    multiple parameter names sharing one type annotation) makes both
+    parameters share a single `SyntaxRef`; `buildDeclarations` tried to
+    map that same ref into the source map once per parameter, and the
+    second attempt hit a duplicate-entry conflict. Fixed by mapping a
+    shared grouped-parameter ref only once. `import "std:mem"; fn main()
+    i32 { return 0; }` now checks successfully. Independently
+    re-verified — full suite green.
+  - **New residual, one stage further, confirmed directly**: a genuine
+    `mem::new_slice[i32](3)` end-to-end fixture now fails differently —
+    `C0619 typed-IR construction failed during buildSpecializations`
+    (not `buildDeclarations`). Progress, not resolution — this is still
+    the actual blocker for the end-to-end backend test referenced in
+    `11-raw-pointers-and-unsafe-ops.md`'s Slice 4 entry. Not yet
+    root-caused, not yet scoped into a dispatch brief.
 - [~] `std/vec.peb` — redesigned (`0fce73e`): `data` is now `[]T`
       (capacity-sized, allocated via the allocator directly then wrapped
       with `slice ptr, cap` — not `mem::new_slice`, which only supports
