@@ -311,6 +311,36 @@ is illegal per 11 §4's decision.
       but the method's declared return type is `?int` — a real,
       pre-existing type mismatch (present in the file before this
       session's redesign too), not yet fixed.
+      - [x] **Diagnostic-quality follow-up, fixed and committed
+            (`dcbabba`).** `s as *char` originally crashed with the
+            generic, internal-error-flavored `C0619 typed-IR
+            construction failed during buildBlocks` instead of a clean
+            rejection — the conversion is correctly forbidden, but the
+            user got a confusing internal-error-style message rather
+            than a real diagnostic. Root cause: implicit compatibility
+            records already got a proper `C0601` via
+            `validateCompatibilityRecords`, but there was no equivalent
+            validation pass for EXPLICIT cast records, so a forbidden
+            cast silently fell through `ir_builder_value.go`'s
+            `buildValueBase` (a zero-value `coercionNode` map lookup)
+            all the way to the generic `buildBlocks` catch-all. Fixed by
+            adding `internal/check/cast_validation.go`'s
+            `validateCastRecords`, mirroring
+            `validateCompatibilityRecords` exactly (same
+            `activeOperatorRecord` guard, same `TypeFinal` root check,
+            same `classify()`-driven decision) but for cast records,
+            wired into `run06b` right before `buildUnit`. Does not touch
+            `classify()`'s own rules or the pointer-to-pointer
+            `compatibleExplicit` special case. The dispatch
+            (`vercel/deepseek/deepseek-v4-flash-0731`) delivered a
+            complete, well-tested fix on the first attempt — unlike the
+            two prior flash/luna dispatches this session, it included
+            9 real regression tests covering the repro, other forbidden
+            pairs, legal-cast regressions, and record-skip edge cases.
+            Verified independently: reproduced the original C0619
+            against the pre-fix tree via `git stash`, confirmed it's
+            gone and replaced by exactly one clean C0601; full suite
+            green.
 - [x] `std/hmap.peb`, `std/set.peb` — DONE, both committed and pushed,
       both check completely clean end to end. Redesign was
       working tree only), same pointer-arithmetic-to-slice-indexing
