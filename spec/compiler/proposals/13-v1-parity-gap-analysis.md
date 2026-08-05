@@ -68,47 +68,38 @@ repeated here.
 
 ### Confirmed broken or missing
 
-- [?] **NEEDS A DESIGN DECISION, not a plain bug — corrected after a failed
-      fix attempt exposed a wrong premise.** Original entry (below) treated
-      `fn sum(...values []i32) i32` failing to check as a checker bug,
-      reasoning from the grammar alone (`03a-grammar.md` parses variadic
-      params) and v1 parity. That premise was never checked against
-      `06b-validation-and-typed-ir.md`, which explicitly says the
-      opposite: line 547, "Pebble-defined variadics are invalid"; line
-      572, "a variadic callable is extern C with the sole variadic group
-      last." `C0604` on `sum`'s own declaration
-      (`internal/check/call_validation.go:182`,
-      `callable.Variadic && callable.Convention != types.C`) is that rule
-      being enforced correctly, not a bug — v2's variadic support as
-      currently specified is scoped to `extern C` interop (matching C's
-      own varargs, e.g. calling `printf`), not v1-style Pebble-native
-      "collect scalar args into a slice" variadics.
-
-      A dispatched fix attempt (deleting the `C0604` rule + fixing
-      `call_facts.go`'s real, separate `FixedCount`-off-by-one bug so
-      `sum(1, 2, 3)` type-checked against an `i32` slice element) worked
-      mechanically but was rejected and discarded unlanded: it silently
-      contradicts an explicit, deliberate spec statement, which is a
-      product decision, not something to fix as a bug fix.
-
-      **Needs a decision**: is `06b`'s "Pebble-defined variadics are
-      invalid" still the intended v2 design (in which case this item
-      should close as "not a gap — working as specified," and v1's
-      `fn sum(...values []int) int` style is intentionally not supported
-      in v2), or should v2 gain Pebble-native variadic support after all
-      (in which case the discarded fix's approach — relax the `C0604`
-      convention rule, fix the real `FixedCount` off-by-one in
-      `prepareDirect`, and route variadic call-site arguments to the
-      slice's element type — is a reasonable starting point, but
-      `06b-validation-and-typed-ir.md` needs updating in the same change,
-      not left stale). The real `FixedCount` off-by-one bug in
-      `call_facts.go:229` (`FixedCount = len(signature.Inputs)` when it
-      should exclude the trailing variadic parameter) is confirmed real
-      and reproducible either way, but only matters if the decision goes
-      the "add Pebble-native variadic support" direction — an
-      `extern C` variadic (`printf`-style) call site doesn't type-check
-      per-argument against a Pebble slice element type at all, so this
-      bug is dormant/unreachable under the current spec.
+- [ ] **Variadic call emission is unimplemented in the backend.** The
+      checker now accepts Pebble-convention variadic declarations and
+      call sites (`fn sum(...values []i32) i32 { ... } fn main() i32
+      { return sum(1, 2, 3); }` checks clean, closed this session — see
+      commit `f70c20c`). But `backend.Emit` has zero support for it:
+      confirmed still failing with `call to symbol N passing 3
+      argument(s), want 1 (the callee declares 1 parameter(s))` — there
+      is no collection of scalar call-site arguments into a runtime
+      slice value anywhere in `internal/backend/emit.go`. Two more,
+      independent (non-variadic-specific) backend restrictions also
+      block the natural repro: a slice parameter typed `[]i32` (as
+      opposed to `[]int`) fails with "slice type with an unsupported
+      element type: slice element type is i32, want int or bool"
+      (`validateHelperSignature`, `emit.go:2007-2010` — a general slice
+      element-width restriction), and `values.len` used as an expression
+      independently fails with "Load of type uint, want int". Needs a
+      real design/scoping pass (how call-site scalars become a runtime
+      slice — likely a stack-allocated array + slice header built at
+      the call site) before dispatching; checker-only, not yet touched.
+- [ ] **Variadic parameter position is unenforced.** Neither the parser
+      nor the checker actually requires the variadic parameter to be
+      the sole trailing group, despite `06b-validation-and-typed-ir.md`
+      saying it must be ("a variadic callable's sole variadic group ...
+      is last"). Confirmed: `fn weird(...values []i32, extra i32) i32`
+      parses and reaches the checker; `call_facts.go`'s `prepareDirect`
+      just always treats `signature.Inputs`'s *last* entry as the
+      variadic one regardless of where `...` was actually written,
+      which happens to still produce a real type error for this
+      specific malformed case (not a silent wrong-accept) but for the
+      wrong reason. Low priority — no known real program hits this —
+      but worth a real position-validation diagnostic eventually rather
+      than relying on incidental type-mismatch errors.
 - **`iter`, the implicit loop-variable name — DECIDED, not a gap.** v1:
       `loop 0..10 { print iter; }` defaults the loop variable to `iter`
       when the `: name` clause is omitted. v2 requires `: name` always
