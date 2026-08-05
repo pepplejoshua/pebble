@@ -1,11 +1,18 @@
-# 12 — outstanding implementation work tracker
+# 12 — outstanding implementation work tracker (ARCHIVED, historical)
 
-This is a living checklist, not a design proposal. Its job is to make sure
-nothing discovered mid-investigation gets lost by being chased and
+**This document is no longer the active tracker.** As of 2026-08-05,
+`13-v1-parity-gap-analysis.md` is the single source-of-truth issue tracker
+— new findings go there, and finished work is deleted from it rather than
+checked off here. This file is kept as historical record of everything
+resolved during the initial v2 implementation push (every `[x]` entry
+below is real, committed, verified work) and is not maintained further.
+The two items that were still open here have been moved to `13`'s
+"Deferred, not scoped" section.
+
+This was a living checklist, not a design proposal. Its job was to make
+sure nothing discovered mid-investigation got lost by being chased and
 forgotten in favor of the next thing. Each item links back to the proposal
-doc that owns its detailed design/history, if one exists. Update this file
-whenever an item's status changes; don't let it drift out of sync with
-reality.
+doc that owns its detailed design/history, if one exists.
 
 Status legend: `[x]` done and committed, `[~]` in progress / partially
 done, `[ ]` not started.

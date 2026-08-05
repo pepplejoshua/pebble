@@ -13,6 +13,17 @@ This is a reading aid and a punch list, not a design proposal. Update it as
 items close; don't let it drift out of sync the way
 `open-language-decisions.md` did (see the note at the end of this doc).
 
+**This document is the issue tracker, per direct instruction (2026-08-05).**
+Rules: new findings go here as soon as they're discovered. No work starts
+on anything not already tracked here. When an item is fixed and verified,
+its entry is DELETED from this document, not marked `[x]` — the tracker
+should only ever show what's currently outstanding, never grow into an
+archive. The permanent record of what was done and why lives in commit
+messages and git history, not here. `12-outstanding-implementation-work.md`
+is now historical/archived — its old items are folded into this document
+where still relevant (see "Deferred, not scoped" below); do not add new
+entries to it.
+
 Status legend: `[x]` confirmed working today, `[ ]` confirmed broken/missing
 today, `[~]` partially working (works in some positions, not others).
 
@@ -329,6 +340,24 @@ against the current compiler the way this document does — don't trust the
 doc's own claim at face value. A full re-audit of that document (not done
 here, given time — only 3 of its ~19 entries were spot-checked) is
 itself a worthwhile follow-up task, separate from this one.
+
+---
+
+## Deferred, not scoped
+
+Carried over from `12-outstanding-implementation-work.md` (now archived).
+Not urgent, no timeline — tracked here only so they aren't rediscovered
+from scratch later.
+
+- `(*p).x` on a struct pointer / materializing a whole dereferenced struct
+  into a local (`let v Point = *p;`) — the checker's place-tracking doesn't
+  extend a `DereferencePlace` through a field-access base in this position.
+  A `t.Skip`'d test in `internal/backend/emit_test.go` records the exact
+  root cause inline. Needs new struct-rvalue backend support.
+- Generational-pointer UAF/double-free tracking, `any` with real type
+  erasure, ownership/borrow-checking. Not scoped, intentionally out of the
+  v1 raw-pointers slice (`11-raw-pointers-and-unsafe-ops.md` §6, "v2,
+  deliberately deferred").
 
 ---
 
