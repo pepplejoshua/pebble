@@ -41,19 +41,7 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-- [ ] **A `u64` literal at or near `UINT64_MAX` fails to compile.**
-      Found while verifying the `print` work (unrelated to `print`
-      itself). `var y u64 = 18446744073709551615;` emits a plain C
-      integer literal with no suffix; `cc` rejects it under
-      `-Wall -Wextra -Werror`: `error: integer literal is too large to
-      be represented in a signed integer type, interpreting as unsigned
-      [-Werror,-Wimplicitly-unsigned-literal]`. Needs a `ULL`-style
-      suffix (or an explicit cast) on the emitted literal wherever an
-      integer literal's own text, taken as a plain signed literal,
-      wouldn't fit — likely in whatever code builds `tir.IntegerLiteral`
-      text for a `u64`-context destination. Not yet scoped further; a
-      smaller `u64` value (e.g. `123456789`) is unaffected, so this is
-      specifically a large-literal edge case, not general `u64` breakage.
+_(none currently open)_
 
 ---
 
