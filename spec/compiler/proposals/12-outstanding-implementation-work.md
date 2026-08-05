@@ -228,7 +228,7 @@ is illegal per 11 §4's decision.
     the actual blocker for the end-to-end backend test referenced in
     `11-raw-pointers-and-unsafe-ops.md`'s Slice 4 entry. Not yet
     root-caused, not yet scoped into a dispatch brief.
-- [~] `std/vec.peb` — redesigned (`0fce73e`): `data` is now `[]T`
+- [x] `std/vec.peb` — DONE, checks with 0 diagnostics. Redesigned (`0fce73e`): `data` is now `[]T`
       (capacity-sized, allocated via the allocator directly then wrapped
       with `slice ptr, cap` — not `mem::new_slice`, which only supports
       fresh allocation, not growing existing memory the way
@@ -244,18 +244,44 @@ is illegal per 11 §4's decision.
       form works (switched to the explicit form). Also fixed an unrelated
       pre-existing bug in `sort()`: `push(&stack, ...)`/`pop(&stack)` used
       free-function syntax for what are actually methods.
-  - **Progress: the auto-ref bugs (both the original gap and the
-    regression it caused) are fixed** (`ea5aecb`, `506651a` — see the
-    dedicated section below). Confirmed directly: the `T0505`
-    shape-mismatch class is gone. **One narrower residual remains**: a
-    `T0501`/`T0510` cascade that — like every other "fails only with the
-    full file" bug this session has hit — is NOT reproduced by any
-    isolated snippet tried (including the exact `push`+`reserve` pair
-    that used to fail). Not yet bisected further, not yet scoped into a
-    dispatch brief. Confirmed the `mem.peb` `buildDeclarations` bug this
-    note used to compare against was actually unrelated (different,
-    already-fixed root cause — a grouped-parameter source-map bug) —
-    don't conflate the two.
+  - **[x] Fully resolved (`342c860`).** The auto-ref bugs (both the
+    original gap and the regression it caused) were already fixed
+    (`ea5aecb`, `506651a`). The residual `T0501`/`T0510` cascade
+    (`self.data[self.len] = value;` in `push`, cascading into ~30
+    diagnostics through the rest of the file) is now also fixed.
+    Dispatched with a hypothesis (ungated speculative generic-bracket
+    resolution in `resolveTemplate`) that turned out to be WRONG — the
+    investigation traced the actual T0501 to `solveChoices` re-emitting
+    a speculative conflict only because the module's deferred-bracket
+    disambiguation had NO viable global choice assignment at all, which
+    was really caused by three separate, genuine bugs: (1)
+    `finishDeferredBracket` forced a deferred bracket's runtime/index
+    branch to exactly equal the surrounding expected destination,
+    wrongly rejecting legal optional-payload-wrap shapes like `return
+    some self.data[index]` (destination `?T`, result `T`); (2) a direct
+    call to a top-level generic function never tied a non-literal
+    argument to its instantiated type parameter, leaving `T` free for
+    `delete(&stack)` inside `sort()`; (3) the operator-concreteness
+    shield for `==`/`!=` only consulted a walk-time rigid-symbol set,
+    missing a slice-index result whose resolved type key is itself a
+    rigid `TypeParameter` (`self.data[i] == value`), incorrectly
+    treating it as a concrete operand and failing `C0603`. Fixed across
+    `internal/check/bracket_facts.go`, `call_facts.go`, and
+    `operator_validation.go`. The dispatch's own diff had zero test
+    coverage and left throwaway probe files uncommitted; regression
+    tests were added directly afterward
+    (`TestBuildUnitDeferredBracketIndexDoesNotForceDestinationEquality`,
+    `TestBuildUnitDirectGenericCallGroundsArgumentType`,
+    `TestBuildUnitEqualityOnRigidSliceIndexResult`). Verified
+    independently: reproduced the original T0501 against the pre-fix
+    tree via `git stash`, confirmed it and all cascading diagnostics are
+    gone; `std/vec.peb` now checks with 0 diagnostics (not even
+    warnings); full suite green. Confirmed the `mem.peb`
+    `buildDeclarations` bug this note used to compare against was
+    actually unrelated (different, already-fixed root cause — a
+    grouped-parameter source-map bug) — don't conflate the two.
+    `std/vec.peb` was already committed from an earlier session; only
+    the compiler fix needed committing here.
 - [x] `std/string.peb` — **fully redesigned and verified, checks
       completely clean (0 diagnostics)**, `1a25b64`/`ea5aecb` (the
       redesign itself plus the auto-ref fix it also needed —
