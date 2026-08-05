@@ -9220,3 +9220,48 @@ func TestEmitNullDerefWritePanics(t *testing.T) {
 	// fn main() i32 { let p *i32 = getNullPtr(); *p = 42; return 0; }
 	emitAndRun(t, "fn getNullPtr() *i32 { let p *i32 = nil; return p; } fn main() i32 { let p *i32 = getNullPtr(); *p = 42; return 0; }", false, 0, true)
 }
+
+func TestEmitVariadicCallSumsCollectedSliceCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro: fn sum(...values []int) int { return
+	// values[0] + values[1] + values[2]; } fn main() int { return sum(10,
+	// 20, 30); } Confirms the collected variadic slice has both the right
+	// length and the right values, by actually summing them (not just
+	// reading .len), proving buildVariadicSliceArgument's compound-literal
+	// array is populated correctly, not merely present.
+	emitAndRun(t, "fn sum(...values []int) int { return values[0] + values[1] + values[2]; } fn main() int { return sum(10, 20, 30); }", false, 60, false)
+}
+
+func TestEmitVariadicCallLenOnlyCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn sum(...values []int) int { return values.len as int; } fn main() int { return sum(1, 2, 3); }", false, 3, false)
+}
+
+func TestEmitVariadicCallFixedPlusVariadicCompilesAndRuns(t *testing.T) {
+	// Confirms the fixed/variadic split is correct in real emitted C: the
+	// fixed `prefix` parameter and the collected `values` slice must both
+	// carry their own, distinct values. 5*10 + values.len(3) = 53 — kept
+	// well under 256 deliberately, since a Unix process exit code truncates
+	// to its low 8 bits (5*1000+3 = 5003, and 5003 mod 256 = 139, which is
+	// indistinguishable from SIGSEGV's exit-code convention purely by
+	// coincidence — this exact confusion cost real investigation time
+	// during this feature's development, so every variadic test here keeps
+	// its expected exit code under 256 on purpose).
+	emitAndRun(t, "fn tagged(prefix int, ...values []int) int { return prefix * 10 + (values.len as int); } fn main() int { return tagged(5, 1, 2, 3); }", false, 53, false)
+}
+
+func TestEmitVariadicCallZeroArgumentsCompilesAndRuns(t *testing.T) {
+	// No variadic arguments at all: the collected slice must be the
+	// established empty-slice shape (.data = NULL, .len = 0), not an
+	// invalid empty array compound literal (a GNU extension, not portable
+	// C99/C11).
+	emitAndRun(t, "fn count(...values []int) int { return values.len as int; } fn main() int { return count(); }", false, 0, false)
+}
+
+func TestEmitVariadicCallBoolElementCompilesAndRuns(t *testing.T) {
+	// Confirms the variadic element dispatch isn't hardcoded to int: a
+	// []bool trailing parameter, collected via buildBoolExpr per element.
+	emitAndRun(t, "fn allTrue(...values []bool) int { if values[0] && values[1] { return 1; } return 0; } fn main() int { return allTrue(true, true); }", false, 1, false)
+}
+
+func TestEmitVariadicCallBoolElementFalseCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn allTrue(...values []bool) int { if values[0] && values[1] { return 1; } return 0; } fn main() int { return allTrue(true, false); }", false, 0, false)
+}

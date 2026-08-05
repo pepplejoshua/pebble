@@ -8072,108 +8072,176 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 // already builds lower
 // the arguments; the checker has already coerced each argument to its
 // parameter's type, so a mismatch here is hand-built IR. The argument count
-// must equal the callee's declared parameter count. Returns the joined
-// argument text, empty when the callee takes no parameters (the caller then
-// emits pebble_fn_<id>(ctx) with no argument list).
+// must equal the callee's declared parameter count. A variadic callee
+// (callee.Variadic — the checker's own declaration node sets it; see
+// ir_builder.go's FunctionDeclaration construction) is the one exception:
+// its trailing slice parameter is fed by every call-site argument from
+// fixedCount (the number of fixed parameters, len(Parameters)-1, mirroring
+// the checker's own FixedCount computation) onward, collected into a single
+// runtime slice value built as ONE C99 compound-literal expression by
+// buildVariadicSliceArgument — the array-literal element storage's automatic
+// storage duration lasts until the end of the enclosing block (C11 6.5.2.5p16),
+// so a callee can validly read the collected slice for the whole call — so
+// the arity requirement for a variadic callee is len(call.Children) >=
+// fixedCount rather than equality. Returns the joined argument text, empty
+// when the callee takes no parameters (the caller then emits
+// pebble_fn_<id>(ctx) with no argument list).
 func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
-	if len(call.Children) != len(callee.Parameters) {
+	variadic := callee.Variadic
+	fixedCount := len(callee.Parameters)
+	if variadic {
+		if len(callee.Parameters) == 0 {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose callee is variadic but declares no parameters (a variadic callee must declare its trailing slice parameter)", call.Symbol)
+		}
+		fixedCount--
+		if len(call.Children) < fixedCount {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want at least %d (the variadic callee declares %d fixed parameter(s) plus a trailing slice parameter)", call.Symbol, len(call.Children), fixedCount, fixedCount)
+		}
+	} else if len(call.Children) != len(callee.Parameters) {
 		return "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want %d (the callee declares %d parameter(s))", call.Symbol, len(call.Children), len(callee.Parameters), len(callee.Parameters))
 	}
-	args := make([]string, len(call.Children))
-	for i, argID := range call.Children {
-		param := callee.Parameters[i]
-		switch {
-		case isWidth(snapshot, width, param.Type):
-			arg, err := buildExpr(unit, snapshot, fileSet, argID, locals, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isUint(snapshot, param.Type):
-			arg, err := buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isBool(snapshot, param.Type):
-			arg, err := buildBoolExpr(unit, snapshot, fileSet, argID, locals, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isChar(snapshot, param.Type):
-			// A char parameter: the argument is a char value built by
-			// buildCharOperand — a reference to a char-typed local in scope, a
-			// char literal directly (f('a')), or a call to a char-returning
-			// helper (f(g())) — emitted as an int32_t value, the same C type
-			// the parameter is declared with, so passing a char by value is
-			// trivially valid C.
-			arg, err := buildCharOperand(unit, snapshot, fileSet, argID, locals, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isTuple(snapshot, param.Type):
-			arg, err := buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, true, call.Symbol, i, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isStruct(snapshot, param.Type):
-			arg, err := buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, false, call.Symbol, i, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isStr(snapshot, param.Type):
-			// A str parameter: the argument is a str value built by
-			// buildStrOperand — a reference to a str-typed local in scope, a
-			// string literal directly (f("hi")), or a call to a str-returning
-			// helper (f(g())) — emitted as a PebbleStr value, the same C type
-			// the parameter is declared with, so passing a str by value is
-			// trivially valid C.
-			arg, err := buildStrOperand(unit, snapshot, fileSet, argID, locals, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isSlice(snapshot, param.Type):
-			// A slice parameter (10.38): the argument must be a reference to an
-			// already-declared slice-typed local in scope of the matching type,
-			// emitted as the local's own pebble_local_<symbol> C name — the
-			// slice type's own struct typedef makes passing the whole slice by
-			// value trivially valid C, no construction needed at the call site
-			// (confirmed checker-reachable: f(s) passes a plain SymbolValue).
-			// An inline slice construction used directly as a call argument
-			// (f(a[1:3])) is also confirmed checker-reachable but is
-			// deliberately out of scope this slice: a C function argument is a
-			// pure expression position with nowhere to place the
-			// temp-declaration statement the construction needs, so it is a
-			// clean rejection naming what was found, not a workaround (see
-			// buildSliceArgument).
-			arg, err := buildSliceArgument(unit, snapshot, argID, locals, param.Type, call.Symbol, i)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		case isPointer(snapshot, param.Type):
-			// A pointer parameter: the argument is a pointer value built by
-			// buildExpr, which handles every pointer-value shape (AddressOf,
-			// a reference to a pointer-typed local, nil, or a call to a
-			// pointer-returning helper).
-			arg, err := buildExpr(unit, snapshot, fileSet, argID, locals, width)
-			if err != nil {
-				return "", err
-			}
-			args[i] = arg
-		default:
-			// validateHelperSignature rules any unsupported parameter out
-			// before a reachable helper is ever built, so this branch is
-			// defense for hand-built IR only.
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", call.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+	args := make([]string, 0, len(call.Children))
+	for i := 0; i < fixedCount; i++ {
+		arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], locals, width)
+		if err != nil {
+			return "", err
 		}
+		args = append(args, arg)
+	}
+	if variadic {
+		sliceArg, err := buildVariadicSliceArgument(unit, snapshot, fileSet, call, callee.Parameters[fixedCount], call.Children[fixedCount:], locals, width)
+		if err != nil {
+			return "", err
+		}
+		args = append(args, sliceArg)
 	}
 	return strings.Join(args, ", "), nil
+}
+
+// buildCallArgument builds one call-site argument expression for one callee
+// parameter, deciding the child's grammar from the parameter's resolved type
+// exactly as an ordinary call's per-argument loop always has — the entry's
+// width parameters take buildExpr, uint parameters take buildUintExpr, bool
+// parameters take buildBoolExpr, char parameters take buildCharOperand, str
+// parameters take buildStrOperand, tuple/struct parameters take
+// buildAggregateArgument, slice parameters take buildSliceArgument, and
+// pointer parameters take buildExpr (which handles every pointer-value shape).
+// The checker has already coerced the argument to the parameter's type, so a
+// mismatch here is hand-built IR. position is the call-site argument index,
+// used only to name the offending argument in rejection messages.
+func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	switch {
+	case isWidth(snapshot, width, param.Type):
+		return buildExpr(unit, snapshot, fileSet, argID, locals, width)
+	case isUint(snapshot, param.Type):
+		return buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
+	case isBool(snapshot, param.Type):
+		return buildBoolExpr(unit, snapshot, fileSet, argID, locals, width)
+	case isChar(snapshot, param.Type):
+		// A char parameter: the argument is a char value built by
+		// buildCharOperand — a reference to a char-typed local in scope, a
+		// char literal directly (f('a')), or a call to a char-returning
+		// helper (f(g())) — emitted as an int32_t value, the same C type
+		// the parameter is declared with, so passing a char by value is
+		// trivially valid C.
+		return buildCharOperand(unit, snapshot, fileSet, argID, locals, width)
+	case isTuple(snapshot, param.Type):
+		return buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, true, calleeSymbol, position, width)
+	case isStruct(snapshot, param.Type):
+		return buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, false, calleeSymbol, position, width)
+	case isStr(snapshot, param.Type):
+		// A str parameter: the argument is a str value built by
+		// buildStrOperand — a reference to a str-typed local in scope, a
+		// string literal directly (f("hi")), or a call to a str-returning
+		// helper (f(g())) — emitted as a PebbleStr value, the same C type
+		// the parameter is declared with, so passing a str by value is
+		// trivially valid C.
+		return buildStrOperand(unit, snapshot, fileSet, argID, locals, width)
+	case isSlice(snapshot, param.Type):
+		// A slice parameter (10.38): the argument must be a reference to an
+		// already-declared slice-typed local in scope of the matching type,
+		// emitted as the local's own pebble_local_<symbol> C name — the
+		// slice type's own struct typedef makes passing the whole slice by
+		// value trivially valid C, no construction needed at the call site
+		// (confirmed checker-reachable: f(s) passes a plain SymbolValue).
+		// An inline slice construction used directly as a call argument
+		// (f(a[1:3])) is also confirmed checker-reachable but is
+		// deliberately out of scope this slice: a C function argument is a
+		// pure expression position with nowhere to place the
+		// temp-declaration statement the construction needs, so it is a
+		// clean rejection naming what was found, not a workaround (see
+		// buildSliceArgument).
+		return buildSliceArgument(unit, snapshot, argID, locals, param.Type, calleeSymbol, position)
+	case isPointer(snapshot, param.Type):
+		// A pointer parameter: the argument is a pointer value built by
+		// buildExpr, which handles every pointer-value shape (AddressOf,
+		// a reference to a pointer-typed local, nil, or a call to a
+		// pointer-returning helper).
+		return buildExpr(unit, snapshot, fileSet, argID, locals, width)
+	default:
+		// validateHelperSignature rules any unsupported parameter out
+		// before a reachable helper is ever built, so this branch is
+		// defense for hand-built IR only.
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+	}
+}
+
+// buildVariadicSliceArgument builds the ONE C argument expression a variadic
+// call's trailing slice parameter receives: a C99 compound literal of the
+// parameter's slice type collecting every call-site argument in the variadic
+// tail as an element of an inline array compound literal,
+//
+//	(<sliceTypeName>){ .data = (<elementCType>[]){<arg0>, <arg1>, ...}, .len = (size_t)(<count>) }
+//
+// built purely as an expression — no pre-statement or temp declaration is
+// needed, because a C99 array compound literal has automatic storage duration
+// lasting until the end of the enclosing block (C11 6.5.2.5p16), not just the
+// enclosing full expression, so the callee can validly read the collected
+// elements for the whole call. Each variadic call-site argument is built as an
+// individual scalar expression at the trailing parameter's slice ELEMENT type
+// (resolved via the slice's TypeKey.Child, the same structural step 10.37's
+// slice construction and validateSliceElementType use), dispatched through the
+// exact same buildCallArgument grammar a fixed parameter of that type would use
+// — the only element types this backend supports for any slice at all are the
+// entry's width and bool (see validateHelperSignature / sliceElementCType), so
+// the practical dispatch is buildExpr for int and buildBoolExpr for bool. The
+// zero-variadic-arguments case emits the codebase's established empty-slice
+// shape instead of an empty array compound literal — `.data = NULL, .len =
+// (size_t)0` — because a zero-size array literal is a GNU extension, not
+// portable C99/C11, and won't compile under the project's strict
+// -Wall -Wextra -Werror harness (the same shape a SliceFromRaw construction of
+// a nil pointer with count 0, `slice ptr, 0`, already produces — see
+// buildRawSliceConstruction).
+func buildVariadicSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, sliceParam tir.Parameter, variadicIDs []tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	sliceType := sliceParam.Type
+	if !isSlice(snapshot, sliceType) {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter %d (symbol %d) has type %s, want a slice type", call.Symbol, len(call.Children)-1, sliceParam.Symbol, describeType(snapshot, sliceType))
+	}
+	key, ok := snapshot.Key(sliceType)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter type %d is not in the type snapshot", call.Symbol, sliceType)
+	}
+	elementType, ok := key.Child()
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter type %s has no element type", call.Symbol, describeType(snapshot, sliceType))
+	}
+	elemCType, err := sliceElementCType(unit, snapshot, width, elementType)
+	if err != nil {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter has an unsupported slice element type: %v", call.Symbol, err)
+	}
+	firstVariadic := len(call.Children) - len(variadicIDs)
+	elems := make([]string, 0, len(variadicIDs))
+	for j, argID := range variadicIDs {
+		expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, locals, width)
+		if err != nil {
+			return "", err
+		}
+		elems = append(elems, expr)
+	}
+	if len(elems) == 0 {
+		return fmt.Sprintf("(%s){ .data = NULL, .len = (size_t)0 }", sliceTypeName(sliceType)), nil
+	}
+	return fmt.Sprintf("(%s){ .data = (%s[]){ %s }, .len = (size_t)(%d) }", sliceTypeName(sliceType), elemCType, strings.Join(elems, ", "), len(elems)), nil
 }
 
 // buildAggregateArgument builds one call-site argument for a tuple- or
