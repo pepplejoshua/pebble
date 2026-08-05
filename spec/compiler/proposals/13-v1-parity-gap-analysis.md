@@ -236,18 +236,6 @@ as confirmed gaps:
 
 ## Part C — tooling and driver gaps (not language gaps, but block real use)
 
-- [ ] **`pebc` (the actual CLI) cannot resolve `import "std:..."` at all.**
-      `cmd/pebc/main.go` calls `module.Build` with no `StandardRoot` set —
-      confirmed via direct reading of the file. Every std-importing test
-      this entire session went through internal Go test harnesses that set
-      `StandardRoot` manually; the real, user-facing CLI has never been
-      exercised against a std-importing program and would fail to resolve
-      the import. **Decided fix direction (this conversation):** use Go's
-      `//go:embed` to bake `std/`'s `.peb` sources directly into the `pebc`
-      binary at build time, so `module.Build` resolves `"std:..."` from an
-      embedded filesystem — no install-time copy step, no path-resolution
-      drift between the binary and whatever stdlib happens to be on disk.
-      Not yet implemented.
 - **v2's CLI will deliberately stay simpler than v1's — not a gap to
       close by re-implementing everything.** v1 (`README.md` "Compiler
       Options"): `-o`, `-c`, `--check-only`, `--generate-only`,
