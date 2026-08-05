@@ -28,12 +28,34 @@ func placeWritability(handoff *solveHandoff, records *solvedRecords, place *plac
 	// Function parameters are mutable storage even though they are not `var`
 	// binding declarations. This remains scoped to the root binding and does
 	// not make immutable locals writable.
-	writable := place.RootMutable || place.RootKind == symbol.SymbolParameter
 	typeSnapshot := handoff.Semantics.Types()
+	writable := place.RootMutable || place.RootKind == symbol.SymbolParameter
+	if !writable {
+		// A local initialized from an address-of expression is an alias, not
+		// the storage being mutated. Its field/index projections inherit the
+		// pointee's writability even when the pointer binding itself is `let`.
+		for _, retained := range handoff.Records.Records() {
+			if retained.Binding == nil || retained.Binding.Symbol != place.Root || !retained.Binding.InitializerPresent {
+				continue
+			}
+			if result, ok := records.Root(retained.Binding.Initializer); ok && result.State == infer.TypeFinal {
+				if key, ok := typeSnapshot.Key(result.Type); ok && key.Kind() == types.Pointer {
+					writable = true
+				}
+			}
+			for _, candidate := range handoff.Records.Records() {
+				if candidate.Operator != nil && candidate.Header.Syntax == retained.Binding.InitializerSyntax && candidate.Operator.Family == operatorAddress {
+					writable = true
+					break
+				}
+			}
+			break
+		}
+	}
 	for _, projection := range place.Projections {
 		switch projection.Kind {
 		case placeStorage:
-			writable = place.RootMutable || place.RootKind == symbol.SymbolParameter
+			writable = writable || place.RootMutable || place.RootKind == symbol.SymbolParameter
 		case placeDereference:
 			writable = true
 		case placeField, placeTuple:

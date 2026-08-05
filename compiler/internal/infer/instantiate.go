@@ -69,6 +69,19 @@ func (s *Session) structuralField(receiver Term, name string, field Term, origin
 		}
 		if shape.kind == shapePointer && len(shape.children) == 1 {
 			shape = shape.children[0]
+			// A pointer shape produced by address-of keeps its pointee as a
+			// leaf term. That term may acquire its concrete/nominal shape later
+			// (notably when it is a slice index), so follow it before rejecting
+			// field access as an unstructured leaf.
+			if shape.kind == shapeLeaf {
+				childState, childKnown, childShape := s.structure(shape.term)
+				switch childState {
+				case structuralKnown:
+					return s.structuralField(s.Known(childKnown), name, field, origin)
+				case structuralShape:
+					shape = childShape
+				}
+			}
 		}
 		if shape.kind == shapeNominal {
 			return s.hasField(receiver, name, field, origin)

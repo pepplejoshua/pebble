@@ -304,6 +304,25 @@ func TestStructuralFieldRelationsThroughPointer(t *testing.T) {
 	assertSlotType(t, solution, dataSlot, data)
 }
 
+func TestStructuralFieldRelationsThroughDeferredPointerPointee(t *testing.T) {
+	program, store := testProgram(t)
+	b := store.Builtins()
+	slice := mustType(t, store, types.SliceKey(b.I32))
+	session := NewSession(program, diagnostic.NewDiagnosticSet(), Config{})
+	pointee := session.Variable(Origin{})
+	receiver := session.Variable(Origin{})
+	length := session.Variable(Origin{})
+	session.Add(Equal(pointee, session.Known(slice), Origin{}))
+	session.Add(ConstrainShape(receiver, PointerShape(Leaf(pointee)), Origin{}))
+	session.Add(StructuralField(receiver, "len", length, Origin{}))
+	lengthSlot := session.PublishSlot(length)
+	if solution := session.Solve(); !solution.Successful() {
+		t.Fatal("deferred pointer pointee structural field did not solve")
+	} else {
+		assertSlotType(t, solution, lengthSlot, b.Uint)
+	}
+}
+
 func TestOptionalHasValueStructuralFieldRelations(t *testing.T) {
 	program, store := testProgram(t)
 	b := store.Builtins()

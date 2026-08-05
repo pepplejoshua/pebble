@@ -107,6 +107,45 @@ func TestBuildUnitSliceIndexPlaceRegressions(t *testing.T) {
 	}
 }
 
+func TestBuildUnitBoundSliceIndexStructField(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"concrete read", `type Entry = struct { key i32; };
+fn get(entries []Entry) i32 {
+    let entry = &entries[0];
+    return entry.key;
+}`},
+		{"concrete writes", `type Entry = struct { key i32; value i32; };
+fn set(entries []Entry, key i32, value i32) void {
+    let entry = &entries[0];
+    entry.key = key;
+    entry.value = value;
+}`},
+		{"direct regression", `type Entry = struct { key i32; };
+fn get(entries []Entry) i32 { return entries[0].key; }`},
+		{"plain pointer regression", `type Entry = struct { key i32; };
+fn get(entry Entry) i32 {
+    let pointer *Entry = &entry;
+    return pointer.key;
+}`},
+		{"generic method", `type Entry[K] = struct { key K; value K; };
+fn update[K](entries []Entry[K], key K, value K) void {
+	    let entry = &entries[0];
+	    entry.key = key;
+	    entry.value = value;
+}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := buildUnitFixture(t, test.source); !ok {
+				t.Fatal("bound slice-index struct field was not buildable")
+			}
+		})
+	}
+}
+
 func TestBuildUnitExternBindingDeclarations(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `extern "C" { let external i32; var mutable i32; }`)
 	if !ok || unit == nil {
