@@ -343,29 +343,68 @@ is illegal per 11 §4's decision.
             and generic) failing before, passing after; full suite
             green.
 
-      **Re-checked both `.peb` files against the real checker after
-      Part 2 — the `T0507` field-access errors are gone, but BOTH files
-      still fail on a separate, pre-existing, unrelated bug**, confirmed
-      independent of everything above: enum shorthand literals
-      (`.Empty`, `.Occupied`, `.Tombstone`) crash typed-IR construction
-      with a generic `C0619 typed-IR construction failed during
-      buildBlocks` internal error. Confirmed via minimal isolated repro
-      that this has NOTHING to do with address-of, bound locals, or
-      slice indexing — the plainest possible case fails identically:
-      `type State = enum { Empty, Occupied }; fn f() void { var s State
-      = .Empty; }`. Also confirmed via `git stash` that this exists
-      identically with or without the Part 2 fix — genuinely
-      pre-existing, not introduced today. This is now the actual
-      blocker for `hmap.peb`/`set.peb` (both use `.Empty`/`.Occupied`/
-      `.Tombstone` pervasively for their entry-state machine) — not yet
-      root-caused past the `C0619` bucket (a deliberately generic
-      fallback for unimplemented/failing closed-IR paths, per this
-      session's earlier "Slice 4" work) or dispatched. Both `.peb` files
-      remain uncommitted.
+      - [x] **Part 3, fixed and committed (`6ba9d60`).** Re-checking
+            both `.peb` files after Part 2 showed the `T0507` errors
+            were gone, but both still crashed with the generic `C0619
+            typed-IR construction failed during buildBlocks` — confirmed
+            via minimal isolated repro that this had NOTHING to do with
+            address-of/bound-locals/slice-indexing at all: the plainest
+            case failed identically (`type State = enum { Empty,
+            Occupied }; fn f() void { var s State = .Empty; }`), and via
+            `git stash` that it was genuinely pre-existing (same with or
+            without Parts 1/2). Root cause: enum-variant shorthand
+            literals (`.Empty`) were fully designed and validated at the
+            semantic layer (06a/06b) but never wired into typed-IR
+            construction — `ir_builder_value.go`'s value-building switch
+            had no `case expressionPartialMember:` and no
+            `aggregateEnumVariant` equivalent of `buildRecordConstruct`
+            existed anywhere. Fixed by adding
+            `buildEnumVariantShorthand` (mirroring `buildRecordConstruct`
+            for the enum-variant aggregate kind, producing the same
+            `tir.EnumVariantValue` node the qualified form already used)
+            plus the missing switch case. The dispatch (flash,
+            `vercel/deepseek/deepseek-v4-flash-0731`) also found and
+            fixed two things this brief got wrong: the variant symbol is
+            never pre-resolved at 06a (an existing test asserts this
+            deliberately), so it's re-derived by name; and several
+            real-world positions (comparisons, struct-field access,
+            assignment RHS — the actual `hmap.peb`/`set.peb` shapes)
+            failed at 06a inference itself (`T0510`), needing a change
+            in `aggregate_facts.go`'s `finishPartialMember` to defer the
+            receiver to a solver variable instead of bailing out when
+            the target type isn't known during authored traversal.
+            Verified independently: reproduced the original C0619
+            against the pre-fix tree via `git stash`, confirmed fixed;
+            full suite green including a real `cc` backend round-trip.
 
-      Once this new bug is fixed and both `.peb` files check clean end
-      to end, commit them.
-      against the real checker end to end before committing them.
+      **Re-checked both `.peb` files again after Part 3: `std/set.peb`
+      now passes completely clean end to end** (0 errors, only
+      pre-existing benign "unreachable statement" warnings — same
+      pattern as a `while true { ... }` loop followed by a trailing
+      `return` the checker can't prove reachable, harmless). **`std/hmap.peb`
+      still fails**, on a distinct, newly-found bug, unrelated to
+      everything above (confirmed: both individual methods build cleanly
+      in isolation without the enum-shorthand fix touching them at all).
+      Bisected precisely by progressively isolating `HashMap[K,V]`'s 8
+      methods: the minimal failing combination is exactly two sibling
+      generic methods on the same struct —
+      ```
+      fn get_by_ref[K, V](self *HashMap[K, V], key K) ?*V { ... return some &entry.value; ... }
+      fn get[K, V](self *HashMap[K, V], key K) ?V {
+          let ptr = self.get_by_ref(key);
+          if !ptr.has_value { return none; }
+          return some *(ptr!);
+      }
+      ```
+      `get_by_ref` alone builds fine. `get_by_ref` + `contains` (which
+      also calls `get_by_ref` but only reads `.has_value`, no deref)
+      builds fine. `get_by_ref` + `remove`/`clear` (unrelated methods)
+      build fine. Only `get_by_ref` + `get` together fails — and `get`
+      is the one method that DEREFERENCES the returned optional pointer
+      through an unwrap (`*(ptr!)`) rather than just reading/comparing
+      it. Not yet root-caused past this isolation or dispatched.
+      `std/hmap.peb` remains uncommitted; `std/set.peb` is ready to
+      commit once reviewed.
 
 ## Pointer-receiver methods can't be called on a value-typed local (fixed, then a regression, fix in flight)
 

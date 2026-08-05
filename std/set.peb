@@ -12,7 +12,7 @@ type Entry[K] = struct {
 };
 
 type Set[K] = struct {
-    entries *Entry[K];
+    entries []Entry[K];
     len     uint;       // number of OCCUPIED entries
     cap     uint;       // number of slots in table
     hash_fn fn (K) u64;
@@ -39,12 +39,12 @@ type Set[K] = struct {
     fn rehash[K](self *Set[K], new_cap uint) void {
         let allocator = self.backing;
         let new_size = new_cap * (sizeof Entry[K]);
-        let new_entries *Entry[K] = allocator.alloc(allocator.ptr, new_size);
+        let ptr *Entry[K] = allocator.alloc(allocator.ptr, new_size) as *Entry[K];
+        let new_entries []Entry[K] = slice ptr, new_cap;
 
         // Initialize
-        var i = 0;
         loop 0..new_cap : i {
-            (new_entries + i).state = .Empty;
+            new_entries[i].state = .Empty;
         }
 
         // Move entries
@@ -56,14 +56,14 @@ type Set[K] = struct {
         self.len = 0;
 
         // Re-insert old items
-        if old_entries != nil {
+        if old_cap != 0 {
             loop 0..old_cap : j {
-                let e = old_entries + j;
+                let e = old_entries[j];
                 if e.state == .Occupied {
                     self.insert(e.key);
                 }
             }
-            allocator.free(allocator.ptr, old_entries);
+            allocator.free(allocator.ptr, old_entries.data as *void);
         }
     }
 
@@ -76,13 +76,13 @@ type Set[K] = struct {
         var tombstone_index ?uint = none;
 
         while true {
-            let entry = self.entries + index;
+            let entry = &self.entries[index];
 
             if entry.state == .Empty {
                 // Prefer first tombstone if found
                 if tombstone_index.has_value {
                     let t = tombstone_index!;
-                    let slot = self.entries + t;
+                    let slot = &self.entries[t];
                     slot.key = key;
                     slot.state = .Occupied;
                     self.len += 1;
@@ -116,7 +116,7 @@ type Set[K] = struct {
         var index = (hash as uint) % self.cap;
 
         while true {
-            let entry = self.entries + index;
+            let entry = &self.entries[index];
 
             if entry.state == .Empty {
                 return false;
@@ -142,7 +142,7 @@ type Set[K] = struct {
         var index = (hash as uint) % self.cap;
 
         while true {
-            let entry = self.entries + index;
+            let entry = &self.entries[index];
 
             if entry.state == .Empty {
                 return false; // not found
@@ -162,9 +162,8 @@ type Set[K] = struct {
 
     // Remove all key entries but keep capacity.
     fn clear[K](self *Set[K]) void {
-        var i = 0;
         loop 0..self.cap : i {
-            (self.entries + i).state = .Empty;
+            self.entries[i].state = .Empty;
         }
         self.len = 0;
     }
@@ -172,8 +171,9 @@ type Set[K] = struct {
 
 // Create an empty set with default capacity.
 fn new[K](hash_fn fn (K) u64, eq_fn fn (K, K) bool) Set[K] {
-    return .{
-        entries = nil,
+    let empty *Entry[K] = nil;
+    return Set[K].{
+        entries = slice empty, 0,
         len     = 0,
         cap     = 0,
         hash_fn = hash_fn,
@@ -191,15 +191,16 @@ fn with_capacity[K](cap uint, hash_fn fn (K) u64,
 
     let allocator = context.default_allocator;
     let size = cap * (sizeof Entry[K]);
-    let ptr *Entry[K] = allocator.alloc(allocator.ptr, size);
+    let ptr *Entry[K] = allocator.alloc(allocator.ptr, size) as *Entry[K];
+    let entries []Entry[K] = slice ptr, cap;
 
     // Initialize all states to Empty
     loop 0..cap : i {
-        (ptr + i).state = .Empty;
+        entries[i].state = .Empty;
     }
 
-    return .{
-        entries = ptr,
+    return Set[K].{
+        entries = entries,
         len     = 0,
         cap     = cap,
         hash_fn = hash_fn,
@@ -210,9 +211,10 @@ fn with_capacity[K](cap uint, hash_fn fn (K) u64,
 
 // Delete the entire set and free memory.
 fn delete[K](self *Set[K]) void {
-    if self.entries != nil {
-        self.backing.free(self.backing.ptr, self.entries);
-        self.entries = nil;
+    if self.cap != 0 {
+        self.backing.free(self.backing.ptr, self.entries.data as *void);
+        let empty *Entry[K] = nil;
+        self.entries = slice empty, 0;
         self.len = 0;
         self.cap = 0;
     }
