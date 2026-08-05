@@ -7932,6 +7932,78 @@ func TestEmitEnumWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitEnumToIntegerCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro from the brief: `Color.green as i32` in an i32
+	// entry. The checker lowers the cast to a tir.EnumToInteger whose single
+	// child is the EnumVariantValue Color.green, and the backend lowers it to a
+	// plain C cast (int32_t)(pebble_variant_<green>) — green's ordinal in
+	// declared order is 1, so the exit code is 1.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 { return Color.green as i32; }", false, 1, false)
+}
+
+func TestEmitEnumToIntegerZeroOrdinalCompilesAndRuns(t *testing.T) {
+	// The first-declared variant (red) has C ordinal 0, so casting it to an
+	// integer yields 0 — proving the cast reads the actual declared-order
+	// discriminant rather than always producing a nonzero value.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 { return Color.red as i32; }", false, 0, false)
+}
+
+func TestEmitEnumToIntegerI64CompilesAndRuns(t *testing.T) {
+	// A different destination integer width than the entry's result type: the
+	// cast's destination (i64) is the entry's own width here, so the
+	// EnumToInteger node's Type matches the surrounding width gate exactly as an
+	// IntegerCast's does. green's ordinal 1 is returned as an i64.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i64 { return Color.green as i64; }", false, 1, false)
+}
+
+func TestEmitEnumToIntegerUnsignedNestedCompilesAndRuns(t *testing.T) {
+	// An unsigned destination (u32) inside an i32 entry: a cast whose
+	// destination is not the entry's width is only valid where the surrounding
+	// context is that width, so it appears as a u32 local's initializer, then
+	// the local is read back out as i32. The destination width is resolved from
+	// the EnumToInteger node's own Type (u32 -> uint32_t), not from the entry.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 { let v u32 = Color.green as u32; return v as i32; }", false, 1, false)
+}
+
+func TestEmitEnumToIntegerFromLocalCompilesAndRuns(t *testing.T) {
+	// An enum value read from a local (not just a variant literal) cast to an
+	// integer: the EnumToInteger's child is a SymbolValue naming the enum-typed
+	// local, built by buildEnumValue as pebble_local_<sym> and cast directly.
+	// c = blue, whose ordinal is 2.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 { var c Color = Color.blue; return c as i32; }", false, 2, false)
+}
+
+func TestEmitEnumToIntegerFromLocalI64CompilesAndRuns(t *testing.T) {
+	// The from-a-local form at a different width (i64): the local's value is
+	// read and cast to the destination width, again via the same
+	// buildEnumValue + plain C cast lowering.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i64 { var c Color = Color.blue; return c as i64; }", false, 2, false)
+}
+
+func TestEmitEnumToIntegerWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the EnumToInteger lowers to a plain C
+	// cast of the enum constant to the destination C type, (int32_t)(...), with
+	// no runtime helper and no intermediate enum-typedef step.
+	unit, snapshot, entryID, enumType, variants, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 { return Color.green as i32; }")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	cast := "(int32_t)(pebble_variant_" + strconv.Itoa(int(variants[1])) + ")"
+	if !strings.Contains(out, cast) {
+		t.Errorf("emitted C missing the enum-to-integer cast %q:\n%s", cast, out)
+	}
+	for _, want := range []string{
+		"typedef enum {",
+		"} " + enumTypeName(enumType) + ";",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // unionFixture builds one .peb source through the full check pipeline and
 // resolves the tagged-union type's TypeID and its variant symbols in declared
 // order, reusing enumFixture's exact type-resolution mechanism (a tagged union

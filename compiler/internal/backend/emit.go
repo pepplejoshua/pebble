@@ -338,6 +338,21 @@
 // the language to read a payload back out of a matched case (a switch case
 // value is a bare expression — there is no pattern-binding syntax), so this
 // backend implements construction + storage + discriminant-only matching only.
+// Since 10.45, a plain enum value may also be cast to an integer (an
+// EnumToInteger, e.g. Color.green as i32) and used anywhere an integer of the
+// destination width is valid. The cast lowers to a plain, unchecked C cast of
+// the enum value's expression to the destination integer type — no runtime
+// validity check is needed, because a well-typed enum value is always a valid
+// member of its enum's declared variant set, so reading out its underlying
+// integer representation (the variant's ordinal in declared order, which IS the
+// C enum constant's value) is always well-defined; the destination width is
+// resolved from the node's own Type exactly as IntegerCast resolves its own,
+// the single operand (an enum-typed local reference, a variant literal, or a
+// zero-payload variant construction) is built by buildEnumValue, and the
+// emitted C is `(<destination C type>)(<enum value expression>)`. The reverse
+// direction — integer cast to an enum, CheckedIntegerToEnum /
+// OptionalIntegerToEnum — is out of scope (it needs a runtime validity check
+// that the integer names a real variant) and tracked as a separate, later task.
 // Enum-typed function parameters/results, and enum-typed
 // tuple/struct/array/optional elements and fields, remain clean rejections.
 package backend
@@ -6985,6 +7000,42 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body integer cast child: %v", err)
+		}
+		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
+	case tir.EnumToInteger:
+		// An enum value cast to an integer (`Color.green as i32`), lowered as a
+		// plain, unchecked C cast of the enum value's expression to the
+		// destination integer type. An enum value once constructed is always a
+		// valid member of its enum's declared variant set — no well-typed Pebble
+		// program can observe an "invalid" enum value, unlike the reverse
+		// integer-to-enum direction, which needs a runtime validity check — so
+		// reading out the enum's underlying integer representation is always
+		// well-defined and needs no runtime helper. The destination width is
+		// resolved from the node's own Type exactly as IntegerCast resolves its
+		// own (and the width gate above has already required it to be the
+		// surrounding context's width); the single child is the enum value being
+		// cast, built by buildEnumValue (an enum-typed local reference, a
+		// variant literal, or a zero-payload variant construction), and the
+		// emitted C is `(<destination C type>)(<enum value expression>)`. A
+		// C enum's value IS the variant's ordinal in declared order and casts to
+		// an integer type directly and trivially, so no intermediate step
+		// through the enum's own typedef is needed. The reverse direction —
+		// CheckedIntegerToEnum / OptionalIntegerToEnum — is out of scope and
+		// rejected elsewhere.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || cType(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
+		}
+		childExpr, err := buildEnumValue(unit, snapshot, node.Children[0], locals)
+		if err != nil {
+			return "", err
 		}
 		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
 	case tir.FloatToInteger:
