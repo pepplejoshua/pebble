@@ -136,20 +136,17 @@ repeated here.
       v1's exact `switch`/`case` shape or does better) happens later,
       after enums and unions are otherwise fully working and all other
       tracked work is done — not now, and not next.
-- [~] **Enum-to-integer casts: checker allows it, backend doesn't emit it.**
-      `open-language-decisions.md` §1.4 records this as an OPEN LANGUAGE
-      QUESTION ("06a still calls this open... 06b's matrix says
-      forbidden"). Verified today the checker actually ACCEPTS `Color.green
-      as i32` and produces a `tir.EnumToInteger` node — so whichever side
-      of that internal disagreement won, the answer is "allowed," at least
-      partially. But `EnumToInteger` has zero references in `emit.go`,
-      so it fails at the backend: `entry function body expression contains
-      a EnumToInteger, want an integer literal, ...`. This is the same
-      "checker allows it, backend was never wired up" shape as several
-      Part A items, not a design question anymore — the design question in
-      `open-language-decisions.md` §1.4 appears to have been silently
-      resolved (in favor of "allowed") sometime since that document was
-      written, without the document being updated.
+- [ ] **Integer-to-enum casts (the reverse direction) still unimplemented.**
+      `EnumToInteger` (enum → integer) is done (`64197e7`). The reverse
+      (`CheckedIntegerToEnum`/`OptionalIntegerToEnum`, integer → enum) is
+      a genuinely different, larger task: it needs a real runtime
+      validity check that the integer actually names a declared variant
+      (unlike enum→integer, which is always safe unchecked) —
+      `CheckedIntegerToEnum` presumably panics on an invalid value,
+      `OptionalIntegerToEnum` presumably returns `none` instead of
+      faulting. Not yet scoped in detail (SAFE/RELEASE behavior for the
+      checked variant needs the same kind of design confirmation as
+      `FloatToInteger`'s `INT_MIN` sentinel and shifts' masking did).
 - **Printing an enum is still rejected exactly as designed** (not a bug):
       `print Color.red;` fails at the checker with `C0612: print operand
       is not printable`, matching `open-language-decisions.md` §3.11
