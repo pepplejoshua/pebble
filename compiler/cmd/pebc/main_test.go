@@ -76,6 +76,27 @@ func TestRunMultiModuleImportEmitsRunnableC(t *testing.T) {
 	}
 }
 
+func TestRunStdImportEmitsRunnableC(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "import \"std:mem\";\n\nfn main() int { var values []int = mem::new_slice[int](3); values[0] = 42; return values[0]; }\n")
+	outPath := filepath.Join(dir, "out.c")
+	var stderr bytes.Buffer
+	if code := run([]string{"-o", outPath, sourcePath}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("std-import run returned %d: %s", code, stderr.String())
+	}
+	emitted, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(emitted), "M0002") {
+		t.Fatalf("emitted C contains module-resolution diagnostics:\n%s", emitted)
+	}
+	if err := compileEmittedC(t, dir, emitted, "std", 42); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {

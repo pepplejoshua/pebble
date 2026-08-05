@@ -12,6 +12,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
+	"github.com/pepplejoshua/pebble/compiler/internal/stdlib"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -32,7 +33,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	provider := module.FileSystemProvider{}
+	provider := stdlib.New(module.FileSystemProvider{})
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
 	entryPath, err := provider.Canonicalize(flags.Arg(0))
@@ -40,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pebc: cannot resolve entry %q: %v\n", flags.Arg(0), err)
 		return 1
 	}
-	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main"}, provider, sources, diagnostics)
+	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
 	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
 	store, err := types.New(types.Config{})
 	if err != nil {

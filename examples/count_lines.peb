@@ -65,16 +65,16 @@ fn count_file(filename str) StatsResult {
 
 fn main() int {
     var file_paths = [
-        "std/func.peb",
-        "std/hash.peb",
-        "std/hmap.peb",
-        "std/io.peb",
-        "std/libc.peb",
-        "std/mem.peb",
-        "std/set.peb",
-        "std/string.peb",
-        "std/vec.peb",
-        "std/mem/arena.peb"
+        "compiler/std/func.peb",
+        "compiler/std/hash.peb",
+        "compiler/std/hmap.peb",
+        "compiler/std/io.peb",
+        "compiler/std/libc.peb",
+        "compiler/std/mem.peb",
+        "compiler/std/set.peb",
+        "compiler/std/string.peb",
+        "compiler/std/vec.peb",
+        "compiler/std/mem/arena.peb"
     ];
 
     var total_stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };

@@ -12,7 +12,7 @@ func TestParserRepositoryCorpus(t *testing.T) {
 	_, filename, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", ".."))
 	var paths []string
-	for _, directory := range []string{"std", "examples"} {
+	for _, directory := range []string{filepath.Join("compiler", "std"), "examples"} {
 		found, err := collectPebbleFiles(filepath.Join(repoRoot, directory))
 		if err != nil {
 			t.Fatal(err)

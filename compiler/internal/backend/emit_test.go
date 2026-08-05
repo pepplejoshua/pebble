@@ -142,7 +142,7 @@ func buildStdFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, *ty
 
 func buildStdMemFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet) {
 	t.Helper()
-	mem, err := os.ReadFile("../../../std/mem.peb")
+	mem, err := os.ReadFile("../../std/mem.peb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +176,11 @@ func TestCheckStdMemImport(t *testing.T) {
 }
 
 func TestCheckStdVecHasNoGenericPointerReceiverShapeErrors(t *testing.T) {
-	vec, err := os.ReadFile("../../../std/vec.peb")
+	vec, err := os.ReadFile("../../std/vec.peb")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem, err := os.ReadFile("../../../std/mem.peb")
+	mem, err := os.ReadFile("../../std/mem.peb")
 	if err != nil {
 		t.Fatal(err)
 	}

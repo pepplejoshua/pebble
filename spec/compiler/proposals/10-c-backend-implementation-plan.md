@@ -1187,7 +1187,7 @@ incrementally as work proceeds.
   cost); an explicit method call is the more honest shape regardless
   of how ownership eventually gets decided.
 
-  A `String` type already exists at [`std/string.peb`](../../../std/string.peb),
+  A `String` type already exists at [`std/string.peb`](../../../compiler/std/string.peb),
   apparently written for the old (pre-C-rewrite) backend: a plain
   struct (`data *char; len usize; capacity usize;`) with methods
   (`push_str`, `reserve`, `substr`, `insert`, `remove`, ...), backed by

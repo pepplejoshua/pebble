@@ -32,7 +32,7 @@ clean:
 install: pebc
 	install -d $(BINDIR)
 	install -m 755 pebc $(BINDIR)
-	cp -r std $(BINDIR)
+	cp -r compiler/std $(BINDIR)
 
 uninstall:
 	rm -f $(BINDIR)/pebc
