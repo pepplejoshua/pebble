@@ -915,14 +915,25 @@ func compileAndRunBounded(t *testing.T, emitted []byte, wantCode int, wantAbnorm
 }
 
 // runCompiledBinary runs one already-compiled binary and asserts its exit
-// behavior. With bounded set, execution is wrapped in the loopExecutionTimeout
-// context so a genuinely non-terminating program (a miscompiled while loop)
-// fails the test loudly and quickly instead of hanging the run; a program that
-// terminates promptly — normally, or abnormally via a panic such as the
-// overflow abort — finishes well before the deadline. With wantAbnormal, the
-// process must terminate abnormally (a non-zero exit or a signal, as abort()
-// produces); otherwise its exit code must equal wantCode.
+// behavior, discarding the process's combined stdout+stderr. With bounded set,
+// execution is wrapped in the loopExecutionTimeout context so a genuinely
+// non-terminating program (a miscompiled while loop) fails the test loudly and
+// quickly instead of hanging the run; a program that terminates promptly —
+// normally, or abnormally via a panic such as the overflow abort — finishes
+// well before the deadline. With wantAbnormal, the process must terminate
+// abnormally (a non-zero exit or a signal, as abort() produces); otherwise its
+// exit code must equal wantCode.
 func runCompiledBinary(t *testing.T, binary string, wantCode int, wantAbnormal, bounded bool) {
+	t.Helper()
+	runCompiledBinaryCapture(t, binary, wantCode, wantAbnormal, bounded)
+}
+
+// runCompiledBinaryCapture is runCompiledBinary with one difference: it
+// returns the process's combined stdout+stderr (as a string) alongside the
+// same exit-behavior assertions. The captured output is what a print-statement
+// test asserts on — an exit code alone cannot carry printed text — so the run
+// logic lives here and the output-free runCompiledBinary delegates to it.
+func runCompiledBinaryCapture(t *testing.T, binary string, wantCode int, wantAbnormal, bounded bool) string {
 	t.Helper()
 	var run *exec.Cmd
 	if bounded {
@@ -950,7 +961,7 @@ func runCompiledBinary(t *testing.T, binary string, wantCode int, wantAbnormal, 
 			t.Fatalf("compiled program exited 0, want abnormal termination\n%s", output)
 		}
 		t.Logf("compiled program terminated abnormally (err=%v, exit code %d): %s", err, code, output)
-		return
+		return string(output)
 	}
 	// A non-zero exit is expected behavior for some programs (the exit code
 	// IS the program's output), so the run error is not itself a failure —
@@ -960,6 +971,57 @@ func runCompiledBinary(t *testing.T, binary string, wantCode int, wantAbnormal, 
 		t.Fatalf("compiled program exited %d, want %d\n%s", code, wantCode, output)
 	}
 	t.Logf("compiled program exited %d, want %d", code, wantCode)
+	return string(output)
+}
+
+// compileAndRunCapture is compileAndRun with one difference: it returns the
+// compiled program's combined stdout+stderr (as a string) alongside the same
+// exit-behavior assertions, so a test can assert on printed text, not just the
+// exit code.
+func compileAndRunCapture(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) string {
+	t.Helper()
+	binary := compileEmittedC(t, emitted)
+	return runCompiledBinaryCapture(t, binary, wantCode, wantAbnormal, false)
+}
+
+// emitAndRunCapture is emitAndRun with one difference: it returns the compiled
+// program's combined stdout+stderr (as a string) alongside the same exit
+// assertions, so a test can assert on actual printed output rather than only
+// the exit code. It drives one .peb entry source through buildFixture, Emit,
+// and the end-to-end cc compile + run.
+func emitAndRunCapture(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) string {
+	t.Helper()
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	return compileAndRunCapture(t, buf.Bytes(), wantCode, wantAbnormal)
+}
+
+// compileAndRunCaptureBounded is compileAndRunCapture for programs whose
+// execution is not statically guaranteed to terminate (a while loop's only
+// bound is its own condition): execution is wrapped in the loopExecutionTimeout
+// context so a genuinely non-terminating program fails the test loudly and
+// quickly instead of hanging the run. It returns the captured stdout+stderr.
+func compileAndRunCaptureBounded(t *testing.T, emitted []byte, wantCode int, wantAbnormal bool) string {
+	t.Helper()
+	binary := compileEmittedC(t, emitted)
+	return runCompiledBinaryCapture(t, binary, wantCode, wantAbnormal, true)
+}
+
+// emitAndRunCaptureBounded is emitAndRunCapture for loop-containing programs,
+// mirroring emitAndRunBounded: the compiled binary runs through the bounded
+// harness so a miscompiled non-terminating loop fails loudly instead of
+// hanging the whole test run. It returns the captured stdout+stderr.
+func emitAndRunCaptureBounded(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) string {
+	t.Helper()
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	return compileAndRunCaptureBounded(t, buf.Bytes(), wantCode, wantAbnormal)
 }
 
 // buildI32EmptyBodyUnit hand-builds a unit whose entry has an i32 result type
@@ -2441,14 +2503,16 @@ func TestEmitIfElseInsideLoopBodyCompilesAndRuns(t *testing.T) {
 	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; while i < 5 { if i == 2 { i = 10; } else { i = i + 1; } } return i; }", false, 10, false)
 }
 
-func TestEmitRejectsPrintInsideWhileBody(t *testing.T) {
-	// The loop-body grammar still accepts only Initialize, Store, If, and
-	// While; a Print inside the body (legal source) must be a clean Emit
-	// rejection naming what was found, not a guessed lowering. This keeps
-	// rejection coverage for a genuinely-unsupported statement kind after the
-	// if-in-loop-body shape became a positive case above.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { print(\"hi\"); i = i + 1; } return i; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitPrintInsideWhileBodyCompilesAndRuns(t *testing.T) {
+	// A print statement inside a loop body (legal source) is now a supported
+	// statement kind: the loop body's statement switch routes it through the
+	// shared buildPrint, so the body prints "hi" once per iteration (three
+	// iterations) and returns the final i = 3 as the exit code. Bounded
+	// execution in case of a miscompiled loop.
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { print(\"hi\"); i = i + 1; } return i; }", false, 3, false)
+	if want := "hi\nhi\nhi\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
 }
 
 func TestEmitNoElseIfInLoopBodyCompilesAndRuns(t *testing.T) {
@@ -2807,14 +2871,16 @@ func TestEmitRejectsI32EmptyBody(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsStatementBeforeReturn(t *testing.T) {
-	// 10.6 makes a local declaration before the return a supported shape, so
-	// the fixture here is a statement kind that is still rejected: a Print
-	// before the final Return. Only Initialize declarations (and, since 10.9,
-	// Store reassignments of an in-scope local) followed by one Return are
-	// accepted in the i32 entry body.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { print(\"hi\"); return 1; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitPrintBeforeReturnCompilesAndRuns(t *testing.T) {
+	// A print statement before the final Return is a supported leading
+	// statement in the entry body block: the print emits its single printf
+	// line ("hi" plus the statement's trailing newline), then the block's
+	// tail returns 1. Asserting the captured stdout confirms the printed text
+	// is exactly one line — not just that the program compiled and exited.
+	out := emitAndRunCapture(t, "fn main() i32 { print(\"hi\"); return 1; }", false, 1, false)
+	if want := "hi\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
 }
 
 func TestEmitRejectsParameters(t *testing.T) {
@@ -2939,22 +3005,266 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsBreakWithUnsupportedDeferStatement(t *testing.T) {
-	// A real-source break inside a loop body that also contains a `defer` with
-	// an unsupported deferred statement kind (Print) produces a Break whose
-	// DeferChain references a Print node. The backend now attempts to emit
-	// deferred statements but correctly rejects Print as an unsupported
-	// deferred statement kind (only Store reassignment is currently supported).
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "not a supported deferred statement kind")
+func TestEmitDeferredPrintBeforeBreakCompilesAndRuns(t *testing.T) {
+	// A real-source break inside a loop body that also contains a `defer
+	// print 5;` produces a Break whose DeferChain references a Print node. The
+	// backend emits the deferred print through the shared buildPrint before
+	// the break, so the loop's first (and only) iteration prints "5" and then
+	// breaks, exiting with i = 0. Bounded execution in case of a miscompiled
+	// loop.
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", false, 0, false)
+	if want := "5\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
 }
 
-func TestEmitRejectsContinueWithUnsupportedDeferStatement(t *testing.T) {
-	// Same unsupported deferred statement rejection for Continue: a defer with
-	// a Print node is correctly rejected as an unsupported deferred statement
-	// kind, rather than being silently dropped or rejected for DeferChain.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "not a supported deferred statement kind")
+func TestEmitDeferredPrintBeforeContinueCompilesAndRuns(t *testing.T) {
+	// Same deferred-print path for Continue: each continue fires the deferred
+	// `print 5` at the loop's next pass. The body increments i and continues
+	// every pass (i becomes 1, 2, then 3), so the deferred print fires three
+	// times before the loop condition fails at i = 3 and the program returns
+	// 0. Bounded execution in case of a miscompiled loop.
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", false, 0, false)
+	if want := "5\n5\n5\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+// print statement emission — every operand type family the checker allows
+// (C0612 restricts print operands to bool, char, str, any integer builtin, or
+// any float builtin), one combined printf per print statement ending in \n,
+// matching v1's print codegen shape.
+
+func TestEmitPrintIntegerLiteralCompilesAndRuns(t *testing.T) {
+	// The simplest print: a bare integer literal operand. A bare literal in a
+	// print operand resolves to the unanchored int builtin (int32_t), so the
+	// format specifier comes from PRId32; the captured output is exactly the
+	// value plus the statement's single trailing newline.
+	out := emitAndRunCapture(t, "fn main() i32 { print 42; return 0; }", false, 0, false)
+	if want := "42\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitPrintEachIntegerWidthCompilesAndRuns(t *testing.T) {
+	// Every integer builtin width, each through a local of that declared
+	// width: the print dispatches on the operand's own resolved kind, so each
+	// width gets its own PRId*/PRIu* specifier matching its fixed-width C
+	// type — and each must compile clean under -Wall -Wextra -Werror, which is
+	// exactly where a hand-picked (wrong) specifier would surface. All print
+	// the same value 7.
+	for _, tc := range []struct {
+		width string
+	}{
+		{"i8"}, {"i16"}, {"i32"}, {"i64"}, {"u8"}, {"u16"}, {"u32"}, {"u64"},
+	} {
+		t.Run(tc.width, func(t *testing.T) {
+			src := "fn main() i32 { let x " + tc.width + " = 7; print x; return 0; }"
+			out := emitAndRunCapture(t, src, false, 0, false)
+			if want := "7\n"; out != want {
+				t.Fatalf("compiled program output = %q, want %q", out, want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
+	// A bool operand prints as the word true or false (v1's approach: the
+	// bool expression wrapped in a C ternary selecting the const char *
+	// literal), not as 1/0. Covers both literal operands and a bool-typed
+	// local operand.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"true literal", "fn main() i32 { print true; return 0; }", "true\n"},
+		{"false literal", "fn main() i32 { print false; return 0; }", "false\n"},
+		{"true local", "fn main() i32 { let b bool = true; print b; return 0; }", "true\n"},
+		{"false local", "fn main() i32 { let b bool = false; print b; return 0; }", "false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
+	// A char operand prints as the single character its int32_t value encodes
+	// (specifier %c), covering both a char literal and a char-typed local.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"literal", "fn main() i32 { print 'x'; return 0; }", "x\n"},
+		{"local", "fn main() i32 { let c char = 'x'; print c; return 0; }", "x\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
+	// A str operand prints its bytes (specifier %s on the PebbleStr's .data
+	// field), covering a string literal, a str-typed local, and the
+	// parenthesized literal form `print ("hi")`, whose operand arrives wrapped
+	// in a tir.SourceAlias that buildPrint unwraps before dispatching.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"literal", "fn main() i32 { print \"hello\"; return 0; }", "hello\n"},
+		{"local", "fn main() i32 { let s str = \"hello\"; print s; return 0; }", "hello\n"},
+		{"parenthesized literal", "fn main() i32 { print (\"hi\"); return 0; }", "hi\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
+	// A float operand prints with %f (f32/f64 promote to double in a variadic
+	// call either way, so %f covers both, matching v1). A bare literal resolves
+	// to f64; an f32-typed local prints through the float grammar at its own
+	// kind. %f's default precision is 6, so 3.5 prints as 3.500000.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"f64 literal", "fn main() i32 { print 3.5; return 0; }", "3.500000\n"},
+		{"f64 local", "fn main() i32 { let x f64 = 3.5; print x; return 0; }", "3.500000\n"},
+		{"f32 local", "fn main() i32 { let x f32 = 3.5; print x; return 0; }", "3.500000\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintMultipleOperandsOneLineCompilesAndRuns(t *testing.T) {
+	// `print a, b, c;` — multiple comma-separated operands print on ONE line
+	// with no separator between them (matching v1): all operands share one
+	// printf call, one format string, one argument list, one trailing newline.
+	// Mixed operand types exercise that the format specifiers and arguments are
+	// assembled in operand order.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"three ints", "fn main() i32 { print 1, 2, 3; return 0; }", "123\n"},
+		{"three strings", "fn main() i32 { print \"a\", \"b\", \"c\"; return 0; }", "abc\n"},
+		{"mixed", "fn main() i32 { print 1, \" \", 2, \" \", 3.25; return 0; }", "1 2 3.250000\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
+	// The emitted C for a mixed-type print must be exactly ONE printf call per
+	// print statement whose format string concatenates one specifier per
+	// operand in order (integer via the out-of-quotes "%"PRId32 macro
+	// spelling, bool/char/str/float as %s/%c/%s/%f literals) and ends in the
+	// literal \n, with the same number of comma-separated arguments in operand
+	// order. Asserting the literal C text is what proves the one-call
+	// combined shape, not a per-operand call. The operand texts are confirmed
+	// against the fixture dump: the char literal 'x' emits (int32_t)120, the
+	// string literal "hi" emits its PebbleStr compound literal's .data field
+	// cast to const char *, and the bool emits the "true"/"false" ternary.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { print 1, true, 'x', \"hi\", 3.5; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if count := strings.Count(out, "printf("); count != 1 {
+		t.Errorf("emitted C has %d printf( calls, want exactly one:\n%s", count, out)
+	}
+	for _, want := range []string{
+		"printf(\"%\"PRId32\"%s\"\"%c\"\"%s\"\"%f\"\"\\n\", 1, (true ? \"true\" : \"false\"), (int32_t)120, (const char *)(PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }.data, 3.5);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitPrintInVoidHelperCompilesAndRuns(t *testing.T) {
+	// A print inside a reachable void helper, emitted as that helper's own C
+	// statement: the reachability walk finds no call inside the Print's
+	// operands here (all literals), and the helper body builds its leading
+	// Print through the same buildLeadingStatement the entry uses. The entry
+	// calls the helper, which prints "9" and returns void.
+	out := emitAndRunCapture(t, "fn helper() void { print 9; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
+	if want := "9\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitPrintHelperCallOperandCompilesAndRuns(t *testing.T) {
+	// A print operand that is a call to a helper: the operand's DirectCall is
+	// reachable through the Print's child walk (so the helper is emitted), and
+	// buildExpr/buildStrOperand build the call at the operand's own resolved
+	// type. Covers an integer-returning helper and a str-returning helper.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"int helper", "fn helper() i32 { return 6; }\nfn main() i32 { print helper(); return 0; }", "6\n"},
+		{"str helper", "fn helper() str { return \"hey\"; }\nfn main() i32 { print helper(); return 0; }", "hey\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitDeferredPrintAtVoidHelperExitCompilesAndRuns(t *testing.T) {
+	// A function-level `defer print 7;` in a void helper fires at the helper's
+	// ImplicitReturn exit (the tail emits its DeferChain before falling off
+	// the end of the C function), so calling the helper prints "7" and the
+	// entry returns 0.
+	out := emitAndRunCapture(t, "fn helper() void { defer print 7; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
+	if want := "7\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitPrintInsideLoopIfCompilesAndRuns(t *testing.T) {
+	// A print inside a loop-body if's arm routes through buildLoopBody -> the
+	// Print case -> buildPrint, so it composes with the if-in-loop-body shape.
+	// The arm fires once (when i == 1), printing "mark", and the loop returns
+	// 2. Bounded execution in case of a miscompiled loop.
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 2 { i = i + 1; if i == 1 { print \"mark\"; } } return i; }", false, 2, false)
+	if want := "mark\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
 }
 
 func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {

@@ -3648,6 +3648,11 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			// body's statement switch documents the supported kinds the way it
 			// does for While/RangeLoop/For/If/Break/Continue/DeferRegister.)
 			text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, "entry function body block while loop body", width, unions)
+		case tir.Print:
+			// A print statement inside a loop body — `print a, b;` on its own
+			// line — flows through the same shared leading-statement builder
+			// buildBlock uses, so the emission logic lives in exactly one place.
+			text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, "entry function body block while loop body", width, unions)
 		default:
 			text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, "entry function body block while loop body", width, unions)
 		}
@@ -3763,6 +3768,15 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 			// call to a non-void-returning function (and any non-call discarded
 			// expression) cleanly.
 			text, err := buildExpressionStatement(unit, snapshot, fileSet, stmt, scope, indent, context, width)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, text)
+		case tir.Print:
+			// A deferred print statement — `defer print a, b;` — built by the
+			// same shared buildPrint a leading print statement uses, so the
+			// emission logic lives in exactly one place.
+			text, err := buildPrint(unit, snapshot, fileSet, stmt, scope, indent, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -3975,8 +3989,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// discarded expression — a non-call value, or a call to a non-void-
 		// returning function — is a clean rejection naming what was found.
 		return buildExpressionStatement(unit, snapshot, fileSet, statement, scope, indent, context, width)
+	case tir.Print:
+		// A print statement — `print a, b, c;` — emitted as one combined
+		// printf call by the shared buildPrint (also used by buildLoopBody's
+		// explicit Print case and buildDeferredStatements for a deferred
+		// print), so the emission logic lives in exactly one place.
+		return buildPrint(unit, snapshot, fileSet, statement, scope, indent, context, width)
 	default:
-		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize), a reassignment (Store), or a call to a void-returning function used as a statement (ExpressionStatement)", context, statement.Kind)
+		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize), a reassignment (Store), a call to a void-returning function used as a statement (ExpressionStatement), or a print statement (Print)", context, statement.Kind)
 	}
 }
 
@@ -4035,6 +4055,202 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		return "", err
 	}
 	return indent + callExpr + ";", nil
+}
+
+// buildPrint builds the C text for one print statement — a tir.Print whose
+// Children are the printed operands in source order, one node per operand
+// (built by the checker's controlPrint case from `print a, b, c;`, each
+// operand independently type-checked). The emission matches v1's print
+// codegen shape exactly: ONE combined printf call per print statement, not
+// one per operand — every operand's format specifier is concatenated into a
+// single format string (ending in the literal `\n`, so every print statement
+// produces exactly one line of output) and every operand's value is a single
+// argument, in the same order. The checker already restricts print operands to
+// exactly bool, char, str, any integer builtin, or any float builtin (C0612 —
+// a nominal enum operand like `print Color.red;` is rejected upstream), so
+// this dispatch is exactly the set of values this backend already knows how
+// to build, each through its OWN existing builder, never a new value-building
+// path:
+//
+//   - integer (Int/Uint/I8/I16/I32/I64/U8/U16/U32/U64) — buildExpr at the
+//     operand's own resolved integer kind, with the format specifier chosen
+//     from the <inttypes.h> PRId8/PRId16/PRId32/PRId64/PRIu8/PRIu16/PRIu32/
+//     PRIu64 macros (string-literal-concatenated into the format string at
+//     compile time) so the specifier's width exactly matches the fixed-width
+//     C type cType produces for the operand — never a hand-picked %hhd/%hd
+//     whose width only happens to match — keeping the mandated
+//     -Wall -Wextra -Werror build -Wformat-clean for every integer width.
+//   - bool — buildBoolExpr, wrapped in a C ternary (`<expr> ? "true" :
+//     "false"`) so the printed text is the word true/false; the format
+//     specifier is %s, exactly v1's approach of making the bool argument a
+//     const char * before the format string is built.
+//   - char — buildCharOperand (a char's C type is the fixed int32_t, which
+//     %c accepts after default argument promotion), specifier %c.
+//   - str — buildStrOperand (a str local, a string literal, or a call to a
+//     str-returning helper), with the argument being the value's .data field
+//     cast to const char * (the runtime's PebbleStr is
+//     { const uint8_t *data; size_t len; }, and %s wants a char *; the
+//     explicit cast is what keeps the emitted call -Wformat-clean), specifier
+//     %s.
+//   - float (F32/F64) — buildFloatExpr at the operand's own float kind;
+//     f32/f64 promote to double in a variadic call either way, so %f for both
+//     is correct and matches v1.
+//
+// The emitted statement is:
+//
+//	<indent>printf("<spec0><spec1>...\n", <arg0>, <arg1>);
+//
+// with the \n spelled as the C two-character escape, and no arguments when the
+// print has no operands (only reachable from hand-built IR — the parser
+// requires at least one expression — emitting printf("\n") to print a blank
+// line, matching v1's zero-expression print). Each integer specifier is
+// emitted as the macro name OUTSIDE the surrounding quotes (`"%"PRId32`, not
+// `"%PRId32"`), so the preprocessor expands the macro to the exact-width
+// specifier text and adjacent-literal concatenation folds it into the format
+// string; the bool/char/str/float specifiers are plain `%s`/`%c`/`%f`
+// literals. Every operand value is built
+// under the grammar its own resolved type selects; a print operand of any type
+// the checker does not allow as printable is a clean rejection naming what was
+// found, never guessed. The function is shared by buildLeadingStatement's
+// Print case (which covers both buildBlock's and buildLoopBody's
+// leading-statement sequences), buildLoopBody's explicit Print case, and
+// buildDeferredStatements' deferred-statement case, so the emission logic
+// lives in exactly one place.
+func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	var formatParts []string
+	var args []string
+	for _, childID := range statement.Children {
+		child, ok := unit.Node(childID)
+		if !ok {
+			return "", fmt.Errorf("%s print statement references invalid operand node %d", context, childID)
+		}
+		// A parenthesized operand — `print ("hi")` — arrives wrapped in
+		// tir.SourceAlias nodes (one per grouping level, confirmed against a
+		// real fixture dump), which record grouped-expression parens and
+		// nothing else, so the operand is unwrapped to its innermost node
+		// before its type is dispatched on. Unwrapping here keeps the
+		// per-type value builders untouched (buildExpr/buildBoolExpr/
+		// buildFloatExpr unwrap a SourceAlias themselves, but buildCharOperand
+		// and buildStrOperand have no SourceAlias case); the unwrapped node
+		// carries the same Type the SourceAlias did, so the dispatch below is
+		// exactly what the checker validated.
+		operandID := childID
+		for child.Kind == tir.SourceAlias {
+			if len(child.Children) != 1 {
+				return "", fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
+			}
+			operandID = child.Children[0]
+			child, ok = unit.Node(operandID)
+			if !ok {
+				return "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
+			}
+		}
+		kind, ok := resolvedBuiltin(snapshot, child.Type)
+		if !ok {
+			return "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+		}
+		var arg string
+		var err error
+		switch {
+		case cType(kind) != "":
+			// An integer operand of any builtin width, not just the entry's
+			// own: its value is built by buildExpr at its own resolved kind
+			// (re-checking every node in the expression carries that width,
+			// exactly as a scalar local declaration does), and its specifier
+			// comes from the <inttypes.h> PRI* macros whose expansion matches
+			// the operand's fixed-width C type. The macro name is emitted
+			// OUTSIDE the string quotes (`"%"PRId32`), so the preprocessor
+			// expands it to the specifier text and the adjacent literals
+			// concatenate into the format string — never spelled
+			// `"%PRId32"`, which would put a literal invalid `%P` specifier
+			// in the format.
+			formatParts = append(formatParts, `"%"`+printfSpecifier(kind))
+			arg, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind)
+		case kind == types.Bool:
+			// A bool operand prints as the words true/false: build the bool
+			// expression under the bool grammar, then wrap it in the C ternary
+			// that selects the const char * literal, so the %s specifier's
+			// argument is already the pointer the format string wants — v1's
+			// own approach for bool in print.
+			formatParts = append(formatParts, `"%s"`)
+			arg, err = buildBoolExpr(unit, snapshot, fileSet, operandID, scope, width)
+			if err == nil {
+				arg = "(" + arg + " ? \"true\" : \"false\")"
+			}
+		case kind == types.Char:
+			// A char operand prints as the single character its int32_t C
+			// value encodes; the value is built under the char grammar.
+			formatParts = append(formatParts, `"%c"`)
+			arg, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+		case kind == types.Str:
+			// A str operand prints its bytes: the value is built under the
+			// str grammar, and the %s argument is the value's .data field cast
+			// to const char * (the reachable str values this backend builds
+			// all originate from NUL-terminated C string literals, so %s
+			// reads exactly the intended bytes).
+			formatParts = append(formatParts, `"%s"`)
+			arg, err = buildStrOperand(unit, snapshot, fileSet, operandID, scope, width)
+			if err == nil {
+				arg = "(const char *)" + arg + ".data"
+			}
+		case kind == types.F32 || kind == types.F64:
+			// A float operand prints with %f; f32/f64 promote to double in a
+			// variadic call either way, so the one specifier covers both,
+			// matching v1. The value is built under the float grammar at its
+			// own float kind.
+			formatParts = append(formatParts, `"%f"`)
+			arg, err = buildFloatExpr(unit, snapshot, fileSet, operandID, scope, kind)
+		default:
+			return "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+		}
+		if err != nil {
+			return "", err
+		}
+		args = append(args, arg)
+	}
+	line := indent + "printf(" + strings.Join(formatParts, "") + `"\n"`
+	if len(args) != 0 {
+		line += ", " + strings.Join(args, ", ")
+	}
+	return line + ");", nil
+}
+
+// printfSpecifier returns the <inttypes.h> PRI* macro name whose
+// compile-time string expansion, string-concatenated into a printf format
+// string as "%" <macro>, prints an argument of the given integer builtin's C
+// type (cType). Using the fixed-width macros — PRId8/PRId16/PRId32/PRId64 for
+// the signed types, PRIu8/PRIu16/PRIu32/PRIu64 for the unsigned — is the
+// portable, warning-clean way to match printf specifiers to the exact-width
+// C types this backend emits: the standard technically requires a variadic
+// format specifier to match the promoted argument type, and a hand-picked
+// %hhd/%hd would only happen to match int8_t/int16_t on common platforms.
+// Int and Uint follow their cType mapping (int32_t and uint64_t
+// respectively). Any non-integer kind returns "", matching cType's own
+// ""-means-not-an-integer contract.
+func printfSpecifier(width types.BuiltinKind) string {
+	switch width {
+	case types.Int:
+		return "PRId32"
+	case types.I8:
+		return "PRId8"
+	case types.I16:
+		return "PRId16"
+	case types.I32:
+		return "PRId32"
+	case types.I64:
+		return "PRId64"
+	case types.Uint:
+		return "PRIu64"
+	case types.U8:
+		return "PRIu8"
+	case types.U16:
+		return "PRIu16"
+	case types.U32:
+		return "PRIu32"
+	case types.U64:
+		return "PRIu64"
+	}
+	return ""
 }
 
 // localInfo records what a declared local holds: an ordinary scalar — the
@@ -8978,10 +9194,16 @@ func entryReturnType(width types.BuiltinKind) string {
 // pre-10.17 skeleton. <stdbool.h> is included unconditionally: it provides
 // the C bool keyword and the true / false literals the moment any bool local
 // or literal is emitted, and adding it for programs with no bool at all is
-// harmless.
+// harmless. <stdio.h> and <inttypes.h> are likewise included unconditionally:
+// a print statement emits a printf call whose format string uses the
+// <inttypes.h> PRI* macros for its fixed-width integer specifiers, so both
+// headers are needed the moment any print is emitted, and adding them for
+// programs with no print at all is harmless.
 func emitEntryC(w io.Writer, typedefs, helpers, userMain, mainBody string) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
+#include <stdio.h>
+#include <inttypes.h>
 `); err != nil {
 		return err
 	}
