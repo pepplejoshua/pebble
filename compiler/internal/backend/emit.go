@@ -3222,8 +3222,9 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 		}
 	}
 	loopScope := cloneLocals(locals)
-	var initText, condText, updateText string
+	var initText, condText, updateText, updatePre string
 	var initSymbol symbol.SymbolID
+	var updateID tir.NodeID
 	if condIndex >= 0 {
 		// The condition is present. The initializer slot is the at-most-one
 		// nonvalue clause before it, and the update slot the at-most-one
@@ -3250,11 +3251,13 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 		}
 		condText = cond
 		if len(clauses)-condIndex-1 == 1 {
-			text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[len(clauses)-1], loopScope, width, unions)
+			updateID = clauses[len(clauses)-1]
+			pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[len(clauses)-1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
 			updateText = text
+			updatePre = pre
 		}
 	} else {
 		// No condition: the checker's fixed relative order leaves at most
@@ -3284,17 +3287,21 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 				// something else. A lone no-condition CompoundStore is the
 				// same update-only shape for a compound assignment or postfix
 				// increment (`for ; ; i++ { ... }`).
-				text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
+				updateID = clauses[0]
+				pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
 				if err != nil {
 					return "", err
 				}
 				updateText = text
+				updatePre = pre
 			case tir.CompoundStore:
-				text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
+				updateID = clauses[0]
+				pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
 				if err != nil {
 					return "", err
 				}
 				updateText = text
+				updatePre = pre
 			default:
 				return "", fmt.Errorf("entry function body block for loop with no condition has a %s clause, want an Initialize (a local declaration), a Store (an update), or a CompoundStore (an update)", clause.Kind)
 			}
@@ -3313,11 +3320,13 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			}
 			initText = text
 			initSymbol = symbol
-			text, err = buildForUpdateClause(unit, snapshot, fileSet, clauses[1], loopScope, width, unions)
+			updateID = clauses[1]
+			pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
 			updateText = text
+			updatePre = pre
 		default:
 			return "", fmt.Errorf("entry function body block for loop with no condition has %d clause(s), want at most two (an initializer and an update)", len(clauses))
 		}
@@ -3337,7 +3346,23 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 		bodyText = bodyIndent + fmt.Sprintf("(void)pebble_local_%d;", initSymbol) + "\n" + bodyText
 	}
 	indent := strings.Repeat("    ", depth+1)
-	return fmt.Sprintf("%sfor (%s; %s; %s) {\n%s\n%s}", indent, initText, condText, updateText, bodyText, indent), nil
+	forText := fmt.Sprintf("%sfor (%s; %s; %s) {\n%s\n%s}", indent, initText, condText, updateText, bodyText, indent)
+	if updatePre != "" {
+		updateNode, ok := unit.Node(updateID)
+		if !ok || len(updateNode.Children) == 0 {
+			return "", fmt.Errorf("entry function body block for loop update references invalid compound place")
+		}
+		lvalue, _, err := buildPlaceLValue(unit, snapshot, fileSet, updateNode.Children[0], loopScope, width)
+		if err != nil {
+			return "", err
+		}
+		tempName := fmt.Sprintf("pebble_compound_ptr_%d", updateID)
+		updatePre = fmt.Sprintf("%s *%s;", cType(width), tempName)
+		updateText = fmt.Sprintf("%s = &(%s), %s", tempName, lvalue, updateText)
+		forText = fmt.Sprintf("%sfor (%s; %s; %s) {\n%s\n%s}", indent, initText, condText, updateText, bodyText, indent)
+		return indent + updatePre + "\n" + forText, nil
+	}
+	return forText, nil
 }
 
 // buildForInitClause validates and builds the C init-clause text for a classic
@@ -3392,18 +3417,19 @@ func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // `step++`), validated and emitted by buildCompoundStore; a discarded-
 // expression update (`for x + 1; ...`) is reachable from real source but out
 // of scope and cleanly rejected.
-func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
-		return "", fmt.Errorf("entry function body block for loop update references invalid node %d", id)
+		return "", "", fmt.Errorf("entry function body block for loop update references invalid node %d", id)
 	}
 	if statement.Kind != tir.Store && statement.Kind != tir.CompoundStore {
-		return "", fmt.Errorf("entry function body block for loop update is a %s, want a Store (a reassignment of a local already in scope) or a CompoundStore (a compound assignment or postfix increment/decrement); a for-loop update must be a single assignment", statement.Kind)
+		return "", "", fmt.Errorf("entry function body block for loop update is a %s, want a Store (a reassignment of a local already in scope) or a CompoundStore (a compound assignment or postfix increment/decrement); a for-loop update must be a single assignment", statement.Kind)
 	}
 	if statement.Kind == tir.CompoundStore {
-		return buildCompoundStore(unit, snapshot, fileSet, statement, scope, "entry function body block for loop update", width)
+		return buildCompoundStore(unit, snapshot, fileSet, id, statement, scope, "entry function body block for loop update", width)
 	}
-	return buildStoreCore(unit, snapshot, fileSet, statement, scope, "entry function body block for loop update", width, unions)
+	core, err := buildStoreCore(unit, snapshot, fileSet, statement, scope, "entry function body block for loop update", width, unions)
+	return "", core, err
 }
 
 // buildScalarInitializeCore builds the declaration text for a scalar local at
@@ -3755,16 +3781,16 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // (+= -> +, -= -> -, *= -> *, /= -> /, %= -> %, and a postfix ++/-- -> + or
 // -). A CompoundStore carrying any other operator is hand-built IR and a clean
 // rejection.
-func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, string, error) {
 	if len(statement.Children) != 2 {
-		return "", fmt.Errorf("%s compound assignment has %d child(ren), want exactly two: the place being combined into and the value to combine into it", context, len(statement.Children))
+		return "", "", fmt.Errorf("%s compound assignment has %d child(ren), want exactly two: the place being combined into and the value to combine into it", context, len(statement.Children))
 	}
 	place, ok := unit.Node(statement.Children[0])
 	if !ok {
-		return "", fmt.Errorf("%s compound assignment references invalid place node %d", context, statement.Children[0])
+		return "", "", fmt.Errorf("%s compound assignment references invalid place node %d", context, statement.Children[0])
 	}
 	if place.Kind != tir.StoragePlace && place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace && place.Kind != tir.FieldPlace {
-		return "", fmt.Errorf("%s compound assignment targets a %s, want a plain StoragePlace naming a local in scope, a CheckedIndexPlace naming an element of an array or slice local, a FieldPlace, or a DereferencePlace for a write through a pointer", context, place.Kind)
+		return "", "", fmt.Errorf("%s compound assignment targets a %s, want a plain StoragePlace naming a local in scope, a CheckedIndexPlace naming an element of an array or slice local, a FieldPlace, or a DereferencePlace for a write through a pointer", context, place.Kind)
 	}
 	// The operator must be one of the five checked-arithmetic operators — the
 	// full set compoundOperator in the checker can attach to a CompoundStore
@@ -3773,12 +3799,12 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	switch statement.Operator {
 	case syntax.Plus, syntax.Minus, syntax.Star, syntax.Slash, syntax.Percent:
 	default:
-		return "", fmt.Errorf("%s compound assignment uses operator %s, want +, -, *, /, or %%", context, statement.Operator)
+		return "", "", fmt.Errorf("%s compound assignment uses operator %s, want +, -, *, /, or %%", context, statement.Operator)
 	}
 	if place.Kind == tir.StoragePlace {
 		targetInfo, declared := scope[place.Symbol]
 		if !declared {
-			return "", fmt.Errorf("%s compound assignment combines into symbol %d, which is not a local in scope", context, place.Symbol)
+			return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, which is not a local in scope", context, place.Symbol)
 		}
 		// The lvalue is the local's own C name; the combined value is built
 		// against the local's own declared type, mirroring buildStoreCore's
@@ -3790,11 +3816,13 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 		switch targetInfo.kind {
 		case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
-			return buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			return "", core, err
 		case types.F32, types.F64:
-			return buildCompoundFloatCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			core, err := buildCompoundFloatCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			return "", core, err
 		default:
-			return "", fmt.Errorf("%s compound assignment combines into symbol %d, a %s local; compound assignment is supported only for integer and float locals", context, place.Symbol, describeType(snapshot, place.Type))
+			return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, a %s local; compound assignment is supported only for integer and float locals", context, place.Symbol, describeType(snapshot, place.Type))
 		}
 	}
 	// A non-plain place (indexed/field/dereference): the lvalue text and the
@@ -3806,12 +3834,18 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	// element) is a clean rejection.
 	lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, statement.Children[0], scope, width)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !isWidth(snapshot, width, elementType) {
-		return "", fmt.Errorf("%s compound assignment combines into an element of type %s, want %s", context, describeType(snapshot, elementType), wantName(width))
+		return "", "", fmt.Errorf("%s compound assignment combines into an element of type %s, want %s", context, describeType(snapshot, elementType), wantName(width))
 	}
-	return buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, width, scope, context)
+	tempName := fmt.Sprintf("pebble_compound_ptr_%d", id)
+	core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, "(*"+tempName+")", width, scope, context)
+	if err != nil {
+		return "", "", err
+	}
+	pre := fmt.Sprintf("%s *%s = &(%s);", cType(width), tempName, lvalue)
+	return pre, core, nil
 }
 
 // buildCompoundIntegerCore builds the combined-value text for a compound
@@ -4191,9 +4225,12 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 			// `defer i += 1;` — built by the same shared buildCompoundStore a
 			// non-deferred compound assignment uses, so the emission logic
 			// lives in exactly one place.
-			core, err := buildCompoundStore(unit, snapshot, fileSet, stmt, scope, context, width)
+			pre, core, err := buildCompoundStore(unit, snapshot, fileSet, deferReg.Children[0], stmt, scope, context, width)
 			if err != nil {
 				return "", err
+			}
+			if pre != "" {
+				parts = append(parts, indent+pre)
 			}
 			parts = append(parts, indent+core+";")
 		case tir.ExpressionStatement:
@@ -4433,9 +4470,12 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// like a Store. The value text is built by buildCompoundStore (shared
 		// with the for-loop update clause); the indent and the trailing `;`
 		// turn it into this full statement, mirroring the Store case.
-		core, err := buildCompoundStore(unit, snapshot, fileSet, statement, scope, context, width)
+		pre, core, err := buildCompoundStore(unit, snapshot, fileSet, id, statement, scope, context, width)
 		if err != nil {
 			return "", err
+		}
+		if pre != "" {
+			return indent + pre + "\n" + indent + core + ";", nil
 		}
 		return indent + core + ";", nil
 	case tir.ExpressionStatement:

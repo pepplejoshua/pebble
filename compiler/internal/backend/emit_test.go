@@ -2530,6 +2530,12 @@ func TestEmitCompoundIndexedPlaceCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var arr [3]i32 = [10, 20, 30]; var i i32 = 1; arr[i] += 5; return arr[i]; }", false, 25, false)
 }
 
+func TestEmitCompoundIndexedPlaceEvaluatesIndexOnce(t *testing.T) {
+	// The index call mutates count, so returning count proves whether the
+	// compound store evaluates its place once (1) or twice (2).
+	emitAndRun(t, "fn bump_and_get_index(p *i32) i32 { *p = *p + 1; return 0; } fn main() i32 { var count i32 = 0; var arr [1]i32 = [0]; arr[bump_and_get_index(&count)] += 1; return count; }", false, 1, false)
+}
+
 func TestEmitCompoundFieldPlaceCompilesAndRuns(t *testing.T) {
 	// A compound assignment to a struct field — c.count -= 2 — is a
 	// CompoundStore whose place is a FieldPlace (a struct field of exactly the
@@ -3909,6 +3915,14 @@ func TestEmitForLoopCompoundStoreUpdateCompilesAndRuns(t *testing.T) {
 	// pebble_rt_checked_add_i32 call buildCompoundStore produces, so step
 	// counts 0..2, total = 0+1+2 = 3, returned as the exit code.
 	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step += 1 { total = total + step; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopIndexedCompoundUpdateEvaluatesPlacePerUpdate(t *testing.T) {
+	// A non-plain compound update cannot put its declaration in the C for
+	// header. The emitter declares the pointer before the loop and assigns its
+	// address in the update expression, so the changing index is evaluated once
+	// on the iteration where the update runs.
+	emitAndRunBounded(t, "fn main() i32 { var arr [2]i32 = [0, 0]; var i i32 = 0; for ; i < 1; arr[i] += 1 { i = i + 1; } return arr[1]; }", false, 1, false)
 }
 
 func TestEmitForLoopPostfixIncrementUpdateCompilesAndRuns(t *testing.T) {
