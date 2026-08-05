@@ -143,44 +143,102 @@ repeated here.
       do not compile to real C yet. This needs independent re-verification
       via `backend.Emit` (not just `check.Check`) once function types are
       actually supported, before trusting either file end-to-end.
-- [~] **Unions are only partially implemented — declarable, not usable.**
-      Both `union` (untagged) and `union enum` (tagged) parse as type
-      declarations. A tagged union can apparently be constructed
-      (`Data.{ Int = 42 }` doesn't error at construction) but field access
-      fails: `var d Data = Data.{ Int = 42 }; return d.Int;` produces
-      `C0605: member operation is invalid`. Untagged unions fail
-      identically. This matches `open-language-decisions.md` §1.3's
-      already-recorded finding for untagged unions specifically
-      ("Untagged unions cannot be constructed, read, or written... `C0615`")
-      but that document does not mention tagged unions having the same
-      field-read problem — worth checking whether `C0605` here is the same
-      underlying gap as `open-language-decisions.md`'s `C0615`, or a
-      second, distinct one; not resolved by this audit.
-      - **Concrete evidence this blocks real, already-written code:**
-        `std/result.peb` is written entirely around tagged-union pattern
-        matching — `type Result[T, E] = union enum { Ok T; Err E; ...
-        fn is_ok(self Result[T, E]) bool { switch self { case Ok: return
-        true; case Err: return false; } } ... }`. This file was NEVER part
-        of the std-library audit's "checks clean" list this session (`vec`,
-        `string`, `hmap`, `set`, `mem`, `hash`, `io`, `libc`, `func` all
-        were; `result` was not) — it almost certainly does not compile
-        today, blocked on exactly this gap.
-- **`switch` on a tagged union, with the `case Ok: return self.Ok;` style
-      destructuring-by-field-access, is what v1 calls pattern matching —
-      design conversation, sequencing decided (2026-08-05).** It is not
-      merely a syntax gap: it requires (1) unions being readable/writable
-      at all (the item directly above, on this list to fix now), and (2)
-      `switch` accepting a union-typed subject with per-variant cases,
-      which cannot even be tested independently of (1) today — you cannot
-      exercise the switch mechanism while field access on the matched
-      variant is broken. v1's own design (per `README.md`) inseparably
-      combines the two (`switch self { case Ok: return self.Ok; ... }`
-      reads a field of the matched variant inline). **Decision:** fix
-      unions (mechanical, no design question, on the active list below);
-      the actual pattern-matching design conversation (whether v2 keeps
-      v1's exact `switch`/`case` shape or does better) happens later,
-      after enums and unions are otherwise fully working and all other
-      tracked work is done — not now, and not next.
+- [ ] **`.{ Name = value }` compound-literal construction doesn't work for
+      union/tagged-union destinations — real, narrow, mechanical bug.**
+      CORRECTED after direct empirical testing invalidated the previous
+      version of this entry (its "construction doesn't error" claim was
+      wrong — retested directly, `Data.{ Int = 42 }` against `type Data =
+      union enum { Int i32; Str str; }` fails immediately with `C0615:
+      aggregate construction is invalid`). Root cause, confirmed by
+      reading the code: `finishRecord`
+      (`internal/check/aggregate_facts.go:271-311`) unconditionally builds
+      an `aggregateStruct`-kind record for ANY `.{ Name = value, ... }`
+      literal regardless of the destination's actual declaration kind —
+      there is no branch routing a single-field literal against a
+      union/`union enum` destination to `aggregateEnumVariant` (the kind
+      `finishPartialMember`, a completely different syntax path for
+      base-less `.Name` dot-shorthand, already builds at line 361).
+      `validateAggregateRecords`'s `aggregateStruct` case then correctly
+      rejects it, since `declaration.Nominal` is `NominalTaggedUnion`, not
+      `NominalStruct`.
+
+      **This is NOT the same gap as field access / pattern matching
+      below** — directly confirmed empirically that CALL-syntax
+      construction (`Data.Int(42)`, not `.{ Int = 42 }`) already works
+      today at both the checker AND backend, compiles, and runs correctly
+      (a real switch on the constructed value with qualified case labels
+      like `case Data.Int:` also already works, checker AND backend, full
+      round-trip verified). The only thing broken is the alternate
+      `.{ Name = value }` literal syntax specifically.
+
+      **Concrete impact**: `std/result.peb` is written entirely with
+      `.{ Name = value }` construction (`Result[T, E].{ Ok = value }`,
+      `Result[T, E].{ Err = error }`) — confirmed via direct testing this
+      fails with exactly this `C0615`, both non-generic and once a
+      generic instantiation is actually exercised by a call site (a
+      never-instantiated generic method isn't fully checked, which is
+      why an earlier, less careful test on this file didn't surface it).
+      Fixing this does NOT make `result.peb` check clean end-to-end by
+      itself — it also uses `self.Ok`-style field access inside
+      `case Ok:` bodies, which is the separate, still-deferred item below
+      — but it's real, necessary, unblocking work independent of that
+      deferred design question.
+- **Tagged-union field access on the matched variant (`case Ok: return
+      self.Ok;`) is pattern matching — still deferred, confirmed by
+      spec text, not merely a sequencing choice.** Previously framed as
+      "mechanical, fix now, pattern matching is a separate later
+      conversation" — that framing undersold how entangled the two
+      actually are. `06b-validation-and-typed-ir.md` line 850 states
+      switch narrowing explicitly: "A tagged-union case narrows only its
+      dominated case region" — meaning `self.Ok` is only ever meant to
+      be legal INSIDE a `case Ok:` body that has narrowed `self` to that
+      variant, not as unconditional field access on any union value
+      (confirmed the `member operation is invalid` / `C0605` root cause:
+      `internal/check/member_validation.go`'s `memberField` case only
+      matches members of `symbol.SymbolKind` `SymbolField`, but union
+      members are registered as `SymbolVariant`
+      (`internal/symbol/resolve.go:242`) — so naively making that check
+      also accept `SymbolVariant` would make `d.Int` legal on ANY union
+      value unconditionally, which is a different, weaker, almost
+      certainly wrong design than the flow-sensitive narrowing the spec
+      actually describes). Implementing this for real is flow-sensitive
+      type narrowing inside a dominated case region — a genuine,
+      nontrivial feature, not a validator tweak. Stays deferred per the
+      already-decided sequencing (after enums/unions are otherwise
+      working and everything else on this tracker is done).
+- **Untagged `union` construction/read/write has no accepted design at
+      all — separate from tagged unions, explicitly "Undecided" in
+      `open-language-decisions.md` §1.3, not merely unimplemented.**
+      Confirmed still accurate; not touched by the construction-syntax
+      fix above (which only affects union ENUM / tagged-union
+      destinations — untagged `union` has no discriminant at all, so
+      the whole "which variant" question that the `.{ Name = value }`
+      routing fix resolves for tagged unions doesn't even apply). Stays
+      out of scope until the safety-model design question is settled.
+- [ ] **Switch case-label dot-shorthand (`.red`) fails to resolve — lower
+      priority, ergonomic only, qualified names work as a full
+      workaround.** `switch c { case .red: ... }` (subject `c` is a
+      `Color`-typed local) fails with `T0510: inference variable has no
+      unique semantic type`, even though the exact same `.red` shorthand
+      works fine in a var-declaration initializer (`var c Color =
+      .red;` checks clean) — confirmed this is switch-case-specific, not
+      a general dot-shorthand bug. Root cause: `prepareSwitchCase`
+      (`internal/check/control_facts.go:425-460`) calls `w.nominalCase`
+      to decide whether a case value is "nominal" (a qualified name or
+      variant call, deferring its resolution to a later, self-describing
+      pass) — but `nominalCase` also returns true for a base-less `.name`
+      (`PartialMemberExpr`, line 418), and the nominal branch
+      unconditionally skips wiring the case value's expectation to the
+      switch subject's type (line 440-444, "Selection and narrowing are
+      post-solve"). That's correct for an already-qualified label like
+      `Color.red` (self-describing, no expected type needed) but wrong
+      for base-less `.red`, which — exactly like the var-declaration case
+      that already works — needs the expected type propagated from
+      context to resolve at all. Confirmed a qualified label
+      (`case Color.red:` / `case Data.Int:`) works fine today as a full
+      workaround for both plain enums and unions, so this is pure
+      ergonomics, not a blocker; affects plain enum switches too, not
+      just unions.
 - [ ] **`OptionalIntegerToEnum` (`5 as ?Color`) still unimplemented.**
       `EnumToInteger` (`64197e7`) and `CheckedIntegerToEnum` (`5d3f44e`,
       direct cast to an enum, panics/RELEASE-trusts on an invalid
