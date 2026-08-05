@@ -544,7 +544,10 @@ compatibility/context-flow records.
 - A variant call is accepted only for the exact enum/tagged-union member and
   becomes `VariantConstruct`, not an ordinary function call.
 - Nonvariadic arity must match. Calling a C variadic function remains `C0604`;
-  no default promotions are defined. Pebble-defined variadics are invalid.
+  no default promotions are defined. A Pebble-defined variadic's trailing
+  slice-typed parameter accepts zero or more call-site arguments, each
+  checked against the slice's element type via the common compatibility
+  matrix; the fixed parameters before it are checked as ordinary arguments.
 - Every fixed argument uses the common compatibility matrix. No argument is
   revisited or reordered. The call result must equal the prepared/solved
   result exactly.
@@ -569,7 +572,9 @@ symbols:
 
 - a body is allowed only for Pebble convention;
 - an extern function is C convention and has no body;
-- a variadic callable is extern C with the sole variadic group last;
+- a variadic callable's sole variadic group is a slice-typed trailing
+  parameter and is last; both C convention (matching C varargs) and Pebble
+  convention (the trailing slice collects call-site arguments) are valid;
 - a method's first expanded parameter is named `self` and has exact containing
   nominal type or pointer-to-that-type;
 - a nongeneric anonymous function is a globally hoisted, noncapturing function
