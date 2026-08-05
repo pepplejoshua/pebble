@@ -2412,6 +2412,240 @@ func TestEmitReassignOverflowStillAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var x i32 = 2147483647; x = x + 1; return x; }", false, 0, true)
 }
 
+func TestEmitCompoundAddCompilesAndRuns(t *testing.T) {
+	// The minimal repro: a compound assignment as an ordinary leading
+	// statement. i += 1 lowers through the checked-arithmetic runtime helper
+	// (pebble_rt_checked_add_i32), never a raw C `+=`, so i goes 5 -> 6 and the
+	// process exits with the combined value 6.
+	emitAndRun(t, "fn main() i32 { var i i32 = 5; i += 1; return i; }", false, 6, false)
+}
+
+func TestEmitCompoundAllOperatorsCompileAndRun(t *testing.T) {
+	// Every compound operator in the language's set — +=, -=, *=, /=, %= — must
+	// combine exactly like the corresponding x = x <op> y, since each lowers
+	// through the same checked-arithmetic runtime helper buildExpr's
+	// CheckedArithmetic case uses. Each case's expected value is independently
+	// computed, not copied from the emission.
+	cases := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{"add", "fn main() i32 { var i i32 = 5; i += 4; return i; }", 9},
+		{"sub", "fn main() i32 { var i i32 = 9; i -= 4; return i; }", 5},
+		{"mul", "fn main() i32 { var i i32 = 3; i *= 7; return i; }", 21},
+		{"div", "fn main() i32 { var i i32 = 21; i /= 3; return i; }", 7},
+		{"mod", "fn main() i32 { var i i32 = 22; i %= 7; return i; }", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.source, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
+	// The single most important correctness property: a compound assignment
+	// must NOT emit a raw C `+=` (which would compile and "work" for in-range
+	// values while silently dropping the overflow check). The emitted C for
+	// `i += 1` must be the same pebble_rt_checked_add_i32 call a plain
+	// `i = i + 1` emits, with the lvalue read as the helper's left operand and
+	// written back as the assignment target.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 5; i += 1; return i; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, 1, (PebbleSourceLoc){\"main.peb\", 1, 32})") {
+		t.Fatalf("emitted C does not combine through the checked helper:\n%s", out)
+	}
+	if strings.Contains(out, " += ") {
+		t.Fatalf("emitted C uses a raw C += instead of the checked helper:\n%s", out)
+	}
+}
+
+func TestEmitPostfixIncrementCompileAndRun(t *testing.T) {
+	// A postfix i++ lowers through the SAME CompoundStore path as += (the
+	// checker builds a postfix update as a CompoundStore with + and a
+	// literal-one value child), so it must work everywhere a += does — here as
+	// an ordinary leading statement. Two increments make i go 4 -> 6.
+	emitAndRun(t, "fn main() i32 { var i i32 = 4; i++; i++; return i; }", false, 6, false)
+}
+
+func TestEmitPostfixDecrementCompileAndRun(t *testing.T) {
+	// A postfix i-- is the -= twin: a CompoundStore with - and a literal-one
+	// value child, emitted as pebble_rt_checked_sub_i32(pebble_local_<i>, 1),
+	// making i go 6 -> 5.
+	emitAndRun(t, "fn main() i32 { var i i32 = 6; i--; return i; }", false, 5, false)
+}
+
+func TestEmitCompoundOverflowStillAborts(t *testing.T) {
+	// 2147483647 += 1 overflows i32. The overflow must survive through a
+	// compound assignment, exactly as it does through a plain reassignment:
+	// i += 1 lowers to pebble_local_<i> = pebble_rt_checked_add_i32(
+	// pebble_local_<i>, 1), which must panic through pebble_rt_panic in
+	// PEBBLE_RT_MODE_SAFE — the process must terminate abnormally, not exit 0
+	// and not return a silently wrapped value. This is the proof that the
+	// emission goes through the checked runtime helper rather than a naive
+	// unchecked C `i += 1`.
+	emitAndRun(t, "fn main() i32 { var i i32 = 2147483647; i += 1; return i; }", false, 0, true)
+}
+
+func TestEmitPostfixIncrementOverflowStillAborts(t *testing.T) {
+	// A postfix i++ overflows identically to i += 1 (it IS i += 1 at the IR
+	// level): 2147483647++ must panic through pebble_rt_checked_add_i32 in
+	// PEBBLE_RT_MODE_SAFE, not silently wrap.
+	emitAndRun(t, "fn main() i32 { var i i32 = 2147483647; i++; return i; }", false, 0, true)
+}
+
+func TestEmitCompoundDivideByZeroStillAborts(t *testing.T) {
+	// i /= 0 must fault through pebble_rt_checked_div_i32 exactly like a plain
+	// i = i / 0 — divide-by-zero is a checked-semantics property a compound
+	// assignment must preserve, not a raw C `/=` which would be UB.
+	emitAndRun(t, "fn main() i32 { var i i32 = 7; i /= 0; return i; }", false, 0, true)
+}
+
+func TestEmitCompoundReleaseWrapsOverflow(t *testing.T) {
+	// In PEBBLE_RT_MODE_RELEASE the checked add wraps instead of panicking
+	// (same helper, different mode): 2147483647 += 1 wraps i to INT32_MIN, so
+	// the follow-on `if i < 0` is true and the process exits 77. A naive raw
+	// C `i += 1` on INT32_MAX is undefined behavior, so this test proves the
+	// wrap is happening through the runtime's own checked helper.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 2147483647; i += 1; if i < 0 { return 77; } else { return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 77, false, false)
+}
+
+func TestEmitCompoundIndexedPlaceCompilesAndRuns(t *testing.T) {
+	// A compound assignment to an array element — arr[i] += 5 — is a
+	// CompoundStore whose place is a CheckedIndexPlace, emitted through the
+	// same buildPlaceLValue machinery a plain indexed Store uses: the lvalue is
+	// arr[pebble_rt_checked_index_i32(...)], read into the checked helper and
+	// written back. i = 1 picks the 20 element, +5 makes it 25, returned.
+	emitAndRun(t, "fn main() i32 { var arr [3]i32 = [10, 20, 30]; var i i32 = 1; arr[i] += 5; return arr[i]; }", false, 25, false)
+}
+
+func TestEmitCompoundFieldPlaceCompilesAndRuns(t *testing.T) {
+	// A compound assignment to a struct field — c.count -= 2 — is a
+	// CompoundStore whose place is a FieldPlace (a struct field of exactly the
+	// entry's width), emitted through the same buildPlaceLValue machinery a
+	// plain field Store uses: pebble_local_<c>.pebble_field_<count>, read into
+	// the checked helper and written back. 10 - 2 = 8, returned.
+	emitAndRun(t, `type Counter = struct { count i32; }; fn main() i32 { var c Counter = Counter.{ count = 10 }; c.count -= 2; return c.count; }`, false, 8, false)
+}
+
+func TestEmitCompoundInLoopBodyCompilesAndRuns(t *testing.T) {
+	// A compound assignment and a postfix increment inside a loop body (a
+	// fall-through statement sequence) route through buildLeadingStatement
+	// exactly like a Store does: sum accumulates i via sum += i and i advances
+	// via i++, so sum = 0+1+2+3+4 = 10, returned as the exit code. Bounded
+	// execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { sum += i; i++; } return sum; }", false, 10, false)
+}
+
+func TestEmitCompoundI64LocalCombinesViaI64Helper(t *testing.T) {
+	// A compound assignment combines at the local's own declared width, not the
+	// entry's: an i64 local inside an i64 entry combines through the _i64
+	// checked helper (the checkedSuffix selection mirrors buildStoreCore's
+	// targetInfo.kind dispatch). The runtime exit code cannot carry a full i64
+	// (the low byte is all the OS sees), so the i64 story is proven by the
+	// emitted helper name here and by the i64-boundary overflow abort in
+	// TestEmitCompoundI64OverflowStillAborts.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { var x i64 = 9223372036854775800; x += 5; return x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_add_i64(pebble_local_25, 5") {
+		t.Fatalf("emitted C does not combine at i64 through the checked helper:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_rt_checked_add_i32") {
+		t.Fatalf("emitted C combines at i32 instead of the local's own i64 width:\n%s", out)
+	}
+}
+
+func TestEmitCompoundI64OverflowStillAborts(t *testing.T) {
+	// 9223372036854775807 += 1 overflows i64 and must panic through
+	// pebble_rt_checked_add_i64 in PEBBLE_RT_MODE_SAFE — the i64 checked-helper
+	// suffix really is selected for a compound assignment, not the i32 twin.
+	emitAndRun(t, "fn main() i64 { var x i64 = 9223372036854775807; x += 1; return x; }", false, 0, true)
+}
+
+func TestEmitCompoundI64LocalInsideI32Function(t *testing.T) {
+	// An i64 local inside an i32 entry combines at i64 (buildExpr at the
+	// local's own width, the _i64 checked helper) even though the entry's
+	// resolved width is i32 — the same width independence a plain i64
+	// reassignment already has. 21 += 21 makes 42, returned as i32 after the
+	// cast.
+	emitAndRun(t, "fn main() i32 { var y i64 = 21; y += 21; return y as i32; }", false, 42, false)
+}
+
+func TestEmitCompoundFloatLocalCompilesAndRuns(t *testing.T) {
+	// A float compound assignment (checker-reachable: the -=, *=, /= families
+	// are NumericSame and += is Add, both admitting floats) combines with the
+	// same plain C operator buildFloatExpr's BinaryValue case uses — floats
+	// have no checked arithmetic anywhere in this backend, so x += 1.0 emits
+	// x = (x + 1.0). 2.5 += 1.0 = 3.5, truncated to exit code 3 by the C
+	// float-to-int conversion of the process exit.
+	emitAndRun(t, "fn main() f32 { var x f32 = 2.5; x += 1.0; return x; }", false, 3, false)
+}
+
+func TestEmitPostfixIncrementFloatCompilesAndRuns(t *testing.T) {
+	// A postfix ++ on a float local lowers through the same CompoundStore path
+	// (the checker's buildPostfixOne synthesizes a 1.0 float literal for a
+	// float place), combining with the plain C operator: x goes 1.5 -> 2.5,
+	// truncated to exit code 2.
+	emitAndRun(t, "fn main() f64 { var x f64 = 1.5; x++; return x; }", false, 2, false)
+}
+
+func TestEmitCompoundDereferencePlaceCompilesAndRuns(t *testing.T) {
+	// A compound assignment through a pointer — *p += 3 — is a CompoundStore
+	// whose place is a DereferencePlace, emitted through the same
+	// buildPlaceLValue machinery a plain write-through-pointer Store uses (the
+	// null-checked dereference is the lvalue, read into the checked helper and
+	// written back). v goes 7 -> 10, returned.
+	emitAndRun(t, "fn main() i32 { var v i32 = 7; var p *i32 = &v; *p += 3; return v; }", false, 10, false)
+}
+
+func TestEmitCompoundSliceElementCompilesAndRuns(t *testing.T) {
+	// A compound assignment to a slice element — s[0] += 4 — is a
+	// CompoundStore whose place is a CheckedIndexPlace over a slice base,
+	// emitted as s.data[pebble_rt_checked_index_i32(...)] both read and
+	// written. The write lands in the backing array, so values[0] goes 1 -> 5.
+	emitAndRun(t, "fn main() i32 { var values [3]i32 = [1, 2, 3]; let s []i32 = values[:]; s[0] += 4; return values[0]; }", false, 5, false)
+}
+
+func TestEmitDeferredCompoundStoreCompilesAndRuns(t *testing.T) {
+	// A deferred compound assignment — defer x += 1; — routes through the same
+	// buildCompoundStore a non-deferred compound assignment uses (the deferred
+	// position accepts a CompoundStore exactly as it accepts a Store), so the
+	// deferred statement runs just before the return and x goes 5 -> 6.
+	emitAndRun(t, "fn main() i32 { var x i32 = 5; defer x += 1; return x; }", false, 6, false)
+}
+
+func TestEmitForLoopNoConditionCompoundUpdateCompilesAndRuns(t *testing.T) {
+	// A lone no-condition for whose only clause is a CompoundStore is the
+	// update-only shape, exactly like a lone no-condition Store: for ; ; i += 2
+	// advances i by checked-add of 2 until the in-body break at i >= 3 fires at
+	// i = 4, returned as the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; for ; ; i += 2 { if i >= 3 { break; } } return i; }", false, 4, false)
+}
+
+func TestEmitCompoundInsideIfArmAndSwitchCaseCompilesAndRuns(t *testing.T) {
+	// A compound assignment in an if-arm and in a switch case body — the
+	// fall-through statement-sequence positions b5be90d unified — routes through
+	// the shared buildLeadingStatement exactly like a Store does: x starts 1,
+	// the if-arm does x += 5 (x = 6), the switch case does x *= 3 (x = 18),
+	// returned. Bounded execution is unnecessary (no loop) but harmless.
+	emitAndRun(t, "fn main() i32 { var x i32 = 1; if x < 10 { x += 5; } switch x { case 6: x *= 3; else: x = 0; } return x; }", false, 18, false)
+}
+
 func TestEmitRejectsStoreToUndeclaredSymbol(t *testing.T) {
 	// A Store's place must name a local declared earlier in the entry body.
 	// The checker would never build a reassignment of an undeclared name from
@@ -3668,13 +3902,21 @@ func TestEmitForLoopRejectsCompoundStoreInitializer(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop initializer is a CompoundStore")
 }
 
-func TestEmitForLoopRejectsCompoundStoreUpdate(t *testing.T) {
-	// A compound-assignment as the for-loop update (step += 1) is reachable
-	// from real source but out of scope: the update must be a single Store
-	// (a reassignment), matching the backend's rule that a reassignment
-	// lowers through buildStoreCore.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step += 1 { total = total + step; } return total; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop update is a CompoundStore")
+func TestEmitForLoopCompoundStoreUpdateCompilesAndRuns(t *testing.T) {
+	// A compound-assignment as the for-loop update (step += 1) is now a
+	// supported update shape: the for-header update clause accepts a
+	// CompoundStore exactly as it accepts a Store, emitting the same
+	// pebble_rt_checked_add_i32 call buildCompoundStore produces, so step
+	// counts 0..2, total = 0+1+2 = 3, returned as the exit code.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step += 1 { total = total + step; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopPostfixIncrementUpdateCompilesAndRuns(t *testing.T) {
+	// A postfix i++ as the for-loop update lowers through the same CompoundStore
+	// path as step += 1 (the checker builds a for-update postfix as a
+	// CompoundStore with + and a literal-one value child), so i counts 0..2 and
+	// total = 0+1+2 = 3, returned as the exit code. Bounded execution.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var i i32 = 0; i < 3; i++ { total = total + i; } return total; }", false, 3, false)
 }
 
 func TestEmitForLoopRejectsExpressionStatementClause(t *testing.T) {
