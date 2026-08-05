@@ -37,18 +37,6 @@ and should be fixed before returning to that list's remaining items
 without them. Confirmed today via direct `emitAndRun`/`Emit` probes against
 the real compiler, not assumed from v1's README.
 
-- [ ] **`print` — the whole statement is unimplemented in the backend.**
-      `tir.Print` exists as a node kind (built correctly by the checker,
-      which validates the operand is `bool`/`char`/`str`/an integer/a float
-      — `C0612` for anything else, e.g. a nominal/enum operand, confirmed
-      still enforced) but has ZERO references anywhere in
-      `internal/backend/emit.go`. `print "hello";` and `print x;` both fail
-      with `entry function body block statement is a Print, want a local
-      declaration...`. There is currently no way to produce output from a
-      Pebble program at all. This is probably the single most damaging gap
-      on this whole list — every other gap is about writing MORE
-      sophisticated programs; this one blocks writing ANY observable
-      program.
 - [ ] **A plain `if` OR `switch` statement not in tail position and not
       inside a loop is rejected — confirmed both, not just `if`.**
       `internal/backend/emit.go`'s `buildLeadingStatement` (the function
@@ -112,14 +100,32 @@ the real compiler, not assumed from v1's README.
       that build this node but are not yet lowered") — this document just
       confirms it's still true and gives a real repro.
 
-**Why these six matter more than anything else on the outstanding-work
-list:** a program that can't print, can't do an early-return guard clause,
-can't increment a loop counter with `i++`, and can't do bitwise arithmetic
-is not usable for ordinary code, regardless of how complete its generics or
-type system are. All six share a common shape (each is a real, working TIR
-node with zero backend emission) and are individually narrow, well-scoped
-fixes — likely comparable in size to `IntegerCast` or Float Stage A/B from
-today's earlier work, not a redesign.
+**Why these matter more than anything else on the outstanding-work
+list:** a program that can't do an early-return guard clause, can't
+increment a loop counter with `i++`, and can't do bitwise arithmetic is
+not usable for ordinary code, regardless of how complete its generics or
+type system are. Each shares a common shape (a real, working TIR node
+with zero backend emission) and is individually narrow, well-scoped —
+comparable in size to `IntegerCast` or Float Stage A/B, not a redesign.
+(`print` itself is done — see git history, `b44691e`.)
+
+---
+
+## New findings (add here as discovered, remove once fixed)
+
+- [ ] **A `u64` literal at or near `UINT64_MAX` fails to compile.**
+      Found while verifying the `print` work (unrelated to `print`
+      itself). `var y u64 = 18446744073709551615;` emits a plain C
+      integer literal with no suffix; `cc` rejects it under
+      `-Wall -Wextra -Werror`: `error: integer literal is too large to
+      be represented in a signed integer type, interpreting as unsigned
+      [-Werror,-Wimplicitly-unsigned-literal]`. Needs a `ULL`-style
+      suffix (or an explicit cast) on the emitted literal wherever an
+      integer literal's own text, taken as a plain signed literal,
+      wouldn't fit — likely in whatever code builds `tir.IntegerLiteral`
+      text for a `u64`-context destination. Not yet scoped further; a
+      smaller `u64` value (e.g. `123456789`) is unaffected, so this is
+      specifically a large-literal edge case, not general `u64` breakage.
 
 ---
 
