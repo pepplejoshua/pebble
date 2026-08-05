@@ -649,15 +649,31 @@ on") is now false: `IntegerCast` backend emission landed today
 and requires exactly this; only the backend still assumes one global
 width):
 
-- [ ] **Stage 1 — per-function width, not program-wide.** Each
-      function (helper or entry) should resolve ITS OWN return type as
-      its own width when building its own body, instead of inheriting
-      `main`'s. `buildHelperFunctions` currently takes one ambient
-      `width` for every helper; it needs to compute each helper's width
-      from that helper's own declared return type. A call site where
-      the caller's and callee's widths differ then just needs the
-      already-required explicit `as` cast around the call result,
-      lowered through the now-existing `IntegerCast` path.
+- [x] **Stage 1, fixed and committed (`169cc3c`).** Each function
+      (helper or entry) now resolves ITS OWN return type as its own
+      width when building its own body, instead of inheriting `main`'s.
+      `validateHelperSignature`'s result check now validates against
+      the helper's own resolved width; `buildHelperFunctions` derives a
+      per-helper `bodyWidth` from its own `ResultType` and uses it for
+      the C return type, `resultInfo`, and the whole body build
+      (locals, arithmetic, return — not just the signature). Parameters
+      deliberately untouched (still match the ambient/caller width —
+      that generalization is separate, not this stage). No call-site
+      change was needed: `buildExpr`'s `IntegerCast` case (added
+      earlier the same day) already recurses into its child at the
+      child's own width, so `helper() as i32` from an `i64` helper
+      lowers correctly for free once the helper itself can build at
+      `i64`. First dispatch (flash) produced a completely empty
+      worklog and zero diff — a harder failure than the usual thin
+      pattern; retried on Luna, which delivered a complete, correctly
+      narrow fix with real tests on the first attempt. Verified
+      independently: reproduced the original rejection against the
+      pre-fix tree via `git stash`, confirmed it's gone; the existing
+      uncast-mismatch-still-rejected regression test still passes
+      unchanged; full suite green; new tests compile and run real C in
+      both directions (`i64`→`i32`, `i32`→`i64`) plus a
+      differently-signed pair (`u32`→`i32`), including one helper with
+      real locals/arithmetic inside its own wider body.
 - [ ] **Stage 2 — per-local width within one function body.** A
       local's width doesn't have to match its own function's return
       type. `localInfo` (`internal/backend/emit.go`) already has a
