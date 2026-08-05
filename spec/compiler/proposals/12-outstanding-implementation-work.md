@@ -285,12 +285,59 @@ is illegal per 11 §4's decision.
       but the method's declared return type is `?int` — a real,
       pre-existing type mismatch (present in the file before this
       session's redesign too), not yet fixed.
-- [~] `std/hmap.peb`, `std/set.peb` — confirmed to need the same
-      pointer-arithmetic-to-slice-indexing redesign as
-      `vec.peb`/`string.peb` (e.g. `(new_entries + i).state = .Empty;`).
-      Not started. The separate `.is_some` blocker is resolved
-      (`.is_some` → `.has_value`, `cf6c41e`); the pointer-arithmetic
-      redesign is still pending.
+- [~] `std/hmap.peb`, `std/set.peb` — redesign WRITTEN (uncommitted,
+      working tree only), same pointer-arithmetic-to-slice-indexing
+      pattern as `vec.peb`/`string.peb`: `entries *Entry[K,V]` →
+      `entries []Entry[K,V]`, `(new_entries + i).state = .Empty;` →
+      `new_entries[i].state = .Empty;`, `self.entries + index` →
+      `&self.entries[index]`, `old_entries != nil` → `old_cap != 0`,
+      explicit `HashMap[K,V].{ entries = slice empty, 0, ... }`/
+      `Set[K].{ ... }` literals (implicit dot-literals confirmed broken
+      for generic destinations earlier this session). The `.is_some`
+      blocker is resolved (`.is_some` → `.has_value`, `cf6c41e`).
+
+      Redesign uncovered a NEW compiler bug (not `vec.peb`'s residual —
+      see below), now split into two parts:
+
+      - [x] **Part 1, fixed and committed (`6b65558`).** `let entry =
+            &bare_local_or_param[index]; entry.field` (read and write)
+            failed with `T0507 type has no structural field named
+            <field>` even though the no-intermediate-binding form
+            `bare_local[index].field` worked. Root cause: (1)
+            `internal/infer/instantiate.go`'s `structuralField` only
+            unwrapped a pointer shape one level before checking for a
+            nominal shape — an address-of local's pointee starts as a
+            deferred leaf term whose concrete shape (e.g. a slice
+            element's struct type) resolves later, so field access on
+            it was rejected as unstructured before that shape settled;
+            fixed by following the leaf term's own structure once more.
+            (2) `internal/check/place_validation.go`'s
+            `placeWritability` only considered the root binding's own
+            `var`/`let` mutability, so writes through such a local still
+            failed even after reads started working — an address-of
+            local is an alias to the pointee's storage, not the storage
+            itself, so its projections now inherit the pointee's
+            writability. Verified independently: reproduced the
+            original failure against the pre-fix tree via `git stash`,
+            confirmed identical repro passes with the fix; full suite
+            green (`gofmt`, `go vet`, `go build`,
+            `go test ./... -count=1`).
+      - [ ] **Part 2, dispatched, awaiting verification.** The Part 1
+            fix does NOT cover `hmap.peb`/`set.peb`'s actual pattern —
+            confirmed via direct isolated testing that `let entry =
+            &self.entries[index]; entry.field` (indexing a slice
+            reached through a pointer-receiver FIELD access, not a bare
+            local/parameter) still fails with the same `T0507` plus a
+            `T0510 inference variable has no unique semantic type` on
+            the write place. This is the real, exact shape used
+            throughout both files (`insert`/`get_by_ref`/`remove`/
+            `rehash`). Dispatched as a narrow follow-up
+            (`/tmp/orc_task_field_through_bound_self_field_slice_index.md`,
+            orc session under Luna) — not yet returned/verified as of
+            this entry.
+
+      Once Part 2 lands and is verified, re-check both `.peb` files
+      against the real checker end to end before committing them.
 
 ## Pointer-receiver methods can't be called on a value-typed local (fixed, then a regression, fix in flight)
 
