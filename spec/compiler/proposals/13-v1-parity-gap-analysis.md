@@ -175,30 +175,6 @@ repeated here.
       the whole "which variant" question that the `.{ Name = value }`
       routing fix resolves for tagged unions doesn't even apply). Stays
       out of scope until the safety-model design question is settled.
-- [ ] **Switch case-label dot-shorthand (`.red`) fails to resolve — lower
-      priority, ergonomic only, qualified names work as a full
-      workaround.** `switch c { case .red: ... }` (subject `c` is a
-      `Color`-typed local) fails with `T0510: inference variable has no
-      unique semantic type`, even though the exact same `.red` shorthand
-      works fine in a var-declaration initializer (`var c Color =
-      .red;` checks clean) — confirmed this is switch-case-specific, not
-      a general dot-shorthand bug. Root cause: `prepareSwitchCase`
-      (`internal/check/control_facts.go:425-460`) calls `w.nominalCase`
-      to decide whether a case value is "nominal" (a qualified name or
-      variant call, deferring its resolution to a later, self-describing
-      pass) — but `nominalCase` also returns true for a base-less `.name`
-      (`PartialMemberExpr`, line 418), and the nominal branch
-      unconditionally skips wiring the case value's expectation to the
-      switch subject's type (line 440-444, "Selection and narrowing are
-      post-solve"). That's correct for an already-qualified label like
-      `Color.red` (self-describing, no expected type needed) but wrong
-      for base-less `.red`, which — exactly like the var-declaration case
-      that already works — needs the expected type propagated from
-      context to resolve at all. Confirmed a qualified label
-      (`case Color.red:` / `case Data.Int:`) works fine today as a full
-      workaround for both plain enums and unions, so this is pure
-      ergonomics, not a blocker; affects plain enum switches too, not
-      just unions.
 - [ ] **`OptionalIntegerToEnum` (`5 as ?Color`) still unimplemented.**
       `EnumToInteger` (`64197e7`) and `CheckedIntegerToEnum` (`5d3f44e`,
       direct cast to an enum, panics/RELEASE-trusts on an invalid
