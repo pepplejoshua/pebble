@@ -607,3 +607,78 @@ own baseline note.
     the identical limitation today) but is a real, still-open backend
     gap for a FUTURE task: generalize helper functions to support
     arbitrary widths/result types, not just the entry's own.
+
+## Backend "single program-wide integer width" restriction (found while scoping primitive casts, `IntegerCast` fixed it partway)
+
+Root-caused precisely (not yet fixed) while scoping the primitive-cast
+work above. This is bigger and more surprising than a per-function
+limitation — it's **program-wide**, not per-function:
+`internal/backend/emit.go`'s `Emit` resolves `main`'s own integer
+return type exactly once, calls it `result`, and threads that SAME
+value, unchanged, through `discoverReachableHelpers` and
+`buildHelperFunctions` as `width` for EVERY function in the compiled
+program — not just `main`'s own body. Confirmed via direct testing:
+
+```
+fn helper() i64 { return 21; }
+fn main() i32 { return 5; helper(); }
+```
+
+fails with `"called function symbol 24 has result type i64, want i32,
+... (a called function may resolve to the entry's integer width, ...)"`
+the moment `main` actually calls `helper` — a helper with a genuinely
+different integer return type is fine as unreached dead code, but
+rejected outright once actually called. So the real constraint is: the
+whole compiled PROGRAM shares one integer width, chosen by whatever
+`main` happens to return.
+
+**Historical origin, from the implementation plan itself**
+(`spec/compiler/proposals/10-c-backend-implementation-plan.md`, phase
+10.13 "widen the backend to i64"): *"a body never mixes widths — an
+i32 local inside an i64 entry (or vice versa) is a clean rejection,
+since there's no cast/coercion lowering to fall back on."* This was a
+deliberate, explicitly-stated bootstrap decision, not an oversight —
+at the time, the backend had no cast/coercion node implemented at all,
+so allowing two widths to meet would have had nowhere to put the
+conversion. That stated precondition ("no cast lowering to fall back
+on") is now false: `IntegerCast` backend emission landed today
+(`5f8a78e`). The restriction is stale, not wrong-when-written.
+
+**The fix, staged into two independent, separately-shippable pieces**
+(neither invents new language semantics — the checker already accepts
+and requires exactly this; only the backend still assumes one global
+width):
+
+- [ ] **Stage 1 — per-function width, not program-wide.** Each
+      function (helper or entry) should resolve ITS OWN return type as
+      its own width when building its own body, instead of inheriting
+      `main`'s. `buildHelperFunctions` currently takes one ambient
+      `width` for every helper; it needs to compute each helper's width
+      from that helper's own declared return type. A call site where
+      the caller's and callee's widths differ then just needs the
+      already-required explicit `as` cast around the call result,
+      lowered through the now-existing `IntegerCast` path.
+- [ ] **Stage 2 — per-local width within one function body.** A
+      local's width doesn't have to match its own function's return
+      type. `localInfo` (`internal/backend/emit.go`) already has a
+      `kind types.BuiltinKind` field PER LOCAL — the data already
+      supports this. `buildScalarInitializeCore` just needs to stop
+      rejecting any width but the ambient one and record the local's
+      real declared width instead; `buildExpr`, when it hits a
+      `SymbolValue` reference, needs to use THAT local's own recorded
+      width rather than assuming everything in scope matches the
+      function's width, requiring (and correctly lowering, via
+      `IntegerCast`) an explicit `as` wherever a mismatch is used —
+      exactly like `(x as i64) as i32` already works today, just
+      persisted across statements instead of only within one
+      expression tree.
+
+Not yet dispatched — deliberately held here as a scoped, written-down
+task rather than started immediately, per direct instruction. This is
+very likely the same root shape of gap that blocks float-expression
+support generally (a function returning `i32` can't have an `f64`
+local either, for the identical reason), so Stage 1 + Stage 2 should be
+done BEFORE returning to the float-cast half of the primitive-casts
+item above — implementing float casts on top of the current
+program-wide-width restriction would mean re-doing that work once this
+lands anyway.
