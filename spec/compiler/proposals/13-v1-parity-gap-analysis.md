@@ -87,17 +87,35 @@ repeated here.
       `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
       v2's current behavior — explicit naming stays required, no implicit
       `iter` default. Not tracked as a gap.
-- [ ] **Function-typed locals don't work in the entry-body backend
-      grammar**, though function-typed STRUCT FIELDS do (confirmed
-      throughout `std/hmap.peb`/`std/set.peb`, e.g. `hash_fn fn (K) u64;`).
-      `type BinaryOp = fn(i32, i32) i32; fn main() i32 { var op BinaryOp =
-      add; return op(1, 2); }` fails at `buildScalarInitializeCore`: `want
-      an integer type, bool, char, or float`. A first-class function VALUE
-      stored in a local (as opposed to invoked directly, or stored as a
-      struct field) isn't supported by the restricted statement grammar —
-      likely the same "narrow grammar built incrementally, never
-      generalized" shape as the width-restriction and float-support gaps
-      fixed earlier today.
+- [ ] **CORRECTED, much bigger than originally scoped: function types have
+      NO real backend representation anywhere, not just in locals.**
+      Original entry claimed struct fields already worked ("confirmed
+      throughout `std/hmap.peb`/`std/set.peb`") — that claim was wrong,
+      based only on the CHECKER accepting those files
+      (`check.Check`), never on actually running them through
+      `backend.Emit`. Directly verified today: `types.Function` has
+      exactly ONE reference in the entire `internal/backend/emit.go`
+      (the whole backend package — confirmed only one non-test `.go`
+      file there), and it's purely for a human-readable error message in
+      `describeType`, not real C emission. A function-typed struct FIELD
+      fails identically to a function-typed local: `type Table = struct
+      { op fn(i32, i32) i32; }; ... var t Table = Table.{ op = add };`
+      fails with `struct type pebble_struct_N_t: field type fn(i32,
+      i32) i32 is not supported, want i32 or bool`. There is no C
+      function-pointer typedef mechanism, no function-value emission,
+      nothing — this needs a real, standalone feature (comparable in
+      size to the float-expression work, not a one-case fix), threading
+      function-pointer C types through struct fields, locals, and likely
+      parameters/results.
+
+      **Sobering correction this forces**: `std/hmap.peb`/`std/set.peb`
+      being marked "checks clean, 0 diagnostics" earlier this session
+      meant exactly that — clean at the CHECKER level — and should NOT
+      have been read as "compiles and runs." Both files have a
+      function-typed field (`hash_fn fn (K) u64;`) and almost certainly
+      do not compile to real C yet. This needs independent re-verification
+      via `backend.Emit` (not just `check.Check`) once function types are
+      actually supported, before trusting either file end-to-end.
 - [~] **Unions are only partially implemented — declarable, not usable.**
       Both `union` (untagged) and `union enum` (tagged) parse as type
       declarations. A tagged union can apparently be constructed
