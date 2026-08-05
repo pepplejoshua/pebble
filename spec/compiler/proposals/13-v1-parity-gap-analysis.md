@@ -68,19 +68,6 @@ repeated here.
 
 ### Confirmed broken or missing
 
-- [ ] **Variadic parameter position is unenforced.** Neither the parser
-      nor the checker actually requires the variadic parameter to be
-      the sole trailing group, despite `06b-validation-and-typed-ir.md`
-      saying it must be ("a variadic callable's sole variadic group ...
-      is last"). Confirmed: `fn weird(...values []i32, extra i32) i32`
-      parses and reaches the checker; `call_facts.go`'s `prepareDirect`
-      just always treats `signature.Inputs`'s *last* entry as the
-      variadic one regardless of where `...` was actually written,
-      which happens to still produce a real type error for this
-      specific malformed case (not a silent wrong-accept) but for the
-      wrong reason. Low priority — no known real program hits this —
-      but worth a real position-validation diagnostic eventually rather
-      than relying on incidental type-mismatch errors.
 - **`iter`, the implicit loop-variable name — DECIDED, not a gap.** v1:
       `loop 0..10 { print iter; }` defaults the loop variable to `iter`
       when the `: name` clause is omitted. v2 requires `: name` always
