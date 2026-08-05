@@ -782,26 +782,45 @@ fix above.
       specifically chosen to discriminate correct truncation from a bug
       (`16777217.5` narrowed to `f32` must exit 2, not 1) and a chained
       int→f32→f64 round-trip.
-- [ ] **Stage C2 — `FloatToInteger`, needs a NEW checked runtime
-      primitive.** Unlike the two casts Stage C1 handled, C's
-      float→integer conversion is undefined behavior when the value is
-      out of the destination integer type's range (or NaN). This needs
-      a real `pebble_rt_checked_float_to_<int-suffix>` family in
-      `runtime/src/arith.c` (+ declaration in
-      `runtime/include/pebble_rt.h`), following the exact pattern
-      `pebble_rt_checked_neg_i32`/`_i64` already establish (see
-      `10.4`/`10.13` in `10-c-backend-implementation-plan.md`): SAFE
-      mode panics (`PEBBLE_PANIC_ARITHMETIC_OVERFLOW` is the closest
-      existing category — confirm whether a new panic kind is actually
-      warranted or whether reusing this one is correct) on
-      out-of-range/NaN input; RELEASE mode needs its own defined
-      fallback behavior (investigate what — C doesn't define a "safe"
-      truncation for out-of-range floats the way it does two's-complement
-      wraparound for integer overflow, so RELEASE mode's semantics here
-      need actual design thought, not a mechanical copy of the integer
-      pattern). Scope: likely just `f32`/`f64` source × `i32`/`i64`
-      destination (4 combinations), matching this backend's existing
-      checked-primitive width coverage (already confirmed elsewhere
-      that `u32` arithmetic isn't covered by the existing checked
-      helpers either — a separate, known gap, not this task's problem
-      to fix). Not yet dispatched.
+- [x] **Stage C2, fixed and committed (`0e1b629`).** `FloatToInteger`
+      for exactly `f32`/`f64` source × `i32`/`i64` destination (4
+      combinations), matching this backend's existing checked-primitive
+      width coverage. RELEASE-mode design confirmed directly with the
+      project owner before implementing: out-of-range/NaN returns the
+      destination's integer-indefinite sentinel (`INT32_MIN`/`INT64_MIN`),
+      mirroring what x86's native truncating float→int convert
+      instruction already does on overflow — the same "RELEASE mode
+      matches hardware's own defined behavior" logic already used for
+      integer overflow's two's-complement wraparound, not newly
+      invented. Four new runtime functions
+      (`pebble_rt_checked_{f32,f64}_to_{i32,i64}` in `runtime/src/arith.c`
+      + `runtime/include/pebble_rt.h`): each checks `isnan()` and range
+      before casting, using an exclusive upper bound of the next power
+      of two (`2^31`/`2^63`) rather than the destination `MAX` directly
+      — `MAX` itself isn't exactly representable in a narrower float
+      type, but `MAX+1` always is, the standard-correct technique
+      regardless of source/destination width (independently verified
+      this reasoning and the exact boundary values used in the tests).
+      SAFE mode reuses the existing `PEBBLE_PANIC_ARITHMETIC_OVERFLOW`
+      kind — no new panic category needed. Backend: new
+      `tir.FloatToInteger` case in `buildExpr`, recursing into the
+      child via `buildFloatExpr` at the child's own float width,
+      calling the matching runtime helper with a source-location
+      argument. Also fixed, found while getting the runtime's own test
+      suite to build for verification: `runtime/Makefile` was missing
+      `src/deref.c` from its `SOURCES` list — a genuine, pre-existing,
+      unrelated build-config gap (the file has existed since `c3fcdae`)
+      that silently left it untested by the smoke suite. Verified
+      independently: reproduced the original rejection against the
+      pre-fix tree via `git stash`, confirmed gone; full Go suite
+      green; the runtime's own smoke-test suite built and passed
+      cleanly in BOTH `SAFE` and `RELEASE` modes under
+      `-Wall -Wextra -Werror`, run directly (not just trusted from the
+      dispatch's report); backend tests compile and run real C for all
+      four combinations, a SAFE-mode boundary panic with correct
+      source-location reporting, and a RELEASE-mode sentinel test.
+
+**The float-expression backend work is now fully closed.** Floats can
+be declared, read, reassigned, used in arithmetic and comparisons, and
+cast to/from integers and between float widths — matching what plain
+integers could already do before this multi-stage effort began.
