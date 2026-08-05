@@ -68,18 +68,47 @@ repeated here.
 
 ### Confirmed broken or missing
 
-- [ ] **Variadic functions are broken at the checker, not the parser.**
-      v1's syntax (`fn sum(...values []int) int`) is also v2's accepted
-      grammar (`parameter_group = [ "..." ], identifier_list, type ;` in
-      `03a-grammar.md`) — confirmed the parser accepts `fn sum(...values
-      []i32) i32`. But calling it fails at the checker: `fn sum(...values
-      []i32) i32 { return values.len as i32; } fn main() i32 { return
-      sum(1, 2, 3); }` produces `T0508: exact numeric literal does not fit
-      the required builtin type` on the first call-site argument, plus
-      `C0604: callable declaration is invalid` for the function itself.
-      Variadic call-site argument type inference is genuinely broken, not
-      just unimplemented in the backend — this is upstream of `emit.go`
-      entirely.
+- [?] **NEEDS A DESIGN DECISION, not a plain bug — corrected after a failed
+      fix attempt exposed a wrong premise.** Original entry (below) treated
+      `fn sum(...values []i32) i32` failing to check as a checker bug,
+      reasoning from the grammar alone (`03a-grammar.md` parses variadic
+      params) and v1 parity. That premise was never checked against
+      `06b-validation-and-typed-ir.md`, which explicitly says the
+      opposite: line 547, "Pebble-defined variadics are invalid"; line
+      572, "a variadic callable is extern C with the sole variadic group
+      last." `C0604` on `sum`'s own declaration
+      (`internal/check/call_validation.go:182`,
+      `callable.Variadic && callable.Convention != types.C`) is that rule
+      being enforced correctly, not a bug — v2's variadic support as
+      currently specified is scoped to `extern C` interop (matching C's
+      own varargs, e.g. calling `printf`), not v1-style Pebble-native
+      "collect scalar args into a slice" variadics.
+
+      A dispatched fix attempt (deleting the `C0604` rule + fixing
+      `call_facts.go`'s real, separate `FixedCount`-off-by-one bug so
+      `sum(1, 2, 3)` type-checked against an `i32` slice element) worked
+      mechanically but was rejected and discarded unlanded: it silently
+      contradicts an explicit, deliberate spec statement, which is a
+      product decision, not something to fix as a bug fix.
+
+      **Needs a decision**: is `06b`'s "Pebble-defined variadics are
+      invalid" still the intended v2 design (in which case this item
+      should close as "not a gap — working as specified," and v1's
+      `fn sum(...values []int) int` style is intentionally not supported
+      in v2), or should v2 gain Pebble-native variadic support after all
+      (in which case the discarded fix's approach — relax the `C0604`
+      convention rule, fix the real `FixedCount` off-by-one in
+      `prepareDirect`, and route variadic call-site arguments to the
+      slice's element type — is a reasonable starting point, but
+      `06b-validation-and-typed-ir.md` needs updating in the same change,
+      not left stale). The real `FixedCount` off-by-one bug in
+      `call_facts.go:229` (`FixedCount = len(signature.Inputs)` when it
+      should exclude the trailing variadic parameter) is confirmed real
+      and reproducible either way, but only matters if the decision goes
+      the "add Pebble-native variadic support" direction — an
+      `extern C` variadic (`printf`-style) call site doesn't type-check
+      per-argument against a Pebble slice element type at all, so this
+      bug is dormant/unreachable under the current spec.
 - **`iter`, the implicit loop-variable name — DECIDED, not a gap.** v1:
       `loop 0..10 { print iter; }` defaults the loop variable to `iter`
       when the `: name` clause is omitted. v2 requires `: name` always
