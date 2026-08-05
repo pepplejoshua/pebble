@@ -25,9 +25,11 @@ See `11-raw-pointers-and-unsafe-ops.md` for full design/history.
       (the contextual-keyword flaw, every renamed identifier, the golden-file
       regen) needs writing up before it's considered closed on paper, even
       though the code itself is done and committed.
-- [ ] Known follow-up (documented in 11 §6): `std/string.peb` needs a
-      rewrite — it does raw pointer arithmetic throughout, illegal under
-      §1.5. Overlaps with the std-library audit below.
+- [x] Known follow-up (documented in 11 §6): `std/string.peb` needed a
+      rewrite — it did raw pointer arithmetic throughout, illegal under
+      §1.5. Done — see the full std-library audit entry below (checks
+      completely clean, 0 diagnostics). This checkbox was stale (fixed
+      earlier but never flipped here).
 - [x] Known follow-up (documented in 11 §6): `std/func.peb`'s
       `map`/`filter`/`zip` inline `(mem::new(...) as *T)[:count]` instead of
       calling `mem::new_slice[T]` — fixed, see the std-library audit below
