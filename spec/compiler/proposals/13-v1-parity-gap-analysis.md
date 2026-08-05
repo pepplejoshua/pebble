@@ -29,34 +29,13 @@ today, `[~]` partially working (works in some positions, not others).
 
 ---
 
-## Part A — statement-level and control-flow gaps (highest priority)
+## Part A — statement-level and control-flow gaps (DONE)
 
-These are more foundational than anything in `12-outstanding-implementation-work.md`
-and should be fixed before returning to that list's remaining items
-(pattern matching, etc.) — you cannot write an ordinary imperative program
-without them. Confirmed today via direct `emitAndRun`/`Emit` probes against
-the real compiler, not assumed from v1's README.
-
-- [ ] **Bit shifts (`<<`, `>>`) are unimplemented.** These produce a
-      distinct `tir.CheckedShift` node (not `CheckedArithmetic`, which only
-      covers `+`/`-`/`*`/`/`/`%` — confirmed via `checkedArithmeticHelper`'s
-      own switch, which has no shift cases), and `CheckedShift` has zero
-      references in `emit.go`. Confirmed: `x << 2` fails with `entry
-      function body expression contains a CheckedShift, want an integer
-      literal, a reference to a local declared earlier in the body, checked
-      +, -, *, /, % arithmetic, or a call to another function`. Already
-      known and named in an existing doc comment ("the integral operators
-      that build this node but are not yet lowered") — this document just
-      confirms it's still true and gives a real repro.
-
-**Why these matter more than anything else on the outstanding-work
-list:** a program that can't do an early-return guard clause, can't
-increment a loop counter with `i++`, and can't do bitwise arithmetic is
-not usable for ordinary code, regardless of how complete its generics or
-type system are. Each shares a common shape (a real, working TIR node
-with zero backend emission) and is individually narrow, well-scoped —
-comparable in size to `IntegerCast` or Float Stage A/B, not a redesign.
-(`print` itself is done — see git history, `b44691e`.)
+Every item closed and pushed: `print` (`b44691e`), mid-body `if`/`switch`
+(`b5be90d`), compound assignment/`++`/`--` including the double-eval fix
+(`d035ff5`, `de32223`), bitwise AND/OR/XOR/NOT (`6b3d818`), bit shifts
+(`7df11b7`). A plain function body can now do everything an ordinary
+imperative program needs.
 
 ---
 
