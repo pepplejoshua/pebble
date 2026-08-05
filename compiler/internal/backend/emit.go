@@ -608,9 +608,10 @@ func findCallDeclaration(unit *tir.Unit, call tir.Node) (tir.Node, error) {
 
 // validateEntrySignature checks the entry's calling convention, parameter
 // count, and result type against the supported shapes: a void result (empty
-// body) or an int/i32/i64 result (body under the recursive block grammar). On
+// body), an int/i32/i64 result, or, since Float Stage A, an f32/f64 result
+// (body under the recursive block grammar). On
 // success it returns the resolved result builtin (types.Void, types.Int,
-// types.I32, or types.I64) — for an integer entry that returned builtin IS the width every
+// types.I32, types.I64, types.F32, or types.F64) — for an integer entry that returned builtin IS the width every
 // builder downstream emits at, threaded through Emit rather than re-derived.
 // Whether the body actually matches the result's shape is decided by the
 // body-validation step the caller dispatches on.
@@ -626,8 +627,8 @@ func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.Buil
 		return 0, fmt.Errorf("entry function result type %d is not in the type snapshot", decl.ResultType)
 	}
 	builtin, ok := key.Builtin()
-	if !ok || (builtin != types.Void && builtin != types.Int && builtin != types.I32 && builtin != types.I64) {
-		return 0, fmt.Errorf("entry function result type is %s, want void, int, i32, or i64", describeType(snapshot, decl.ResultType))
+	if !ok || (builtin != types.Void && builtin != types.Int && builtin != types.I32 && builtin != types.I64 && builtin != types.F32 && builtin != types.F64) {
+		return 0, fmt.Errorf("entry function result type is %s, want void, int, i32, i64, f32, or f64", describeType(snapshot, decl.ResultType))
 	}
 	return builtin, nil
 }
@@ -2409,6 +2410,16 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			if preReturn != "" {
 				statements = append(statements, preReturn)
 			}
+		} else if result.kind == types.F32 || result.kind == types.F64 {
+			// A float-returning entry (a main declared to return f32/f64 — the
+			// one float-returning position Float Stage A supports; float helper
+			// results are rejected upstream by validateHelperSignature, so only
+			// the entry's resultInfo can carry a float kind), so the return
+			// value is built under the float grammar by buildFloatExpr rather
+			// than buildExpr, which rejects a float-typed value. Supported
+			// return shapes are a float literal or a SymbolValue naming a
+			// float-typed local in scope of the same float kind.
+			returnValue, err = buildFloatExpr(unit, snapshot, fileSet, last.Children[0], scope, result.kind)
 		} else {
 			returnValue, err = buildExpr(unit, snapshot, fileSet, last.Children[0], scope, width)
 		}
@@ -2763,6 +2774,12 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			// return line, the same mechanical shape the deferred statements
 			// below demonstrate.
 			preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
+		} else if result.kind == types.F32 || result.kind == types.F64 {
+			// A float-returning entry's bare single-statement case body
+			// returning a float value: built under the float grammar by
+			// buildFloatExpr, exactly like buildBlock's tail-position Return
+			// case.
+			returnValue, err = buildFloatExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind)
 		} else {
 			returnValue, err = buildExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
 		}
@@ -3240,30 +3257,35 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 
 // buildScalarInitializeCore builds the declaration text for a scalar local at
 // its own declared builtin type — any integer width (not just the entry's
-// resolved width), bool, or char — WITHOUT the leading indent and WITHOUT the
+// resolved width), bool, char, or, since Float Stage A, a float — WITHOUT the
+// leading indent and WITHOUT the
 // trailing `;` (and without the trailing (void) cast) a full block-level
 // declaration statement gets: `<cType> pebble_local_<symbol> = <expr>`. It is
 // the scalar tail of the Initialize dispatch, shared by buildLeadingStatement
 // (which prepends the indent and appends `;` plus the (void) cast to form the
 // full statement) and buildForInitClause (which uses the core as the
 // for-header init clause, where the for statement's own header syntax supplies
-// the terminating `;`), so the integer-width/bool/char validation, the
-// buildExpr/buildBoolExpr/buildCharOperand dispatch, and the scope recording
+// the terminating `;`), so the integer-width/bool/char/float validation, the
+// buildExpr/buildBoolExpr/buildCharOperand/buildFloatExpr dispatch, and the
+// scope recording
 // live in exactly one place. An integer local is emitted at its own declared
 // width (cType(kind)) and its initializer is built by buildExpr at that same
 // width — so e.g. an i64 local inside an i32 function is an int64_t whose
 // initializer is built at i64, not i32; a bool local is emitted as a C bool
 // (built by buildBoolExpr); a char local is emitted as the fixed C int32_t
-// (built by buildCharOperand). Anything else — a tuple/array/optional/struct/
+// (built by buildCharOperand); a float local is emitted at its own declared
+// float type (floatCType(kind) — float for f32, double for f64) and its
+// initializer is built by buildFloatExpr at that same kind. Anything else — a
+// tuple/array/optional/struct/
 // str local — is a clean rejection naming the type, matching
 // buildLeadingStatement's own rule. On success the local is recorded in scope
-// (localInfo{kind: kind} for an integer, localInfo{kind: types.Bool} for a
+// (localInfo{kind: kind} for an integer or float, localInfo{kind: types.Bool} for a
 // bool, or localInfo{isChar: true} for a char) so a later reference or
 // reassignment resolves against the same type.
 func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 	if !ok {
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, or char", context, describeType(snapshot, initValue.Type))
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
 	}
 	switch kind {
 	case types.Bool:
@@ -3288,12 +3310,26 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		}
 		scope[statement.Symbol] = localInfo{isChar: true}
 		return fmt.Sprintf("int32_t pebble_local_%d = %s", statement.Symbol, initExpr), nil
+	case types.F32, types.F64:
+		// A float local (f32 or f64, Stage A): emitted at the local's own
+		// declared float C type (floatCType — float for f32, double for f64),
+		// its value built by buildFloatExpr (a float literal or a reference to
+		// an in-scope float-typed local of the same kind). The scope entry
+		// records the local's own float kind (localInfo{kind: kind}, exactly
+		// as an integer local records its own width) so a later reference or
+		// reassignment is validated and emitted as that kind's float.
+		initExpr, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{kind: kind}
+		return fmt.Sprintf("%s pebble_local_%d = %s", floatCType(kind), statement.Symbol, initExpr), nil
 	}
 	if cType(kind) == "" {
 		// Anything that is not bool/char and not an integer builtin the
 		// backend emits (str, void) is a clean rejection naming the type,
 		// matching buildLeadingStatement's own rule.
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, or char", context, describeType(snapshot, initValue.Type))
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
 	}
 	// An integer local of any builtin width, not just the entry's own:
 	// emitted at the local's own declared width (cType(kind)), so e.g. an
@@ -3317,13 +3353,16 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // indent and appends the `;` to form the full statement) and
 // buildForUpdateClause (which uses the core as the for-header update clause,
 // where the for statement's own syntax supplies the `;`), so the
-// place-validation and the buildExpr/buildBoolExpr dispatch live in exactly
+// place-validation and the buildExpr/buildBoolExpr/buildFloatExpr dispatch
+// live in exactly
 // one place. The place must be a plain StoragePlace naming a local in scope,
 // or, since 10.39, a CheckedIndexPlace naming an element of an array or
 // slice local (`arr[i] = v;` / `s[i] = v;`), and the new value is validated
 // and emitted against the resolved place type — the local's own declared type
 // for a StoragePlace (the local's own integer width via buildExpr — an i64
-// local reassigned inside an i32 function builds its new value at i64 — bool
+// local reassigned inside an i32 function builds its new value at i64 — a
+// float local via buildFloatExpr at its own recorded float kind, so an f64
+// local reassigned inside an f32 function builds its new value at f64 — bool
 // via buildBoolExpr, or, since 10.36, str — a new value that must be a string
 // literal, emitted as a whole-struct PebbleStr reassignment; see the isStr
 // branch below), or the resolved element type for a CheckedIndexPlace (the
@@ -3384,13 +3423,28 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	// The new value is validated and emitted against the local's own declared
 	// type: the local's own integer width for an integer local (buildExpr at
 	// that width — an i64 local reassigned inside an i32 function builds its
-	// new value at i64, not i32), the bool grammar for a bool local
+	// new value at i64, not i32), the float grammar for a float local
+	// (buildFloatExpr at the local's own recorded float kind — an f64 local
+	// reassigned inside an f32 function builds its new value at f64, not f32),
+	// the bool grammar for a bool local
 	// (buildBoolExpr). A value of the wrong type — a bool assigned to an
 	// integer local, or an integer assigned to a bool local — is rejected by
 	// the appropriate builder.
 	switch targetInfo.kind {
 	case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
 		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+	case types.F32, types.F64:
+		// A Store whose place names a float-typed local (f32 or f64, Stage A)
+		// is a float reassignment: the new value is built by buildFloatExpr at
+		// the local's own recorded float kind (a float literal or a reference
+		// to an in-scope float-typed local of that same kind), so `x = 2.5;`
+		// emits `pebble_local_<sym> = 2.5;` at the local's own C type. A value
+		// of any other shape or type is a clean rejection by buildFloatExpr.
+		storeValue, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
 		if err != nil {
 			return "", err
 		}
@@ -7557,6 +7611,80 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 	}
 }
 
+// buildFloatExpr builds one float value in a position that accepts a float
+// expression, the float grammar's counterpart of buildBoolExpr: the float
+// builtins' scalar shapes, built on top of the same locals/scope machinery
+// buildExpr uses. Stage A supports exactly three node kinds, and no others,
+// corresponding to declaring a float local, reading it, and (for a float-
+// returning main) returning it:
+//
+//   - tir.FloatLiteral — a float literal (e.g. 3.14), emitted as its C
+//     float/double constant text verbatim (the checker's validated decimal
+//     text is already a valid C floating constant — a decimal point and/or
+//     exponent are always present — and needs no suffix for either float
+//     width, since assigning a double constant to a float is not a warning
+//     under this suite's -Wall -Wextra -Werror). The text is defensively
+//     re-validated before being trusted, mirroring how buildExpr's
+//     IntegerLiteral case validates its own literal text.
+//   - tir.SymbolValue — a reference to an in-scope float-typed local of the
+//     same float kind, emitted as pebble_local_<symbolID> (the reader of a
+//     float local).
+//   - tir.SourceAlias — Pebble's grouped-expression parens, transparently
+//     unwrapped (exactly one child), the same distinction buildExpr and
+//     buildBoolExpr make for parenthesized float expressions.
+//
+// Width must be one of the two float builtins (F32 for an f32 position, F64
+// for an f64 position) and every node in an accepted expression tree must
+// carry exactly that builtin — a node carrying the other float kind, or a
+// non-float value, is a clean rejection naming the wanted kind, never a
+// coercion. There is deliberately NO DirectCall/MethodCall case: a float-
+// returning helper is not reachable in this stage (validateHelperSignature
+// rejects one, since floatCType's "" guards the same place cType's did for
+// non-integers before 169cc3c), so a float-typed call in this position would
+// be a clean rejection by the default case anyway. Float arithmetic,
+// comparisons, and casts are likewise out of scope and named in the
+// rejection. Shared by the three positions a float value can appear in this
+// stage: a float local's declaration initializer (buildScalarInitializeCore),
+// a float local's reassignment (buildStoreCore), and a float-returning
+// entry's tail-position return value (buildBlock / buildSwitchCaseBody
+// dispatch on resultInfo.kind).
+func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
+	}
+	if !isFloat(snapshot, node.Type) {
+		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName(width))
+	}
+	builtin, _ := resolvedBuiltin(snapshot, node.Type)
+	if builtin != width {
+		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName(width))
+	}
+	switch node.Kind {
+	case tir.FloatLiteral:
+		text := node.Literal.Float
+		if !isValidFloatLiteralText(text) {
+			return "", fmt.Errorf("entry function body expression contains a float literal with malformed text %q", text)
+		}
+		return text, nil
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || info.kind != width {
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a %s local declared earlier in the body", node.Symbol, wantName(width))
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.SourceAlias:
+		// A SourceAlias is transparent — it records grouped-expression parens
+		// and nothing else — so it is unwrapped and its single child built.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
+		}
+		return buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+	default:
+		return "", fmt.Errorf("entry function body expression contains a %s, want a float literal or a reference to a %s local declared earlier in the body", node.Kind, wantName(width))
+	}
+}
+
 // shortCircuitOperator maps the two logical-combination token kinds a
 // ShortCircuitValue may carry to their plain C spellings. Both C and Pebble
 // && and || short-circuit their right operand, and both sides of the operator
@@ -7666,6 +7794,20 @@ func isChar(snapshot *types.Snapshot, id types.TypeID) bool {
 		return false
 	}
 	return id == snapshot.Builtins().Char
+}
+
+// isFloat reports whether id is one of the snapshot's two float builtins
+// (f32 or f64). It is the float cousin of isBool: every node in an accepted
+// float expression tree must carry exactly one of the two float builtins, and
+// — unlike bool, which has just one type — which float builtin a node carries
+// must also match the specific float kind the surrounding position wants, so
+// buildFloatExpr additionally checks the resolved kind against its width
+// argument rather than accepting either float builtin interchangeably.
+func isFloat(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	return id == snapshot.Builtins().F32 || id == snapshot.Builtins().F64
 }
 
 // isVoid reports whether id is the snapshot's void builtin. A void result is
@@ -8490,6 +8632,24 @@ func cType(width types.BuiltinKind) string {
 	return ""
 }
 
+// floatCType returns the C floating-point type corresponding to a Pebble
+// float builtin: float for f32, double for f64. It is deliberately a separate
+// helper from cType rather than an extension of it: cType is integer-specific
+// by name and doc-comment, and its ""-means-not-an-integer contract is relied
+// on by several integer-only paths (validateHelperSignature, the
+// buildScalarInitializeCore fall-through), so overloading it with float kinds
+// would change what those paths mean. Anything that is not a float builtin
+// returns "", matching cType's convention.
+func floatCType(width types.BuiltinKind) string {
+	switch width {
+	case types.F32:
+		return "float"
+	case types.F64:
+		return "double"
+	}
+	return ""
+}
+
 // checkedSuffix returns the pebble_rt_checked_* function-name suffix for the
 // given width: "i32" for an int or i32 entry, "i64" for an i64 entry. It is
 // exactly the type's name for the fixed-width entries, but named for what it
@@ -8519,6 +8679,54 @@ func isNonNegativeDecimal(s string) bool {
 		}
 	}
 	return true
+}
+
+// isValidFloatLiteralText reports whether s is a well-formed non-negative
+// decimal floating-literal text of the shapes Pebble's lexer can produce:
+// an integer part of one or more digits, optionally followed by a fractional
+// part (a '.' plus one or more digits) and/or an exponent (a 'e'/'E' with an
+// optional sign and one or more digits). Float is expected to be exactly one
+// of these by construction — the checker's decodeFloatLiteral strips the
+// '_' separators the lexer allowed and the infer layer has already parsed and
+// bounded the literal — so the check is defensive against malformed payloads,
+// exactly mirroring how buildExpr's IntegerLiteral case validates its own
+// literal text with isNonNegativeDecimal before trusting it. Every accepted
+// text is also a valid C floating constant verbatim (a decimal point and/or
+// exponent are always present, and C accepts the same digit/dot/sign/exp
+// spellings), so the text can be spliced into the emitted C unchanged.
+func isValidFloatLiteralText(s string) bool {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	// Integer part must be non-empty: the lexer starts a number with a digit.
+	if i == 0 {
+		return false
+	}
+	digits := func() bool {
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		return i > start
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		if !digits() {
+			return false
+		}
+	}
+	if i >= len(s) {
+		return true
+	}
+	if s[i] != 'e' && s[i] != 'E' {
+		return false
+	}
+	i++
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	return digits() && i == len(s)
 }
 
 // helperFunction is the C text of one reachable helper function: a static
@@ -8574,7 +8782,8 @@ const integerEntryUserMain = `static %s pebble_user_main(PebbleContext *ctx) {
 const integerEntryMainBody = `return pebble_user_main(&ctx);`
 
 // entryReturnType is the C return type pebble_user_main is declared with for
-// a supported integer width. An i32 entry keeps the legacy "int" spelling —
+// a supported scalar entry result. An i32 entry keeps the legacy "int"
+// spelling —
 // byte-identical to the pre-i64 shape, and C int is the 32-bit type that entry
 // already relied on. An i64 entry must be the exact-width int64_t, not int, so
 // a 64-bit return value is not truncated to 32 bits before the hosted main
@@ -8582,10 +8791,20 @@ const integerEntryMainBody = `return pebble_user_main(&ctx);`
 // return pebble_user_main(&ctx); then narrows int64_t to int — the POSIX exit
 // code is only the low byte of what main returns — which a -Wall -Wextra
 // -Werror build without -Wconversion does not warn about; verified by building
-// an i64-entry program.)
+// an i64-entry program.) An f32/f64 entry (Float Stage A) is declared
+// "float"/"double", and the hosted main's return pebble_user_main(&ctx);
+// narrows that to int the same implicit way C defines float-to-integer
+// conversion for in-range values (3.14 narrows to exit code 3) — verified to
+// build warning-free under the same flags, so no explicit cast is needed at
+// the call site.
 func entryReturnType(width types.BuiltinKind) string {
-	if width == types.I64 {
+	switch width {
+	case types.I64:
 		return "int64_t"
+	case types.F32:
+		return "float"
+	case types.F64:
+		return "double"
 	}
 	return "int"
 }

@@ -3764,6 +3764,125 @@ func TestEmitI64ForInitClauseInsideI32FunctionCompilesAndRuns(t *testing.T) {
 	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; var i i32 = 0; for var limit i64 = 21; i < 3; i = i + 1 { total = total + (limit as i32); } return total; }", false, 63, false)
 }
 
+func TestEmitF64LocalDeclaresAndReturns(t *testing.T) {
+	// Float Stage A's minimal repro (the required test 1): an f64 local is
+	// declared, read back by a bare reference (the Return's SymbolValue), and
+	// returned from an f64-returning main. buildScalarInitializeCore must emit
+	// the local at its own float C type double, buildFloatExpr must both
+	// accept the 3.14 FloatLiteral initializer and the SymbolValue reading the
+	// local back, and buildBlock's tail-return float dispatch must emit
+	// `return pebble_local_<sym>;`. The compile-and-run check asserts the
+	// harness's observable contract: the hosted int main narrows the returned
+	// double to the process exit code by C's float-to-integer truncation, so
+	// 3.14 exits 3. That single code cannot distinguish 3.14 from (say) 3.0,
+	// so the emitted-C assertions below pin the real value: the local is a C
+	// double initialized from the untouched literal text 3.14, and the return
+	// value is the local by name rather than a re-emitted (possibly
+	// re-rounded) literal.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x f64 = 3.14; return x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"double pebble_local_",
+		"= 3.14;",
+		"return pebble_local_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 3, false)
+}
+
+func TestEmitF32LocalDeclaresAndReturns(t *testing.T) {
+	// Confirms the float case is not hardcoded to one width (required test
+	// 2): an f32 local (not f64) is declared and returned from an f32-
+	// returning main. buildScalarInitializeCore must pick floatCType(F32) =
+	// float for the C declaration, and buildFloatExpr must build the 3.9
+	// initializer and the read-back SymbolValue at the f32 kind. f32 round-
+	// trips as a C float (3.9f), and the hosted main truncates it to exit
+	// code 3.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f32 { var x f32 = 3.9; return x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"float pebble_local_",
+		"= 3.9;",
+		"return pebble_local_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 3, false)
+}
+
+func TestEmitReassignsF64LocalAndReturns(t *testing.T) {
+	// Required test 4: a Store reassigns an already-declared f64 local
+	// (x = 2.5;), so buildStoreCore's float case must build the new value via
+	// buildFloatExpr at the local's own recorded f64 kind and emit
+	// `pebble_local_<sym> = 2.5;`. The exit code (2) is the truncation of the
+	// reassigned 2.5, and the emitted-C assertion pins the literal 2.5 in the
+	// Store (the declaration carried 1.25, so the 2.5 substring can only come
+	// from the reassignment).
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x f64 = 1.25; x = 2.5; return x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"double pebble_local_",
+		"= 1.25;",
+		"pebble_local_",
+		"= 2.5;",
+		"return pebble_local_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitParenthesizedFloatExpressions(t *testing.T) {
+	// SourceAlias unwrapping, the parenthesized-expression distinction: a
+	// grouped float literal `(3.5)` as a local's initializer and a grouped
+	// float reference `(x)` as the main's return value both arrive as
+	// SourceAlias nodes, which buildFloatExpr transparently recurses through
+	// (exactly as buildExpr and buildBoolExpr already do). (3.5 narrows to
+	// exit code 3.)
+	emitAndRun(t, "fn main() f64 { var x f64 = (3.5); return (x); }", false, 3, false)
+}
+
+func TestEmitF64LiteralTruncatesToExitCode(t *testing.T) {
+	// The float value round-trips through the real emitted C and the harness's
+	// process-exit observation, not just "it compiles": a fractional f64
+	// whose C float-to-int truncation would land on a different code than a
+	// rounding (or an integer-truncated literal) lowering would. 3.99 must
+	// truncate to 3 (not round to 4), and the compile-and-run of the actual
+	// emitted C asserts 3.
+	emitAndRun(t, "fn main() f64 { var x f64 = 3.99; return x; }", false, 3, false)
+}
+
+func TestEmitRejectsFloatArithmeticInFloatReturnPosition(t *testing.T) {
+	// Regression: a float value this stage deliberately does NOT support —
+	// float arithmetic, checked before even the checker's operand level as a
+	// float-family BinaryValue (no integer operand, so no checked-arithmetic
+	// lowering) — must still be a clean rejection from buildFloatExpr naming
+	// what was found, never a crash or a guessed lowering. This pins the Stage
+	// A scope boundary: a float local can be declared, read, reassigned, and
+	// (from a float main) returned, but 1.0 + 2.0 is a later stage.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() f64 { return 1.0 + 2.0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "BinaryValue")
+}
+
 func TestEmitRejectsSelfRecursion(t *testing.T) {
 	// Recursion is legal, checker-accepted Pebble (confirmed against a real
 	// fixture), so this is a genuine backend-scope boundary: the reachability
@@ -6171,11 +6290,13 @@ func TestEmitRejectsStructReturningHelperInAnotherHelpersReturn(t *testing.T) {
 
 func TestEmitRejectsEntryReturningTuple(t *testing.T) {
 	// The entry itself cannot declare a tuple/struct result type: its C return
-	// type stays the integer entryReturnType regardless of what the language
+	// type stays the scalar entryReturnType (integer, or a float since Float
+	// Stage A) regardless of what the language
 	// lets a helper write. validateEntrySignature rejects the tuple result
-	// exactly as it always has, unchanged by this slice.
+	// exactly as it always has, with the accepted-result list since Float
+	// Stage A extended by f32 and f64.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() (i32, i32) { return (1, 2); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "entry function result type is (i32, i32), want void, int, i32, or i64")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "entry function result type is (i32, i32), want void, int, i32, i64, f32, or f64")
 }
 
 func TestEmitTupleReturningHelperInIfArmLocalInitializerCompilesAndRuns(t *testing.T) {
