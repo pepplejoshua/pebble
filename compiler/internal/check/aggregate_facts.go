@@ -268,6 +268,24 @@ func (w *walker) recordReceiverTerm(ctx walkContext, plan *recordPlan, origin in
 	return plan.receiver.Term
 }
 
+// recordConstructionKind selects the aggregate record kind for a .{ } literal.
+// A single-field literal against a tagged-union (union enum) destination is a
+// variant construction (.{ Int = 42 } is sugar for Data.Int(42)) and builds an
+// aggregateTaggedVariant; every other shape is an ordinary aggregateStruct.
+// Multi-field literals against a tagged union stay aggregateStruct so the
+// existing rejection path reports them.
+func (w *walker) recordConstructionKind(rp *recordPlan) aggregateKind {
+	if len(rp.fields) != 1 {
+		return aggregateStruct
+	}
+	if rp.declaration != 0 {
+		if declaration, ok := w.program.TypeDeclaration(rp.declaration); ok && declaration.Nominal == infer.NominalTaggedUnion {
+			return aggregateTaggedVariant
+		}
+	}
+	return aggregateStruct
+}
+
 func (w *walker) finishRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree, plan *expressionPlan) {
 	origin := w.origin(ref, node, "record result", ctx.typeOwner, ctx.genericOwner)
 	rp := plan.record
@@ -275,6 +293,7 @@ func (w *walker) finishRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 		return
 	}
 	receiver := w.recordReceiverTerm(ctx, rp, origin)
+	kind := w.recordConstructionKind(rp)
 	fields := make([]fieldValue, 0, len(rp.fields))
 	runtime := make([]valueID, 0, len(rp.fields))
 	childrenSuccessful := true
@@ -292,14 +311,14 @@ func (w *walker) finishRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 	if !childrenSuccessful {
 		result := w.failExpression(ref, origin)
 		header := w.header(ref, ctx.genericOwner, true)
-		aggregate := aggregateRecord{Header: header, Kind: aggregateStruct, Result: result.ID, Receiver: rp.receiver.ID, Declaration: rp.declaration, Fields: fields, DeclarationFields: rp.declarationFields}
+		aggregate := aggregateRecord{Header: header, Kind: kind, Result: result.ID, Receiver: rp.receiver.ID, Declaration: rp.declaration, Fields: fields, DeclarationFields: rp.declarationFields}
 		plan.specialized, _ = w.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
 		return
 	}
 	result := w.expressionResult(ref, receiver, origin)
 	w.addConstraint(infer.Equal(result.Term, receiver, origin))
 	header := w.header(ref, ctx.genericOwner, !w.publishedSyntax[ref])
-	aggregate := aggregateRecord{Header: header, Kind: aggregateStruct, Result: result.ID, Receiver: rp.receiver.ID, Declaration: rp.declaration, Fields: fields, DeclarationFields: rp.declarationFields}
+	aggregate := aggregateRecord{Header: header, Kind: kind, Result: result.ID, Receiver: rp.receiver.ID, Declaration: rp.declaration, Fields: fields, DeclarationFields: rp.declarationFields}
 	specialized, _ := w.addRecord(retainedRecord{Header: header, Aggregate: &aggregate})
 	plan.specialized = specialized
 	if specialized == 0 || !w.publishedSyntax[ref] {

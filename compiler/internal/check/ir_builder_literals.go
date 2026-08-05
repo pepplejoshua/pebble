@@ -196,3 +196,31 @@ func (s *irBuildState) buildRecordConstruct(record *expressionRecord, node *tir.
 	node.Fields = fields
 	return true
 }
+
+// buildTaggedVariantConstruct handles a .{ Int = 42 } record literal against a
+// tagged-union (union enum) destination, which finishRecord routes to an
+// aggregateTaggedVariant record. It produces exactly the VariantConstruct node
+// the call-syntax path (Data.Int(42)) already builds: Member is the variant
+// symbol (name-resolved for the qualified form, re-derived by name for the
+// inferred form) and the single payload value becomes the one child.
+func (s *irBuildState) buildTaggedVariantConstruct(record *expressionRecord, node *tir.Node) bool {
+	aggregate, ok := s.aggregatesByRecord[record.Specialized]
+	if !ok || aggregate == nil || aggregate.Kind != aggregateTaggedVariant || len(aggregate.Fields) != 1 {
+		return false
+	}
+	member := aggregate.Fields[0].Member
+	if member == 0 {
+		member = s.memberSymbol(aggregate.Receiver, aggregate.Fields[0].Name)
+	}
+	if member == 0 {
+		return false
+	}
+	valueNode, ok := s.buildValue(aggregate.Fields[0].Value)
+	if !ok {
+		return false
+	}
+	node.Kind = tir.VariantConstruct
+	node.Member = member
+	node.Children = []tir.NodeID{valueNode}
+	return true
+}

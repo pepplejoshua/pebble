@@ -1513,6 +1513,36 @@ func TestBuildValueRecordConstruct(t *testing.T) {
 	}
 }
 
+// TestBuildValueTaggedUnionRecordConstruct covers the .{ Int = 42 } construction
+// surface for tagged unions, which finishRecord routes to an
+// aggregateTaggedVariant record: the IR builder must produce the same
+// VariantConstruct node the call-syntax path (Data.Int(42)) produces, with the
+// variant symbol as Member and the single payload value as its one child.
+func TestBuildValueTaggedUnionRecordConstruct(t *testing.T) {
+	sources := []string{
+		"type Data = union enum { Int i32; Str str; };\nlet d Data = Data.{ Int = 42 };",
+		"type Data = union enum { Int i32; Str str; };\nlet d Data = .{ Int = 42 };",
+	}
+	for _, source := range sources {
+		t.Run(source, func(t *testing.T) {
+			state, records := testBuildValue(t, source)
+			id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionRecordValue })
+			nid, ok := state.buildValue(id)
+			if !ok {
+				t.Fatal("buildValue failed")
+			}
+			unit, err := buildTestIRUnit(state)
+			if err != nil {
+				t.Fatalf("Build failed: %v", err)
+			}
+			node := unit.Nodes()[nid-1]
+			if node.Kind != tir.VariantConstruct || node.Member == 0 || len(node.Children) != 1 {
+				t.Fatalf("variant construct node = %+v", node)
+			}
+		})
+	}
+}
+
 func TestBuildValueCheckedIntegerNegation(t *testing.T) {
 	state, records := testBuildValue(t, "let neg i32 = -1;")
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionPrefix })

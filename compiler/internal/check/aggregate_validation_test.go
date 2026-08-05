@@ -81,6 +81,70 @@ fn check() void {
 	}
 }
 
+func TestValidateAggregateRecordsAcceptsTaggedUnionRecordConstruct(t *testing.T) {
+	source := `
+type Data = union enum { Int i32; Str str; };
+fn check() void {
+    var qualified Data = Data.{ Int = 42 };
+    var inferred Data = .{ Int = 43 };
+    var other Data = Data.{ Str = "x" };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if !validateAggregateRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) || hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("valid tagged-union record constructs were rejected: %+v", diagnostics.Items())
+	}
+	var tagged *aggregateRecord
+	for _, aggregate := range aggregateRecords(handoff) {
+		if aggregate.Kind == aggregateTaggedVariant {
+			tagged = aggregate
+			break
+		}
+	}
+	if tagged == nil {
+		t.Fatal("fixture did not produce a tagged-variant aggregate")
+	}
+}
+
+func TestValidateAggregateRecordsRejectsTaggedUnionUnknownVariantName(t *testing.T) {
+	source := `
+type Data = union enum { Int i32; Str str; };
+fn check() void {
+    var d Data = Data.{ Nope = 42 };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if validateAggregateRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("unknown tagged-union variant name was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateAggregateRecordsRejectsTaggedUnionWrongPayloadType(t *testing.T) {
+	source := `
+type Data = union enum { Int i32; Str str; };
+fn check() void {
+    var d Data = Data.{ Int = "wrong" };
+}
+`
+	diagnostics, _, _ := runAggregateValidation(t, source)
+	if !hasValidationDiagnostic(diagnostics, infer.CodeUnification) {
+		t.Fatalf("tagged-union payload type mismatch was not rejected with a type-compatibility diagnostic: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateAggregateRecordsRejectsTaggedUnionMultipleVariants(t *testing.T) {
+	source := `
+type Data = union enum { Int i32; Str str; };
+fn check() void {
+    var d Data = Data.{ Int = 1, Str = "x" };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if validateAggregateRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("multi-variant tagged-union literal was not rejected: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateAggregateRecordsRejectsFieldNameErrors(t *testing.T) {
 	cases := []struct {
 		name string

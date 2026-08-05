@@ -126,7 +126,26 @@ func validateAggregateRecords(handoff *solveHandoff, records *solvedRecords, dia
 			}
 
 		case aggregateTaggedVariant:
-			// Tagged variants with payloads are call records in the current pipeline.
+			if declaration.Nominal != infer.NominalTaggedUnion {
+				report(CodeMember, aggregate.Header)
+				continue
+			}
+			if len(aggregate.Fields) != 1 {
+				report(CodeMember, aggregate.Header)
+				continue
+			}
+			name := aggregate.Fields[0].Name
+			matched := false
+			for _, id := range orderedMembers {
+				selected, found := symbolsByID[id]
+				if found && selected.Kind == symbol.SymbolVariant && selected.Name == name {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				fieldReport(CodeMember, aggregate.Fields[0], aggregate.Header)
+			}
 		}
 	}
 	return !failed

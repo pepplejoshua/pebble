@@ -8200,6 +8200,22 @@ func TestEmitUnionTwoPayloadVariantsOtherCaseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Shape = union enum { empty void; wide i32; big bool; }; fn main() i32 {\nvar a Shape = Shape.wide(42);\nvar b Shape = Shape.big(true);\nswitch b { case Shape.empty: return 0; case Shape.wide: return 1; case Shape.big: return 2; }\n}", false, 2, false)
 }
 
+func TestEmitUnionRecordConstructQualifiedCompilesAndRuns(t *testing.T) {
+	// The .{ Int = 42 } construction surface for a tagged union, qualified form:
+	// finishRecord routes it to an aggregateTaggedVariant record and the IR
+	// builder produces the same VariantConstruct node as the call-syntax form
+	// Data.Int(42), so the backend lowers it identically and the switch fires
+	// the Int case (exit 1), proving the two syntaxes are equivalent.
+	emitAndRun(t, "type Data = union enum { Int i32; Str str; }; fn main() i32 {\nvar d Data = Data.{ Int = 42 };\nswitch d { case Data.Int: return 1; case Data.Str: return 0; }\n}", false, 1, false)
+}
+
+func TestEmitUnionRecordConstructInferredCompilesAndRuns(t *testing.T) {
+	// Same construction via the inferred receiver form (.{ Int = 42 } against an
+	// annotated destination): the variant symbol is re-derived by name at IR
+	// build time, and the emitted switch still fires the Int case (exit 1).
+	emitAndRun(t, "type Data = union enum { Int i32; Str str; }; fn main() i32 {\nvar d Data = .{ Int = 42 };\nswitch d { case Data.Int: return 1; case Data.Str: return 0; }\n}", false, 1, false)
+}
+
 func TestEmitUnionVariantLiteralSwitchSubjectCompilesAndRuns(t *testing.T) {
 	// A variant construction used directly as the switch subject (switch
 	// Choice.value(5)) — confirmed checker-reachable — is built as the union's

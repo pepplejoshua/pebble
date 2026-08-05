@@ -197,7 +197,10 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 			return 0, false
 		}
 	case expressionRecordValue:
-		if !s.buildRecordConstruct(record, &node) {
+		if s.buildRecordConstruct(record, &node) {
+			break
+		}
+		if !s.buildTaggedVariantConstruct(record, &node) {
 			return 0, false
 		}
 	case expressionPartialMember:
