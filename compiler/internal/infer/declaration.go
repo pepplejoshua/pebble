@@ -184,9 +184,21 @@ func (p *Program) prepareSignatures() {
 		if resultNode != 0 {
 			signature.Result = p.resolveTemplate(symbol.SyntaxRef{Module: sym.Module, Node: resultNode}, sym.ID, false, 0)
 		}
+		var parameterNodeIDs []syntax.NodeID
 		for _, id := range semanticNodeIDs(tree, node.Children()) {
-			if n, _ := tree.Node(id); n.Kind() == syntax.Parameter && n.Data()&syntax.ParameterVariadic != 0 {
-				signature.Variadic = true
+			if n, _ := tree.Node(id); n.Kind() == syntax.Parameter {
+				parameterNodeIDs = append(parameterNodeIDs, id)
+			}
+		}
+		for i, id := range parameterNodeIDs {
+			n, _ := tree.Node(id)
+			if n.Data()&syntax.ParameterVariadic == 0 {
+				continue
+			}
+			signature.Variadic = true
+			if i != len(parameterNodeIDs)-1 {
+				p.reporter.error(CodeInvalidType, "a variadic parameter must be the last parameter", Origin{Span: n.Span(), Symbol: sym.ID})
+				signature.State = DeclarationError
 			}
 		}
 		if signature.Result == 0 {

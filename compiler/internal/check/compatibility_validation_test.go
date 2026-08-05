@@ -219,6 +219,19 @@ fn main() i32 { return add(1, 2); }
 
 // Calling a C-convention variadic remains C0604; this task only enables
 // Pebble-convention variadic calls.
+// A variadic parameter that isn't the sole trailing group must be rejected
+// with a real diagnostic naming the problem (T0501, infer/declaration.go's
+// prepareSignatures), not merely happen to fail later with an incidental
+// type-mismatch error for the wrong reason.
+func TestVariadicParameterMustBeLast(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn weird(...values []i32, extra i32) i32 { return extra; }
+`)
+	if result.Successful() || !hasValidationDiagnostic(diagnostics, diagnostic.Code("T0501")) {
+		t.Fatalf("non-trailing variadic parameter was not rejected with T0501: %+v", diagnostics.Items())
+	}
+}
+
 func TestVariadicChangeKeepsCVariadicCallRejected(t *testing.T) {
 	diagnostics, result := runVariadicCheck(t, `
 extern "C" { fn printf(fmt str, ...args []u8) i32; }
