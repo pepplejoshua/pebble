@@ -162,6 +162,89 @@ type Table[K] = struct {
 	}
 }
 
+func TestBuildUnitEnumShorthandLiteral(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"variable initializer", `type State = enum { Empty, Occupied };
+fn f() void {
+    var s State = .Empty;
+}`},
+		{"return position", `type State = enum { Empty, Occupied };
+fn f() State { return .Empty; }`},
+		{"comparison", `type State = enum { Empty, Occupied };
+fn f(s State) bool { return s == .Empty; }`},
+		{"hashtable entry shape", `type State = enum { Empty, Occupied };
+type Entry = struct { key i32; state State; };
+type Table = struct {
+    entries []Entry;
+    fn insert(self *Table, key i32) void {
+        let entry = &self.entries[0];
+        if entry.state == .Empty { entry.key = key; entry.state = .Occupied; }
+    }
+};`},
+		{"explicit qualified form regression", `type Color = enum { red, blue };
+let color Color = Color.red;
+fn f(value Color) bool { return value == Color.blue; }`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			unit, ok := buildUnitFixture(t, test.source)
+			if !ok || unit == nil {
+				t.Fatal("enum shorthand fixture was not buildable")
+			}
+			if seen := nodesOfKind(unit, tir.EnumVariantValue); len(seen) == 0 {
+				t.Fatal("fixture produced no EnumVariantValue node")
+			}
+		})
+	}
+}
+
+func TestBuildUnitEnumShorthandLiteralVariantSymbol(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type State = enum { Empty, Occupied };
+fn f() void {
+    var s State = .Empty;
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
+	if !ok || unit == nil {
+		t.Fatal("buildUnit rejected enum shorthand fixture")
+	}
+
+	var emptySymbol symbol.SymbolID
+	for _, sym := range inputs.Resolution.Symbols.All() {
+		if sym.Name == "Empty" && sym.Kind == symbol.SymbolVariant {
+			emptySymbol = sym.ID
+		}
+	}
+	if emptySymbol == 0 {
+		t.Fatal("missing Empty variant symbol")
+	}
+
+	units := nodesOfKind(unit, tir.EnumVariantValue)
+	if len(units) != 1 {
+		t.Fatalf("EnumVariantValue nodes = %d, want 1", len(units))
+	}
+	node := unit.Nodes()[units[0]-1]
+	if node.Member != emptySymbol {
+		t.Fatalf("EnumVariantValue member = %d, want %d", node.Member, emptySymbol)
+	}
+}
+
 func TestBuildUnitExternBindingDeclarations(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `extern "C" { let external i32; var mutable i32; }`)
 	if !ok || unit == nil {

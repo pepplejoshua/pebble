@@ -312,18 +312,29 @@ func (w *walker) finishRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 
 func (w *walker) finishPartialMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree, plan *expressionPlan, origin infer.Origin) typedValue {
 	result := w.expressionResult(ref, w.session.Variable(origin), origin)
-	id, known := w.knownDestination(ctx.expected)
-	if !known {
-		return result
-	}
-	declaration, declarationFields := w.nominalDeclaration(id)
-	receiverOrigin := w.origin(ref, node, "partial member receiver", ctx.typeOwner, ctx.genericOwner)
-	receiver, _ := w.newSlotValue(w.session.Known(id), receiverOrigin)
-	receiver.Known = id
-	w.knownValues[receiver.ID] = id
 	children := node.Children()
 	if len(children) == 0 {
 		return result
+	}
+	// When the target nominal type is already known during the authored
+	// traversal (.Empty where a let/var annotation or return type fixes the
+	// receiver), ground the receiver immediately. Otherwise the receiver is a
+	// solver variable that settles through unification (e.g. `entry.state ==
+	// .Empty`, where the sibling operand's structural field type binds the
+	// receiver at solve time); the member symbol and nominal declaration are
+	// re-derived by name from the solved receiver type before typed-IR
+	// construction and validated there.
+	receiverOrigin := w.origin(ref, node, "partial member receiver", ctx.typeOwner, ctx.genericOwner)
+	var declaration symbol.SymbolID
+	var declarationFields []symbol.SymbolID
+	var receiver typedValue
+	if id, known := w.knownDestination(ctx.expected); known {
+		declaration, declarationFields = w.nominalDeclaration(id)
+		receiver, _ = w.newSlotValue(w.session.Known(id), receiverOrigin)
+		receiver.Known = id
+		w.knownValues[receiver.ID] = id
+	} else {
+		receiver, _ = w.newSlotValue(w.session.Variable(receiverOrigin), receiverOrigin)
 	}
 	nameNode, _ := tree.Node(children[0])
 	name := string(w.copySource(nameNode.Span()))
@@ -337,7 +348,14 @@ func (w *walker) finishPartialMember(ref symbol.SyntaxRef, node syntax.Node, ctx
 	if name != "" {
 		w.addConstraint(infer.HasField(receiver.Term, name, memberDestination.Term, memberOrigin))
 	}
-	w.addConstraint(infer.Equal(result.Term, w.session.Known(id), origin))
+	if receiver.Known != 0 {
+		w.addConstraint(infer.Equal(result.Term, w.session.Known(receiver.Known), origin))
+	} else {
+		w.addConstraint(infer.Equal(result.Term, receiver.Term, origin))
+		if destination := ctx.expected.Destination; destination != 0 && w.generation.hasValue(destination) {
+			w.addConstraint(infer.Equal(result.Term, w.generation.values[destination-1].Term, origin))
+		}
+	}
 	header := w.header(ref, ctx.genericOwner, declaration == 0 || name == "")
 	field := fieldValue{Field: ref, NameSyntax: nameRef, Name: string([]byte(name)), NameSpan: nameNode.Span(), Member: member, Value: result.ID, Destination: memberDestination.ID}
 	aggregate := aggregateRecord{Header: header, Kind: aggregateEnumVariant, Result: result.ID, Receiver: receiver.ID, Declaration: declaration, Fields: []fieldValue{field}, DeclarationFields: declarationFields}

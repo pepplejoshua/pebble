@@ -6605,6 +6605,21 @@ func TestEmitEnumEqualityTrueCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nif c == Color.red { return 1; } else { return 5; }\n}", false, 1, false)
 }
 
+func TestEmitEnumShorthandComparisonAndAssignmentCompilesAndRuns(t *testing.T) {
+	// Enum-variant shorthand literals (.Empty/.Occupied) in a var initializer,
+	// an equality comparison, and an assignment. The loop body is the one
+	// statement position where the backend already supports mid-body conditions
+	// (the entry/helper body grammar allows only leading declarations, stores,
+	// and calls followed by a tail return/if/switch), so the one-iteration
+	// loop hosts the branching. The local starts .Empty: the first comparison
+	// correctly does NOT fire, the local is reassigned .Occupied, and the
+	// second comparison fires, accumulating n = 42. Every .Empty is a
+	// deferred-receiver aggregate resolved from the solved enum type, and the
+	// emitted C compares and assigns the enum's discriminant constants, so the
+	// runtime branch behavior proves the shorthand lowered correctly.
+	emitAndRunBounded(t, "type State = enum { Empty, Occupied };\nfn main() i32 {\nvar n i32 = 0;\nvar done i32 = 0;\nwhile done == 0 {\nvar s State = .Empty;\nif s == .Occupied { n = n + 1; }\ns = .Occupied;\nif s == .Occupied { n = n + 42; }\ndone = 1;\n}\nreturn n;\n}", false, 42, false)
+}
+
 func TestEmitEnumOrderingCompilesAndRuns(t *testing.T) {
 	// An ordering comparison on enum values, c < Color.blue — also confirmed
 	// checker-reachable (the checker accepts it, unlike bool ordering). Both

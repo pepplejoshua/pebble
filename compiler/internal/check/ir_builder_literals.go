@@ -150,6 +150,31 @@ func (s *irBuildState) arrayLength(id valueID) (uint64, bool) {
 	return length, ok
 }
 
+// buildEnumVariantShorthand handles the enum-variant shorthand literal (a
+// leading dot followed by a variant name, e.g. .Empty). The semantic layer
+// resolves the target enum type into a single aggregateEnumVariant record whose
+// first field names the selected variant; the variant symbol itself is never
+// name-resolved at 06a (the resolver defers partial-member names), so it is
+// re-derived by name from the solved receiver type here. This produces the same
+// EnumVariantValue node that the explicit and qualified forms (Color.red)
+// already build, so the backend handles it for free.
+func (s *irBuildState) buildEnumVariantShorthand(record *expressionRecord, node *tir.Node) bool {
+	aggregate, ok := s.aggregatesByRecord[record.Specialized]
+	if !ok || aggregate == nil || aggregate.Kind != aggregateEnumVariant || len(aggregate.Fields) == 0 {
+		return false
+	}
+	member := aggregate.Fields[0].Member
+	if member == 0 {
+		member = s.memberSymbol(aggregate.Receiver, aggregate.Fields[0].Name)
+	}
+	if member == 0 {
+		return false
+	}
+	node.Kind = tir.EnumVariantValue
+	node.Member = member
+	return true
+}
+
 func (s *irBuildState) buildRecordConstruct(record *expressionRecord, node *tir.Node) bool {
 	aggregate, ok := s.aggregatesByRecord[record.Specialized]
 	if !ok || aggregate == nil || aggregate.Kind != aggregateStruct || aggregate.Declaration == 0 {

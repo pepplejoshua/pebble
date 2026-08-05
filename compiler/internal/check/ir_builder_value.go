@@ -200,6 +200,10 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		if !s.buildRecordConstruct(record, &node) {
 			return 0, false
 		}
+	case expressionPartialMember:
+		if !s.buildEnumVariantShorthand(record, &node) {
+			return 0, false
+		}
 	case expressionCall:
 		if !s.buildCall(record, &node) {
 			return 0, false
