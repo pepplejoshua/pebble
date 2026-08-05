@@ -335,6 +335,17 @@ func (w *walker) finishCall(ref symbol.SyntaxRef, node syntax.Node, ctx walkCont
 	}
 	if p.target.Kind == callIndirect {
 		w.addConstraint(infer.Callable(callee.Term, callable, p.result.Term, origin))
+	} else if p.target.Kind == callDirect {
+		// Directly-called top-level generic functions need every argument tied
+		// to its instantiated parameter so a non-literal argument grounds the
+		// inferred type argument (literal arguments already connect through the
+		// literal-fit expectation). Without this the parameter stays a free
+		// variable whenever the result context does not name the type either.
+		if signature, ok := w.program.Signature(p.target.Symbol); ok && len(signature.TypeParams) != 0 {
+			for _, argument := range callable {
+				w.addConstraint(infer.Equal(argument.Source, argument.Destination, origin))
+			}
+		}
 	} else if p.target.Kind == callMethod {
 		m := w.memberPlans[p.method]
 		if m != nil {

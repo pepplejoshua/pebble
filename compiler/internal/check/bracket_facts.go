@@ -258,7 +258,14 @@ func (w *walker) finishDeferredBracket(ref symbol.SyntaxRef, ctx walkContext, p 
 	if ctx.expected.Destination != 0 && w.generation.hasValue(ctx.expected.Destination) {
 		destination := w.generation.values[ctx.expected.Destination-1].Term
 		p.genericBranch.constraints = append(p.genericBranch.constraints, infer.Equal(p.genericResult.Term, destination, w.originForRef(ref, "generic bracket expected result", ctx.typeOwner, ctx.genericOwner)))
-		p.runtimeBranch.constraints = append(p.runtimeBranch.constraints, infer.Equal(p.result.Term, destination, w.originForRef(ref, "runtime bracket expected result", ctx.typeOwner, ctx.genericOwner)))
+		// The runtime interpretation is a slice/array index, so its result is
+		// already fixed by the Indexable constraint to the element type. Do not
+		// additionally force it to equal the surrounding expected destination:
+		// that eagerly unifies the element type with the enclosing context's
+		// type (e.g. the optional payload of `some X`, or a return type), which
+		// wrongly rejects shapes such as `return some self.data[index]`. The
+		// destination check still happens through the retained compatibility
+		// record below, exactly as it does for a non-deferred index.
 	}
 	header := w.header(ref, ctx.genericOwner, false)
 	previous := w.activeBranch

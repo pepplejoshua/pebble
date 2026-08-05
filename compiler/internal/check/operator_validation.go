@@ -113,7 +113,15 @@ func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, 
 
 		bad := false
 		isRigid := rigid[uint32(op.Header.Owner)]
-		concrete := func(index int) bool { return resolved[index] && !isRigid[op.Operands[index]] }
+		concrete := func(index int) bool {
+			if !resolved[index] || isRigid[op.Operands[index]] {
+				return false
+			}
+			if _, rigid := keys[index].TypeParameter(); rigid {
+				return false
+			}
+			return true
+		}
 		builtin := func(index int) (types.BuiltinKind, bool) {
 			if !resolved[index] || keys[index].Kind() != types.Builtin {
 				return 0, false
@@ -210,7 +218,16 @@ func validateBooleanOperators(handoff *solveHandoff, records *solvedRecords, dia
 
 		isRigid := rigid[uint32(op.Header.Owner)]
 		concrete := func(index int) bool {
-			return resolved[index] && (index >= len(op.Operands) || !isRigid[op.Operands[index]])
+			if !resolved[index] {
+				return false
+			}
+			if index < len(op.Operands) && isRigid[op.Operands[index]] {
+				return false
+			}
+			if _, rigid := keys[index].TypeParameter(); rigid {
+				return false
+			}
+			return true
 		}
 		isBool := func(index int) bool {
 			kind, ok := keys[index].Builtin()

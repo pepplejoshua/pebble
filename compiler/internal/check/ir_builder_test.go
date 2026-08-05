@@ -162,6 +162,104 @@ type Table[K] = struct {
 	}
 }
 
+func TestBuildUnitDeferredBracketIndexDoesNotForceDestinationEquality(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"optional payload wrap", `type Box[T] = struct {
+    data []T;
+    fn get[T](self *Box[T], index uint) ?T {
+        return some self.data[index];
+    }
+};`},
+		{"plain generic return, regression", `type Box[T] = struct {
+    data []T;
+    fn get[T](self *Box[T], index uint) T {
+        return self.data[index];
+    }
+};`},
+		{"optional-pointer payload wrap, regression", `type Box[T] = struct {
+    data []T;
+    fn get_ref[T](self *Box[T], index uint) ?*T {
+        return some &self.data[index];
+    }
+};`},
+		{"assignment through field-access index, regression", `type Box[T] = struct {
+    data []T;
+    len uint;
+    fn push[T](self *Box[T], value T) void {
+        self.data[self.len] = value;
+    }
+};`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := buildUnitFixture(t, test.source); !ok {
+				t.Fatal("deferred-bracket index fixture was not buildable")
+			}
+		})
+	}
+}
+
+func TestBuildUnitDirectGenericCallGroundsArgumentType(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"variable argument grounds type parameter", `fn identity[T](value T) T { return value; }
+fn f(x uint) uint {
+    return identity(x);
+}`},
+		{"variable argument to void-returning generic function", `fn consume[T](value T) void {}
+fn f(x uint) void {
+    consume(x);
+}`},
+		{"literal argument, regression", `fn identity[T](value T) T { return value; }
+fn f() uint {
+    return identity(1);
+}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := buildUnitFixture(t, test.source); !ok {
+				t.Fatal("direct generic call fixture was not buildable")
+			}
+		})
+	}
+}
+
+func TestBuildUnitEqualityOnRigidSliceIndexResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"non-deferred index equality", `fn find[T](items []T, target T) bool {
+    var i uint = 0;
+    while i < items.len {
+        if items[i] == target {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}`},
+		{"deferred-bracket field index equality", `type Box[T] = struct {
+    data []T;
+    fn contains[T](self *Box[T], index uint, value T) bool {
+        return self.data[index] == value;
+    }
+};`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := buildUnitFixture(t, test.source); !ok {
+				t.Fatal("equality on a rigid slice-index result was not buildable")
+			}
+		})
+	}
+}
+
 func TestBuildUnitDereferenceOperandNeedNotBeAPlace(t *testing.T) {
 	tests := []struct {
 		name   string
