@@ -136,6 +136,22 @@ fn update[K](entries []Entry[K], key K, value K) void {
 	    entry.key = key;
 	    entry.value = value;
 }`},
+		{"pointer receiver field concrete", `type Entry = struct { key i32; state i32; };
+type Table = struct {
+    entries []Entry;
+    fn insert(self *Table, key i32) void {
+        let entry = &self.entries[0];
+        if entry.state == 0 { entry.key = key; entry.state = 1; }
+    }
+};`},
+		{"pointer receiver field generic", `type Entry[K] = struct { key K; };
+type Table[K] = struct {
+    entries []Entry[K];
+    fn insert(self *Table[K], key K) void {
+        let entry = &self.entries[0];
+        entry.key = key;
+    }
+};`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
