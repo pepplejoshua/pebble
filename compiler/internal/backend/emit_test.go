@@ -3871,16 +3871,60 @@ func TestEmitF64LiteralTruncatesToExitCode(t *testing.T) {
 	emitAndRun(t, "fn main() f64 { var x f64 = 3.99; return x; }", false, 3, false)
 }
 
-func TestEmitRejectsFloatArithmeticInFloatReturnPosition(t *testing.T) {
-	// Regression: a float value this stage deliberately does NOT support —
-	// float arithmetic, checked before even the checker's operand level as a
-	// float-family BinaryValue (no integer operand, so no checked-arithmetic
-	// lowering) — must still be a clean rejection from buildFloatExpr naming
-	// what was found, never a crash or a guessed lowering. This pins the Stage
-	// A scope boundary: a float local can be declared, read, reassigned, and
-	// (from a float main) returned, but 1.0 + 2.0 is a later stage.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() f64 { return 1.0 + 2.0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "BinaryValue")
+func TestEmitFloatArithmeticInFloatReturnPosition(t *testing.T) {
+	// Regression: Stage A rejected this BinaryValue because float arithmetic
+	// was not yet in buildFloatExpr. Stage B now lowers it as plain C float
+	// arithmetic, with no checked runtime helper needed.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { return 1.0 + 2.0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1.0 + 2.0") {
+		t.Fatalf("emitted C did not contain plain float addition:\n%s", buf.String())
+	}
+	compileAndRun(t, buf.Bytes(), 3, false)
+}
+
+func TestEmitFloatArithmeticOperatorsCompileAndRun(t *testing.T) {
+	for _, test := range []struct {
+		name, source, emitted string
+		expected              int
+	}{
+		{"addition", "fn main() f64 { var a f64 = 1.5; var b f64 = 2.5; return a + b; }", " + ", 4},
+		{"subtraction", "fn main() f64 { var a f64 = 5.5; var b f64 = 2.5; return a - b; }", " - ", 3},
+		{"multiplication", "fn main() f64 { var a f64 = 1.5; var b f64 = 2.0; return a * b; }", " * ", 3},
+		{"division", "fn main() f64 { var a f64 = 8.0; var b f64 = 2.0; return a / b; }", " / ", 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unit, snapshot, entryID, sources := buildFixture(t, test.source, "main", false)
+			var buf bytes.Buffer
+			if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+				t.Fatalf("Emit failed: %v", err)
+			}
+			if !strings.Contains(buf.String(), test.emitted) {
+				t.Fatalf("emitted C missing plain float operator %q:\n%s", test.emitted, buf.String())
+			}
+			compileAndRun(t, buf.Bytes(), test.expected, false)
+		})
+	}
+}
+
+func TestEmitFloatComparisonBetweenLocalsCompilesAndRuns(t *testing.T) {
+	// Float comparisons use the same BinaryValue condition path as integer
+	// comparisons, but operands are built by buildFloatExpr at f64 width.
+	emitAndRun(t, "fn main() f64 { var a f64 = 1.5; var b f64 = 2.5; if a < b { return 7.0; } else { return 3.0; } }", false, 7, false)
+}
+
+func TestEmitRejectsMixedWidthFloatArithmeticAndComparison(t *testing.T) {
+	for _, source := range []string{
+		"fn main() f64 { var a f32 = 1.0; var b f64 = 2.0; return a + b; }",
+		"fn main() f64 { var a f32 = 1.0; var b f64 = 2.0; if a < b { return 1.0; } else { return 0.0; } }",
+	} {
+		if _, _, _, _, err := buildFixtureMaybeFailing(t, source, "main", false); err == nil {
+			t.Fatalf("checker accepted mixed-width float expression: %s", source)
+		}
+	}
 }
 
 func TestEmitRejectsSelfRecursion(t *testing.T) {

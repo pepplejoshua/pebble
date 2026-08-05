@@ -5783,6 +5783,20 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		}
 		return "(" + left + ") " + op + " (" + right + ")", nil
 	}
+	if isFloat(snapshot, leftOperand.Type) && leftOperand.Type == rightOperand.Type {
+		// Float arithmetic and comparisons have defined C semantics, including
+		// overflow, infinities, NaNs, and division by zero. Emit the comparison
+		// directly after building both operands at their shared float width.
+		left, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, leftOperand.Type))
+		if err != nil {
+			return "", err
+		}
+		right, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[1], locals, resolvedFloatKind(snapshot, rightOperand.Type))
+		if err != nil {
+			return "", err
+		}
+		return left + " " + op + " " + right, nil
+	}
 	if isEnumType(unit, snapshot, leftOperand.Type) && isEnumType(unit, snapshot, rightOperand.Type) {
 		// A comparison between two plain enum values — c == Color.red,
 		// c != Color.red, and (confirmed against a real fixture) the ordering
@@ -7680,9 +7694,38 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
 		return buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+	case tir.BinaryValue:
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("entry function body float arithmetic has %d operands, want exactly two", len(node.Children))
+		}
+		op, ok := arithmeticOperator(node.Operator)
+		if !ok || node.Operator == syntax.Percent {
+			return "", fmt.Errorf("entry function body float arithmetic uses operator %s, want +, -, *, or /", node.Operator)
+		}
+		left, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "(" + left + " " + op + " " + right + ")", nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a float literal or a reference to a %s local declared earlier in the body", node.Kind, wantName(width))
 	}
+}
+
+func resolvedFloatKind(snapshot *types.Snapshot, id types.TypeID) types.BuiltinKind {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return 0
+	}
+	kind, ok := key.Builtin()
+	if !ok || (kind != types.F32 && kind != types.F64) {
+		return 0
+	}
+	return kind
 }
 
 // shortCircuitOperator maps the two logical-combination token kinds a
