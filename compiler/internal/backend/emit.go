@@ -6818,7 +6818,9 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 // symbols in scope at this point in the
 // entry body (a map is deliberately used, not a slice, so membership is a
 // constant-time check); it is read-only for a SymbolValue reference and is
-// otherwise threaded through unchanged. It accepts exactly four node kinds:
+// otherwise threaded through unchanged. In addition to the scalar and call
+// forms below, it accepts plain bitwise &, |, ^, and ~ expressions, which are
+// safe to emit directly as C operators:
 //
 //   - IntegerLiteral — its decimal text (defensively validated, exactly as
 //     10.3 validated a bare literal return).
@@ -6828,6 +6830,10 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 //     operator +, -, *, /, or % — pebble_rt_checked_add_<suffix> /
 //     pebble_rt_checked_sub_<suffix> / pebble_rt_checked_mul_<suffix> /
 //     pebble_rt_checked_div_<suffix> / pebble_rt_checked_mod_<suffix>.
+//   - BinaryValue with exactly two operands of the entry's width and operator
+//     &, |, or ^ — the parenthesized plain C operator expression.
+//   - PrefixValue with exactly one operand of the entry's width and operator
+//     ~ — the parenthesized plain C bitwise-not expression.
 //   - SymbolValue whose Symbol is in locals — pebble_local_<symbol ID>, the C
 //     name buildBlock gave that local's declaration.
 //   - DirectCall — a call to another Pebble-convention function whose result
@@ -6841,7 +6847,8 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 //     explicit child.
 //
 // CheckedArithmetic with any other operator (the integral operators that build
-// this node but are not yet lowered) is rejected, not guessed. A SymbolValue
+// this node but are not yet lowered) is rejected, not guessed. BinaryValue or
+// PrefixValue with any other operator, including shifts, is also rejected. A SymbolValue
 // referencing anything not in locals (a global, a symbol from an
 // outer/different scope — none of which are reachable from this narrow body
 // shape, but checked defensively rather than assumed) is a clean rejection.
@@ -7031,6 +7038,35 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", err
 		}
 		return helper + "(" + left + ", " + right + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
+	case tir.BinaryValue:
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("entry function body expression contains a BinaryValue with %d operand(s), want exactly two", len(node.Children))
+		}
+		op, ok := bitwiseOperator(node.Operator)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a BinaryValue with operator %s, want &, |, or ^", node.Operator)
+		}
+		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "(" + left + " " + op + " " + right + ")", nil
+	case tir.PrefixValue:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a PrefixValue with %d operand(s), want exactly one", len(node.Children))
+		}
+		if node.Operator != syntax.Tilde {
+			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want ~", node.Operator)
+		}
+		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "~(" + child + ")", nil
 	case tir.SymbolValue:
 		if _, declared := locals[node.Symbol]; !declared {
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
@@ -7168,7 +7204,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		// scalar case.
 		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, or a call to another function", node.Kind)
+		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, bitwise &, |, ^, ~, or a call to another function", node.Kind)
 	}
 }
 
@@ -8571,6 +8607,23 @@ func shortCircuitOperator(op syntax.TokenKind) (string, bool) {
 		return "&&", true
 	case syntax.LogicalOr:
 		return "||", true
+	default:
+		return "", false
+	}
+}
+
+// bitwiseOperator maps the unchecked integral operators whose C semantics are
+// defined for every bit pattern. Shifts are deliberately excluded: their
+// CheckedShift nodes require checked runtime semantics and are not plain C
+// operators in this backend.
+func bitwiseOperator(op syntax.TokenKind) (string, bool) {
+	switch op {
+	case syntax.Ampersand:
+		return "&", true
+	case syntax.Pipe:
+		return "|", true
+	case syntax.Caret:
+		return "^", true
 	default:
 		return "", false
 	}

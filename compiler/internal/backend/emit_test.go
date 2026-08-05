@@ -400,6 +400,31 @@ func TestEmitCheckedNegateFeedsArithmeticCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { return -5 + 10; }", false, 5, false)
 }
 
+func TestEmitBitwiseOperatorsCompilesAndRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"and", "fn main() i32 { let a i32 = 12; let b i32 = 10; return a & b; }", 8},
+		{"or", "fn main() i32 { let a i32 = 12; let b i32 = 10; return a | b; }", 14},
+		{"xor", "fn main() i32 { let a i32 = 12; let b i32 = 10; return a ^ b; }", 6},
+		{"not", "fn main() i32 { let a i32 = 10; return (~a) & 15; }", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitBitwiseCombinedExpressionCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { let a i32 = 12; let b i32 = 10; let c i32 = 3; return (a & b) | c; }", false, 11, false)
+}
+
+func TestEmitBitwiseI64CompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn main() i64 { let a i64 = 12; let b i64 = 10; return (a ^ b) | 8; }", false, 14, false)
+}
+
 func TestEmitCheckedDivisionCompilesAndRuns(t *testing.T) {
 	// 7 / 2 = 3 (plain C division truncates toward zero, which is also the
 	// language's semantics): the CheckedArithmetic node with operator Slash is
