@@ -68,25 +68,6 @@ repeated here.
 
 ### Confirmed broken or missing
 
-- [ ] **Variadic call emission is unimplemented in the backend.** The
-      checker now accepts Pebble-convention variadic declarations and
-      call sites (`fn sum(...values []i32) i32 { ... } fn main() i32
-      { return sum(1, 2, 3); }` checks clean, closed this session — see
-      commit `f70c20c`). But `backend.Emit` has zero support for it:
-      confirmed still failing with `call to symbol N passing 3
-      argument(s), want 1 (the callee declares 1 parameter(s))` — there
-      is no collection of scalar call-site arguments into a runtime
-      slice value anywhere in `internal/backend/emit.go`. Two more,
-      independent (non-variadic-specific) backend restrictions also
-      block the natural repro: a slice parameter typed `[]i32` (as
-      opposed to `[]int`) fails with "slice type with an unsupported
-      element type: slice element type is i32, want int or bool"
-      (`validateHelperSignature`, `emit.go:2007-2010` — a general slice
-      element-width restriction), and `values.len` used as an expression
-      independently fails with "Load of type uint, want int". Needs a
-      real design/scoping pass (how call-site scalars become a runtime
-      slice — likely a stack-allocated array + slice header built at
-      the call site) before dispatching; checker-only, not yet touched.
 - [ ] **Variadic parameter position is unenforced.** Neither the parser
       nor the checker actually requires the variadic parameter to be
       the sole trailing group, despite `06b-validation-and-typed-ir.md`
