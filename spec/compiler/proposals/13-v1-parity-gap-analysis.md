@@ -37,21 +37,6 @@ and should be fixed before returning to that list's remaining items
 without them. Confirmed today via direct `emitAndRun`/`Emit` probes against
 the real compiler, not assumed from v1's README.
 
-- [ ] **Bitwise operators `&`, `|`, `^` are unimplemented in the backend.**
-      Each parses and checks fine, producing a `tir.BinaryValue` node, but
-      `buildExpr`'s accepted-node-kind list (documented explicitly in its
-      own doc comment: "It accepts exactly four node kinds") has no case
-      for a bitwise `BinaryValue` — only comparison-shaped `BinaryValue`s
-      route through the separate `buildComparison`/`buildBoolExpr` path.
-      Confirmed: `a & b`, `a | b`, `a ^ b` (each with `i32` operands) all
-      fail with `entry function body expression contains a BinaryValue,
-      want an integer literal, a reference to a local declared earlier in
-      the body, checked +, -, *, /, % arithmetic, or a call to another
-      function`.
-- [ ] **Bitwise NOT (`~a`) is unimplemented.** Produces a `tir.PrefixValue`
-      node; confirmed rejected with the same "want ... checked
-      arithmetic..." message, naming `PrefixValue` instead of
-      `BinaryValue`.
 - [ ] **Bit shifts (`<<`, `>>`) are unimplemented.** These produce a
       distinct `tir.CheckedShift` node (not `CheckedArithmetic`, which only
       covers `+`/`-`/`*`/`/`/`%` — confirmed via `checkedArithmeticHelper`'s
