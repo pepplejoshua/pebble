@@ -322,21 +322,49 @@ is illegal per 11 §4's decision.
             confirmed identical repro passes with the fix; full suite
             green (`gofmt`, `go vet`, `go build`,
             `go test ./... -count=1`).
-      - [ ] **Part 2, dispatched, awaiting verification.** The Part 1
-            fix does NOT cover `hmap.peb`/`set.peb`'s actual pattern —
-            confirmed via direct isolated testing that `let entry =
-            &self.entries[index]; entry.field` (indexing a slice
-            reached through a pointer-receiver FIELD access, not a bare
-            local/parameter) still fails with the same `T0507` plus a
-            `T0510 inference variable has no unique semantic type` on
-            the write place. This is the real, exact shape used
-            throughout both files (`insert`/`get_by_ref`/`remove`/
-            `rehash`). Dispatched as a narrow follow-up
-            (`/tmp/orc_task_field_through_bound_self_field_slice_index.md`,
-            orc session under Luna) — not yet returned/verified as of
-            this entry.
+      - [x] **Part 2, fixed and committed (`0e2ae62`).** The Part 1 fix
+            only followed a deferred leaf pointee ONE hop, which didn't
+            cover `hmap.peb`/`set.peb`'s actual pattern: `let entry =
+            &self.entries[index]; entry.field` (indexing a slice reached
+            through a pointer-receiver FIELD access, not a bare
+            local/parameter) needs more than one hop, since
+            `self.entries`'s own type resolves through an earlier
+            structural-field step before the slice's element type
+            settles. Fixed by turning the single follow into a bounded
+            loop (max 8 hops) in `structuralField`, returning the
+            existing "pending, retry later" signal instead of a
+            spurious failure when a hop makes no progress. The dispatch
+            for this (Luna) returned only new test fixtures reproducing
+            the gap with an empty worklog and no code change — same
+            thin-investigation failure pattern as earlier this session;
+            reverted the stub and implemented the fix directly after
+            tracing the Part 1 diff myself. Verified independently:
+            reproduced both fixtures (pointer-receiver field, concrete
+            and generic) failing before, passing after; full suite
+            green.
 
-      Once Part 2 lands and is verified, re-check both `.peb` files
+      **Re-checked both `.peb` files against the real checker after
+      Part 2 — the `T0507` field-access errors are gone, but BOTH files
+      still fail on a separate, pre-existing, unrelated bug**, confirmed
+      independent of everything above: enum shorthand literals
+      (`.Empty`, `.Occupied`, `.Tombstone`) crash typed-IR construction
+      with a generic `C0619 typed-IR construction failed during
+      buildBlocks` internal error. Confirmed via minimal isolated repro
+      that this has NOTHING to do with address-of, bound locals, or
+      slice indexing — the plainest possible case fails identically:
+      `type State = enum { Empty, Occupied }; fn f() void { var s State
+      = .Empty; }`. Also confirmed via `git stash` that this exists
+      identically with or without the Part 2 fix — genuinely
+      pre-existing, not introduced today. This is now the actual
+      blocker for `hmap.peb`/`set.peb` (both use `.Empty`/`.Occupied`/
+      `.Tombstone` pervasively for their entry-state machine) — not yet
+      root-caused past the `C0619` bucket (a deliberately generic
+      fallback for unimplemented/failing closed-IR paths, per this
+      session's earlier "Slice 4" work) or dispatched. Both `.peb` files
+      remain uncommitted.
+
+      Once this new bug is fixed and both `.peb` files check clean end
+      to end, commit them.
       against the real checker end to end before committing them.
 
 ## Pointer-receiver methods can't be called on a value-typed local (fixed, then a regression, fix in flight)
