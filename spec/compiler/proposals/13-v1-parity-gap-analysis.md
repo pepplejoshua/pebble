@@ -143,46 +143,6 @@ repeated here.
       do not compile to real C yet. This needs independent re-verification
       via `backend.Emit` (not just `check.Check`) once function types are
       actually supported, before trusting either file end-to-end.
-- [ ] **`.{ Name = value }` compound-literal construction doesn't work for
-      union/tagged-union destinations — real, narrow, mechanical bug.**
-      CORRECTED after direct empirical testing invalidated the previous
-      version of this entry (its "construction doesn't error" claim was
-      wrong — retested directly, `Data.{ Int = 42 }` against `type Data =
-      union enum { Int i32; Str str; }` fails immediately with `C0615:
-      aggregate construction is invalid`). Root cause, confirmed by
-      reading the code: `finishRecord`
-      (`internal/check/aggregate_facts.go:271-311`) unconditionally builds
-      an `aggregateStruct`-kind record for ANY `.{ Name = value, ... }`
-      literal regardless of the destination's actual declaration kind —
-      there is no branch routing a single-field literal against a
-      union/`union enum` destination to `aggregateEnumVariant` (the kind
-      `finishPartialMember`, a completely different syntax path for
-      base-less `.Name` dot-shorthand, already builds at line 361).
-      `validateAggregateRecords`'s `aggregateStruct` case then correctly
-      rejects it, since `declaration.Nominal` is `NominalTaggedUnion`, not
-      `NominalStruct`.
-
-      **This is NOT the same gap as field access / pattern matching
-      below** — directly confirmed empirically that CALL-syntax
-      construction (`Data.Int(42)`, not `.{ Int = 42 }`) already works
-      today at both the checker AND backend, compiles, and runs correctly
-      (a real switch on the constructed value with qualified case labels
-      like `case Data.Int:` also already works, checker AND backend, full
-      round-trip verified). The only thing broken is the alternate
-      `.{ Name = value }` literal syntax specifically.
-
-      **Concrete impact**: `std/result.peb` is written entirely with
-      `.{ Name = value }` construction (`Result[T, E].{ Ok = value }`,
-      `Result[T, E].{ Err = error }`) — confirmed via direct testing this
-      fails with exactly this `C0615`, both non-generic and once a
-      generic instantiation is actually exercised by a call site (a
-      never-instantiated generic method isn't fully checked, which is
-      why an earlier, less careful test on this file didn't surface it).
-      Fixing this does NOT make `result.peb` check clean end-to-end by
-      itself — it also uses `self.Ok`-style field access inside
-      `case Ok:` bodies, which is the separate, still-deferred item below
-      — but it's real, necessary, unblocking work independent of that
-      deferred design question.
 - **Tagged-union field access on the matched variant (`case Ok: return
       self.Ok;`) is pattern matching — still deferred, confirmed by
       spec text, not merely a sequencing choice.** Previously framed as
