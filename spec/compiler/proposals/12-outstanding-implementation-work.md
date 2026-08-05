@@ -674,27 +674,42 @@ width):
       both directions (`i64`→`i32`, `i32`→`i64`) plus a
       differently-signed pair (`u32`→`i32`), including one helper with
       real locals/arithmetic inside its own wider body.
-- [ ] **Stage 2 — per-local width within one function body.** A
-      local's width doesn't have to match its own function's return
-      type. `localInfo` (`internal/backend/emit.go`) already has a
-      `kind types.BuiltinKind` field PER LOCAL — the data already
-      supports this. `buildScalarInitializeCore` just needs to stop
-      rejecting any width but the ambient one and record the local's
-      real declared width instead; `buildExpr`, when it hits a
-      `SymbolValue` reference, needs to use THAT local's own recorded
-      width rather than assuming everything in scope matches the
-      function's width, requiring (and correctly lowering, via
-      `IntegerCast`) an explicit `as` wherever a mismatch is used —
-      exactly like `(x as i64) as i32` already works today, just
-      persisted across statements instead of only within one
-      expression tree.
+- [x] **Stage 2, fixed and committed (`5271d1d`).** A local's width no
+      longer has to match its own function's return type.
+      `buildScalarInitializeCore` now accepts any integer builtin kind
+      for a local declaration (not just the ambient width), emits it at
+      its own `cType(kind)`, builds its initializer via `buildExpr` at
+      that same kind, and records the local's OWN width in `localInfo`.
+      `buildStoreCore`'s reassignment path does the equivalent for a
+      Store targeting an already-declared local, building the new value
+      at the local's own recorded `targetInfo.kind`. `buildFor{Init,Update}Clause`
+      needed no changes — both already reuse the two functions above, so
+      a for-loop init clause declaring a mismatched-width local is
+      covered for free (proven by a round-trip test). No change was
+      needed to `buildExpr`'s `SymbolValue` case or its width gate: a
+      bare reference to a mismatched-width local was already correctly
+      rejected by the existing gate (which checks the reference's own
+      resolved type, independent of the locals map), and an explicit
+      `as` cast already flowed through the `IntegerCast` machinery from
+      earlier the same day — confirmed via a dedicated regression test,
+      not assumed. Two pre-existing tests
+      (`TestEmitI64RejectsI32Local`/`TestEmitI32RejectsI64Local`)
+      asserted the exact restriction being lifted; inverted both to
+      assert the new legal behavior (with explanatory comments) instead
+      of deleting them. Also found and noted, out of scope: the
+      backend's checked-arithmetic runtime helpers only cover `i32`/
+      `i64`, so arithmetic on a `u32` local currently emits a broken
+      helper name — a real, separate, still-open gap, not touched here.
+      Verified independently: reproduced the original rejection against
+      the pre-fix tree via `git stash`, confirmed it's gone with the
+      exact original error message; full suite green; new tests compile
+      and run real C (a plain mismatched-width local, `i64` arithmetic
+      between two such locals with an explicit cast back, a Store
+      reassignment, a `u32` local, a for-loop init clause) plus the
+      still-rejected-without-a-cast regression.
 
-Not yet dispatched — deliberately held here as a scoped, written-down
-task rather than started immediately, per direct instruction. This is
-very likely the same root shape of gap that blocks float-expression
-support generally (a function returning `i32` can't have an `f64`
-local either, for the identical reason), so Stage 1 + Stage 2 should be
-done BEFORE returning to the float-cast half of the primitive-casts
-item above — implementing float casts on top of the current
-program-wide-width restriction would mean re-doing that work once this
-lands anyway.
+Both stages of the program-wide-width restriction are now closed. Next:
+return to the float-cast half of the primitive-casts item above — no
+longer blocked, since a function/local can now legitimately be a
+different integer width than its surroundings, the same mechanism
+floats need.
