@@ -194,6 +194,28 @@ int32_t pebble_rt_checked_f64_to_i32(double value, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_f32_to_i64(float value, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc);
 
+/* ---- checked integer-to-enum conversion -------------------------------------
+ * Validates that an integer names a real variant of a destination enum (the
+ * compiler's CheckedIntegerToEnum node, `5 as Color`). Pebble enums are
+ * ordinal — variant Members[i] gets the C enum value i — so the validation is
+ * just a bounds check: an integer names a variant exactly when
+ * 0 <= value < variant_count. One int64_t-based primitive serves every source
+ * integer width and signedness: the compiler emits the source cast to int64_t
+ * before calling (sign-extending a genuinely negative signed source,
+ * zero-extending an unsigned source below 2^63, and bit-reinterpreting a u64
+ * source at or above 2^63 as negative), and the primitive's single unsigned
+ * comparison (uint64_t)value < (uint64_t)variant_count recovers both a
+ * genuinely negative signed source and a genuinely huge unsigned source as
+ * out-of-range — unsigned reinterpreting is well-defined in C, so no path
+ * invokes UB. variant_count is always a small nonnegative compile-time
+ * constant (the destination enum's variant count). SAFE: an out-of-range value
+ * panics with PEBBLE_PANIC_ARITHMETIC_OVERFLOW, the same panic the other
+ * checked integer primitives raise. RELEASE: returns value unchanged, no
+ * check — trusting the input, matching this runtime's release-mode convention
+ * for checked primitives.
+ */
+int64_t pebble_rt_checked_int_to_enum(int64_t value, int64_t variant_count, PebbleSourceLoc loc);
+
 /* ---- checked division and modulo -------------------------------------------
  * Division and modulo have a fault case wraparound cannot fix: b == 0 has no
  * defined quotient at all, in either mode — unlike +, -, *, there is no

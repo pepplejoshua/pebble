@@ -350,9 +350,18 @@
 // the single operand (an enum-typed local reference, a variant literal, or a
 // zero-payload variant construction) is built by buildEnumValue, and the
 // emitted C is `(<destination C type>)(<enum value expression>)`. The reverse
-// direction — integer cast to an enum, CheckedIntegerToEnum /
-// OptionalIntegerToEnum — is out of scope (it needs a runtime validity check
-// that the integer names a real variant) and tracked as a separate, later task.
+// direction — integer cast to an enum, CheckedIntegerToEnum — is implemented
+// since 10.46: `5 as Color` lowers through the single canonical-width runtime
+// primitive pebble_rt_checked_int_to_enum (see the buildExpr case and
+// buildCheckedIntegerToEnumExpr), which bounds-checks the integer against the
+// destination enum's variant count — Pebble enums are ordinal, so an integer
+// names a real variant exactly when 0 <= value < variant_count — with SAFE
+// mode panicking out-of-range (PEBBLE_PANIC_ARITHMETIC_OVERFLOW) and RELEASE
+// mode skipping the check entirely (a plain unchecked cast, trusting the
+// input). The optional-destination form, OptionalIntegerToEnum (`5 as ?Color`),
+// remains out of scope (it needs to evaluate the source integer exactly once
+// while producing both a validity bool and a value, a genuinely different
+// mechanism) and is tracked as a separate, later task.
 // Enum-typed function parameters/results, and enum-typed
 // tuple/struct/array/optional elements and fields, remain clean rejections.
 package backend
@@ -1610,13 +1619,17 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 // collectEnumTypesWalk appends every enum type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Three node shapes carry
+// region of the node graph the body builders consume. Four node shapes carry
 // an enum type: an EnumVariantValue node's own Type (a variant literal,
 // e.g. Color.green), a VariantConstruct node's own Type (a variant
 // construction, e.g. Color.red() — the parenthesized-call form of a plain
 // enum's payload-less variant, or e.g. Choice.value(5) — a tagged-union
 // payload-carrying construction, which this walk collects exactly the same way
-// and the caller filters out as a tagged union; see collectUnionTypes), and an
+// and the caller filters out as a tagged union; see collectUnionTypes), a
+// CheckedIntegerToEnum node's own Type (an integer cast to an enum, e.g.
+// `5 as Color` — the node's Type is the destination enum type, so a cast that
+// never participates in a local declaration still gets its typedef emitted),
+// and an
 // Initialize whose initializer value carries an enum type (an enum-typed local
 // declaration — the local's type is recorded on the initializer value node,
 // not on the Initialize node itself, confirmed against a real fixture, the
@@ -1637,6 +1650,19 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.VariantConstruct {
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.CheckedIntegerToEnum {
+		// An integer cast to an enum (`5 as Color`): the node's own Type IS
+		// the destination enum type, collected exactly like an
+		// EnumVariantValue's — a cast that is never part of a local
+		// declaration (e.g. a store's new value or a switch subject standing
+		// alone) would otherwise leave the enum typedef unemitted. The
+		// caller's tagged-union filter applies the same way it does to the
+		// variant-shape rules above (a checked cast can only target a plain
+		// enum in real source — the checker routes an integer to a
+		// NominalEnum destination only — but the filter keeps the invariant
+		// uniform).
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.Initialize {
@@ -2665,7 +2691,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// A plain-enum-typed subject: a reference to an enum-typed local
 			// (a SymbolValue) or a variant literal (an EnumVariantValue /
 			// zero-payload VariantConstruct) — buildEnumValue handles all three.
-			subjectExpr, err = buildEnumValue(unit, snapshot, switchNode.Children[0], locals)
+			subjectExpr, err = buildEnumValue(unit, snapshot, fileSet, switchNode.Children[0], locals)
 		}
 	} else if isWidth(snapshot, width, subjectNode.Type) {
 		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
@@ -3668,7 +3694,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// value is a variant literal (an EnumVariantValue, or a
 			// zero-payload VariantConstruct) built by the enum value builder,
 			// emitted as `pebble_local_<sym> = pebble_variant_<member>;`.
-			storeValue, err := buildEnumValue(unit, snapshot, statement.Children[1], scope)
+			storeValue, err := buildEnumValue(unit, snapshot, fileSet, statement.Children[1], scope)
 			if err != nil {
 				return "", err
 			}
@@ -4404,7 +4430,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			if _, isUnion := unions[initValue.Type]; isUnion {
 				return buildUnionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, unions, width)
 			}
-			return buildEnumLocalDeclaration(unit, snapshot, statement, initValue, scope, indent, context)
+			return buildEnumLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context)
 		}
 		if isStruct(snapshot, initValue.Type) {
 			if runtimeType(unit, snapshot, initValue.Type) != 0 {
@@ -5907,11 +5933,15 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 }
 
 // buildEnumLocalDeclaration builds one plain enum-typed local's declaration: a
-// `pebble_enum_<typeID>_t pebble_local_<symbol> = pebble_variant_<member>;`
-// whose initializer is a variant literal — an EnumVariantValue (Color.green,
-// the member-access form) or a zero-payload VariantConstruct (Color.red(), the
+// `pebble_enum_<typeID>_t pebble_local_<symbol> = <initializer>;` whose
+// initializer is a variant literal — an EnumVariantValue (Color.green, the
+// member-access form) or a zero-payload VariantConstruct (Color.red(), the
 // parenthesized-call form, which a plain enum's payload-less variants also
-// produce — confirmed against a real fixture). Both lower to the variant's C
+// produce — confirmed against a real fixture) — or, since CheckedIntegerToEnum
+// support landed, an integer cast to the enum (`5 as Color`, built by
+// buildCheckedIntegerToEnumExpr through the checked runtime primitive, e.g.
+// `pebble_local_<sym> = (pebble_enum_<typeID>_t)pebble_rt_checked_int_to_enum(...);`).
+// A variant literal lowers to the variant's C
 // enum constant, whose value is the variant's ordinal in the enum's declared
 // order (the C typedef emits one named constant per variant in TypeDecl order,
 // so the constant and the typedef agree by construction). A payload-carrying
@@ -5928,7 +5958,7 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // reassignment, switch subject, or comparison resolves the enum type being
 // used. Like every scalar local, the declaration is followed by a (void) cast
 // against -Wunused-variable.
-func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string) (string, error) {
+func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string) (string, error) {
 	switch initValue.Kind {
 	case tir.EnumVariantValue:
 		if len(initValue.Children) == 1 {
@@ -5938,38 +5968,53 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, stateme
 		if len(initValue.Children) >= 1 {
 			return "", fmt.Errorf("%s declares an enum-typed local initialized from a variant construction with %d payload(s); a tagged-union (union enum) construction routes through buildUnionLocalDeclaration, never a plain enum declaration", context, len(initValue.Children))
 		}
+	case tir.CheckedIntegerToEnum:
+		// An integer cast to an enum (`let c Color = 5 as Color;`) is built by
+		// buildCheckedIntegerToEnumExpr below — the value is produced by the
+		// checked runtime primitive, not a variant constant.
 	default:
-		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a %s, want a variant literal (e.g. Color.green); initializing an enum local from another value is not supported yet", context, enumTypeName(initValue.Type), initValue.Kind)
+		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a %s, want a variant literal (e.g. Color.green) or an integer cast to the enum type (e.g. 5 as Color); initializing an enum local from another value is not supported yet", context, enumTypeName(initValue.Type), initValue.Kind)
 	}
 	info, err := resolveEnumInfo(unit, snapshot, initValue.Type)
 	if err != nil {
 		return "", err
 	}
+	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+	if initValue.Kind == tir.CheckedIntegerToEnum {
+		castExpr, err := buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, initValue, scope, context)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, castExpr, indent, statement.Symbol), nil
+	}
 	if !containsVariant(info.variants, initValue.Member) {
 		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from variant symbol %d, which is not one of its declared variants", context, enumTypeName(initValue.Type), initValue.Member)
 	}
-	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
 	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, enumVariantName(initValue.Member), indent, statement.Symbol), nil
 }
 
 // buildEnumValue builds the C expression text for a plain enum value node of
-// three shapes (all confirmed against real fixtures): an EnumVariantValue
+// five shapes (all confirmed against real fixtures): an EnumVariantValue
 // (Color.green, a variant literal with no payload), a zero-payload
 // VariantConstruct (Color.red(), the parenthesized-call form of a plain
-// enum's payload-less variant), and a SymbolValue naming an enum-typed local
-// declared earlier in the body (emitted as its pebble_local_<symbolID> C name).
-// A variant literal emits its C enum constant pebble_variant_<member>, whose
-// value is the variant's ordinal in the enum's declared order. A
-// payload-carrying variant — an EnumVariantValue or VariantConstruct with one
-// or more children — is a tagged-union construction, which real source routes
-// to buildUnionConstruction instead; this rejection is defense for hand-built
-// IR where such a construction reaches this plain-enum builder. Anything else
-// is a clean
+// enum's payload-less variant), a SymbolValue naming an enum-typed local
+// declared earlier in the body (emitted as its pebble_local_<symbolID> C name),
+// a SourceAlias (transparent grouped-expression parens, e.g. `(2 as Color)`,
+// unwrapped to its single child), and — since CheckedIntegerToEnum support
+// landed — an integer cast to an enum (`5 as Color`, built by
+// buildCheckedIntegerToEnumExpr through the checked runtime primitive). A
+// variant literal emits its C enum constant
+// pebble_variant_<member>, whose value is the variant's ordinal in the enum's
+// declared order. A payload-carrying variant — an EnumVariantValue or
+// VariantConstruct with one or more children — is a tagged-union construction,
+// which real source routes to buildUnionConstruction instead; this rejection is
+// defense for hand-built IR where such a construction reaches this plain-enum
+// builder. Anything else is a clean
 // rejection, never a guessed lowering. This is the one shared builder for an
 // enum value wherever one is needed this slice: an enum-typed local's
 // declaration initializer, a reassignment's new value, an enum switch's
 // subject, and an enum comparison's operand.
-func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, locals map[symbol.SymbolID]localInfo) (string, error) {
+func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -5991,9 +6036,72 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, id tir.NodeID, loc
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not an enum-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.SourceAlias:
+		// A SourceAlias is transparent — it records grouped-expression parens
+		// (e.g. `(2 as Color) == Color.blue`) and nothing else — so it is
+		// unwrapped and its single child built, exactly as buildBoolExpr and
+		// buildFloatExpr already unwrap it.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
+		}
+		return buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
+	case tir.CheckedIntegerToEnum:
+		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression")
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
 	}
+}
+
+// buildCheckedIntegerToEnumExpr builds the C expression text for one integer-to-
+// enum cast (a tir.CheckedIntegerToEnum, e.g. `5 as Color`), the shared builder
+// behind every enum-value position the cast can occupy: an enum-typed local's
+// declaration initializer, a reassignment's new value, an enum switch's
+// subject, and an enum comparison's operand. The destination enum type is the
+// node's own Type (a plain enum — the checker only ever routes an integer to a
+// NominalEnum destination; a tagged-union destination is impossible), and the
+// emitted C is
+//
+//	(<destination enum C type>)pebble_rt_checked_int_to_enum((int64_t)(<child expr>), <variant_count>, <source loc>)
+//
+// The single child is the ordinary integer being cast, built by the integer
+// expression builder (buildExpr) at its own declared width, not by
+// buildEnumValue (which is for enum-typed operands). The variant count comes
+// from the destination enum's TypeDecl.Members length: Pebble enums are
+// ordinal, variant Members[i] gets the C enum value i, so an integer names a
+// real variant exactly when 0 <= value < variant_count — the runtime primitive
+// enforces exactly that bound (see pebble_rt.h), SAFE panicking out-of-range
+// and RELEASE returning the value unchecked.
+func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string) (string, error) {
+	if node.Kind != tir.CheckedIntegerToEnum {
+		return "", fmt.Errorf("%s contains a %s, want a CheckedIntegerToEnum", context, node.Kind)
+	}
+	if len(node.Children) != 1 {
+		return "", fmt.Errorf("%s contains a CheckedIntegerToEnum with %d children, want exactly one", context, len(node.Children))
+	}
+	info, err := resolveEnumInfo(unit, snapshot, node.Type)
+	if err != nil {
+		return "", fmt.Errorf("%s integer-to-enum cast: %v", context, err)
+	}
+	if len(info.variants) == 0 {
+		return "", fmt.Errorf("%s integer-to-enum cast targets enum %s, which has no declared variants", context, enumTypeName(node.Type))
+	}
+	child, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", fmt.Errorf("%s integer-to-enum cast references invalid child node %d", context, node.Children[0])
+	}
+	childType, ok := snapshot.Key(child.Type)
+	if !ok {
+		return "", fmt.Errorf("%s integer-to-enum cast child has invalid type %d", context, child.Type)
+	}
+	childWidth, ok := childType.Builtin()
+	if !ok || cType(childWidth) == "" {
+		return "", fmt.Errorf("%s integer-to-enum cast child has non-integer type %s", context, describeType(snapshot, child.Type))
+	}
+	childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+	if err != nil {
+		return "", fmt.Errorf("%s integer-to-enum cast child: %v", context, err)
+	}
+	return fmt.Sprintf("(%s)pebble_rt_checked_int_to_enum((int64_t)(%s), %d, %s)", enumTypeName(node.Type), childExpr, len(info.variants), buildSourceLoc(fileSet, node.Span)), nil
 }
 
 // buildUnionLocalDeclaration builds one tagged-union-typed local's declaration:
@@ -6558,11 +6666,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		if leftOperand.Type != rightOperand.Type {
 			return "", fmt.Errorf("entry function body if condition compares two enum values of different types %s and %s", enumTypeName(leftOperand.Type), enumTypeName(rightOperand.Type))
 		}
-		left, err := buildEnumValue(unit, snapshot, node.Children[0], locals)
+		left, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildEnumValue(unit, snapshot, node.Children[1], locals)
+		right, err := buildEnumValue(unit, snapshot, fileSet, node.Children[1], locals)
 		if err != nil {
 			return "", err
 		}
@@ -6962,7 +7070,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}
 	}
-	if !isWidth(snapshot, width, node.Type) {
+	if node.Kind != tir.CheckedIntegerToEnum && !isWidth(snapshot, width, node.Type) {
 		wantName, _ := builtinName(width)
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
 	}
@@ -7019,9 +7127,10 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		// emitted C is `(<destination C type>)(<enum value expression>)`. A
 		// C enum's value IS the variant's ordinal in declared order and casts to
 		// an integer type directly and trivially, so no intermediate step
-		// through the enum's own typedef is needed. The reverse direction —
-		// CheckedIntegerToEnum / OptionalIntegerToEnum — is out of scope and
-		// rejected elsewhere.
+		// through the enum's own typedef is needed. The reverse direction,
+		// CheckedIntegerToEnum, is implemented in this file's sibling case (and
+		// via buildCheckedIntegerToEnumExpr); only the optional-destination form,
+		// OptionalIntegerToEnum, remains out of scope.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with %d children, want exactly one", len(node.Children))
 		}
@@ -7033,11 +7142,37 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(destinationWidth) == "" {
 			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
-		childExpr, err := buildEnumValue(unit, snapshot, node.Children[0], locals)
+		childExpr, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
 		if err != nil {
 			return "", err
 		}
 		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
+	case tir.CheckedIntegerToEnum:
+		// An integer cast to an enum (`5 as Color`), lowered through the
+		// single canonical-width runtime primitive
+		// pebble_rt_checked_int_to_enum. The destination enum type is the
+		// node's own Type (an enum-typed value, exactly as the surrounding
+		// width gate bypasses it — the enum check precedes the width gate by
+		// design); its variant count is the destination enum's TypeDecl.Members
+		// length (variant Members[i] gets the C enum value i, so an integer
+		// names a real variant exactly when 0 <= value < variant_count). The
+		// single child is the ordinary integer being cast, built by the
+		// integer expression builder at its own declared width — not
+		// buildEnumValue, which is for enum-typed operands. The emitted C is
+		// `(<destination enum C type>)pebble_rt_checked_int_to_enum((int64_t)
+		// (<child expr>), <variant_count>, <source loc>)`: the source is
+		// widened to the primitive's int64_t input (sign-extending a negative
+		// signed source, zero-extending any unsigned source up to 63 bits, and
+		// bit-reinterpreting a u64 >= 2^63 as negative — all recovered
+		// correctly by the primitive's single unsigned bounds comparison), and
+		// the primitive's result is narrowed back to the enum type. SAFE mode
+		// panics out-of-range; RELEASE returns the value unchanged (unchecked,
+		// trusting the input). The reverse direction, OptionalIntegerToEnum
+		// (`5 as ?Color`), remains out of scope and is tracked separately.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedIntegerToEnum with %d children, want exactly one", len(node.Children))
+		}
+		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression")
 	case tir.FloatToInteger:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with %d children, want exactly one", len(node.Children))

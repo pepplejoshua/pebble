@@ -61,6 +61,15 @@
  *      configuration (RELEASE included) — same reasoning as division by
  *      zero and checked indexing, since there is no defined fallback for a
  *      null dereference in C.
+ *  17. Checked integer-to-enum conversion: in-range values (0, 1, 2 for a
+ *      3-variant enum) return unchanged at the int64_t primitive's width;
+ *      out-of-range and genuinely negative sources are mode-dependent —
+ *      SAFE panics with the arithmetic-overflow kind in forked children
+ *      (the same verify harness as check 7), RELEASE returns the value
+ *      unchanged with no check. A u64 source at or above 2^63, which the
+ *      compiler bit-reinterprets to a negative int64_t (INT64_MIN), is
+ *      also exercised at both modes: SAFE must reject it (its uint64_t
+ *      reinterpretation recovers the huge magnitude), RELEASE returns it.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -223,6 +232,42 @@ static void trigger_float_to_integer_overflow(void) {
 
 static void trigger_float_to_integer_nan(void) {
     (void)pebble_rt_checked_f32_to_i64(NAN, (PebbleSourceLoc){0});
+}
+#endif
+
+/* Checked integer-to-enum conversion: the compiler emits the source value cast
+ * to int64_t before calling (sign-extending a negative signed source,
+ * zero-extending an unsigned source below 2^63, bit-reinterpreting a u64 at or
+ * above 2^63 as negative), and the primitive's single unsigned comparison
+ * (uint64_t)value < (uint64_t)variant_count validates it. In-range values for
+ * a 3-variant enum are ordinals 0, 1, 2 — each returned unchanged. The
+ * boundary (value == variant_count) and negative sources are exercised
+ * per-mode below.
+ */
+static void test_checked_int_to_enum_normal(void) {
+    assert(pebble_rt_checked_int_to_enum(0, 3, (PebbleSourceLoc){0}) == 0);
+    assert(pebble_rt_checked_int_to_enum(1, 3, (PebbleSourceLoc){0}) == 1);
+    assert(pebble_rt_checked_int_to_enum(2, 3, (PebbleSourceLoc){0}) == 2);
+    /* A larger variant count, and an in-range value near its boundary. */
+    assert(pebble_rt_checked_int_to_enum(7, 8, (PebbleSourceLoc){0}) == 7);
+}
+
+#if defined(PEBBLE_RT_MODE_SAFE)
+static void trigger_int_to_enum_out_of_range(void) {
+    (void)pebble_rt_checked_int_to_enum(5, 3, (PebbleSourceLoc){0});
+}
+
+static void trigger_int_to_enum_negative(void) {
+    (void)pebble_rt_checked_int_to_enum(-1, 3, (PebbleSourceLoc){0});
+}
+
+/* A u64 source at or above 2^63 (the compiler bit-reinterprets it to a
+ * negative int64_t; INT64_MIN is the bit pattern of u64 2^63). Its uint64_t
+ * reinterpretation recovers the huge magnitude, so it must fail the bounds
+ * check just like a genuinely negative source.
+ */
+static void trigger_int_to_enum_huge_u64(void) {
+    (void)pebble_rt_checked_int_to_enum(INT64_MIN, 3, (PebbleSourceLoc){0});
 }
 #endif
 
@@ -747,6 +792,9 @@ int main(void) {
     test_float_to_integer_normal();
     printf("ok: checked float-to-integer normal results and boundaries\n");
 
+    test_checked_int_to_enum_normal();
+    printf("ok: checked integer-to-enum normal results\n");
+
     if (verify_panic_reports_location() != 0) {
         fprintf(stderr, "smoke_test: panic location-report subprocess check FAILED\n");
         return 1;
@@ -896,6 +944,12 @@ int main(void) {
         fprintf(stderr, "smoke_test: checked shift panic subprocess check FAILED\n");
         return 1;
     }
+    if (verify_checked_overflow_panics("integer-to-enum cast out of range", trigger_int_to_enum_out_of_range) != 0 ||
+        verify_checked_overflow_panics("integer-to-enum negative source", trigger_int_to_enum_negative) != 0 ||
+        verify_checked_overflow_panics("integer-to-enum huge u64 source", trigger_int_to_enum_huge_u64) != 0) {
+        fprintf(stderr, "smoke_test: checked integer-to-enum panic subprocess check FAILED\n");
+        return 1;
+    }
     printf("ok: checked arithmetic overflow panics in subprocess\n");
 #else
     /* RELEASE: overflow wraps to the operation's two's-complement bit
@@ -936,6 +990,17 @@ int main(void) {
         pebble_rt_checked_shr_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) != -1 ||
         pebble_rt_checked_shl_i32(1, -1, (PebbleSourceLoc){0}) != INT32_MIN) {
         fprintf(stderr, "smoke_test: checked shift did not mask the count in RELEASE\n");
+        return 1;
+    }
+    /* RELEASE: the integer-to-enum bounds check is skipped entirely, so an
+     * out-of-range value, a genuinely negative source, and a huge u64
+     * (reinterpreted as INT64_MIN) all return the value unchanged with no
+     * panic — the established release-mode "trust the input" convention.
+     */
+    if (pebble_rt_checked_int_to_enum(5, 3, (PebbleSourceLoc){0}) != 5 ||
+        pebble_rt_checked_int_to_enum(-1, 3, (PebbleSourceLoc){0}) != -1 ||
+        pebble_rt_checked_int_to_enum(INT64_MIN, 3, (PebbleSourceLoc){0}) != INT64_MIN) {
+        fprintf(stderr, "smoke_test: integer-to-enum did not skip the bounds check in RELEASE\n");
         return 1;
     }
     printf("ok: checked arithmetic wraps in RELEASE\n");

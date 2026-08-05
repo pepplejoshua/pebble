@@ -282,6 +282,39 @@ int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc) {
     return (int64_t)value;
 }
 
+/* Integer-to-enum conversion (the compiler's CheckedIntegerToEnum node,
+ * `5 as Color`): validates that the integer names a real variant of the
+ * destination enum. Pebble enums are ordinal — variant Members[i] gets the C
+ * enum value i — so an integer names a variant exactly when
+ * 0 <= value < variant_count, and the validation is just a bounds check. A
+ * single int64_t-based primitive serves every source integer width and
+ * signedness: the compiler emits the source cast to int64_t before calling,
+ * which sign-extends a genuinely negative signed source, zero-extends an
+ * unsigned source below 2^63, and bit-reinterprets a u64 source at or above
+ * 2^63 as a negative int64_t. The one comparison
+ * `(uint64_t)value < (uint64_t)variant_count` then handles all of them:
+ * reinterpreting a negative int64_t as uint64_t recovers the correct large
+ * magnitude via two's-complement bit patterns, so a genuinely negative signed
+ * source AND a genuinely huge unsigned source both correctly fail the bounds
+ * check through the same single unsigned comparison, with no UB (unsigned
+ * reinterpretation is well-defined in C). variant_count is always a small
+ * nonnegative compile-time constant, the destination enum's variant count.
+ * SAFE: an out-of-range value panics with PEBBLE_PANIC_ARITHMETIC_OVERFLOW,
+ * the same panic every other checked integer primitive raises. RELEASE:
+ * returns value unchanged, no check — trusting the input, matching the
+ * release-mode convention for checked primitives above.
+ */
+int64_t pebble_rt_checked_int_to_enum(int64_t value, int64_t variant_count, PebbleSourceLoc loc) {
+    if ((uint64_t)value >= (uint64_t)variant_count) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("integer-to-enum cast out of range", loc);
+#else
+        (void)loc;
+#endif
+    }
+    return value;
+}
+
 /* ---- checked division and modulo -------------------------------------------
  * Defined once for both modes, per the header contract:
  *

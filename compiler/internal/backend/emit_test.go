@@ -8004,6 +8004,125 @@ func TestEmitEnumToIntegerWritesC(t *testing.T) {
 	}
 }
 
+// --- 10.46: integer-to-enum casts (CheckedIntegerToEnum) ---
+
+// emitAndRunRelease drives one .peb entry source through buildFixture, Emit,
+// and an end-to-end cc compile + run in PEBBLE_RT_MODE_RELEASE — the release
+// twin of emitAndRun (which compiles in SAFE mode), so a checked primitive's
+// mode-dependent behavior can be asserted at both configurations.
+func emitAndRunRelease(t *testing.T, sourceText string, wantCode int, wantAbnormal bool) {
+	t.Helper()
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, wantCode, wantAbnormal, false)
+}
+
+func TestEmitCheckedIntegerToEnumOutOfRangeSafePanics(t *testing.T) {
+	// The minimal repro: `5 as Color` where Color has three variants (red,
+	// green, blue, ordinals 0-2) — 5 names no real variant. Compiled in
+	// PEBBLE_RT_MODE_SAFE, the cast must panic through the runtime's checked
+	// primitive before the enum value is ever used, so the process terminates
+	// abnormally rather than exiting 0. The cast's destination enum type is
+	// declared only as a local's type (never constructed or switched on), so
+	// this also proves the enum typedef is still emitted for a cast-reached
+	// enum.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 5 as Color;\nreturn 0;\n}", false, 0, true)
+}
+
+func TestEmitCheckedIntegerToEnumOutOfRangeReleaseDoesNotPanic(t *testing.T) {
+	// The same `5 as Color` in PEBBLE_RT_MODE_RELEASE: the bounds check is
+	// skipped entirely (release trusts the input), so the cast produces some
+	// enum value and the program runs to its return 0. Which enum value it is
+	// is explicitly NOT asserted — release is unchecked, so any value is
+	// acceptable; the assertion is only that the program did not crash.
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 5 as Color;\nreturn 0;\n}", 0, false)
+}
+
+func TestEmitCheckedIntegerToEnumValidRoundTripsSafe(t *testing.T) {
+	// An in-range cast, `1 as Color` (ordinal 1, green), verified end to end
+	// by casting it back with EnumToInteger: the round-trip value must be 1 in
+	// SAFE mode.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 1 as Color;\nreturn c as i32;\n}", false, 1, false)
+}
+
+func TestEmitCheckedIntegerToEnumValidRoundTripsRelease(t *testing.T) {
+	// The same in-range `1 as Color` round trip in RELEASE mode: the unchecked
+	// cast passes 1 through, cast back to i32 it is still 1.
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 1 as Color;\nreturn c as i32;\n}", 1, false)
+}
+
+func TestEmitCheckedIntegerToEnumNegativeSafePanics(t *testing.T) {
+	// `-1 as Color`: a genuinely negative signed source. The backend widens it
+	// to int64_t (sign-extending), and the primitive's unsigned comparison
+	// (uint64_t)(-1) >= (uint64_t)3 must reject it — the exact case the
+	// unsigned-comparison design exists to get right. SAFE mode panics.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = -1 as Color;\nreturn 0;\n}", false, 0, true)
+}
+
+func TestEmitCheckedIntegerToEnumNegativeReleaseDoesNotPanic(t *testing.T) {
+	// The same `-1 as Color` in RELEASE mode: no bounds check, so the program
+	// runs to its return 0 instead of panicking.
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = -1 as Color;\nreturn 0;\n}", 0, false)
+}
+
+func TestEmitCheckedIntegerToEnumFromLocalSafePanics(t *testing.T) {
+	// A source value from a local (not a literal): `n as Color` where n is an
+	// i32 local holding 5 — out of range for a 3-variant enum. The local read
+	// feeds the same checked cast; SAFE mode panics.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet n i32 = 5;\nlet c Color = n as Color;\nreturn 0;\n}", false, 0, true)
+}
+
+func TestEmitCheckedIntegerToEnumFromLocalValidRoundTripsSafe(t *testing.T) {
+	// An in-range local source: n = 2, `n as Color` is ordinal 2 (blue),
+	// round-tripped back through EnumToInteger to 2.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet n i32 = 2;\nlet c Color = n as Color;\nreturn c as i32;\n}", false, 2, false)
+}
+
+func TestEmitCheckedIntegerToEnumStorePositionCompilesAndRuns(t *testing.T) {
+	// A store-position cast: `c = 2 as Color;` reassigns an already-declared
+	// enum local (buildStoreCore's enum branch routes the value through
+	// buildEnumValue, which now accepts the cast), so the store lands ordinal 2
+	// (blue) and the round trip returns 2.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nc = 2 as Color;\nreturn c as i32;\n}", false, 2, false)
+}
+
+func TestEmitCheckedIntegerToEnumComparisonPositionCompilesAndRuns(t *testing.T) {
+	// A comparison-position cast: `(2 as Color) == Color.blue` compares the
+	// cast result against a variant literal (buildComparison's enum branch),
+	// which is true since the cast produces ordinal 2.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nif (2 as Color) == Color.blue { return 1; } else { return 0; }\n}", false, 1, false)
+}
+
+func TestEmitCheckedIntegerToEnumWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the cast lowers to
+	// `(<enum typedef>)pebble_rt_checked_int_to_enum((int64_t)(<child>),
+	// <variant_count>, <loc>)` — the source widened to the primitive's int64_t
+	// input, the variant count from the destination enum's 3 declared members,
+	// and the result narrowed back to the enum typedef.
+	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 1 as Color;\nreturn c as i32;\n}")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	want := "(" + enumTypeName(enumType) + ")pebble_rt_checked_int_to_enum((int64_t)(1), 3, (PebbleSourceLoc)"
+	if !strings.Contains(out, want) {
+		t.Errorf("emitted C missing the integer-to-enum cast call %q:\n%s", want, out)
+	}
+	for _, want := range []string{
+		"typedef enum {",
+		"} " + enumTypeName(enumType) + ";",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // unionFixture builds one .peb source through the full check pipeline and
 // resolves the tagged-union type's TypeID and its variant symbols in declared
 // order, reusing enumFixture's exact type-resolution mechanism (a tagged union
