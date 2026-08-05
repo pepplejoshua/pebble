@@ -131,6 +131,40 @@ int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
     return result;
 }
 
+int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 32) {
+        pebble_rt_overflow_panic("i32 shift amount out of range", loc);
+    }
+    /* Left-shifting a negative signed value is undefined behavior in C
+     * regardless of whether amount is in range (C11 6.5.7p4) -- shift as
+     * unsigned (defined for every bit pattern) and reinterpret the result,
+     * matching the RELEASE-mode path below exactly. */
+    return (int32_t)((uint32_t)value << (uint32_t)amount);
+}
+
+int32_t pebble_rt_checked_shr_i32(int32_t value, int32_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 32) {
+        pebble_rt_overflow_panic("i32 shift amount out of range", loc);
+    }
+    return value >> amount;
+}
+
+int64_t pebble_rt_checked_shl_i64(int64_t value, int64_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 64) {
+        pebble_rt_overflow_panic("i64 shift amount out of range", loc);
+    }
+    /* See pebble_rt_checked_shl_i32: left-shifting a negative signed value
+     * is UB in C regardless of amount being in range; shift unsigned. */
+    return (int64_t)((uint64_t)value << (uint64_t)amount);
+}
+
+int64_t pebble_rt_checked_shr_i64(int64_t value, int64_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 64) {
+        pebble_rt_overflow_panic("i64 shift amount out of range", loc);
+    }
+    return value >> amount;
+}
+
 #else /* PEBBLE_RT_MODE_RELEASE */
 
 int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
@@ -171,6 +205,27 @@ int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
     (void)loc;
     return (int64_t)(0u - (uint64_t)a);
+}
+
+int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int32_t)((uint32_t)value << ((uint32_t)amount & 31u));
+}
+
+int32_t pebble_rt_checked_shr_i32(int32_t value, int32_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return value >> ((uint32_t)amount & 31u);
+}
+
+int64_t pebble_rt_checked_shl_i64(int64_t value, int64_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    amount = (int64_t)((uint64_t)amount & 63u);
+    return (int64_t)((uint64_t)value << (uint64_t)amount);
+}
+
+int64_t pebble_rt_checked_shr_i64(int64_t value, int64_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return value >> ((uint64_t)amount & 63u);
 }
 
 #endif /* PEBBLE_RT_MODE_SAFE / PEBBLE_RT_MODE_RELEASE */

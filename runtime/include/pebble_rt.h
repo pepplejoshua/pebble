@@ -171,6 +171,16 @@ int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc);
 
+/* ---- checked bit shifts -----------------------------------------------------
+ * Shift counts outside [0, 32) or [0, 64) are invalid. SAFE mode panics with
+ * PEBBLE_PANIC_ARITHMETIC_OVERFLOW; RELEASE mode masks the count to the
+ * operand width before shifting, matching native hardware shift behavior.
+ */
+int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc);
+int32_t pebble_rt_checked_shr_i32(int32_t value, int32_t amount, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_shl_i64(int64_t value, int64_t amount, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_shr_i64(int64_t value, int64_t amount, PebbleSourceLoc loc);
+
 /* ---- checked float-to-integer conversion -----------------------------------
  * Converts f32/f64 values to i32/i64 after checking for NaN and values outside
  * the destination's representable range. SAFE mode panics with

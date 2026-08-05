@@ -195,6 +195,13 @@ static void test_checked_arithmetic_normal(void) {
     assert(pebble_rt_checked_mod_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) == 0);
 }
 
+static void test_checked_shift_normal(void) {
+    assert(pebble_rt_checked_shl_i32(3, 4, (PebbleSourceLoc){0}) == 48);
+    assert(pebble_rt_checked_shr_i32(48, 4, (PebbleSourceLoc){0}) == 3);
+    assert(pebble_rt_checked_shl_i64(3, 4, (PebbleSourceLoc){0}) == 48);
+    assert(pebble_rt_checked_shr_i64(48, 4, (PebbleSourceLoc){0}) == 3);
+}
+
 static void test_float_to_integer_normal(void) {
     assert(pebble_rt_checked_f32_to_i32(42.75f, (PebbleSourceLoc){0}) == 42);
     assert(pebble_rt_checked_f64_to_i32(-42.75, (PebbleSourceLoc){0}) == -42);
@@ -515,6 +522,14 @@ static void trigger_div_overflow_i64(void) {
     (void)pebble_rt_checked_div_i64(INT64_MIN, -1, (PebbleSourceLoc){0});
 }
 
+static void trigger_shift_out_of_range(void) {
+    (void)pebble_rt_checked_shl_i32(1, 32, (PebbleSourceLoc){0});
+}
+
+static void trigger_shift_negative(void) {
+    (void)pebble_rt_checked_shr_i64(1, -1, (PebbleSourceLoc){0});
+}
+
 #endif /* PEBBLE_RT_MODE_SAFE */
 
 /* Same shape as verify_panic_aborts: fork a child, capture its stderr
@@ -726,6 +741,9 @@ int main(void) {
     test_checked_arithmetic_normal();
     printf("ok: checked arithmetic normal results\n");
 
+    test_checked_shift_normal();
+    printf("ok: checked shift normal results\n");
+
     test_float_to_integer_normal();
     printf("ok: checked float-to-integer normal results and boundaries\n");
 
@@ -873,6 +891,11 @@ int main(void) {
         fprintf(stderr, "smoke_test: float-to-i64 NaN subprocess check FAILED\n");
         return 1;
     }
+    if (verify_checked_overflow_panics("i32 shift amount out of range", trigger_shift_out_of_range) != 0 ||
+        verify_checked_overflow_panics("i64 negative shift amount", trigger_shift_negative) != 0) {
+        fprintf(stderr, "smoke_test: checked shift panic subprocess check FAILED\n");
+        return 1;
+    }
     printf("ok: checked arithmetic overflow panics in subprocess\n");
 #else
     /* RELEASE: overflow wraps to the operation's two's-complement bit
@@ -907,6 +930,12 @@ int main(void) {
         pebble_rt_checked_f64_to_i32(NAN, (PebbleSourceLoc){0}) != INT32_MIN ||
         pebble_rt_checked_f64_to_i64(9223372036854775808.0, (PebbleSourceLoc){0}) != INT64_MIN) {
         fprintf(stderr, "smoke_test: float-to-integer did not return indefinite sentinel in RELEASE\n");
+        return 1;
+    }
+    if (pebble_rt_checked_shl_i32(1, 35, (PebbleSourceLoc){0}) != 8 ||
+        pebble_rt_checked_shr_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) != -1 ||
+        pebble_rt_checked_shl_i32(1, -1, (PebbleSourceLoc){0}) != INT32_MIN) {
+        fprintf(stderr, "smoke_test: checked shift did not mask the count in RELEASE\n");
         return 1;
     }
     printf("ok: checked arithmetic wraps in RELEASE\n");

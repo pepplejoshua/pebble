@@ -2517,6 +2517,39 @@ func TestEmitCompoundOverflowStillAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var i i32 = 2147483647; i += 1; return i; }", false, 0, true)
 }
 
+func TestEmitCheckedShiftsCompileAndRun(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { return (3 << 4) >> 2; }", false, 12, false)
+	emitAndRun(t, "fn main() i64 { return (3 << 4) >> 2; }", false, 12, false)
+}
+
+func TestEmitCheckedShiftAcceptsNarrowerAmount(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { var amount u8 = 2; return 1 << amount; }", false, 4, false)
+}
+
+func TestEmitCheckedShiftOutOfRangeAbortsInSafeMode(t *testing.T) {
+	emitAndRun(t, "fn main() i32 { return 1 << 32; }", false, 0, true)
+}
+
+func TestEmitCheckedShiftMasksCountInReleaseMode(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 1 << 35; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 8, false, false)
+}
+
+func TestEmitCheckedShiftNegativeCountMasksInReleaseMode(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var one i32 = 1; var amount i32 = -1; return (one << amount) >> 31; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 255, false, false)
+}
+
 func TestEmitPostfixIncrementOverflowStillAborts(t *testing.T) {
 	// A postfix i++ overflows identically to i += 1 (it IS i += 1 at the IR
 	// level): 2147483647++ must panic through pebble_rt_checked_add_i32 in

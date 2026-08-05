@@ -7038,6 +7038,38 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", err
 		}
 		return helper + "(" + left + ", " + right + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
+	case tir.CheckedShift:
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedShift with %d operand(s), want exactly two", len(node.Children))
+		}
+		helper, ok := checkedShiftHelper(node.Operator, width)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedShift with operator %s, want << or >>", node.Operator)
+		}
+		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		amountNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression references invalid shift amount node %d", node.Children[1])
+		}
+		amountType, ok := snapshot.Key(amountNode.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body shift amount has invalid type %d", amountNode.Type)
+		}
+		amountWidth, ok := amountType.Builtin()
+		if !ok || cType(amountWidth) == "" {
+			return "", fmt.Errorf("entry function body shift amount has non-integer type %s", describeType(snapshot, amountNode.Type))
+		}
+		amount, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, amountWidth)
+		if err != nil {
+			return "", err
+		}
+		if amountWidth != width {
+			amount = "(" + cType(width) + ")(" + amount + ")"
+		}
+		return helper + "(" + left + ", " + amount + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.BinaryValue:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body expression contains a BinaryValue with %d operand(s), want exactly two", len(node.Children))
@@ -8656,6 +8688,23 @@ func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (stri
 		return "", false
 	}
 	return base + "_" + checkedSuffix(width), true
+}
+
+func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, bool) {
+	var base string
+	switch op {
+	case syntax.ShiftLeft:
+		base = "pebble_rt_checked_shl"
+	case syntax.ShiftRight:
+		base = "pebble_rt_checked_shr"
+	default:
+		return "", false
+	}
+	suffix := checkedSuffix(width)
+	if suffix == "" {
+		return "", false
+	}
+	return base + "_" + suffix, true
 }
 
 // isWidth reports whether id is the snapshot's builtin for the entry's
