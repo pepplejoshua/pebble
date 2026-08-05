@@ -87,8 +87,15 @@ repeated here.
       `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
       v2's current behavior — explicit naming stays required, no implicit
       `iter` default. Not tracked as a gap.
-- [ ] **CORRECTED, much bigger than originally scoped: function types have
-      NO real backend representation anywhere, not just in locals.**
+- [ ] **DEFERRED TO LAST (explicit standing instruction, 2026-08-04): work
+      through every other tracker item first. When this is finally
+      scoped, start by reading v1's C prototype implementation
+      (`src/codegen.c`/`src/type.c` — believed to represent function
+      values as C function pointers) as a reference, but do not port it
+      literally — the goal is a v2 design that is better and more
+      consistent than v1's, not parity-by-copy.**
+      CORRECTED, much bigger than originally scoped: function types have
+      NO real backend representation anywhere, not just in locals.
       Original entry claimed struct fields already worked ("confirmed
       throughout `std/hmap.peb`/`std/set.peb`") — that claim was wrong,
       based only on the CHECKER accepting those files
