@@ -3185,12 +3185,12 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 // CompoundStore, or a discarded ExpressionStatement initializer are all
 // reachable from real source but out of scope and cleanly rejected, matching
 // the backend's rule that only an Initialize declares a local. The declared
-// local must be of the entry's resolved width or bool — the same two scalar
-// grammars a bare Initialize supports — validated and emitted by
-// buildScalarInitializeCore, which also records the local in the caller's loop
-// scope so the condition, update, and body can reference it. Returns the
-// clause text and the declared symbol (so buildFor can emit the (void) cast
-// as the body's first statement).
+// local may be of any integer width (not just the entry's resolved width),
+// bool, or char — the same scalar grammars a bare Initialize supports —
+// validated and emitted by buildScalarInitializeCore, which also records the
+// local in the caller's loop scope so the condition, update, and body can
+// reference it. Returns the clause text and the declared symbol (so buildFor
+// can emit the (void) cast as the body's first statement).
 func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, symbol.SymbolID, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
@@ -3238,41 +3238,34 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	return buildStoreCore(unit, snapshot, fileSet, statement, scope, "entry function body block for loop update", width, unions)
 }
 
-// buildScalarInitializeCore builds the declaration text for a scalar local of
-// the entry's resolved width or bool, WITHOUT the leading indent and WITHOUT
-// the trailing `;` (and without the trailing (void) cast) a full block-level
+// buildScalarInitializeCore builds the declaration text for a scalar local at
+// its own declared builtin type — any integer width (not just the entry's
+// resolved width), bool, or char — WITHOUT the leading indent and WITHOUT the
+// trailing `;` (and without the trailing (void) cast) a full block-level
 // declaration statement gets: `<cType> pebble_local_<symbol> = <expr>`. It is
 // the scalar tail of the Initialize dispatch, shared by buildLeadingStatement
 // (which prepends the indent and appends `;` plus the (void) cast to form the
 // full statement) and buildForInitClause (which uses the core as the
 // for-header init clause, where the for statement's own header syntax supplies
-// the terminating `;`), so the entry's-width-or-bool validation, the
-// buildExpr/buildBoolExpr dispatch, and the scope recording live in exactly
-// one place. The initializer value must carry exactly the entry's resolved
-// width (built by buildExpr) or the bool builtin (built by buildBoolExpr);
-// anything else — a tuple/array/optional/struct/str local, or the other
-// integer width — is a clean rejection naming the type, matching
+// the terminating `;`), so the integer-width/bool/char validation, the
+// buildExpr/buildBoolExpr/buildCharOperand dispatch, and the scope recording
+// live in exactly one place. An integer local is emitted at its own declared
+// width (cType(kind)) and its initializer is built by buildExpr at that same
+// width — so e.g. an i64 local inside an i32 function is an int64_t whose
+// initializer is built at i64, not i32; a bool local is emitted as a C bool
+// (built by buildBoolExpr); a char local is emitted as the fixed C int32_t
+// (built by buildCharOperand). Anything else — a tuple/array/optional/struct/
+// str local — is a clean rejection naming the type, matching
 // buildLeadingStatement's own rule. On success the local is recorded in scope
-// (localInfo{kind: width} or localInfo{kind: types.Bool}) so a later
-// reference or reassignment resolves against the same type.
+// (localInfo{kind: kind} for an integer, localInfo{kind: types.Bool} for a
+// bool, or localInfo{isChar: true} for a char) so a later reference or
+// reassignment resolves against the same type.
 func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 	if !ok {
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s, bool, or char", context, describeType(snapshot, initValue.Type), wantName(width))
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, or char", context, describeType(snapshot, initValue.Type))
 	}
 	switch kind {
-	case width:
-		// An integer local: emitted at the entry's width, exactly as
-		// buildLeadingStatement emits it (buildExpr re-checks every node in
-		// the initializer is that width). The scope entry records the width so
-		// a later reference or reassignment is validated and emitted as an
-		// integer.
-		initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, width)
-		if err != nil {
-			return "", err
-		}
-		scope[statement.Symbol] = localInfo{kind: width}
-		return fmt.Sprintf("%s pebble_local_%d = %s", cType(width), statement.Symbol, initExpr), nil
 	case types.Bool:
 		// A bool local: emitted as a C bool, its value built by buildBoolExpr
 		// (the bool grammar is genuinely different from the integer one).
@@ -3295,9 +3288,26 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		}
 		scope[statement.Symbol] = localInfo{isChar: true}
 		return fmt.Sprintf("int32_t pebble_local_%d = %s", statement.Symbol, initExpr), nil
-	default:
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want %s, bool, or char", context, describeType(snapshot, initValue.Type), wantName(width))
 	}
+	if cType(kind) == "" {
+		// Anything that is not bool/char and not an integer builtin the
+		// backend emits (str, void) is a clean rejection naming the type,
+		// matching buildLeadingStatement's own rule.
+		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, or char", context, describeType(snapshot, initValue.Type))
+	}
+	// An integer local of any builtin width, not just the entry's own:
+	// emitted at the local's own declared width (cType(kind)), so e.g. an
+	// i64 local inside an i32 function is an int64_t, and its initializer is
+	// built by buildExpr at that same width (buildExpr re-checks every node
+	// in the initializer is the local's own width). The scope entry records
+	// the local's own width so a later reference or reassignment is
+	// validated and emitted as that width's integer.
+	initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{kind: kind}
+	return fmt.Sprintf("%s pebble_local_%d = %s", cType(kind), statement.Symbol, initExpr), nil
 }
 
 // buildStoreCore builds the value text for a reassignment of a local already
@@ -3312,13 +3322,15 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // or, since 10.39, a CheckedIndexPlace naming an element of an array or
 // slice local (`arr[i] = v;` / `s[i] = v;`), and the new value is validated
 // and emitted against the resolved place type — the local's own declared type
-// for a StoragePlace (the entry's width via buildExpr, bool via buildBoolExpr,
-// or, since 10.36, str — a new value that must be a string literal, emitted
-// as a whole-struct PebbleStr reassignment; see the isStr branch below), or
-// the resolved element type for a CheckedIndexPlace (the entry's width via
-// buildExpr or bool via buildBoolExpr, exactly as a scalar value position
-// dispatches), mirroring buildLeadingStatement's Store case exactly, including
-// its rejections of a Store targeting a tuple/array/optional/struct local.
+// for a StoragePlace (the local's own integer width via buildExpr — an i64
+// local reassigned inside an i32 function builds its new value at i64 — bool
+// via buildBoolExpr, or, since 10.36, str — a new value that must be a string
+// literal, emitted as a whole-struct PebbleStr reassignment; see the isStr
+// branch below), or the resolved element type for a CheckedIndexPlace (the
+// entry's width via buildExpr or bool via buildBoolExpr, exactly as a scalar
+// value position dispatches), mirroring buildLeadingStatement's Store case
+// exactly, including its rejections of a Store targeting a
+// tuple/array/optional/struct local.
 func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(statement.Children) != 2 {
 		return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
@@ -3370,13 +3382,15 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
 	}
 	// The new value is validated and emitted against the local's own declared
-	// type: the entry's width for an integer local (buildExpr), the bool
-	// grammar for a bool local (buildBoolExpr). A value of the wrong type — a
-	// bool assigned to an integer local, or an integer assigned to a bool
-	// local — is rejected by the appropriate builder.
+	// type: the local's own integer width for an integer local (buildExpr at
+	// that width — an i64 local reassigned inside an i32 function builds its
+	// new value at i64, not i32), the bool grammar for a bool local
+	// (buildBoolExpr). A value of the wrong type — a bool assigned to an
+	// integer local, or an integer assigned to a bool local — is rejected by
+	// the appropriate builder.
 	switch targetInfo.kind {
-	case width:
-		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+	case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
+		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
 		if err != nil {
 			return "", err
 		}

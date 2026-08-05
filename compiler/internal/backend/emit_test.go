@@ -3509,22 +3509,24 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitI64RejectsI32Local(t *testing.T) {
-	// An i32 local inside an i64 entry is a legal, well-typed Pebble program
-	// the checker builds (the local is simply never returned), but this backend
-	// emits exactly one width per entry and has no cast/coercion lowering, so
-	// it must be rejected with a clear width-mismatch error naming the wanted
-	// width — never crashed on, and never silently emitted as an i64 local.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i64 { let x i32 = 1; return 2; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i64")
+func TestEmitI64NowDeclaresI32Local(t *testing.T) {
+	// Stage 2's fix inverted this test's original assertion: an i32 local
+	// inside an i64 entry was previously a clean width-mismatch rejection and
+	// is now a legal, supported declaration (the local's own declared width,
+	// not the entry's, governs its C type). The fixture declares the i32
+	// local and returns the i64 constant, never leaking the i32 value without
+	// a cast.
+	emitAndRun(t, "fn main() i64 { let x i32 = 1; return 2; }", false, 2, false)
 }
 
-func TestEmitI32RejectsI64Local(t *testing.T) {
-	// The reverse direction: an i64 local inside an i32 entry is likewise a
-	// legal program the checker builds and a clean width-mismatch rejection
-	// for this backend.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let x i64 = 1; return 2; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+func TestEmitI32NowDeclaresI64Local(t *testing.T) {
+	// Stage 2's fix inverted this test's original assertion: an i64 local
+	// inside an i32 entry was previously a clean width-mismatch rejection and
+	// is now a legal, supported declaration (the local's own declared width,
+	// not the entry's, governs its C type and its initializer's ambient build
+	// width). The fixture declares the i64 local and returns the i32 constant,
+	// never leaking the i64 value without a cast.
+	emitAndRun(t, "fn main() i32 { let x i64 = 1; return 2; }", false, 2, false)
 }
 
 func TestEmitHelperPlusHelperCompilesAndRuns(t *testing.T) {
@@ -3699,6 +3701,67 @@ func TestEmitCastsI32HelperResultToI64Main(t *testing.T) {
 
 func TestEmitCastsU32HelperResultToI32Main(t *testing.T) {
 	emitAndRun(t, "fn helper() u32 { return 7; } fn main() i32 { return helper() as i32; }", false, 7, false)
+}
+
+func TestEmitDeclaresI64LocalInsideI32Function(t *testing.T) {
+	// Stage 2's minimal repro: a local declared at a different integer width
+	// than its own function. var y i64 = 100; inside an i32-returning
+	// function is a plain i64 local used only internally (never returned or
+	// leaked without a cast): buildScalarInitializeCore emits it as a C
+	// int64_t (the local's own declared width, not the entry's i32), and the
+	// function returns x unchanged as the exit code.
+	emitAndRun(t, "fn main() i32 { var x i32 = 5; var y i64 = 100; return x; }", false, 5, false)
+}
+
+func TestEmitI64LocalsArithmeticInsideI32Function(t *testing.T) {
+	// A local of the other width actually used in arithmetic with other
+	// locals of that same other width, not just declared and ignored: two
+	// i64 locals inside an i32 function are added together at i64 (buildExpr
+	// builds both operands at the locals' own i64 width, lowering through the
+	// i64 checked-arithmetic helper) and the explicitly-cast result is
+	// returned as the exit code.
+	emitAndRun(t, "fn main() i32 { var a i64 = 21; var b i64 = 21; return (a + b) as i32; }", false, 42, false)
+}
+
+func TestEmitReassignsI64LocalInsideI32Function(t *testing.T) {
+	// A reassignment (a Store), not just the initial Initialize: an i64
+	// local declared inside an i32 function is reassigned later in the same
+	// body. buildStoreCore must build the new value at the local's own
+	// recorded i64 width (not the entry's i32) and emit
+	// `pebble_local_<sym> = <value>`; the reassigned value is then cast back
+	// to i32 for the exit code.
+	emitAndRun(t, "fn main() i32 { var y i64 = 100; y = 7; return y as i32; }", false, 7, false)
+}
+
+func TestEmitDeclaresU32LocalInsideI32Function(t *testing.T) {
+	// A uint-family local (u32, not the i32/i64 pair) to confirm the fix is
+	// generic across integer widths rather than hardcoded: a u32 local is
+	// declared and then reassigned inside an i32 function, its value cast
+	// back to i32 for the exit code. (Arithmetic on u32 is deliberately
+	// avoided: the backend's checked-arithmetic helpers only cover i32/i64.)
+	emitAndRun(t, "fn main() i32 { var a u32 = 40; a = 2; return a as i32; }", false, 2, false)
+}
+
+func TestEmitRejectsBareI64LocalReferenceInI32Context(t *testing.T) {
+	// Regression: a bare (uncast) reference to a mismatched-width local used
+	// where the width matters must still be a clean rejection, never a silent
+	// coercion. The checker accepts `return y;` (an i64 local from an
+	// i32-returning function), but the backend's buildExpr width gate rejects
+	// the SymbolValue's own resolved i64 type against the ambient i32,
+	// naming the i32 it wanted.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var y i64 = 100; return y; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+}
+
+func TestEmitI64ForInitClauseInsideI32FunctionCompilesAndRuns(t *testing.T) {
+	// The for-header initializer reuses buildScalarInitializeCore, so the
+	// mismatched-width local fix covers it automatically: a classic for loop
+	// whose init clause declares an i64 local inside an i32 function. The i64
+	// local is only ever referenced through an explicit `as i32` cast (the
+	// bare reference would fail the entry-width gate, as the test above
+	// proves), and the loop accumulates 21 three times into an i32 counter.
+	// Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; var i i32 = 0; for var limit i64 = 21; i < 3; i = i + 1 { total = total + (limit as i32); } return total; }", false, 63, false)
 }
 
 func TestEmitRejectsSelfRecursion(t *testing.T) {
