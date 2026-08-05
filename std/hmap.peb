@@ -13,7 +13,7 @@ type Entry[K, V] = struct {
 };
 
 type HashMap[K, V] = struct {
-    entries *Entry[K, V];
+    entries []Entry[K, V];
     len     uint;       // number of OCCUPIED entries
     cap     uint;       // number of slots in table
     hash_fn fn (K) u64;
@@ -24,12 +24,12 @@ type HashMap[K, V] = struct {
     fn rehash[K, V](self *HashMap[K, V], new_cap uint) void {
         let allocator = self.backing;
         let new_size = new_cap * (sizeof Entry[K, V]);
-        let new_entries *Entry[K, V] = allocator.alloc(allocator.ptr, new_size);
+        let ptr *Entry[K, V] = allocator.alloc(allocator.ptr, new_size) as *Entry[K, V];
+        let new_entries []Entry[K, V] = slice ptr, new_cap;
 
         // Initialize
-        var i = 0;
         loop 0..new_cap : i {
-            (new_entries + i).state = .Empty;
+            new_entries[i].state = .Empty;
         }
 
         // Move entries
@@ -41,14 +41,14 @@ type HashMap[K, V] = struct {
         self.len = 0;
 
         // Re-insert old items
-        if old_entries != nil {
+        if old_cap != 0 {
             loop 0..old_cap : j {
-                let e = old_entries + j;
+                let e = old_entries[j];
                 if e.state == .Occupied {
                     self.insert(e.key, e.value);
                 }
             }
-            allocator.free(allocator.ptr, old_entries);
+            allocator.free(allocator.ptr, old_entries.data as *void);
         }
     }
 
@@ -77,13 +77,13 @@ type HashMap[K, V] = struct {
         var tombstone_index ?uint = none;
 
         while true {
-            let entry = self.entries + index;
+            let entry = &self.entries[index];
 
             if entry.state == .Empty {
                 // Prefer first tombstone if found
                 if tombstone_index.has_value {
                     let t = tombstone_index!;
-                    let slot = self.entries + t;
+                    let slot = &self.entries[t];
                     slot.key = key;
                     slot.value = value;
                     slot.state = .Occupied;
@@ -120,14 +120,14 @@ type HashMap[K, V] = struct {
         var index = (hash as uint) % self.cap;
 
         while true {
-            let entry = self.entries + index;
+            let entry = &self.entries[index];
 
             if entry.state == .Empty {
                 return none;
             }
 
             if entry.state == .Occupied && self.eq_fn(entry.key, key) {
-                return some &(entry.value);
+                return some &entry.value;
             }
 
             index = (index + 1) % self.cap;
@@ -160,7 +160,7 @@ type HashMap[K, V] = struct {
         var index = (hash as uint) % self.cap;
 
         while true {
-            let entry = self.entries + index;
+            let entry = &self.entries[index];
 
             if entry.state == .Empty {
                 return false; // not found
@@ -180,9 +180,8 @@ type HashMap[K, V] = struct {
 
     // Remove all key-value pairs but keep capacity.
     fn clear[K, V](self *HashMap[K, V]) void {
-        var i = 0;
         loop 0..self.cap : i {
-            (self.entries + i).state = .Empty;
+            self.entries[i].state = .Empty;
         }
         self.len = 0;
     }
@@ -190,8 +189,9 @@ type HashMap[K, V] = struct {
 
 // Create an empty map with default capacity.
 fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
-    return .{
-        entries = nil,
+    let empty *Entry[K, V] = nil;
+    return HashMap[K, V].{
+        entries = slice empty, 0,
         len     = 0,
         cap     = 0,
         hash_fn = hash_fn,
@@ -209,15 +209,16 @@ fn with_capacity[K, V](cap uint, hash_fn fn (K) u64,
 
     let allocator = context.default_allocator;
     let size = cap * (sizeof Entry[K, V]);
-    let ptr *Entry[K, V] = allocator.alloc(allocator.ptr, size);
+    let ptr *Entry[K, V] = allocator.alloc(allocator.ptr, size) as *Entry[K, V];
+    let entries []Entry[K, V] = slice ptr, cap;
 
     // Initialize all states to Empty
     loop 0..cap : i {
-        (ptr + i).state = .Empty;
+        entries[i].state = .Empty;
     }
 
-    return .{
-        entries = ptr,
+    return HashMap[K, V].{
+        entries = entries,
         len     = 0,
         cap     = cap,
         hash_fn = hash_fn,
@@ -228,9 +229,10 @@ fn with_capacity[K, V](cap uint, hash_fn fn (K) u64,
 
 // Delete the entire map and free memory.
 fn delete[K, V](self *HashMap[K, V]) void {
-    if self.entries != nil {
-        self.backing.free(self.backing.ptr, self.entries);
-        self.entries = nil;
+    if self.cap != 0 {
+        self.backing.free(self.backing.ptr, self.entries.data as *void);
+        let empty *Entry[K, V] = nil;
+        self.entries = slice empty, 0;
     }
     self.len = 0;
     self.cap = 0;
