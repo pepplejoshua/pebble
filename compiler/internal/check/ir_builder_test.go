@@ -162,6 +162,42 @@ type Table[K] = struct {
 	}
 }
 
+func TestBuildUnitDereferenceOperandNeedNotBeAPlace(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"grouped pointer operand", `fn f(ptr *i32) i32 { return *(ptr); }`},
+		{"unwrap-then-deref concrete", `fn f(ptr ?*i32) ?i32 {
+    if !ptr.has_value { return none; }
+    return some *(ptr!);
+}`},
+		{"unwrap-then-deref generic", `fn f[V](ptr ?*V) ?V {
+    if !ptr.has_value { return none; }
+    return some *(ptr!);
+}`},
+		{"generic method returns an unwrapped-and-dereferenced pointer", `type Table[V] = struct {
+    entries []V;
+    fn get_ref[V](self *Table[V]) ?*V {
+        return some &self.entries[0];
+    }
+    fn get[V](self *Table[V]) ?V {
+        let ptr = self.get_ref();
+        if !ptr.has_value { return none; }
+        return some *(ptr!);
+    }
+};`},
+		{"plain dereference regression", `fn f(ptr *i32) i32 { return *ptr; }`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := buildUnitFixture(t, test.source); !ok {
+				t.Fatal("dereference of a non-place operand was not buildable")
+			}
+		})
+	}
+}
+
 func TestBuildUnitEnumShorthandLiteral(t *testing.T) {
 	tests := []struct {
 		name   string

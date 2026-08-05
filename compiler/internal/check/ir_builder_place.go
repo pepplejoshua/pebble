@@ -135,6 +135,20 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 	if !ok {
 		return 0, false
 	}
+	if record.Kind == expressionGrouped && len(record.Children) == 1 {
+		// A parenthesized sub-expression is a transparent alias at the value
+		// level (see buildValueBase's SourceAlias case); its place, if any, is
+		// exactly its inner expression's place. Without this, the generic
+		// single-child branch below misreads a grouped dereference operand
+		// (e.g. *(ptr)) as an unhandled leaf, since a GroupedTerm has neither
+		// a member nor an operator record of its own.
+		inner, found := s.buildPlaceForValue(record.Children[0])
+		if !found {
+			return 0, false
+		}
+		s.placeValues[id] = inner
+		return inner, true
+	}
 	var root symbol.SymbolID
 	var rootType types.TypeID
 	var current tir.NodeID
@@ -168,6 +182,23 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 			return 0, false
 		}
 		n, made := s.addNode(tir.Node{Kind: tir.CheckedIndexPlace, Type: typ, Span: record.Header.Span, Writable: s.placeWritableValue(index.Base), Children: []tir.NodeID{base, child}}, symbol.SyntaxRef{})
+		if !made {
+			return 0, false
+		}
+		current = n
+	} else if op := s.operatorForValue(id, record.Header.Syntax); len(record.Children) == 1 && op != nil && op.Family == operatorDereference {
+		// A dereference's operand only needs to be a POINTER VALUE, not itself
+		// a place (e.g. *(ptr!) dereferences an unwrapped Optional payload,
+		// and *(some_call()) would dereference a call result) — build it via
+		// buildValue directly rather than routing through the member/tuple
+		// branch below, which requires its single child to already be
+		// place-buildable.
+		writable := s.placeWritableValue(record.Children[0])
+		child, found := s.buildValue(op.Operands[0])
+		if !found {
+			return 0, false
+		}
+		n, made := s.addNode(tir.Node{Kind: tir.DereferencePlace, Type: typ, Span: record.Header.Span, Writable: writable, Children: []tir.NodeID{child}}, symbol.SyntaxRef{})
 		if !made {
 			return 0, false
 		}
@@ -208,16 +239,6 @@ func (s *irBuildState) buildPlaceForValue(id valueID) (tir.NodeID, bool) {
 				return 0, false
 			}
 			current = made
-		} else if op := s.operatorForValue(id, record.Header.Syntax); op != nil && op.Family == operatorDereference {
-			child, found := s.buildValue(op.Operands[0])
-			if !found {
-				return 0, false
-			}
-			n, made := s.addNode(tir.Node{Kind: tir.DereferencePlace, Type: typ, Span: record.Header.Span, Writable: writable, Children: []tir.NodeID{child}}, symbol.SyntaxRef{})
-			if !made {
-				return 0, false
-			}
-			current = n
 		} else {
 			return 0, false
 		}
