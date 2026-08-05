@@ -6131,6 +6131,35 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains an integer literal with malformed text %q", text)
 		}
 		return text, nil
+	case tir.IntegerCast:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains an IntegerCast with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains an IntegerCast with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || cType(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains an IntegerCast with non-integer destination type %s", describeType(snapshot, node.Type))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains an IntegerCast referencing invalid child node %d", node.Children[0])
+		}
+		childType, ok := snapshot.Key(child.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body IntegerCast child has invalid type %d", child.Type)
+		}
+		childWidth, ok := childType.Builtin()
+		if !ok || cType(childWidth) == "" {
+			return "", fmt.Errorf("entry function body IntegerCast child has non-integer type %s", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		if err != nil {
+			return "", fmt.Errorf("entry function body integer cast child: %v", err)
+		}
+		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
 	case tir.CheckedNegate:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedNegate with %d operand(s), want exactly one", len(node.Children))
@@ -6282,6 +6311,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if ok && child.Kind == tir.TupleElementValue {
 				return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
 			}
+			return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
 		}
 		return "", fmt.Errorf("entry function body expression contains a SourceAlias, which is not supported")
 	case tir.DirectCall, tir.MethodCall:
@@ -7564,18 +7594,12 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 	if snapshot == nil {
 		return false
 	}
-	var want types.TypeID
-	switch width {
-	case types.Int:
-		want = snapshot.Builtins().Int
-	case types.I32:
-		want = snapshot.Builtins().I32
-	case types.I64:
-		want = snapshot.Builtins().I64
-	default:
+	key, ok := snapshot.Key(id)
+	if !ok {
 		return false
 	}
-	return id == want
+	builtin, ok := key.Builtin()
+	return ok && builtin == width && cType(width) != ""
 }
 
 func isUint(snapshot *types.Snapshot, id types.TypeID) bool {
@@ -8418,18 +8442,31 @@ func wantName(width types.BuiltinKind) string {
 	return name
 }
 
-// cType returns the C type name an integer local of the given width is
-// declared with: int32_t for an int or i32 entry, int64_t for an i64 entry. Only
-// these widths this backend emits are mapped; anything else returns "" and the
-// caller's own width validation has already ruled it out.
+// cType returns the fixed-width C integer type corresponding to a Pebble
+// integer builtin. Int and uint use Pebble's platform-independent 32-bit and
+// 64-bit representations respectively.
 func cType(width types.BuiltinKind) string {
 	switch width {
 	case types.Int:
 		return "int32_t"
+	case types.Uint:
+		return "uint64_t"
+	case types.I8:
+		return "int8_t"
+	case types.I16:
+		return "int16_t"
 	case types.I32:
 		return "int32_t"
 	case types.I64:
 		return "int64_t"
+	case types.U8:
+		return "uint8_t"
+	case types.U16:
+		return "uint16_t"
+	case types.U32:
+		return "uint32_t"
+	case types.U64:
+		return "uint64_t"
 	}
 	return ""
 }

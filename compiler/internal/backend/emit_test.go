@@ -7654,6 +7654,24 @@ func TestEmitExplicitPointerCastRoundTripCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var y i32 = 42; let p *i32 = &y; let q *void = p as *void; let r *i32 = q as *i32; return *r; }", false, 42, false)
 }
 
+func TestEmitIntegerCastRoundTripCompilesAndRuns(t *testing.T) {
+	// The intermediate i64 cast has a different width from the i32 entry, but
+	// the outer cast returns to the entry width.
+	// The test runner observes the process exit code, so reduce the result to
+	// its low byte after the cast (300 exits as 44 on Unix either way).
+	emitAndRunBounded(t, "fn main() i32 { var n i32 = 0; var done i32 = 0; while done == 0 { var x i32 = 300; n = (x as i64) as i32; done = 1; } return n % 256; }", false, 44, false)
+}
+
+func TestEmitIntegerCastTruncatesCompilesAndRuns(t *testing.T) {
+	// 4294967297 narrowed to i32 wraps to 1, matching the fixed-width C cast.
+	emitAndRunBounded(t, "fn main() i32 { var n i32 = 0; var done i32 = 0; while done == 0 { n = (4294967297 as i64) as i32; done = 1; } return n; }", false, 1, false)
+}
+
+func TestEmitIntegerCastUnsignedRoundTripCompilesAndRuns(t *testing.T) {
+	// Exercise a differently-signed intermediate type rather than only i32/i64.
+	emitAndRunBounded(t, "fn main() i32 { var n i32 = 0; var done i32 = 0; while done == 0 { var x i32 = 300; n = (x as u32) as i32; done = 1; } return n % 256; }", false, 44, false)
+}
+
 func TestEmitNilPointerLocalCompilesAndRuns(t *testing.T) {
 	// let p *i32 = nil; return 0;
 	// Declaring a nil pointer local is valid; we just don't dereference it.
