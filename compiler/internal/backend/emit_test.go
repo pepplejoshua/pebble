@@ -3685,6 +3685,22 @@ func TestEmitRejectsI32MainCallsI64Helper(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
 }
 
+func TestEmitCastsI64HelperResultToI32Main(t *testing.T) {
+	emitAndRun(t, "fn helper() i64 { return 21; } fn main() i32 { return helper() as i32; }", false, 21, false)
+}
+
+func TestEmitBuildsI64HelperBodyAtItsOwnWidth(t *testing.T) {
+	emitAndRun(t, "fn helper() i64 { let value i64 = 20; return value + 1; } fn main() i32 { return helper() as i32; }", false, 21, false)
+}
+
+func TestEmitCastsI32HelperResultToI64Main(t *testing.T) {
+	emitAndRun(t, "fn helper() i32 { return 7; } fn main() i64 { return (helper() as i64) + 1; }", false, 8, false)
+}
+
+func TestEmitCastsU32HelperResultToI32Main(t *testing.T) {
+	emitAndRun(t, "fn helper() u32 { return 7; } fn main() i32 { return helper() as i32; }", false, 7, false)
+}
+
 func TestEmitRejectsSelfRecursion(t *testing.T) {
 	// Recursion is legal, checker-accepted Pebble (confirmed against a real
 	// fixture), so this is a genuine backend-scope boundary: the reachability

@@ -1988,8 +1988,9 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 			}
 		}
 	}
-	if !isWidth(snapshot, width, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want %s, char, str, a tuple/struct result type, a slice result type, a pointer result type, or void (a called function may resolve to the entry's integer width, char, str, a tuple/struct type, a slice type, a pointer type, or void for a call used as a bare discarded-expression statement)", decl.Symbol, describeType(snapshot, decl.ResultType), wantName(width))
+	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
+	if (!integerResult || cType(resultWidth) == "") && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, char, str, a tuple/struct result type, a slice result type, a pointer result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
@@ -2138,8 +2139,12 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// resultInfo{kind: types.Void}. The tuple/struct
 		// shape is validated wherever its typedef is built (buildTupleTypedef /
 		// buildStructTypedef), exactly like a tuple/struct parameter's.
-		returnType := cType(width)
-		result := resultInfo{kind: width}
+		bodyWidth := width
+		if resultWidth, integerResult := resolvedBuiltin(snapshot, helper.decl.ResultType); integerResult && cType(resultWidth) != "" {
+			bodyWidth = resultWidth
+		}
+		returnType := cType(bodyWidth)
+		result := resultInfo{kind: bodyWidth}
 		switch {
 		case isVoid(snapshot, helper.decl.ResultType):
 			// A void-result helper (10.33) is declared with the C return type
@@ -2208,7 +2213,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			returnType = pointerTypeName(snapshot, pointeeTypeID)
 			result = resultInfo{pointerType: helper.decl.ResultType}
 		}
-		statements, err := buildBlock(unit, snapshot, fileSet, helper.block, scope, 0, width, result, unions)
+		statements, err := buildBlock(unit, snapshot, fileSet, helper.block, scope, 0, bodyWidth, result, unions)
 		if err != nil {
 			return "", err
 		}
