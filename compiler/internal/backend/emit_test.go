@@ -6960,6 +6960,142 @@ func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
 	}
 }
 
+func TestEmitTopLevelGuardIfCompilesAndRuns(t *testing.T) {
+	// The minimal non-tail-if repro: a guard-clause if with no else, as a
+	// leading statement in a top-level function body, followed by more code.
+	// x = 5 takes the guard (x + 1 = 6); x = 0 falls through the guard to
+	// the code after it (x + 10 = 10). Both calls run, so both the guard arm
+	// and the fall-through code after the if are exercised.
+	emitAndRun(t, "fn helper(x i32) i32 { if x > 0 { return x + 1; } return x + 10; } fn main() i32 { return helper(5) + helper(0); }", false, 16, false)
+}
+
+func TestEmitTopLevelGuardIfWritesC(t *testing.T) {
+	// The emitted C for the minimal repro must be a plain no-else if whose
+	// arm ends in return, followed by the enclosing return — the shape
+	// buildLeadingIf produces, byte-identical in style to buildLoopIf's.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn helper(x i32) i32 { if x > 0 { return 1; } return 0; } fn main() i32 { return helper(1); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    if (pebble_local_25 > 0) {",
+		"        return 1;",
+		"    }",
+		"    return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "} else {") {
+		t.Errorf("emitted C contains an else for a no-else if:\n%s", out)
+	}
+}
+
+func TestEmitTopLevelIfElseLeadingCompilesAndRuns(t *testing.T) {
+	// A top-level if/else (both arms present) as a leading statement,
+	// followed by more code that runs after either arm: pick(1) takes the
+	// then-arm (result = 10, then 11) and pick(0) takes the else-arm
+	// (result = 20, then 20), so both arms plus the fall-through code after
+	// the if are exercised.
+	emitAndRun(t, "fn pick(x i32) i32 { var result i32 = 0; if x > 0 { result = 10; } else { result = 20; } result = result + x; return result; } fn main() i32 { return pick(1) + pick(0); }", false, 31, false)
+}
+
+func TestEmitTopLevelSwitchLeadingCompilesAndRuns(t *testing.T) {
+	// A switch as an ordinary top-level leading statement, followed by more
+	// code: classify(1) hits the single-value case (11), classify(2) hits the
+	// multi-value case (21), and classify(9) hits the else arm (31). Every
+	// case body falls through to the statements after the switch, and none
+	// ends in a return — the shape buildSwitch was previously unable to emit
+	// in a non-tail position.
+	emitAndRun(t, "fn classify(x i32) i32 { var result i32 = 0; switch x { case 1: result = result + 10; case 2, 3: result = result + 20; else: result = result + 30; } result = result + 1; return result; } fn main() i32 { return classify(1) + classify(2) + classify(9); }", false, 63, false)
+}
+
+func TestEmitTopLevelSwitchLeadingWithReturningCaseCompilesAndRuns(t *testing.T) {
+	// A top-level switch whose case bodies may return OR fall through:
+	// f(1) returns 99 from inside a case body, f(2) falls through case 2 to
+	// the code after the switch (1 + 10 = 11), and f(9) falls through the
+	// else arm (2 + 10 = 12). This confirms a case body's "may fall through"
+	// grammar includes the return case, matching what buildSwitchCaseBody's
+	// bare-Return path did for the tail position.
+	emitAndRun(t, "fn f(x i32) i32 { var total i32 = 0; switch x { case 1: return 99; case 2: total = total + 1; else: total = total + 2; } return total + 10; } fn main() i32 { return f(1) + f(2) + f(9); }", false, 122, false)
+}
+
+func TestEmitSwitchInsideLoopBodyCompilesAndRuns(t *testing.T) {
+	// The switch-in-loop repro: a switch as a statement inside a while loop
+	// body, followed by more loop-body code. i counts 0, 1, 2; each switch
+	// adds 1/2/3 by case, then the code after the switch adds 1, so total =
+	// (1+1) + (2+1) + (3+1) = 9, returned as the exit code. This is the
+	// position where If already worked but Switch did not. Bounded execution
+	// in case of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 3 { switch i { case 0: total = total + 1; case 1: total = total + 2; else: total = total + 3; } total = total + 1; i = i + 1; } return total; }", false, 9, false)
+}
+
+func TestEmitIfInsideSwitchCaseBodyCompilesAndRuns(t *testing.T) {
+	// Nested control flow inside a fall-through switch case body: the case 2
+	// body is itself an if/else whose arms reassign the enclosing local. x=2
+	// hits the case 2 body's then-arm (total = 5), then the code after the
+	// switch adds 1, so total = 6.
+	emitAndRun(t, "fn main() i32 { var x i32 = 2; var total i32 = 0; switch x { case 1: total = total + 1; case 2: if x == 2 { total = total + 5; } else { total = total + 6; } else: total = total + 9; } total = total + 1; return total; }", false, 6, false)
+}
+
+func TestEmitSwitchInsideIfArmCompilesAndRuns(t *testing.T) {
+	// Nested control flow inside a top-level if arm: the then-arm is itself
+	// a switch whose case bodies fall through, and the code after the if runs
+	// after either arm. x=1 takes the then-arm's case 1 (total = 10), then
+	// the fall-through code adds 1, so total = 11.
+	emitAndRun(t, "fn main() i32 { var x i32 = 1; var total i32 = 0; if x > 0 { switch x { case 1: total = total + 10; else: total = total + 20; } } else { total = total + 30; } total = total + 1; return total; }", false, 11, false)
+}
+
+func TestEmitIfAndSwitchInsideTopLevelIfArmCompilesAndRuns(t *testing.T) {
+	// Both a nested if and a nested switch inside a single top-level if arm,
+	// plus more code after the outer if: x=1 takes the then-arm, whose own if
+	// adds 1 and whose switch adds 10, then the outer fall-through code adds
+	// 1, so total = 12.
+	emitAndRun(t, "fn main() i32 { var x i32 = 1; var y i32 = 2; var total i32 = 0; if x > 0 { if y > 0 { total = total + 1; } else { total = total + 2; } switch y { case 2: total = total + 10; else: total = total + 20; } } total = total + 1; return total; }", false, 12, false)
+}
+
+func TestEmitBreakAndContinueInsideLoopIfArmCompilesAndRuns(t *testing.T) {
+	// Regression: break and continue inside an if arm inside a while loop
+	// body still work after the loop-body dispatch was reorganized into the
+	// shared fall-through builder. i counts 1..9; even i continues past the
+	// total accumulation, and i=5 breaks the loop. Only odd i < 5 accumulate
+	// (1 and 3), so total = 4.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 10 { i = i + 1; if i % 2 == 0 { continue; } if i == 5 { break; } total = total + i; } return total; }", false, 4, false)
+}
+
+func TestEmitBreakInsideSwitchCaseBodyTargetsSwitchCompilesAndRuns(t *testing.T) {
+	// A break inside a switch case body targets the switch — Pebble's break
+	// resolves to the nearest enclosing loop-or-switch, so the emitted C
+	// break (which C also resolves to the nearest switch/loop) is the direct,
+	// correct translation. The switch sits inside a loop, so if the break
+	// wrongly leaked to the loop the accumulation after the switch would stop
+	// early. i=0 falls through the else (+1, then after-switch +1 = 2), i=1
+	// hits case 1's break (switch only, then after-switch +1 = 3), i=2 hits
+	// case 2 (+10, then after-switch +1 = 14), so total = 14.
+	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var total i32 = 0; while i < 3 { switch i { case 1: break; case 2: total = total + 10; else: total = total + 1; } total = total + 1; i = i + 1; } return total; }", false, 14, false)
+}
+
+func TestEmitEnumSwitchLeadingCompilesAndRuns(t *testing.T) {
+	// An enum-typed subject in a fall-through (leading-position) switch: the
+	// subject-building and CaseValue label logic shared with the tail-position
+	// buildSwitch is reused unchanged by buildLoopSwitch. c = green hits the
+	// CaseValue-based case (total = 10), then the fall-through code adds 1,
+	// so total = 11.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar total i32 = 0;\nvar c Color = Color.green;\nswitch c { case Color.red: total = total + 1; case Color.green: total = total + 10; case Color.blue: total = total + 100; }\ntotal = total + 1;\nreturn total;\n}", false, 11, false)
+}
+
+func TestEmitReturnInsideLoopIfArmCompilesAndRuns(t *testing.T) {
+	// A return inside an if arm inside a loop body exits the function early —
+	// reachable now that the enclosing function's result grammar threads
+	// through the fall-through builder into loop bodies. f(3) returns 3 from
+	// inside the loop; f(20) never matches and returns 99 after the loop, so
+	// the exit code is 3 + 99 = 102.
+	emitAndRunBounded(t, "fn f(x i32) i32 { var i i32 = 0; while i < 10 { if i == x { return i; } i = i + 1; } return 99; } fn main() i32 { return f(3) + f(20); }", false, 102, false)
+}
+
 // buildFixtureMaybeFailing is like buildFixture but returns an error instead of
 // calling t.Fatal, for tests that expect the checker to reject a fixture.
 func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requireEntry bool) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet, error) {

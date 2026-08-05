@@ -2305,7 +2305,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// body is its own scope (buildWhile clones, exactly as buildIf's
 			// arms do), so nothing the loop declares leaks into this block's
 			// scope map.
-			whileText, err := buildWhile(unit, snapshot, fileSet, statement, scope, depth, width, unions)
+			whileText, err := buildWhile(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2318,7 +2318,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// bound iterator. Its body is its own scope (buildRangeLoop seeds
 			// the iterator and buildLoopBody clones), so nothing the loop
 			// declares leaks into this block's scope map.
-			rangeText, err := buildRangeLoop(unit, snapshot, fileSet, statement, scope, depth, width, unions)
+			rangeText, err := buildRangeLoop(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2332,7 +2332,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// its own scope (buildFor seeds the initializer's local and
 			// buildLoopBody clones), so nothing the loop declares leaks into
 			// this block's scope map.
-			forText, err := buildFor(unit, snapshot, fileSet, statement, scope, depth, width, unions)
+			forText, err := buildFor(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2346,7 +2346,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// is only ever emitted at exit points whose DeferChain references it.
 			continue
 		}
-		text, err := buildLeadingStatement(unit, snapshot, fileSet, block.Children[i], scope, indent, "entry function body block", width, unions)
+		text, err := buildLeadingStatement(unit, snapshot, fileSet, block.Children[i], scope, indent, depth, "entry function body block", width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -2358,82 +2358,17 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 	}
 	switch last.Kind {
 	case tir.Return:
-		if len(last.Children) != 1 {
-			return "", fmt.Errorf("entry function body return statement has %d argument(s), want exactly one expression", len(last.Children))
-		}
-		var returnValue string
-		var err error
-		if result.isChar {
-			// The enclosing function returns char (a reachable helper whose
-			// ResultType is char — the entry always threads a scalar resultInfo),
-			// so the return value is built under the char grammar by
-			// buildCharOperand rather than buildExpr, which rejects a
-			// char-typed value. Supported return shapes are a SymbolValue
-			// naming a char-typed local in scope, a char literal, or a call to
-			// another char-returning helper.
-			returnValue, err = buildCharOperand(unit, snapshot, fileSet, last.Children[0], scope, width)
-		} else if result.isStr {
-			// The enclosing function returns str (a reachable helper whose
-			// ResultType is str — the entry always threads a scalar resultInfo),
-			// so the return value is built under the str grammar by
-			// buildStrOperand rather than buildExpr, which rejects a str-typed
-			// value. Supported return shapes are a SymbolValue naming a
-			// str-typed local in scope, a string literal, or a call to another
-			// str-returning helper.
-			returnValue, err = buildStrOperand(unit, snapshot, fileSet, last.Children[0], scope, width)
-		} else if result.tuple != 0 || result.structType != 0 {
-			// The enclosing function returns a tuple/struct (a reachable helper
-			// whose ResultType is an aggregate — the entry always threads a
-			// scalar resultInfo), so the return value is built under the
-			// aggregate grammar by buildAggregateReturnValue rather than
-			// buildExpr, which rejects an aggregate-typed value. Supported
-			// return shapes are a SymbolValue naming an aggregate-typed local
-			// in scope of the matching type, or a fresh inline TupleValue /
-			// RecordConstruct of the matching type (both built via 10.25's
-			// expression builders); anything else is a clean rejection.
-			returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, last.Children[0], scope, result, width)
-		} else if result.sliceType != 0 {
-			// The enclosing function returns a slice (a reachable helper whose
-			// ResultType is a slice type), so the return value is built under
-			// the slice grammar by buildSliceReturnValue rather than buildExpr,
-			// which rejects a slice-typed value. Supported return shapes are a
-			// SymbolValue naming a slice-typed local in scope (a single-
-			// statement forward) or a fresh CheckedSlice construction, which
-			// needs the same two-statement temp-then-construction shape a slice
-			// local's declaration uses. The temp-declaration statement is
-			// threaded into the statement sequence as an extra pre-return
-			// statement, the same mechanical shape the deferred statements
-			// below demonstrate — just for construction complexity rather than
-			// deferred cleanup.
-			var preReturn string
-			preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, fileSet, last.Children[0], scope, result, indent, width)
-			if preReturn != "" {
-				statements = append(statements, preReturn)
-			}
-		} else if result.kind == types.F32 || result.kind == types.F64 {
-			// A float-returning entry (a main declared to return f32/f64 — the
-			// one float-returning position Float Stage A supports; float helper
-			// results are rejected upstream by validateHelperSignature, so only
-			// the entry's resultInfo can carry a float kind), so the return
-			// value is built under the float grammar by buildFloatExpr rather
-			// than buildExpr, which rejects a float-typed value. Supported
-			// return shapes are a float literal or a SymbolValue naming a
-			// float-typed local in scope of the same float kind.
-			returnValue, err = buildFloatExpr(unit, snapshot, fileSet, last.Children[0], scope, result.kind)
-		} else {
-			returnValue, err = buildExpr(unit, snapshot, fileSet, last.Children[0], scope, width)
-		}
+		// A return in the block's tail position — the enclosing function's
+		// final statement. The return value's grammar, the deferred statements
+		// that must run first, and the slice-construction temp-then-construction
+		// shape are all built by the shared buildReturnStatement (also used by
+		// buildFallthroughBody for a return inside a fall-through statement
+		// sequence), so the emission logic lives in exactly one place.
+		text, err := buildReturnStatement(unit, snapshot, fileSet, last, scope, indent, "entry function body block", width, result, unions)
 		if err != nil {
 			return "", err
 		}
-		deferText, err := buildDeferredStatements(unit, snapshot, fileSet, last.DeferChain, scope, indent, "entry function body block", width, unions)
-		if err != nil {
-			return "", err
-		}
-		if deferText != "" {
-			statements = append(statements, deferText)
-		}
-		statements = append(statements, indent+"return "+returnValue+";")
+		statements = append(statements, text)
 	case tir.ImplicitReturn:
 		// A void-result function (a reachable void helper — the entry's own
 		// void shape is handled separately by validateEmptyBody and never
@@ -2474,6 +2409,106 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 	return strings.Join(statements, "\n"), nil
 }
 
+// buildReturnStatement validates and builds the C text for one return
+// statement (tir.Return) in any position: the tail of a block (buildBlock),
+// or a return inside a fall-through statement sequence — an if arm, a switch
+// case body, or a loop body (see buildFallthroughBody). The return value is
+// built under the grammar the enclosing function's result selects:
+// buildCharOperand for a char result, buildStrOperand for a str result,
+// buildAggregateReturnValue for a tuple/struct result, buildSliceReturnValue
+// for a slice result (whose fresh-construction shape needs the two-statement
+// temp-then-construction form, threaded in as a pre-return statement),
+// buildFloatExpr for a float result, and buildExpr for a scalar integer
+// result. The DeferChain's deferred statements are emitted first (in the
+// chain's own LIFO order), then the return line itself:
+//
+//	<indent>return <value>;
+//
+// with any pre-return statements and deferred statements joined ahead of it.
+// Any other shape — a return with a child count other than exactly one — is a
+// clean rejection naming what was found. context names the enclosing
+// construct in error messages.
+func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, returnNode tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	if len(returnNode.Children) != 1 {
+		return "", fmt.Errorf("%s return statement has %d argument(s), want exactly one expression", context, len(returnNode.Children))
+	}
+	var returnValue string
+	var err error
+	var preReturn string
+	if result.isChar {
+		// The enclosing function returns char (a reachable helper whose
+		// ResultType is char — the entry always threads a scalar resultInfo),
+		// so the return value is built under the char grammar by
+		// buildCharOperand rather than buildExpr, which rejects a
+		// char-typed value. Supported return shapes are a SymbolValue
+		// naming a char-typed local in scope, a char literal, or a call to
+		// another char-returning helper.
+		returnValue, err = buildCharOperand(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+	} else if result.isStr {
+		// The enclosing function returns str (a reachable helper whose
+		// ResultType is str — the entry always threads a scalar resultInfo),
+		// so the return value is built under the str grammar by
+		// buildStrOperand rather than buildExpr, which rejects a str-typed
+		// value. Supported return shapes are a SymbolValue naming a
+		// str-typed local in scope, a string literal, or a call to another
+		// str-returning helper.
+		returnValue, err = buildStrOperand(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+	} else if result.tuple != 0 || result.structType != 0 {
+		// The enclosing function returns a tuple/struct (a reachable helper
+		// whose ResultType is an aggregate — the entry always threads a
+		// scalar resultInfo), so the return value is built under the
+		// aggregate grammar by buildAggregateReturnValue rather than
+		// buildExpr, which rejects an aggregate-typed value. Supported
+		// return shapes are a SymbolValue naming an aggregate-typed local
+		// in scope of the matching type, or a fresh inline TupleValue /
+		// RecordConstruct of the matching type (both built via 10.25's
+		// expression builders); anything else is a clean rejection.
+		returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, width)
+	} else if result.sliceType != 0 {
+		// The enclosing function returns a slice (a reachable helper whose
+		// ResultType is a slice type), so the return value is built under
+		// the slice grammar by buildSliceReturnValue rather than buildExpr,
+		// which rejects a slice-typed value. Supported return shapes are a
+		// SymbolValue naming a slice-typed local in scope (a single-
+		// statement forward) or a fresh CheckedSlice construction, which
+		// needs the same two-statement temp-then-construction shape a slice
+		// local's declaration uses. The temp-declaration statement is
+		// threaded into the statement sequence as an extra pre-return
+		// statement, the same mechanical shape the deferred statements
+		// below demonstrate — just for construction complexity rather than
+		// deferred cleanup.
+		preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
+	} else if result.kind == types.F32 || result.kind == types.F64 {
+		// A float-returning entry (a main declared to return f32/f64 — the
+		// one float-returning position Float Stage A supports; float helper
+		// results are rejected upstream by validateHelperSignature, so only
+		// the entry's resultInfo can carry a float kind), so the return
+		// value is built under the float grammar by buildFloatExpr rather
+		// than buildExpr, which rejects a float-typed value. Supported
+		// return shapes are a float literal or a SymbolValue naming a
+		// float-typed local in scope of the same float kind.
+		returnValue, err = buildFloatExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind)
+	} else {
+		returnValue, err = buildExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+	}
+	if err != nil {
+		return "", err
+	}
+	deferText, err := buildDeferredStatements(unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
+	if err != nil {
+		return "", err
+	}
+	parts := []string{}
+	if preReturn != "" {
+		parts = append(parts, preReturn)
+	}
+	if deferText != "" {
+		parts = append(parts, deferText)
+	}
+	parts = append(parts, indent+"return "+returnValue+";")
+	return strings.Join(parts, "\n"), nil
+}
+
 // buildSwitch validates and builds the C text for a switch statement used as a
 // block's tail: a tir.Switch whose Children[0] is the subject expression
 // (built by buildExpr for an integer subject, buildBoolExpr for a bool
@@ -2510,7 +2545,42 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 // enum constant, and its value (the variant's ordinal in the enum's declared
 // order) matches the subject's own typedef by construction. Any other shape is
 // a clean rejection naming what was found.
+//
+// buildSwitch is the thin tail-position entry point: it builds every case
+// body under buildSwitchCaseBody's "must end in return" grammar. The
+// fall-through twin, buildLoopSwitch, reuses this same core via
+// buildSwitchStatement with fallthrough set, so the subject-building and
+// case-grouping logic lives in exactly one place.
 func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	return buildSwitchStatement(unit, snapshot, fileSet, switchNode, locals, depth, width, result, unions, false)
+}
+
+// buildLoopSwitch validates and builds the C text for a switch statement used
+// as a non-tail, fall-through statement — a leading statement in a top-level
+// function body, a statement inside a loop body, an if arm, or another switch
+// case body. It is the fall-through twin of buildSwitch: everything about
+// subject-building and case grouping is shared through buildSwitchStatement,
+// and only the per-case body requirement differs — a case body is an ordinary
+// statement sequence that MAY end in a return but may also simply fall
+// through (see buildLoopSwitchCaseBody), instead of buildSwitchCaseBody's
+// every-arm-must-return grammar. It serves both the top-level leading
+// position (buildLeadingStatement's Switch case) and the loop-body/arm
+// position (buildFallthroughStatement's Switch case): the two have no
+// substantive difference, since a break/continue inside a case body targets
+// the nearest enclosing loop or switch by Pebble's own control-flow rules,
+// and the emitted C break/continue resolves to the same construct.
+func buildLoopSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	return buildSwitchStatement(unit, snapshot, fileSet, switchNode, locals, depth, width, result, unions, true)
+}
+
+// buildSwitchStatement is the shared core behind buildSwitch and
+// buildLoopSwitch: it validates and builds the C text for a switch statement
+// with exactly the same subject-building, case-grouping, and label emission in
+// both positions. The only difference is the case-body builder selected by
+// fallthrough: false selects buildSwitchCaseBody (each body must end in a
+// return), true selects buildLoopSwitchCaseBody (each body is an ordinary
+// fall-through statement sequence that may or may not return).
+func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
 	if len(switchNode.Children) < 2 {
 		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
 	}
@@ -2666,15 +2736,31 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 	}
 	indent := strings.Repeat("    ", depth+1)
 	caseIndent := strings.Repeat("    ", depth+2)
+	// A fall-through switch's case body is emitted with a trailing `break;`
+	// inside its braces: in C a case body falls through into the next case
+	// unless it ends in a jump, and a Pebble case body may simply fall through
+	// off its last statement. The break is emitted unconditionally — after a
+	// body that already ends in a return/break/continue it is unreachable C,
+	// which is valid and warning-free under the mandated -Wall -Wextra -Werror
+	// (no -Wunreachable-code), and it is what makes a body that does NOT end in
+	// a jump terminate its case instead of leaking into the next case's
+	// statements. The tail-position switch never needs it, because every case
+	// body ends in a return (see buildSwitchCaseBody).
+	bodyWrap := func(bodyText string) string {
+		if fallThrough {
+			return fmt.Sprintf("{\n%s\n%sbreak;\n%s}", bodyText, caseIndent+"    ", caseIndent)
+		}
+		return fmt.Sprintf("{\n%s\n%s}", bodyText, caseIndent)
+	}
 	var parts []string
 	for _, g := range groups {
 		if g.elseID != 0 {
 			// The else/default arm.
-			bodyText, err := buildSwitchCaseBody(unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions)
+			bodyText, err := buildSwitchCaseBodyOrFallthrough(unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions, fallThrough)
 			if err != nil {
 				return "", err
 			}
-			parts = append(parts, fmt.Sprintf("%sdefault: {\n%s\n%s}", caseIndent, bodyText, caseIndent))
+			parts = append(parts, fmt.Sprintf("%sdefault: %s", caseIndent, bodyWrap(bodyText)))
 			continue
 		}
 		// Emit stacked case labels for each SwitchCase in the group.
@@ -2687,13 +2773,25 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 			parts = append(parts, fmt.Sprintf("%s%s", caseIndent, label))
 		}
 		// The body is shared across all cases in the group.
-		bodyText, err := buildSwitchCaseBody(unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions)
+		bodyText, err := buildSwitchCaseBodyOrFallthrough(unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions, fallThrough)
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, fmt.Sprintf("%s{\n%s\n%s}", caseIndent, bodyText, caseIndent))
+		parts = append(parts, fmt.Sprintf("%s%s", caseIndent, bodyWrap(bodyText)))
 	}
 	return fmt.Sprintf("%sswitch (%s) {\n%s\n%s}", indent, subjectExpr, strings.Join(parts, "\n"), indent), nil
+}
+
+// buildSwitchCaseBodyOrFallthrough selects the case-body builder for one
+// switch case by the switch's position: a tail-position switch (fallthrough
+// false) builds the body under buildSwitchCaseBody's every-arm-must-return
+// grammar; a fall-through switch (fallthrough true) builds it under
+// buildLoopSwitchCaseBody's may-fall-through grammar.
+func buildSwitchCaseBodyOrFallthrough(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
+	if fallThrough {
+		return buildLoopSwitchCaseBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
+	}
+	return buildSwitchCaseBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
 }
 
 // buildCaseLabel emits one C `case <value>:` label from a SwitchCase node.
@@ -2803,6 +2901,40 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	return "", fmt.Errorf("switch case body is a %s, want a Block or a Return", bodyNode.Kind)
 }
 
+// buildLoopSwitchCaseBody builds the C text for one case body of a
+// fall-through switch (see buildLoopSwitch): the case-body twin of
+// buildSwitchCaseBody whose only difference is that the body is an ordinary
+// fall-through statement sequence rather than one that must end in a return.
+// The body may be a Block node (a multi-statement case body) or a bare
+// statement node (a single-statement case body with no braces). A Block body
+// is built via buildFallthroughBody — the same shared "arbitrary statement
+// sequence, no forced tail" builder a fall-through if's arms use, so a case
+// body may declare locals, reassign enclosing ones, print, call void helpers,
+// nest ifs/switches/loops, return early, or fall through off the end — and a
+// bare statement body is built directly via buildFallthroughStatement. Both
+// are the exact same dispatch a loop body's statements go through, so a break
+// or continue inside a case body resolves (by Pebble's own control-flow
+// rules) to the nearest enclosing loop or switch and is emitted as the
+// equivalent C jump. The caller (buildSwitchStatement) wraps the returned
+// text with a trailing `break;` inside the case's braces, since a C case body
+// that does not itself end in a jump must break to avoid leaking into the
+// next case (see bodyWrap there).
+func buildLoopSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	bodyNode, ok := unit.Node(bodyID)
+	if !ok {
+		return "", fmt.Errorf("switch case body references invalid node %d", bodyID)
+	}
+	if bodyNode.Kind == tir.Block {
+		return buildFallthroughBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions, "switch case body")
+	}
+	// Bare single-statement case body: built as one fall-through statement by
+	// the same dispatch a statement inside a Block case body (or a loop body,
+	// or an if arm) goes through, so it may be a Store, a call, a print, a
+	// return, a nested if/switch, and so on — not just a Return.
+	indent := strings.Repeat("    ", depth+1)
+	return buildFallthroughStatement(unit, snapshot, fileSet, bodyID, locals, indent, depth, width, result, unions, "switch case body")
+}
+
 // buildIf validates and builds the C text for a two-armed if/else block: a
 // tir.If with HasElse set, whose condition is a direct integer comparison
 // (buildComparison) and whose two arms are Blocks built by recursing into
@@ -2860,7 +2992,7 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, 
 //
 // Any other shape — a wrong child count, or a body that is not a Block — is a
 // clean rejection naming what was found.
-func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(whileNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
 	}
@@ -2868,7 +3000,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 	if err != nil {
 		return "", err
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, fileSet, whileNode.Children[1], locals, depth+1, width, unions)
+	bodyText, err := buildLoopBody(unit, snapshot, fileSet, whileNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2912,7 +3044,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 // ... }` with no `: name`, which has no way to be observed from inside and is
 // low-value), or a body that is not a Block — is a clean rejection naming
 // what was found.
-func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(rangeNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block range loop has %d child(ren), want exactly 3 (the start value, the end value, then the loop body)", len(rangeNode.Children))
 	}
@@ -2941,7 +3073,7 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	// body declares out of this block's own scope map.
 	loopScope := cloneLocals(locals)
 	loopScope[rangeNode.Symbol] = localInfo{kind: width}
-	bodyText, err := buildLoopBody(unit, snapshot, fileSet, rangeNode.Children[2], loopScope, depth+1, width, unions)
+	bodyText, err := buildLoopBody(unit, snapshot, fileSet, rangeNode.Children[2], loopScope, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -3045,7 +3177,7 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // range loop made). Any other shape — an ambiguous clause list, an
 // out-of-scope initializer or update, a missing or non-Block body — is a
 // clean rejection naming what was found.
-func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(forNode.Children) < 1 || len(forNode.Children) > 4 {
 		return "", fmt.Errorf("entry function body block for loop has %d child(ren), want 1 to 4 (the optional initializer, condition, and update clauses, then the loop body)", len(forNode.Children))
 	}
@@ -3175,7 +3307,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			return "", fmt.Errorf("entry function body block for loop with no condition has %d clause(s), want at most two (an initializer and an update)", len(clauses))
 		}
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, fileSet, bodyID, loopScope, depth+1, width, unions)
+	bodyText, err := buildLoopBody(unit, snapshot, fileSet, bodyID, loopScope, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -3560,35 +3692,58 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	}
 }
 
-// buildLoopBody validates and builds the C statement sequence for a while
-// loop's body: a Block whose children are local declarations (Initialize),
-// reassignments (Store), conditional if statements (a tir.If built by
-// buildLoopIf — the else is optional in a loop body), nested while loops (a
-// tir.While built by buildWhile), nested range loops (a tir.RangeLoop built
-// by buildRangeLoop), nested classic for loops (a tir.For built by buildFor),
-// and break/continue statements (a tir.Break /
+// buildLoopBody validates and builds the C statement sequence for a loop body
+// (a while's, a range loop's, or a classic for loop's): a Block built by the
+// shared buildFallthroughBody fall-through statement-sequence builder, with
+// the loop-body context naming. This is the loop-specific entry point
+// (buildWhile/buildRangeLoop/buildFor/buildLoopIf recurse here); the same
+// builder serves a fall-through if's arms and a fall-through switch's case
+// bodies uniformly, since they all need the identical "arbitrary statement
+// sequence, no forced tail" capability. An empty loop body (zero children) is
+// legal — `while cond {}` is a real, if useless, program — and emits no
+// statements at all.
+func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	return buildFallthroughBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions, "entry function body block while loop body")
+}
+
+// buildFallthroughBody validates and builds the C statement sequence for an
+// ordinary, fall-through block: a Block whose children are local declarations
+// (Initialize), reassignments (Store), print statements (Print), bare
+// discarded-expression statements (ExpressionStatement), conditional if
+// statements (a tir.If built by buildLoopIf — the else is optional), switch
+// statements (a tir.Switch built by buildLoopSwitch — case bodies may fall
+// through or return), nested while/range/classic-for loops (built by
+// buildWhile/buildRangeLoop/buildFor), return statements (built by
+// buildReturnStatement), and break/continue statements (a tir.Break /
 // tir.Continue built by buildLoopJump), built one level deeper than the
-// enclosing block. A loop body has no required tail — it just runs statements
-// and does not need to end in a return or if — so buildBlock is deliberately
-// not reused here; the grammar is genuinely different. The body is its own
-// scope: locals are cloned from the enclosing set (the same cloneLocals
-// discipline buildIf's arms use) before any declaration is added, so a local
-// declared inside the loop is invisible outside it and re-initializes on every
-// C iteration, which is the correct C block-scope behavior for a `while cond {
-// let x i32 = ...; }` shape. A nested while's body and each loop-body if arm
-// are their own scopes in turn (buildWhile and buildLoopIf both recurse into
-// buildLoopBody, which clones per entry), so a local declared inside one of
-// them is invisible to its siblings and to anything outside it. Any other
-// statement kind (a Return, a Print, anything else) is a clean rejection
-// naming what was found. An empty loop body (zero children) is legal — `while
-// cond {}` is a real, if useless, program — and emits no statements at all.
-func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+// enclosing block. A fall-through block has no required tail — it just runs
+// statements and does not need to end in a return or if — so buildBlock is
+// deliberately not reused here; the grammar is genuinely different. This is
+// the shared builder for every sequence with that shape: a loop body
+// (buildLoopBody), a fall-through if's arm (buildLeadingIf and buildLoopIf),
+// and a fall-through switch's case body (buildLoopSwitchCaseBody), all of
+// which need the identical "arbitrary statement sequence, no forced tail"
+// capability. The block is its own scope: locals are cloned from the
+// enclosing set (the same cloneLocals discipline buildIf's arms use) before
+// any declaration is added, so a local declared inside it is invisible
+// outside it. A nested loop's body and each if arm/switch case body are their
+// own scopes in turn (buildWhile/buildRangeLoop/buildFor/buildLoopIf and
+// buildLoopSwitch all recurse into this same builder, which clones per
+// entry), so a local declared inside one of them is invisible to its siblings
+// and to anything outside it. A break or continue inside the sequence targets
+// the nearest enclosing loop or switch by Pebble's own control-flow rules;
+// the emitted C break/continue resolves to the same construct, so the
+// translation is direct and correct (see buildLoopJump). Any other statement
+// kind is a clean rejection naming what was found. An empty block (zero
+// children) emits no statements at all. context names the enclosing construct
+// in error messages.
+func buildFallthroughBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
-		return "", fmt.Errorf("entry function body block while loop body references invalid node %d", bodyID)
+		return "", fmt.Errorf("%s references invalid node %d", context, bodyID)
 	}
 	if body.Kind != tir.Block {
-		return "", fmt.Errorf("entry function body block while loop body is a %s, want a Block", body.Kind)
+		return "", fmt.Errorf("%s is a %s, want a Block", context, body.Kind)
 	}
 	if len(body.Children) == 0 {
 		return "", nil
@@ -3597,71 +3752,115 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 	indent := strings.Repeat("    ", depth+1)
 	var statements []string
 	for _, childID := range body.Children {
-		statement, ok := unit.Node(childID)
-		if !ok {
-			return "", fmt.Errorf("entry function body block while loop body references invalid statement node %d", childID)
-		}
-		var text string
-		var err error
-		switch statement.Kind {
-		case tir.While:
-			// A nested while inside a loop body reuses buildWhile unchanged: it
-			// already recurses into buildLoopBody for its own body, so nested
-			// loops compose without any change to buildWhile itself.
-			text, err = buildWhile(unit, snapshot, fileSet, statement, scope, depth, width, unions)
-		case tir.RangeLoop:
-			// A nested range loop inside a loop body (a while's or another
-			// range loop's body) reuses buildRangeLoop unchanged: it recurses
-			// into this same buildLoopBody for its own body, so nested range
-			// loops compose exactly like nested whiles do.
-			text, err = buildRangeLoop(unit, snapshot, fileSet, statement, scope, depth, width, unions)
-		case tir.For:
-			// A nested classic for loop inside a loop body (a while's, range
-			// loop's, or another for loop's body) reuses buildFor unchanged:
-			// it recurses into this same buildLoopBody for its own body, so
-			// nested classic for loops compose exactly like nested whiles and
-			// range loops do.
-			text, err = buildFor(unit, snapshot, fileSet, statement, scope, depth, width, unions)
-		case tir.If:
-			// A conditional statement inside a loop body is built by buildLoopIf:
-			// its arms are themselves loop bodies (no required tail, optional
-			// else), genuinely different from the tail-requiring buildIf. Because
-			// buildLoopIf recurses into buildLoopBody for each arm, a break or
-			// continue inside an arm is handled by this same switch, unchanged.
-			text, err = buildLoopIf(unit, snapshot, fileSet, statement, scope, depth, width, unions)
-		case tir.Break:
-			text, err = buildLoopJump(unit, snapshot, fileSet, statement, "break", indent, "entry function body block while loop body", scope, width, unions)
-		case tir.Continue:
-			text, err = buildLoopJump(unit, snapshot, fileSet, statement, "continue", indent, "entry function body block while loop body", scope, width, unions)
-		case tir.DeferRegister:
-			// A DeferRegister in a loop body's leading-statement sequence is a
-			// registration marker the checker's analysis already consumed; the
-			// backend must emit nothing at this position. The deferred statement
-			// is only ever emitted at exit points whose DeferChain references it.
-			continue
-		case tir.ExpressionStatement:
-			// A bare discarded-expression statement inside a loop body —
-			// `helper();` on its own line — flows through the same shared
-			// leading-statement builder buildBlock uses, so the emission logic
-			// lives in exactly one place. (The default case below would reach
-			// buildLeadingStatement too; the case is spelled out so the loop
-			// body's statement switch documents the supported kinds the way it
-			// does for While/RangeLoop/For/If/Break/Continue/DeferRegister.)
-			text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, "entry function body block while loop body", width, unions)
-		case tir.Print:
-			// A print statement inside a loop body — `print a, b;` on its own
-			// line — flows through the same shared leading-statement builder
-			// buildBlock uses, so the emission logic lives in exactly one place.
-			text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, "entry function body block while loop body", width, unions)
-		default:
-			text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, "entry function body block while loop body", width, unions)
-		}
+		text, err := buildFallthroughStatement(unit, snapshot, fileSet, childID, scope, indent, depth, width, result, unions, context)
 		if err != nil {
 			return "", err
 		}
-		statements = append(statements, text)
+		if text != "" {
+			statements = append(statements, text)
+		}
 	}
 	return strings.Join(statements, "\n"), nil
+}
+
+// buildFallthroughStatement validates and builds the C text for one statement
+// in a fall-through statement sequence (see buildFallthroughBody), dispatching
+// on the statement kind exactly as buildBlock's leading-statement loop and the
+// loop-body statement switch do, but with the loop body's own "no required
+// tail" grammar extended to the whole sequence: a nested while/range loop/for
+// loop recurses into its own loop builder (which recurses back into
+// buildFallthroughBody for its body), a conditional if is built by buildLoopIf
+// (arms are themselves fall-through sequences, optional else), a switch by
+// buildLoopSwitch (case bodies are themselves fall-through sequences), a
+// return by buildReturnStatement, a break/continue by buildLoopJump, a
+// DeferRegister emits nothing, and everything else — an Initialize, a Store,
+// an ExpressionStatement, a Print — flows through the shared
+// buildLeadingStatement. indent is the statement's C indentation (the
+// sequence's own indent, depth+1 levels); depth is the sequence's nesting
+// depth, passed to the nested control-flow builders unchanged so they open
+// their own bodies one level deeper. context names the enclosing construct in
+// error messages.
+func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, childID tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
+	statement, ok := unit.Node(childID)
+	if !ok {
+		return "", fmt.Errorf("%s references invalid statement node %d", context, childID)
+	}
+	var text string
+	var err error
+	switch statement.Kind {
+	case tir.While:
+		// A nested while inside a fall-through sequence reuses buildWhile
+		// unchanged: it already recurses into buildLoopBody (via
+		// buildFallthroughBody) for its own body, so nested loops compose
+		// without any change to buildWhile itself.
+		text, err = buildWhile(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+	case tir.RangeLoop:
+		// A nested range loop inside a fall-through sequence (a loop body, an
+		// if arm, or a switch case body) reuses buildRangeLoop unchanged: it
+		// recurses into this same builder for its own body, so nested range
+		// loops compose exactly like nested whiles do.
+		text, err = buildRangeLoop(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+	case tir.For:
+		// A nested classic for loop inside a fall-through sequence reuses
+		// buildFor unchanged: it recurses into this same builder for its own
+		// body, so nested classic for loops compose exactly like nested whiles
+		// and range loops do.
+		text, err = buildFor(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+	case tir.If:
+		// A conditional statement inside a fall-through sequence is built by
+		// buildLoopIf: its arms are themselves fall-through sequences (no
+		// required tail, optional else), genuinely different from the
+		// tail-requiring buildIf. Because buildLoopIf recurses into
+		// buildLoopBody for each arm, a break or continue inside an arm is
+		// handled by this same switch, unchanged.
+		text, err = buildLoopIf(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+	case tir.Switch:
+		// A switch statement inside a fall-through sequence is built by
+		// buildLoopSwitch: its case bodies are themselves fall-through
+		// sequences (may return or fall through), unlike the tail-requiring
+		// buildSwitch. Because buildLoopSwitch recurses into this same
+		// dispatch for each case body, a break or continue inside a case body
+		// is handled here, unchanged — C's own break/continue scoping resolves
+		// it to the nearest enclosing loop or switch, which matches Pebble's
+		// break-target rules (see buildLoopSwitch).
+		text, err = buildLoopSwitch(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+	case tir.Return:
+		// A return inside a fall-through sequence — an if arm, a switch case
+		// body, or a loop body — exits the enclosing function immediately,
+		// built by the same shared buildReturnStatement the block-tail Return
+		// case uses.
+		text, err = buildReturnStatement(unit, snapshot, fileSet, statement, scope, indent, context, width, result, unions)
+	case tir.Break:
+		text, err = buildLoopJump(unit, snapshot, fileSet, statement, "break", indent, context, scope, width, unions)
+	case tir.Continue:
+		text, err = buildLoopJump(unit, snapshot, fileSet, statement, "continue", indent, context, scope, width, unions)
+	case tir.DeferRegister:
+		// A DeferRegister in a fall-through statement sequence is a
+		// registration marker the checker's analysis already consumed; the
+		// backend must emit nothing at this position. The deferred statement
+		// is only ever emitted at exit points whose DeferChain references it.
+		return "", nil
+	case tir.ExpressionStatement:
+		// A bare discarded-expression statement — `helper();` on its own line
+		// — flows through the same shared leading-statement builder buildBlock
+		// uses, so the emission logic lives in exactly one place. (The default
+		// case below would reach buildLeadingStatement too; the case is
+		// spelled out so this switch documents the supported kinds the way it
+		// does for While/RangeLoop/For/If/Switch/Return/Break/Continue/
+		// DeferRegister.)
+		text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
+	case tir.Print:
+		// A print statement — `print a, b;` on its own line — flows through
+		// the same shared leading-statement builder buildBlock uses, so the
+		// emission logic lives in exactly one place.
+		text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
+	default:
+		text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
+	}
+	if err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 // buildLoopIf validates and builds the C text for a conditional statement
@@ -3693,7 +3892,7 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 //
 // Any other shape — a child count inconsistent with HasElse, or an arm that is
 // not a Block — is a clean rejection naming what was found.
-func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
@@ -3704,7 +3903,7 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildLoopBody(unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, unions)
+	thenText, err := buildLoopBody(unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -3712,7 +3911,67 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 	if !ifNode.HasElse {
 		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
 	}
-	elseText, err := buildLoopBody(unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, unions)
+	elseText, err := buildLoopBody(unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
+}
+
+// buildLeadingIf validates and builds the C text for a conditional statement
+// (tir.If) as an ordinary leading statement in a top-level function body —
+// the non-tail, non-loop position, e.g. a guard clause `if x > 0 { return 1;
+// }` followed by more statements. It is the top-level twin of buildLoopIf
+// (which buildIf, the tail-requiring two-armed form, is NOT: a leading if
+// need not be the block's last statement and its arms need not end in
+// return). Exactly like buildLoopIf, the child count is derived from HasElse
+// (a no-else If has exactly two children — the condition and the then-arm —
+// and a HasElse If has exactly three), the condition is a direct integer
+// comparison built by buildComparison, and the else is optional. The arms are
+// built by buildFallthroughBody — the same shared "arbitrary statement
+// sequence, no forced tail" builder a switch case body and a loop body use —
+// at the next nesting depth, which clones the incoming locals per arm, so a
+// local declared inside one arm is invisible to the sibling arm and to
+// anything outside the if, while locals declared in the enclosing body remain
+// visible inside both arms. The emitted text is indented at this statement's
+// depth, mirroring buildIf and buildLoopIf:
+//
+//	<indent>if (<condition>) {
+//	<then statements, one level deeper>
+//	<indent>}
+//
+// or, with an else:
+//
+//	<indent>if (<condition>) {
+//	<then statements, one level deeper>
+//	<indent>} else {
+//	<else statements, one level deeper>
+//	<indent>}
+//
+// Any other shape — a child count inconsistent with HasElse, or an arm that is
+// not a Block — is a clean rejection naming what was found. context names the
+// enclosing construct in error messages and is prefixed with " arm" for each
+// arm's own error messages.
+func buildLeadingIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
+	if ifNode.HasElse && len(ifNode.Children) != 3 {
+		return "", fmt.Errorf("%s if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", context, len(ifNode.Children))
+	}
+	if !ifNode.HasElse && len(ifNode.Children) != 2 {
+		return "", fmt.Errorf("%s if has no else arm but %d child(ren), want exactly 2 (condition, then-arm)", context, len(ifNode.Children))
+	}
+	condition, err := buildCondition(unit, snapshot, fileSet, ifNode.Children[0], locals, width)
+	if err != nil {
+		return "", err
+	}
+	thenText, err := buildFallthroughBody(unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions, context+" arm")
+	if err != nil {
+		return "", err
+	}
+	indent := strings.Repeat("    ", depth+1)
+	if !ifNode.HasElse {
+		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
+	}
+	elseText, err := buildFallthroughBody(unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions, context+" arm")
 	if err != nil {
 		return "", err
 	}
@@ -3821,10 +4080,19 @@ func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 }
 
 // buildLeadingStatement validates and builds one leading statement in the
-// block grammar shared by buildBlock and buildLoopBody: an Initialize (a local
-// declaration) or a Store (a reassignment of a local already in scope).
+// block grammar shared by buildBlock and buildFallthroughBody: an Initialize (a
+// local declaration), a Store (a reassignment of a local already in scope), a
+// Print, a bare discarded-expression statement (an ExpressionStatement), and —
+// since the non-tail if/switch work — a conditional if statement (a tir.If
+// built by buildLeadingIf: arms are fall-through sequences, optional else)
+// and a switch statement (a tir.Switch built by buildLoopSwitch: case bodies
+// may fall through or return). The If and Switch cases are how a leading
+// function-body statement sequence admits ordinary, non-tail control flow: an
+// `if` or `switch` followed by more statements.
 // context names the enclosing construct in error messages; indent is the
-// statement's C indentation. scope is the set of in-scope locals, each mapped
+// statement's C indentation; depth is the enclosing block's nesting depth,
+// passed to the If/Switch builders so they open their arms/case bodies one
+// level deeper. scope is the set of in-scope locals, each mapped
 // to a localInfo recording the resolved type it was declared with: the entry's
 // integer width or bool for a scalar local, the tuple type's TypeID for a
 // tuple local, the array type's TypeID for an array local, the optional
@@ -3852,7 +4120,7 @@ func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 // caller is responsible for having already cloned scope if the statements must
 // not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
 // do). Any other statement kind is a clean rejection naming what was found.
-func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, depth int, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
@@ -3995,8 +4263,22 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// explicit Print case and buildDeferredStatements for a deferred
 		// print), so the emission logic lives in exactly one place.
 		return buildPrint(unit, snapshot, fileSet, statement, scope, indent, context, width)
+	case tir.If:
+		// A conditional if statement as an ordinary leading statement — the
+		// non-tail shape, e.g. a guard clause `if x > 0 { return 1; }`
+		// followed by more code. Its arms are fall-through statement sequences
+		// (no required tail, optional else), built by buildLeadingIf, the
+		// top-level twin of buildLoopIf.
+		return buildLeadingIf(unit, snapshot, fileSet, statement, scope, depth, width, result, unions, context)
+	case tir.Switch:
+		// A switch statement as an ordinary leading statement — a non-tail
+		// switch whose case bodies may fall through or return, built by
+		// buildLoopSwitch (the same fall-through switch the loop-body/arm
+		// position uses). This is the only place a top-level function body can
+		// contain a non-tail switch; see buildLoopSwitch.
+		return buildLoopSwitch(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	default:
-		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize), a reassignment (Store), a call to a void-returning function used as a statement (ExpressionStatement), or a print statement (Print)", context, statement.Kind)
+		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize), a reassignment (Store), a call to a void-returning function used as a statement (ExpressionStatement), a print statement (Print), a conditional if statement (If), or a switch statement (Switch)", context, statement.Kind)
 	}
 }
 
