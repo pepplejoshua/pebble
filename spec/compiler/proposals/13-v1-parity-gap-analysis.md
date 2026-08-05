@@ -37,32 +37,6 @@ and should be fixed before returning to that list's remaining items
 without them. Confirmed today via direct `emitAndRun`/`Emit` probes against
 the real compiler, not assumed from v1's README.
 
-- [ ] **A plain `if` OR `switch` statement not in tail position and not
-      inside a loop is rejected — confirmed both, not just `if`.**
-      `internal/backend/emit.go`'s `buildLeadingStatement` (the function
-      that builds every non-final statement in a function body) accepts
-      exactly three statement kinds at its top level: `Initialize` (a local
-      declaration), `Store` (a reassignment), and `ExpressionStatement` (a
-      void call used as a statement). `buildBlock`'s separate tail-position
-      switch (the block's FINAL statement only) accepts exactly four:
-      `Return`, `ImplicitReturn`, `If`, `Switch`. `Return`/`ImplicitReturn`
-      are legitimately tail-only by language semantics (anything after an
-      unconditional return is dead code regardless of backend
-      capability) — not a bug. `If` and `Switch` are NOT semantically
-      tail-only, and both are confirmed broken as leading statements:
-      a guard-clause `if` in the middle of an ordinary function body (`if x
-      < 0 { return 0; } ... more code ...`), the single most common shape
-      of real imperative code, is rejected outright unless wrapped in a
-      loop or moved to the exact last position. Confirmed via two separate
-      direct tests: `fn helper(x i32) i32 { if x > 0 { return 1; } return
-      0; }` fails with `... statement is a If, want a local declaration
-      (Initialize), a reassignment (Store), or a call to a void-returning
-      function ...`; a `switch` with the identical shape (cases before a
-      trailing `return -1;`) fails identically, naming `Switch` instead of
-      `If`. Both share one root cause and should be fixed together (both
-      just need to be added to `buildLeadingStatement`'s accepted set,
-      presumably reusing whatever value/statement-sequence machinery the
-      tail-position versions already use).
 - [ ] **Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) is unimplemented.**
       `tir.CompoundStore` exists and is built by the checker (confirmed:
       `x += 1;` parses and type-checks) but has ZERO references in
