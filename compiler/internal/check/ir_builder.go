@@ -637,6 +637,11 @@ func (s *irBuildState) indexExpressions() bool {
 		if retained.Member != nil && retained.Member.Kind == memberVariant && retained.Member.Member != 0 {
 			s.variantBySyntax[retained.Header.Syntax] = retained.Member.Member
 		}
+		if retained.Aggregate != nil && (retained.Aggregate.Kind == aggregateEnumVariant || retained.Aggregate.Kind == aggregateTaggedVariant) && len(retained.Aggregate.Fields) != 0 {
+			if member := caseVariantMember(s.handoff.Semantics.Resolution(), retained.Aggregate); member != 0 {
+				s.variantBySyntax[retained.Header.Syntax] = member
+			}
+		}
 	}
 	return true
 }

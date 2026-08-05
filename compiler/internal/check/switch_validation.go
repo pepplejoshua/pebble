@@ -40,6 +40,11 @@ func validateSwitches(handoff *solveHandoff, records *solvedRecords, diagnostics
 		if retained.Member != nil && retained.Member.Kind == memberVariant && retained.Member.Member != 0 {
 			variantBySyntax[retained.Header.Syntax] = retained.Member.Member
 		}
+		if retained.Aggregate != nil && (retained.Aggregate.Kind == aggregateEnumVariant || retained.Aggregate.Kind == aggregateTaggedVariant) && len(retained.Aggregate.Fields) != 0 {
+			if member := caseVariantMember(resolution, retained.Aggregate); member != 0 {
+				variantBySyntax[retained.Header.Syntax] = member
+			}
+		}
 	}
 
 	for _, retained := range handoff.Records.Records() {
@@ -93,6 +98,32 @@ func validateSwitches(handoff *solveHandoff, records *solvedRecords, diagnostics
 
 	reporter.flush()
 	return !failed
+}
+
+// caseVariantMember recovers the variant symbol a base-less .name switch case
+// label refers to. The resolver defers partial-member names (symbol/visit.go),
+// so an aggregateEnumVariant/aggregateTaggedVariant record carries the authored
+// name rather than a resolved member; the member is re-derived by name from the
+// record's solved nominal declaration here, mirroring validateAggregateRecords
+// and ir_builder_literals.go.
+func caseVariantMember(resolution *symbol.Result, aggregate *aggregateRecord) symbol.SymbolID {
+	if resolution == nil || aggregate == nil || len(aggregate.Fields) == 0 {
+		return 0
+	}
+	if member := aggregate.Fields[0].Member; member != 0 {
+		return member
+	}
+	name := aggregate.Fields[0].Name
+	if aggregate.Declaration == 0 || name == "" {
+		return 0
+	}
+	for _, memberID := range resolution.Members(aggregate.Declaration) {
+		selected, ok := resolution.Symbols.Symbol(memberID)
+		if ok && selected.Kind == symbol.SymbolVariant && selected.Name == name {
+			return memberID
+		}
+	}
+	return 0
 }
 
 type switchCategory uint8

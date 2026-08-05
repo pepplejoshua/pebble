@@ -7822,6 +7822,46 @@ func TestEmitEnumSwitchBareReturnCaseBodyCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.blue;\nswitch c { case Color.red: return 1; case Color.green: return 2; case Color.blue: return 3; }\n}", false, 3, false)
 }
 
+func TestEmitEnumSwitchBaselessCaseLabelsCompileAndRun(t *testing.T) {
+	// The base-less .name shorthand for switch case labels (the exact repro:
+	// `case .red:` against a Color-typed subject). Each variant's subject must
+	// fire its own case branch and exit with the matching code, proving the
+	// shorthand resolves to the same member as the qualified `case Color.red:`
+	// form rather than merely checking clean. No trailing return after the
+	// switch: the shorthand must be recognized as exhaustive by
+	// switchIsExhaustive (control_validation.go) exactly like a qualified
+	// label already is, not merely resolve without also covering
+	// exhaustiveness — a masked version of this test with a spurious trailing
+	// return previously hid a real gap there (base-less case values produce
+	// an aggregateEnumVariant record, not a memberVariant member record, so
+	// switchIsExhaustive's coverage set never saw them and every base-less
+	// switch spuriously required an unreachable trailing return).
+	for _, fixture := range []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{"red", "Color.red", 1},
+		{"green", "Color.green", 2},
+		{"blue", "Color.blue", 3},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			emitAndRun(t, "type Color = enum { red, green, blue }; fn main() int {\nvar c Color = "+fixture.value+";\nswitch c { case .red: return 1; case .green: return 2; case .blue: return 3; }\n}", false, fixture.want, false)
+		})
+	}
+}
+
+func TestEmitTaggedUnionSwitchBaselessCaseLabelsCompileAndRun(t *testing.T) {
+	// Same base-less .name shorthand as
+	// TestEmitEnumSwitchBaselessCaseLabelsCompileAndRun, against a tagged
+	// union (union enum) subject instead of a plain enum — confirms the
+	// exhaustiveness fix (switchIsExhaustive now also indexes
+	// aggregateTaggedVariant records) covers both nominal-declaration kinds,
+	// not just plain enums. No trailing return: the switch must be
+	// recognized as exhaustive.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case .empty: return 0; case .value: return 1; }\n}", false, 1, false)
+}
+
 func TestEmitEnumStoreCompilesAndRuns(t *testing.T) {
 	// Reassigning an enum-typed local (c = Color.red; after declaration) lowers
 	// through buildStoreCore's enum branch to

@@ -56,11 +56,25 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 	coveredBools := make(map[bool]bool)
 	coveredEnumVariants := make(map[symbol.SymbolID]bool)
 	variantBySyntax := make(map[symbol.SyntaxRef]symbol.SymbolID)
+	resolution := handoff.Semantics.Resolution()
 	for _, record := range handoff.Records.Records() {
-		if !activeOperatorRecord(handoff, record.Header) || record.Member == nil || record.Member.Kind != memberVariant || record.Member.Member == 0 {
+		if !activeOperatorRecord(handoff, record.Header) {
 			continue
 		}
-		variantBySyntax[record.Header.Syntax] = record.Member.Member
+		if record.Member != nil && record.Member.Kind == memberVariant && record.Member.Member != 0 {
+			variantBySyntax[record.Header.Syntax] = record.Member.Member
+			continue
+		}
+		// A base-less `.name` switch case label (e.g. `case .red:`) produces an
+		// aggregateEnumVariant/aggregateTaggedVariant aggregate record, not a
+		// memberVariant member record, because the resolver defers partial-member
+		// names — mirrors validateSwitches' identical indexing in
+		// switch_validation.go and caseVariantMember's doc comment there.
+		if record.Aggregate != nil && (record.Aggregate.Kind == aggregateEnumVariant || record.Aggregate.Kind == aggregateTaggedVariant) && len(record.Aggregate.Fields) != 0 {
+			if member := caseVariantMember(resolution, record.Aggregate); member != 0 {
+				variantBySyntax[record.Header.Syntax] = member
+			}
+		}
 	}
 
 	for _, child := range ctrl.Composition {

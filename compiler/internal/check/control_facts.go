@@ -440,6 +440,17 @@ func (w *walker) prepareSwitchCase(ref symbol.SyntaxRef, node syntax.Node, ctx w
 		if w.nominalCase(value, tree) {
 			// A nominal case retains subject, member identity, name, and span
 			// through its member record. Selection and narrowing are post-solve.
+			// A base-less .name shorthand has no self-describing base; its
+			// member resolution depends on the subject's type, so wire the
+			// subject as the expected shape destination. Qualified labels and
+			// callVariant static targets already carry their own base and must
+			// not be touched here.
+			if node, ok := tree.Node(value.Node); ok && node.Kind() == syntax.PartialMemberExpr &&
+				control.subject != 0 && w.generation.hasValue(control.subject) {
+				if expected := w.expectationFor(value, control.subject, compatibilityBranch); expected.Kind != expectNone {
+					w.expectations[value] = expected
+				}
+			}
 			continue
 		}
 		// The shared memoized evaluator owns C0614 for every rejected form.

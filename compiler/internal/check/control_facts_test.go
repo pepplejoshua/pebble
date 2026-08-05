@@ -1158,3 +1158,172 @@ fn check(value i32, flag bool) void {
 		t.Fatal("no case controlValue found")
 	}
 }
+
+// TestSwitchFactsBaselessNominalCaseShorthand verifies that base-less .name
+// switch case labels resolve against the subject's type for both a plain enum
+// and a tagged union. Before the fix these produced T0510 "inference variable
+// has no unique semantic type" because prepareSwitchCase skipped expectation
+// wiring for PartialMemberExpr case values.
+func TestSwitchFactsBaselessNominalCaseShorthand(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Color = enum { red, green, blue };
+type Data = union enum { Ok void; Err void; };
+fn colorValue(c Color) int {
+    switch c {
+        case .red: return 1;
+        case .green: return 2;
+        case .blue: return 3;
+    }
+    return 0;
+}
+fn dataValue(d Data) int {
+    switch d {
+        case .Ok: return 4;
+        case .Err: return 5;
+    }
+    return 0;
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	item, _ := inputs.Graph.Module(inputs.Graph.Root)
+	partial, qualified := 0, 0
+	for _, ref := range facts.Walk.order {
+		node, _ := item.Tree.Node(ref.Node)
+		if node.Kind() != syntax.SwitchCase {
+			continue
+		}
+		for _, value := range switchCaseValues(ref, node, item.Tree) {
+			if !facts.Walk.nominalCase(value, item.Tree) {
+				t.Fatalf("case value %+v was not classified nominal", value)
+			}
+			valueNode, _ := item.Tree.Node(value.Node)
+			if valueNode.Kind() == syntax.PartialMemberExpr {
+				partial++
+				if _, ok := facts.Walk.expectations[value]; !ok {
+					t.Fatalf("base-less case value %+v carries no subject expectation", value)
+				}
+			} else {
+				qualified++
+				if _, ok := facts.Walk.expectations[value]; ok {
+					t.Fatalf("qualified case value %+v unexpectedly carries a subject expectation", value)
+				}
+			}
+		}
+	}
+	if partial != 5 || qualified != 0 {
+		t.Fatalf("partial=%d qualified=%d, want partial=5 qualified=0", partial, qualified)
+	}
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("base-less nominal cases did not solve: successful=%v diagnostics=%+v", solution.Successful(), diagnostics.Items())
+	}
+}
+
+// TestSwitchFactsQualifiedNominalCaseLabelsUnaffected locks the regression that
+// qualified case labels (explicit base) keep working exactly as before the
+// base-less shorthand fix: they must not carry a subject expectation.
+func TestSwitchFactsQualifiedNominalCaseLabelsUnaffected(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Color = enum { red, green, blue };
+type Data = union enum { Ok void; Err void; };
+fn colorValue(c Color) int {
+    switch c {
+        case Color.red: return 1;
+        case Color.green: return 2;
+        case Color.blue: return 3;
+    }
+    return 0;
+}
+fn dataValue(d Data) int {
+    switch d {
+        case Data.Ok: return 4;
+        case Data.Err: return 5;
+    }
+    return 0;
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	item, _ := inputs.Graph.Module(inputs.Graph.Root)
+	count := 0
+	for _, ref := range facts.Walk.order {
+		node, _ := item.Tree.Node(ref.Node)
+		if node.Kind() != syntax.SwitchCase {
+			continue
+		}
+		for _, value := range switchCaseValues(ref, node, item.Tree) {
+			if !facts.Walk.nominalCase(value, item.Tree) {
+				t.Fatalf("qualified case value %+v was not classified nominal", value)
+			}
+			valueNode, _ := item.Tree.Node(value.Node)
+			if valueNode.Kind() == syntax.PartialMemberExpr {
+				t.Fatalf("qualified case value %+v parsed as a partial member", value)
+			}
+			if _, ok := facts.Walk.expectations[value]; ok {
+				t.Fatalf("qualified case value %+v unexpectedly carries a subject expectation", value)
+			}
+			count++
+		}
+	}
+	if count != 5 {
+		t.Fatalf("qualified case values = %d, want 5", count)
+	}
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("qualified nominal cases did not solve: successful=%v diagnostics=%+v", solution.Successful(), diagnostics.Items())
+	}
+}
+
+// TestSwitchFactsVariantCallCaseLabelsRejectedAsBefore locks the regression
+// that case labels written as calls (`.red()`, `Color.red()`, payload variant
+// calls) are not nominal and are rejected with C0614 exactly as before the
+// base-less shorthand fix. These shapes are unreachable nominal syntax, so the
+// fix must not alter them.
+func TestSwitchFactsVariantCallCaseLabelsRejectedAsBefore(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Color = enum { red, green, blue };
+type Data = union enum { Int i32; Str str; };
+fn a(c Color) int {
+    switch c {
+        case Color.red(): return 1;
+    }
+    return 0;
+}
+fn b(c Color) int {
+    switch c {
+        case .red(): return 2;
+    }
+    return 0;
+}
+fn d(data Data) int {
+    switch data {
+        case Data.Int(1): return 3;
+    }
+    return 0;
+}
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	item, _ := inputs.Graph.Module(inputs.Graph.Root)
+	for _, ref := range facts.Walk.order {
+		node, _ := item.Tree.Node(ref.Node)
+		if node.Kind() != syntax.SwitchCase {
+			continue
+		}
+		for _, value := range switchCaseValues(ref, node, item.Tree) {
+			if facts.Walk.nominalCase(value, item.Tree) {
+				t.Fatalf("call-shaped case value %+v was classified nominal", value)
+			}
+		}
+	}
+	facts.Session.Solve()
+	for _, diagnosticItem := range diagnostics.Items() {
+		if diagnosticItem.Severity != diagnostic.Error {
+			continue
+		}
+		if diagnosticItem.Code != CodeInvalidConstant && diagnosticItem.Code != infer.CodeUnresolved {
+			t.Fatalf("call-shaped case label produced unexpected diagnostic: %+v", diagnosticItem)
+		}
+	}
+	if !hasControlDiagnostic(diagnostics, CodeInvalidConstant) {
+		t.Fatalf("call-shaped case label was not rejected with C0614: %+v", diagnostics.Items())
+	}
+}
