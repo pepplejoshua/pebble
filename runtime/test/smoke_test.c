@@ -68,6 +68,7 @@
 #include "pebble_rt.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -193,6 +194,30 @@ static void test_checked_arithmetic_normal(void) {
     assert(pebble_rt_checked_mod_i32(INT32_MIN, -1, (PebbleSourceLoc){0}) == 0);
     assert(pebble_rt_checked_mod_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) == 0);
 }
+
+static void test_float_to_integer_normal(void) {
+    assert(pebble_rt_checked_f32_to_i32(42.75f, (PebbleSourceLoc){0}) == 42);
+    assert(pebble_rt_checked_f64_to_i32(-42.75, (PebbleSourceLoc){0}) == -42);
+    assert(pebble_rt_checked_f32_to_i64(42.75f, (PebbleSourceLoc){0}) == 42);
+    assert(pebble_rt_checked_f64_to_i64(-42.75, (PebbleSourceLoc){0}) == -42);
+
+    /* INT32_MAX is rounded to 2^31 in f32, so that value is out of range;
+     * the adjacent in-range value is the greatest representable float below it.
+     */
+    assert(pebble_rt_checked_f32_to_i32(2147483520.0f, (PebbleSourceLoc){0}) == 2147483520);
+    assert(pebble_rt_checked_f64_to_i32(2147483647.0, (PebbleSourceLoc){0}) == INT32_MAX);
+    assert(pebble_rt_checked_f64_to_i64(9223372036854774784.0, (PebbleSourceLoc){0}) == INT64_C(9223372036854774784));
+}
+
+#if defined(PEBBLE_RT_MODE_SAFE)
+static void trigger_float_to_integer_overflow(void) {
+    (void)pebble_rt_checked_f64_to_i32(2147483648.0, (PebbleSourceLoc){0});
+}
+
+static void trigger_float_to_integer_nan(void) {
+    (void)pebble_rt_checked_f32_to_i64(NAN, (PebbleSourceLoc){0});
+}
+#endif
 
 /* A checked call given a real (non-zero) PebbleSourceLoc must report it in
  * the panic — proving the plumbing actually reaches pebble_rt_panic's
@@ -701,6 +726,9 @@ int main(void) {
     test_checked_arithmetic_normal();
     printf("ok: checked arithmetic normal results\n");
 
+    test_float_to_integer_normal();
+    printf("ok: checked float-to-integer normal results and boundaries\n");
+
     if (verify_panic_reports_location() != 0) {
         fprintf(stderr, "smoke_test: panic location-report subprocess check FAILED\n");
         return 1;
@@ -837,6 +865,14 @@ int main(void) {
         fprintf(stderr, "smoke_test: checked i64 div overflow subprocess check FAILED\n");
         return 1;
     }
+    if (verify_checked_overflow_panics("float-to-i32 overflow", trigger_float_to_integer_overflow) != 0) {
+        fprintf(stderr, "smoke_test: float-to-i32 overflow subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("float-to-i64 NaN", trigger_float_to_integer_nan) != 0) {
+        fprintf(stderr, "smoke_test: float-to-i64 NaN subprocess check FAILED\n");
+        return 1;
+    }
     printf("ok: checked arithmetic overflow panics in subprocess\n");
 #else
     /* RELEASE: overflow wraps to the operation's two's-complement bit
@@ -865,6 +901,12 @@ int main(void) {
     }
     if (pebble_rt_checked_div_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) != INT64_MIN) {
         fprintf(stderr, "smoke_test: checked i64 div did not wrap to INT64_MIN in RELEASE\n");
+        return 1;
+    }
+    if (pebble_rt_checked_f32_to_i32(2147483648.0f, (PebbleSourceLoc){0}) != INT32_MIN ||
+        pebble_rt_checked_f64_to_i32(NAN, (PebbleSourceLoc){0}) != INT32_MIN ||
+        pebble_rt_checked_f64_to_i64(9223372036854775808.0, (PebbleSourceLoc){0}) != INT64_MIN) {
+        fprintf(stderr, "smoke_test: float-to-integer did not return indefinite sentinel in RELEASE\n");
         return 1;
     }
     printf("ok: checked arithmetic wraps in RELEASE\n");

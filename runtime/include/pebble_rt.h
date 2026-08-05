@@ -171,6 +171,19 @@ int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc);
 
+/* ---- checked float-to-integer conversion -----------------------------------
+ * Converts f32/f64 values to i32/i64 after checking for NaN and values outside
+ * the destination's representable range. SAFE mode panics with
+ * PEBBLE_PANIC_ARITHMETIC_OVERFLOW; RELEASE mode returns the destination's
+ * integer-indefinite sentinel (INT32_MIN or INT64_MIN). The upper bound is
+ * exclusive: for floating sources it is expressed as 2^31 or 2^63 because
+ * INT32_MAX/INT64_MAX round to those values at the relevant precision.
+ */
+int32_t pebble_rt_checked_f32_to_i32(float value, PebbleSourceLoc loc);
+int32_t pebble_rt_checked_f64_to_i32(double value, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_f32_to_i64(float value, PebbleSourceLoc loc);
+int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc);
+
 /* ---- checked division and modulo -------------------------------------------
  * Division and modulo have a fault case wraparound cannot fix: b == 0 has no
  * defined quotient at all, in either mode — unlike +, -, *, there is no

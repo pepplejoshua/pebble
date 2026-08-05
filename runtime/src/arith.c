@@ -1,5 +1,6 @@
 #include "pebble_rt.h"
 
+#include <math.h>
 #include <stdint.h>
 
 /* Checked i32 and i64 arithmetic, the runtime home of the typed IR's
@@ -173,6 +174,58 @@ int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
 }
 
 #endif /* PEBBLE_RT_MODE_SAFE / PEBBLE_RT_MODE_RELEASE */
+
+/* Float-to-integer conversion must check before the C cast: an out-of-range
+ * or NaN conversion is undefined. The upper bounds are exclusive powers of
+ * two, which remain correct when INT32_MAX/INT64_MAX are rounded by conversion
+ * to the source float type. */
+int32_t pebble_rt_checked_f32_to_i32(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -2147483648.0f || value >= 2147483648.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to i32 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT32_MIN;
+#endif
+    }
+    return (int32_t)value;
+}
+
+int32_t pebble_rt_checked_f64_to_i32(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -2147483648.0 || value >= 2147483648.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to i32 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT32_MIN;
+#endif
+    }
+    return (int32_t)value;
+}
+
+int64_t pebble_rt_checked_f32_to_i64(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -9223372036854775808.0f || value >= 9223372036854775808.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to i64 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT64_MIN;
+#endif
+    }
+    return (int64_t)value;
+}
+
+int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -9223372036854775808.0 || value >= 9223372036854775808.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to i64 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT64_MIN;
+#endif
+    }
+    return (int64_t)value;
+}
 
 /* ---- checked division and modulo -------------------------------------------
  * Defined once for both modes, per the header contract:

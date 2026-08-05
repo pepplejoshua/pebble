@@ -6247,6 +6247,32 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body integer cast child: %v", err)
 		}
 		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
+	case tir.FloatToInteger:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || checkedSuffix(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a FloatToInteger referencing invalid child node %d", node.Children[0])
+		}
+		childWidth := resolvedFloatKind(snapshot, child.Type)
+		if childWidth == 0 {
+			return "", fmt.Errorf("entry function body FloatToInteger child has non-float type %s", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		if err != nil {
+			return "", fmt.Errorf("entry function body float-to-integer cast child: %v", err)
+		}
+		helper := "pebble_rt_checked_" + childFloatSuffix(childWidth) + "_to_" + checkedSuffix(destinationWidth)
+		return helper + "(" + childExpr + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.CheckedNegate:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedNegate with %d operand(s), want exactly one", len(node.Children))
@@ -8781,6 +8807,16 @@ func checkedSuffix(width types.BuiltinKind) string {
 		return "i32"
 	case types.I64:
 		return "i64"
+	}
+	return ""
+}
+
+func childFloatSuffix(width types.BuiltinKind) string {
+	switch width {
+	case types.F32:
+		return "f32"
+	case types.F64:
+		return "f64"
 	}
 	return ""
 }

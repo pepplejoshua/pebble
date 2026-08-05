@@ -838,6 +838,35 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 	return binary
 }
 
+func compileEmittedCRelease(t *testing.T, emitted []byte) string {
+	t.Helper()
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
+	}
+	dir := t.TempDir()
+	program := filepath.Join(dir, "program.c")
+	if err := os.WriteFile(program, emitted, 0o644); err != nil {
+		t.Fatalf("write emitted C: %v", err)
+	}
+	binary := filepath.Join(dir, "program")
+	runtimeRoot := runtimeSourceRoot(t)
+	compileArgs := []string{
+		"-std=c11", "-Wall", "-Wextra", "-Werror",
+		"-DPEBBLE_RT_MODE_RELEASE",
+		"-I", filepath.Join(runtimeRoot, "include"), program,
+	}
+	for _, sourceFile := range runtimeSourceFiles {
+		compileArgs = append(compileArgs, filepath.Join(runtimeRoot, "src", sourceFile))
+	}
+	compileArgs = append(compileArgs, "-o", binary)
+	compile := exec.Command(cc, compileArgs...)
+	if output, err := compile.CombinedOutput(); err != nil {
+		t.Fatalf("cc RELEASE compilation failed: %v\n%s", err, output)
+	}
+	return binary
+}
+
 func cachedRuntimeObjects(cc, runtimeRoot string) (string, error) {
 	runtimeObjectsOnce.Do(func() {
 		if _, err := exec.LookPath("cc"); err != nil {
@@ -4015,6 +4044,49 @@ func TestEmitChainedIntegerToFloatAndFloatCastCompilesAndRuns(t *testing.T) {
 		t.Fatalf("emitted C missing chained FloatCast (double) cast:\n%s", out)
 	}
 	compileAndRun(t, buf.Bytes(), 23, false)
+}
+
+func TestEmitFloatToIntegerCompilesAndRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"f32 to i32", "fn main() i32 { let x f32 = 42.75; return x as i32; }", 42},
+		{"f64 to i32", "fn main() i32 { let x f64 = 42.75; return x as i32; }", 42},
+		{"f32 to i64", "fn main() i64 { let x f32 = 42.75; return x as i64; }", 42},
+		{"f64 to i64", "fn main() i64 { let x f64 = 42.75; return x as i64; }", 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, snapshot, entryID, sources := buildFixture(t, tc.src, "main", false)
+			var buf bytes.Buffer
+			if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+				t.Fatalf("Emit failed: %v", err)
+			}
+			out := buf.String()
+			if !strings.Contains(out, "pebble_rt_checked_f") || !strings.Contains(out, "_to_i") {
+				t.Fatalf("emitted C missing checked float-to-integer helper:\n%s", out)
+			}
+			compileAndRun(t, buf.Bytes(), tc.want, false)
+		})
+	}
+}
+
+func TestEmitFloatToIntegerBoundaryPanics(t *testing.T) {
+	// f32 cannot represent INT32_MAX; 2147483647.0f rounds to 2^31 and must
+	// be rejected rather than reaching C's undefined float-to-int conversion.
+	emitAndRun(t, "fn main() i32 { let x f32 = 2147483647.0; return x as i32; }", false, 0, true)
+	emitAndRun(t, "fn main() i64 { let x f64 = 9223372036854775808.0; return x as i64; }", false, 0, true)
+}
+
+func TestEmitFloatToIntegerReleaseReturnsSentinel(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x f64 = 2147483648.0; return (x as i32) + 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 1, false, false)
 }
 
 func TestEmitRejectsSelfRecursion(t *testing.T) {
