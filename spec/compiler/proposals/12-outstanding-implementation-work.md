@@ -767,11 +767,41 @@ fix above.
       comparison-driven branch, plus a regression confirming
       mixed-width float expressions without a cast are still rejected
       by the checker.
-- [ ] **Stage C — the three float-involving casts.** `IntegerToFloat`,
-      `FloatToInteger`, `FloatCast`. Only `FloatToInteger` strictly
-      needs a NEW checked runtime primitive (C's float→int conversion
-      is undefined behavior for out-of-range values); `IntegerToFloat`
-      and `FloatCast` are well-defined in C already and can likely be
-      plain unchecked casts, mirroring `IntegerCast` (`5f8a78e`).
-      Depends on Stage A (done) for float locals to cast into/out of;
-      does not strictly depend on Stage B.
+- [x] **Stage C1, fixed and committed (`940db77`).** `IntegerToFloat`
+      and `FloatCast` — both unchecked plain C casts, confirmed
+      well-defined for every input (including precision loss) under
+      this project's actual `-Wall -Wextra -Werror` flags before
+      implementing. Both added as new cases in `buildFloatExpr`,
+      directly mirroring `IntegerCast`'s "recurse into the child at its
+      own resolved width" shape. `IntegerToFloat`'s child builds via
+      `buildExpr` (integer source); `FloatCast`'s child builds via a
+      recursive `buildFloatExpr` (float source), using `resolvedFloatKind`
+      from Stage B. Verified independently: reproduced the original
+      rejection against the pre-fix tree via `git stash`, confirmed
+      gone; full suite green; tests include a narrowing case
+      specifically chosen to discriminate correct truncation from a bug
+      (`16777217.5` narrowed to `f32` must exit 2, not 1) and a chained
+      int→f32→f64 round-trip.
+- [ ] **Stage C2 — `FloatToInteger`, needs a NEW checked runtime
+      primitive.** Unlike the two casts Stage C1 handled, C's
+      float→integer conversion is undefined behavior when the value is
+      out of the destination integer type's range (or NaN). This needs
+      a real `pebble_rt_checked_float_to_<int-suffix>` family in
+      `runtime/src/arith.c` (+ declaration in
+      `runtime/include/pebble_rt.h`), following the exact pattern
+      `pebble_rt_checked_neg_i32`/`_i64` already establish (see
+      `10.4`/`10.13` in `10-c-backend-implementation-plan.md`): SAFE
+      mode panics (`PEBBLE_PANIC_ARITHMETIC_OVERFLOW` is the closest
+      existing category — confirm whether a new panic kind is actually
+      warranted or whether reusing this one is correct) on
+      out-of-range/NaN input; RELEASE mode needs its own defined
+      fallback behavior (investigate what — C doesn't define a "safe"
+      truncation for out-of-range floats the way it does two's-complement
+      wraparound for integer overflow, so RELEASE mode's semantics here
+      need actual design thought, not a mechanical copy of the integer
+      pattern). Scope: likely just `f32`/`f64` source × `i32`/`i64`
+      destination (4 combinations), matching this backend's existing
+      checked-primitive width coverage (already confirmed elsewhere
+      that `u32` arithmetic isn't covered by the existing checked
+      helpers either — a separate, known gap, not this task's problem
+      to fix). Not yet dispatched.
