@@ -37,16 +37,23 @@ and should be fixed before returning to that list's remaining items
 without them. Confirmed today via direct `emitAndRun`/`Emit` probes against
 the real compiler, not assumed from v1's README.
 
-- [ ] **Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) is unimplemented.**
-      `tir.CompoundStore` exists and is built by the checker (confirmed:
-      `x += 1;` parses and type-checks) but has ZERO references in
-      `emit.go`. Fails identically to `If`: `entry function body block
-      statement is a CompoundStore, want a local declaration...`. You must
-      write `x = x + 1;` instead.
-- [ ] **Increment/decrement (`i++`, `i--`) is unimplemented** — same root
-      cause as compound assignment: `i++` parses to a `CompoundStore` node,
-      which hits the identical `buildLeadingStatement` gap. Confirmed via
-      direct test.
+- [ ] **Compound assignment double-evaluates a non-plain place's
+      side-effecting index/base expression — fix in flight.** Base
+      implementation landed (`d035ff5`): `+=`/`-=`/`*=`/`/=`/`%=` and
+      `i++`/`i--` all work correctly for plain locals and for
+      side-effect-free array/field/pointer targets (everything currently
+      reachable in `std/`). Real, confirmed, independently-reproduced bug
+      found and honestly flagged by that same dispatch: the emitted
+      `lvalue = helper(lvalue, rhs, loc)` shape repeats the lvalue TEXT,
+      so `arr[f()] += 1;` calls `f()` twice — a genuine violation of the
+      single-evaluation guarantee `internal/check/ir_builder_test.go`'s
+      own checker test already asserts for this exact shape, and one
+      every mainstream language with side-effecting lvalues (C, C++, Go,
+      Rust) makes. Not accepted as a limitation — fix dispatched
+      immediately (take the place's address once into a temp pointer,
+      dereference twice, mirroring the existing `tempDecl` pattern
+      `buildSliceConstruction`/`buildSliceReturnValue` already use in
+      this file). Remove this entry once that lands and is verified.
 - [ ] **Bitwise operators `&`, `|`, `^` are unimplemented in the backend.**
       Each parses and checks fine, producing a `tir.BinaryValue` node, but
       `buildExpr`'s accepted-node-kind list (documented explicitly in its
