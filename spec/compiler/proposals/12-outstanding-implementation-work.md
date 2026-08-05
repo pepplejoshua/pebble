@@ -745,18 +745,28 @@ fix above.
       (not just exit codes, which can't distinguish float values) plus
       a scope-boundary regression confirming arithmetic still cleanly
       rejects.
-- [ ] **Stage B — float arithmetic and comparisons.** Not yet scoped
-      in detail. Needs: float `+`/`-`/`*`/`/` (checked or unchecked —
-      investigate whether this project's "checked" runtime-primitive
-      philosophy applies to floats the same way it does to integers,
-      since float overflow behaves differently than integer overflow
-      in C — infinity is a defined result, not UB, unlike signed
-      integer overflow), and float comparisons (`==`, `<`, etc.,
-      likely feeding into the existing `buildBoolExpr`). Float
-      parameters and float helper-function results are likely still
-      out of scope for this stage too (mirroring how Stage A of the
-      width-restriction fix handled results before Stage B handled
-      locals) — confirm the right split when scoping this.
+- [x] **Stage B, fixed and committed (`06c8cc2`).** Float `+`/`-`/`*`/`/`
+      and comparisons (`==`/`!=`/`<`/`<=`/`>`/`>=`) between two
+      same-width float operands. Confirmed the "checked or unchecked"
+      question up front: unlike signed integer overflow, IEEE 754 float
+      arithmetic (overflow to infinity, division by zero producing
+      `inf`/`-inf`/`NaN`) is well-defined C behavior — so this is
+      UNCHECKED, no new runtime primitive, unlike integer arithmetic's
+      `pebble_rt_checked_*` helpers. `buildFloatExpr` gained a
+      `tir.BinaryValue` case (`%` explicitly excluded — doesn't apply to
+      floats in C); `buildComparison` gained a float-operand branch,
+      reusing its already-validated six-operator gate. Investigation
+      found float binary operators are ordinary `tir.BinaryValue` nodes
+      at the checker level (`CheckedArithmetic` is selected only for
+      integer operands) — no checker change needed. Float parameters
+      and helper-function results remain out of scope, per plan.
+      Verified independently: reproduced the original rejection against
+      the pre-fix tree via `git stash`, confirmed gone; full suite
+      green; tests compile and run real C for all four operators
+      (asserting the actual emitted operator text) and a
+      comparison-driven branch, plus a regression confirming
+      mixed-width float expressions without a cast are still rejected
+      by the checker.
 - [ ] **Stage C — the three float-involving casts.** `IntegerToFloat`,
       `FloatToInteger`, `FloatCast`. Only `FloatToInteger` strictly
       needs a NEW checked runtime primitive (C's float→int conversion
