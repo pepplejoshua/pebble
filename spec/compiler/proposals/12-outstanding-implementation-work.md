@@ -20,11 +20,14 @@ See `11-raw-pointers-and-unsafe-ops.md` for full design/history.
 - [x] Slice 4 — `slice` keyword (pointer + count → slice), implemented as an
       unconditional reserved keyword after the initial contextual-keyword
       design was rejected and corrected
-- [ ] **§11 doc entry for the `slice` keyword slice is still owed** — the
-      spec doc's own record stops at Slice 3; Slice 4's real history
-      (the contextual-keyword flaw, every renamed identifier, the golden-file
-      regen) needs writing up before it's considered closed on paper, even
-      though the code itself is done and committed.
+- [x] **§11 doc entry for the `slice` keyword.** Stale checkbox — this
+      was already written (commits `8e8f3f2`, `08fbb97`, `46d4af6`),
+      confirmed by directly re-reading `11-raw-pointers-and-unsafe-ops.md`
+      §11 (lines 372-490): a complete, thorough section covering the
+      contextual-keyword flaw and its fix, every renamed identifier, the
+      golden-file regen, and three follow-up updates chronicling the
+      whole downstream chain through to the final passing end-to-end
+      test. Nothing left to write.
 - [x] Known follow-up (documented in 11 §6): `std/string.peb` needed a
       rewrite — it did raw pointer arithmetic throughout, illegal under
       §1.5. Done — see the full std-library audit entry below (checks
