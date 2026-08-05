@@ -176,6 +176,9 @@ func run06b(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config
 	if !validateCompatibilityRecords(handoff, records, diagnostics, config) {
 		return newResult(handoff, records, nil, nil, false)
 	}
+	if !validateCastRecords(handoff, records, diagnostics, config) {
+		return newResult(handoff, records, nil, nil, false)
+	}
 
 	// Generic requirements.
 	requirements, ok := validateRequirements(handoff, records, diagnostics, config)

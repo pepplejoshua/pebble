@@ -18,8 +18,10 @@ func TestValidationFixtures(t *testing.T) {
 			path := path
 			t.Run(filepath.Base(path), func(t *testing.T) {
 				diagnostics, handoff, records := runValidationFixture(t, path)
-				if !validateCompatibilityRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeConversion) {
-					t.Fatalf("valid conversion fixture was rejected: %+v", diagnostics.Items())
+				compatibilityOK := validateCompatibilityRecords(handoff, records, diagnostics, Config{})
+				castOK := validateCastRecords(handoff, records, diagnostics, Config{})
+				if !compatibilityOK || !castOK || hasValidationDiagnostic(diagnostics, CodeConversion) {
+					t.Fatalf("valid conversion fixture was rejected: compatibility=%v cast=%v diagnostics=%+v", compatibilityOK, castOK, diagnostics.Items())
 				}
 			})
 		}
