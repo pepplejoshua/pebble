@@ -285,7 +285,8 @@ is illegal per 11 §4's decision.
       but the method's declared return type is `?int` — a real,
       pre-existing type mismatch (present in the file before this
       session's redesign too), not yet fixed.
-- [~] `std/hmap.peb`, `std/set.peb` — redesign WRITTEN (uncommitted,
+- [x] `std/hmap.peb`, `std/set.peb` — DONE, both committed and pushed,
+      both check completely clean end to end. Redesign was
       working tree only), same pointer-arithmetic-to-slice-indexing
       pattern as `vec.peb`/`string.peb`: `entries *Entry[K,V]` →
       `entries []Entry[K,V]`, `(new_entries + i).state = .Empty;` →
@@ -378,33 +379,58 @@ is illegal per 11 §4's decision.
             full suite green including a real `cc` backend round-trip.
 
       **Re-checked both `.peb` files again after Part 3: `std/set.peb`
-      now passes completely clean end to end** (0 errors, only
-      pre-existing benign "unreachable statement" warnings — same
-      pattern as a `while true { ... }` loop followed by a trailing
-      `return` the checker can't prove reachable, harmless). **`std/hmap.peb`
-      still fails**, on a distinct, newly-found bug, unrelated to
-      everything above (confirmed: both individual methods build cleanly
-      in isolation without the enum-shorthand fix touching them at all).
-      Bisected precisely by progressively isolating `HashMap[K,V]`'s 8
-      methods: the minimal failing combination is exactly two sibling
-      generic methods on the same struct —
-      ```
-      fn get_by_ref[K, V](self *HashMap[K, V], key K) ?*V { ... return some &entry.value; ... }
-      fn get[K, V](self *HashMap[K, V], key K) ?V {
-          let ptr = self.get_by_ref(key);
-          if !ptr.has_value { return none; }
-          return some *(ptr!);
-      }
-      ```
-      `get_by_ref` alone builds fine. `get_by_ref` + `contains` (which
-      also calls `get_by_ref` but only reads `.has_value`, no deref)
-      builds fine. `get_by_ref` + `remove`/`clear` (unrelated methods)
-      build fine. Only `get_by_ref` + `get` together fails — and `get`
-      is the one method that DEREFERENCES the returned optional pointer
-      through an unwrap (`*(ptr!)`) rather than just reading/comparing
-      it. Not yet root-caused past this isolation or dispatched.
-      `std/hmap.peb` remains uncommitted; `std/set.peb` is ready to
-      commit once reviewed.
+      passed completely clean end to end** (0 errors, only pre-existing
+      benign "unreachable statement" warnings — same pattern as a
+      `while true { ... }` loop followed by a trailing `return` the
+      checker can't prove reachable, harmless) and was committed
+      (`52c72b7`, from an earlier session). **`std/hmap.peb` still
+      failed**, on a distinct bug, confirmed unrelated to Parts 1-3
+      (both individual methods involved built cleanly in isolation
+      before the enum-shorthand fix ever touched them). An initial
+      bisection (progressively isolating `HashMap[K,V]`'s 8 methods)
+      pointed at the sibling-method pair `get_by_ref`/`get` as the
+      minimal failing combination — but that framing turned out to be a
+      red herring; see Part 4.
+
+      - [x] **Part 4, fixed and committed (`269f937`).** Investigated
+            directly (not dispatched — small and precisely traceable).
+            The real trigger has nothing to do with sibling generic
+            methods: it's `get()`'s `return some *(ptr!);` — a
+            DEREFERENCE whose operand is an UNWRAPPED optional payload,
+            reproduced standalone with no structs, no generics, and no
+            method calls at all (`fn f(ptr ?*i32) ?i32 { if
+            !ptr.has_value { return none; } return some *(ptr!); }`
+            fails identically). Two compounding gaps in
+            `internal/check/ir_builder_place.go`'s `buildPlaceForValue`,
+            both in its generic "single child" branch: (1) no handling
+            for `expressionGrouped` (parenthesized) nodes at all — even
+            the simpler `*(ptr)` (a grouped plain pointer, no unwrap)
+            failed the same way, since a `GroupedTerm` has one child but
+            matches neither the member-access nor the
+            dereference-operator pattern and fell through to an
+            unconditional failure; fixed by treating a grouped term as
+            fully transparent (its place is exactly its inner
+            expression's place). (2) More fundamentally, the branch
+            unconditionally tried to build its single child AS A PLACE
+            first, before even checking whether the parent was a
+            dereference operator — but a dereference's operand only
+            needs to be a POINTER VALUE, not a place, and the
+            dereference-handling code never used that eagerly-built
+            result anyway. So `*(ptr!)` still failed even after fix 1,
+            since `ptr!` (an `Unwrap` operator) isn't itself
+            place-buildable either — correctly so, unwrapping just
+            extracts a value. Fixed by checking for the
+            dereference-operator case first, ahead of the generic
+            member/tuple branch that legitimately needs its child to be
+            a place. Verified independently: isolated minimal repros for
+            both gaps (grouped operand alone, then unwrap+deref
+            together) failed before, passed after; full suite green.
+
+      **Re-checked both `.peb` files after Part 4: `std/hmap.peb` now
+      also checks completely clean end to end** (same benign
+      "unreachable statement" warnings as `set.peb`, no errors).
+      Committed (`f4811d2`) and pushed. `std/hmap.peb`/`std/set.peb`
+      redesign is DONE.
 
 ## Pointer-receiver methods can't be called on a value-typed local (fixed, then a regression, fix in flight)
 
