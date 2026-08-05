@@ -713,3 +713,55 @@ return to the float-cast half of the primitive-casts item above — no
 longer blocked, since a function/local can now legitimately be a
 different integer width than its surroundings, the same mechanism
 floats need.
+
+## Float-expression backend support (multi-stage, follows the width-restriction fix above)
+
+The backend had ZERO float-expression support anywhere before this —
+confirmed via `grep -n "FloatLiteral" internal/backend/emit.go`
+returning no matches prior to Stage A. Split into narrow,
+independently-shippable stages, same discipline as the width-restriction
+fix above.
+
+- [x] **Stage A, fixed and committed (`8e33980`).** A float local can
+      be declared, read back (bare reference and return), and
+      reassigned. New `buildFloatExpr` (modeled on `buildBoolExpr`)
+      accepts exactly `FloatLiteral`, `SymbolValue` of a same-kind float
+      local, and single-child `SourceAlias`. `buildScalarInitializeCore`/
+      `buildStoreCore` gained float cases mirroring the per-local
+      integer-width fix (`5271d1d`). `validateEntrySignature`/
+      `entryReturnType` now accept `f32`/`f64` for a float-typed `main`
+      specifically — verified the hosted `main`'s implicit
+      float-to-int narrowing (for the process exit code) builds
+      warning-free under this project's actual `-Wall -Wextra -Werror`
+      flags. Deliberately does NOT include: float arithmetic, float
+      comparisons, any cast, float parameters, or float helper-function
+      results — all separate later stages. No `DirectCall` case in
+      `buildFloatExpr` — confirmed a float-returning helper is
+      unreachable (`validateHelperSignature` already rejects it).
+      Checker needed no changes (backend-only gap, confirmed by
+      testing). Verified independently: reproduced the original
+      rejection against the pre-fix tree via `git stash`, confirmed
+      gone; full suite green; tests assert on actual emitted C text
+      (not just exit codes, which can't distinguish float values) plus
+      a scope-boundary regression confirming arithmetic still cleanly
+      rejects.
+- [ ] **Stage B — float arithmetic and comparisons.** Not yet scoped
+      in detail. Needs: float `+`/`-`/`*`/`/` (checked or unchecked —
+      investigate whether this project's "checked" runtime-primitive
+      philosophy applies to floats the same way it does to integers,
+      since float overflow behaves differently than integer overflow
+      in C — infinity is a defined result, not UB, unlike signed
+      integer overflow), and float comparisons (`==`, `<`, etc.,
+      likely feeding into the existing `buildBoolExpr`). Float
+      parameters and float helper-function results are likely still
+      out of scope for this stage too (mirroring how Stage A of the
+      width-restriction fix handled results before Stage B handled
+      locals) — confirm the right split when scoping this.
+- [ ] **Stage C — the three float-involving casts.** `IntegerToFloat`,
+      `FloatToInteger`, `FloatCast`. Only `FloatToInteger` strictly
+      needs a NEW checked runtime primitive (C's float→int conversion
+      is undefined behavior for out-of-range values); `IntegerToFloat`
+      and `FloatCast` are well-defined in C already and can likely be
+      plain unchecked casts, mirroring `IntegerCast` (`5f8a78e`).
+      Depends on Stage A (done) for float locals to cast into/out of;
+      does not strictly depend on Stage B.
