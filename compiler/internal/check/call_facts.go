@@ -226,7 +226,11 @@ func (w *walker) prepareDirect(p *callPlan, ref symbol.SyntaxRef, ctx walkContex
 	if !ok || signature.State != infer.DeclarationReady {
 		return
 	}
-	p.target.Convention, p.target.ConventionKnown, p.target.FixedCount, p.target.Variadic = signature.Convention, true, uint32(len(signature.Inputs)), signature.Variadic
+	fixedCount := uint32(len(signature.Inputs))
+	if signature.Variadic && len(signature.Inputs) != 0 {
+		fixedCount--
+	}
+	p.target.Convention, p.target.ConventionKnown, p.target.FixedCount, p.target.Variadic = signature.Convention, true, fixedCount, signature.Variadic
 	origin := w.originForRef(ref, "direct call", p.target.Symbol, ctx.genericOwner)
 	if len(signature.TypeParams) != 0 {
 		if p.target.Site == (symbol.SyntaxRef{}) {
@@ -244,6 +248,7 @@ func (w *walker) prepareDirect(p *callPlan, ref symbol.SyntaxRef, ctx walkContex
 		}
 	} else {
 		p.calleeValue, _ = w.newSlotValue(w.symbolTerm(p.target.Symbol, origin), origin)
+		variadic := typedValue{}
 		for i, t := range signature.Inputs {
 			term := w.termForTemplate(t, nil, origin)
 			v, _ := w.newSlotValue(term, origin)
@@ -252,12 +257,32 @@ func (w *walker) prepareDirect(p *callPlan, ref symbol.SyntaxRef, ctx walkContex
 				w.knownValues[v.ID] = template.Known
 				w.rigidValues[v.ID] = w.isRigidType(template.Known)
 			}
+			if signature.Variadic && i == len(signature.Inputs)-1 {
+				variadic = v
+				continue
+			}
 			p.destinations = append(p.destinations, v)
 			_ = i
 		}
+		if signature.Variadic {
+			element := w.variadicElement(variadic, origin)
+			for i := int(p.target.FixedCount); i < len(p.arguments); i++ {
+				term := element.Term
+				if element.Known == 0 {
+					term = w.session.Variable(origin)
+				}
+				v, _ := w.newSlotValue(term, origin)
+				if element.Known != 0 {
+					v.Known = element.Known
+					w.knownValues[v.ID] = element.Known
+					w.rigidValues[v.ID] = w.isRigidType(element.Known)
+				}
+				p.destinations = append(p.destinations, v)
+			}
+		}
 		w.addConstraint(infer.Equal(p.result.Term, w.termForTemplate(signature.Result, nil, origin), origin))
 	}
-	if !p.target.Variadic && len(p.destinations) < len(p.arguments) {
+	if len(p.destinations) < len(p.arguments) {
 		p.destinations = append(p.destinations, w.freshDestinations(p.arguments[len(p.destinations):], ctx)...)
 	}
 	for i, a := range p.arguments {
@@ -265,6 +290,27 @@ func (w *walker) prepareDirect(p *callPlan, ref symbol.SyntaxRef, ctx walkContex
 			w.expectations[a] = w.expectationFor(a, p.destinations[i].ID, compatibilityArgument)
 		}
 	}
+}
+
+// variadicElement resolves the element type of a slice-typed variadic
+// parameter so call-site arguments in the variadic tail can be checked
+// individually against the slice's element type rather than against the
+// slice itself. The parameter template is fully known for a nongeneric
+// callable, so it is resolved to a concrete slice TypeID and the element
+// type is taken from its TypeKey.
+func (w *walker) variadicElement(parameter typedValue, origin infer.Origin) typedValue {
+	if parameter.Known == 0 {
+		return typedValue{}
+	}
+	key, ok := w.generation.inputs.Types.Key(parameter.Known)
+	if !ok {
+		return typedValue{}
+	}
+	element, ok := key.Child()
+	if !ok {
+		return typedValue{}
+	}
+	return typedValue{Term: w.session.Known(element), Known: element}
 }
 func (w *walker) prepareVariant(p *callPlan, ref symbol.SyntaxRef, ctx walkContext) {
 	member, ok := w.generation.inputs.Resolution.Symbols.Symbol(p.target.Symbol)

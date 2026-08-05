@@ -148,3 +148,83 @@ func TestValidateCompatibilityRecordsUsesRoleContext(t *testing.T) {
 		t.Fatalf("role context was not used: %q, %q", messages[0], messages[1])
 	}
 }
+
+func runVariadicCheck(t *testing.T, source string) (*diagnostic.DiagnosticSet, *Result) {
+	t.Helper()
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+	return diagnostics, Check(inputs, diagnostics, Config{})
+}
+
+// The exact reported repro: the checker must collect the scalar call-site
+// arguments into the variadic slice parameter, checking each against the
+// slice's element type instead of the slice type itself.
+func TestVariadicCallChecksElementTypedArguments(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn sum(...values []i32) i32 { return values.len as i32; }
+fn main() i32 { return sum(1, 2, 3); }
+`)
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("variadic call was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestVariadicCallSeparatesFixedPrefix(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn tagged(prefix i32, ...values []i32) i32 { return prefix; }
+fn main() i32 { return tagged(0, 1, 2, 3); }
+`)
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("fixed+varying call was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestVariadicCallAllowsZeroVariadicArguments(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn sum(...values []i32) i32 { return values.len as i32; }
+fn main() i32 { return sum(); }
+`)
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("empty variadic call was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestVariadicCallRejectsLiteralOutsideElementType(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn sum(...values []i32) i32 { return values.len as i32; }
+fn main() i32 { return sum(1, 3000000000); }
+`)
+	if result.Successful() || !hasValidationDiagnostic(diagnostics, diagnostic.Code("T0508")) {
+		t.Fatalf("out-of-range variadic literal was not rejected with T0508: %+v", diagnostics.Items())
+	}
+}
+
+func TestVariadicDeclarationAloneIsAccepted(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn sum(...values []i32) i32 { return values.len as i32; }
+`)
+	if !result.Successful() || hasValidationDiagnostic(diagnostics, diagnostic.Code("C0604")) {
+		t.Fatalf("variadic declaration alone was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestVariadicChangePreservesOrdinaryCalls(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+fn add(left i32, right i32) i32 => left + right;
+fn main() i32 { return add(1, 2); }
+`)
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("ordinary nonvariadic call was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// Calling a C-convention variadic remains C0604; this task only enables
+// Pebble-convention variadic calls.
+func TestVariadicChangeKeepsCVariadicCallRejected(t *testing.T) {
+	diagnostics, result := runVariadicCheck(t, `
+extern "C" { fn printf(fmt str, ...args []u8) i32; }
+fn main() i32 { return printf("hi", 1, 2); }
+`)
+	if result.Successful() || !hasValidationDiagnostic(diagnostics, diagnostic.Code("C0604")) {
+		t.Fatalf("C variadic call was not rejected with C0604: %+v", diagnostics.Items())
+	}
+}

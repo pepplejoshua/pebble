@@ -179,9 +179,6 @@ func validateCallableRecords(handoff *solveHandoff, records *solvedRecords, diag
 		if callable.BodyPresent && callable.Convention != types.Pebble {
 			invalidConvention = true
 		}
-		if callable.Variadic && callable.Convention != types.C {
-			invalidConvention = true
-		}
 		if invalidConvention {
 			report(CodeCall, callable.Header, "callable declaration is invalid")
 		}
