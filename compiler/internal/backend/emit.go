@@ -2822,7 +2822,8 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 		if !isNonNegativeDecimal(text) {
 			return "", fmt.Errorf("switch case contains an integer literal with malformed text %q", text)
 		}
-		return "case " + text + ":", nil
+		litWidth, _ := resolvedBuiltin(snapshot, caseNode.Type)
+		return "case " + integerLiteralText(text, litWidth) + ":", nil
 	case tir.LiteralBool:
 		if caseNode.Literal.Bool {
 			return "case 1:", nil
@@ -5344,7 +5345,8 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		}
 		count = fmt.Sprintf("pebble_local_%d", countNode.Symbol)
 	} else if countNode.Kind == tir.IntegerLiteral {
-		count = countNode.Literal.IntegerNum
+		litWidth, _ := resolvedBuiltin(snapshot, countNode.Type)
+		count = integerLiteralText(countNode.Literal.IntegerNum, litWidth)
 	} else {
 		count, err = buildUintExpr(unit, snapshot, fileSet, node.Children[1], scope, width)
 		if err != nil {
@@ -5366,7 +5368,8 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		}
 		return buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
 	case tir.IntegerLiteral:
-		return node.Literal.IntegerNum, nil
+		litWidth, _ := resolvedBuiltin(snapshot, node.Type)
+		return integerLiteralText(node.Literal.IntegerNum, litWidth), nil
 	case tir.SizeofType:
 		if node.TypeArg == snapshot.Builtins().I32 || node.TypeArg == snapshot.Builtins().Int {
 			return "sizeof(int32_t)", nil
@@ -6823,7 +6826,8 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 // safe to emit directly as C operators:
 //
 //   - IntegerLiteral — its decimal text (defensively validated, exactly as
-//     10.3 validated a bare literal return).
+//     10.3 validated a bare literal return), given a "u" suffix when the
+//     literal's width is unsigned so a large value is an unsigned C constant.
 //   - CheckedNegate with exactly one operand of the entry's width —
 //     pebble_rt_checked_neg_<suffix>.
 //   - CheckedArithmetic with exactly two operands of the entry's width and
@@ -6953,7 +6957,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !isNonNegativeDecimal(text) {
 			return "", fmt.Errorf("entry function body expression contains an integer literal with malformed text %q", text)
 		}
-		return text, nil
+		return integerLiteralText(text, width), nil
 	case tir.IntegerCast:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains an IntegerCast with %d children, want exactly one", len(node.Children))
@@ -7310,7 +7314,8 @@ func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		return "", fmt.Errorf("invalid indirect-call argument")
 	}
 	if node.Kind == tir.IntegerLiteral {
-		return node.Literal.IntegerNum, nil
+		litWidth, _ := resolvedBuiltin(snapshot, node.Type)
+		return integerLiteralText(node.Literal.IntegerNum, litWidth), nil
 	}
 	if isUint(snapshot, node.Type) {
 		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
@@ -9650,6 +9655,26 @@ func childFloatSuffix(width types.BuiltinKind) string {
 		return "f64"
 	}
 	return ""
+}
+
+// integerLiteralText returns the C spelling of a decimal integer literal
+// destined for a value position of the given builtin width: the plain decimal
+// text, plus a "u" suffix when that width is an unsigned integer builtin
+// (Uint, U8, U16, U32, or U64), so a large literal — e.g. the decimal form of
+// UINT64_MAX — is parsed by the C compiler as an unsigned constant instead of
+// triggering -Wimplicitly-unsigned-literal under the mandated -Wall -Wextra
+// -Werror build. A plain "u" is sufficient for every unsigned width this
+// backend emits: a suffixed decimal constant is promoted through unsigned int,
+// unsigned long, and unsigned long long until one can represent it, so any
+// value that fits in unsigned long long — every value Pebble can express at
+// those widths, including UINT64_MAX for Uint/U64's uint64_t — is typed
+// exactly. A literal destined for a signed width is returned unchanged.
+func integerLiteralText(text string, width types.BuiltinKind) string {
+	switch width {
+	case types.Uint, types.U8, types.U16, types.U32, types.U64:
+		return text + "u"
+	}
+	return text
 }
 
 // isNonNegativeDecimal reports whether s is a non-empty run of ASCII decimal

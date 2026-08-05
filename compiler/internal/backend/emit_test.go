@@ -3366,6 +3366,89 @@ func TestEmitPrintEachIntegerWidthCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitUnsuffixedU64MaxLiteralCompilesAndRuns(t *testing.T) {
+	// The exact reported bug: a decimal literal that does not fit in any
+	// signed C integer type (UINT64_MAX's decimal form) assigned to a u64
+	// local. Before the fix the emitted C was `uint64_t pebble_local_N =
+	// 18446744073709551615;` — the unsuffixed literal made cc fail under the
+	// mandated -Wall -Wextra -Werror via -Wimplicitly-unsigned-literal. The
+	// emitted C must carry a "u" suffix and the program must compile, run,
+	// and print the full value, not a truncated or misinterpreted one.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 18446744073709551615; print y; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "18446744073709551615u") {
+		t.Fatalf("emitted C does not spell the u64 literal with an unsigned suffix:\n%s", out)
+	}
+	if got := compileAndRunCapture(t, buf.Bytes(), 0, false); got != "18446744073709551615\n" {
+		t.Fatalf("compiled program output = %q, want %q", got, "18446744073709551615\n")
+	}
+}
+
+func TestEmitUnsuffixedU32MaxLiteralCompilesAndRuns(t *testing.T) {
+	// The same large-literal-at-unsigned-width shape at u32: UINT32_MAX's
+	// decimal form in a u32 local. Unsuffixed it exceeds a signed 32-bit
+	// literal's range and cc would warn under -Wall -Wextra -Werror; with the
+	// "u" suffix it is a plain unsigned int constant. The emitted C must use
+	// the suffix and the program must print the full value.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u32 = 4294967295; print y; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "4294967295u") {
+		t.Fatalf("emitted C does not spell the u32 literal with an unsigned suffix:\n%s", out)
+	}
+	if strings.Contains(out, " = 4294967295;") {
+		t.Fatalf("emitted C contains an unsuffixed UINT32_MAX literal:\n%s", out)
+	}
+	if got := compileAndRunCapture(t, buf.Bytes(), 0, false); got != "4294967295\n" {
+		t.Fatalf("compiled program output = %q, want %q", got, "4294967295\n")
+	}
+}
+
+func TestEmitSmallUnsignedLiteralRegressionCompilesAndRuns(t *testing.T) {
+	// The already-working small-literal case must keep working: a value well
+	// inside signed range at u64 width still compiles clean (now with a
+	// harmless "u" suffix) and prints the correct value.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 123456789; print y; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	if got := compileAndRunCapture(t, buf.Bytes(), 0, false); got != "123456789\n" {
+		t.Fatalf("compiled program output = %q, want %q", got, "123456789\n")
+	}
+}
+
+func TestEmitLargeSignedLiteralNoUnsignedSuffix(t *testing.T) {
+	// A large SIGNED literal (INT64_MAX) must not gain an unsigned suffix:
+	// the emitted C must keep the plain decimal text so the value is the
+	// signed maximum, not an unsigned constant of the same digits. The
+	// program must compile under -Wall -Wextra -Werror (a bare INT64_MAX
+	// decimal is exactly representable as signed long long, so it is
+	// warning-free unsuffixed) and print the correct value.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let y i64 = 9223372036854775807; print y; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "9223372036854775807u") {
+		t.Fatalf("emitted C gives the signed i64 literal an unsigned suffix:\n%s", out)
+	}
+	if !strings.Contains(out, "9223372036854775807") {
+		t.Fatalf("emitted C is missing the signed i64 literal:\n%s", out)
+	}
+	if got := compileAndRunCapture(t, buf.Bytes(), 0, false); got != "9223372036854775807\n" {
+		t.Fatalf("compiled program output = %q, want %q", got, "9223372036854775807\n")
+	}
+}
+
 func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
 	// A bool operand prints as the word true or false (v1's approach: the
 	// bool expression wrapped in a C ternary selecting the const char *
