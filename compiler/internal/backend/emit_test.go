@@ -3927,6 +3927,96 @@ func TestEmitRejectsMixedWidthFloatArithmeticAndComparison(t *testing.T) {
 	}
 }
 
+func TestEmitIntegerToFloatCastCompilesAndRuns(t *testing.T) {
+	// An integer local cast to a float and used in float arithmetic: 3 as f64
+	// plus 0.5 must yield the real float 3.5, which the hosted main truncates
+	// to exit code 3 — had the cast produced an integer (or an implicit
+	// truncating coupling), the result would be a different value. The
+	// emitted-C assertion pins the lowering: the integer child is built via
+	// buildExpr at its own i32 width and wrapped in a plain C (double) cast,
+	// exactly the FloatCast-free shape a well-defined int->float conversion
+	// needs (no checked runtime primitive).
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x i32 = 3; return (x as f64) + 0.5; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(double)(pebble_local_") {
+		t.Fatalf("emitted C missing IntegerToFloat (double) cast:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 3, false)
+}
+
+func TestEmitIntegerToFloatOfI64LocalCompilesAndRuns(t *testing.T) {
+	// The IntegerToFloat child is resolved at its OWN integer width, not the
+	// entry's: an i64 local (different from the f64 main's own width grammar)
+	// cast to a float must still build the child via buildExpr at i64 width.
+	// 16777217 (2^24+1) is not representable exactly in f32, so the narrowing
+	// cast to f32 rounds it to 16777216.0f; adding 1.0 to the widened result
+	// and truncating exits 16777217 % 256 == 1.
+	emitAndRun(t, "fn main() f64 { var x i64 = 16777217; return ((x as f32) as f64) + 1.0; }", false, 1, false)
+}
+
+func TestEmitFloatCastNarrowingCompilesAndRuns(t *testing.T) {
+	// An f64 local narrowed to f32. 16777217.5 (2^24 + 1.5) is not
+	// representable in f32: round-to-nearest-even gives 16777218.0f, which
+	// truncates to exit code 2 (verified empirically against cc). Had the cast
+	// been missing (the f64 kept), truncation of 16777217.5 would exit 1 — so
+	// the exit code discriminates the narrowing from a no-op. The emitted-C
+	// assertion pins the (float) cast on the f64 local.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f32 { var x f64 = 16777217.5; return (x as f32); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(float)(pebble_local_") {
+		t.Fatalf("emitted C missing FloatCast narrowing (float) cast:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitFloatCastWideningCompilesAndRuns(t *testing.T) {
+	// An f32 local widened to f64. f32->f64 widening is exact, so no exit-code
+	// truncation can distinguish the widened value from the unwidened one;
+	// the emitted-C assertion pins the (double) cast on the f32 local, and the
+	// arithmetic result (2.5 -> exit 2) verifies the widened value flows into
+	// f64 arithmetic.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x f32 = 1.5; return (x as f64) + 1.0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(double)(pebble_local_") {
+		t.Fatalf("emitted C missing FloatCast widening (double) cast:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitChainedIntegerToFloatAndFloatCastCompilesAndRuns(t *testing.T) {
+	// Both new casts in one expression: an integer local cast to f32 (an
+	// IntegerToFloat), used in f32 arithmetic, then the result widened to f64
+	// by a FloatCast for the final f64 return. 33 as f32 / 1.5 as f32 = 22.0f,
+	// widened to 22.0, plus 1.0 -> 23.0, exit 23. The emitted C must contain
+	// both the (float) IntegerToFloat cast and the (double) FloatCast widening
+	// cast.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x i32 = 33; var f f32 = 1.5; var g f32 = (x as f32) / f; return (g as f64) + 1.0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(float)(pebble_local_") {
+		t.Fatalf("emitted C missing chained IntegerToFloat (float) cast:\n%s", out)
+	}
+	if !strings.Contains(out, "(double)(pebble_local_") {
+		t.Fatalf("emitted C missing chained FloatCast (double) cast:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 23, false)
+}
+
 func TestEmitRejectsSelfRecursion(t *testing.T) {
 	// Recursion is legal, checker-accepted Pebble (confirmed against a real
 	// fixture), so this is a genuine backend-scope boundary: the reachability

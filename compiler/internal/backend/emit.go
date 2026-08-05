@@ -7711,6 +7711,82 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return "", err
 		}
 		return "(" + left + " " + op + " " + right + ")", nil
+	case tir.IntegerToFloat:
+		// An integer value cast to a float (`x as f64` where x is an integer).
+		// The result is a float (this node's Type is the destination float
+		// builtin, already gated to width above), and the single child is the
+		// integer being cast. The child is built via buildExpr — NOT
+		// buildFloatExpr — at its own resolved integer width, mirroring how
+		// buildExpr's IntegerCast case resolves the child's own width
+		// independently of the ambient width, because a cast's whole point is
+		// that its operand's width differs from it. The lowering is a plain,
+		// unchecked C cast `(<destination float type>)(<child>)`: C's
+		// integer-to-float conversion is well-defined for every input (no
+		// undefined behavior, no range fault), so — exactly like IntegerCast —
+		// no checked runtime primitive is needed.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToFloat with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToFloat with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || floatCType(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToFloat with non-float destination type %s", describeType(snapshot, node.Type))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToFloat referencing invalid child node %d", node.Children[0])
+		}
+		childType, ok := snapshot.Key(child.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body IntegerToFloat child has invalid type %d", child.Type)
+		}
+		childWidth, ok := childType.Builtin()
+		if !ok || cType(childWidth) == "" {
+			return "", fmt.Errorf("entry function body IntegerToFloat child has non-integer type %s", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		if err != nil {
+			return "", fmt.Errorf("entry function body integer-to-float cast child: %v", err)
+		}
+		return "(" + floatCType(destinationWidth) + ")(" + childExpr + ")", nil
+	case tir.FloatCast:
+		// A float value cast to a different float width (`x as f32` where x is
+		// an f64, or vice versa). The result is a float (this node's Type is
+		// the destination float builtin, already gated to width above), and the
+		// single child is the float being cast. The child is built via a
+		// recursive buildFloatExpr call at the CHILD's own resolved float width
+		// (not the destination width), the same "recurse at the child's own
+		// width" principle as IntegerCast. The lowering is a plain, unchecked C
+		// cast `(<destination float type>)(<child>)`: C's float-to-float
+		// conversion is well-defined for every input, so no checked runtime
+		// primitive is needed.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a FloatCast with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a FloatCast with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || floatCType(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains a FloatCast with non-float destination type %s", describeType(snapshot, node.Type))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a FloatCast referencing invalid child node %d", node.Children[0])
+		}
+		childWidth := resolvedFloatKind(snapshot, child.Type)
+		if childWidth == 0 {
+			return "", fmt.Errorf("entry function body expression contains a FloatCast with non-float child type %s", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		if err != nil {
+			return "", fmt.Errorf("entry function body float cast child: %v", err)
+		}
+		return "(" + floatCType(destinationWidth) + ")(" + childExpr + ")", nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a float literal or a reference to a %s local declared earlier in the body", node.Kind, wantName(width))
 	}
