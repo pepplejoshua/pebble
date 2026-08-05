@@ -49,26 +49,32 @@ the real compiler, not assumed from v1's README.
       on this whole list — every other gap is about writing MORE
       sophisticated programs; this one blocks writing ANY observable
       program.
-- [ ] **A plain `if` statement not in tail position and not inside a loop
-      is rejected.** `internal/backend/emit.go`'s `buildLeadingStatement`
-      (the function that builds every non-final statement in a function
-      body) accepts exactly three statement kinds at its top level:
-      `Initialize` (a local declaration), `Store` (a reassignment), and
-      `ExpressionStatement` (a void call used as a statement). `If` is
-      absent. `buildBlock` special-cases `While`/`For`/`RangeLoop` as
-      leading statements (each routes through a separate, more permissive
-      loop-body builder) and separately special-cases the block's FINAL
-      statement to allow `Return` or a two-armed `if`/`else` there — but a
-      guard-clause `if` in the middle of an ordinary function body (`if x <
-      0 { return 0; } ... more code ...`), the single most common shape of
-      real imperative code, is rejected outright unless wrapped in a loop.
-      Confirmed: `fn helper(x i32) i32 { if x > 0 { return 1; } return 0;
-      }` fails with `entry function body block statement is a If, want a
-      local declaration (Initialize), a reassignment (Store), or a call to
-      a void-returning function used as a statement (ExpressionStatement)`.
-      A non-tail `Switch` is presumably affected identically (not
-      separately verified, but it shares the same `buildLeadingStatement`
-      gate).
+- [ ] **A plain `if` OR `switch` statement not in tail position and not
+      inside a loop is rejected — confirmed both, not just `if`.**
+      `internal/backend/emit.go`'s `buildLeadingStatement` (the function
+      that builds every non-final statement in a function body) accepts
+      exactly three statement kinds at its top level: `Initialize` (a local
+      declaration), `Store` (a reassignment), and `ExpressionStatement` (a
+      void call used as a statement). `buildBlock`'s separate tail-position
+      switch (the block's FINAL statement only) accepts exactly four:
+      `Return`, `ImplicitReturn`, `If`, `Switch`. `Return`/`ImplicitReturn`
+      are legitimately tail-only by language semantics (anything after an
+      unconditional return is dead code regardless of backend
+      capability) — not a bug. `If` and `Switch` are NOT semantically
+      tail-only, and both are confirmed broken as leading statements:
+      a guard-clause `if` in the middle of an ordinary function body (`if x
+      < 0 { return 0; } ... more code ...`), the single most common shape
+      of real imperative code, is rejected outright unless wrapped in a
+      loop or moved to the exact last position. Confirmed via two separate
+      direct tests: `fn helper(x i32) i32 { if x > 0 { return 1; } return
+      0; }` fails with `... statement is a If, want a local declaration
+      (Initialize), a reassignment (Store), or a call to a void-returning
+      function ...`; a `switch` with the identical shape (cases before a
+      trailing `return -1;`) fails identically, naming `Switch` instead of
+      `If`. Both share one root cause and should be fixed together (both
+      just need to be added to `buildLeadingStatement`'s accepted set,
+      presumably reusing whatever value/statement-sequence machinery the
+      tail-position versions already use).
 - [ ] **Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) is unimplemented.**
       `tir.CompoundStore` exists and is built by the checker (confirmed:
       `x += 1;` parses and type-checks) but has ZERO references in
@@ -152,14 +158,13 @@ repeated here.
       Variadic call-site argument type inference is genuinely broken, not
       just unimplemented in the backend — this is upstream of `emit.go`
       entirely.
-- [ ] **`iter`, the implicit loop-variable name, does not exist in v2.**
-      v1: `loop 0..10 { print iter; }` — omitting the `: name` clause
-      defaults the loop variable to `iter`. v2: confirmed `loop 0..5 { sum
-      = sum + iter; }` fails at the checker with `N0001: undefined name
-      "iter"` — v2 apparently requires the `: name` clause always. Either
-      this is a deliberate design change (in which case it should be
-      documented as one, not left silent) or a real gap; not distinguished
-      by this audit.
+- **`iter`, the implicit loop-variable name — DECIDED, not a gap.** v1:
+      `loop 0..10 { print iter; }` defaults the loop variable to `iter`
+      when the `: name` clause is omitted. v2 requires `: name` always
+      (`loop 0..5 { sum = sum + iter; }` fails at the checker with
+      `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
+      v2's current behavior — explicit naming stays required, no implicit
+      `iter` default. Not tracked as a gap.
 - [ ] **Function-typed locals don't work in the entry-body backend
       grammar**, though function-typed STRUCT FIELDS do (confirmed
       throughout `std/hmap.peb`/`std/set.peb`, e.g. `hash_fn fn (K) u64;`).
@@ -193,21 +198,22 @@ repeated here.
         `string`, `hmap`, `set`, `mem`, `hash`, `io`, `libc`, `func` all
         were; `result` was not) — it almost certainly does not compile
         today, blocked on exactly this gap.
-- [ ] **`switch` on a tagged union, with the `case Ok: return self.Ok;`
-      style destructuring-by-field-access, is what v1 calls pattern
-      matching** — and what `12-outstanding-implementation-work.md`
-      already tracks as "held for a design conversation." This audit's
-      contribution: it is not merely a syntax gap. It requires (1) unions
-      being readable/writable at all (the item directly above), which is
-      itself broken today, and (2) `switch` accepting a union-typed subject
-      with per-variant cases, which has not been verified independently of
-      (1) — you cannot test the switch mechanism in isolation while field
-      access on the switched-into variant is broken. **Recommendation:**
-      pattern matching should not be scoped as "add switch destructuring
-      syntax" alone; it should be scoped as "make unions readable/writable,
-      then add the switch mechanism on top," since v1's own design (per
-      `README.md`) inseparably combines the two (`switch self { case Ok:
-      return self.Ok; ... }` reads a field of the matched variant inline).
+- **`switch` on a tagged union, with the `case Ok: return self.Ok;` style
+      destructuring-by-field-access, is what v1 calls pattern matching —
+      design conversation, sequencing decided (2026-08-05).** It is not
+      merely a syntax gap: it requires (1) unions being readable/writable
+      at all (the item directly above, on this list to fix now), and (2)
+      `switch` accepting a union-typed subject with per-variant cases,
+      which cannot even be tested independently of (1) today — you cannot
+      exercise the switch mechanism while field access on the matched
+      variant is broken. v1's own design (per `README.md`) inseparably
+      combines the two (`switch self { case Ok: return self.Ok; ... }`
+      reads a field of the matched variant inline). **Decision:** fix
+      unions (mechanical, no design question, on the active list below);
+      the actual pattern-matching design conversation (whether v2 keeps
+      v1's exact `switch`/`case` shape or does better) happens later,
+      after enums and unions are otherwise fully working and all other
+      tracked work is done — not now, and not next.
 - [~] **Enum-to-integer casts: checker allows it, backend doesn't emit it.**
       `open-language-decisions.md` §1.4 records this as an OPEN LANGUAGE
       QUESTION ("06a still calls this open... 06b's matrix says
@@ -222,14 +228,18 @@ repeated here.
       `open-language-decisions.md` §1.4 appears to have been silently
       resolved (in favor of "allowed") sometime since that document was
       written, without the document being updated.
-- [ ] **Printing an enum is still rejected exactly as designed** (not a
-      bug): `print Color.red;` fails at the checker with `C0612: print
-      operand is not printable`, matching `open-language-decisions.md`
-      §3.11 exactly. Confirmed still accurate. This is explicitly listed
-      there as "blocks nothing today" and a real future-feature gap
-      (needs a variant-name table emitted into the binary) — not
-      something to fix as part of Part A's `print` work, which only needs
-      to handle the types the checker already allows.
+- **Printing an enum is still rejected exactly as designed** (not a bug):
+      `print Color.red;` fails at the checker with `C0612: print operand
+      is not printable`, matching `open-language-decisions.md` §3.11
+      exactly. Confirmed still accurate. **Decision (2026-08-05):
+      deliberately last, not tracked as near-term work.** Debug-object
+      printing is planned to become "amazing" as its own dedicated effort
+      — not just enum variant names, a real facility — but that only makes
+      sense once the compiler itself is fully correct first (this whole
+      tracker). Do not scope or start this until everything else here is
+      done. Not something to fix as part of Part A's plain `print`
+      implementation, which only needs to handle the types the checker
+      already allows today (bool/char/str/integers/floats).
 
 ### Not yet individually re-verified (flagged, not confirmed)
 
@@ -294,22 +304,22 @@ as confirmed gaps:
       embedded filesystem — no install-time copy step, no path-resolution
       drift between the binary and whatever stdlib happens to be on disk.
       Not yet implemented.
-- [ ] **v1's CLI surface is far larger than v2's.** v1 (`README.md`
-      "Compiler Options"): `-o`, `-c`, `--check-only`, `--generate-only`,
+- **v2's CLI will deliberately stay simpler than v1's — not a gap to
+      close by re-implementing everything.** v1 (`README.md` "Compiler
+      Options"): `-o`, `-c`, `--check-only`, `--generate-only`,
       `--keep-c`/`--no-keep-c`, `--compiler`, `-l`/`-L`/`-I` (linking),
       `--header`/`--sys-header`/`--cc-flags`, `--std-path`, `--freestanding`,
       `--entry-point`, `--no-main`, `--shared`, `--debug`/`--release-small`/
       `--release-safe`/`--release`, `-v`/`--verbose`, `-w`/`--warnings`. v2's
-      `pebc` (`cmd/pebc/main.go`, confirmed via direct reading): exactly one
-      flag, `-o`. Every other v1 mode — check-only, freestanding, custom
-      entry point, no-main/object-file-only, shared library, release
-      variants, linking flags — has no v2 equivalent yet. This matches
-      `open-language-decisions.md` §2.8 ("Driver/CLI modes... has not
-      decided which of the C prototype's CLI modes it preserves") almost
-      exactly, except that document is about which modes v2 SHOULD support
-      (a design question); this entry is about the fact that NONE of them
-      exist yet at all (an implementation gap) — both are true
-      simultaneously.
+      `pebc` (`cmd/pebc/main.go`): exactly one flag, `-o`. **Decision
+      (2026-08-05): v2's CLI stays simpler by design — a lot of v1's
+      surface gets cut, not ported.** This entry stays open only for the
+      `go:embed`-stdlib work already scoped on the active list below
+      (making `-std:...` imports resolve without a flag at all); do not
+      treat the rest of v1's flag list as a to-do. If/when specific
+      modes (freestanding, release variants, etc.) are wanted, that's a
+      separate, deliberate decision to make later — not default parity
+      work.
 
 ---
 
