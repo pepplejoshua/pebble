@@ -61,3 +61,4 @@ Module.symvers
 Mkfile.old
 dkms.conf
 playground
+editors/pebble-zed/extension.wasm
