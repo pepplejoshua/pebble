@@ -9775,3 +9775,68 @@ func TestEmitFunctionTypedLocalDoesNotRegressAllocator(t *testing.T) {
 	// two mechanisms coexist correctly.
 	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn main() int {\nvar f fn(int, int) int = add;\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\n*p = f(3, 4);\nreturn *p;\n}", false, 7, false)
 }
+
+// --- Function types: slice 2/3, function-typed struct fields ---
+
+func TestEmitFunctionTypedStructFieldCallCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro: constructing a struct with a function-typed
+	// field (Table.{ op = add }) and calling directly through the field
+	// (t.op(1, 2)), no intermediate local. The field read reaches
+	// buildFunctionValue as a bare FieldValue (the indirect call's direct
+	// -callee shape), distinct from the Load(FieldPlace)-wrapped shape a
+	// non-callee position uses (see the next test).
+	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int { var t Table = Table.{ op = add }; return t.op(1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedStructFieldViaLocalCompilesAndRuns(t *testing.T) {
+	// Reading a function-typed field into a local first, then calling
+	// through the local — confirms the field-read value forwards correctly
+	// into buildFunctionLocalDeclaration (slice 1) unchanged, and exercises
+	// the Load(FieldPlace)-wrapped field-read shape a local-declaration
+	// initializer position produces (distinct from the direct-callee
+	// FieldValue shape the previous test uses).
+	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int { var t Table = Table.{ op = add }; var f fn(int, int) int = t.op; return f(1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedStructFieldNeverReadCompilesAndRuns(t *testing.T) {
+	// A function-typed field that is constructed but never read back by
+	// name anywhere else — confirms the typedef-collection and
+	// reachability-walk fixes (RecordConstruct.Fields isn't part of
+	// node.Children, so both walks need an explicit case to find a
+	// HoistedFunctionValue used only as a field's construction value)
+	// correctly discover the referenced function and its typedef even
+	// though nothing calls through the field at all.
+	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int { var t Table = Table.{ op = add }; return 5; }", false, 5, false)
+}
+
+func TestEmitFunctionTypedStructFieldWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the function typedef appears BEFORE
+	// the struct typedef that names it as a field's C type (slice 2
+	// reverses slice 1's "function typedefs are self-contained, append
+	// last" assumption, since a struct field can now reference a function
+	// typedef), and the field value is assigned bare (no cast).
+	unit, snapshot, entryID, sources := buildFixture(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int { var t Table = Table.{ op = add }; return t.op(1, 2); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	fnptrIndex := strings.Index(out, "typedef int32_t (*pebble_fnptr_")
+	structIndex := strings.Index(out, "typedef struct {\n    pebble_fnptr_")
+	if fnptrIndex < 0 || structIndex < 0 || fnptrIndex > structIndex {
+		t.Errorf("function typedef does not precede the struct typedef that names it as a field (definition before use):\n%s", out)
+	}
+	if !strings.Contains(out, ".pebble_field_") || !strings.Contains(out, "= pebble_fn_") {
+		t.Errorf("emitted C missing expected field-initializer shape:\n%s", out)
+	}
+}
+
+func TestEmitFunctionTypedStructFieldDoesNotRegressAllocator(t *testing.T) {
+	// The exact collision this slice was built to avoid: a function-typed
+	// struct field read (t.op) produces the same FieldValue TIR node kind a
+	// real allocator field access does. This program exercises both in the
+	// same run, confirming indirectCalleePlace's runtime-field-identity
+	// check (hardened in 50b3970, reused unchanged here) still correctly
+	// tells them apart.
+	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int {\nvar t Table = Table.{ op = add };\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\n*p = t.op(3, 4);\nreturn *p;\n}", false, 7, false)
+}

@@ -535,6 +535,40 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	// Function-pointer typedefs (pebble_fnptr_<typeID>_t) are emitted BEFORE
+	// the enum/aggregate typedef block, and merged with every function type
+	// reachable ONLY through a struct field's own resolved type (function
+	// -types slice 2: a struct field never referenced by name outside its
+	// own construction still needs its field's function typedef collected,
+	// mirroring how the slice-field backfill immediately above this comment
+	// merges a struct field's slice type into sliceInfos) — since a struct
+	// whose field type is a function type now names pebble_fnptr_<typeID>_t
+	// as that field's C type (structFieldCType), C requires the function
+	// typedef to be defined before the struct typedef that references it.
+	// This reverses slice 1's original "function typedefs are self-contained,
+	// append last" assumption, which held only because no aggregate typedef
+	// could reference a function typedef yet.
+	functionTypes, err := collectFunctionTypes(unit, snapshot, blockID, helpers)
+	if err != nil {
+		return err
+	}
+	functionTypesSeen := make(map[types.TypeID]bool, len(functionTypes))
+	for _, id := range functionTypes {
+		functionTypesSeen[id] = true
+	}
+	for _, structInfo := range structInfos {
+		for _, field := range structInfo.fields {
+			if !isFunctionType(snapshot, field.typ) || functionTypesSeen[field.typ] {
+				continue
+			}
+			functionTypesSeen[field.typ] = true
+			functionTypes = append(functionTypes, field.typ)
+		}
+	}
+	functionTypedefs, err := buildFunctionTypedefs(snapshot, result, functionTypes)
+	if err != nil {
+		return err
+	}
 	// The enum typedef block is emitted BEFORE the aggregate typedef block
 	// (and, transitively, before the unions): since the OptionalIntegerToEnum
 	// slice an optional's value field may name a plain enum typedef
@@ -550,7 +584,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs := appendTypedefBlock(enumTypedefs, aggTypedefs)
+	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, aggTypedefs))
 	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, result, unionInfos)
 	if err != nil {
 		return err
@@ -561,22 +595,6 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return err
 	}
 	typedefs = appendTypedefBlock(sliceTypedefs, typedefs)
-	// Function-pointer typedefs (pebble_fnptr_<typeID>_t) are appended AFTER
-	// every other typedef family: they are self-contained (their parameter and
-	// result C types never name an aggregate typedef — see
-	// validateFunctionTypeSignature / functionTypeParamCType /
-	// functionTypeResultCType), so C has no ordering requirement on them, but
-	// appending last keeps every aggregate/slice/enum/union typedef this file
-	// already emits byte-identical to before this slice.
-	functionTypes, err := collectFunctionTypes(unit, snapshot, blockID, helpers)
-	if err != nil {
-		return err
-	}
-	functionTypedefs, err := buildFunctionTypedefs(snapshot, result, functionTypes)
-	if err != nil {
-		return err
-	}
-	typedefs = appendTypedefBlock(typedefs, functionTypedefs)
 	helpersText, err := buildHelperFunctions(unit, snapshot, fileSet, helpers, result, unions)
 	if err != nil {
 		return err
@@ -875,6 +893,23 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 	}
 	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall || node.Kind == tir.HoistedFunctionValue {
 		*out = append(*out, node)
+	}
+	if node.Kind == tir.RecordConstruct {
+		// A struct construction's field values (`Table.{ op = add }`,
+		// function-types slice 2) are stored in node.Fields
+		// ([]FieldInit{Field, Value}), NOT node.Children (confirmed by reading
+		// collectStructTypesWalk's identical special-case for the same
+		// reason) — so a HoistedFunctionValue used only as a field's
+		// construction value (e.g. `add` in `Table.{ op = add }`) is walked
+		// explicitly here; otherwise the referenced function is never
+		// discovered as reachable and its pebble_fn_<symbolID> definition is
+		// never emitted, leaving the struct's field initializer referencing
+		// an undeclared identifier.
+		for _, field := range node.Fields {
+			if err := collectDirectCalls(unit, field.Value, out); err != nil {
+				return err
+			}
+		}
 	}
 	for _, childID := range node.Children {
 		if child, ok := unit.Node(childID); ok && child.Kind == tir.DeferRegister {
@@ -1316,6 +1351,21 @@ func collectFunctionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 	}
 	if (node.Kind == tir.HoistedFunctionValue || node.Kind == tir.SymbolValue) && isFunctionType(snapshot, node.Type) {
 		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.RecordConstruct {
+		// A struct construction's field values (`Table.{ op = add }`,
+		// function-types slice 2) are NOT part of node.Children — they are
+		// stored separately in node.Fields ([]FieldInit{Field, Value}),
+		// confirmed by reading collectStructTypesWalk's identical need to
+		// special-case RecordConstruct for the same reason — so a function
+		// -typed field's value (a HoistedFunctionValue/SymbolValue the
+		// Children-following recursion below would otherwise never reach) is
+		// walked explicitly here.
+		for _, field := range node.Fields {
+			if err := collectFunctionTypesWalk(unit, snapshot, field.Value, out); err != nil {
+				return err
+			}
+		}
 	}
 	if node.Kind == tir.IndirectCall && node.FunctionType != 0 && isFunctionType(snapshot, node.FunctionType) {
 		// The checker sets IndirectCall.FunctionType on BOTH the allocator's
@@ -6428,6 +6478,19 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				return "", err
 			}
 			expr = built
+		case isFunctionType(snapshot, fieldType):
+			// A function-typed field's construction value (`Table.{ op = add }`,
+			// function-types slice 2): built by the same buildFunctionValue a
+			// function-typed local's declaration and the general indirect call's
+			// callee already use (slice 1) — a bare top-level function reference
+			// (HoistedFunctionValue) or a reference to an in-scope function-typed
+			// local (SymbolValue), whose C value already matches the field's own
+			// pebble_fnptr_<typeID>_t C type with no cast needed.
+			built, err := buildFunctionValue(unit, snapshot, fileSet, valueNode, scope, context)
+			if err != nil {
+				return "", err
+			}
+			expr = built
 		default:
 			return "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType), wantName(width))
 		}
@@ -8208,24 +8271,21 @@ func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 	if len(node.Children) < 1 || node.ContextAction != tir.ContextForward {
 		return "", fmt.Errorf("indirect call has invalid callee or context action")
 	}
-	placeNode, _, ok := indirectCalleePlace(unit, node)
+	placeNode, allocatorCallee, ok := indirectCalleePlace(unit, node)
 	if !ok {
 		return "", fmt.Errorf("indirect call has invalid callee")
 	}
 	var base string
 	var owner types.TypeID
 	var member symbol.SymbolID
-	allocatorCallee := false
-	if placeNode.Kind == tir.FieldPlace {
-		allocatorCallee = true
+	if allocatorCallee && placeNode.Kind == tir.FieldPlace {
 		var err error
 		base, owner, err = buildPlaceLValue(unit, snapshot, fileSet, placeNode.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
 		member = placeNode.Member
-	} else if placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1 {
-		allocatorCallee = true
+	} else if allocatorCallee && placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1 {
 		receiver, ok := unit.Node(placeNode.Children[0])
 		if !ok {
 			return "", fmt.Errorf("invalid allocator receiver")
@@ -8367,6 +8427,74 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 			return "", fmt.Errorf("%s contains a SourceAlias referencing invalid node %d", context, node.Children[0])
 		}
 		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context)
+	case tir.FieldValue:
+		// A function-typed struct field read (`t.op`, function-types slice 2):
+		// the receiver is a struct-typed local in scope (a SymbolValue),
+		// emitted as its own pebble_local_<symbol> C name, and the field is
+		// read as pebble_field_<member> — the exact same designated-field-name
+		// convention every other struct field this backend emits already uses
+		// (see buildStructBraceList's ".pebble_field_%d" inits and
+		// buildFieldPlaceRead's identical trailing access), just reached
+		// through buildFunctionValue instead of the width/bool-only field
+		// -read path (buildFieldPlaceRead), since a function-typed field's
+		// value isn't a scalar. Only a plain struct-typed local receiver is
+		// supported in this slice (not a pointer-to-struct receiver, a nested
+		// field, or another function-typed expression's field) — anything
+		// else is a clean rejection naming what was found.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a FieldValue with %d child(ren), want exactly one (the struct receiver)", context, len(node.Children))
+		}
+		receiver, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s contains a FieldValue referencing invalid receiver node %d", context, node.Children[0])
+		}
+		if receiver.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("%s reads a function-typed field from a %s receiver, want a reference to a struct-typed local declared earlier in the body", context, receiver.Kind)
+		}
+		info, declared := locals[receiver.Symbol]
+		if !declared || (info.structType == 0 && info.runtimeType == 0) {
+			return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a struct-typed local declared earlier in the body", context, receiver.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d.pebble_field_%d", receiver.Symbol, node.Member), nil
+	case tir.Load:
+		// A function-typed field read used as an rvalue in a position other
+		// than an indirect call's direct callee (e.g. a local declaration's
+		// initializer, `var f fn(int, int) int = t.op;`) is wrapped in a
+		// Load node by the checker (confirmed via a real fixture: Load's
+		// single child here is a FieldPlace, not the bare FieldValue the
+		// direct-callee position produces) — transparently unwrapped to its
+		// single child.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a Load with %d child(ren), want exactly one", context, len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s contains a Load referencing invalid node %d", context, node.Children[0])
+		}
+		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context)
+	case tir.FieldPlace:
+		// The lvalue-place form of a function-typed struct field read (the
+		// shape a Load's child takes, as opposed to FieldValue's rvalue
+		// form) — the receiver is a StoragePlace naming a struct-typed local
+		// in scope, and the field is read the same
+		// pebble_local_<symbol>.pebble_field_<member> way FieldValue's case
+		// does. Only a plain struct-typed local receiver is supported in
+		// this slice, matching the FieldValue case's own restriction.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a FieldPlace with %d child(ren), want exactly one (the struct receiver)", context, len(node.Children))
+		}
+		receiverPlace, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s contains a FieldPlace referencing invalid receiver node %d", context, node.Children[0])
+		}
+		if receiverPlace.Kind != tir.StoragePlace {
+			return "", fmt.Errorf("%s reads a function-typed field from a %s receiver, want a reference to a struct-typed local declared earlier in the body", context, receiverPlace.Kind)
+		}
+		info, declared := locals[receiverPlace.Symbol]
+		if !declared || (info.structType == 0 && info.runtimeType == 0) {
+			return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a struct-typed local declared earlier in the body", context, receiverPlace.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d.pebble_field_%d", receiverPlace.Symbol, node.Member), nil
 	default:
 		return "", fmt.Errorf("%s contains a %s, want a reference to a function-typed local or a bare function value", context, node.Kind)
 	}
@@ -10604,6 +10732,21 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 	}
 	if isSlice(snapshot, id) {
 		return sliceTypeName(id), nil
+	}
+	if isFunctionType(snapshot, id) {
+		// A function-typed field (`op fn(int, int) int;`, function-types
+		// slice 2): declared with the function type's own pointer typedef,
+		// pebble_fnptr_<typeID>_t (see functionTypeName / buildFunctionTypedef,
+		// slice 1) — the same C type a function-typed local or value uses, so
+		// storing a function value in the field is trivially valid C. The
+		// field's signature is validated by validateFunctionTypeSignature
+		// wherever the field's construction/read value is built
+		// (buildFunctionValue), mirroring how a slice field's element type is
+		// validated separately from this resolver.
+		if err := validateFunctionTypeSignature(snapshot, width, id); err != nil {
+			return "", fmt.Errorf("field type %s: %v", describeType(snapshot, id), err)
+		}
+		return functionTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
