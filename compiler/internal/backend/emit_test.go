@@ -8648,6 +8648,46 @@ func TestEmitSliceI64CompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i64 { var a [5]i64 = [100, 200, 300, 400, 500]; var s []i64 = a[1:3]; return s[0]; }", false, 200, false)
 }
 
+func TestEmitU8SliceFromArrayCompilesAndRuns(t *testing.T) {
+	// []u8, an entry-width-independent fixed-width integer element (main
+	// returns int, not u8): construct a [3]u8 array, slice it, index-read
+	// element 1. Confirms both the array-typed-local element gate and the
+	// slice-construction/index-read paths accept a non-entry-width scalar.
+	emitAndRun(t, "fn main() int { var arr [3]u8 = [1 as u8, 2 as u8, 3 as u8]; var s []u8 = arr[:]; return s[1] as int; }", false, 2, false)
+}
+
+func TestEmitCharSliceFromArrayCompilesAndRuns(t *testing.T) {
+	// []char, mirroring the u8 case above for char specifically (its own
+	// fixed int32_t C representation, not a resolvedBuiltin integer).
+	emitAndRun(t, "fn main() int { var arr [3]char = ['a', 'b', 'c']; var s []char = arr[:]; if s[1] == 'b' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitI64SliceNonEntryWidthCompilesAndRuns(t *testing.T) {
+	// Unlike TestEmitSliceI64CompilesAndRuns (where i64 IS the entry width,
+	// since main returns i64 there), this entry returns int, so i64 here is
+	// genuinely a non-ambient width — the case that previously only worked
+	// by coincidence when i64 happened to match the entry's own width.
+	emitAndRun(t, "fn main() int { var arr [3]i64 = [100, 200, 300]; var s []i64 = arr[:]; return s[1] as int; }", false, 200, false)
+}
+
+func TestEmitU8SliceWritesUint8CType(t *testing.T) {
+	// Emitted-C shape check: a []u8 array/slice pair must declare uint8_t,
+	// not the ambient entry width's C type (int32_t) or any other width —
+	// arrayElementCType's scalar fallback previously returned cType(width)
+	// (the AMBIENT width), which would have been silently wrong here rather
+	// than a clean rejection; this confirms the element's OWN resolved width
+	// is what's actually emitted.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var arr [3]u8 = [1 as u8, 2 as u8, 3 as u8]; var s []u8 = arr[:]; return s[1] as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "uint8_t") {
+		t.Errorf("expected uint8_t in emitted C, got:\n%s", out)
+	}
+}
+
 func TestEmitSliceOutOfBoundsRangeAborts(t *testing.T) {
 	// Out-of-range slice end bound: use a helper to supply a runtime end
 	// value that exceeds the array length, bypassing the checker's

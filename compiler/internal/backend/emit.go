@@ -1266,7 +1266,10 @@ func resolveSliceInfo(snapshot *types.Snapshot, id types.TypeID) (sliceInfo, err
 }
 
 // validateSliceElementType rejects a slice type whose element type is anything
-// other than the entry's resolved width or bool — the same element gate 10.37
+// other than a fixed-width integer builtin (the entry's resolved width, uint,
+// u8, u16, u32, u64, i8, i16, i32, or i64 — each resolved to its OWN width by
+// resolvedBuiltin/cType, independent of the ambient `width` of the context the
+// slice is being validated from), char, or bool — the same element gate 10.37
 // enforces for a slice-typed local (see buildSliceLocalDeclaration and
 // sliceElementCType), applied here to a slice-typed function parameter or
 // result type so a helper signature naming a slice of tuples, str, or any
@@ -1280,10 +1283,25 @@ func validateSliceElementType(snapshot *types.Snapshot, width types.BuiltinKind,
 	if !ok {
 		return fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
 	}
-	if !isWidth(snapshot, width, element) && !isBool(snapshot, element) {
-		return fmt.Errorf("slice element type is %s, want %s or bool", describeType(snapshot, element), wantName(width))
+	if !isSupportedSliceElementType(snapshot, element) {
+		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, or bool", describeType(snapshot, element))
 	}
 	return nil
+}
+
+// isSupportedSliceElementType reports whether a slice element type is one this
+// backend can emit: a fixed-width integer builtin (resolved to its own width by
+// resolvedBuiltin/cType — the entry's width, uint, u8, u16, u32, u64, i8, i16,
+// i32, or i64), char (the fixed int32_t), or bool. This is the single shared
+// element gate sliceElementCType, buildSliceConstruction, and the index
+// read/write value grammars all consult, mirroring how the function-types work
+// admitted integer parameters/results by resolvedBuiltin/cType generically
+// instead of a width-specific predicate list.
+func isSupportedSliceElementType(snapshot *types.Snapshot, id types.TypeID) bool {
+	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
+		return true
+	}
+	return isChar(snapshot, id) || isBool(snapshot, id)
 }
 
 // collectFunctionTypes resolves, in first-encountered order, every function
@@ -3141,7 +3159,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// float-typed local in scope of the same float kind.
 		returnValue, err = buildFloatExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind)
 	} else {
-		returnValue, err = buildExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+		returnValue, err = buildExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width, width)
 	}
 	if err != nil {
 		return "", err
@@ -3296,10 +3314,10 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// A plain-enum-typed subject: a reference to an enum-typed local
 			// (a SymbolValue) or a variant literal (an EnumVariantValue /
 			// zero-payload VariantConstruct) — buildEnumValue handles all three.
-			subjectExpr, err = buildEnumValue(unit, snapshot, fileSet, switchNode.Children[0], locals)
+			subjectExpr, err = buildEnumValue(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 		}
 	} else if isWidth(snapshot, width, subjectNode.Type) {
-		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width, width)
 	} else if isBool(snapshot, subjectNode.Type) {
 		subjectExpr, err = buildBoolExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if subjectNode.Kind == tir.IntegerLiteral && subjectNode.Type == snapshot.Builtins().Int {
@@ -3532,7 +3550,7 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			// case.
 			returnValue, err = buildFloatExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind)
 		} else {
-			returnValue, err = buildExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
+			returnValue, err = buildExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, width, width)
 		}
 		if err != nil {
 			return "", err
@@ -3774,7 +3792,7 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
-	return buildExpr(unit, snapshot, fileSet, id, locals, width)
+	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 }
 
 // buildFor validates and builds the C text for a classic for loop statement
@@ -4077,7 +4095,7 @@ func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// returned as a pre statement buildFor emits before the for statement,
 		// and the header clause is the optional-typed local's own declaration
 		// reading that temp.
-		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", id)
+		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", id, width)
 		if err != nil {
 			return "", "", 0, err
 		}
@@ -4201,7 +4219,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	// in the initializer is the local's own width). The scope entry records
 	// the local's own width so a later reference or reassignment is
 	// validated and emitted as that width's integer.
-	initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind)
+	initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind, width)
 	if err != nil {
 		return "", err
 	}
@@ -4256,13 +4274,6 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if err != nil {
 			return "", err
 		}
-		if isWidth(snapshot, width, elementType) {
-			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
-		}
 		if isBool(snapshot, elementType) {
 			storeValue, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
@@ -4270,14 +4281,33 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
-		if isPointer(snapshot, elementType) {
-			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+		if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
+			// An integer element of any fixed-width builtin, not just the
+			// entry's own: the new value is built at the ELEMENT's own resolved
+			// width (a u8 slice element inside an i32 function builds its new
+			// value at u8), mirroring how a scalar local's reassignment builds
+			// at the local's own declared width.
+			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, elementWidth, width)
 			if err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
-		return "", fmt.Errorf("%s reassigns an element of type %s, want %s or bool", context, describeType(snapshot, elementType), wantName(width))
+		if isChar(snapshot, elementType) {
+			storeValue, err := buildCharOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
+		if isPointer(snapshot, elementType) {
+			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
+		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, or pointer", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
 	if !declared {
@@ -4295,7 +4325,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	// the appropriate builder.
 	switch targetInfo.kind {
 	case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
-		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
+		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind, width)
 		if err != nil {
 			return "", err
 		}
@@ -4338,7 +4368,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// value is a variant literal (an EnumVariantValue, or a
 			// zero-payload VariantConstruct) built by the enum value builder,
 			// emitted as `pebble_local_<sym> = pebble_variant_<member>;`.
-			storeValue, err := buildEnumValue(unit, snapshot, fileSet, statement.Children[1], scope)
+			storeValue, err := buildEnumValue(unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -4429,7 +4459,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// reassignment — `p = q;` or `p = nil;`. The new value is a
 			// pointer expression built by buildExpr which now handles
 			// pointer-typed nodes (AddressOf, SymbolValue, NilPointer).
-			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -4518,7 +4548,7 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 		switch targetInfo.kind {
 		case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
-			core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context, width)
 			return "", core, err
 		case types.F32, types.F64:
 			core, err := buildCompoundFloatCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
@@ -4542,7 +4572,7 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		return "", "", fmt.Errorf("%s compound assignment combines into an element of type %s, want %s", context, describeType(snapshot, elementType), wantName(width))
 	}
 	tempName := fmt.Sprintf("pebble_compound_ptr_%d", id)
-	core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, "(*"+tempName+")", width, scope, context)
+	core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, "(*"+tempName+")", width, scope, context, width)
 	if err != nil {
 		return "", "", err
 	}
@@ -4561,12 +4591,12 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // `i = i + 1`. A place width with no checked helper (any integer builtin other
 // than int/i32/i64 — the backend has no checked runtime primitive at those
 // widths) is a clean rejection rather than a malformed helper name.
-func buildCompoundIntegerCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string) (string, error) {
+func buildCompoundIntegerCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if checkedSuffix(placeWidth) == "" {
 		return "", fmt.Errorf("%s compound assignment combines at %s, which has no checked-arithmetic runtime helper; compound assignment is supported only at int, i32, or i64", context, wantName(placeWidth))
 	}
 	helper, _ := checkedArithmeticHelper(statement.Operator, placeWidth)
-	value, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, placeWidth)
+	value, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, placeWidth, width)
 	if err != nil {
 		return "", err
 	}
@@ -5092,7 +5122,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			if _, isUnion := unions[initValue.Type]; isUnion {
 				return buildUnionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, unions, width)
 			}
-			return buildEnumLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context)
+			return buildEnumLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isStruct(snapshot, initValue.Type) {
 			if runtimeType(unit, snapshot, initValue.Type) != 0 {
@@ -5392,7 +5422,7 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// `"%PRId32"`, which would put a literal invalid `%P` specifier
 			// in the format.
 			formatParts = append(formatParts, `"%"`+printfSpecifier(kind))
-			arg, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind)
+			arg, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind, width)
 		case kind == types.Bool:
 			// A bool operand prints as the words true/false: build the bool
 			// expression under the bool grammar, then wrap it in the C ternary
@@ -5777,7 +5807,7 @@ func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	for i, elementType := range elements {
 		switch {
 		case isWidth(snapshot, width, elementType):
-			elementExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[i], scope, width)
+			elementExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[i], scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -5888,17 +5918,21 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	if _, err := arrayLengthLiteral(length, width); err != nil {
 		return "", fmt.Errorf("%s: %v", context, err)
 	}
-	// Every element type must be exactly the entry's width or bool, for both
-	// initializer forms; anything else (a nested array element) is a clean
-	// rejection naming the element type, since this backend emits exactly
-	// those two C types as array elements. An enum element is a Nominal type
-	// exactly like a struct element (see isEnumType) and is rejected here
-	// explicitly, since enum-typed array elements are out of scope.
+	// Every scalar element type must be a fixed-width integer builtin (resolved
+	// to its OWN width by resolvedBuiltin/cType — the entry's width, uint, u8,
+	// u16, u32, u64, i8, i16, i32, or i64), char, or bool — the same
+	// isSupportedSliceElementType gate the slice-side element builders use,
+	// widened here from the entry-width-only check so a slice constructed from
+	// an array of u8/char/etc. elements (a[1:3] over a real [N]u8 backing
+	// array) can actually be built. Tuple/array/optional/struct elements remain
+	// accepted exactly as before. An enum element is a Nominal type exactly
+	// like a struct element (see isEnumType) and is rejected here explicitly,
+	// since enum-typed array elements are out of scope.
 	if isEnumType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type %s is an enum type; enum-typed array elements are not supported yet", context, describeType(snapshot, initValue.Type), enumTypeName(elementType))
 	}
-	if !isWidth(snapshot, width, elementType) && !isBool(snapshot, elementType) && !isTuple(snapshot, elementType) && !isArray(snapshot, elementType) && !isOptional(snapshot, elementType) && !isStruct(snapshot, elementType) {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want %s or bool", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType), wantName(width))
+	if !isSupportedSliceElementType(snapshot, elementType) && !isTuple(snapshot, elementType) && !isArray(snapshot, elementType) && !isOptional(snapshot, elementType) && !isStruct(snapshot, elementType) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, or an aggregate element type", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
 	if initValue.Kind == tir.ArrayRepeat {
@@ -5913,6 +5947,15 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		var err error
 		if isBool(snapshot, elementType) {
 			expr, err = buildBoolExpr(unit, snapshot, fileSet, child, scope, width)
+		} else if isChar(snapshot, elementType) {
+			expr, err = buildCharOperand(unit, snapshot, fileSet, child, scope, width)
+		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
+			// An integer element of any fixed-width builtin, not just the
+			// entry's own: each element is built at the element's OWN resolved
+			// width (an element of a [3]u8 array inside an i32 function builds
+			// its value at u8), mirroring how buildScalarInitializeCore builds
+			// a scalar local at its own declared width.
+			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, elementWidth, width)
 		} else if isTuple(snapshot, elementType) {
 			expr, err = buildNestedAggregateValue(unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else if isStruct(snapshot, elementType) {
@@ -5920,7 +5963,7 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		} else if isOptional(snapshot, elementType) {
 			expr, err = buildNestedAggregateValue(unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else {
-			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, width)
+			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, width, width)
 		}
 		if err != nil {
 			return "", err
@@ -5996,8 +6039,12 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 	var valueExpr string
 	if isBool(snapshot, elementType) {
 		valueExpr, err = buildBoolExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+	} else if isChar(snapshot, elementType) {
+		valueExpr, err = buildCharOperand(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+	} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
+		valueExpr, err = buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, elementWidth, width)
 	} else {
-		valueExpr, err = buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		valueExpr, err = buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 	}
 	if err != nil {
 		return "", err
@@ -6089,7 +6136,7 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	if len(node.Children) != 2 {
 		return "", fmt.Errorf("%s SliceFromRaw has %d children, want two", context, len(node.Children))
 	}
-	ptr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+	ptr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
 	if err != nil {
 		return "", err
 	}
@@ -6234,8 +6281,8 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !ok {
 		return "", "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
 	}
-	if !isWidth(snapshot, width, sliceElementType) && !isBool(snapshot, sliceElementType) {
-		return "", "", fmt.Errorf("%s slice element type is %s, want %s or bool", context, describeType(snapshot, sliceElementType), wantName(width))
+	if !isSupportedSliceElementType(snapshot, sliceElementType) {
+		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, or bool", context, describeType(snapshot, sliceElementType))
 	}
 	arrayKey, ok := snapshot.Key(baseInfo.array)
 	if !ok {
@@ -6319,7 +6366,7 @@ func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			return fmt.Sprintf("pebble_local_%d", boundNode.Symbol)
 		}
 	}
-	expr, err := buildExpr(unit, snapshot, fileSet, nodeID, scope, width)
+	expr, err := buildExpr(unit, snapshot, fileSet, nodeID, scope, width, width)
 	if err != nil {
 		return ""
 	}
@@ -6329,6 +6376,9 @@ func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
+	}
+	if isChar(snapshot, id) {
+		return "int32_t", nil
 	}
 	if isTuple(snapshot, id) {
 		return tupleTypeName(id), nil
@@ -6342,21 +6392,33 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		}
 		return structTypeName(id), nil
 	}
-	return cType(width), nil
+	// A scalar integer element resolves to its OWN width, not the ambient
+	// entry width: a [3]u8 array inside an i32 function must declare its C
+	// storage as uint8_t[3] (and a slice over it as a uint8_t* data pointer),
+	// mirroring sliceElementCType's own element-own-width resolution.
+	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
+		return cType(elementWidth), nil
+	}
+	return "", fmt.Errorf("array element type %s is not supported", describeType(snapshot, id))
 }
 
 // sliceElementCType resolves the C pointer target type for a slice's data
-// field: the element's C type. Only the entry's width and bool are supported
-// slice element types, matching arrayElementCType's own gates. Any other
-// element type is a clean rejection naming what was found.
+// field: the element's C type. Any fixed-width integer builtin (resolved to its
+// own width by resolvedBuiltin/cType), char (the fixed int32_t), and bool are
+// supported slice element types, matching isSupportedSliceElementType and
+// arrayElementCType's own scalar handling. Any other element type is a clean
+// rejection naming what was found.
 func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
-	if isWidth(snapshot, width, id) {
-		return cType(width), nil
+	if isChar(snapshot, id) {
+		return "int32_t", nil
 	}
-	return "", fmt.Errorf("slice element type %s is not supported; only %s or bool slice elements are supported", describeType(snapshot, id), wantName(width))
+	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
+		return cType(elementWidth), nil
+	}
+	return "", fmt.Errorf("slice element type %s is not supported; only a fixed-width integer, char, or bool slice elements are supported", describeType(snapshot, id))
 }
 
 // buildOptionalLocalDeclaration builds one optional-typed local's declaration:
@@ -6400,7 +6462,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		var valueExpr string
 		switch {
 		case isWidth(snapshot, width, payloadType):
-			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -6462,7 +6524,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		// buildOptionalIntegerToEnumDeclaration) — the one position this
 		// backend supports the cast in, because a declaration statement has a
 		// natural place to prepend the temp's own statement line.
-		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, context, id)
+		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, context, id, width)
 		if err != nil {
 			return "", err
 		}
@@ -6515,7 +6577,7 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	var err error
 	switch {
 	case isWidth(snapshot, width, payload):
-		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isTuple(snapshot, payload):
@@ -6638,7 +6700,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		var expr string
 		switch {
 		case isWidth(snapshot, width, fieldType):
-			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -6678,7 +6740,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			}
 			expr = fmt.Sprintf("pebble_local_%d", fieldValue.Symbol)
 		case isPointer(snapshot, fieldType):
-			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -6756,7 +6818,7 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // reassignment, switch subject, or comparison resolves the enum type being
 // used. Like every scalar local, the declaration is followed by a (void) cast
 // against -Wunused-variable.
-func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string) (string, error) {
+func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	switch initValue.Kind {
 	case tir.EnumVariantValue:
 		if len(initValue.Children) == 1 {
@@ -6779,7 +6841,7 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	}
 	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
 	if initValue.Kind == tir.CheckedIntegerToEnum {
-		castExpr, err := buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, initValue, scope, context)
+		castExpr, err := buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, initValue, scope, context, width)
 		if err != nil {
 			return "", err
 		}
@@ -6812,7 +6874,7 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // enum value wherever one is needed this slice: an enum-typed local's
 // declaration initializer, a reassignment's new value, an enum switch's
 // subject, and an enum comparison's operand.
-func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo) (string, error) {
+func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -6842,9 +6904,9 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
-		return buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
+		return buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals, width)
 	case tir.CheckedIntegerToEnum:
-		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression")
+		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression", width)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an enum-payload optional (`c!` where c is
 		// ?Color), used as an enum value — the read-back path for an
@@ -6908,7 +6970,7 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // real variant exactly when 0 <= value < variant_count — the runtime primitive
 // enforces exactly that bound (see pebble_rt.h), SAFE panicking out-of-range
 // and RELEASE returning the value unchecked.
-func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string) (string, error) {
+func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string, entryWidth types.BuiltinKind) (string, error) {
 	if node.Kind != tir.CheckedIntegerToEnum {
 		return "", fmt.Errorf("%s contains a %s, want a CheckedIntegerToEnum", context, node.Kind)
 	}
@@ -6934,7 +6996,7 @@ func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fil
 	if !ok || cType(childWidth) == "" {
 		return "", fmt.Errorf("%s integer-to-enum cast child has non-integer type %s", context, describeType(snapshot, child.Type))
 	}
-	childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+	childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 	if err != nil {
 		return "", fmt.Errorf("%s integer-to-enum cast child: %v", context, err)
 	}
@@ -6976,7 +7038,7 @@ func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fil
 // the optional `?Color` — the destination enum is its payload, unwrapped via
 // TypeKey.Child() the same way buildOptionalLocalDeclaration unwraps an
 // optional-typed initializer's payload.
-func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, id tir.NodeID) (string, string, error) {
+func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, id tir.NodeID, width types.BuiltinKind) (string, string, error) {
 	if initValue.Kind != tir.OptionalIntegerToEnum {
 		return "", "", fmt.Errorf("%s contains a %s, want an OptionalIntegerToEnum", context, initValue.Kind)
 	}
@@ -7013,7 +7075,7 @@ func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snaps
 	if !ok || cType(childWidth) == "" {
 		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child has non-integer type %s", context, describeType(snapshot, child.Type))
 	}
-	childExpr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, childWidth)
+	childExpr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, childWidth, width)
 	if err != nil {
 		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child: %v", context, err)
 	}
@@ -7118,7 +7180,7 @@ func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		if isBool(snapshot, payloadNode.Type) {
 			payloadExpr, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
 		} else {
-			payloadExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+			payloadExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
 		}
 		if err != nil {
 			return "", err
@@ -7320,7 +7382,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s pointer cast initializer has %d children, want exactly one", context, len(initValue.Children))
 		}
-		childText, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		childText, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 		if err != nil {
 			return "", fmt.Errorf("%s pointer cast child: %v", context, err)
 		}
@@ -7619,11 +7681,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		if leftOperand.Type != rightOperand.Type {
 			return "", fmt.Errorf("entry function body if condition compares two enum values of different types %s and %s", enumTypeName(leftOperand.Type), enumTypeName(rightOperand.Type))
 		}
-		left, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
+		left, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildEnumValue(unit, snapshot, fileSet, node.Children[1], locals)
+		right, err := buildEnumValue(unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -7676,7 +7738,7 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
-	return buildExpr(unit, snapshot, fileSet, id, locals, width)
+	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 }
 
 // buildStrOperand builds one str value in a position that accepts a str
@@ -7798,9 +7860,28 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			return "", fmt.Errorf("entry function body expression contains an indirect call whose result type is %s, want char", describeType(snapshot, node.Type))
 		}
 		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
+	case tir.Load:
+		// A char-typed element read of a char-element slice (`let c char =
+		// s[0];`). The checker lowers s[i] to Load(CheckedIndexPlace), exactly
+		// as an integer or bool element read does, and the Load's Type is the
+		// slice's char element type (already gated to char above). The read is
+		// emitted by the same buildArrayPlaceRead machinery an integer slice
+		// element read uses — .data[pebble_rt_checked_index_i32/_i64(...)] at
+		// the ENTRY width — whose resulting C type int32_t is the char value's
+		// C type everywhere.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
+		}
+		if place.Kind != tir.CheckedIndexPlace {
+			return "", fmt.Errorf("entry function body expression contains a char Load whose place is a %s, want a CheckedIndexPlace (a char-element slice read)", place.Kind)
+		}
+		return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, false)
 	case tir.CheckedIndex:
-		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —
-		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
+		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
 		// exactly when the indexed value has no addressable place: a str's
 		// byte-level content is not addressable the way array/slice element
 		// storage is, so str indexing is a pure decode-to-value operation
@@ -7865,7 +7946,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			}
 			index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 		} else {
-			index, err = buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+			index, err = buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, width)
 			if err != nil {
 				return "", fmt.Errorf("str index: %v", err)
 			}
@@ -7950,7 +8031,17 @@ func comparisonOperator(op syntax.TokenKind) (string, bool) {
 // Emitting the checked runtime helpers (rather than raw C operators) is what
 // keeps the IR nodes' real overflow and divide-by-zero semantics from silently
 // disappearing in the emitted program.
-func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+//
+// width is the width the expression tree is being built AT — the entry's own
+// width for a top-level expression, but a value's own resolved width (u8, i64,
+// ...) when buildScalarInitializeCore, buildCallArgument, buildStoreCore, or
+// an IntegerCast child re-anchors the grammar. entryWidth is the width of the
+// function being emitted, threaded unchanged through every recursive call so a
+// width-suffixed runtime call buried in the tree (a slice/array index's
+// pebble_rt_checked_index_i32/_i64, whose helper exists only at i32/i64) can
+// always pick the entry's helper rather than the element's possibly-empty
+// checkedSuffix.
+func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, entryWidth types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -7988,7 +8079,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if len(node.Children) != 1 {
 				return "", fmt.Errorf("entry function body expression contains an AddressOf with %d children, want exactly one", len(node.Children))
 			}
-			placeLValue, _, err := buildPlaceLValue(unit, snapshot, fileSet, node.Children[0], locals, width)
+			placeLValue, _, err := buildPlaceLValue(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
 			if err != nil {
 				return "", fmt.Errorf("entry function body address-of place: %v", err)
 			}
@@ -8022,7 +8113,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if len(node.Children) != 1 {
 				return "", fmt.Errorf("entry function body expression contains a PointerCast with %d children, want exactly one", len(node.Children))
 			}
-			child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+			child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 			if err != nil {
 				return "", fmt.Errorf("entry function body pointer cast child: %v", err)
 			}
@@ -8086,7 +8177,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(childWidth) == "" {
 			return "", fmt.Errorf("entry function body IntegerCast child has non-integer type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body integer cast child: %v", err)
 		}
@@ -8123,7 +8214,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(destinationWidth) == "" {
 			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
-		childExpr, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
+		childExpr, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8153,7 +8244,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedIntegerToEnum with %d children, want exactly one", len(node.Children))
 		}
-		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression")
+		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression", entryWidth)
 	case tir.OptionalIntegerToEnum:
 		// An integer cast to an optional enum (`5 as ?Color`): the ONE
 		// supported position is a local variable declaration's initializer
@@ -8201,7 +8292,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if node.Operator != syntax.Minus {
 			return "", fmt.Errorf("entry function body expression contains a CheckedNegate with operator %s, want -", node.Operator)
 		}
-		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8214,11 +8305,11 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %%", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8231,7 +8322,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedShift with operator %s, want << or >>", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8247,7 +8338,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(amountWidth) == "" {
 			return "", fmt.Errorf("entry function body shift amount has non-integer type %s", describeType(snapshot, amountNode.Type))
 		}
-		amount, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, amountWidth)
+		amount, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, amountWidth, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8263,11 +8354,11 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a BinaryValue with operator %s, want &, |, or ^", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8279,7 +8370,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if node.Operator != syntax.Tilde {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want ~", node.Operator)
 		}
-		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -8346,7 +8437,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		}
 		if place.Kind != tir.TuplePlace {
 			if place.Kind == tir.CheckedIndexPlace {
-				return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, false)
+				return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, entryWidth, false)
 			}
 			if place.Kind == tir.FieldPlace {
 				return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
@@ -8404,9 +8495,9 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if len(node.Children) == 1 {
 			child, ok := unit.Node(node.Children[0])
 			if ok && child.Kind == tir.TupleElementValue {
-				return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+				return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 			}
-			return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+			return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		}
 		return "", fmt.Errorf("entry function body expression contains a SourceAlias, which is not supported")
 	case tir.DirectCall, tir.MethodCall:
@@ -8752,7 +8843,7 @@ func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	if isUint(snapshot, node.Type) {
 		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
 	}
-	return buildExpr(unit, snapshot, fileSet, id, locals, width)
+	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 }
 
 // buildDirectCall builds the C expression text for one tir.DirectCall: a call
@@ -8846,9 +8937,14 @@ func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 
 // buildArrayPlaceRead lowers Load(CheckedIndexPlace) for an array or slice
 // local. The index is built as an integer expression and checked with the
-// runtime helper selected by the entry width before it is used as the C
-// subscript. For a slice base, the subscript uses .data and .len instead of
-// the base array directly.
+// runtime helper selected by the ENTRY width (width — the only width with a
+// checked-index primitive) before it is used as the C subscript. For a slice
+// base, the subscript uses .data and .len instead of the base array directly.
+// The element value grammar is decided by the element's own type: bool for the
+// buildBoolExpr path (wantBool), char, or any fixed-width integer at its own
+// resolved width — the caller (buildExpr/buildBoolExpr/buildCharOperand) has
+// already gated the Load's type against its consuming grammar, so this element
+// check is defense for hand-built IR rather than a re-gate on the entry width.
 func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	if len(place.Children) != 2 {
 		return "", fmt.Errorf("CheckedIndexPlace wants two children")
@@ -8878,8 +8974,8 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 				if !isBool(snapshot, element) {
 					return "", fmt.Errorf("slice element type is %s, want bool", describeType(snapshot, element))
 				}
-			} else if !isWidth(snapshot, width, element) {
-				return "", fmt.Errorf("slice element type is %s, want %s", describeType(snapshot, element), wantName(width))
+			} else if !isSupportedSliceElementType(snapshot, element) {
+				return "", fmt.Errorf("slice element type is %s, want a fixed-width integer, char, or bool", describeType(snapshot, element))
 			}
 			indexNode, ok := unit.Node(place.Children[1])
 			if !ok {
@@ -8897,7 +8993,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 				}
 				index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 			} else {
-				index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width)
+				index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width, width)
 				if err != nil {
 					return "", fmt.Errorf("slice index: %v", err)
 				}
@@ -8921,8 +9017,8 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if !isBool(snapshot, element) {
 			return "", fmt.Errorf("array element type is %s, want bool", describeType(snapshot, element))
 		}
-	} else if !isWidth(snapshot, width, element) {
-		return "", fmt.Errorf("array element type is %s, want %s", describeType(snapshot, element), wantName(width))
+	} else if !isSupportedSliceElementType(snapshot, element) {
+		return "", fmt.Errorf("array element type is %s, want a fixed-width integer, char, or bool", describeType(snapshot, element))
 	}
 	indexNode, ok := unit.Node(place.Children[1])
 	if !ok {
@@ -8947,7 +9043,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 	} else {
 		var err error
-		index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width)
+		index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width, width)
 		if err != nil {
 			return "", fmt.Errorf("array index: %v", err)
 		}
@@ -9074,7 +9170,7 @@ func buildDereferencePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	if len(place.Children) != 1 {
 		return "", fmt.Errorf("dereference place wants one child")
 	}
-	ptrExpr, err := buildExpr(unit, snapshot, fileSet, place.Children[0], locals, width)
+	ptrExpr, err := buildExpr(unit, snapshot, fileSet, place.Children[0], locals, width, width)
 	if err != nil {
 		return "", fmt.Errorf("dereference pointer expression: %v", err)
 	}
@@ -9202,7 +9298,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			}
 			idx = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 		} else {
-			idx, err = buildExpr(unit, snapshot, fileSet, n.Children[1], locals, width)
+			idx, err = buildExpr(unit, snapshot, fileSet, n.Children[1], locals, width, width)
 			if err != nil {
 				return "", 0, err
 			}
@@ -9237,7 +9333,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if len(n.Children) != 1 {
 			return "", 0, fmt.Errorf("dereference place wants one child")
 		}
-		ptrExpr, err := buildExpr(unit, snapshot, fileSet, n.Children[0], locals, width)
+		ptrExpr, err := buildExpr(unit, snapshot, fileSet, n.Children[0], locals, width, width)
 		if err != nil {
 			return "", 0, fmt.Errorf("dereference pointer expression: %v", err)
 		}
@@ -9409,7 +9505,7 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 	// arithmetic), not through the general buildExpr path.
 	paramWidth, integerParam := resolvedBuiltin(snapshot, param.Type)
 	if integerParam && cType(paramWidth) != "" && !isUint(snapshot, param.Type) {
-		return buildExpr(unit, snapshot, fileSet, argID, locals, paramWidth)
+		return buildExpr(unit, snapshot, fileSet, argID, locals, paramWidth, width)
 	}
 	switch {
 	case isUint(snapshot, param.Type):
@@ -9467,7 +9563,7 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// buildExpr, which handles every pointer-value shape (AddressOf,
 		// a reference to a pointer-typed local, nil, or a call to a
 		// pointer-returning helper).
-		return buildExpr(unit, snapshot, fileSet, argID, locals, width)
+		return buildExpr(unit, snapshot, fileSet, argID, locals, width, width)
 	case isFunctionType(snapshot, param.Type):
 		// A function-typed parameter (function-types slice 3): the argument
 		// is a function value built by buildFunctionValue — a bare top-level
@@ -9898,7 +9994,7 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	var err error
 	switch {
 	case isWidth(snapshot, width, payload):
-		value, err = buildExpr(unit, snapshot, fileSet, id, locals, width)
+		value, err = buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
 	default:
@@ -10262,7 +10358,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if !ok || cType(childWidth) == "" {
 			return "", fmt.Errorf("entry function body IntegerToFloat child has non-integer type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
 		if err != nil {
 			return "", fmt.Errorf("entry function body integer-to-float cast child: %v", err)
 		}
