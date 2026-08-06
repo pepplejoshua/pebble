@@ -388,7 +388,7 @@ func (s *irBuildState) buildPostfixOne(op *operatorRecord) (tir.NodeID, bool) {
 	}
 	kind := tir.IntegerLiteral
 	literal := tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "1", IntegerDen: "1"}
-	if key, found := s.handoff.Semantics.Types().Key(typ); found {
+	if key, found := s.typeKey(typ); found {
 		if builtin, isBuiltin := key.Builtin(); isBuiltin && isFloatBuiltin(builtin) {
 			kind = tir.FloatLiteral
 			literal = tir.Literal{Kind: tir.LiteralFloat, Float: "1.0"}

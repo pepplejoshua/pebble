@@ -280,7 +280,7 @@ func (s *irBuildState) memberSymbol(base valueID, name string) symbol.SymbolID {
 	if !ok {
 		return 0
 	}
-	key, ok := s.handoff.Semantics.Types().Key(typ)
+	key, ok := s.typeKey(typ)
 	if !ok {
 		return 0
 	}
@@ -289,7 +289,7 @@ func (s *irBuildState) memberSymbol(base valueID, name string) symbol.SymbolID {
 		if !childOK {
 			return 0
 		}
-		key, ok = s.handoff.Semantics.Types().Key(pointee)
+		key, ok = s.typeKey(pointee)
 		if !ok {
 			return 0
 		}
@@ -333,7 +333,7 @@ func (s *irBuildState) isString(id valueID) bool {
 	if !ok {
 		return false
 	}
-	key, ok := s.handoff.Semantics.Types().Key(typ)
+	key, ok := s.typeKey(typ)
 	if !ok || key.Kind() != types.Builtin {
 		return false
 	}

@@ -73,7 +73,7 @@ func (s *irBuildState) buildIndirectCall(call *callRecord, flow *contextFlowReco
 	if !ok {
 		return false
 	}
-	convention, ok := functionConvention(s.handoff, functionType)
+	convention, ok := s.functionConvention(functionType)
 	if !ok {
 		return false
 	}
@@ -98,7 +98,7 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	if !ok {
 		return false
 	}
-	convention, ok := functionConvention(s.handoff, functionType)
+	convention, ok := s.functionConvention(functionType)
 	if !ok {
 		return false
 	}
@@ -106,14 +106,14 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	if !ok {
 		return false
 	}
-	functionKey, functionKeyOK := s.handoff.Semantics.Types().Key(functionType)
+	functionKey, functionKeyOK := s.typeKey(functionType)
 	if functionKeyOK {
 		_, parameters, _, _, isFunction := functionKey.Function()
 		if isFunction && len(parameters) != 0 {
 			selfType := parameters[0]
 			receiverType, receiverTypeOK := s.resolveType(call.Receiver)
-			selfKey, selfKeyOK := s.handoff.Semantics.Types().Key(selfType)
-			receiverKey, receiverKeyOK := s.handoff.Semantics.Types().Key(receiverType)
+			selfKey, selfKeyOK := s.typeKey(selfType)
+			receiverKey, receiverKeyOK := s.typeKey(receiverType)
 			if receiverTypeOK && selfKeyOK && receiverKeyOK && selfKey.Kind() == types.Pointer && receiverKey.Kind() != types.Pointer {
 				pointee, pointeeOK := selfKey.Child()
 				if pointeeOK && pointee == receiverType {
@@ -200,10 +200,10 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 func (s *irBuildState) methodSpecializationArgs(call *callRecord, method infer.MethodSelection, signature infer.Signature) ([]types.TypeID, bool) {
 	receiverArgs := make([]types.TypeID, 0, len(signature.TypeParams))
 	if receiverType, ok := s.resolveType(call.Receiver); ok {
-		key, found := s.handoff.Semantics.Types().Key(receiverType)
+		key, found := s.typeKey(receiverType)
 		if found && key.Kind() == types.Pointer {
 			receiverType, _ = key.Child()
-			key, found = s.handoff.Semantics.Types().Key(receiverType)
+			key, found = s.typeKey(receiverType)
 		}
 		if found {
 			if _, nominalArgs, nominal := key.Nominal(); nominal {
@@ -314,8 +314,8 @@ func (s *irBuildState) buildCallChildren(call *callRecord, node *tir.Node) bool 
 
 // functionConvention extracts the calling convention carried by a function
 // value's own type, used where the callRecord does not record one directly.
-func functionConvention(handoff *solveHandoff, functionType types.TypeID) (types.CallingConvention, bool) {
-	key, ok := handoff.Semantics.Types().Key(functionType)
+func (s *irBuildState) functionConvention(functionType types.TypeID) (types.CallingConvention, bool) {
+	key, ok := s.typeKey(functionType)
 	if !ok {
 		return 0, false
 	}

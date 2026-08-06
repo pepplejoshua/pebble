@@ -49,6 +49,22 @@ func (b *Builder) checkFrozen() error {
 	return nil
 }
 
+// RefreshSnapshot replaces the builder's owning type snapshot with a fresh view
+// of the type store. Types interned after construction — for example the
+// concrete substitutions created while building generic specializations — are
+// not owned by the original snapshot, so the unit's owning snapshot must be
+// retaken once all type interning is complete and before Build verifies it.
+func (b *Builder) RefreshSnapshot(snapshot *types.Snapshot) error {
+	if err := b.checkFrozen(); err != nil {
+		return err
+	}
+	if snapshot == nil {
+		return errors.New("nil type snapshot")
+	}
+	b.snapshot = snapshot
+	return nil
+}
+
 func canAdd(used, add, limit uint64) bool {
 	if add > limit {
 		return false

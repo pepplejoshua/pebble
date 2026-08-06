@@ -96,7 +96,7 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 			if member.Kind == memberField && member.Name == "len" && len(record.Children) == 1 {
 				baseType, found := s.resolveType(record.Children[0])
 				if found {
-					if key, keyFound := s.handoff.Semantics.Types().Key(baseType); keyFound {
+					if key, keyFound := s.typeKey(baseType); keyFound {
 						if length, _, array := key.Array(); array {
 							node.Kind = tir.IntegerLiteral
 							node.Literal = tir.Literal{Kind: tir.LiteralInteger, IntegerNum: strconv.FormatUint(length, 10), IntegerDen: "1"}

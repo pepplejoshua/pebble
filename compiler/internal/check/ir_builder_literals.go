@@ -142,7 +142,7 @@ func (s *irBuildState) arrayLength(id valueID) (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	key, ok := s.handoff.Semantics.Types().Key(typ)
+	key, ok := s.typeKey(typ)
 	if !ok {
 		return 0, false
 	}

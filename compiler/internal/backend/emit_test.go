@@ -10859,3 +10859,98 @@ func TestCheckStdHmapU64HashFnTypes(t *testing.T) {
 		t.Fatal("check succeeded without an IR unit")
 	}
 }
+
+func TestCheckStdHmapRehash(t *testing.T) {
+	// The C0619 regression this test pins: calling std/hmap.peb's generic
+	// `rehash` method — an indexed slice-element FIELD WRITE
+	// (`self.entries[i].state = .Empty`) inside a method of a generic struct
+	// declared in a separate std module — failed with an opaque
+	// "typed-IR construction failed" internal error. The root cause was that
+	// member/function-type KEY lookups read the frozen inference snapshot while
+	// the type being resolved had already been concretely substituted through
+	// the active specialization mapping into the live type store; the concrete
+	// Entry[int, int] / HashMap[int, int] types interned mid-build are absent
+	// from the freeze-time snapshot, so the key lookup failed, member symbols
+	// were left zeroed, and a FieldPlace with no Member reached the verifier.
+	//
+	// This is exactly the shape bisection isolated: the identical construct
+	// checks clean when the struct is declared in main.peb and only fails when
+	// the generic struct lives in an imported std module, because only then
+	// does the specialization build substitute concrete types into the live
+	// store after the snapshot was taken.
+	hmap, err := os.ReadFile("../../std/hmap.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := os.ReadFile("../../std/mem.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{
+		"main.peb":     []byte(`import "std:hmap"; fn userHash(x int) u64 => x as u64; fn userEq(a int, b int) bool => a == b; fn main() int { var m = hmap::new[int, int](userHash, userEq); m.rehash(8); return 0; }`),
+		"std/hmap.peb": hmap,
+		"std/mem.peb":  mem,
+	}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed on std:hmap rehash: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("check succeeded without an IR unit")
+	}
+}
+
+func TestCheckStdModuleGenericMethodIndexedFieldWrite(t *testing.T) {
+	// The minimal cross-module reproduction bisection isolated: a generic
+	// struct in an imported std module whose method performs an indexed
+	// slice-element field write. Before the store/snapshot fix this checked
+	// clean when the same shape was declared in main.peb but failed C0619 the
+	// moment the struct was moved into a std module, because only the
+	// cross-module specialization build interns substituted concrete types
+	// after the inference snapshot. `hmap::new` is kept in the module so the
+	// call from main matches the real fixture layout.
+	mem, err := os.ReadFile("../../std/mem.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hmap := `type EntryState = enum { Empty, Tombstone, Occupied };
+type Entry[K, V] = struct { key K; value V; state EntryState; };
+type HashMap[K, V] = struct { entries []Entry[K, V];
+    fn rehash[K, V](self *HashMap[K, V], new_cap uint) void {
+        loop 0..new_cap : i {
+            self.entries[i].state = .Empty;
+        }
+    }
+};
+fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
+    var arr [0]Entry[K, V] = [];
+    var s []Entry[K, V] = arr[:];
+    return HashMap[K, V].{ entries = s };
+}`
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{
+		"main.peb":     []byte(`import "std:hmap"; fn userHash(x int) u64 => x as u64; fn userEq(a int, b int) bool => a == b; fn main() int { var m = hmap::new[int, int](userHash, userEq); m.rehash(8); return 0; }`),
+		"std/hmap.peb": []byte(hmap),
+		"std/mem.peb":  mem,
+	}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed on minimal std-module generic indexed field write: %+v", diagnostics.Items())
+	}
+}

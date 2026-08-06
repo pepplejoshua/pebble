@@ -86,7 +86,7 @@ func (s *irBuildState) operatorHasIntegerOperand(op *operatorRecord) bool {
 	if !ok {
 		return false
 	}
-	key, ok := s.handoff.Semantics.Types().Key(typ)
+	key, ok := s.typeKey(typ)
 	if !ok {
 		return false
 	}

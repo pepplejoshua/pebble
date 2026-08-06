@@ -105,6 +105,17 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 			return fail("typed-IR construction failed during " + step.name)
 		}
 	}
+	// Building interned new concrete types (generic substitutions resolved
+	// through the active mapping during buildBlocks/buildSpecializations) after
+	// the snapshot NewBuilder received; the unit's owning snapshot must cover
+	// every referenced type or Build's verifier rejects the unit.
+	freshSnapshot, err := store.Snapshot()
+	if err != nil {
+		return fail("typed-IR construction failed during specialization type snapshot")
+	}
+	if err := b.RefreshSnapshot(freshSnapshot); err != nil {
+		return fail("typed-IR construction failed during specialization type snapshot")
+	}
 	unit, err = b.Build()
 	if err != nil {
 		return fail("typed-IR construction failed during Build: " + err.Error())
@@ -358,6 +369,21 @@ func (s *irBuildState) resolveType(id valueID) (types.TypeID, bool) {
 		return 0, false
 	}
 	return substituted, true
+}
+
+// typeKey resolves a type's key against the live type store rather than the
+// frozen inference snapshot. A type resolved during a specialization build has
+// already been substituted through the active mapping, which interns concrete
+// types into the store AFTER the freeze-time snapshot was taken; those
+// substituted types are absent from the snapshot, so any key lookup of a
+// resolveType result must read the store. Test-constructed build states bind
+// no store, so the frozen snapshot is the fallback there (they never apply a
+// substitution).
+func (s *irBuildState) typeKey(typ types.TypeID) (types.TypeKey, bool) {
+	if s.store != nil {
+		return s.store.Key(typ)
+	}
+	return s.handoff.Semantics.Types().Key(typ)
 }
 
 func (s *irBuildState) buildDeclarations() bool {
