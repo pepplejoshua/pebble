@@ -9840,3 +9840,71 @@ func TestEmitFunctionTypedStructFieldDoesNotRegressAllocator(t *testing.T) {
 	// tells them apart.
 	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int {\nvar t Table = Table.{ op = add };\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\n*p = t.op(3, 4);\nreturn *p;\n}", false, 7, false)
 }
+
+// --- Function types: slice 3/3, function-typed parameters and results ---
+
+func TestEmitFunctionTypedParameterCompilesAndRuns(t *testing.T) {
+	// The exact minimal parameter repro: apply(f fn(int,int)int, x int, y
+	// int) calls through the function-typed parameter.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { return apply(add, 1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedResultCompilesAndRuns(t *testing.T) {
+	// The exact minimal result repro: chooseOp() fn(int,int)int returns a
+	// bare function reference, forwarded into a local and called through it.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn chooseOp() fn(int, int) int { return add; } fn main() int { var f fn(int, int) int = chooseOp(); return f(1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedParameterMixedSignatureCompilesAndRuns(t *testing.T) {
+	// A function-typed parameter combined with other parameter types and
+	// positions in the same signature — confirms the dispatch works
+	// regardless of where in the parameter list the function-typed one sits.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn apply(x int, f fn(int, int) int, y int) int { return f(x, y); } fn main() int { return apply(10, add, 20); }", false, 30, false)
+}
+
+func TestEmitFunctionTypedParameterStructFieldArgumentCompilesAndRuns(t *testing.T) {
+	// Passing a function-typed STRUCT FIELD as a call argument — combines
+	// slice 2 (struct fields) and slice 3 (parameters).
+	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { var t Table = Table.{ op = add }; return apply(t.op, 1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedResultChainedCallCompilesAndRuns(t *testing.T) {
+	// A function-returning helper's result forwarded directly as another
+	// call's argument, and a function-returning helper calling another
+	// function-returning helper — both real DirectCall-as-function-value
+	// shapes, not just the caller-side local-declaration read-back.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn chooseOp() fn(int, int) int { return add; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { return apply(chooseOp(), 1, 2); }", false, 3, false)
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn chooseOp() fn(int, int) int { return add; } fn wrap() fn(int, int) int { return chooseOp(); } fn main() int { var f fn(int, int) int = wrap(); return f(1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedGenericValueCompilesAndRuns(t *testing.T) {
+	// A generic function referenced as a first-class value
+	// (GenericFunctionValue, confirmed checker-reachable via identity[int]),
+	// both as a local's initializer and as a call argument.
+	emitAndRun(t, "fn identity[T](x T) T { return x; } fn main() int { var f fn(int) int = identity[int]; return f(3); }", false, 3, false)
+	emitAndRun(t, "fn identity[T](x T) T { return x; } fn apply(f fn(int) int) int { return f(5); } fn main() int { return apply(identity[int]); }", false, 5, false)
+}
+
+func TestEmitFunctionTypedParameterResultDoesNotRegressAllocator(t *testing.T) {
+	// The same allocator-collision class slices 1 and 2 each guarded against,
+	// exercised for parameters and results specifically.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int {\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\n*p = apply(add, 3, 4);\nreturn *p;\n}", false, 7, false)
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn chooseOp() fn(int, int) int { return add; } fn main() int {\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\nvar f fn(int, int) int = chooseOp();\n*p = f(3, 4);\nreturn *p;\n}", false, 7, false)
+}
+
+func TestEmitFunctionTypedParameterResultWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the function-typed parameter's C type
+	// is the fnptr typedef, the argument is passed bare, and the indirect
+	// call through the parameter threads ctx.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { return apply(add, 1, 2); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"pebble_fnptr_", "pebble_local_", "(ctx, pebble_fn_"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}

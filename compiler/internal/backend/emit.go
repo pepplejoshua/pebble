@@ -891,7 +891,7 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 	if !ok {
 		return fmt.Errorf("reachability walk references invalid node %d", nodeID)
 	}
-	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall || node.Kind == tir.HoistedFunctionValue {
+	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall || node.Kind == tir.HoistedFunctionValue || node.Kind == tir.GenericFunctionValue {
 		*out = append(*out, node)
 	}
 	if node.Kind == tir.RecordConstruct {
@@ -1309,6 +1309,31 @@ func collectFunctionTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 		if err := collectFunctionTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
 			return nil, err
 		}
+		// A reachable helper's own parameter list is a source of function
+		// types the body walk cannot see: a function-typed parameter is
+		// referenced by the helper's C signature even if no reachable body
+		// ever mentions the parameter (a fn-typed parameter never read in the
+		// body, or forwarded only through a call whose own FunctionType is a
+		// DIFFERENT fn type), so its typedef must be discovered here too —
+		// mirroring collectTupleTypes/collectStructTypes' identical
+		// Parameters scan.
+		for _, param := range helper.decl.Parameters {
+			if isFunctionType(snapshot, param.Type) {
+				collected = append(collected, param.Type)
+			}
+		}
+		// A reachable helper's own result type is the same kind of source for
+		// the typedef its C signature names as its return type: a
+		// function-returning helper's C signature declares
+		// pebble_fnptr_<typeID>_t, so a function type that appears nowhere in
+		// any reachable body still needs its typedef emitted. (For a reachable
+		// function-returning helper the body walk usually finds the type
+		// anyway, since the helper must produce a function value to return;
+		// this scan closes the same class of gap the Parameters scan above
+		// closes, for the return side.)
+		if isFunctionType(snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
+		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
 	var deduplicated []types.TypeID
@@ -1349,7 +1374,7 @@ func collectFunctionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 	if !ok {
 		return fmt.Errorf("function-type walk references invalid node %d", nodeID)
 	}
-	if (node.Kind == tir.HoistedFunctionValue || node.Kind == tir.SymbolValue) && isFunctionType(snapshot, node.Type) {
+	if (node.Kind == tir.HoistedFunctionValue || node.Kind == tir.SymbolValue || node.Kind == tir.GenericFunctionValue) && isFunctionType(snapshot, node.Type) {
 		*out = append(*out, node.Type)
 	}
 	if node.Kind == tir.RecordConstruct {
@@ -2299,12 +2324,29 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, or an optional type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, a pointer type, or an optional type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a slice type with an unsupported element type: %v", decl.Symbol, i, param.Symbol, err)
+			}
+		}
+		// A function-typed parameter's own signature needs no per-signature gate
+		// here beyond the shared validateFunctionTypeSignature check: exactly
+		// like an optional parameter's payload, it is validated wherever its
+		// typedef gets built (buildFunctionTypedef via validateFunctionTypeSignature),
+		// and collectFunctionTypes guarantees that typedef is emitted for every
+		// reachable helper's parameter types, so an unsupported signature shape
+		// (a float parameter, a tuple/struct/slice/optional/pointer parameter,
+		// or an aggregate/str result) is a clean rejection at typedef build
+		// time, never a guessed layout. The signature check is repeated here so
+		// a reachable helper with a bad function-typed parameter fails during
+		// helper discovery with the same message a function-typed local's
+		// invalid type would name.
+		if isFunctionType(snapshot, param.Type) {
+			if err := validateFunctionTypeSignature(snapshot, width, param.Type); err != nil {
+				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a function type with an unsupported signature: %v", decl.Symbol, i, param.Symbol, err)
 			}
 		}
 		// An optional parameter's own payload shape needs no per-payload gate
@@ -2315,12 +2357,17 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// clean rejection at typedef build time, never a guessed layout.
 	}
 	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
-	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
+	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) && !isFunctionType(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, a function result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
 			return fmt.Errorf("called function symbol %d has a slice result type with an unsupported element type: %v", decl.Symbol, err)
+		}
+	}
+	if isFunctionType(snapshot, decl.ResultType) {
+		if err := validateFunctionTypeSignature(snapshot, width, decl.ResultType); err != nil {
+			return fmt.Errorf("called function symbol %d has a function result type with an unsupported signature: %v", decl.Symbol, err)
 		}
 	}
 	return nil
@@ -2524,6 +2571,26 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				}
 				params = append(params, ctypeName+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{pointerType: param.Type}
+			case isFunctionType(snapshot, param.Type):
+				// A function-typed parameter (function-types slice 3) seeds
+				// the callee's locals scope as a function-typed local
+				// (localInfo.functionType — the SAME field a function-typed
+				// local's Initialize uses), so a reference to the parameter
+				// inside the body — as an indirect call's callee (`f(x, y)`),
+				// forwarded as another function-typed parameter's argument, or
+				// returned by a function-result helper — resolves through the
+				// existing buildFunctionValue machinery unchanged (its
+				// SymbolValue case reads localInfo.functionType exactly like
+				// buildFunctionLocalDeclaration's scope entry does). The C
+				// parameter is declared with the function type's own pointer
+				// typedef (pebble_fnptr_<typeID>_t, slice 1's functionTypeName
+				// — the same C type a function-typed local is declared with),
+				// so passing a function value by value is trivially valid C
+				// (a call site passes a function value of the same C type).
+				// The function type's own signature is validated by
+				// validateHelperSignature above, so the typedef always builds.
+				params = append(params, functionTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{functionType: param.Type}
 			default:
 				// validateHelperSignature rules any unsupported parameter out
 				// before a reachable helper is ever built, so this branch is
@@ -2644,6 +2711,23 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// internal shape.
 			returnType = optionalTypeName(helper.decl.ResultType)
 			result = resultInfo{optionalType: helper.decl.ResultType}
+		case isFunctionType(snapshot, helper.decl.ResultType):
+			// A function-result helper (function-types slice 3) is declared
+			// with the function type's own pointer typedef
+			// (pebble_fnptr_<typeID>_t) as its C return type — the same
+			// typedef slice 1 builds for a function-typed local, no new typedef
+			// shape needed — and resultInfo records the function-result shape
+			// (resultInfo.functionType, mirroring how resultInfo.optionalType
+			// was added for optional results) so buildBlock's tail-position
+			// Return builds its value via buildFunctionValue (a bare function
+			// reference, a function-typed local or parameter forward, a
+			// function-typed struct field forward, or a call to another
+			// function-result helper) rather than buildExpr, which would
+			// reject a function-typed value. The function type's own signature
+			// is validated by validateHelperSignature above, so the typedef
+			// always builds.
+			returnType = functionTypeName(helper.decl.ResultType)
+			result = resultInfo{functionType: helper.decl.ResultType}
 		}
 		statements, err := buildBlock(unit, snapshot, fileSet, helper.block, scope, 0, bodyWidth, result, unions)
 		if err != nil {
@@ -2931,6 +3015,20 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// the optional is supplied here; anything else is a clean
 		// rejection.
 		returnValue, err = buildOptionalValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.optionalType, "entry function body return statement", width)
+	} else if result.functionType != 0 {
+		// The enclosing function returns a function type (a reachable helper
+		// whose ResultType is a function type — the entry always threads a
+		// scalar resultInfo), so the return value is built under the function
+		// grammar by buildFunctionValue rather than buildExpr, which rejects
+		// a function-typed value. Supported return shapes are a bare function
+		// reference (a HoistedFunctionValue), a reference to an in-scope
+		// function-typed local or parameter (a SymbolValue), a function-typed
+		// struct field read (a FieldValue or Load(FieldPlace)), a generic
+		// function referenced as a value (a GenericFunctionValue), or a call
+		// to another function-returning helper (a DirectCall whose result type
+		// is the function type — a return forward); anything else is a clean
+		// rejection.
+		returnValue, err = buildFunctionValue(unit, snapshot, fileSet, mustNode(unit, returnNode.Children[0]), scope, "entry function body return statement", width)
 	} else if result.kind == types.F32 || result.kind == types.F64 {
 		// A float-returning entry (a main declared to return f32/f64 — the
 		// one float-returning position Float Stage A supports; float helper
@@ -4203,7 +4301,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// coerced the new value to the local's own declared function
 			// type (the two signatures match), so the assigned C function
 			// pointer is always the local's own pebble_fnptr_<typeID>_t.
-			storeValue, err := buildFunctionValue(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context)
+			storeValue, err := buildFunctionValue(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -5383,11 +5481,12 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // resultInfo records what the enclosing function's tail return must produce:
 // an ordinary scalar — the entry's resolved integer width, in kind — a str
 // value, in isStr, a char value, in isChar, a tuple, in tuple (its types.TypeID), a struct, in
-// structType, a slice, in sliceType, or an optional, in optionalType. The fields are
+// structType, a slice, in sliceType, an optional, in optionalType, or a
+// function value, in functionType (its types.TypeID). The fields are
 // mutually exclusive, mirroring localInfo: kind is zero for a compound or str
 // or char result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
 // str result, isChar is true only for a char result (whose C return type is
-// the fixed int32_t, independent of the entry's width), and tuple/structType/sliceType/optionalType are zero
+// the fixed int32_t, independent of the entry's width), and tuple/structType/sliceType/optionalType/functionType are zero
 // for a scalar result. It is threaded alongside width through buildBlock and
 // buildIf so a tuple/struct-returning helper's tail-position Return builds its
 // value via buildAggregateReturnValue (a SymbolValue naming a matching
@@ -5400,11 +5499,15 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // buildOptionalReturnValue (a SymbolValue naming a matching optional-typed
 // local, a fresh SomeOptional/NoneOptional/OptionalInject construction, a call
 // to another optional-returning helper, or a bare payload whose implicit
-// injection is supplied there), and a
+// injection is supplied there), a
+// function-returning helper's tail-position Return builds its value via
+// buildFunctionValue (a bare function reference, a function-typed local or
+// parameter forward, a function-typed struct field forward, or a call to
+// another function-returning helper), and a
 // str-returning helper's tail-position Return builds its value via
 // buildStrOperand (a SymbolValue naming a str local, a string literal, or a
 // call to a str-returning helper) instead of
-// buildExpr, which would reject an aggregate-, slice-, optional-, or str-typed value. The entry's own body
+// buildExpr, which would reject an aggregate-, slice-, optional-, function-typed, or str-typed value. The entry's own body
 // always threads resultInfo{kind: width} (a scalar, unchanged behavior), since
 // the entry's C return type stays the integer entryReturnType regardless of
 // what a helper may return.
@@ -5417,6 +5520,7 @@ type resultInfo struct {
 	sliceType    types.TypeID
 	pointerType  types.TypeID
 	optionalType types.TypeID
+	functionType types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -6486,7 +6590,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// (HoistedFunctionValue) or a reference to an in-scope function-typed
 			// local (SymbolValue), whose C value already matches the field's own
 			// pebble_fnptr_<typeID>_t C type with no cast needed.
-			built, err := buildFunctionValue(unit, snapshot, fileSet, valueNode, scope, context)
+			built, err := buildFunctionValue(unit, snapshot, fileSet, valueNode, scope, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -7029,7 +7133,7 @@ func buildFunctionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 	if err := validateFunctionTypeSignature(snapshot, width, fnType); err != nil {
 		return "", fmt.Errorf("%s: %v", context, err)
 	}
-	valueText, err := buildFunctionValue(unit, snapshot, fileSet, initValue, scope, context)
+	valueText, err := buildFunctionValue(unit, snapshot, fileSet, initValue, scope, context, width)
 	if err != nil {
 		return "", err
 	}
@@ -7832,14 +7936,19 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	}
 	// A function-typed node's Type is never the entry's width, so it must
 	// bypass the width gate below the same way a pointer-typed node does. This
-	// covers the two shapes a function value can take: a reference to an
-	// existing function-typed local (SymbolValue) or a bare top-level function
-	// reference (HoistedFunctionValue), both built by buildFunctionValue. (The
+	// covers the shapes a function value can take: a reference to an
+	// existing function-typed local or parameter (SymbolValue), a bare
+	// top-level function reference (HoistedFunctionValue), a generic function
+	// referenced as a value (GenericFunctionValue), a call to a
+	// function-returning helper (DirectCall), a function-typed struct field
+	// read (FieldValue/Load), and (since function-types slice 2) a bare
+	// function reference used as a struct field's construction value — all
+	// built by buildFunctionValue. (The
 	// general indirect call through such a value is handled by buildIndirectCall
 	// at the top of this function, whose callee child is a function-typed node
 	// routed through this same bypass.)
 	if isFunctionType(snapshot, node.Type) {
-		return buildFunctionValue(unit, snapshot, fileSet, node, locals, "entry function body expression")
+		return buildFunctionValue(unit, snapshot, fileSet, node, locals, "entry function body expression", width)
 	}
 	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) {
 		wantName, _ := builtinName(width)
@@ -8354,7 +8463,7 @@ func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 // calleeNode is the unwrapped callee value node (a SymbolValue naming a
 // function-typed local, or a HoistedFunctionValue), built by buildFunctionValue.
 func buildFunctionIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node, calleeNode tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
-	calleeExpr, err := buildFunctionValue(unit, snapshot, fileSet, calleeNode, locals, "entry function body indirect call")
+	calleeExpr, err := buildFunctionValue(unit, snapshot, fileSet, calleeNode, locals, "entry function body indirect call", width)
 	if err != nil {
 		return "", err
 	}
@@ -8404,7 +8513,7 @@ func buildFunctionIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // (buildFunctionIndirectCall, also reachable through buildExpr's function-type
 // bypass for a fn-typed node used as a value). Any other shape is a clean
 // rejection naming what was found.
-func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string) (string, error) {
+func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	switch node.Kind {
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
@@ -8418,6 +8527,36 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 			return "", err
 		}
 		return helperCName(decl), nil
+	case tir.GenericFunctionValue:
+		// A generic function referenced as a first-class value
+		// (`var f fn(int) int = identity[int];`, function-types slice 3):
+		// the same resolution a generic function CALL uses
+		// (findCalledFunctionDeclaration with the value's own TypeArgs —
+		// node.Symbol is the generic function's declaration symbol and
+		// node.TypeArgs the concrete specialization's type arguments), and the
+		// specialized declaration's own C name emitted exactly like a
+		// HoistedFunctionValue's — a bare C function name that decays to the
+		// exact fnptr typedef type, no cast needed. The specialization is
+		// discovered as reachable by the same collectDirectCalls case added
+		// for this node kind, so its pebble_fn_<symbol>_<function> definition
+		// is always emitted.
+		decl, err := findCalledFunctionDeclaration(unit, node.Symbol, node.TypeArgs)
+		if err != nil {
+			return "", err
+		}
+		return helperCName(decl), nil
+	case tir.DirectCall:
+		// A call to a function-returning helper used as a function-typed value
+		// (`var f fn(int, int) int = chooseOp();`, `return chooseOp();`,
+		// `apply(chooseOp(), 1, 2)`, `f = chooseOp();`, or a struct field's
+		// construction value `Table.{ op = chooseOp() }` — all confirmed
+		// checker-reachable, all the same DirectCall-with-a-function-result
+		// node whose Type is the function type): built by buildDirectCall, the
+		// same call builder every other direct call uses. The emitted C is
+		// `pebble_fn_<callee>(ctx, ...)` — a C function call whose return
+		// type IS the callee's declared fnptr typedef, so the expression is a
+		// function pointer of the exact value's C type, no cast needed.
+		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
 	case tir.SourceAlias:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
@@ -8426,7 +8565,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if !ok {
 			return "", fmt.Errorf("%s contains a SourceAlias referencing invalid node %d", context, node.Children[0])
 		}
-		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context)
+		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context, width)
 	case tir.FieldValue:
 		// A function-typed struct field read (`t.op`, function-types slice 2):
 		// the receiver is a struct-typed local in scope (a SymbolValue),
@@ -8471,7 +8610,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if !ok {
 			return "", fmt.Errorf("%s contains a Load referencing invalid node %d", context, node.Children[0])
 		}
-		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context)
+		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context, width)
 	case tir.FieldPlace:
 		// The lvalue-place form of a function-typed struct field read (the
 		// shape a Load's child takes, as opposed to FieldValue's rvalue
@@ -9130,8 +9269,10 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // width parameters take buildExpr, uint parameters take buildUintExpr, bool
 // parameters take buildBoolExpr, char parameters take buildCharOperand, str
 // parameters take buildStrOperand, tuple/struct parameters take
-// buildAggregateArgument, slice parameters take buildSliceArgument, and
-// pointer parameters take buildExpr (which handles every pointer-value shape).
+// buildAggregateArgument, slice parameters take buildSliceArgument, pointer
+// parameters take buildExpr (which handles every pointer-value shape), and
+// function-typed parameters (function-types slice 3) take buildFunctionValue
+// (the shared builder every function-typed value position uses).
 // The checker has already coerced the argument to the parameter's type, so a
 // mismatch here is hand-built IR. position is the call-site argument index,
 // used only to name the offending argument in rejection messages.
@@ -9195,6 +9336,23 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// a reference to a pointer-typed local, nil, or a call to a
 		// pointer-returning helper).
 		return buildExpr(unit, snapshot, fileSet, argID, locals, width)
+	case isFunctionType(snapshot, param.Type):
+		// A function-typed parameter (function-types slice 3): the argument
+		// is a function value built by buildFunctionValue — a bare top-level
+		// function reference (apply(add, 1, 2), a HoistedFunctionValue), an
+		// in-scope function-typed local or parameter (a SymbolValue), a
+		// function-typed struct field read (a FieldValue or Load(FieldPlace),
+		// combining slice 2 and slice 3), a generic function referenced as a
+		// value (a GenericFunctionValue), or a call to a function-returning
+		// helper (a DirectCall whose result type is the function type) —
+		// emitted as a pebble_fnptr_<typeID>_t value, the same C type the
+		// parameter is declared with, so passing a function by value is
+		// trivially valid C.
+		argNode, ok := unit.Node(argID)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) references invalid argument node %d", calleeSymbol, position, param.Symbol, argID)
+		}
+		return buildFunctionValue(unit, snapshot, fileSet, argNode, locals, fmt.Sprintf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d)", calleeSymbol, position, param.Symbol), width)
 	default:
 		// validateHelperSignature rules any unsupported parameter out
 		// before a reachable helper is ever built, so this branch is
