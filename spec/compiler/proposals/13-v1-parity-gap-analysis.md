@@ -86,18 +86,25 @@ repeated here.
       runs through `backend.Emit`. `std/set.peb` uses the identical
       `hash_fn` shape via `hmap` and should be re-verified the same way
       before being trusted end-to-end (not separately re-tested).
-- [ ] **Generic struct DATA fields — slice 1 done (254a00c): a field
-      directly typed as the struct's own type parameter (`key K`,
-      `value V`) now resolves per-instantiation via a new
-      `types.Snapshot.Substitute`, including two specializations of
-      the same generic struct in one program (previously collided on
-      shared field symbols).** Still open, narrower scope remaining:
-      a field whose type is a COMPOUND type wrapping a parameter (`?K`,
-      `[K]`, `*K`, a nested generic like `Vec[K]`) — `HashMap[K,V]`'s
-      `entries` field (a slice/pointer-shaped type depending on `K`/
-      `V`) and its `Allocator`-typed `backing` field are this shape,
-      still unresolved. Needed before `std/hmap.peb` itself can
-      compile its struct layout.
+- [x] Generic struct DATA fields, slices 1 (`254a00c`) and 2a
+      (`8c339d3`) done — a field directly typed as the struct's own
+      type parameter (`key K`), and a field whose type WRAPS a
+      parameter via `?K` or `*K`, both now resolve correctly
+      per-instantiation, including two specializations of the same
+      generic struct sharing every field symbol in one program.
+- [ ] **Generic struct DATA fields, slice 2b — slice-wrapped (`[K]`)
+      and nested-generic-wrapped (`Vec[K]`) fields, confirmed to fail
+      differently and more severely than the optional/pointer cases
+      slice 2a fixed.** A slice-wrapped field fails outright even at a
+      SINGLE specialization: `"entry function body block contains a
+      slice field ... initialized from a CheckedSlice, want a slice
+      local"`. A nested-generic field (one generic struct field typed
+      as another generic struct instantiated with the outer's own
+      parameter) fails immediately too: `"struct type 0 is not in the
+      type snapshot"`. This is what `HashMap[K,V]`'s real `entries`
+      field (slice-shaped) and `backing` (`Allocator`-typed) need —
+      still unresolved, needed before `std/hmap.peb` itself can
+      compile its struct layout. Not yet scoped for dispatch.
 - [ ] **Generic struct METHOD calls are rejected by design, confirmed
       via the pre-existing `TestEmitRejectsGenericMethodCall`** — found
       in the same `hmap.peb` re-verification. `HashMap[K,V]`'s
@@ -107,7 +114,7 @@ repeated here.
       already work fine — only the method-call form is blocked). A
       full `hmap.peb` consumer (construct + insert + get) cannot
       compile-and-run until both this and the generic-struct-data
-      -fields gap above are fixed.
+      -fields slice 2b gap above are fixed.
 - [x] `std/hash.peb`'s `hash_bytes` fixed (2a917d5) — **corrected
       framing: this was never a checker bug.** Pointer arithmetic
       (`ptr + integer`) is deliberately forbidden by the language
