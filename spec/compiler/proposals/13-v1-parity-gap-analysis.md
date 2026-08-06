@@ -41,7 +41,29 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-(none open)
+- [x] Cross-module generic specialization type lookups against a
+      frozen snapshot fixed (`f7c6451`) — the root cause of `std/
+      hmap.peb`'s opaque `C0619` failure on every real method (found
+      while trying a full real `hmap.peb` consumer end-to-end after
+      the generic-method-calls fix). `rehash`/`get_by_ref`/`get`/
+      `insert`/`maybe_grow`/`contains`/`remove`/`clear` all now build
+      cleanly — confirmed via a real Go-harness `Emit` compile.
+- [ ] **A full `std/hmap.peb` consumer (`new` + `insert` + `get`) now
+      hits a different, honest, well-diagnosed limitation instead of
+      a crash: this backend has no forward-declaration mechanism for
+      recursive/mutually-recursive function calls.** `insert ->
+      maybe_grow -> rehash -> insert` is a genuine call cycle
+      (`rehash` re-inserts old entries via `self.insert(...)` while
+      growing); `Emit` cleanly rejects it: `"recursion is not
+      supported yet: the call chain function 26 -> function 27 ->
+      function 28 -> function 26 is a cycle ... this backend has no
+      forward-declaration mechanism to order recursive calls yet."`
+      This is the last known blocker on `std/hmap.peb` compiling and
+      running end-to-end. Not yet scoped — likely needs real C forward
+      declarations for the whole reachable call graph, not a small
+      fix (see how `10-c-backend-and-runtime.md`/prior sessions
+      discuss the current single-pass "emit definitions in dependency
+      order" assumption this backend relies on everywhere else).
 
 ---
 
