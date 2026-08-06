@@ -115,16 +115,27 @@ repeated here.
       was correctly rejected. Redesigned to `data []u8` + slice
       indexing, matching the established `vec.peb`/`set.peb` house
       style (`52c72b7`).
-- [ ] **The backend's slice element-type support is much narrower
-      than `std/*.peb` needs — only entry-width/bool, found while
-      verifying the `hash_bytes` fix above.** `validateSliceElementType`
-      (`internal/backend/emit.go:1274`) rejects any slice whose
-      element is not the entry width or bool — so `[]u8` (needed to
-      actually call the fixed `hash_bytes`), `[]char`, `[]str`, and a
-      slice of any struct/tuple type all fail to emit. This is the
-      same root gap as `HashMap[K,V]`'s `entries` field above (a slice
-      whose element is a generic-struct type) — likely the same fix
-      resolves both, but confirm rather than assume once scoped.
+- [x] Slice element-type support widened (f85b4a0) — any fixed-width
+      integer (`uint`, `u64`, `u8`/`u16`/`u32`, `i8`/`i16`/`i32`/`i64`)
+      and `char` now work as a slice element, alongside the
+      already-working entry width and `bool`. Still open, narrower:
+      `[]str` and a slice of any struct/tuple/generic-struct type
+      (`HashMap[K,V]`'s `entries` field is this shape) are unchanged —
+      not confirmed to be the same fix as this one turned out to be,
+      contrary to the earlier note here; this slice was scalars only.
+- [ ] **General arithmetic on a non-entry-width integer inside a
+      called helper's body still fails — found while verifying the
+      slice element-type fix above, confirmed unrelated to slices.**
+      `fn f(x u64) u64 { return x ^ 1; }` called from an `int`-entry
+      `main` fails with `"entry function body expression contains a
+      SymbolValue of type u64, want int"` — zero slices/arrays
+      involved. This is why `std/hash.peb`'s real `hash_bytes` (FNV-1a:
+      `hash ^ (data[i] as u64); hash = hash * fnv_prime;` inside a
+      u64-returning helper) still can't run end-to-end even though its
+      slice indexing now works — the u64 arithmetic itself is the
+      remaining blocker. Not yet scoped in detail; likely a real,
+      sizable gap in how non-entry-width scalar expressions are built
+      inside helper bodies generally, not slice- or hash.peb-specific.
 - [ ] **`hash_str`/`hash_ptr`/`hash_char` in `std/hash.peb` use casts
       the checker actually forbids — found while verifying the
       `hash_bytes` fix above, previously masked because the
