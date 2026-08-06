@@ -545,6 +545,119 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	}
 }
 
+func TestEmitGenericStructNestedFieldCompileAndRun(t *testing.T) {
+	// Nested-generic struct fields: a generic struct field typed as ANOTHER
+	// generic struct instantiated with the outer's own parameter
+	// (`Outer[K] = struct { inner Inner[K]; }`). The inner construction
+	// (`Inner[int].{ val = 5 }`) lives at the outer RecordConstruct's
+	// Fields[0].Value — reachable only via the field-value recursion this
+	// slice adds to collectStructTypesWalk, never via the Children-following
+	// recursion (field values are in node.Fields, not node.Children, the same
+	// gap collectFunctionTypesWalk/collectOptionalTypesWalk already closed) —
+	// so before the fix the inner struct type was never collected for a C
+	// typedef and emission failed outright with "struct type 0 is not in the
+	// type snapshot" (the outer field read's unresolved TypeID). 5 is the
+	// value read through both struct layers.
+	emitAndRun(t, `type Inner[T] = struct { val T; }; type Outer[K] = struct { inner Inner[K]; }; fn main() int { var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } }; return o.inner.val; }`, false, 5, false)
+}
+
+func TestEmitGenericStructNestedFieldTwoSpecializationsCompileAndRun(t *testing.T) {
+	// Two specializations of the outer struct in one program, each carrying a
+	// DIFFERENT nested specialization (`Inner[int]` vs `Inner[bool]`): every
+	// field symbol is shared across specializations (they come from the same
+	// declaration), but each instantiation's nested struct type is now
+	// collected from its own construction subtree, so Outer[int]'s inner and
+	// Outer[bool]'s inner resolve to distinct C struct typedefs with the
+	// correct per-K payload. b.inner.val must dispatch against Inner[bool]'s
+	// bool grammar and o.inner.val against Inner[int]'s int grammar; exit
+	// code 5 requires both field reads to hit their own specialization.
+	emitAndRun(t, `type Inner[T] = struct { val T; }; type Outer[K] = struct { inner Inner[K]; }; fn main() int { var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } }; var b Outer[bool] = Outer[bool].{ inner = Inner[bool].{ val = true } }; if b.inner.val { return o.inner.val; } else { return 0; } }`, false, 5, false)
+}
+
+func TestEmitGenericStructNestedFieldWritesInnerTypedefFirst(t *testing.T) {
+	// The emitted-C shape and ORDER check for the nested-generic case: the
+	// inner struct's typedef must be emitted BEFORE the outer struct's, since
+	// C requires a type to be fully defined before it is used as a by-value
+	// member (a forward declaration is not enough for an embedded field).
+	// orderAggregateTypes's DFS postorder emits dependencies first, so once
+	// the fix collects Inner[int] at all, `pebble_struct_26_t` (Inner[int])
+	// precedes `pebble_struct_25_t` (Outer[int], whose field names
+	// pebble_struct_26_t). The order is asserted directly rather than trusting
+	// the compile (which would also fail loudly under -Werror were it wrong).
+	// Struct type IDs 26/25 and field symbols 26 (val) / 29 (inner) from a
+	// real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Inner[T] = struct { val T; }; type Outer[K] = struct { inner Inner[K]; }; fn main() int { var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } }; return o.inner.val; }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_26;\n} pebble_struct_26_t;",
+		"typedef struct {\n    pebble_struct_26_t pebble_field_29;\n} pebble_struct_25_t;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	// Recover the inner typedef name from the outer struct's struct-typed
+	// field reference, then assert the inner typedef's definition precedes
+	// that reference (dependency-first emission).
+	innerName := ""
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "pebble_struct_") && strings.Contains(trimmed, " pebble_field_") {
+			innerName = strings.TrimSpace(strings.Fields(trimmed)[0])
+			break
+		}
+	}
+	if innerName == "" {
+		t.Fatalf("emitted C has no struct-typed field reference:\n%s", out)
+	}
+	innerTypedefEnd := strings.Index(out, "} "+innerName+";")
+	outerFieldRef := strings.Index(out, innerName+" pebble_field_")
+	if innerTypedefEnd < 0 {
+		t.Errorf("emitted C missing the inner struct typedef definition (%s):\n%s", innerName, out)
+	} else if outerFieldRef < 0 {
+		t.Errorf("emitted C missing the outer struct's struct-typed field reference:\n%s", out)
+	} else if innerTypedefEnd > outerFieldRef {
+		t.Errorf("inner struct typedef (%s) is not emitted before the outer struct that embeds it (inner typedef end %d > outer field reference %d):\n%s", innerName, innerTypedefEnd, outerFieldRef, out)
+	}
+}
+
+func TestEmitGenericStructNestedFieldTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
+	// The emitted-C shape check for the nested-generic two-specialization case:
+	// each outer specialization's inner field must name ITS OWN nested
+	// specialization's typedef — pebble_struct_26_t (Inner[int]) inside
+	// pebble_struct_25_t (Outer[int]), pebble_struct_28_t (Inner[bool])
+	// inside pebble_struct_27_t (Outer[bool]) — with no shared/wrong inner
+	// typedef (a shared layout would emit one). Struct type IDs 26/25/28/27,
+	// field symbols 26 (val) / 29 (inner) from a real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Inner[T] = struct { val T; }; type Outer[K] = struct { inner Inner[K]; }; fn main() int { var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } }; var b Outer[bool] = Outer[bool].{ inner = Inner[bool].{ val = true } }; if b.inner.val { return o.inner.val; } else { return 0; } }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_26;\n} pebble_struct_26_t;",
+		"typedef struct {\n    pebble_struct_26_t pebble_field_29;\n} pebble_struct_25_t;",
+		"typedef struct {\n    bool pebble_field_26;\n} pebble_struct_28_t;",
+		"typedef struct {\n    pebble_struct_28_t pebble_field_29;\n} pebble_struct_27_t;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	// Four distinct typedef names — the two specializations do not share
+	// layouts (each outer embeds its own inner).
+	for _, name := range []string{"pebble_struct_26_t", "pebble_struct_25_t", "pebble_struct_28_t", "pebble_struct_27_t"} {
+		if strings.Count(out, "} "+name+";") != 1 {
+			t.Errorf("expected exactly one typedef named %s:\n%s", name, out)
+		}
+	}
+}
+
 func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int => 0;", true, 0, false)
 }

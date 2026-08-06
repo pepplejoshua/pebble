@@ -1607,6 +1607,19 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 			if value, ok := unit.Node(field.Value); ok && value.Type != 0 {
 				fieldTypes[field.Field] = value.Type
 			}
+			// A construction's field values are stored in node.Fields
+			// ([]FieldInit), NOT node.Children, so the Children-following
+			// recursion below never reaches a NESTED construction used only as
+			// this struct's field value (e.g. `Outer[int].{ inner = Inner[int].{
+			// val = 5 } }` — the Inner[int] RecordConstruct lives at
+			// Fields[0].Value). Without this recursive walk the nested struct
+			// type is never collected, so no C typedef is emitted for it and
+			// the outer struct's field read resolves to an unresolved TypeID —
+			// the same "Fields isn't in Children" gap collectFunctionTypesWalk
+			// (0b6ed32) and collectOptionalTypesWalk (8c339d3) already close.
+			if err := collectStructTypesWalk(unit, snapshot, field.Value, out, fieldTypes); err != nil {
+				return err
+			}
 		}
 	}
 	if node.Kind == tir.FieldPlace {
