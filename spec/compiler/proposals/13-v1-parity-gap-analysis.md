@@ -143,28 +143,6 @@ repeated here.
       the whole "which variant" question that the `.{ Name = value }`
       routing fix resolves for tagged unions doesn't even apply). Stays
       out of scope until the safety-model design question is settled.
-- [ ] **`OptionalIntegerToEnum` (`5 as ?Color`) still unimplemented.**
-      `EnumToInteger` (`64197e7`) and `CheckedIntegerToEnum` (`5d3f44e`,
-      direct cast to an enum, panics/RELEASE-trusts on an invalid
-      ordinal via the new `pebble_rt_checked_int_to_enum` runtime
-      primitive) are both done. The optional-destination form is a
-      genuinely different, harder problem, not a copy of the checked
-      one: it needs to evaluate the source integer exactly once while
-      producing BOTH a validity bool and a value (to build the
-      `{ .has_value = ..., .value = ... }` optional struct literal) —
-      this backend has no established expression-level "evaluate once,
-      use twice" mechanism (the `tempDecl`/pre-statement pattern used
-      for compound-assignment double-eval safety only threads through
-      statement builders, not general `buildExpr` positions; the
-      TIR-level `TempBind`/`TempRead` node kinds exist in
-      `internal/tir/node.go` but are unused anywhere in the checker or
-      backend today — investigate whether they're the intended
-      mechanism for this before inventing a new one). Deliberately not
-      attempted alongside `CheckedIntegerToEnum` for this reason. The
-      validity check itself is identical once resolved (same ordinal
-      bounds check, always performed in both SAFE and RELEASE — unlike
-      the checked cast, an optional's contract requires the check to
-      actually run regardless of mode).
 - **Printing an enum is still rejected exactly as designed** (not a bug):
       `print Color.red;` fails at the checker with `C0612: print operand
       is not printable`, matching `open-language-decisions.md` §3.11
