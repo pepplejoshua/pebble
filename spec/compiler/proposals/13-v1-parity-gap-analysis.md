@@ -123,19 +123,26 @@ repeated here.
       (`HashMap[K,V]`'s `entries` field is this shape) are unchanged —
       not confirmed to be the same fix as this one turned out to be,
       contrary to the earlier note here; this slice was scalars only.
-- [ ] **General arithmetic on a non-entry-width integer inside a
-      called helper's body still fails — found while verifying the
-      slice element-type fix above, confirmed unrelated to slices.**
-      `fn f(x u64) u64 { return x ^ 1; }` called from an `int`-entry
-      `main` fails with `"entry function body expression contains a
-      SymbolValue of type u64, want int"` — zero slices/arrays
-      involved. This is why `std/hash.peb`'s real `hash_bytes` (FNV-1a:
-      `hash ^ (data[i] as u64); hash = hash * fnv_prime;` inside a
-      u64-returning helper) still can't run end-to-end even though its
-      slice indexing now works — the u64 arithmetic itself is the
-      remaining blocker. Not yet scoped in detail; likely a real,
-      sizable gap in how non-entry-width scalar expressions are built
-      inside helper bodies generally, not slice- or hash.peb-specific.
+- [x] Comparison operators on non-entry-width integers fixed
+      (`30fca68`) — **narrower than first framed: this was never
+      general arithmetic, only comparison operands.** `u64`/`i64`/`u8`
+      etc. already worked fine in arithmetic, casts, calls, and
+      returns; only `==`/`!=`/`<`/`<=`/`>`/`>=` on a non-entry-width
+      integer rejected outright (`buildComparisonOperand` built every
+      such operand at the ambient entry width instead of its own).
+- [ ] **Checked arithmetic (`*`, `+`, `-`, `/`, `%` with overflow
+      checks) on a non-entry-width integer still fails — the actual
+      remaining blocker on `std/hash.peb`'s real `hash_bytes` running
+      end-to-end, found while verifying the comparison fix above.**
+      `hash = hash * fnv_prime;` (both `u64`) inside a u64-returning
+      helper fails: `checkedSuffix` (`internal/backend/emit.go`) only
+      covers `Int`/`I32`/`I64`, so a checked-arithmetic call for `u64`
+      (or any other non-entry-width integer) lowers to a runtime
+      helper name with an empty suffix (`pebble_rt_checked_mul_`).
+      Comparisons, casts, calls, and returns on non-entry-width
+      integers all work now (see above and earlier fixes) — this is
+      specifically the checked-arithmetic-operator gap. Not yet scoped
+      in detail.
 - [ ] **`hash_str`/`hash_ptr`/`hash_char` in `std/hash.peb` use casts
       the checker actually forbids — found while verifying the
       `hash_bytes` fix above, previously masked because the
