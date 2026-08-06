@@ -41,18 +41,7 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-- [ ] **A bool-returning DIRECT call used straight in a condition
-      position fails — confirmed unrelated to function types, zero
-      function types involved.** `fn id(b bool) bool { return b; }
-      fn main() int { if id(true) { return 1; } else { return 2; } }`
-      fails with "entry function body expression contains a DirectCall,
-      want a bool literal, a reference to a bool local declared earlier
-      in the body, a comparison, a && / || combination, or a !
-      negation" — `buildBoolExpr` has no `DirectCall` case at all.
-      Found while verifying a function-types slice-3 dispatch's test
-      suite (one of 16 real scenarios it wrote); confirmed genuinely
-      pre-existing and unrelated by reproducing with the function type
-      entirely removed. Not yet scoped in detail.
+(none open)
 
 ---
 
