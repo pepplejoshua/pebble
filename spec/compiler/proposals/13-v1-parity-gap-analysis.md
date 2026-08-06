@@ -41,17 +41,28 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-- [ ] **Pre-existing bug: `none` for a never-constructed aggregate
-      payload misclassifies via `isEnumType`'s no-evidence heuristic.**
-      Found as a side effect of testing optional function results
-      (unrelated to that fix, confirmed reproducible with a bare
-      optional local and no helper functions at all): `var o ?P =
-      none;` where `P` is a struct type that is never actually
-      constructed anywhere in the reachable program emits an invalid
-      C typedef, because `isEnumType`'s heuristic (used to distinguish
-      a struct from an enum when there's no real construction evidence
-      to go on) misclassifies the never-constructed struct as an enum.
-      Not yet scoped.
+- [ ] **Narrower residual: struct field-type resolution has no fallback
+      when a struct has ZERO usage evidence anywhere in the whole
+      program.** The `isEnumType` misclassification itself is fixed
+      (this session — a direct declaration-node signal replaces the old
+      usage-evidence guess), and the realistic case (a struct used
+      normally elsewhere, also passed as a `none` optional payload) now
+      compiles and runs correctly. What remains: a struct that is
+      declared but never constructed, never field-accessed, and never
+      referenced ANYWHERE in the reachable program except as an
+      optional's payload type (`var o ?P = none;` with zero other uses
+      of `P`) still fails — `resolveStructInfo`'s `fieldTypes` map,
+      which supplies each field's C type, is populated purely by
+      scanning for `FieldPlace`/`RecordConstruct` usage evidence, with
+      no fallback when none exists (confirmed: `types.Snapshot`, the
+      only type-level data `internal/backend` receives, exposes no
+      per-member/field type introspection at all — `Key`/`Kind`/
+      `Builtins` only — so a positive alternative signal isn't
+      reachable from this package as currently structured). A real
+      fix likely needs richer semantic data threaded into
+      `tir.Unit`/`types.Snapshot` from the checker, not a backend-only
+      change. Low priority — very unlikely to hit a truly unused
+      struct in a real program.
 
 ---
 
