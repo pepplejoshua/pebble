@@ -229,9 +229,6 @@ above. None of these has been individually verified with a real compile
 attempt yet — listed here as a starting point for the next audit pass, not
 as confirmed gaps:
 
-- `HoistedFunctionValue`, `GenericFunctionValue` — a function referenced as
-  a first-class VALUE (not called immediately). Likely related to, or the
-  same root cause as, the function-typed-local gap confirmed above.
 - `TupleCoerce` — implicit tuple element-type coercion at an assignment
   boundary. Unclear whether this is genuinely unreachable given how the
   checker structures these coercions elsewhere, or a real gap; needs
