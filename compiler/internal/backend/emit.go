@@ -2324,8 +2324,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, uint, u64, bool, char, str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
@@ -2414,13 +2414,24 @@ func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.Builtin
 	if variadic {
 		return fmt.Errorf("function type %s is variadic, which is not supported yet", describeType(snapshot, id))
 	}
+	// A function type's parameter is admitted when it is an integer builtin
+	// this backend emits (resolved to its OWN width via resolvedBuiltin/cType,
+	// independent of the ambient `width` of the context the function type is
+	// being validated from — this is what lets a `fn(int) u64` type be
+	// validated from a u64-width call context and a `fn(u64) int` type from an
+	// entry-width context), or uint/u64 (both resolve to uint64_t), or
+	// bool/char/str. The signature's parameter C types are decided by the same
+	// resolution in functionTypeParamCType, and each call argument is built at
+	// its parameter's own resolved width by buildCallArgument, so the kind of
+	// each parameter determines how it is built rather than the ambient width.
 	for i, parameter := range parameters {
-		if !isWidth(snapshot, width, parameter) && !isUint(snapshot, parameter) && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) {
-			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, bool, char, or str (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
+		paramWidth, integerParam := resolvedBuiltin(snapshot, parameter)
+		if !(integerParam && cType(paramWidth) != "") && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) {
+			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, u64, or another fixed-width integer, bool, char, or str (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
 		}
 	}
-	if !isWidth(snapshot, width, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isVoid(snapshot, result) {
-		return fmt.Errorf("function type %s has result type %s, want %s, bool, char, or void (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
+	if !isWidth(snapshot, width, result) && !isU64(snapshot, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isVoid(snapshot, result) {
+		return fmt.Errorf("function type %s has result type %s, want %s, u64, bool, char, or void (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
 	}
 	return nil
 }
@@ -2472,6 +2483,17 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			case isUint(snapshot, param.Type):
 				params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{kind: types.Uint}
+			case isU64(snapshot, param.Type):
+				// A u64-typed parameter seeds the callee's locals scope as a
+				// u64 local (localInfo{kind: types.U64}), exactly as a u64
+				// local's Initialize does, so a reference to the parameter
+				// inside the body resolves through the existing buildExpr
+				// machinery at the u64 width unchanged. The C parameter is
+				// declared as the fixed uint64_t — the same C type a u64
+				// local is declared with — so passing a u64 by value is
+				// trivially valid C.
+				params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{kind: types.U64}
 			case isBool(snapshot, param.Type):
 				params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{kind: types.Bool}
@@ -9277,9 +9299,22 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // mismatch here is hand-built IR. position is the call-site argument index,
 // used only to name the offending argument in rejection messages.
 func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	// A parameter's own resolved integer width, when the parameter is an
+	// integer builtin the backend emits (the entry's width, uint, u64, or
+	// any other fixed-width integer). Deciding the argument grammar from the
+	// parameter's OWN width — rather than the ambient width of the call
+	// site — lets a call whose result is consumed in a different-width
+	// context (a u64 result assigned into a u64 local, for instance) still
+	// build each argument at the parameter's type, and likewise lets a u64
+	// parameter be called from an entry-width context. uint is deliberately
+	// excluded below: it is the platform-native pointer-width builtin the
+	// backend builds through buildUintExpr (sizeof, slice bounds, checked
+	// arithmetic), not through the general buildExpr path.
+	paramWidth, integerParam := resolvedBuiltin(snapshot, param.Type)
+	if integerParam && cType(paramWidth) != "" && !isUint(snapshot, param.Type) {
+		return buildExpr(unit, snapshot, fileSet, argID, locals, paramWidth)
+	}
 	switch {
-	case isWidth(snapshot, width, param.Type):
-		return buildExpr(unit, snapshot, fileSet, argID, locals, width)
 	case isUint(snapshot, param.Type):
 		return buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
 	case isBool(snapshot, param.Type):
@@ -10279,6 +10314,18 @@ func isUint(snapshot *types.Snapshot, id types.TypeID) bool {
 	return snapshot != nil && id == snapshot.Builtins().Uint
 }
 
+// isU64 reports whether id is the snapshot's u64 builtin. It is the u64 twin
+// of isUint: u64 is a DISTINCT builtin from uint in this compiler
+// (snapshot.Builtins().U64 vs snapshot.Builtins().Uint), so it needs its own
+// predicate rather than being folded into isUint, just as isUint is separate
+// from isWidth. Unlike uint (the platform-native pointer-width type that the
+// backend builds through buildUintExpr for its sizeof/slice-bounds/checked
+// arithmetic), u64 is an ordinary fixed-width integer that flows through the
+// general buildExpr path at its own resolved width.
+func isU64(snapshot *types.Snapshot, id types.TypeID) bool {
+	return snapshot != nil && id == snapshot.Builtins().U64
+}
+
 // isBool reports whether id is the snapshot's bool builtin. It is the bool
 // twin of isWidth: every node in an accepted bool expression tree must carry
 // exactly the bool builtin, since this backend has no cast/coercion lowering
@@ -11215,6 +11262,8 @@ func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, p
 		return cType(width), nil
 	case isUint(snapshot, param):
 		return "uint64_t", nil
+	case isU64(snapshot, param):
+		return "uint64_t", nil
 	case isBool(snapshot, param):
 		return "bool", nil
 	case isChar(snapshot, param):
@@ -11236,6 +11285,8 @@ func functionTypeResultCType(snapshot *types.Snapshot, width types.BuiltinKind, 
 	switch {
 	case isWidth(snapshot, width, result):
 		return cType(width), nil
+	case isU64(snapshot, result):
+		return "uint64_t", nil
 	case isBool(snapshot, result):
 		return "bool", nil
 	case isChar(snapshot, result):

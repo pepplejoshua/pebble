@@ -9908,3 +9908,137 @@ func TestEmitFunctionTypedParameterResultWritesC(t *testing.T) {
 		}
 	}
 }
+
+// --- Function types: u64 parameter/result support ---
+
+func TestEmitU64FunctionTypeResultCompilesAndRuns(t *testing.T) {
+	// u64 as a function type's RESULT (the exact shape std/hmap.peb's
+	// `hash_fn fn (K) u64` field uses): a function-typed local whose signature
+	// returns u64, an indirect call through it, and the u64 result consumed as
+	// a plain u64 rvalue. A prior attempt found validateFunctionTypeSignature's
+	// result gate rejected a u64 result because isUint only admits the distinct
+	// `uint` builtin, never U64 — so no type whose signature returned u64 could
+	// even be declared. This confirms the u64 result flows end to end.
+	emitAndRun(t, "fn hashOf(x int) u64 { return x as u64; } fn main() int { var f fn(int) u64 = hashOf; var r u64 = f(5); return r as int; }", false, 5, false)
+}
+
+func TestEmitU64FunctionTypeParamCompilesAndRuns(t *testing.T) {
+	// The mirror: u64 as a function type's PARAMETER, used as a function-typed
+	// local and called with a real u64 value. The param side had the identical
+	// isUint-excludes-U64 bug as the result side, so this must be fixed for
+	// symmetry, not just the result.
+	emitAndRun(t, "fn udToInt(x u64) int { return x as int; } fn main() int { var v u64 = 7; var f fn(u64) int = udToInt; return f(v); }", false, 7, false)
+	// And as a function-typed HELPER PARAMETER, called with a u64 argument.
+	emitAndRun(t, "fn udToInt(x u64) int { return x as int; } fn apply(f fn(u64) int, x u64) int { return f(x); } fn main() int { var v u64 = 9; return apply(udToInt, v); }", false, 9, false)
+}
+
+func TestEmitU64FunctionTypeBothCompilesAndRuns(t *testing.T) {
+	// A function type whose signature mentions u64 in BOTH the parameter and
+	// the result, called round-trip through a u64 local.
+	emitAndRun(t, "fn id(x u64) u64 { return x; } fn main() int { var f fn(u64) u64 = id; var r u64 = f(5); return r as int; }", false, 5, false)
+}
+
+func TestEmitU64FunctionTypeStructFieldCompilesAndRuns(t *testing.T) {
+	// The motivating real-code shape, concretized without a generic struct:
+	// a function-typed STRUCT FIELD whose signature returns u64 (hmap's
+	// `hash_fn fn (K) u64`) and a separate struct field whose signature takes
+	// u64, both called through the field. This is the position std/hmap.peb's
+	// hash_fn field occupies.
+	emitAndRun(t, "type Table = struct { hash fn(int) u64; }; fn hashOf(x int) u64 { return x as u64; } fn main() int { var t Table = Table.{ hash = hashOf }; var h u64 = t.hash(5); return h as int; }", false, 5, false)
+	emitAndRun(t, "type Conv = struct { toi fn(u64) int; }; fn udToInt(x u64) int { return x as int; } fn main() int { var v u64 = 6; var c Conv = Conv.{ toi = udToInt }; return c.toi(v); }", false, 6, false)
+}
+
+func TestEmitU64FunctionTypeHelperParameterAndResultCompilesAndRuns(t *testing.T) {
+	// A u64 function-type PARAMETER and a u64 function-type RESULT in ordinary
+	// (non-function-typed) helper positions: a helper taking a fn(int) u64
+	// parameter calls through it and returns the u64 result, and a helper
+	// returning fn(u64) int is forwardable. This exercises the u64 rows of
+	// validateHelperSignature / buildHelperFunctions / buildReturnStatement.
+	emitAndRun(t, "fn hashOf(x int) u64 { return x as u64; } fn callHash(f fn(int) u64, x int) u64 { return f(x); } fn main() int { var r u64 = callHash(hashOf, 8); return r as int; }", false, 8, false)
+	// A helper whose RESULT is a function type whose PARAMETER is u64.
+	emitAndRun(t, "fn udToInt(x u64) int { return x as int; } fn choose() fn(u64) int { return udToInt; } fn main() int { var f fn(u64) int = choose(); var v u64 = 3; return f(v); }", false, 3, false)
+}
+
+func TestEmitU64FunctionTypeWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the function type whose RESULT is u64 is
+	// typedef'd with a uint64_t return type (`uint64_t (*pebble_fnptr_<id>_t)`),
+	// the function type whose PARAMETER is u64 declares that parameter as
+	// uint64_t, and a u64-typed helper parameter/result is declared as uint64_t
+	// too — a uint64_t, not an unsupported rejection.
+	src := "fn hashOf(x int) u64 { return x as u64; } fn udToInt(x u64) int { return x as int; } fn main() int { var f fn(int) u64 = hashOf; var g fn(u64) int = udToInt; var r u64 = f(5); return r as int; }"
+	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef uint64_t (*pebble_fnptr_", // fn(int) u64 result
+		", uint64_t);",                     // fn(u64) int parameter slot
+		"uint64_t pebble_local_",           // the u64-typed helper parameter
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitU64FunctionTypeResultConsumedAsRvalueCompilesAndRuns(t *testing.T) {
+	// A u64 function-type INDIRECT CALL result consumed as a plain rvalue in a
+	// NON-local position (not just a local-declaration initializer): forwarded
+	// directly as another expression's integer operand. This is the seat the
+	// original tracker framed as the "results" gap — the indirect call's result
+	// must be built at the u64 width even though the enclosing statement is
+	// entry-width.
+	emitAndRun(t, "fn hashOf(x int) u64 { return x as u64; } fn main() int { var f fn(int) u64 = hashOf; return (f(5) as int) + 1; }", false, 6, false)
+}
+
+func TestCheckStdHmapU64HashFnTypes(t *testing.T) {
+	// The real motivating module: std/hmap.peb declares `hash_fn fn (K) u64`
+	// and `fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V]`
+	// — u64 in function-type parameter and RESULT positions (line 19 and 191 in
+	// the module source). The checker must type-accept the module with no
+	// diagnostics: this confirms the u64 function-type result/parameter shapes
+	// the hardware accepts and that the feature's motivating real-code type has
+	// always been well-typed. Reading the real module files (not a fixture
+	// string) mirrors TestCheckStdVecHasNoGenericPointerReceiverShapeErrors.
+	//
+	// (Emit of a full hmap consumer — hmap::new[int, int], insert, get — is
+	// blocked not by u64 function types but by pre-existing, out-of-scope
+	// generic-struct gaps: HashMap's `key K` / `value V` type-parameter fields,
+	// its uint/slice/runtime-Allocator fields, and the generic method calls
+	// insert/get, all rejected by the backend's generic-struct/method
+	// supporters separately. The u64 `hash_fn fn (K) u64` and
+	// `fn new[K, V](..., hash_fn fn (K) u64, ...)` types themselves check clean
+	// and their shapes emit-and-run in every function-type position the
+	// TestEmitU64FunctionType* tests above exercise concretely.)
+	hmap, err := os.ReadFile("../../std/hmap.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := os.ReadFile("../../std/mem.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{
+		"main.peb":     []byte(`import "std:hmap"; fn userHash(x int) u64 => x as u64; fn userEq(a int, b int) bool => a == b; fn main() int { var m = hmap::new[int, int](userHash, userEq); return 0; }`),
+		"std/hmap.peb": hmap,
+		"std/mem.peb":  mem,
+	}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed on std:hmap with u64 hash_fn: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("check succeeded without an IR unit")
+	}
+}
