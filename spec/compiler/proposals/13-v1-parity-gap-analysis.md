@@ -99,15 +99,19 @@ repeated here.
       case only ever accepted a reference to an already-declared
       slice-typed local, unlike every other aggregate field type. Also
       fixes the generic case this was originally investigated for.
-- [ ] **Nested-generic struct fields — one generic struct field typed
-      as ANOTHER generic struct instantiated with the outer's own
-      parameter (`inner Inner[K]`), confirmed to fail immediately even
-      at a single specialization: `"struct type 0 is not in the type
-      snapshot"`.** Distinct from the now-fixed slice-wrapped case
-      above. This is what `HashMap[K,V]`'s `backing` (`Allocator`
-      -typed) field needs — still unresolved, needed before
-      `std/hmap.peb` itself can compile its struct layout. Not yet
-      investigated in depth.
+- [x] Nested-generic struct fields fixed (`56fd83e`) — one generic
+      struct field typed as ANOTHER generic struct instantiated with
+      the outer's own parameter (`inner Inner[K]`) now works, including
+      two specializations of the outer struct in one program.
+      `collectStructTypesWalk` never recursed into a `RecordConstruct`'s
+      `field.Value` (only `.Children`), so a nested construction's
+      struct type never got collected for a typedef — the same
+      "`Fields` isn't in `Children`" gap already closed twice elsewhere
+      this session. Note: `HashMap[K,V]`'s actual `backing` field is
+      `Allocator`-typed, a compiler builtin rather than a real generic
+      struct declaration, so this fix's exact applicability to
+      `std/hmap.peb` itself is not yet confirmed — re-verify against
+      the real file before assuming it's fully unblocked.
 - [ ] **Generic struct METHOD calls are rejected by design, confirmed
       via the pre-existing `TestEmitRejectsGenericMethodCall`** — found
       in the same `hmap.peb` re-verification. `HashMap[K,V]`'s
@@ -116,7 +120,7 @@ repeated here.
       today (free generic functions like `hmap::new[int, int](...)`
       already work fine — only the method-call form is blocked). A
       full `hmap.peb` consumer (construct + insert + get) cannot
-      compile-and-run until both this and the nested-generic-fields gap
+      compile-and-run until both this and any remaining struct-field gap
       above are fixed.
 - [x] `std/hash.peb`'s `hash_bytes` fixed (2a917d5) — **corrected
       framing: this was never a checker bug.** Pointer arithmetic
