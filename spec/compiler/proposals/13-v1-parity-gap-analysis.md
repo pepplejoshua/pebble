@@ -84,6 +84,10 @@ repeated here.
       suggests is also likely broken there)
 - [x] Generic functions, generic structs, generic methods (extensively
       verified all session)
+- [x] Relative-path imports — `import "./utils/math";` (the leading
+      `./` is required; a bare `"utils/math"` needs a configured
+      `SearchRoots` entry `pebc` doesn't set up, an unrelated,
+      correct-as-designed rejection, not a bug)
 - [x] `context`/`Allocator` system (extensively verified all session)
 - [x] Explicit casts (`as`), `sizeof`
 
@@ -190,8 +194,6 @@ above before being trusted either as "works" or "broken":
   `extern { ... }` and single `extern fn` have been used/verified this
   session)
 - `extern { type FILE; }` — extern opaque types
-- Relative-path imports (`import "utils/math";`) — only `import
-  "std:..."` has been exercised this session
 - Nested generic instantiations at the type level (`Vec[HashMap[str,
   Result[T, E]]]`) — generics have been verified extensively but not
   specifically nested three levels deep with a union in the mix
@@ -212,11 +214,12 @@ as confirmed gaps:
 - `HoistedFunctionValue`, `GenericFunctionValue` — a function referenced as
   a first-class VALUE (not called immediately). Likely related to, or the
   same root cause as, the function-typed-local gap confirmed above.
-- `OptionalInject`, `TupleCoerce` — implicit coercion nodes (wrapping a
-  plain value into `some x`, or coercing a tuple's element types at an
-  assignment boundary). Unclear whether these are genuinely unreachable
-  given how the checker structures these coercions elsewhere, or a real
-  gap; needs direct investigation, not a grep-based conclusion.
+- `TupleCoerce` — implicit tuple element-type coercion at an assignment
+  boundary. Unclear whether this is genuinely unreachable given how the
+  checker structures these coercions elsewhere, or a real gap; needs
+  direct investigation, not a grep-based conclusion. (`OptionalInject`
+  is done — implicit optional injection now works for local
+  declarations and function results, this session.)
 - `TypeUse` — almost certainly a compile-time-only bookkeeping node with no
   runtime representation; low suspicion of being a real gap, listed for
   completeness only.
