@@ -8163,6 +8163,153 @@ func TestEmitCheckedIntegerToEnumWritesC(t *testing.T) {
 	}
 }
 
+// --- OptionalIntegerToEnum: integer-to-optional-enum casts (`5 as ?Color`) ---
+
+func TestEmitOptionalIntegerToEnumOutOfRangeHasValueFalseSafe(t *testing.T) {
+	// The exact repro: `var c ?Color = 5 as ?Color;` where Color has three
+	// variants (red, green, blue, ordinals 0-2) — 5 names no real variant.
+	// The cast must produce an optional whose has_value is false, verified by
+	// reading c.has_value directly. SAFE mode.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 5 as ?Color;\nif c.has_value { return 1; } else { return 0; }\n}", false, 0, false)
+}
+
+func TestEmitOptionalIntegerToEnumOutOfRangeHasValueFalseRelease(t *testing.T) {
+	// The same `var c ?Color = 5 as ?Color;` in PEBBLE_RT_MODE_RELEASE.
+	// Unlike the checked cast (which skips its check in RELEASE), the
+	// optional's validity query must be correct in BOTH modes — a wrong
+	// has_value would be silently incorrect, not merely unchecked — so
+	// has_value is false here too, exactly as in SAFE.
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 5 as ?Color;\nif c.has_value { return 1; } else { return 0; }\n}", 0, false)
+}
+
+func TestEmitOptionalIntegerToEnumOutOfRangeUnwrapPanicsSafe(t *testing.T) {
+	// The strongest confirmation that has_value is false: force-unwrapping
+	// the absent optional (`c!`) panics through
+	// pebble_rt_checked_unwrap_i32 in SAFE mode, so the process terminates
+	// abnormally rather than returning anything.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 5 as ?Color;\nreturn c! as i32;\n}", false, 0, true)
+}
+
+func TestEmitOptionalIntegerToEnumOutOfRangeUnwrapPanicsRelease(t *testing.T) {
+	// The same force-unwrap in RELEASE: unwrapping an absent optional panics
+	// in every configuration (the runtime's unwrap is not mode-gated), so
+	// the process terminates abnormally here too — and the panicking unwrap
+	// is itself the proof that has_value is false in RELEASE as well.
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 5 as ?Color;\nreturn c! as i32;\n}", 0, true)
+}
+
+func TestEmitOptionalIntegerToEnumValidRoundTripsSafe(t *testing.T) {
+	// An in-range cast, `1 as ?Color` (ordinal 1, green): has_value must be
+	// true, and the unwrapped value must be the green variant — verified by a
+	// round trip through EnumToInteger, exactly the CheckedIntegerToEnum
+	// pattern (`return c as i32` == 1), with the unwrap reading the optional
+	// local's stored enum value. SAFE mode.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 1 as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", false, 1, false)
+}
+
+func TestEmitOptionalIntegerToEnumValidRoundTripsRelease(t *testing.T) {
+	// The same in-range `1 as ?Color` round trip in RELEASE mode: the
+	// validity query and the value both behave identically to SAFE, so the
+	// unwrapped value still round-trips to 1 (green).
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 1 as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", 1, false)
+}
+
+func TestEmitOptionalIntegerToEnumFromLocalCompilesAndRuns(t *testing.T) {
+	// A source value from a local (not a literal): `n as ?Color` where n is
+	// an i32 local. In range (n = 2, blue), has_value is true and the unwrap
+	// round-trips to 2; out of range (n = 7), has_value is false.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 2;\nvar c ?Color = n as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", false, 2, false)
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 7;\nvar c ?Color = n as ?Color;\nif c.has_value { return 99; } else { return 0; }\n}", false, 0, false)
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 2;\nvar c ?Color = n as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", 2, false)
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 7;\nvar c ?Color = n as ?Color;\nif c.has_value { return 99; } else { return 0; }\n}", 0, false)
+}
+
+func TestEmitOptionalIntegerToEnumEvaluatesSourceExactlyOnce(t *testing.T) {
+	// The actual point of the pre-statement design: the cast must evaluate
+	// its source integer exactly ONCE. bump(&count) increments count through
+	// the pointer and returns 0; if the source expression were embedded twice
+	// (once for the has_value query, once for the value), count would be 2.
+	// It must be 1. SAFE mode.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn bump(p *i32) i32 { *p = *p + 1; return 0; } fn main() i32 {\nvar count i32 = 0;\nvar c ?Color = bump(&count) as ?Color;\nif !c.has_value { return 99; }\nreturn count;\n}", false, 1, false)
+}
+
+func TestEmitOptionalIntegerToEnumEvaluatesSourceExactlyOnceRelease(t *testing.T) {
+	// The same single-evaluation guarantee in RELEASE mode — identical
+	// behavior, since the temp-hoisting design is mode-independent.
+	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn bump(p *i32) i32 { *p = *p + 1; return 0; } fn main() i32 {\nvar count i32 = 0;\nvar c ?Color = bump(&count) as ?Color;\nif !c.has_value { return 99; }\nreturn count;\n}", 1, false)
+}
+
+func TestEmitOptionalIntegerToEnumForLoopInitializerCompilesAndRuns(t *testing.T) {
+	// The for-loop-initializer position: `for var c ?Color = ...; ...` — the
+	// cast is hoisted into an int64_t temp emitted as a statement before the
+	// for, and the header's init clause is the optional-typed local reading
+	// that temp. In range (1), the condition c.has_value is true so the body
+	// breaks and the program returns 1; out of range (5), has_value is false
+	// so the loop body never runs and the program returns 0. Bounded
+	// execution, in both modes.
+	emitAndRunBounded(t, "type Color = enum { red, green, blue }; fn main() i32 {\nfor var c ?Color = 1 as ?Color; c.has_value; { break; }\nreturn 1;\n}", false, 1, false)
+	emitAndRunBounded(t, "type Color = enum { red, green, blue }; fn main() i32 {\nfor var c ?Color = 5 as ?Color; c.has_value; { break; }\nreturn 0;\n}", false, 0, false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nfor var c ?Color = 1 as ?Color; c.has_value; { break; }\nreturn 1;\n}", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileEmittedCRelease(t, buf.Bytes())
+}
+
+func TestEmitRejectsOptionalIntegerToEnumReturnPosition(t *testing.T) {
+	// A return-position cast (`return 5 as ?Color;`) is rejected by the
+	// CHECKER before the backend ever runs — a clean compile-time rejection,
+	// not a backend crash and not a double-evaluated emission.
+	if _, _, _, _, err := buildFixtureMaybeFailing(t, "type Color = enum { red, green, blue }; fn main() i32 {\nreturn 5 as ?Color;\n}", "main", false); err == nil {
+		t.Errorf("checker accepted an integer-to-optional-enum cast in a return position")
+	}
+}
+
+func TestEmitRejectsOptionalIntegerToEnumCallArgumentPosition(t *testing.T) {
+	// A cast used as a call argument (`helper(5 as ?Color)` where helper
+	// takes a ?Color parameter) reaches the backend and is cleanly rejected
+	// naming the parameter's optional type — the pre-existing optional-typed
+	// parameter limitation, never a crash or a guessed lowering.
+	unit, snapshot, entryID, _ := buildFixture(t, "type Color = enum { red, green, blue }; fn helper(c ?Color) i32 { return 0; } fn main() i32 {\nreturn helper(5 as ?Color);\n}", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "parameter 0 (symbol")
+}
+
+func TestEmitOptionalIntegerToEnumWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the source integer is evaluated exactly
+	// once into an int64_t temp (a pre-statement), and the optional local is
+	// then constructed with both fields read from that single temp — the
+	// has_value bool from the runtime validity query and the enum value
+	// narrowed from the temp. The temp name derives from the Initialize
+	// node's own id, mirroring pebble_compound_ptr_<id>. The enum typedef is
+	// emitted before the optional typedef that names it as the value field.
+	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 1 as ?Color;\nreturn c! as i32;\n}")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if got := strings.Count(out, "int64_t pebble_temp_"); got != 1 {
+		t.Errorf("source integer temp appears %d time(s), want exactly one (single evaluation):\n%s", got, out)
+	}
+	for _, want := range []string{
+		"int64_t pebble_temp_",
+		".has_value = pebble_rt_int_to_enum_is_valid(pebble_temp_",
+		".value = (" + enumTypeName(enumType) + ")pebble_temp_",
+		"(" + enumTypeName(enumType) + ")pebble_rt_checked_unwrap_i32(pebble_local_",
+		"typedef struct {\n    bool has_value;\n    " + enumTypeName(enumType) + " value;\n} pebble_optional_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	enumIndex := strings.Index(out, "typedef enum {")
+	optionalIndex := strings.Index(out, "} pebble_optional_")
+	if enumIndex < 0 || optionalIndex < 0 || enumIndex > optionalIndex {
+		t.Errorf("enum typedef does not precede the optional typedef that names it (definition before use):\n%s", out)
+	}
+}
+
 // unionFixture builds one .peb source through the full check pipeline and
 // resolves the tagged-union type's TypeID and its variant symbols in declared
 // order, reusing enumFixture's exact type-resolution mechanism (a tagged union

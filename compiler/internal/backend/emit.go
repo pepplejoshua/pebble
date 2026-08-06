@@ -359,11 +359,14 @@
 // mode panicking out-of-range (PEBBLE_PANIC_ARITHMETIC_OVERFLOW) and RELEASE
 // mode skipping the check entirely (a plain unchecked cast, trusting the
 // input). The optional-destination form, OptionalIntegerToEnum (`5 as ?Color`),
-// remains out of scope (it needs to evaluate the source integer exactly once
-// while producing both a validity bool and a value, a genuinely different
-// mechanism) and is tracked as a separate, later task.
-// Enum-typed function parameters/results, and enum-typed
-// tuple/struct/array/optional elements and fields, remain clean rejections.
+// is implemented since this slice, but ONLY as a local variable declaration's
+// initializer (see buildOptionalIntegerToEnumDeclaration): the cast must
+// evaluate its source integer exactly once while producing both a has_value
+// validity bool and an enum value, which needs a pre-declaration statement the
+// backend can place only at the two local-declaration call sites; every other
+// position is a clean rejection, not a double-evaluated emission.
+// Enum-typed function parameters/results, and enum-typed tuple/struct/array
+// elements and fields, remain clean rejections.
 package backend
 
 import (
@@ -527,20 +530,27 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs, err := buildAggregateTypedefs(unit, snapshot, result, ordered.all, ordered.structs)
+	// The enum typedef block is emitted BEFORE the aggregate typedef block
+	// (and, transitively, before the unions): since the OptionalIntegerToEnum
+	// slice an optional's value field may name a plain enum typedef
+	// (pebble_enum_<typeID>_t, see optionalPayloadCType), C requires the enum
+	// typedef to be defined before the optional struct typedef that references
+	// it. Enum typedefs are self-contained (variant constants only), so they
+	// have no forward dependencies and can safely lead the block.
+	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos)
 	if err != nil {
 		return err
 	}
+	aggTypedefs, err := buildAggregateTypedefs(unit, snapshot, result, ordered.all, ordered.structs)
+	if err != nil {
+		return err
+	}
+	typedefs := appendTypedefBlock(enumTypedefs, aggTypedefs)
 	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, result, unionInfos)
 	if err != nil {
 		return err
 	}
 	typedefs = appendTypedefBlock(typedefs, unionTypedefs)
-	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos)
-	if err != nil {
-		return err
-	}
-	typedefs = appendTypedefBlock(typedefs, enumTypedefs)
 	sliceTypedefs, err := buildSliceTypedefs(unit, snapshot, sliceInfos, result)
 	if err != nil {
 		return err
@@ -1664,6 +1674,19 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 		// NominalEnum destination only — but the filter keeps the invariant
 		// uniform).
 		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.OptionalIntegerToEnum {
+		// An integer cast to an optional enum (`5 as ?Color`): unlike the
+		// checked cast, the node's own Type is the OPTIONAL type, not the
+		// enum, so the destination enum is the optional's payload — resolved
+		// here so the optional typedef's value field
+		// (pebble_enum_<typeID>_t, see optionalPayloadCType) always has its
+		// enum typedef emitted ahead of it.
+		if key, ok := snapshot.Key(node.Type); ok && key.Kind() == types.Optional {
+			if child, ok := key.Child(); ok && isEnumType(unit, snapshot, child) {
+				*out = append(*out, child)
+			}
+		}
 	}
 	if node.Kind == tir.Initialize {
 		for _, childID := range node.Children {
@@ -3264,7 +3287,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 		}
 	}
 	loopScope := cloneLocals(locals)
-	var initText, condText, updateText, updatePre string
+	var initText, initPre, condText, updateText, updatePre string
 	var initSymbol symbol.SymbolID
 	var updateID tir.NodeID
 	if condIndex >= 0 {
@@ -3280,11 +3303,12 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			return "", fmt.Errorf("entry function body block for loop has %d clause(s) after its condition, want at most one (the update)", len(clauses)-condIndex-1)
 		}
 		if condIndex == 1 {
-			text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
+			pre, text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
 			if err != nil {
 				return "", err
 			}
 			initText = text
+			initPre = pre
 			initSymbol = symbol
 		}
 		cond, err := buildCondition(unit, snapshot, fileSet, clauses[condIndex], loopScope, width)
@@ -3313,11 +3337,12 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			clause, _ := unit.Node(clauses[0])
 			switch clause.Kind {
 			case tir.Initialize:
-				text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
+				pre, text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
 				if err != nil {
 					return "", err
 				}
 				initText = text
+				initPre = pre
 				initSymbol = symbol
 			case tir.Store:
 				// A lone no-condition Store is the update-only shape
@@ -3356,14 +3381,15 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			if updateClause.Kind != tir.Store && updateClause.Kind != tir.CompoundStore {
 				return "", fmt.Errorf("entry function body block for loop with no condition follows the initializer with a %s clause, want a Store or CompoundStore (the update)", updateClause.Kind)
 			}
-			text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
+			pre, text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
 			if err != nil {
 				return "", err
 			}
 			initText = text
+			initPre = pre
 			initSymbol = symbol
 			updateID = clauses[1]
-			pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[1], loopScope, width, unions)
+			pre, text, err = buildForUpdateClause(unit, snapshot, fileSet, clauses[1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -3389,6 +3415,15 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 	}
 	indent := strings.Repeat("    ", depth+1)
 	forText := fmt.Sprintf("%sfor (%s; %s; %s) {\n%s\n%s}", indent, initText, condText, updateText, bodyText, indent)
+	var preLines string
+	if initPre != "" {
+		// The initializer's source-integer temp lives in the enclosing block,
+		// not the for-header (a header clause is a single C declaration, and
+		// the int64_t temp and the optional-typed local have different C
+		// types), so it is emitted as a statement before the for — the same
+		// leading position updatePre uses.
+		preLines += indent + initPre + "\n"
+	}
 	if updatePre != "" {
 		updateNode, ok := unit.Node(updateID)
 		if !ok || len(updateNode.Children) == 0 {
@@ -3402,7 +3437,10 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 		updatePre = fmt.Sprintf("%s *%s;", cType(width), tempName)
 		updateText = fmt.Sprintf("%s = &(%s), %s", tempName, lvalue, updateText)
 		forText = fmt.Sprintf("%sfor (%s; %s; %s) {\n%s\n%s}", indent, initText, condText, updateText, bodyText, indent)
-		return indent + updatePre + "\n" + forText, nil
+		preLines += indent + updatePre + "\n"
+	}
+	if preLines != "" {
+		return preLines + forText, nil
 	}
 	return forText, nil
 }
@@ -3421,30 +3459,54 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 // validated and emitted by buildScalarInitializeCore, which also records the
 // local in the caller's loop scope so the condition, update, and body can
 // reference it. Returns the clause text and the declared symbol (so buildFor
-// can emit the (void) cast as the body's first statement).
-func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, symbol.SymbolID, error) {
+// can emit the (void) cast as the body's first statement), plus, for an
+// OptionalIntegerToEnum initializer, a pre statement text that must be emitted
+// BEFORE the for statement — the source integer's one-time-evaluation temp
+// declaration, which a single for-header declaration cannot hold alongside the
+// optional-typed local (the two have different C types, and a for-header
+// declaration is a single C declaration) — mirroring the updatePre mechanism
+// buildCompoundStore uses.
+func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, symbol.SymbolID, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
-		return "", 0, fmt.Errorf("entry function body block for loop initializer references invalid node %d", id)
+		return "", "", 0, fmt.Errorf("entry function body block for loop initializer references invalid node %d", id)
 	}
 	if statement.Kind != tir.Initialize {
-		return "", 0, fmt.Errorf("entry function body block for loop initializer is a %s, want a local declaration (an Initialize); a for-loop initializer must declare a local of %s or bool", statement.Kind, wantName(width))
+		return "", "", 0, fmt.Errorf("entry function body block for loop initializer is a %s, want a local declaration (an Initialize); a for-loop initializer must declare a local of %s or bool", statement.Kind, wantName(width))
 	}
 	if len(statement.Children) != 1 {
-		return "", 0, fmt.Errorf("entry function body block for loop initializer initializes %d value(s), want exactly one expression", len(statement.Children))
+		return "", "", 0, fmt.Errorf("entry function body block for loop initializer initializes %d value(s), want exactly one expression", len(statement.Children))
 	}
 	if _, declared := scope[statement.Symbol]; declared {
-		return "", 0, fmt.Errorf("entry function body block for loop initializer declares local %d more than once", statement.Symbol)
+		return "", "", 0, fmt.Errorf("entry function body block for loop initializer declares local %d more than once", statement.Symbol)
 	}
 	initValue, ok := unit.Node(statement.Children[0])
 	if !ok {
-		return "", 0, fmt.Errorf("entry function body block for loop initializer references invalid value node %d", statement.Children[0])
+		return "", "", 0, fmt.Errorf("entry function body block for loop initializer references invalid value node %d", statement.Children[0])
+	}
+	if initValue.Kind == tir.OptionalIntegerToEnum {
+		// An integer-to-optional-enum cast as the for-loop initializer
+		// (`for var c ?Color = 5 as ?Color; ...`): the cast is supported only
+		// in a local-declaration initializer, and the for-loop initializer IS
+		// a local declaration — but the header clause must be a single C
+		// declaration, and the cast needs the source hoisted into an int64_t
+		// temp of a different C type (see
+		// buildOptionalIntegerToEnumDeclaration), so the temp's declaration is
+		// returned as a pre statement buildFor emits before the for statement,
+		// and the header clause is the optional-typed local's own declaration
+		// reading that temp.
+		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", id)
+		if err != nil {
+			return "", "", 0, err
+		}
+		scope[statement.Symbol] = localInfo{optional: initValue.Type}
+		return pre, core, statement.Symbol, nil
 	}
 	core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", width)
 	if err != nil {
-		return "", 0, err
+		return "", "", 0, err
 	}
-	return core, statement.Symbol, nil
+	return "", core, statement.Symbol, nil
 }
 
 // buildForUpdateClause validates and builds the C update-clause text for a
@@ -4408,9 +4470,11 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// An optional-typed local: its type is the initializer value's
 			// Type (the Initialize node carries no Type itself, confirmed
 			// against a real fixture — same as tuple/array locals). The
-			// supported initializer is SomeOptional (some <expr>); every
-			// other optional initializer shape is a clean rejection.
-			return buildOptionalLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			// supported initializers are SomeOptional (some <expr>), none, and
+			// since the OptionalIntegerToEnum slice an integer-to-optional-
+			// enum cast (`5 as ?Color`); every other optional initializer
+			// shape is a clean rejection.
+			return buildOptionalLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, id)
 		}
 		if isEnumType(unit, snapshot, initValue.Type) {
 			// An enum-typed local: its type is the initializer value's Type
@@ -5645,7 +5709,11 @@ func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // a `pebble_optional_<typeID>_t pebble_local_<symbol> = { .has_value = true,
 // .value = <expr> };` for a SomeOptional initializer, or
 // `{ .has_value = false, .value = 0 }` for a NoneOptional (`none` — the
-// payload value is irrelevant when absent, so zero is fine).
+// payload value is irrelevant when absent, so zero is fine), or — since the
+// OptionalIntegerToEnum slice — a two-statement
+// temp-declaration-plus-declaration fragment for an integer-to-optional-enum
+// cast initializer (`var c ?Color = 5 as ?Color;`), built by
+// buildOptionalIntegerToEnumDeclaration.
 // The payload expression is built by the grammar its own type selects —
 // buildExpr for an integer payload, buildBoolExpr for a bool payload — exactly
 // like the tuple and array element builders. The local's scope entry records
@@ -5655,7 +5723,7 @@ func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // payload type, since this backend emits exactly those two C types as the value
 // field. Like every scalar local, the declaration is followed by a (void) cast
 // against -Wunused-variable.
-func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, id tir.NodeID) (string, error) {
 	key, ok := snapshot.Key(initValue.Type)
 	if !ok {
 		return "", fmt.Errorf("%s declares an optional-typed local whose type %d is not in the type snapshot", context, initValue.Type)
@@ -5690,6 +5758,13 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 				return "", err
 			}
 			valueExpr = expr
+		case isEnumType(unit, snapshot, payloadType):
+			// An enum-payload optional initialized from `some <variant>` — the
+			// only enum-payload optional initializer this backend supports is
+			// an integer-to-optional-enum cast (`5 as ?Color`, see the
+			// OptionalIntegerToEnum case below); a some-initialized enum
+			// payload is a clean rejection naming the shape.
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from some with an enum payload %s; the only supported enum-payload optional initializer is an integer-to-optional-enum cast (e.g. 5 as ?Color)", context, optionalTypeName(initValue.Type), enumTypeName(payloadType))
 		case isStruct(snapshot, payloadType):
 			expr, err := buildNestedAggregateValue(unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
 			if err != nil {
@@ -5706,6 +5781,21 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		// when absent; zero is fine.
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = false, .value = 0 };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, indent, statement.Symbol), nil
+	case tir.OptionalIntegerToEnum:
+		// An integer cast to an optional enum used directly as a local
+		// declaration's initializer (`var c ?Color = 5 as ?Color;`). The
+		// cast must evaluate its source integer exactly once and derive both
+		// the has_value bool and the enum value from that single evaluation,
+		// so the source is hoisted into an int64_t temp (see
+		// buildOptionalIntegerToEnumDeclaration) — the one position this
+		// backend supports the cast in, because a declaration statement has a
+		// natural place to prepend the temp's own statement line.
+		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, context, id)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{optional: initValue.Type}
+		return fmt.Sprintf("%s%s\n%s%s;\n%s(void)pebble_local_%d;", indent, pre, indent, core, indent, statement.Symbol), nil
 	default:
 		return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a %s, want some <expr> or none", context, optionalTypeName(initValue.Type), initValue.Kind)
 	}
@@ -6047,6 +6137,45 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		return buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals)
 	case tir.CheckedIntegerToEnum:
 		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression")
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an enum-payload optional (`c!` where c is
+		// ?Color), used as an enum value — the read-back path for an
+		// OptionalIntegerToEnum-constructed local (`5 as ?Color`), which is
+		// how the in-range round trip (`c! as i32 == 1`) is observable end to
+		// end. The unwrap reads the optional local's has_value and value
+		// fields through the checked-unwrap runtime helper at the C enum's
+		// underlying width (a C enum is int-compatible, so
+		// pebble_rt_checked_unwrap_i32's value parameter and int32_t result
+		// both accept the enum's representation directly), and the int32_t
+		// result is narrowed back to the enum typedef. The child must name an
+		// optional-typed local whose payload is exactly the enum the unwrap
+		// yields.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+		}
+		if child.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of an enum-payload optional whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
+		}
+		info, declared := locals[child.Symbol]
+		if !declared {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing symbol %d, which is not a local declared earlier in the entry body", child.Symbol)
+		}
+		if info.optional == 0 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		payloadKey, ok := snapshot.Key(info.optional)
+		if !ok || payloadKey.Kind() != types.Optional {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d with unresolvable optional type %d", child.Symbol, info.optional)
+		}
+		payload, ok := payloadKey.Child()
+		if !ok || !isEnumType(unit, snapshot, payload) || payload != node.Type {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d whose payload %s is not the enum type %s the unwrap yields", child.Symbol, describeType(snapshot, payload), enumTypeName(node.Type))
+		}
+		return fmt.Sprintf("(%s)pebble_rt_checked_unwrap_i32(pebble_local_%d.has_value, pebble_local_%d.value, %s)", enumTypeName(node.Type), child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
 	}
@@ -6102,6 +6231,88 @@ func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fil
 		return "", fmt.Errorf("%s integer-to-enum cast child: %v", context, err)
 	}
 	return fmt.Sprintf("(%s)pebble_rt_checked_int_to_enum((int64_t)(%s), %d, %s)", enumTypeName(node.Type), childExpr, len(info.variants), buildSourceLoc(fileSet, node.Span)), nil
+}
+
+// buildOptionalIntegerToEnumDeclaration builds the two-part C fragment a local
+// declaration whose initializer is an OptionalIntegerToEnum (`var c ?Color =
+// 5 as ?Color;`) needs. Unlike its sibling CheckedIntegerToEnum, the cast must
+// produce an optional STRUCT VALUE with two fields — `{ .has_value = <bool>,
+// .value = <enum value> }` — both derived from the SAME source integer, so the
+// source must be evaluated exactly ONCE and both fields read from that single
+// evaluation. Naively embedding the source expression twice would evaluate it
+// twice, wrong whenever the source has a side effect (a function call, for
+// instance). This backend has no expression-level "evaluate once, reuse twice"
+// mechanism (buildExpr returns a plain `(string, error)` with no pre-statement
+// threading), so the cast is supported ONLY as a local variable declaration's
+// initializer — the two call sites that already emit a single indent-prefixed
+// statement are the natural places to prepend one more line — and is cleanly
+// rejected everywhere else. The returned pre string is the one-time
+// evaluation statement, and core the local declaration WITHOUT leading indent
+// and WITHOUT trailing `;`:
+//
+//	pre:  int64_t pebble_temp_<id> = (int64_t)(<child expr>);
+//	core: pebble_optional_<typeID>_t pebble_local_<symbol> = { .has_value =
+//	      pebble_rt_int_to_enum_is_valid(pebble_temp_<id>, <variant_count>),
+//	      .value = (<enum C type>)pebble_temp_<id> }
+//
+// so the two callers assemble them into the two-line leading-statement form
+// (buildOptionalLocalDeclaration, which prepends the indent to each line and
+// appends `;` plus the (void) cast) and the leading-statement-plus-header form
+// (buildForInitClause, which emits pre as a statement before the for and uses
+// core as the for-header's init clause, where the header's own `;` terminates
+// it) — mirroring buildCompoundStore's (pre, core, err) shape exactly. The
+// temp name is derived from the Initialize statement's own node id, mirroring
+// the pebble_compound_ptr_<id> naming scheme's uniqueness-per-call-site. The
+// destination enum type and variant count are resolved exactly as
+// buildCheckedIntegerToEnumExpr resolves them, except the node's own Type is
+// the optional `?Color` — the destination enum is its payload, unwrapped via
+// TypeKey.Child() the same way buildOptionalLocalDeclaration unwraps an
+// optional-typed initializer's payload.
+func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, id tir.NodeID) (string, string, error) {
+	if initValue.Kind != tir.OptionalIntegerToEnum {
+		return "", "", fmt.Errorf("%s contains a %s, want an OptionalIntegerToEnum", context, initValue.Kind)
+	}
+	if len(initValue.Children) != 1 {
+		return "", "", fmt.Errorf("%s contains an OptionalIntegerToEnum with %d child(ren), want exactly one integer value", context, len(initValue.Children))
+	}
+	optionalKey, ok := snapshot.Key(initValue.Type)
+	if !ok {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast has invalid destination type %d", context, initValue.Type)
+	}
+	if optionalKey.Kind() != types.Optional {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast destination %s is not an optional type", context, describeType(snapshot, initValue.Type))
+	}
+	enumType, ok := optionalKey.Child()
+	if !ok {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast destination %s has no payload type", context, describeType(snapshot, initValue.Type))
+	}
+	info, err := resolveEnumInfo(unit, snapshot, enumType)
+	if err != nil {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast: %v", context, err)
+	}
+	if len(info.variants) == 0 {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast targets enum %s, which has no declared variants", context, enumTypeName(enumType))
+	}
+	child, ok := unit.Node(initValue.Children[0])
+	if !ok {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast references invalid child node %d", context, initValue.Children[0])
+	}
+	childType, ok := snapshot.Key(child.Type)
+	if !ok {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child has invalid type %d", context, child.Type)
+	}
+	childWidth, ok := childType.Builtin()
+	if !ok || cType(childWidth) == "" {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child has non-integer type %s", context, describeType(snapshot, child.Type))
+	}
+	childExpr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, childWidth)
+	if err != nil {
+		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child: %v", context, err)
+	}
+	tempName := fmt.Sprintf("pebble_temp_%d", id)
+	pre := fmt.Sprintf("int64_t %s = (int64_t)(%s);", tempName, childExpr)
+	core := fmt.Sprintf("%s pebble_local_%d = { .has_value = pebble_rt_int_to_enum_is_valid(%s, %d), .value = (%s)%s }", optionalTypeName(initValue.Type), statement.Symbol, tempName, len(info.variants), enumTypeName(enumType), tempName)
+	return pre, core, nil
 }
 
 // buildUnionLocalDeclaration builds one tagged-union-typed local's declaration:
@@ -7070,7 +7281,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}
 	}
-	if node.Kind != tir.CheckedIntegerToEnum && !isWidth(snapshot, width, node.Type) {
+	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) {
 		wantName, _ := builtinName(width)
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
 	}
@@ -7168,11 +7379,25 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		// the primitive's result is narrowed back to the enum type. SAFE mode
 		// panics out-of-range; RELEASE returns the value unchanged (unchecked,
 		// trusting the input). The reverse direction, OptionalIntegerToEnum
-		// (`5 as ?Color`), remains out of scope and is tracked separately.
+		// (`5 as ?Color`), is handled in the sibling case below.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedIntegerToEnum with %d children, want exactly one", len(node.Children))
 		}
 		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression")
+	case tir.OptionalIntegerToEnum:
+		// An integer cast to an optional enum (`5 as ?Color`): the ONE
+		// supported position is a local variable declaration's initializer
+		// (see buildOptionalIntegerToEnumDeclaration), where the backend can
+		// emit a pre-statement to evaluate the source integer exactly once
+		// before building both the has_value bool and the enum value from it.
+		// Every expression position reaches here only through a plain
+		// `(string, error)` builder with no pre-statement threading, so there
+		// is nowhere to hoist the source's single evaluation — embedding the
+		// source twice would evaluate it twice, wrong for a side-effecting
+		// source. Rather than emit a wrong double-evaluated C or reach for a
+		// GNU statement-expression, the cast is cleanly rejected here naming
+		// what was found.
+		return "", fmt.Errorf("entry function body expression contains an integer-to-optional-enum cast to %s, which is only supported as a local variable declaration's initializer; a C expression position has nowhere to place the temp-declaration statement that evaluates the source integer exactly once, so the cast is not supported here", describeType(snapshot, node.Type))
 	case tir.FloatToInteger:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with %d children, want exactly one", len(node.Children))
@@ -9462,8 +9687,9 @@ func buildOptionalTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types
 //	} pebble_optional_<typeID>_t;
 //
 // The value field's C type is the payload's own type (int32_t/int64_t for the
-// entry's width, bool for a bool payload). A TypeID that is not an optional
-// type in the snapshot is a clean rejection, not a guessed layout.
+// entry's width, bool for a bool payload, or the payload's enum typedef for an
+// enum payload). A TypeID that is not an optional type in the snapshot is a
+// clean rejection, not a guessed layout.
 func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
@@ -9585,9 +9811,13 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 
 // optionalPayloadCType is the C field type an optional payload of the given
 // type is declared with in its optional's struct typedef: int32_t / int64_t
-// for a payload of the entry's resolved width, bool for a bool payload. Any
-// other payload type is a clean rejection naming what was found, since this
-// backend emits exactly those two C types as optional value fields.
+// for a payload of the entry's resolved width, bool for a bool payload, and,
+// since the OptionalIntegerToEnum slice, the payload's own enum typedef
+// (pebble_enum_<typeID>_t) for an enum payload — the destination shape of an
+// integer cast to an optional enum (`5 as ?Color`), whose optional struct must
+// carry the enum value field. Any other payload type is a clean rejection
+// naming what was found, since this backend emits exactly those C types as
+// optional value fields.
 func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isWidth(snapshot, width, id) {
 		return cType(width), nil
@@ -9600,7 +9830,7 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 	}
 	if isStruct(snapshot, id) {
 		if isEnumType(unit, snapshot, id) {
-			return "", fmt.Errorf("payload type %s is an enum type; enum-typed optional payloads are not supported yet", enumTypeName(id))
+			return enumTypeName(id), nil
 		}
 		return structTypeName(id), nil
 	}

@@ -315,6 +315,28 @@ int64_t pebble_rt_checked_int_to_enum(int64_t value, int64_t variant_count, Pebb
     return value;
 }
 
+/* Integer-to-optional-enum validity query (the compiler's
+ * OptionalIntegerToEnum node, `5 as ?Color`): a pure, mode-independent bounds
+ * check reporting whether the integer names a real variant of the destination
+ * enum. The bounds logic is identical to pebble_rt_checked_int_to_enum above —
+ * the same ordinal-enum reasoning (variant Members[i] gets the C enum value i,
+ * so an integer names a variant exactly when 0 <= value < variant_count), the
+ * same int64_t single-width input contract (the compiler emits the source cast
+ * to int64_t before calling, so a genuinely negative signed source sign-extends
+ * and a u64 source at or above 2^63 bit-reinterprets as negative, both of which
+ * the single unsigned comparison (uint64_t)value < (uint64_t)variant_count
+ * recovers correctly with no UB) — but as a pure query: it returns a bool, has
+ * no panic branch, and takes no PebbleSourceLoc at all. It therefore behaves
+ * IDENTICALLY in SAFE and RELEASE builds. That mode-independence is a
+ * requirement, not a convenience: the compiler emits this query to compute an
+ * optional's has_value field, and a wrong has_value would be silently
+ * incorrect rather than merely unchecked, so the check must not be gated
+ * behind the mode macro the way the checked cast's check is.
+ */
+bool pebble_rt_int_to_enum_is_valid(int64_t value, int64_t variant_count) {
+    return (uint64_t)value < (uint64_t)variant_count;
+}
+
 /* ---- checked division and modulo -------------------------------------------
  * Defined once for both modes, per the header contract:
  *

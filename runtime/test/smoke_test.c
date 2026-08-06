@@ -70,6 +70,11 @@
  *      compiler bit-reinterprets to a negative int64_t (INT64_MIN), is
  *      also exercised at both modes: SAFE must reject it (its uint64_t
  *      reinterpretation recovers the huge magnitude), RELEASE returns it.
+ *  18. Integer-to-optional-enum validity query
+ *      (pebble_rt_int_to_enum_is_valid, the OptionalIntegerToEnum node):
+ *      a pure, mode-independent bounds check, so the SAME in-range /
+ *      out-of-range / negative / huge-u64 results are asserted in BOTH
+ *      SAFE and RELEASE builds (the query runs unconditionally in main).
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -250,6 +255,38 @@ static void test_checked_int_to_enum_normal(void) {
     assert(pebble_rt_checked_int_to_enum(2, 3, (PebbleSourceLoc){0}) == 2);
     /* A larger variant count, and an in-range value near its boundary. */
     assert(pebble_rt_checked_int_to_enum(7, 8, (PebbleSourceLoc){0}) == 7);
+}
+
+/* The integer-to-optional-enum validity query
+ * (pebble_rt_int_to_enum_is_valid, the compiler's OptionalIntegerToEnum node,
+ * `5 as ?Color`) is a PURE query: it reports whether the integer names a real
+ * variant of the destination enum, and must behave IDENTICALLY in SAFE and
+ * RELEASE builds — unlike the checked cast, which skips its bounds check in
+ * RELEASE, an optional's has_value field is computed from this query and a
+ * wrong answer would be silently incorrect rather than merely unchecked. The
+ * bounds logic is the checked cast's own: in-range ordinals (0, 1, 2 for a
+ * 3-variant enum) are valid; the boundary value (== variant_count), genuinely
+ * negative sources, and a huge u64 source (bit-reinterpreted to INT64_MIN) are
+ * all invalid. This function is called unconditionally in main so both modes
+ * assert the exact same results.
+ */
+static void test_int_to_enum_is_valid(void) {
+    assert(pebble_rt_int_to_enum_is_valid(0, 3) == true);
+    assert(pebble_rt_int_to_enum_is_valid(1, 3) == true);
+    assert(pebble_rt_int_to_enum_is_valid(2, 3) == true);
+    /* A larger variant count, and an in-range value near its boundary. */
+    assert(pebble_rt_int_to_enum_is_valid(7, 8) == true);
+    /* The boundary value itself names no variant. */
+    assert(pebble_rt_int_to_enum_is_valid(3, 3) == false);
+    /* Out of range. */
+    assert(pebble_rt_int_to_enum_is_valid(5, 3) == false);
+    /* A genuinely negative signed source. */
+    assert(pebble_rt_int_to_enum_is_valid(-1, 3) == false);
+    /* A u64 source at or above 2^63, bit-reinterpreted to INT64_MIN: its
+     * uint64_t reinterpretation recovers the huge magnitude, so it is invalid
+     * exactly like a genuinely negative source.
+     */
+    assert(pebble_rt_int_to_enum_is_valid(INT64_MIN, 3) == false);
 }
 
 #if defined(PEBBLE_RT_MODE_SAFE)
@@ -794,6 +831,9 @@ int main(void) {
 
     test_checked_int_to_enum_normal();
     printf("ok: checked integer-to-enum normal results\n");
+
+    test_int_to_enum_is_valid();
+    printf("ok: integer-to-optional-enum validity query\n");
 
     if (verify_panic_reports_location() != 0) {
         fprintf(stderr, "smoke_test: panic location-report subprocess check FAILED\n");

@@ -216,6 +216,21 @@ int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc);
  */
 int64_t pebble_rt_checked_int_to_enum(int64_t value, int64_t variant_count, PebbleSourceLoc loc);
 
+/* ---- integer-to-optional-enum validity query -------------------------------
+ * A pure, mode-independent bounds check (the compiler's OptionalIntegerToEnum
+ * node, `5 as ?Color`): reports whether the integer names a real variant of the
+ * destination enum. The bounds logic is identical to
+ * pebble_rt_checked_int_to_enum above — the same ordinal-enum reasoning, the
+ * same int64_t single-width input contract, the same single unsigned
+ * comparison (uint64_t)value < (uint64_t)variant_count — but as a pure query:
+ * it returns a bool, has no panic branch, and takes no PebbleSourceLoc. It
+ * therefore behaves IDENTICALLY in SAFE and RELEASE builds; the check must not
+ * be gated behind the mode macro, because the compiler emits this query to
+ * compute an optional's has_value field and a wrong has_value would be
+ * silently incorrect rather than merely unchecked.
+ */
+bool pebble_rt_int_to_enum_is_valid(int64_t value, int64_t variant_count);
+
 /* ---- checked division and modulo -------------------------------------------
  * Division and modulo have a fault case wraparound cannot fix: b == 0 has no
  * defined quotient at all, in either mode — unlike +, -, *, there is no
