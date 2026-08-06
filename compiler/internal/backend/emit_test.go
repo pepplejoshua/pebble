@@ -9010,15 +9010,59 @@ func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsOptionalParameterCompilesAndRuns(t *testing.T) {
-	// Optional-typed PARAMETERS remain explicitly out of scope: a helper
-	// taking a ?int parameter is still rejected by validateHelperSignature's
-	// parameter gate (the loop building the "parameter %d ... has type %s,
-	// want..." error), untouched by this slice. The error names the parameter
-	// position, not the result — a regression guard that the optional-result
-	// change did not loosen the parameter check.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn f() ?int { return 5; } fn g(o ?int) int { return 0; } fn main() int { return g(f()); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "parameter 0")
+func TestEmitOptionalParameterCompilesAndRuns(t *testing.T) {
+	// Optional-typed PARAMETERS: a helper taking a ?int parameter, called
+	// with a scalar implicit-injection argument (`g(5)`, which arrives as an
+	// OptionalInject node at a call site — unlike a return position's bare
+	// payload). The parameter is seeded into the callee's scope exactly like
+	// an optional local (localInfo{optional: ...}), so a body read
+	// (o.has_value) resolves through the existing optional-local machinery.
+	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(5); }", false, 1, false)
+}
+
+func TestEmitOptionalParameterNoneArgumentCompilesAndRuns(t *testing.T) {
+	// A fresh `none` passed directly as the argument.
+	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(none); }", false, 0, false)
+}
+
+func TestEmitOptionalParameterSomeArgumentCompilesAndRuns(t *testing.T) {
+	// A fresh `some x` passed directly as the argument.
+	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(some 5); }", false, 1, false)
+}
+
+func TestEmitOptionalParameterForwardsLocalCompilesAndRuns(t *testing.T) {
+	// An already-declared optional-typed local passed as the argument — the
+	// SymbolValue-forward shape.
+	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { var n ?int = none; return g(n); }", false, 0, false)
+}
+
+func TestEmitOptionalParameterForwardsCallResultCompilesAndRuns(t *testing.T) {
+	// The result of another optional-returning call passed directly as the
+	// argument — the DirectCall-forward shape.
+	emitAndRun(t, "fn f() ?int { return 5; } fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(f()); }", false, 1, false)
+}
+
+func TestEmitOptionalParameterStructPayloadCompilesAndRuns(t *testing.T) {
+	// A tuple/struct-payload optional parameter, not just an integer payload
+	// — confirms the payload-type dispatch isn't hardcoded to scalars. Bool
+	// implicit injection is checker-rejected (T0505, matching the identical
+	// limitation on the return-position work), so struct/tuple payloads use
+	// explicit `some`.
+	emitAndRun(t, "type P = struct { x int; y int; };\nfn g(o ?P) int { if o.has_value { return 1; } return 0; } fn main() int { return g(some P.{ x = 1, y = 2 }); }", false, 1, false)
+}
+
+func TestEmitOptionalParameterTuplePayloadCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn g(o ?(int, int)) int { if o.has_value { return 1; } return 0; } fn main() int { return g(some (1, 2)); }", false, 1, false)
+}
+
+func TestEmitOptionalResultTestsStillPass(t *testing.T) {
+	// Regression guard: the optional-RESULT machinery (landed earlier this
+	// session) is unaffected by adding parameter support — the shared
+	// buildOptionalValue (generalized from buildOptionalReturnValue to serve
+	// both the return and call-argument positions) still returns the exact
+	// same C for a return-position optional value it did before
+	// generalization.
+	emitAndRun(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return 1; } return 0; }", false, 1, false)
 }
 
 func TestEmitSliceParameterWritesC(t *testing.T) {

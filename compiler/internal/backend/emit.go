@@ -972,12 +972,19 @@ func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 // collectOptionalTypes appends, in first-encountered order, the optional
 // TypeID of every optional type the emitted program actually references: the
 // entry body (root) followed by every reachable helper's body, each walked
-// by the same Children + DeferChain traversal collectDirectCalls uses. An
+// by the same Children + DeferChain traversal collectDirectCalls uses, plus
+// each reachable helper's own declared parameter types and result type. An
 // optional type is referenced in exactly two places in the emitted C — an
 // optional-typed local's declaration (an Initialize whose initializer value
 // carries the optional type) and a SomeOptional node (whose Type is the
-// optional type) — so collecting exactly those two node shapes guarantees
-// every typedef the program needs is discovered. The caller deduplicates so
+// optional type) — so collecting exactly those two node shapes, each
+// reachable helper's parameter list, and each reachable helper's result type
+// guarantees every typedef the program needs is discovered (the parameter/
+// result scans close the same gap the tuple/struct collection's own scans
+// close: an optional type used only as a parameter type or only as a helper's
+// result type, never constructed in any reachable body, still needs its
+// typedef emitted since the helper's C signature names
+// pebble_optional_<typeID>_t). The caller deduplicates so
 // each distinct optional type yields exactly one typedef, emitted before any
 // function definition in the final output.
 func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]types.TypeID, error) {
@@ -988,6 +995,21 @@ func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 	for _, helper := range helpers {
 		if err := collectOptionalTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
 			return nil, err
+		}
+		// A reachable helper's own parameter list is a source of optional
+		// types the body walk cannot see: an optional-typed parameter is
+		// referenced by the helper's C signature (its C declaration names
+		// pebble_optional_<typeID>_t) even if no reachable body ever
+		// constructs or injects an optional of that type — the body walk only
+		// collects SomeOptional nodes and Initialize children, so a bare
+		// `g(5)` call-site argument (an OptionalInject whose type the walk
+		// does not collect) or an unused `fn g(o ?int)` parameter would leave
+		// the typedef unemitted. This is the same Parameters scan 10.24 added
+		// for tuple/struct/slice parameters, applied to optional parameters.
+		for _, param := range helper.decl.Parameters {
+			if isOptional(snapshot, param.Type) {
+				collected = append(collected, param.Type)
+			}
 		}
 		// A reachable helper's own result type is a source of optional types
 		// the body walk cannot see: an optional-returning helper's C signature
@@ -2020,8 +2042,9 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 
 // validateHelperSignature checks one called function against the constraints
 // every reachable helper must satisfy: Pebble-convention, parameters whose
-// types are exactly the entry's resolved width, bool, str, a tuple type, or a
-// struct type, and a result of exactly the entry's resolved width, str, a tuple
+// types are exactly the entry's resolved width, bool, str, a tuple type, a
+// struct type, an optional type, or a pointer type, and a result of exactly
+// the entry's resolved width, str, a tuple
 // type, a struct type, an optional type, or void. The width
 // rule is the same reasoning 10.13 established for locals — a called function
 // of the other width (an i32 helper called from an i64 entry, or vice versa) is
@@ -2030,14 +2053,18 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // options a local has: the entry's width, bool, str (a str parameter is
 // declared as the runtime's PebbleStr and read/compared/returned exactly like a
 // str local — 10.36), a tuple type (one of the
-// shapes 10.19 supports — element types the entry's width or bool), or a
+// shapes 10.19 supports — element types the entry's width or bool), a
 // struct type (one of the shapes 10.22 supports — field types the entry's
-// width or bool); a tuple/struct/str/optional result type has the same options.
+// width or bool), an optional type (whose payload is read back through the
+// same has_value / force-unwrap machinery an optional local uses), or a
+// pointer type; a tuple/struct/str/optional result type has the same options.
 // The
 // tuple/struct's own internal shape is validated wherever
 // its typedef gets built (buildTupleTypedef / buildStructTypedef), not here,
 // and an optional result's own payload shape is likewise validated wherever
-// its typedef gets built (buildOptionalTypedef / optionalPayloadCType).
+// its typedef gets built (buildOptionalTypedef / optionalPayloadCType) — the
+// same coverage an optional parameter's payload gets through
+// collectOptionalTypes.
 // Anything else (a pointer, an array, an enum, a helper of the
 // other integer width) is a clean rejection naming the position. A void-result
 // helper is accepted: 10.33 added the one position such a call is legal in —
@@ -2070,14 +2097,20 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, or a pointer type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, or an optional type (a parameter may be the entry's integer width, bool, char, str, a tuple/struct type, a slice type, a pointer type, or an optional type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a slice type with an unsupported element type: %v", decl.Symbol, i, param.Symbol, err)
 			}
 		}
+		// An optional parameter's own payload shape needs no per-payload gate
+		// here: exactly like an optional result's, it is validated wherever its
+		// typedef gets built (buildOptionalTypedef / optionalPayloadCType), and
+		// collectOptionalTypes guarantees that typedef is emitted for every
+		// reachable helper's parameter types, so an unsupported payload is a
+		// clean rejection at typedef build time, never a guessed layout.
 	}
 	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
 	if (!integerResult || cType(resultWidth) == "") && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) {
@@ -2100,7 +2133,9 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // every parameter maps to its resolved type — the entry's width, bool, char
 // (localInfo{isChar}), str
 // (localInfo{isStr}), a tuple
-// type (localInfo{tuple}), or a struct type (localInfo{structType}) — so a
+// type (localInfo{tuple}), a struct type (localInfo{structType}), a slice
+// type (localInfo{sliceType}), a pointer type (localInfo{pointerType}), or an
+// optional type (localInfo{optional}) — so a
 // SymbolValue reference or a Store targeting a parameter inside the body
 // resolves through the existing machinery unchanged, and a tuple/struct
 // parameter's element/field reads resolve through the same
@@ -2109,7 +2144,10 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 // naming every local uses, so a parameter and a local are textually identical
 // inside the body (which is correct: they behave identically once inside the
 // function), a tuple/struct parameter's C type being its aggregate's own
-// typedef name (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t) and a str
+// typedef name (pebble_tuple_<typeID>_t / pebble_struct_<typeID>_t), a slice
+// parameter's being its slice's own typedef name (pebble_slice_<typeID>_t),
+// an optional parameter's being the optional's own typedef name
+// (pebble_optional_<typeID>_t), and a str
 // parameter's C type being the runtime's fixed PebbleStr. Each
 // parameter also gets a `(void)pebble_local_<symbolID>;` immediately after
 // the opening brace, the same -Wunused-parameter defense the `(void)ctx;`
@@ -2180,6 +2218,27 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				// validateHelperSignature, so the typedef always builds.
 				params = append(params, sliceTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 				scope[param.Symbol] = localInfo{sliceType: param.Type}
+			case isOptional(snapshot, param.Type):
+				// An optional-typed parameter seeds the callee's locals scope
+				// as an optional local (localInfo.optional), exactly as an
+				// optional local's Initialize does, so a reference to the
+				// parameter inside the body — a `.has_value` read, a `!`
+				// force-unwrap, forwarding it in a return or as another
+				// call's argument — resolves through the existing optional-
+				// local machinery (buildOptionalHasValue, the
+				// CheckedOptionalUnwrap path, buildOptionalReturnValue)
+				// completely unchanged, no new read-path code. The C
+				// parameter is declared with the optional type's own struct
+				// typedef name (pebble_optional_<typeID>_t — the same
+				// typedef 10.21 builds for an optional local, no new typedef
+				// shape needed), so passing the whole optional by value is
+				// trivially valid C (a call site passes an optional-typed
+				// value of the same C type). The payload type is validated
+				// wherever its typedef is built (buildOptionalTypedef via
+				// optionalPayloadCType) — the same coverage an optional
+				// local's payload gets.
+				params = append(params, optionalTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+				scope[param.Symbol] = localInfo{optional: param.Type}
 			case isStr(snapshot, param.Type):
 				// A str-typed parameter seeds the callee's locals scope as a
 				// str local (localInfo.isStr), exactly as a str local's
@@ -2215,7 +2274,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				// validateHelperSignature rules any unsupported parameter out
 				// before a reachable helper is ever built, so this branch is
 				// defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, or an optional type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
 		}
@@ -2311,7 +2370,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// return type — the same typedef 10.21 builds for an optional
 			// local, no new typedef shape needed — and resultInfo records the
 			// optional shape so buildBlock's tail-position Return builds its
-			// value via buildOptionalReturnValue (a SymbolValue naming an
+			// value via buildOptionalValue (a SymbolValue naming an
 			// optional-typed local, a fresh SomeOptional/NoneOptional/
 			// OptionalInject construction, or a call to another
 			// optional-returning helper) rather than buildExpr, which would
@@ -2589,7 +2648,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	} else if result.optionalType != 0 {
 		// The enclosing function returns an optional (a reachable helper
 		// whose ResultType is an optional type), so the return value is
-		// built under the optional grammar by buildOptionalReturnValue
+		// built under the optional grammar by buildOptionalValue
 		// rather than buildExpr, which rejects an optional-typed value.
 		// Supported return shapes are a SymbolValue naming an
 		// optional-typed local in scope of the matching type, a fresh
@@ -2599,7 +2658,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// forward), or a bare payload value whose implicit injection into
 		// the optional is supplied here; anything else is a clean
 		// rejection.
-		returnValue, err = buildOptionalReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, width)
+		returnValue, err = buildOptionalValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.optionalType, "entry function body return statement", width)
 	} else if result.kind == types.F32 || result.kind == types.F64 {
 		// A float-returning entry (a main declared to return f32/f64 — the
 		// one float-returning position Float Stage A supports; float helper
@@ -8501,6 +8560,17 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// clean rejection naming what was found, not a workaround (see
 		// buildSliceArgument).
 		return buildSliceArgument(unit, snapshot, argID, locals, param.Type, calleeSymbol, position)
+	case isOptional(snapshot, param.Type):
+		// An optional parameter: the argument is an optional value built by
+		// buildOptionalValue — a SymbolValue naming an optional-typed local
+		// in scope, a fresh SomeOptional/NoneOptional/OptionalInject
+		// construction (a call site's scalar implicit injection, `g(5)`,
+		// arrives as an OptionalInject node, unlike a return position's bare
+		// payload), or a DirectCall to another optional-returning helper —
+		// emitted as the optional's own compound literal or a forwarded
+		// C name/call, the same C type the parameter is declared with, so
+		// passing an optional by value is trivially valid C.
+		return buildOptionalValue(unit, snapshot, fileSet, argID, locals, param.Type, fmt.Sprintf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d)", calleeSymbol, position, param.Symbol), width)
 	case isPointer(snapshot, param.Type):
 		// A pointer parameter: the argument is a pointer value built by
 		// buildExpr, which handles every pointer-value shape (AddressOf,
@@ -8825,30 +8895,32 @@ func buildSliceReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a slice-typed local in scope or a fresh slice construction (a CheckedSlice); only returning an already-declared slice-typed local or constructing a fresh slice from an array inline is supported", context, node.Kind)
 }
 
-// buildOptionalReturnValue builds the C text for an optional-returning
-// function's tail-position return. The enclosing function's result type comes
-// from result.optionalType (set by buildHelperFunctions from the helper's own
-// ResultType), and exactly four return-value shapes are supported (all
-// confirmed against real fixtures):
+// buildOptionalValue builds the C expression text for an optional-typed value
+// in the one position-neutral grammar both an optional-returning function's
+// tail-position return and a call site's optional-typed argument share: the
+// target optional type comes in as optionalType (a return passes
+// result.optionalType; a call site passes its parameter's type), and exactly
+// four value shapes are supported (all confirmed against real fixtures):
 //
 //   - a plain SymbolValue naming an already-declared optional-typed local — or
 //     an optional-typed parameter, which seeds the callee's scope identically —
-//     in scope whose declared type is exactly the function's result type,
-//     emitted as the local's own pebble_local_<symbol> C name: forwarding an
+//     in scope whose declared type is exactly the target optional type, emitted
+//     as the local's own pebble_local_<symbol> C name: forwarding an
 //     already-computed optional value without re-constructing it;
 //   - a fresh SomeOptional / NoneOptional / OptionalInject construction of the
-//     matching optional type (`return some x;`, `return none;`, or the implicit
-//     aggregate-injection form `return (1, 2);` — the checker wraps a
-//     tuple/struct payload's implicit injection in an OptionalInject node, while
-//     a scalar payload's injection arrives as the bare payload value itself,
-//     the fourth shape below), built by the shared buildOptionalValueExpr (the
+//     matching optional type (`some x;`, `none`, or an implicit injection — at
+//     a call site the checker wraps even a scalar implicit injection like `g(5)`
+//     in an OptionalInject node, while at a return position a scalar payload's
+//     injection arrives as the bare payload value itself, the fourth shape
+//     below; a tuple/struct payload's implicit injection is an OptionalInject
+//     in both positions), built by the shared buildOptionalValueExpr (the
 //     same builder a nested-in-aggregate optional value uses), which handles
 //     every supported payload grammar and emits the optional's own compound
 //     literal;
-//   - a DirectCall to another optional-returning helper (`return g();` — the
-//     call node carries the optional result type, so it is built by the same
-//     buildDirectCall machinery any call uses and forwarded as the return
-//     value, confirmed reachable from real source);
+//   - a DirectCall to another optional-returning helper (`return g();` /
+//     `g(f());` — the call node carries the optional result type, so it is
+//     built by the same buildDirectCall machinery any call uses and forwarded
+//     as the value, confirmed reachable from real source);
 //   - a bare payload value whose Type is the optional's payload type rather
 //     than the optional type itself — the scalar implicit-injection shape the
 //     checker produces for `return 5;` in an optional-returning helper (the
@@ -8857,59 +8929,62 @@ func buildSliceReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 //     `(pebble_optional_<typeID>_t){ .has_value = true, .value = <payload> }`
 //     compound literal, the payload built by the grammar its own type selects.
 //
-// Any other return-value shape is a clean rejection. width is the entry's
+// Any other value shape is a clean rejection. context names the position in
+// rejection messages ("entry function body return statement" for a return, or
+// "entry function body expression contains a call to symbol <N> whose
+// parameter <M>" for a call argument). width is the entry's
 // resolved integer width, threaded through to the inline builders so each
-// payload is built at the width the result type's own typedef uses.
-func buildOptionalReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, width types.BuiltinKind) (string, error) {
+// payload is built at the width the target type's own typedef uses.
+func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, optionalType types.TypeID, context string, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
-		return "", fmt.Errorf("entry function body return statement references invalid value node %d", id)
+		return "", fmt.Errorf("%s references invalid value node %d", context, id)
 	}
 	if node.Kind == tir.SymbolValue {
 		info, declared := locals[node.Symbol]
 		if !declared {
-			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is not a local in scope", node.Symbol)
+			return "", fmt.Errorf("%s names symbol %d, which is not a local in scope", context, node.Symbol)
 		}
-		if info.optional != result.optionalType {
-			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not an optional-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), optionalTypeName(result.optionalType))
+		if info.optional != optionalType {
+			return "", fmt.Errorf("%s names symbol %d, which is a local of type %s, not an optional-typed local of type %s", context, node.Symbol, describeType(snapshot, node.Type), optionalTypeName(optionalType))
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
 	if node.Kind == tir.SomeOptional || node.Kind == tir.NoneOptional || node.Kind == tir.OptionalInject {
-		// A fresh optional value built inline: `return some x;`, `return
-		// none;`, or an implicit aggregate injection `return (1, 2);`
-		// (OptionalInject). buildOptionalValueExpr shares the SomeOptional
+		// A fresh optional value built inline: `some x;`, `none`, or an
+		// implicit injection `(1, 2);` / a call site's `g(5)` (OptionalInject).
+		// buildOptionalValueExpr shares the SomeOptional
 		// and OptionalInject cases — both carry exactly one payload child
 		// and lower to the identical C — and handles the NoneOptional
 		// zero-child form.
-		return buildOptionalValueExpr(unit, snapshot, fileSet, node, locals, "entry function body return statement", width)
+		return buildOptionalValueExpr(unit, snapshot, fileSet, node, locals, context, width)
 	}
 	if node.Kind == tir.DirectCall {
-		// A return forward of another optional-returning helper's result:
-		// `return g();`. The call's own result type is validated by
-		// validateHelperSignature (the callee's declared ResultType must be
-		// an optional type) and the checker coerces the call's type to the
-		// enclosing function's result type, so a plain buildDirectCall of
+		// A forward of another optional-returning helper's result:
+		// `return g();` or `g(f());`. The call's own result type is validated
+		// by validateHelperSignature (the callee's declared ResultType must be
+		// an optional type) and the checker coerces the value to the target
+		// optional type, so a plain buildDirectCall of
 		// the call node is the whole lowering — the call already returns
 		// the optional's own C type.
 		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
 	}
 	// The remaining supported shape is the bare scalar payload the checker
 	// produces for implicit injection in a return (`return 5;` in a ?int
-	// helper): the return child carries the payload type, not the optional
+	// helper): the value node carries the payload type, not the optional
 	// type. Inject it here — the same C a SomeOptional/OptionalInject of
 	// this payload would emit, with the payload built by the grammar its own
 	// type selects.
-	key, ok := snapshot.Key(result.optionalType)
+	key, ok := snapshot.Key(optionalType)
 	if !ok {
-		return "", fmt.Errorf("entry function body return statement returns a value of type %s in an optional-returning function whose result type %d is not in the type snapshot", describeType(snapshot, node.Type), result.optionalType)
+		return "", fmt.Errorf("%s names a value of type %s whose target optional type %d is not in the type snapshot", context, describeType(snapshot, node.Type), optionalType)
 	}
 	payload, ok := key.Child()
 	if !ok {
-		return "", fmt.Errorf("entry function body return statement returns a value of type %s in an optional-returning function whose result type %s has no payload type", describeType(snapshot, node.Type), optionalTypeName(result.optionalType))
+		return "", fmt.Errorf("%s names a value of type %s whose target optional type %s has no payload type", context, describeType(snapshot, node.Type), optionalTypeName(optionalType))
 	}
 	if node.Type != payload {
-		return "", fmt.Errorf("entry function body return statement returns a %s, want an optional-typed value of type %s (a reference to an optional-typed local, some/none, a call to an optional-returning helper) or a payload value of type %s", describeType(snapshot, node.Type), optionalTypeName(result.optionalType), describeType(snapshot, payload))
+		return "", fmt.Errorf("%s names a %s, want an optional-typed value of type %s (a reference to an optional-typed local, some/none, a call to an optional-returning helper) or a payload value of type %s", context, describeType(snapshot, node.Type), optionalTypeName(optionalType), describeType(snapshot, payload))
 	}
 	var value string
 	var err error
@@ -8919,12 +8994,12 @@ func buildOptionalReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
 	default:
-		return "", fmt.Errorf("entry function body return statement implicitly injects a payload value of type %s, want %s or bool", describeType(snapshot, payload), wantName(width))
+		return "", fmt.Errorf("%s implicitly injects a payload value of type %s, want %s or bool", context, describeType(snapshot, payload), wantName(width))
 	}
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("(%s){ .has_value = true, .value = %s }", optionalTypeName(result.optionalType), value), nil
+	return fmt.Sprintf("(%s){ .has_value = true, .value = %s }", optionalTypeName(optionalType), value), nil
 }
 
 // buildBoolExpr builds the C text for a bool value node, used both for a bool
