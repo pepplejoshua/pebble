@@ -108,12 +108,35 @@ repeated here.
       full `hmap.peb` consumer (construct + insert + get) cannot
       compile-and-run until both this and the generic-struct-data
       -fields gap above are fixed.
-- [ ] **`std/hash.peb` has a pre-existing checker bug, found in passing
-      earlier this session while building an `hmap.peb` re-verification
-      test (was not formally tracked until now).** `hash = hash ^
-      (*(data + i) as u64);` fails with `T0505: cannot unify semantic
-      type kind 1 with kind 2`. Not yet investigated in detail — this
-      entry exists so it isn't lost again.
+- [x] `std/hash.peb`'s `hash_bytes` fixed (2a917d5) — **corrected
+      framing: this was never a checker bug.** Pointer arithmetic
+      (`ptr + integer`) is deliberately forbidden by the language
+      (`open-language-decisions.md` §1.5); `hash_bytes` used it and
+      was correctly rejected. Redesigned to `data []u8` + slice
+      indexing, matching the established `vec.peb`/`set.peb` house
+      style (`52c72b7`).
+- [ ] **The backend's slice element-type support is much narrower
+      than `std/*.peb` needs — only entry-width/bool, found while
+      verifying the `hash_bytes` fix above.** `validateSliceElementType`
+      (`internal/backend/emit.go:1274`) rejects any slice whose
+      element is not the entry width or bool — so `[]u8` (needed to
+      actually call the fixed `hash_bytes`), `[]char`, `[]str`, and a
+      slice of any struct/tuple type all fail to emit. This is the
+      same root gap as `HashMap[K,V]`'s `entries` field above (a slice
+      whose element is a generic-struct type) — likely the same fix
+      resolves both, but confirm rather than assume once scoped.
+- [ ] **`hash_str`/`hash_ptr`/`hash_char` in `std/hash.peb` use casts
+      the checker actually forbids — found while verifying the
+      `hash_bytes` fix above, previously masked because the
+      pointer-arithmetic error aborted the module's diagnostics before
+      reaching these.** `char as u64` (`hash_str:11`, `hash_char:86`)
+      and `ptr as u64` (`hash_ptr:81`) both fail with `C0601: cannot
+      cast value: no valid conversion exists between these types` —
+      `internal/check/compatibility.go`'s cast classification treats
+      `char`/pointer → integer as `compatibleForbidden`. Needs a
+      design decision (a real bit-reinterpret cast path for char/
+      pointer, or a different hashing approach in the stdlib) before
+      it can be fixed either in the checker or in `hash.peb` itself.
 - **Tagged-union field access on the matched variant (`case Ok: return
       self.Ok;`) is pattern matching — still deferred, confirmed by
       spec text, not merely a sequencing choice.** Previously framed as
