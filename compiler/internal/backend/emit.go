@@ -7549,8 +7549,10 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // operand that is itself a comparison cannot chain associatively with the
 // outer operator (e.g. (a == b) == (c == d) must not collapse to a left-to-
 // right a == b == c == d). Otherwise each operand is built by
-// buildComparisonOperand (an int-typed integer literal, or any i32 expression
-// buildExpr accepts). Any other node kind, or any other operator on a
+// buildComparisonOperand (an int-typed integer literal, an unanchored
+// loop-iterator symbol, or any fixed-width-integer expression buildExpr
+// accepts at the operand's own resolved width, including non-entry-width
+// integers like u64, i64, or u8). Any other node kind, or any other operator on a
 // BinaryValue (bitwise), is a clean rejection. The && / || that lower to
 // ShortCircuitValue nodes are not this function's concern — buildCondition
 // routes them to buildBoolExpr.
@@ -7691,6 +7693,22 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		}
 		return left + " " + op + " " + right, nil
 	}
+	// Both integer operands are built at their OWN resolved integer widths
+	// (see buildComparisonOperand), so a comparison between two fixed-width
+	// integers of DIFFERENT widths (a u64 vs a u8, or a u64 vs an i32) is
+	// rejected cleanly here rather than silently emitting mismatched C types
+	// side by side — the same explicit same-type requirement the enum branch
+	// above enforces. Real source never reaches here mismatched: the checker
+	// requires both comparison operands to carry the identical concrete type
+	// (confirmed against a real fixture — a `u64 == u8` comparison is a clean
+	// T0505 "cannot unify" check-phase rejection before typed IR exists), so
+	// this guard is defense for hand-built IR only, exactly like the enum
+	// branch's.
+	leftWidth, leftInteger := resolvedBuiltin(snapshot, leftOperand.Type)
+	rightWidth, rightInteger := resolvedBuiltin(snapshot, rightOperand.Type)
+	if leftInteger && rightInteger && cType(leftWidth) != "" && cType(rightWidth) != "" && leftWidth != rightWidth {
+		return "", fmt.Errorf("entry function body if condition compares two integer values of different widths %s and %s", wantName(leftWidth), wantName(rightWidth))
+	}
 	left, err := buildComparisonOperand(unit, snapshot, fileSet, node.Children[0], locals, width)
 	if err != nil {
 		return "", err
@@ -7715,9 +7733,23 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // as the unanchored int builtin, since the comparison anchors nothing), and
 // the iterator is always declared in C at the entry's width, so its name is
 // the correct C lvalue in the comparison. Every
-// other operand must be an expression of the entry's width that buildExpr
-// accepts — a literal, a
-// reference to a local declared earlier in the entry body, or checked negation
+// other integer operand is built at its OWN resolved integer width rather
+// than the ambient entry width — a comparison between two non-entry-width
+// integers (a u64 local compared against a literal, an i8 local, and so on)
+// must build each operand at that operand's own width, since the operand's C
+// local is declared at its own width and the checker anchors each operand to
+// the other (both comparison operands always carry the same concrete integer
+// type). This is the same per-operand width resolution buildCallArgument
+// performs for a function-type parameter. uint is deliberately excluded, as
+// buildCallArgument excludes it: uint is the platform-native pointer-width
+// builtin the backend builds through buildUintExpr (sizeof, slice bounds,
+// checked arithmetic), not the general buildExpr path. The ambient entry
+// width is threaded through as buildExpr's entryWidth parameter so any
+// width-requiring child (a checked runtime call) still knows the true entry
+// width, not conflated with the operand's own width. Anything else must be an
+// expression of the entry's width that buildExpr
+// accepts — a reference to a local declared earlier in the entry body, or
+// checked negation
 // and checked +, -, *, /, % arithmetic — and is delegated to buildExpr, whose
 // own width gate and kind switch do the rejecting.
 func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
@@ -7737,6 +7769,13 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 			return "", fmt.Errorf("entry function body if condition references symbol %d, which is not a local in scope", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	operandWidth, integerOperand := resolvedBuiltin(snapshot, node.Type)
+	if integerOperand && cType(operandWidth) != "" && !isUint(snapshot, node.Type) {
+		return buildExpr(unit, snapshot, fileSet, id, locals, operandWidth, width)
+	}
+	if isUint(snapshot, node.Type) {
+		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
 	}
 	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 }

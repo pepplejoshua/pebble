@@ -8670,6 +8670,72 @@ func TestEmitI64SliceNonEntryWidthCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { var arr [3]i64 = [100, 200, 300]; var s []i64 = arr[:]; return s[1] as int; }", false, 200, false)
 }
 
+func TestEmitU64EqualityComparisonCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro for the non-entry-width comparison bug: a u64
+	// local (a non-entry width in an int-entry main) compared with == against
+	// a literal, the result stored in a bool local and used in an if.
+	// Previously failed with "entry function body expression contains a
+	// SymbolValue of type u64, want int" because buildComparisonOperand built
+	// both operands at the AMBIENT entry width rather than each operand's own
+	// resolved width. The == is false (5 != 0), so the else branch runs and
+	// exit code 1 proves the comparison emitted and evaluated correctly.
+	emitAndRun(t, "fn main() int { let h u64 = 5; let eq bool = h == 0; if eq { return 0; } else { return 1; } }", false, 1, false)
+}
+
+func TestEmitU64OrderingComparisonsCompilesAndRuns(t *testing.T) {
+	// All four ordering operators on a non-entry-width integer (u64 in an
+	// int-entry main), each taking the branch matching its value so both true
+	// and false outcomes are exercised — proving the fix is not specific to
+	// equality. Each table row is also self-anchoring: the literal operand is
+	// unified to u64 by the checker, so both operands of every comparison
+	// resolve to the same width.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"less", "fn main() int { let h u64 = 5; if h < 10 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h u64 = 5; if h < 5 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h u64 = 5; if h <= 5 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h u64 = 5; if h <= 4 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h u64 = 5; if h > 4 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h u64 = 5; if h > 5 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h u64 = 5; if h >= 5 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h u64 = 5; if h >= 6 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitU8ComparisonCompilesAndRuns(t *testing.T) {
+	// A different non-entry-width integer (u8 in an int-entry main) confirms
+	// the fix generalizes rather than being u64-specific: both == and the
+	// ordering operators build the u8 operands at their own resolved width.
+	emitAndRun(t, "fn main() int { let h u8 = 3; if h == 3 { return 0; } else { return 1; } }", false, 0, false)
+	emitAndRun(t, "fn main() int { let h u8 = 3; if h < 4 { return 0; } else { return 1; } }", false, 0, false)
+}
+
+func TestEmitRejectsMismatchedNonEntryWidthComparison(t *testing.T) {
+	// A comparison between two mismatched non-entry-width integers (u64 vs
+	// u8) is a CLEAN rejection — an error, never a crash and never
+	// silently-wrong C. The checker requires both comparison operands to carry
+	// the identical concrete type (validateBooleanOperators rejects
+	// typeIDs[0] != typeIDs[1]) and rejects the mismatch itself at
+	// type-check time as a T0505 "cannot unify" — so from real source the
+	// rejection happens before typed IR ever reaches Emit. The backend's own
+	// same-width guard in buildComparison (mirroring the enum branch) is
+	// defense-in-depth for hand-built IR that bypasses the checker.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn main() int { let a u64 = 5; let b u8 = 3; let eq bool = a == b; if eq { return 0; } else { return 1; } }", "main", false)
+	if err == nil {
+		t.Fatal("expected the checker to reject a u64 == u8 comparison, but the fixture built and checked successfully")
+	}
+	if !strings.Contains(err.Error(), "check failed") {
+		t.Fatalf("expected a clean check-phase rejection, got: %v", err)
+	}
+}
+
 func TestEmitU8SliceWritesUint8CType(t *testing.T) {
 	// Emitted-C shape check: a []u8 array/slice pair must declare uint8_t,
 	// not the ambient entry width's C type (int32_t) or any other width —
