@@ -112,16 +112,21 @@ repeated here.
       struct declaration, so this fix's exact applicability to
       `std/hmap.peb` itself is not yet confirmed — re-verify against
       the real file before assuming it's fully unblocked.
-- [ ] **Generic struct METHOD calls are rejected by design, confirmed
-      via the pre-existing `TestEmitRejectsGenericMethodCall`** — found
-      in the same `hmap.peb` re-verification. `HashMap[K,V]`'s
-      `m.insert(...)` / `m.get(...)` are methods on a `[K,V]`-generic
-      receiver; the backend explicitly rejects generic method calls
-      today (free generic functions like `hmap::new[int, int](...)`
-      already work fine — only the method-call form is blocked). A
-      full `hmap.peb` consumer (construct + insert + get) cannot
-      compile-and-run until both this and any remaining struct-field gap
-      above are fixed.
+- [x] Generic struct METHOD calls fixed (`6666d2d`) — a method that
+      redeclares its own type parameters matching its containing
+      struct's (the exact shape `std/hmap.peb`'s real methods use,
+      e.g. `fn insert[K, V](self *HashMap[K, V], ...)`) now builds a
+      concrete specialization and compiles/runs, including two
+      specializations of the receiver, extra parameters beyond `self`,
+      and a pointer receiver. Root cause was checker-side: the checker
+      never built a concrete specialization for a method call the way
+      it already did for a free generic function call, so the backend
+      always found nothing to lower against. **Still open, narrower**:
+      a method declaring NO type parameters of its own but still
+      referencing its containing struct's parameter directly (`fn
+      describe(self Box[K]) int => 42;`, no `[K]` on the method) hits
+      a different, unrelated backend error when called — not fixed,
+      not the shape `hmap.peb` actually uses, so not urgent.
 - [x] `std/hash.peb`'s `hash_bytes` fixed (2a917d5) — **corrected
       framing: this was never a checker bug.** Pointer arithmetic
       (`ptr + integer`) is deliberately forbidden by the language
