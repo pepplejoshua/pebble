@@ -5733,10 +5733,15 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		return "", fmt.Errorf("%s declares an optional-typed local of type %s, which has no payload type", context, optionalTypeName(initValue.Type))
 	}
 	switch initValue.Kind {
-	case tir.SomeOptional:
-		// SomeOptional has exactly one child: the payload expression.
+	case tir.SomeOptional, tir.OptionalInject:
+		// SomeOptional (an explicit `some <expr>`) and OptionalInject (an
+		// implicit injection, e.g. `var o ?int = 5;` with no `some` keyword)
+		// both carry exactly one child, the payload expression, and lower to
+		// the identical C: `{ .has_value = true, .value = <payload> }` — the
+		// two TIR node kinds only distinguish authored syntax, not runtime
+		// behavior, so they share this whole case body.
 		if len(initValue.Children) != 1 {
-			return "", fmt.Errorf("%s declares an optional-typed local from SomeOptional with %d child(ren), want exactly one payload expression", context, len(initValue.Children))
+			return "", fmt.Errorf("%s declares an optional-typed local from %s with %d child(ren), want exactly one payload expression", context, initValue.Kind, len(initValue.Children))
 		}
 		var valueExpr string
 		switch {

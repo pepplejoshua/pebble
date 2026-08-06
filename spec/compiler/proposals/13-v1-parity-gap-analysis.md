@@ -41,7 +41,21 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-_(none currently open)_
+- [ ] **Optional-typed function results are unsupported in the backend.**
+      Found during a real-code audit of the node-kind list below (looking
+      into `OptionalInject`, since fixed for local declarations — see the
+      just-removed line above). `fn f() ?int { return 5; }` called as
+      `var o ?int = f();` fails at `backend.Emit` with: "called function
+      symbol N has result type ?int, want its own integer width, char,
+      str, a tuple/struct result type, a slice result type, a pointer
+      result type, or void" — the function-result C calling convention
+      simply has no optional case at all yet. Confirmed distinct from,
+      and NOT fixed by, the `OptionalInject`-in-local-declarations fix
+      (`internal/backend/emit.go`'s `buildOptionalLocalDeclaration`,
+      landed this session) — that fix only covers a local's own
+      initializer, not a callee's return type. Not yet scoped in detail;
+      likely needs the same C-struct-return convention this backend
+      already uses for tuple/struct results, extended to optional types.
 
 ---
 
@@ -188,9 +202,6 @@ above. None of these has been individually verified with a real compile
 attempt yet — listed here as a starting point for the next audit pass, not
 as confirmed gaps:
 
-- `OptionalIntegerToEnum`, `CheckedIntegerToEnum` — the reverse direction
-  of the enum-to-integer gap above (integer→enum coercion); likely the
-  same "checker allows it, backend never wired up" shape.
 - `HoistedFunctionValue`, `GenericFunctionValue` — a function referenced as
   a first-class VALUE (not called immediately). Likely related to, or the
   same root cause as, the function-typed-local gap confirmed above.

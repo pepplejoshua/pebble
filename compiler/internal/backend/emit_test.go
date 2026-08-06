@@ -8310,6 +8310,22 @@ func TestEmitOptionalIntegerToEnumWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitOptionalImplicitInjectionCompilesAndRuns(t *testing.T) {
+	// Implicit optional injection (`var o ?int = 5;`, no `some` keyword) is a
+	// tir.OptionalInject node, distinct from an explicit tir.SomeOptional —
+	// found unimplemented during a real-code audit (checker accepts it,
+	// backend previously rejected it by name: "declares an optional-typed
+	// local ... initialized from a OptionalInject, want some <expr> or
+	// none"). Fixed by handling OptionalInject alongside SomeOptional in
+	// buildOptionalLocalDeclaration's switch, since both lower to the
+	// identical C. This is scoped to local declarations only, matching
+	// SomeOptional's own existing scope — not a claim that implicit
+	// injection works everywhere (e.g. an optional function RESULT type is
+	// a separate, broader, not-yet-supported restriction, confirmed
+	// unrelated to this fix and tracked separately).
+	emitAndRun(t, "fn main() int {\nvar o ?int = 5;\nif o.has_value { return 1; } else { return 0; }\n}", false, 1, false)
+}
+
 // unionFixture builds one .peb source through the full check pipeline and
 // resolves the tagged-union type's TypeID and its variant symbols in declared
 // order, reusing enumFixture's exact type-resolution mechanism (a tagged union
