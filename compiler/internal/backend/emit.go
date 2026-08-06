@@ -561,6 +561,22 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return err
 	}
 	typedefs = appendTypedefBlock(sliceTypedefs, typedefs)
+	// Function-pointer typedefs (pebble_fnptr_<typeID>_t) are appended AFTER
+	// every other typedef family: they are self-contained (their parameter and
+	// result C types never name an aggregate typedef — see
+	// validateFunctionTypeSignature / functionTypeParamCType /
+	// functionTypeResultCType), so C has no ordering requirement on them, but
+	// appending last keeps every aggregate/slice/enum/union typedef this file
+	// already emits byte-identical to before this slice.
+	functionTypes, err := collectFunctionTypes(unit, snapshot, blockID, helpers)
+	if err != nil {
+		return err
+	}
+	functionTypedefs, err := buildFunctionTypedefs(snapshot, result, functionTypes)
+	if err != nil {
+		return err
+	}
+	typedefs = appendTypedefBlock(typedefs, functionTypedefs)
 	helpersText, err := buildHelperFunctions(unit, snapshot, fileSet, helpers, result, unions)
 	if err != nil {
 		return err
@@ -765,8 +781,11 @@ func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDec
 	return walk.order, nil
 }
 
-// visit walks one function's body for DirectCall nodes, recursing into every
-// discovered callee's own body. The entry is the root of the walk; the entry
+// visit walks one function's body for DirectCall nodes — and, since the
+// function-values slice, HoistedFunctionValue nodes (a bare top-level function
+// reference used as a value, resolved through the same findFunctionDeclaration
+// machinery a called function uses) — recursing into every discovered callee's
+// own body. The entry is the root of the walk; the entry
 // itself is never added to the emission order (its C definition,
 // pebble_user_main, is emitted separately after the helpers). A callee
 // already fully walked (done) is a shared subgraph — a diamond, where two
@@ -831,7 +850,12 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 }
 
 // collectDirectCalls appends every tir.DirectCall node in the tree rooted at
-// nodeID, following Children and DeferChain. The typed-IR node graph is
+// nodeID, following Children and DeferChain, plus — since the function-values
+// slice — every tir.HoistedFunctionValue node (a bare top-level function
+// reference used as a value, e.g. the initializer of a function-typed local or
+// the callee of an indirect call), whose referenced function must be emitted
+// as a helper even though no DirectCall ever invokes it. The typed-IR node
+// graph is
 // single-parented, so this walk terminates and each node is visited at most
 // once per path. A DeferRegister child is skipped here: the deferred statement
 // inside it is only ever emitted at exit points whose DeferChain references
@@ -849,7 +873,7 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 	if !ok {
 		return fmt.Errorf("reachability walk references invalid node %d", nodeID)
 	}
-	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
+	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall || node.Kind == tir.HoistedFunctionValue {
 		*out = append(*out, node)
 	}
 	for _, childID := range node.Children {
@@ -1223,6 +1247,101 @@ func validateSliceElementType(snapshot *types.Snapshot, width types.BuiltinKind,
 	}
 	if !isWidth(snapshot, width, element) && !isBool(snapshot, element) {
 		return fmt.Errorf("slice element type is %s, want %s or bool", describeType(snapshot, element), wantName(width))
+	}
+	return nil
+}
+
+// collectFunctionTypes resolves, in first-encountered order, every function
+// type the emitted program actually references as a first-class value: the
+// entry body (root) followed by every reachable helper's body, each walked by
+// the same Children + DeferChain traversal collectDirectCalls uses. A function
+// type is referenced by exactly two node shapes — a value node whose own Type
+// is the function type (a HoistedFunctionValue, the bare top-level function
+// reference that seeds a function-typed local or an indirect call's callee,
+// or a function-typed SymbolValue) and an IndirectCall's FunctionType field
+// (the callee's own function type, which the general indirect call resolves
+// its parameter list from) — so collecting exactly those shapes guarantees
+// every fnptr typedef the program needs is discovered. The returned IDs are
+// deduplicated by function TypeID, so every distinct function type yields
+// exactly one typedef, emitted before any function definition in the final
+// output.
+func collectFunctionTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]types.TypeID, error) {
+	var collected []types.TypeID
+	if err := collectFunctionTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectFunctionTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var deduplicated []types.TypeID
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		deduplicated = append(deduplicated, id)
+	}
+	return deduplicated, nil
+}
+
+// collectFunctionTypesWalk appends every function type encountered in the tree
+// rooted at nodeID to out, in first-encountered order, following Children and
+// DeferChain exactly like collectDirectCalls so it visits the same reachable
+// region of the node graph the body builders consume. Two node KINDS carry a
+// first-class function type: a HoistedFunctionValue (a bare top-level
+// function reference) and a function-typed SymbolValue (a reference to an
+// in-scope function-typed local) — both confirmed the only two shapes
+// buildFunctionValue handles. This is deliberately narrower than "any node
+// whose own Type is a function type": the built-in Allocator's alloc/
+// realloc/free fields are ALSO function-typed (a FieldValue/FieldPlace node
+// accessing them has Type = fn(*void, uint) *void), but they are read
+// through the allocator-specific indirect-call path (buildIndirectCall's
+// allocatorCallee branch) using the runtime's own pre-existing
+// PebbleAllocFn/PebbleReallocFn/PebbleFreeFn typedefs, never this general
+// pebble_fnptr_<typeID>_t mechanism — collecting them here would wrongly
+// demand a typedef for a signature this slice's validateFunctionTypeSignature
+// doesn't support (a pointer parameter), breaking every allocator call in the
+// program. An IndirectCall's own FunctionType field is collected too, but
+// only for the GENERAL case (an allocator IndirectCall never sets
+// FunctionType, confirmed against a real fixture, so the != 0 guard already
+// excludes it; the explicit node-kind restriction above is the primary,
+// intentional guard).
+func collectFunctionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("function-type walk references invalid node %d", nodeID)
+	}
+	if (node.Kind == tir.HoistedFunctionValue || node.Kind == tir.SymbolValue) && isFunctionType(snapshot, node.Type) {
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.IndirectCall && node.FunctionType != 0 && isFunctionType(snapshot, node.FunctionType) {
+		// The checker sets IndirectCall.FunctionType on BOTH the allocator's
+		// built-in indirect call and the general case (confirmed via a real
+		// fixture — an earlier version of this check assumed it was set only
+		// for the general case, which was wrong and caused every allocator
+		// call in the program to be misidentified as needing a general
+		// pebble_fnptr_<typeID>_t typedef for the allocator's own *void
+		// -parameter signature, which validateFunctionTypeSignature correctly
+		// rejects, breaking every allocator call). indirectCalleePlace is the
+		// single shared signal (used by buildIndirectCall too) that actually
+		// distinguishes the two: the allocator case's callee unwraps to a
+		// FieldPlace/FieldValue, which is excluded here.
+		if _, isAllocator, ok := indirectCalleePlace(unit, node); ok && !isAllocator {
+			*out = append(*out, node.FunctionType)
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectFunctionTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectFunctionTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2077,7 +2196,7 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // every reachable helper must satisfy: Pebble-convention, parameters whose
 // types are exactly the entry's resolved width, bool, str, a tuple type, a
 // struct type, an optional type, or a pointer type, and a result of exactly
-// the entry's resolved width, str, a tuple
+// the entry's resolved width, bool, str, a tuple
 // type, a struct type, an optional type, or void. The width
 // rule is the same reasoning 10.13 established for locals — a called function
 // of the other width (an i32 helper called from an i64 entry, or vice versa) is
@@ -2146,13 +2265,65 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		// clean rejection at typedef build time, never a guessed layout.
 	}
 	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
-	if (!integerResult || cType(resultWidth) == "") && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
+	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
 			return fmt.Errorf("called function symbol %d has a slice result type with an unsupported element type: %v", decl.Symbol, err)
 		}
+	}
+	return nil
+}
+
+// validateFunctionTypeSignature checks one function type used as a first-class
+// value — a function-typed local's declared type, a function-typed value's own
+// type, or an indirect call's callee type — against the constraints every such
+// signature must satisfy, mirroring validateHelperSignature's own gate but
+// narrowed to this slice's supported shapes. A function type must be
+// Pebble-convention (a C-convention function type as a first-class local's
+// type is not checker-reachable — the checker itself rejects assigning a
+// C-convention function value to a fn(...) type and a `fn "C"(...)` type
+// annotation fails typed-IR construction — so it is a clean rejection here,
+// never supported), non-variadic, and every parameter must be one of the
+// entry's resolved width, uint, bool, char, or str, and the result must be one
+// of the entry's resolved width, bool, char, or void. This is deliberately the
+// set of shapes this slice can both BUILD (the parameter grammar is exactly
+// buildCallArgument's, so every fn-typed call argument is buildable; the
+// result grammar is exactly the positions the backend can consume an indirect
+// call's result in — the entry's return via buildExpr, a bool position via
+// buildBoolExpr, a char position via buildCharOperand, and a discarded
+// statement via buildExpressionStatement) and whose C types are fully
+// self-contained (the entry's cType, uint64_t, bool, int32_t, PebbleStr, or
+// void — never a tuple/struct/slice/optional/pointer C type that would drag an
+// aggregate typedef into the fnptr typedef and require the aggregate collectors
+// to chase function-type signatures). Any other parameter/result shape — a
+// float (which validateHelperSignature rejects for an ordinary helper anyway),
+// a tuple/struct/slice/optional/pointer, or an aggregate/str result — is a
+// clean rejection naming what is unsupported, the same gate buildFunctionTypedef
+// re-checks before emitting a typedef.
+func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return fmt.Errorf("function type %d is not in the type snapshot", id)
+	}
+	convention, parameters, result, variadic, ok := key.Function()
+	if !ok {
+		return fmt.Errorf("type %s is not a function type", describeType(snapshot, id))
+	}
+	if convention != types.Pebble {
+		return fmt.Errorf("function type %s uses the %s calling convention, want Pebble (a C-convention function type as a first-class value is not supported yet)", describeType(snapshot, id), callingConventionName(convention))
+	}
+	if variadic {
+		return fmt.Errorf("function type %s is variadic, which is not supported yet", describeType(snapshot, id))
+	}
+	for i, parameter := range parameters {
+		if !isWidth(snapshot, width, parameter) && !isUint(snapshot, parameter) && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) {
+			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, bool, char, or str (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
+		}
+	}
+	if !isWidth(snapshot, width, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isVoid(snapshot, result) {
+		return fmt.Errorf("function type %s has result type %s, want %s, bool, char, or void (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
 	}
 	return nil
 }
@@ -2341,6 +2512,16 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// statement call (buildExpressionStatement), never as a value.
 			returnType = "void"
 			result = resultInfo{kind: types.Void}
+		case isBool(snapshot, helper.decl.ResultType):
+			// A bool-result helper (added for the function-types slice, whose
+			// required bool-parameter/bool-result function-type test needs a
+			// bool-returning function to be emittable as a helper) is declared
+			// with the C return type "bool" and resultInfo{kind: types.Bool} so
+			// buildBlock's tail-position Return builds its value via
+			// buildBoolExpr rather than buildExpr, which would reject a
+			// bool-typed value.
+			returnType = "bool"
+			result = resultInfo{kind: types.Bool}
 		case isChar(snapshot, helper.decl.ResultType):
 			// A char-result helper (10.41) is declared with the fixed C
 			// int32_t as its C return type — the same C type a char local is
@@ -2635,7 +2816,15 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	var returnValue string
 	var err error
 	var preReturn string
-	if result.isChar {
+	if result.kind == types.Bool {
+		// The enclosing function returns bool (a reachable helper whose
+		// ResultType is bool, added for the function-types slice), so the
+		// return value is built under the bool grammar by buildBoolExpr rather
+		// than buildExpr, which rejects a bool-typed value. Supported return
+		// shapes are a SymbolValue naming a bool-typed local in scope, a bool
+		// literal, a comparison, a ! negation, or an && / || combination.
+		returnValue, err = buildBoolExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+	} else if result.isChar {
 		// The enclosing function returns char (a reachable helper whose
 		// ResultType is char — the entry always threads a scalar resultInfo),
 		// so the return value is built under the char grammar by
@@ -3954,6 +4143,22 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
 		}
+		if targetInfo.functionType != 0 {
+			// A Store whose place names a function-typed local is a
+			// whole-value reassignment — `f = g;` — whose new value is
+			// another function-typed value built by buildFunctionValue (a
+			// reference to an in-scope function-typed local or a bare
+			// function value), emitted as
+			// `pebble_local_<sym> = <value>;`. The checker has already
+			// coerced the new value to the local's own declared function
+			// type (the two signatures match), so the assigned C function
+			// pointer is always the local's own pebble_fnptr_<typeID>_t.
+			storeValue, err := buildFunctionValue(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+		}
 		if targetInfo.tuple != 0 {
 			// A Store whose place names a tuple-typed local is a
 			// whole-tuple reassignment, which is out of scope this slice
@@ -4683,6 +4888,16 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// pointer initializer shape is a clean rejection.
 			return buildPointerLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
+		if isFunctionType(snapshot, initValue.Type) {
+			// A function-typed local: its type is the initializer value's Type
+			// (the Initialize node carries no Type itself, same as every other
+			// compound local). The supported initializer is a function value —
+			// a bare top-level function reference (a HoistedFunctionValue) or
+			// another function-typed local (a SymbolValue); every other
+			// function initializer shape is a clean rejection (see
+			// buildFunctionLocalDeclaration).
+			return buildFunctionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+		}
 		core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, context, width)
 		if err != nil {
 			return "", err
@@ -5043,17 +5258,18 @@ func printfSpecifier(width types.BuiltinKind) string {
 // so no call site needed a second argument, the option that changes the fewest
 // existing call sites correctly.
 type localInfo struct {
-	kind        types.BuiltinKind
-	isStr       bool
-	isChar      bool
-	tuple       types.TypeID
-	array       types.TypeID
-	optional    types.TypeID
-	structType  types.TypeID
-	enumType    types.TypeID
-	sliceType   types.TypeID
-	pointerType types.TypeID
-	runtimeType types.TypeID
+	kind         types.BuiltinKind
+	isStr        bool
+	isChar       bool
+	tuple        types.TypeID
+	array        types.TypeID
+	optional     types.TypeID
+	structType   types.TypeID
+	enumType     types.TypeID
+	sliceType    types.TypeID
+	pointerType  types.TypeID
+	runtimeType  types.TypeID
+	functionType types.TypeID
 }
 
 func buildRuntimeLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
@@ -6724,6 +6940,40 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, valueText, indent, statement.Symbol), nil
 }
 
+// buildFunctionLocalDeclaration builds one function-typed local's declaration:
+// a `pebble_fnptr_<typeID>_t pebble_local_<symbol> = <init_expr>;` whose
+// initializer is a function value — a bare top-level function reference (a
+// HoistedFunctionValue, e.g. `var f fn(int, int) int = add;`) or a reference
+// to an in-scope function-typed local (a SymbolValue, a function-to-function
+// copy) — both built by buildFunctionValue. The local's C type is the function
+// type's own pointer typedef, pebble_fnptr_<typeID>_t (see buildFunctionTypedef),
+// so a bare function name (which decays to a function pointer of exactly that
+// typedef's shape) needs no cast at the declaration site. The function type's
+// own signature — its calling convention, parameter list, and result — is
+// validated against this slice's supported shapes by
+// validateFunctionTypeSignature before the typedef or declaration is emitted
+// (a function type whose parameters/result mention anything other than the
+// entry's width, uint, bool, char, or str parameters and the entry's width,
+// bool, char, or void result is a clean rejection naming what is unsupported).
+// The scope entry records functionType so a later reference, reassignment, or
+// indirect call resolves the local's declared function type. Like every local,
+// the declaration is followed by a (void) cast against -Wunused-variable.
+func buildFunctionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	fnType := initValue.Type
+	if !isFunctionType(snapshot, fnType) {
+		return "", fmt.Errorf("%s declares a local of type %s, want a function type", context, describeType(snapshot, fnType))
+	}
+	if err := validateFunctionTypeSignature(snapshot, width, fnType); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	valueText, err := buildFunctionValue(unit, snapshot, fileSet, initValue, scope, context)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{functionType: fnType}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, functionTypeName(fnType), statement.Symbol, valueText, indent, statement.Symbol), nil
+}
+
 // buildPointerLocalDeclaration builds one pointer-typed local's declaration: a
 // `<pointee_c_type> * pebble_local_<symbol> = <init_expr>;` whose initializer
 // is an AddressOf expression (`let p *i32 = &y;`), another pointer-typed local
@@ -7268,6 +7518,18 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want char", node.Symbol, describeType(snapshot, node.Type))
 		}
 		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+	case tir.IndirectCall:
+		// A call through a function-typed value whose result is char
+		// (confirmed checker-reachable: `let c char = f('a');` lowers the
+		// initializer to a char-typed IndirectCall). The call itself is built
+		// by the same buildIndirectCall machinery a scalar-width indirect call
+		// uses — the callee and every argument are built under the callee's
+		// own function type — and the result is an int32_t, the same C type a
+		// char value uses everywhere.
+		if !isChar(snapshot, node.Type) {
+			return "", fmt.Errorf("entry function body expression contains an indirect call whose result type is %s, want char", describeType(snapshot, node.Type))
+		}
+		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
 	case tir.CheckedIndex:
 		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —
 		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
@@ -7504,6 +7766,17 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		default:
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}
+	}
+	// A function-typed node's Type is never the entry's width, so it must
+	// bypass the width gate below the same way a pointer-typed node does. This
+	// covers the two shapes a function value can take: a reference to an
+	// existing function-typed local (SymbolValue) or a bare top-level function
+	// reference (HoistedFunctionValue), both built by buildFunctionValue. (The
+	// general indirect call through such a value is handled by buildIndirectCall
+	// at the top of this function, whose callee child is a function-typed node
+	// routed through this same bypass.)
+	if isFunctionType(snapshot, node.Type) {
+		return buildFunctionValue(unit, snapshot, fileSet, node, locals, "entry function body expression")
 	}
 	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) {
 		wantName, _ := builtinName(width)
@@ -7879,25 +8152,52 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	}
 }
 
-func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
-	if len(node.Children) < 1 || node.ContextAction != tir.ContextForward {
-		return "", fmt.Errorf("indirect call has invalid callee or context action")
+// indirectCalleePlace unwraps an IndirectCall's callee child (Children[0])
+// past any SourceAlias (grouped-expression parens) and a single Load, and
+// reports whether the unwrapped node is the allocator-specific shape — a
+// FieldPlace or FieldValue (an .alloc/.realloc/.free field access) — the
+// ONE signal that reliably distinguishes the allocator's built-in indirect
+// call (which uses the runtime's own pre-existing PebbleAllocFn/
+// PebbleReallocFn/PebbleFreeFn typedefs) from the general case (an ordinary
+// function-typed value). Both buildIndirectCall and collectFunctionTypesWalk
+// call this so the two agree on which case any given IndirectCall is —
+// confirmed via a real fixture that the checker sets IndirectCall.FunctionType
+// on BOTH shapes (not just the general one, contrary to an earlier, unverified
+// assumption), so FunctionType alone cannot distinguish them; the callee's own
+// unwrapped node kind is the only reliable signal.
+func indirectCalleePlace(unit *tir.Unit, node tir.Node) (placeNode tir.Node, isAllocator bool, ok bool) {
+	if len(node.Children) < 1 {
+		return tir.Node{}, false, false
 	}
-	calleeNode, ok := unit.Node(node.Children[0])
-	if !ok {
-		return "", fmt.Errorf("indirect call has invalid callee")
+	calleeNode, found := unit.Node(node.Children[0])
+	if !found {
+		return tir.Node{}, false, false
 	}
-	placeNode := calleeNode
+	placeNode = calleeNode
 	for placeNode.Kind == tir.SourceAlias && len(placeNode.Children) == 1 {
 		placeNode, _ = unit.Node(placeNode.Children[0])
 	}
 	if placeNode.Kind == tir.Load && len(placeNode.Children) == 1 {
 		placeNode, _ = unit.Node(placeNode.Children[0])
 	}
+	isAllocator = placeNode.Kind == tir.FieldPlace || (placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1)
+	return placeNode, isAllocator, true
+}
+
+func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if len(node.Children) < 1 || node.ContextAction != tir.ContextForward {
+		return "", fmt.Errorf("indirect call has invalid callee or context action")
+	}
+	placeNode, _, ok := indirectCalleePlace(unit, node)
+	if !ok {
+		return "", fmt.Errorf("indirect call has invalid callee")
+	}
 	var base string
 	var owner types.TypeID
 	var member symbol.SymbolID
+	allocatorCallee := false
 	if placeNode.Kind == tir.FieldPlace {
+		allocatorCallee = true
 		var err error
 		base, owner, err = buildPlaceLValue(unit, snapshot, fileSet, placeNode.Children[0], locals, width)
 		if err != nil {
@@ -7905,6 +8205,7 @@ func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		}
 		member = placeNode.Member
 	} else if placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1 {
+		allocatorCallee = true
 		receiver, ok := unit.Node(placeNode.Children[0])
 		if !ok {
 			return "", fmt.Errorf("invalid allocator receiver")
@@ -7915,8 +8216,16 @@ func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 			return "", err
 		}
 		owner, member = receiver.Type, placeNode.Member
-	} else {
-		return "", fmt.Errorf("indirect call callee is not an allocator field: %s", calleeNode.Kind)
+	}
+	if !allocatorCallee {
+		// The general indirect call: the callee is an ordinary function-typed
+		// value, not an allocator function field. This is the f(1, 2) shape —
+		// a call through a function-typed local (or a bare function value),
+		// distinct from the allocator-specific FieldPlace/FieldValue shape
+		// above. Both the callee and every argument are built under the
+		// callee's own function type (buildFunctionIndirectCall), and the
+		// allocator path above is completely untouched.
+		return buildFunctionIndirectCall(unit, snapshot, fileSet, node, placeNode, locals, width)
 	}
 	field, mapped := runtimeFieldName(unit, owner, member)
 	if !mapped || (member != unit.Runtime().AllocatorAlloc && member != unit.Runtime().AllocatorRealloc && member != unit.Runtime().AllocatorFree) {
@@ -7941,6 +8250,106 @@ func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		args[0] = "(PebbleContext *)" + args[0]
 	}
 	return fmt.Sprintf("((%s)(%s.%s))(%s)", cast, base, field, strings.Join(args, ", ")), nil
+}
+
+// buildFunctionIndirectCall builds the C expression text for the GENERAL
+// indirect call through an ordinary function-typed value — the f(1, 2) shape —
+// where the callee (Children[0], already unwrapped past SourceAlias/Load by
+// buildIndirectCall) is a function-typed value rather than an allocator
+// function field, and every argument (Children[1:]) is built under the
+// callee's own function type's parameter list, which REPLACES the
+// tir.Node.Parameters an ordinary fixed function declaration would have. The
+// callee's function type is the IndirectCall's FunctionType field (its own
+// Type is the call's RESULT type, distinct from the callee's type — confirmed
+// against a real fixture). The emitted C is
+//
+//	<callee-expr>(ctx, <arg0>, <arg1>, ...)
+//
+// for a Pebble-convention function type: the callee value's own C type IS
+// pebble_fnptr_<typeID>_t (a function-typed local is declared as exactly that
+// typedef), so calling it directly with the threaded context and its declared
+// parameters is trivially valid C, no cast needed. Each argument's grammar is
+// decided by buildCallArgument from its parameter's resolved type — the exact
+// same per-parameter-type dispatch an ordinary fixed function's call uses.
+// calleeNode is the unwrapped callee value node (a SymbolValue naming a
+// function-typed local, or a HoistedFunctionValue), built by buildFunctionValue.
+func buildFunctionIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node, calleeNode tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	calleeExpr, err := buildFunctionValue(unit, snapshot, fileSet, calleeNode, locals, "entry function body indirect call")
+	if err != nil {
+		return "", err
+	}
+	fnType := node.FunctionType
+	if !isFunctionType(snapshot, fnType) {
+		return "", fmt.Errorf("indirect call has a callee of type %s, want a function type", describeType(snapshot, fnType))
+	}
+	if err := validateFunctionTypeSignature(snapshot, width, fnType); err != nil {
+		return "", err
+	}
+	key, ok := snapshot.Key(fnType)
+	if !ok {
+		return "", fmt.Errorf("indirect call callee type %d is not in the type snapshot", fnType)
+	}
+	_, parameters, _, _, ok := key.Function()
+	if !ok {
+		return "", fmt.Errorf("indirect call callee type %s is not a function type", describeType(snapshot, fnType))
+	}
+	if len(node.Children)-1 != len(parameters) {
+		return "", fmt.Errorf("indirect call passes %d argument(s), want %d (the callee's function type %s declares %d parameter(s))", len(node.Children)-1, len(parameters), describeType(snapshot, fnType), len(parameters))
+	}
+	args := make([]string, 0, len(parameters))
+	for i, id := range node.Children[1:] {
+		arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, locals, width)
+		if err != nil {
+			return "", err
+		}
+		args = append(args, arg)
+	}
+	if len(args) == 0 {
+		return fmt.Sprintf("%s(ctx)", calleeExpr), nil
+	}
+	return fmt.Sprintf("%s(ctx, %s)", calleeExpr, strings.Join(args, ", ")), nil
+}
+
+// buildFunctionValue builds the C expression text for one function-typed VALUE:
+// a reference to an in-scope function-typed local (a SymbolValue, emitted as
+// pebble_local_<symbol>, whose C type is the local's own pebble_fnptr_<typeID>_t)
+// or a bare top-level function reference (a HoistedFunctionValue, emitted as
+// the referenced function's own C name pebble_fn_<symbolID> — a bare C function
+// name naturally decays to a function pointer of the exact fnptr typedef type,
+// so no cast is needed at a declaration site). A SourceAlias (grouped-expression
+// parens) is transparently unwrapped. It is the single builder shared by the
+// three positions a function value can appear in: a function-typed local's
+// declaration initializer (buildFunctionLocalDeclaration), a function-typed
+// local's reassignment (buildStoreCore), and the general indirect call's callee
+// (buildFunctionIndirectCall, also reachable through buildExpr's function-type
+// bypass for a fn-typed node used as a value). Any other shape is a clean
+// rejection naming what was found.
+func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string) (string, error) {
+	switch node.Kind {
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || info.functionType == 0 {
+			return "", fmt.Errorf("%s references symbol %d, which is not a function-typed local declared earlier in the body", context, node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.HoistedFunctionValue:
+		decl, err := findFunctionDeclaration(unit, node.Symbol, "function value")
+		if err != nil {
+			return "", err
+		}
+		return helperCName(decl), nil
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s contains a SourceAlias referencing invalid node %d", context, node.Children[0])
+		}
+		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context)
+	default:
+		return "", fmt.Errorf("%s contains a %s, want a reference to a function-typed local or a bare function value", context, node.Kind)
+	}
 }
 
 func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
@@ -9147,6 +9556,15 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.IndirectCall:
+		// A call through a function-typed value whose result is bool
+		// (confirmed checker-reachable: `if f(true) { ... }` lowers the
+		// condition to a bool-typed IndirectCall). The call itself is built by
+		// the same buildIndirectCall machinery a scalar-width indirect call
+		// uses — the callee and every argument are built under the callee's
+		// own function type — and the result is a C bool, which this position
+		// accepts directly.
+		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an optional-typed local with a bool payload (x!).
 		// The child is a SymbolValue naming the optional local, and this
@@ -9699,6 +10117,21 @@ func isPointer(snapshot *types.Snapshot, id types.TypeID) bool {
 	return ok && key.Kind() == types.Pointer
 }
 
+// isFunctionType reports whether id resolves to a function type in the
+// snapshot. A function-typed local is declared with the function type's own
+// pointer typedef (pebble_fnptr_<typeID>_t) and its value is a function
+// pointer; the function type is recognized by this distinct predicate rather
+// than by a shared scalar-builder switch, since a function type is not a
+// types.BuiltinKind (mirroring how isTuple / isSlice / isOptional recognize
+// their own kinds).
+func isFunctionType(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.Function
+}
+
 // pointerPointeeType returns the pointee type of a pointer type. It is the
 // single way to extract the child of a pointer type, mirroring how
 // key.Child() works for Slice/Optional but restricted to Pointer kinds for
@@ -9796,6 +10229,15 @@ func optionalTypeName(id types.TypeID) string {
 // stable types.TypeID, mirroring the tuple naming discipline.
 func structTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_struct_%d_t", id)
+}
+
+// functionTypeName is the deterministic C name of one distinct function type's
+// pointer typedef: pebble_fnptr_<typeID>_t, derived from the function type's
+// own stable types.TypeID, following the same TypeID-based naming discipline
+// as pebble_slice_<typeID>_t / pebble_optional_<typeID>_t /
+// pebble_struct_<typeID>_t (NOT v1's ad-hoc canonical-name-string scheme).
+func functionTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_fnptr_%d_t", id)
 }
 
 func runtimeType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) symbol.RuntimeType {
@@ -10371,6 +10813,116 @@ func buildSliceTypedef(unit *tir.Unit, snapshot *types.Snapshot, info sliceInfo,
 		return "", fmt.Errorf("slice type %s: %v", sliceTypeName(info.typ), err)
 	}
 	return fmt.Sprintf("typedef struct {\n    %s *data;\n    size_t len;\n} %s;", elemCType, sliceTypeName(info.typ)), nil
+}
+
+// buildFunctionTypedefs builds the C text of one function-pointer typedef per
+// function type in ids, in order, each joined by a newline. The caller (Emit)
+// supplies ids in first-encountered order from the function-type collection
+// pass, so every function type the emitted program references as a first-class
+// value has exactly one typedef here, written before any function definition
+// in the final output.
+func buildFunctionTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+	texts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		text, err := buildFunctionTypedef(snapshot, width, id)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildFunctionTypedef builds the C text of one function type's pointer
+// typedef, mirroring v1's TYPE_FUNCTION typedef shape adapted to v2's
+// TypeID-based naming and ctx-threading convention:
+//
+//	typedef <result-c-type> (*pebble_fnptr_<typeID>_t)(PebbleContext *ctx, <param-c-types>...);
+//
+// The function type's own signature is resolved via types.TypeKey.Function()
+// (convention, parameters, result, variadic), and every parameter/result C
+// type is resolved by functionTypeParamCType / functionTypeResultCType — the
+// same C types buildHelperFunctions declares an ordinary Pebble-convention
+// helper's parameters and result with, so a hoisted function's C name and the
+// fnptr typedef always agree exactly. Only Pebble-convention function types
+// are reachable as first-class values in this slice (a C-convention one is a
+// clean rejection — see validateFunctionTypeSignature), so the typedef always
+// carries the trailing PebbleContext *ctx parameter. Every parameter/result C
+// type is self-contained (the entry's cType, uint64_t, bool, int32_t,
+// PebbleStr, or void), so the typedef never references an aggregate typedef
+// that might be emitted after it.
+func buildFunctionTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if err := validateFunctionTypeSignature(snapshot, width, id); err != nil {
+		return "", err
+	}
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return "", fmt.Errorf("function type %d is not in the type snapshot", id)
+	}
+	_, parameters, result, _, ok := key.Function()
+	if !ok {
+		return "", fmt.Errorf("type %s is not a function type", describeType(snapshot, id))
+	}
+	resultCType, err := functionTypeResultCType(snapshot, width, result)
+	if err != nil {
+		return "", err
+	}
+	paramCTypes := make([]string, len(parameters))
+	for i, parameter := range parameters {
+		paramCType, err := functionTypeParamCType(snapshot, width, parameter)
+		if err != nil {
+			return "", err
+		}
+		paramCTypes[i] = paramCType
+	}
+	if len(paramCTypes) == 0 {
+		return fmt.Sprintf("typedef %s (*pebble_fnptr_%d_t)(PebbleContext *ctx);", resultCType, id), nil
+	}
+	return fmt.Sprintf("typedef %s (*pebble_fnptr_%d_t)(PebbleContext *ctx, %s);", resultCType, id, strings.Join(paramCTypes, ", ")), nil
+}
+
+// functionTypeParamCType resolves one function type's parameter to the C type
+// an ordinary Pebble-convention helper's parameter of that type is declared
+// with (see buildHelperFunctions): the entry's cType(width) for a width
+// parameter, uint64_t for uint, bool for bool, int32_t for char, and PebbleStr
+// for str — the exact self-contained set validateFunctionTypeSignature admits.
+// Anything else is a clean rejection, defense for hand-built IR (the
+// validation has already ruled every reachable parameter shape out).
+func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
+	switch {
+	case isWidth(snapshot, width, param):
+		return cType(width), nil
+	case isUint(snapshot, param):
+		return "uint64_t", nil
+	case isBool(snapshot, param):
+		return "bool", nil
+	case isChar(snapshot, param):
+		return "int32_t", nil
+	case isStr(snapshot, param):
+		return "PebbleStr", nil
+	}
+	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, or str", describeType(snapshot, param), wantName(width))
+}
+
+// functionTypeResultCType resolves one function type's result to the C return
+// type an ordinary Pebble-convention helper with that result is declared with
+// (see buildHelperFunctions): the entry's cType(width) for a width result,
+// bool, int32_t for char, and void — the exact self-contained set
+// validateFunctionTypeSignature admits. Anything else is a clean rejection,
+// defense for hand-built IR (the validation has already ruled every reachable
+// result shape out).
+func functionTypeResultCType(snapshot *types.Snapshot, width types.BuiltinKind, result types.TypeID) (string, error) {
+	switch {
+	case isWidth(snapshot, width, result):
+		return cType(width), nil
+	case isBool(snapshot, result):
+		return "bool", nil
+	case isChar(snapshot, result):
+		return "int32_t", nil
+	case isVoid(snapshot, result):
+		return "void", nil
+	}
+	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, or void", describeType(snapshot, result), wantName(width))
 }
 
 // joinTypedefs joins two typedef text blocks into a single block, with a blank

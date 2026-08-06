@@ -9706,3 +9706,72 @@ func TestEmitVariadicCallBoolElementCompilesAndRuns(t *testing.T) {
 func TestEmitVariadicCallBoolElementFalseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn allTrue(...values []bool) int { if values[0] && values[1] { return 1; } return 0; } fn main() int { return allTrue(true, false); }", false, 0, false)
 }
+
+// --- Function types: slice 1/3, function-typed locals, function values, and
+// general indirect calls (struct fields, parameters, and results are later
+// slices) ---
+
+func TestEmitFunctionTypedLocalCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro: a function-typed local initialized from a bare
+	// top-level function reference (a HoistedFunctionValue), called through
+	// an indirect call. add's own C name (pebble_fn_<symbol>) decays to a
+	// function pointer matching the local's pebble_fnptr_<typeID>_t typedef,
+	// no cast needed.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; return f(1, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedLocalReassignmentCompilesAndRuns(t *testing.T) {
+	// Reassigning a function-typed local to a different function of the same
+	// signature (f = sub;) — the buildStoreCore functionType branch.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn sub(a int, b int) int { return a - b; } fn main() int { var f fn(int, int) int = add; f = sub; return f(5, 2); }", false, 3, false)
+}
+
+func TestEmitFunctionTypedLocalBoolSignatureCompilesAndRuns(t *testing.T) {
+	// A bool-parameter/bool-result function type — confirms the
+	// parameter/result C-type dispatch isn't hardcoded to int. This also
+	// exercises the bool-returning-helper support added as a genuine
+	// prerequisite (validateHelperSignature previously rejected any
+	// bool-result helper outright, which would have made `id` itself
+	// unemittable).
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var f fn(bool) bool = id; if f(true) { return 1; } else { return 2; } }", false, 1, false)
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var f fn(bool) bool = id; if f(false) { return 1; } else { return 2; } }", false, 2, false)
+}
+
+func TestEmitFunctionTypedLocalWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the typedef shape
+	// (typedef <ret> (*pebble_fnptr_<id>_t)(PebbleContext *ctx, ...);), the
+	// function value assigned bare (no cast) at the declaration site, and the
+	// indirect call threading ctx as the first argument.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; return f(1, 2); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"(*pebble_fnptr_",
+		")(PebbleContext *ctx, int32_t, int32_t);",
+		"pebble_fnptr_",
+		"= pebble_fn_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(pebble_fnptr_") && strings.Contains(out, ")pebble_fn_") {
+		t.Errorf("function value declaration should not be cast, found a cast form:\n%s", out)
+	}
+}
+
+func TestEmitFunctionTypedLocalDoesNotRegressAllocator(t *testing.T) {
+	// The general indirect-call path (buildFunctionIndirectCall) must not
+	// interfere with the pre-existing allocator-specific indirect call
+	// (context.default_allocator.alloc(...) and friends), which shares the
+	// same tir.IndirectCall node kind but is detected and handled by a wholly
+	// separate branch (allocatorCallee). Regression-covered already by this
+	// file's existing TestEmitRuntimeAllocator* tests (run as part of the
+	// full suite); this test adds one more real allocation round trip
+	// alongside a function-typed local in the same program, confirming the
+	// two mechanisms coexist correctly.
+	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn main() int {\nvar f fn(int, int) int = add;\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\n*p = f(3, 4);\nreturn *p;\n}", false, 7, false)
+}
