@@ -156,10 +156,13 @@ typedef struct PebbleSourceLoc {
  * arithmetic, so this is defined behavior, never a signed-overflow UB trap) —
  * release mode trades the panic for speed, not for undefined behavior.
  *
- * i32 and i64 for now; other integer widths arrive with the lowering slices
- * that need them. The i64 variants are the exact same contract at the wider
- * width — same overflow-panic-in-SAFE / wrap-in-RELEASE split, same
- * two's-complement wraparound computed via unsigned arithmetic.
+ * i32, i64, and u64 for now; other integer widths arrive with the lowering
+ * slices that need them. The i64 and u64 variants are the exact same contract
+ * at the wider width — same overflow-panic-in-SAFE / wrap-in-RELEASE split,
+ * same two's-complement wraparound (for u64 the wrap is simply the C-defined
+ * modular semantics of the unsigned type itself). There is no checked_neg
+ * at u64: the language rejects unary minus on an unsigned operand at
+ * type-check time, so no runtime support is needed for it.
  */
 int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
@@ -170,6 +173,10 @@ int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc);
+
+uint64_t pebble_rt_checked_add_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 
 /* ---- checked bit shifts -----------------------------------------------------
  * Shift counts outside [0, 32) or [0, 64) are invalid. SAFE mode panics with
@@ -275,10 +282,13 @@ int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
  * site rather than baked into the check itself, so one pair of functions
  * serves every array length and width. Returns index unchanged when in
  * bounds, so a call site can be used directly as the emitted array subscript:
- * arr[pebble_rt_checked_index_i32(idx, N)].
+ * arr[pebble_rt_checked_index_i32(idx, N)]. The u64 variant is the same
+ * contract at the unsigned width — its one difference is that an index can
+ * never be negative, so only the index >= length bound needs checking.
  */
 int32_t pebble_rt_checked_index_i32(int32_t index, int32_t length, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_index_u64(uint64_t index, uint64_t length, PebbleSourceLoc loc);
 
 /* ---- checked slice range ---------------------------------------------------
  * A slice expression (arr[start:end]) validates 0 <= start <= end <= length
@@ -293,6 +303,7 @@ int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length, PebbleSourceL
  */
 int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_slice_start_u64(uint64_t start, uint64_t end, uint64_t length, PebbleSourceLoc loc);
 
 /* ---- checked pointer dereference --------------------------------------------
  * A dereference of a raw pointer is null-checked: a NULL pointer panics with
@@ -368,6 +379,7 @@ int pebble_rt_str_cmp(PebbleStr a, PebbleStr b);
  */
 int32_t pebble_rt_str_char_at_i32(PebbleStr s, int32_t index, PebbleSourceLoc loc);
 int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index, PebbleSourceLoc loc);
+int32_t pebble_rt_str_char_at_u64(PebbleStr s, uint64_t index, PebbleSourceLoc loc);
 
 #ifndef PEBBLE_RT_FREESTANDING
 /* ---- hosted argument adaptation --------------------------------------------

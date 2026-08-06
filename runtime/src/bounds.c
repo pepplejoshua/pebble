@@ -34,6 +34,18 @@ int64_t pebble_rt_checked_index_i64(int64_t index, int64_t length, PebbleSourceL
     return index;
 }
 
+/* The u64 variant of the checked index: the same contract at the unsigned
+ * width. Its one structural difference from the signed twins is that an
+ * unsigned index can never be negative, so the lower bound needs no check —
+ * only index >= length can fail.
+ */
+uint64_t pebble_rt_checked_index_u64(uint64_t index, uint64_t length, PebbleSourceLoc loc) {
+    if (index >= length) {
+        pebble_rt_index_panic(loc);
+    }
+    return index;
+}
+
 int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t length, PebbleSourceLoc loc) {
     if (start < 0 || start > end || end > length) {
         pebble_rt_index_panic(loc);
@@ -43,6 +55,18 @@ int32_t pebble_rt_checked_slice_start_i32(int32_t start, int32_t end, int32_t le
 
 int64_t pebble_rt_checked_slice_start_i64(int64_t start, int64_t end, int64_t length, PebbleSourceLoc loc) {
     if (start < 0 || start > end || end > length) {
+        pebble_rt_index_panic(loc);
+    }
+    return start;
+}
+
+/* The u64 variant of the checked slice start: the same contract at the
+ * unsigned width. Its one structural difference from the signed twins is that
+ * an unsigned start can never be negative, so the lower bound needs no check —
+ * only start > end or end > length can fail.
+ */
+uint64_t pebble_rt_checked_slice_start_u64(uint64_t start, uint64_t end, uint64_t length, PebbleSourceLoc loc) {
+    if (start > end || end > length) {
         pebble_rt_index_panic(loc);
     }
     return start;

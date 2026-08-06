@@ -85,6 +85,27 @@ int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index, PebbleSourceLoc lo
     return pebble_rt_str_char_at(s, index, loc);
 }
 
+/* The u64 variant of the str char-at index: the same contract at the
+ * unsigned width. Its one structural difference from the shared signed
+ * implementation is that an unsigned index can never be negative, so the
+ * char_index < 0 branch needs no equivalent — only an index past the last
+ * codepoint (or a malformed encoding) can fail, and the count is tracked in
+ * uint64_t so a huge index compares correctly.
+ */
+int32_t pebble_rt_str_char_at_u64(PebbleStr s, uint64_t index, PebbleSourceLoc loc) {
+    size_t byte_pos = 0;
+    uint64_t count = 0;
+    while (byte_pos < s.len) {
+        int32_t cp = pebble_rt_utf8_decode_one(s, &byte_pos, loc);
+        if (count == index) {
+            return cp;
+        }
+        count++;
+    }
+    pebble_rt_str_index_panic(loc);
+    return 0; /* unreachable */
+}
+
 /* Byte-for-byte str equality (see pebble_rt.h). */
 bool pebble_rt_str_eq(PebbleStr a, PebbleStr b) {
     if (a.len != b.len) {

@@ -4589,11 +4589,18 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // emits `pebble_local_<i> = pebble_rt_checked_add_i32(pebble_local_<i>, 1,
 // <loc>)` with the identical overflow and divide-by-zero semantics as a plain
 // `i = i + 1`. A place width with no checked helper (any integer builtin other
-// than int/i32/i64 — the backend has no checked runtime primitive at those
-// widths) is a clean rejection rather than a malformed helper name.
+// than int/i32/i64/u64 — the backend has no checked runtime primitive at those
+// widths) is a clean rejection rather than a malformed helper name. u64 is
+// admitted for the +, -, * family this slice added (pebble_rt_checked_add/
+// sub/mul_u64), but a u64 /= or %= is cleanly rejected: there is no
+// checked_div_u64/mod_u64, so emitting one would be a call to a nonexistent
+// helper.
 func buildCompoundIntegerCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if checkedSuffix(placeWidth) == "" {
 		return "", fmt.Errorf("%s compound assignment combines at %s, which has no checked-arithmetic runtime helper; compound assignment is supported only at int, i32, or i64", context, wantName(placeWidth))
+	}
+	if placeWidth == types.U64 && (statement.Operator == syntax.Slash || statement.Operator == syntax.Percent) {
+		return "", fmt.Errorf("%s compound assignment %ss at u64, which has no checked division/modulo runtime helper; u64 compound assignment is supported only for +, -, or *", context, statement.Operator)
 	}
 	helper, _ := checkedArithmeticHelper(statement.Operator, placeWidth)
 	value, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, placeWidth, width)
@@ -8307,7 +8314,12 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with invalid destination type %d", node.Type)
 		}
 		destinationWidth, ok := destination.Builtin()
-		if !ok || checkedSuffix(destinationWidth) == "" {
+		// The float-to-integer conversion helpers exist only for i32 and i64
+		// destinations. A u64 destination is cleanly rejected here rather than
+		// emitted as a call to a nonexistent pebble_rt_checked_f*_to_u64
+		// (checkedSuffix admits u64 for the +, -, * arithmetic family this
+		// slice adds, but the float-conversion family has no u64 twin yet).
+		if !ok || checkedSuffix(destinationWidth) == "" || destinationWidth == types.U64 {
 			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
 		child, ok := unit.Node(node.Children[0])
@@ -8342,7 +8354,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		}
 		helper, ok := checkedArithmeticHelper(node.Operator, width)
 		if !ok {
-			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %%", node.Operator)
+			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %% (at u64, only +, -, and * have a checked runtime helper)", node.Operator)
 		}
 		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
@@ -10496,7 +10508,10 @@ func bitwiseOperator(op syntax.TokenKind) (string, bool) {
 // (or their _i64 twins), which handle both the divide-by-zero fault (in every
 // mode) and the one
 // division overflow input, INT32_MIN / -1 (INT64_MIN / -1 at the wider
-// width). Any other operator (bitwise, etc.)
+// width). At u64 the +, -, * family exists (pebble_rt_checked_add/sub/mul_u64,
+// this slice), but the / and % family has no u64 twin yet, so a u64 division
+// or modulo is cleanly rejected rather than emitted as a call to a nonexistent
+// pebble_rt_checked_div_u64/mod_u64. Any other operator (bitwise, etc.)
 // is deliberately not mapped and rejected by the caller.
 func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (string, bool) {
 	var base string
@@ -10514,6 +10529,9 @@ func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (stri
 	default:
 		return "", false
 	}
+	if width == types.U64 && (op == syntax.Slash || op == syntax.Percent) {
+		return "", false
+	}
 	return base + "_" + checkedSuffix(width), true
 }
 
@@ -10528,7 +10546,12 @@ func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, b
 		return "", false
 	}
 	suffix := checkedSuffix(width)
-	if suffix == "" {
+	// Only the i32 and i64 widths have runtime shift helpers; a u64 shift is
+	// cleanly rejected here rather than emitted as a call to a nonexistent
+	// pebble_rt_checked_shl_u64/shr_u64 (checkedSuffix admits u64 for the
+	// +, -, * arithmetic family this slice adds, but the shift family has no
+	// u64 twin yet, so this remains the pre-widening rejection).
+	if suffix == "" || width == types.U64 {
 		return "", false
 	}
 	return base + "_" + suffix, true
@@ -11624,9 +11647,9 @@ func floatCType(width types.BuiltinKind) string {
 }
 
 // checkedSuffix returns the pebble_rt_checked_* function-name suffix for the
-// given width: "i32" for an int or i32 entry, "i64" for an i64 entry. It is
-// exactly the type's name for the fixed-width entries, but named for what it
-// selects — the width-specific runtime helper family.
+// given width: "i32" for an int or i32 entry, "i64" for an i64 entry, "u64"
+// for a u64 entry. It is exactly the type's name for the fixed-width entries,
+// but named for what it selects — the width-specific runtime helper family.
 func checkedSuffix(width types.BuiltinKind) string {
 	switch width {
 	case types.Int:
@@ -11635,6 +11658,8 @@ func checkedSuffix(width types.BuiltinKind) string {
 		return "i32"
 	case types.I64:
 		return "i64"
+	case types.U64:
+		return "u64"
 	}
 	return ""
 }

@@ -8709,6 +8709,184 @@ func TestEmitU64OrderingComparisonsCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitU64CheckedArithmeticCompilesAndRuns(t *testing.T) {
+	// u64 add/sub/mul as a non-ambient width (u64 operands in u64-returning
+	// helpers called from an int-entry main, mirroring the i64
+	// non-entry-width slice test's avoidance of the entry width coinciding
+	// with the type under test). Each helper lowers its CheckedArithmetic to
+	// pebble_rt_checked_add/sub/mul_u64, which must produce the arithmetically
+	// correct result for ordinary non-wrapping operands, returned via `as
+	// int` and asserted as the process exit code.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"add", "fn addU(x u64, y u64) u64 { return x + y; } fn main() int { let r u64 = addU(40, 2); return r as int; }", 42},
+		{"sub", "fn subU(x u64, y u64) u64 { return x - y; } fn main() int { let r u64 = subU(50, 8); return r as int; }", 42},
+		{"mul", "fn mulU(x u64, y u64) u64 { return x * y; } fn main() int { let r u64 = mulU(6, 7); return r as int; }", 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitU64CheckedArithmeticWritesU64Helper(t *testing.T) {
+	// Assert the exact helper names in the emitted C: a u64-returning
+	// helper's CheckedArithmetic must lower to pebble_rt_checked_add_u64 (not
+	// the empty-suffix pebble_rt_checked_add_ the pre-fix code emitted, which
+	// only failed later at cc compile time), proving the resolved u64 width
+	// really reaches the runtime function-name selection.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn addU(x u64, y u64) u64 { return x + y; } fn main() int { let r u64 = addU(40, 2); return r as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_add_u64(") {
+		t.Errorf("emitted C missing the u64 checked-add helper:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_rt_checked_add_(") || strings.Contains(out, "pebble_rt_checked_add_i64(") {
+		t.Errorf("emitted C uses a wrong-width checked-add helper for u64 operands:\n%s", out)
+	}
+}
+
+func TestEmitU64CheckedArithmeticOverflowAborts(t *testing.T) {
+	// u64 overflow detection is real, not just "it compiles": each of add
+	// (UINT64_MAX + 1), sub (0 - 1), and mul (UINT64_MAX * 2) wraps the
+	// unsigned width, and the emitted pebble_rt_checked_*_u64 helper must
+	// detect it with __builtin_*_overflow and panic through pebble_rt_panic
+	// in PEBBLE_RT_MODE_SAFE — the process must terminate abnormally, not
+	// exit 0 and not return any specific wrapped value.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"add", "fn addU(x u64, y u64) u64 { return x + y; } fn main() int { let r u64 = addU(18446744073709551615, 1); return r as int; }"},
+		{"sub", "fn subU(x u64, y u64) u64 { return x - y; } fn main() int { let r u64 = subU(0, 1); return r as int; }"},
+		{"mul", "fn mulU(x u64, y u64) u64 { return x * y; } fn main() int { let r u64 = mulU(18446744073709551615, 2); return r as int; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, 0, true)
+		})
+	}
+}
+
+func TestEmitU64HashBytesFnv1aCompilesAndRuns(t *testing.T) {
+	// The motivating case: a helper mirroring std/hash.peb's hash_bytes
+	// FNV-1a body verbatim (`hash = hash ^ (x as u64); hash = hash *
+	// fnv_prime;` inside a loop over a real []u8 slice), called from an
+	// int-entry main. This combines the u64 checked-arithmetic fix with the
+	// already-landed comparison (30fca68) and slice-element-type (f85b4a0)
+	// fixes: the body's u64 multiply and slice index must now emit the real
+	// pebble_rt_checked_mul_u64 / pebble_rt_checked_index_u64 helpers rather
+	// than the empty-suffix names that previously failed at cc compile time.
+	// The fixed loop bound stands in for `loop 0..data.len : i`, whose
+	// uint-typed range bound is a separate pre-existing blocker unrelated to
+	// this slice (std/hash.peb itself still can't be imported for other
+	// separately-tracked cast reasons; this fixture is standalone).
+	//
+	// SAFE mode: the FNV-1a multiply genuinely wraps mod 2^64 (the offset
+	// basis times fnv_prime exceeds 2^64 on the very first iteration), so
+	// the checked-mul helper must panic — the run terminates abnormally,
+	// proving the u64 overflow path is reached by a real hash workload.
+	// RELEASE mode: the same multiply wraps (the unsigned type's own defined
+	// semantics), so the whole FNV-1a body runs to completion and the
+	// resulting hash is nonzero, returned as exit code 0.
+	src := "fn hash_bytes(data []u8) u64 { var hash u64 = 14695981039346656037; let fnv_prime u64 = 1099511628211; loop 0..3 : i { hash = hash ^ (data[i] as u64); hash = hash * fnv_prime; } return hash; } fn main() int { var data [3]u8 = [1, 2, 3]; var s []u8 = data[:]; var h u64 = hash_bytes(s); if h == 0 { return 1; } return 0; }"
+	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"pebble_rt_checked_mul_u64(",
+		"pebble_rt_checked_index_u64(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 0, true)
+	releaseBinary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, releaseBinary, 0, false, false)
+}
+
+func TestEmitU64SliceConstructionInHelperCompilesAndRuns(t *testing.T) {
+	// The slice-start gap this slice closes: constructing an ordinary INT
+	// slice (arr[:]) inside a u64-returning helper — the u64-ness comes from
+	// the AMBIENT function width, not the slice's own element type — must
+	// lower to pebble_rt_checked_slice_start_u64 (not the empty-suffix name
+	// that previously failed at cc compile time, nor a nonexistent helper).
+	// The slice must build with correct bounds and its element read correctly,
+	// called from an int-entry main.
+	emitAndRun(t, "fn f() u64 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; return s[1] as u64; } fn main() int { return f() as int; }", false, 2, false)
+}
+
+func TestEmitU64SliceConstructionOutOfBoundsAborts(t *testing.T) {
+	// The out-of-bounds twin of the slice-start fix: a runtime end bound past
+	// the array length inside a u64-returning helper must route through
+	// pebble_rt_checked_slice_start_u64 and panic with
+	// PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS in every configuration, so the process
+	// terminates abnormally. A helper supplies the out-of-range end to bypass
+	// the checker's compile-time range validation.
+	emitAndRun(t, "fn getEnd() u64 { return 10; } fn f() u64 { var arr [3]int = [1, 2, 3]; var e u64 = getEnd(); var s []int = arr[0:e]; return s[0] as u64; } fn main() int { return f() as int; }", false, 0, true)
+}
+
+func TestEmitU64SliceConstructionWritesU64Helper(t *testing.T) {
+	// Assert the exact helper name in the emitted C: a slice construction
+	// inside a u64-returning helper must call pebble_rt_checked_slice_start_u64.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn f() u64 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; return s[1] as u64; } fn main() int { return f() as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_slice_start_u64(") {
+		t.Errorf("emitted C missing the u64 checked-slice-start helper:\n%s", out)
+	}
+}
+
+func TestEmitU64StrIndexInHelperCompilesAndRuns(t *testing.T) {
+	// The str-index gap this slice closes: indexing a str (s[i]) inside a
+	// u64-returning helper must lower to pebble_rt_str_char_at_u64 (not the
+	// empty-suffix name that previously failed at cc compile time), decode
+	// the right codepoint, and drive a comparison to a real result.
+	emitAndRun(t, "fn f() u64 { var s str = \"hi\"; var c char = s[1]; if c == 'i' { return 1; } return 0; } fn main() int { return f() as int; }", false, 1, false)
+}
+
+func TestEmitU64CompoundAndPostfixCompilesAndRuns(t *testing.T) {
+	// The compound-assignment gate (checkedSuffix(placeWidth) == "") now
+	// admits a u64 place for the +, -, * family (this slice's add/sub/mul_u64
+	// helpers): += and postfix ++ on a u64 local inside a u64-returning helper
+	// must route through pebble_rt_checked_add_u64 and produce the correct
+	// value, called from an int-entry main.
+	emitAndRun(t, "fn f() u64 { var x u64 = 40; x += 2; x++; return x; } fn main() int { return f() as int; }", false, 43, false)
+}
+
+func TestEmitU64CompoundOverflowStillAborts(t *testing.T) {
+	// u64 compound += follows the same checked-overflow contract as a plain
+	// `x = x + y`: adding 1 to UINT64_MAX must panic through
+	// pebble_rt_checked_add_u64 in SAFE mode, so the process terminates
+	// abnormally.
+	emitAndRun(t, "fn f() u64 { var x u64 = 18446744073709551615; x += 1; return x; } fn main() int { return f() as int; }", false, 0, true)
+}
+
+func TestEmitRejectsU64CheckedDivision(t *testing.T) {
+	// A u64 / or % has no checked runtime helper (div/mod is out of this
+	// slice's scope — only +, -, * got u64 twins), so the backend must reject
+	// it CLEANLY at Emit time, not emit a call to a nonexistent
+	// pebble_rt_checked_div_u64/mod_u64 that would only fail at cc compile.
+	// Both the plain expression form and the compound-assignment form are
+	// asserted.
+	emitAndRunRejects(t, "fn f() u64 { var a u64 = 10; var b u64 = 2; return a / b; } fn main() int { return f() as int; }", "only +, -, and * have a checked runtime helper")
+	emitAndRunRejects(t, "fn f() u64 { var a u64 = 10; var b u64 = 2; return a % b; } fn main() int { return f() as int; }", "only +, -, and * have a checked runtime helper")
+	emitAndRunRejects(t, "fn f() u64 { var x u64 = 10; x /= 2; return x; } fn main() int { return f() as int; }", "no checked division/modulo runtime helper")
+	emitAndRunRejects(t, "fn f() u64 { var x u64 = 10; x %= 2; return x; } fn main() int { return f() as int; }", "no checked division/modulo runtime helper")
+}
+
 func TestEmitU8ComparisonCompilesAndRuns(t *testing.T) {
 	// A different non-entry-width integer (u8 in an int-entry main) confirms
 	// the fix generalizes rather than being u64-specific: both == and the

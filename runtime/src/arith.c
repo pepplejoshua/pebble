@@ -119,6 +119,42 @@ int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     return result;
 }
 
+/* The u64 trio: the same contract at the unsigned width. __builtin_*_overflow
+ * accepts unsigned operand types directly (GCC and Clang both define them for
+ * every integer type, signed or unsigned) and reports unsigned wraparound as
+ * overflow exactly the way it reports signed overflow, so the SAFE path is the
+ * identical shape with uint64_t substituting for int64_t. The RELEASE path
+ * needs no cast gymnastics at all: plain uint64_t + - * is already the
+ * defined modular-arithmetic wraparound semantics of unsigned C arithmetic
+ * (C11 6.3.1.3/6.2.5), so the wrapped result is simply the direct operation.
+ * There is deliberately no checked_neg_u64 here — the language rejects unary
+ * minus on an unsigned operand at type-check time, so no runtime support is
+ * needed.
+ */
+uint64_t pebble_rt_checked_add_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    uint64_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u64 addition overflow", loc);
+    }
+    return result;
+}
+
+uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    uint64_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u64 subtraction overflow", loc);
+    }
+    return result;
+}
+
+uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    uint64_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u64 multiplication overflow", loc);
+    }
+    return result;
+}
+
 /* Negation overflows only at the one boundary value: -INT64_MIN is not
  * representable in i64. __builtin_sub_overflow(0, a, ...) reports exactly
  * that case.
@@ -200,6 +236,21 @@ int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
 int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     (void)loc;
     return (int64_t)((uint64_t)a * (uint64_t)b);
+}
+
+uint64_t pebble_rt_checked_add_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a + b;
+}
+
+uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a - b;
+}
+
+uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a * b;
 }
 
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {

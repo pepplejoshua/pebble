@@ -13,14 +13,18 @@
  *      before it could report success on the checks above.
  *   6. The checked i32 and i64 helpers produce arithmetically correct
  *      results for non-overflowing operands, including division/modulo with
- *      negative operands (plain C / and % truncate toward zero).
+ *      negative operands (plain C / and % truncate toward zero). The u64
+ *      add/sub/mul helpers likewise produce correct results for ordinary
+ *      (non-wrapping) unsigned operands.
  *   7. Overflow behavior is mode-dependent and both modes are asserted:
  *      SAFE — pebble_rt_checked_add_i32(INT32_MAX, 1, (PebbleSourceLoc){0}),
  *      pebble_rt_checked_neg_i32(INT32_MIN, (PebbleSourceLoc){0}), and their i64 twins
  *      (add(INT64_MAX, 1), neg(INT64_MIN), div(INT64_MIN, -1)) panic
  *      through pebble_rt_panic, verified in forked children like check 5;
  *      RELEASE — the same operations wrap to the width's MIN instead of
- *      panicking.
+ *      panicking. The u64 add/sub/mul helpers follow the same split: SAFE
+ *      panics on unsigned wraparound (UINT64_MAX + 1, 0 - 1, UINT64_MAX * 2),
+ *      RELEASE wraps modulo 2^64 (the unsigned type's own defined semantics).
  *   8. Division and modulo's distinct fault cases: division by zero panics
  *      in EVERY configuration (RELEASE included) at both widths — there is
  *      no defined quotient, so this fork check is not mode-gated; the MIN
@@ -176,6 +180,19 @@ static void test_checked_arithmetic_normal(void) {
     assert(pebble_rt_checked_mul_i64(6, 7, (PebbleSourceLoc){0}) == 42);
     assert(pebble_rt_checked_neg_i64(5, (PebbleSourceLoc){0}) == -5);
     assert(pebble_rt_checked_neg_i64(INT64_MIN + 1, (PebbleSourceLoc){0}) == INT64_MAX);
+
+    /* The u64 twins of add/sub/mul: ordinary unsigned operands produce the
+     * arithmetically correct result, and the boundary values that do NOT wrap
+     * are also asserted (UINT64_MAX + 0 stays UINT64_MAX, 0 - 0 stays 0,
+     * UINT64_MAX * 1 stays UINT64_MAX) — the wrap cases themselves are
+     * exercised per-mode below (SAFE: panics, RELEASE: wraps).
+     */
+    assert(pebble_rt_checked_add_u64(2, 3, (PebbleSourceLoc){0}) == 5);
+    assert(pebble_rt_checked_sub_u64(10, 4, (PebbleSourceLoc){0}) == 6);
+    assert(pebble_rt_checked_mul_u64(6, 7, (PebbleSourceLoc){0}) == 42);
+    assert(pebble_rt_checked_add_u64(UINT64_MAX, 0, (PebbleSourceLoc){0}) == UINT64_MAX);
+    assert(pebble_rt_checked_sub_u64(0, 0, (PebbleSourceLoc){0}) == 0);
+    assert(pebble_rt_checked_mul_u64(UINT64_MAX, 1, (PebbleSourceLoc){0}) == UINT64_MAX);
 
     /* Division and modulo use plain C / and %, which truncate toward zero
      * on this platform — (-7) / 2 == -3 and (-7) % 2 == -1 (the sign of %
@@ -457,6 +474,12 @@ static void test_str_char_at_normal(void) {
     assert(pebble_rt_str_char_at_i32(mixed_width_str, 4, (PebbleSourceLoc){0}) == 'b');
     assert(pebble_rt_str_char_at_i64(mixed_width_str, 0, (PebbleSourceLoc){0}) == 'a');
     assert(pebble_rt_str_char_at_i64(mixed_width_str, 4, (PebbleSourceLoc){0}) == 'b');
+    /* The u64 variant decodes the same mixed-width string at an unsigned
+     * index; the 4-byte sequence (index 3) exercises the full decode path.
+     */
+    assert(pebble_rt_str_char_at_u64(mixed_width_str, 0, (PebbleSourceLoc){0}) == 'a');
+    assert(pebble_rt_str_char_at_u64(mixed_width_str, 3, (PebbleSourceLoc){0}) == 0x1F600);
+    assert(pebble_rt_str_char_at_u64(mixed_width_str, 4, (PebbleSourceLoc){0}) == 'b');
 }
 
 static void trigger_str_char_at_negative_index(void) {
@@ -465,6 +488,10 @@ static void trigger_str_char_at_negative_index(void) {
 
 static void trigger_str_char_at_index_past_end(void) {
     (void)pebble_rt_str_char_at_i32(mixed_width_str, 5, (PebbleSourceLoc){0});
+}
+
+static void trigger_str_char_at_index_past_end_u64(void) {
+    (void)pebble_rt_str_char_at_u64(mixed_width_str, 5, (PebbleSourceLoc){0});
 }
 
 static void trigger_str_char_at_truncated_sequence(void) {
@@ -490,6 +517,11 @@ static void test_checked_index_normal(void) {
     assert(pebble_rt_checked_index_i32(2, 3, (PebbleSourceLoc){0}) == 2);
     assert(pebble_rt_checked_index_i64(0, 3, (PebbleSourceLoc){0}) == 0);
     assert(pebble_rt_checked_index_i64(2, 3, (PebbleSourceLoc){0}) == 2);
+    /* The u64 variant: an unsigned index can never be negative, so only the
+     * in-bounds results and the index >= length failure need asserting.
+     */
+    assert(pebble_rt_checked_index_u64(0, 3, (PebbleSourceLoc){0}) == 0);
+    assert(pebble_rt_checked_index_u64(2, 3, (PebbleSourceLoc){0}) == 2);
 }
 
 static void trigger_index_too_high(void) {
@@ -508,6 +540,10 @@ static void trigger_index_negative_i64(void) {
     (void)pebble_rt_checked_index_i64(-1, 3, (PebbleSourceLoc){0});
 }
 
+static void trigger_index_too_high_u64(void) {
+    (void)pebble_rt_checked_index_u64(3, 3, (PebbleSourceLoc){0});
+}
+
 /* Checked slice range: a valid range returns start unchanged, including both
  * edge cases (an empty slice, start == end; a full-range slice, start == 0
  * and end == length); an invalid range panics in EVERY configuration — same
@@ -521,6 +557,13 @@ static void test_checked_slice_range_normal(void) {
     assert(pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){0}) == 1);
     assert(pebble_rt_checked_slice_start_i64(0, 5, 5, (PebbleSourceLoc){0}) == 0);
     assert(pebble_rt_checked_slice_start_i64(2, 2, 5, (PebbleSourceLoc){0}) == 2);
+    /* The u64 variant: an unsigned start can never be negative, so only the
+     * in-bounds results and the start > end / end > length failures need
+     * asserting.
+     */
+    assert(pebble_rt_checked_slice_start_u64(1, 3, 5, (PebbleSourceLoc){0}) == 1);
+    assert(pebble_rt_checked_slice_start_u64(0, 5, 5, (PebbleSourceLoc){0}) == 0);
+    assert(pebble_rt_checked_slice_start_u64(2, 2, 5, (PebbleSourceLoc){0}) == 2);
 }
 
 static void trigger_slice_start_negative(void) {
@@ -545,6 +588,14 @@ static void trigger_slice_start_after_end_i64(void) {
 
 static void trigger_slice_end_too_high_i64(void) {
     (void)pebble_rt_checked_slice_start_i64(0, 6, 5, (PebbleSourceLoc){0});
+}
+
+static void trigger_slice_start_after_end_u64(void) {
+    (void)pebble_rt_checked_slice_start_u64(3, 2, 5, (PebbleSourceLoc){0});
+}
+
+static void trigger_slice_end_too_high_u64(void) {
+    (void)pebble_rt_checked_slice_start_u64(0, 6, 5, (PebbleSourceLoc){0});
 }
 
 /* Checked optional unwrap: a present optional returns its payload unchanged
@@ -610,6 +661,18 @@ static void trigger_shift_out_of_range(void) {
 
 static void trigger_shift_negative(void) {
     (void)pebble_rt_checked_shr_i64(1, -1, (PebbleSourceLoc){0});
+}
+
+static void trigger_add_overflow_u64(void) {
+    (void)pebble_rt_checked_add_u64(UINT64_MAX, 1, (PebbleSourceLoc){0});
+}
+
+static void trigger_sub_overflow_u64(void) {
+    (void)pebble_rt_checked_sub_u64(0, 1, (PebbleSourceLoc){0});
+}
+
+static void trigger_mul_overflow_u64(void) {
+    (void)pebble_rt_checked_mul_u64(UINT64_MAX, 2, (PebbleSourceLoc){0});
 }
 
 #endif /* PEBBLE_RT_MODE_SAFE */
@@ -800,6 +863,10 @@ int main(void) {
         fprintf(stderr, "smoke_test: str char-at index-past-end subprocess check FAILED\n");
         return 1;
     }
+    if (verify_checked_overflow_panics("str char-at index past end u64", trigger_str_char_at_index_past_end_u64) != 0) {
+        fprintf(stderr, "smoke_test: str char-at u64 index-past-end subprocess check FAILED\n");
+        return 1;
+    }
     if (verify_checked_overflow_panics("str char-at truncated sequence", trigger_str_char_at_truncated_sequence) != 0) {
         fprintf(stderr, "smoke_test: str char-at truncated-sequence subprocess check FAILED\n");
         return 1;
@@ -887,6 +954,10 @@ int main(void) {
         fprintf(stderr, "smoke_test: checked i64 index negative subprocess check FAILED\n");
         return 1;
     }
+    if (verify_checked_overflow_panics("u64 index too high", trigger_index_too_high_u64) != 0) {
+        fprintf(stderr, "smoke_test: checked u64 index too-high subprocess check FAILED\n");
+        return 1;
+    }
     printf("ok: out-of-bounds indexing panics in subprocess\n");
 
     test_checked_slice_range_normal();
@@ -918,6 +989,11 @@ int main(void) {
     }
     if (verify_checked_overflow_panics("i64 slice end too high", trigger_slice_end_too_high_i64) != 0) {
         fprintf(stderr, "smoke_test: checked i64 slice end-too-high subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("u64 slice start after end", trigger_slice_start_after_end_u64) != 0 ||
+        verify_checked_overflow_panics("u64 slice end too high", trigger_slice_end_too_high_u64) != 0) {
+        fprintf(stderr, "smoke_test: checked u64 slice range panic subprocess check FAILED\n");
         return 1;
     }
     printf("ok: invalid slice range panics in subprocess\n");
@@ -971,6 +1047,12 @@ int main(void) {
         fprintf(stderr, "smoke_test: checked i64 div overflow subprocess check FAILED\n");
         return 1;
     }
+    if (verify_checked_overflow_panics("u64 addition overflow", trigger_add_overflow_u64) != 0 ||
+        verify_checked_overflow_panics("u64 subtraction overflow", trigger_sub_overflow_u64) != 0 ||
+        verify_checked_overflow_panics("u64 multiplication overflow", trigger_mul_overflow_u64) != 0) {
+        fprintf(stderr, "smoke_test: checked u64 overflow panic subprocess check FAILED\n");
+        return 1;
+    }
     if (verify_checked_overflow_panics("float-to-i32 overflow", trigger_float_to_integer_overflow) != 0) {
         fprintf(stderr, "smoke_test: float-to-i32 overflow subprocess check FAILED\n");
         return 1;
@@ -1018,6 +1100,22 @@ int main(void) {
     }
     if (pebble_rt_checked_div_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) != INT64_MIN) {
         fprintf(stderr, "smoke_test: checked i64 div did not wrap to INT64_MIN in RELEASE\n");
+        return 1;
+    }
+    /* RELEASE: u64 overflow wraps modulo 2^64, the unsigned type's own
+     * defined C semantics — no cast gymnastics involved. UINT64_MAX + 1 is 0,
+     * 0 - 1 is UINT64_MAX, and UINT64_MAX * 2 is UINT64_MAX - 1.
+     */
+    if (pebble_rt_checked_add_u64(UINT64_MAX, 1, (PebbleSourceLoc){0}) != 0) {
+        fprintf(stderr, "smoke_test: checked u64 add did not wrap to 0 in RELEASE\n");
+        return 1;
+    }
+    if (pebble_rt_checked_sub_u64(0, 1, (PebbleSourceLoc){0}) != UINT64_MAX) {
+        fprintf(stderr, "smoke_test: checked u64 sub did not wrap to UINT64_MAX in RELEASE\n");
+        return 1;
+    }
+    if (pebble_rt_checked_mul_u64(UINT64_MAX, 2, (PebbleSourceLoc){0}) != UINT64_MAX - 1) {
+        fprintf(stderr, "smoke_test: checked u64 mul did not wrap to UINT64_MAX - 1 in RELEASE\n");
         return 1;
     }
     if (pebble_rt_checked_f32_to_i32(2147483648.0f, (PebbleSourceLoc){0}) != INT32_MIN ||
