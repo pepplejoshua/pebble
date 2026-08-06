@@ -41,21 +41,28 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-- [ ] **Optional-typed function results are unsupported in the backend.**
-      Found during a real-code audit of the node-kind list below (looking
-      into `OptionalInject`, since fixed for local declarations — see the
-      just-removed line above). `fn f() ?int { return 5; }` called as
-      `var o ?int = f();` fails at `backend.Emit` with: "called function
-      symbol N has result type ?int, want its own integer width, char,
-      str, a tuple/struct result type, a slice result type, a pointer
-      result type, or void" — the function-result C calling convention
-      simply has no optional case at all yet. Confirmed distinct from,
-      and NOT fixed by, the `OptionalInject`-in-local-declarations fix
-      (`internal/backend/emit.go`'s `buildOptionalLocalDeclaration`,
-      landed this session) — that fix only covers a local's own
-      initializer, not a callee's return type. Not yet scoped in detail;
-      likely needs the same C-struct-return convention this backend
-      already uses for tuple/struct results, extended to optional types.
+- [ ] **Optional-typed function parameters are still unsupported.**
+      Results are done (this session — a helper may now return `?T`,
+      mirroring the tuple/struct/slice-result convention). Parameters
+      were deliberately left out of that fix's scope and remain
+      rejected: `fn g(o ?int) int { ... }` fails at `backend.Emit` with
+      "parameter 0 ... has type ?int, want int, bool, char, or str, a
+      tuple/struct type, a slice type, or a pointer type" —
+      `validateHelperSignature`'s parameter-type loop simply has no
+      optional case. Not yet scoped; likely mirrors the result fix's
+      shape (seed the parameter into `localInfo{optional: ...}`, same
+      as an optional local, on function entry).
+- [ ] **Pre-existing bug: `none` for a never-constructed aggregate
+      payload misclassifies via `isEnumType`'s no-evidence heuristic.**
+      Found as a side effect of testing optional function results
+      (unrelated to that fix, confirmed reproducible with a bare
+      optional local and no helper functions at all): `var o ?P =
+      none;` where `P` is a struct type that is never actually
+      constructed anywhere in the reachable program emits an invalid
+      C typedef, because `isEnumType`'s heuristic (used to distinguish
+      a struct from an enum when there's no real construction evidence
+      to go on) misclassifies the never-constructed struct as an enum.
+      Not yet scoped.
 
 ---
 
