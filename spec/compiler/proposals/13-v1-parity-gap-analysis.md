@@ -130,19 +130,18 @@ repeated here.
       returns; only `==`/`!=`/`<`/`<=`/`>`/`>=` on a non-entry-width
       integer rejected outright (`buildComparisonOperand` built every
       such operand at the ambient entry width instead of its own).
-- [ ] **Checked arithmetic (`*`, `+`, `-`, `/`, `%` with overflow
-      checks) on a non-entry-width integer still fails — the actual
-      remaining blocker on `std/hash.peb`'s real `hash_bytes` running
-      end-to-end, found while verifying the comparison fix above.**
-      `hash = hash * fnv_prime;` (both `u64`) inside a u64-returning
-      helper fails: `checkedSuffix` (`internal/backend/emit.go`) only
-      covers `Int`/`I32`/`I64`, so a checked-arithmetic call for `u64`
-      (or any other non-entry-width integer) lowers to a runtime
-      helper name with an empty suffix (`pebble_rt_checked_mul_`).
-      Comparisons, casts, calls, and returns on non-entry-width
-      integers all work now (see above and earlier fixes) — this is
-      specifically the checked-arithmetic-operator gap. Not yet scoped
-      in detail.
+- [x] Checked arithmetic (`+`, `-`, `*`) for `u64` fixed (`d5e7fe9`) —
+      new runtime primitives (`pebble_rt_checked_add/sub/mul_u64`,
+      mirroring the `i64` family) plus `pebble_rt_checked_slice_start_u64`
+      and `pebble_rt_checked_str_char_at_u64`, which turned out to be
+      reachable too (a `u64`-returning function's ambient width reaches
+      every `checkedSuffix` call site, not just arithmetic — found by
+      compiling emitted C directly with `cc`, not just trusting the Go
+      test suite). `u64` division/modulo, shifts, and float-to-integer
+      conversion still have no runtime twin and are now explicit clean
+      rejections. `std/hash.peb`'s real `hash_bytes` body (mirrored,
+      not the actual file — see below) now compiles and runs
+      end-to-end via `backend.Emit`.
 - [ ] **`hash_str`/`hash_ptr`/`hash_char` in `std/hash.peb` use casts
       the checker actually forbids — found while verifying the
       `hash_bytes` fix above, previously masked because the
