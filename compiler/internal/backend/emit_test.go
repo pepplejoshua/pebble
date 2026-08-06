@@ -432,6 +432,119 @@ func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
 	}
 }
 
+func TestEmitGenericStructOptionalFieldSingleCompileAndRun(t *testing.T) {
+	// Generic struct compound fields, optional-wrapped: a single
+	// specialization of `Box[K] = struct { value ?K; }` with K = int must
+	// compile AND run with the correct unwrapped value. The field's member
+	// template wraps the struct's own parameter, so the checker leaves its
+	// MemberTypes entry unresolved and the backend must recover the concrete
+	// Optional(int) type from the construction evidence. 5 is the unwrapped
+	// value.
+	emitAndRun(t, `type Box[K] = struct { value ?K; }; fn main() int { var b Box[int] = Box[int].{ value = some 5 }; return b.value!; }`, false, 5, false)
+}
+
+func TestEmitGenericStructOptionalTwoSpecializationsCompileAndRun(t *testing.T) {
+	// The exact repro that was broken before this slice: TWO specializations
+	// of the same generic struct in one program, the field type a compound
+	// wrapping the struct's own parameter. Before the fix, Box[bool]'s struct
+	// typedef reused Box[int]'s Optional(int) field type (pebble_optional_29_t)
+	// and the Box[bool] construction referenced pebble_optional_30_t which was
+	// never defined — a real cc failure (undeclared identifier). The
+	// specialization is now resolved from its own construction evidence, so
+	// each struct typedef carries its own payload optional and every optional
+	// typedef is emitted. The three-way test proves all three values
+	// independently: c.value! is true, d.value! is false (both bool
+	// specializations, distinguishing by VALUE not just by type), b.value! is
+	// 5 (int specialization), so the exit code 5 requires every field read to
+	// dispatch against its own specialization's optional payload type. (d's
+	// payload is `some false`, not `none` — force-unwrapping a `none` value
+	// with `!` is checked and panics by design, so `none` can't stand in for
+	// "false" here without aborting the program.)
+	emitAndRun(t, `type Box[K] = struct { value ?K; }; fn main() int { var b Box[int] = Box[int].{ value = some 5 }; var c Box[bool] = Box[bool].{ value = some true }; var d Box[bool] = Box[bool].{ value = some false }; if c.value! { if d.value! { return 1; } else { return b.value!; } } else { return 0; } }`, false, 5, false)
+}
+
+func TestEmitGenericStructPointerFieldSingleCompileAndRun(t *testing.T) {
+	// Generic struct compound fields, pointer-wrapped: a single specialization
+	// of `Ref[K] = struct { ptr *K; }` with K = int must compile AND run with
+	// the correct dereferenced value. The member's template wraps the struct's
+	// own parameter, so its MemberTypes entry is unresolved and the backend
+	// recovers the concrete *int pointee from the construction evidence; the
+	// nil construction, the non-nil assignment, and the checked dereference all
+	// agree on int32_t. 7 is the value read through the pointer field.
+	emitAndRun(t, `type Ref[K] = struct { ptr *K; }; fn main() int { var r Ref[int] = Ref[int].{ ptr = nil }; var x int = 7; var p *int = &x; r.ptr = p; if r.ptr == nil { return 0; } else { return *r.ptr; } }`, false, 7, false)
+}
+
+func TestEmitGenericStructPointerTwoSpecializationsCompileAndRun(t *testing.T) {
+	// The pointer analogue of the two-specialization repro: before this slice,
+	// Ref[bool]'s struct typedef field reused Ref[int]'s pointee (both declared
+	// `bool *` or both `int32_t *` depending on node order) — silently wrong
+	// and a -Werror incompatible-pointer-types failure under the runtime
+	// Makefile's flags. Now each specialization's pointee is recovered from its
+	// own construction evidence. The program proves both independently: *s.ptr
+	// reads Ref[bool]'s bool true (driving the outer if), *r.ptr reads Ref[int]'s
+	// int 7 (the returned value), so exit code 7 requires both field reads to
+	// dispatch against their own specialization's pointee type.
+	emitAndRun(t, `type Ref[K] = struct { ptr *K; }; fn main() int { var r Ref[int] = Ref[int].{ ptr = nil }; var s Ref[bool] = Ref[bool].{ ptr = nil }; var x int = 7; var y bool = true; var p *int = &x; var q *bool = &y; r.ptr = p; s.ptr = q; if s.ptr == nil { return 0; } else { if *s.ptr { return *r.ptr; } else { return 1; } } }`, false, 7, false)
+}
+
+func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
+	// The emitted-C shape check for the pointer two-specialization case: each
+	// specialization's typedef must declare the CORRECT pointee C type — int32_t
+	// for Ref[int], bool for Ref[bool] — with no shared/wrong pointee and no
+	// rejection. The two typedefs are distinct pebble_struct_<typeID>_t
+	// definitions (24 for Ref[int], 25 for Ref[bool], 26 the ptr field symbol)
+	// from a real fixture dump. Before the fix both typedefs declared the same
+	// pointee (one specialization's won and the other was silently wrong).
+	unit, snapshot, entryID, sources := buildFixture(t, `type Ref[K] = struct { ptr *K; }; fn main() int { var r Ref[int] = Ref[int].{ ptr = nil }; var s Ref[bool] = Ref[bool].{ ptr = nil }; var x int = 7; var y bool = true; var p *int = &x; var q *bool = &y; r.ptr = p; s.ptr = q; if s.ptr == nil { return 0; } else { if *s.ptr { return *r.ptr; } else { return 1; } } }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t * pebble_field_26;\n} pebble_struct_24_t;",
+		"typedef struct {\n    bool * pebble_field_26;\n} pebble_struct_25_t;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	// Each specialization is a distinct typedef name and the second does not
+	// reuse the first's pointee (a shared layout would emit one typedef).
+	if strings.Count(out, "} pebble_struct_24_t;") != 1 || strings.Count(out, "} pebble_struct_25_t;") != 1 {
+		t.Errorf("expected exactly one typedef each for the two specializations:\n%s", out)
+	}
+}
+
+func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
+	// The emitted-C shape check for the optional two-specialization case: each
+	// specialization's typedef must name its OWN payload optional type —
+	// pebble_optional_29_t (Optional(int)) for Box[int], pebble_optional_30_t
+	// (Optional(bool)) for Box[bool] — and BOTH optional typedefs must be
+	// emitted (before this slice the bool-payload optional was referenced but
+	// never defined, a real cc error). Struct type IDs 24/25, optional types
+	// 29/30, field symbol 26 from a real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Box[K] = struct { value ?K; }; fn main() int { var b Box[int] = Box[int].{ value = some 5 }; var c Box[bool] = Box[bool].{ value = some true }; var d Box[bool] = Box[bool].{ value = none }; if c.value! { if d.value! { return 1; } else { return b.value!; } } else { return 0; } }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    pebble_optional_29_t pebble_field_26;\n} pebble_struct_24_t;",
+		"typedef struct {\n    pebble_optional_30_t pebble_field_26;\n} pebble_struct_25_t;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	// Both optional typedefs must exist: the bool-payload optional is what was
+	// referenced-but-undefined before this slice.
+	if strings.Count(out, "} pebble_optional_29_t;") != 1 || strings.Count(out, "} pebble_optional_30_t;") != 1 {
+		t.Errorf("expected exactly one typedef each for the two optional payloads:\n%s", out)
+	}
+}
+
 func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int => 0;", true, 0, false)
 }

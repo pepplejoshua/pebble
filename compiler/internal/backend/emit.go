@@ -1105,7 +1105,12 @@ func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 // on the initializer value node, not on the Initialize node itself). The
 // Initialize rule alone covers a `none`-initialized local too (a NoneOptional
 // node carries its own optional Type exactly like SomeOptional does), so no
-// separate NoneOptional case is needed here.
+// separate NoneOptional case is needed here. A RecordConstruct's field values
+// are the one more source the Children-only recursion would miss: an
+// optional-typed struct field (`Box[int].{ value = some 5 }`) carries its
+// SomeOptional field value in node.Fields, not node.Children, so the field
+// value's optional Type is collected here — the same hole the struct walk's
+// own RecordConstruct case closes for struct types.
 func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
@@ -1120,6 +1125,13 @@ func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 		for _, childID := range node.Children {
 			if child, ok := unit.Node(childID); ok && isOptional(snapshot, child.Type) {
 				*out = append(*out, child.Type)
+			}
+		}
+	}
+	if node.Kind == tir.RecordConstruct {
+		for _, field := range node.Fields {
+			if value, ok := unit.Node(field.Value); ok && isOptional(snapshot, value.Type) {
+				*out = append(*out, value.Type)
 			}
 		}
 	}
@@ -1822,7 +1834,20 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 			fieldType = substituted
 		}
 		if fieldType == 0 {
-			fieldType, ok = fieldTypes[member]
+			// A member whose template wraps the struct's own parameter (e.g.
+			// `?K` or `*K`) has no parameterized TypeID to substitute, so the
+			// concrete field type is recovered per instantiation from the
+			// struct's OWN construction evidence first: any RecordConstruct
+			// whose type is exactly this instantiation (node.Type, not merely
+			// the shared declaration) names the field's resolved type on its
+			// value node. Two specializations share every field symbol, so the
+			// per-symbol fieldTypes fallback below would let one
+			// instantiation's type win over the other's; the scoped recovery
+			// is what keeps them distinct.
+			fieldType, ok = instantiatedFieldType(unit, id, member)
+			if !ok {
+				fieldType, ok = fieldTypes[member]
+			}
 			if !ok {
 				return structInfo{}, fmt.Errorf("struct type %s field symbol %d has no resolvable type in the unit", structTypeName(id), member)
 			}
@@ -1830,6 +1855,29 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 		fields[i] = structFieldInfo{member: member, typ: fieldType}
 	}
 	return structInfo{typ: id, decl: decl, fields: fields}, nil
+}
+
+// instantiatedFieldType recovers one field's type for a SPECIFIC struct
+// instantiation from the unit's own construction evidence: any RecordConstruct
+// whose type is exactly structType (not merely whose declaration matches) and
+// whose Fields include member, returning that field value node's Type. Two
+// specializations of one generic struct share every field symbol, so the
+// recovery must be scoped to the instantiation's own type or the first
+// constructed instantiation would supply the field type for the rest.
+func instantiatedFieldType(unit *tir.Unit, structType types.TypeID, member symbol.SymbolID) (types.TypeID, bool) {
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.RecordConstruct || node.Type != structType {
+			continue
+		}
+		for _, field := range node.Fields {
+			if field.Field == member {
+				if value, ok := unit.Node(field.Value); ok && value.Type != 0 {
+					return value.Type, true
+				}
+			}
+		}
+	}
+	return 0, false
 }
 
 // structSubstitutions builds the per-instantiation substitution map for a
@@ -9450,13 +9498,16 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 // the instantiation's own arguments rather than any per-symbol evidence —
 // per-symbol node-graph evidence would let the first instantiation's Int win
 // over the second's Bool. When the member's MemberTypes entry is unresolved
-// (a member whose template wraps a parameter, out of scope here) the type is
-// instead recovered from the unit's own node graph: any FieldPlace node
-// carrying the member (its Type is the field's resolved type), or any
-// RecordConstruct of the same declaration whose Fields contain the member (the
-// value node's Type is the field's resolved type). A member that is not in the
-// struct's declared member list, or whose type cannot be resolved from the
-// unit, reports false.
+// (a member whose template wraps a parameter) the type is instead recovered
+// from the unit's own node graph, scoped to THIS instantiation: any
+// RecordConstruct whose type is exactly structType and whose Fields contain
+// the member (the value node's Type is the field's resolved type), or any
+// FieldPlace whose base resolves to structType and whose Member is the member
+// (its Type is the field's resolved type). The RecordConstruct/FieldPlace
+// scoping is what keeps two specializations of one generic struct from
+// borrowing each other's field type. A member that is not in the struct's
+// declared member list, or whose type cannot be resolved from the unit,
+// reports false.
 func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType types.TypeID, member symbol.SymbolID) (types.TypeID, bool) {
 	key, ok := snapshot.Key(structType)
 	if !ok {
@@ -9491,9 +9542,11 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 	}
 	for _, node := range unit.Nodes() {
 		if node.Kind == tir.FieldPlace && node.Member == member && node.Type != 0 {
-			return node.Type, true
+			if structOf, ok := fieldPlaceStructType(unit, node); ok && structOf == structType {
+				return node.Type, true
+			}
 		}
-		if node.Kind == tir.RecordConstruct && node.Symbol == decl {
+		if node.Kind == tir.RecordConstruct && node.Symbol == decl && node.Type == structType {
 			for _, field := range node.Fields {
 				if field.Field == member {
 					if value, ok := unit.Node(field.Value); ok && value.Type != 0 {
@@ -9502,6 +9555,35 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 				}
 			}
 		}
+	}
+	return 0, false
+}
+
+// fieldPlaceStructType resolves the struct type a FieldPlace reads from by
+// walking the place's base chain to the underlying StoragePlace or
+// DereferencePlace (whose Type is the struct type). Two generic
+// specializations of one struct share every field symbol, so FieldPlace
+// evidence must be scoped to the struct type the read actually projects —
+// matching the RecordConstruct recovery's node.Type == structType scoping —
+// or the first matching FieldPlace in the unit (from another specialization)
+// would supply the wrong field type.
+func fieldPlaceStructType(unit *tir.Unit, node tir.Node) (types.TypeID, bool) {
+	if len(node.Children) != 1 {
+		return 0, false
+	}
+	base, ok := unit.Node(node.Children[0])
+	if !ok {
+		return 0, false
+	}
+	switch base.Kind {
+	case tir.StoragePlace:
+		return base.Type, true
+	case tir.DereferencePlace:
+		// A DereferencePlace's Type is already the pointee type, which for a
+		// struct-field projection is the struct type being read.
+		return base.Type, true
+	case tir.FieldPlace:
+		return fieldPlaceStructType(unit, base)
 	}
 	return 0, false
 }
