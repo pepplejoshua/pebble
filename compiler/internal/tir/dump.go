@@ -354,7 +354,7 @@ func (d *dumper) dumpNode(id NodeID, n Node, u *Unit) error {
 			n.Convention, n.ContextAction.String(), n.Symbol, n.Member); err != nil {
 			return err
 		}
-	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum, PointerCast:
+	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, CharToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum, PointerCast:
 		// payload printed via children
 	case CheckedOptionalUnwrap:
 		// payload printed via children

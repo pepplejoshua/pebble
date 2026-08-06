@@ -65,8 +65,9 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 		coercionNode := map[coercionKind]tir.NodeKind{
 			coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
 			coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
-			coercionEnumToInteger: tir.EnumToInteger, coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum,
-			coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum, coercionPointerCast: tir.PointerCast,
+			coercionEnumToInteger: tir.EnumToInteger, coercionCharToInteger: tir.CharToInteger,
+			coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum,
+			coercionCheckedIntegerToEnum:  tir.CheckedIntegerToEnum, coercionPointerCast: tir.PointerCast,
 		}[coercion]
 		if coercionNode == 0 {
 			return 0, false
@@ -408,6 +409,7 @@ func (s *irBuildState) addCoercionNode(kind coercionKind, destination types.Type
 		coercionIntegerCast: tir.IntegerCast, coercionIntegerToFloat: tir.IntegerToFloat,
 		coercionFloatToInteger: tir.FloatToInteger, coercionFloatCast: tir.FloatCast,
 		coercionOptionalInject: tir.OptionalInject, coercionEnumToInteger: tir.EnumToInteger,
+		coercionCharToInteger:         tir.CharToInteger,
 		coercionOptionalIntegerToEnum: tir.OptionalIntegerToEnum, coercionCheckedIntegerToEnum: tir.CheckedIntegerToEnum,
 		coercionPointerCast: tir.PointerCast,
 	}[kind]

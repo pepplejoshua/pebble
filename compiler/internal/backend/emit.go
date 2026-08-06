@@ -8265,6 +8265,41 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", err
 		}
 		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
+	case tir.CharToInteger:
+		// A char value cast to an integer (`c as u32`), lowered as a plain,
+		// unchecked C cast of the char value's expression to the destination
+		// integer type. A char is a Unicode scalar value, and every valid
+		// codepoint (max 0x10FFFF) fits identically in every integer width
+		// Pebble has, so no well-typed Pebble program can construct a char
+		// value whose codepoint overflows the destination width — reading out
+		// the char's codepoint as an integer is always well-defined and needs
+		// no runtime helper, exactly as enum-to-integer (EnumToInteger) casts
+		// need none. The destination width is resolved from the node's own Type
+		// exactly as IntegerCast resolves its own (and the width gate above has
+		// already required it to be the surrounding context's width); the single
+		// child is the char value being cast, built by buildCharOperand (a char
+		// literal, a char-typed local reference, a char-returning call, or a
+		// char element read), and the emitted C is `(<destination C type>)
+		// (<char value expression>)`. The reverse direction, integer-to-char,
+		// is out of scope (an arbitrary integer is not necessarily a valid
+		// Unicode scalar, so that direction needs a validity-checked design of
+		// its own).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CharToInteger with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CharToInteger with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || cType(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains a CharToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
+		}
+		childExpr, err := buildCharOperand(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
+		if err != nil {
+			return "", err
+		}
+		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
 	case tir.CheckedIntegerToEnum:
 		// An integer cast to an enum (`5 as Color`), lowered through the
 		// single canonical-width runtime primitive

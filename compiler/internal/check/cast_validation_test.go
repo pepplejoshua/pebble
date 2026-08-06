@@ -121,6 +121,35 @@ func TestValidateCastRecordsAcceptsIdentityCast(t *testing.T) {
 	}
 }
 
+func TestValidateCastRecordsAcceptsCharToInteger(t *testing.T) {
+	// The forward char -> integer direction: `c as u64` (the std/hash.peb
+	// hash_char shape) must now classify compatibleExplicit and be accepted.
+	source := `fn f(c char) u64 { return c as u64; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal char->u64 cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsRejectsIntegerToChar(t *testing.T) {
+	// The reverse integer -> char direction is deliberately out of scope and
+	// must STILL be rejected with a clean C0601 — an arbitrary integer is not
+	// necessarily a valid Unicode scalar (e.g. the surrogate range), so this
+	// direction needs its own validity-checked design later. Regression guard
+	// proving the new rule did not accidentally open it.
+	source := `fn f(v u32) char { return v as char; }`
+	diagnostics, result := run06bFixture(t, source)
+	if result.Successful() {
+		t.Fatal("forbidden u32->char cast was accepted")
+	}
+	if got := countCode(diagnostics, CodeConversion); got != 1 {
+		t.Fatalf("expected exactly one C0601, got %d: %+v", got, diagnostics.Items())
+	}
+	if hasCode(diagnostics, CodeGeneration) {
+		t.Fatalf("forbidden cast leaked the C0619 internal-error path: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateCastRecordsSkipsUnresolvedRoots(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})
 	handoff := run06a(inputs, diagnostics, Config{})

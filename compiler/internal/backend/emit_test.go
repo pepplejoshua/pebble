@@ -8105,6 +8105,55 @@ func TestEmitEnumToIntegerWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitCharToIntegerCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro from the brief: `let c char = 'A'; let n u32 =
+	// c as u32; return n as i32;` — a char read out as its codepoint. The
+	// checker lowers the cast to a tir.CharToInteger whose single child is the
+	// char-typed local c, and the backend lowers it to a plain C cast
+	// (uint32_t)(pebble_local_<c>) — 'A' is codepoint 65, so the exit code is
+	// 65. The u32 destination is not the entry's i32 width, so the cast appears
+	// as the u32 local's initializer, then the local is read back out as i32.
+	emitAndRun(t, "fn main() i32 { let c char = 'A'; let n u32 = c as u32; return n as i32; }", false, 65, false)
+}
+
+func TestEmitCharToIntegerFromLiteralCompilesAndRuns(t *testing.T) {
+	// The CharToInteger child can be a bare char literal (not just a local
+	// reference): 'A' as u32 is built by buildCharOperand's CharLiteral path
+	// and cast to uint32_t, then read back out as i32. Codepoint 65.
+	emitAndRun(t, "fn main() i32 { let n u32 = 'A' as u32; return n as i32; }", false, 65, false)
+}
+
+func TestEmitCharToIntegerHashCharCompilesAndRuns(t *testing.T) {
+	// The real motivating case from std/hash.peb:85-87 — `fn hash_char(val
+	// char) u64 { return hash_u64(val as u64); }` — as a standalone fixture
+	// (std/hash.peb itself is untouched). The `val as u64` is a CharToInteger
+	// whose destination (u64) is the argument width of hash_u64, so the width
+	// gate passes exactly as the hash module needs. hash_char('A') reads out
+	// codepoint 65 and returns it as a u64, which main narrows to i32.
+	emitAndRun(t, "fn hash_u64(val u64) u64 { return val; }\nfn hash_char(val char) u64 { return hash_u64(val as u64); }\nfn main() i32 { return hash_char('A') as i32; }", false, 65, false)
+}
+
+func TestEmitCharToIntegerU64CompilesAndRuns(t *testing.T) {
+	// The same char-to-integer cast at the other motivating width (u64),
+	// matching hash_char's destination directly in a u64 entry.
+	emitAndRun(t, "fn main() i64 { let c char = 'A'; let n u64 = c as u64; return n as i64; }", false, 65, false)
+}
+
+func TestEmitCharToIntegerWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the CharToInteger lowers to a plain C
+	// cast of the char value's expression to the destination C type,
+	// (uint32_t)(...), with no runtime helper.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let c char = 'A'; let n u32 = c as u32; return n as i32; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(uint32_t)(pebble_local_") {
+		t.Errorf("emitted C missing the char-to-integer cast (uint32_t)(pebble_local_...):\n%s", out)
+	}
+}
+
 // --- 10.46: integer-to-enum casts (CheckedIntegerToEnum) ---
 
 // emitAndRunRelease drives one .peb entry source through buildFixture, Emit,

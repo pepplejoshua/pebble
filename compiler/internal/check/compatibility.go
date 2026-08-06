@@ -61,6 +61,9 @@ func classifyPrimitive(source, destination types.TypeKey) (compatibilityClass, b
 	if (srcInteger || srcFloat) && (dstInteger || dstFloat) {
 		return compatibleExplicit, true
 	}
+	if srcKind == types.Char && dstInteger {
+		return compatibleExplicit, true
+	}
 	return compatibleForbidden, true
 }
 
@@ -155,6 +158,7 @@ const (
 	coercionOptionalInject
 	coercionTupleCoerce
 	coercionEnumToInteger
+	coercionCharToInteger
 	coercionOptionalIntegerToEnum
 	coercionCheckedIntegerToEnum
 	coercionPointerCast
@@ -186,6 +190,9 @@ func coercionFor(snapshot *infer.SemanticSnapshot, class compatibilityClass, sou
 		}
 		if isFloatBuiltin(srcBuiltin) && isFloatBuiltin(dstBuiltin) {
 			return coercionFloatCast
+		}
+		if srcBuiltin == types.Char && isIntegerBuiltin(dstBuiltin) {
+			return coercionCharToInteger
 		}
 	}
 

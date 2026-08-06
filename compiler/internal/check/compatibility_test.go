@@ -56,6 +56,9 @@ func expectedPrimitiveClass(src, dst types.BuiltinKind) compatibilityClass {
 	if srcNum && dstNum {
 		return compatibleExplicit
 	}
+	if src == types.Char && isInteger(dst) {
+		return compatibleExplicit
+	}
 	return compatibleForbidden
 }
 
@@ -156,7 +159,7 @@ fn main() void {}
 		"tupleImplicitDestination":  intern(types.TupleKey([]types.TypeID{a, optionalOptionalA})),
 		"tupleExplicit":             intern(types.TupleKey([]types.TypeID{a, store.Builtins().F32})),
 		"tupleExplicitDestination":  intern(types.TupleKey([]types.TypeID{a, store.Builtins().F64})),
-		"tupleForbidden":            intern(types.TupleKey([]types.TypeID{a, b})),
+		"tupleForbidden":            intern(types.TupleKey([]types.TypeID{a, store.Builtins().Str})),
 		"tupleForbiddenDestination": intern(types.TupleKey([]types.TypeID{a, a})),
 		"tupleShort":                intern(types.TupleKey([]types.TypeID{a})),
 		"fnPebble":                  intern(types.FunctionKey(types.Pebble, []types.TypeID{a}, a, false)),
@@ -197,6 +200,11 @@ func TestClassifyCompositeMatrix(t *testing.T) {
 		{"different optional payload", f.optionalA, ids["optionalB"], compatibleForbidden},
 		{"enum to integer", f.enum, f.integer, compatibleExplicit},
 		{"integer to enum", f.integer, f.enum, compatibleExplicit},
+		{"char to integer", f.b, f.integer, compatibleExplicit},
+		{"integer to char", f.integer, f.b, compatibleForbidden},
+		{"char to u32", f.b, s.Types().Builtins().U32, compatibleExplicit},
+		{"char to u64", f.b, s.Types().Builtins().U64, compatibleExplicit},
+		{"u32 to char", s.Types().Builtins().U32, f.b, compatibleForbidden},
 		{"integer to optional enum", f.integer, ids["optionalEnum"], compatibleExplicit},
 		{"integer to tagged union", f.integer, f.tagged, compatibleForbidden},
 		{"implicit tuple", ids["tupleImplicit"], ids["tupleImplicitDestination"], compatibleImplicit},
@@ -235,7 +243,7 @@ func TestCoercionFor(t *testing.T) {
 		{"identity array", ids["arrayA"], ids["arrayA"], coercionNone},
 		{"identity slice", ids["sliceA"], ids["sliceA"], coercionNone},
 		// 2. compatibleForbidden → coercionNone
-		{"forbidden builtin", f.b, f.a, coercionNone},
+		{"forbidden builtin", s.Types().Builtins().Bool, f.a, coercionNone},
 		{"forbidden pointer", ids["ptrA"], ids["ptrB"], coercionPointerCast},
 		{"forbidden array payload", ids["arrayA"], ids["arrayB"], coercionNone},
 		{"forbidden different slice", ids["sliceA"], ids["sliceB"], coercionNone},
@@ -260,6 +268,12 @@ func TestCoercionFor(t *testing.T) {
 		{"enum to integer", f.enum, f.integer, coercionEnumToInteger},
 		{"integer to bare enum", f.integer, f.enum, coercionCheckedIntegerToEnum},
 		{"integer to optional enum", f.integer, ids["optionalEnum"], coercionOptionalIntegerToEnum},
+		// 8. char conversions
+		{"char to integer i32", f.b, f.integer, coercionCharToInteger},
+		{"char to integer u32", f.b, s.Types().Builtins().U32, coercionCharToInteger},
+		{"char to integer u64", f.b, s.Types().Builtins().U64, coercionCharToInteger},
+		{"integer to char", f.integer, f.b, coercionNone},
+		{"u32 to char", s.Types().Builtins().U32, f.b, coercionNone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
