@@ -90,51 +90,42 @@ repeated here.
       `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
       v2's current behavior — explicit naming stays required, no implicit
       `iter` default. Not tracked as a gap.
-- [ ] **All three slices done (2ab27d6, 0b6ed32, 0643cca) — function
-      types now work end to end for locals, values, indirect calls,
-      struct fields, parameters, and results.** Independently
-      re-verified `std/hmap.peb` via `backend.Emit` (not just
-      `check.Check`) as promised — found one real, narrow, precise
-      residual gap in the process: `validateFunctionTypeSignature`'s
-      supported RESULT types are entry-width/bool/char/void only, not
-      `uint`/`u64` — asymmetric with parameters, where `uint` IS
-      already supported. `hmap.peb`'s `hash_fn fn (K) u64;` field fails
-      with exactly this: "function type fn(int) u64 has result type
-      u64, want int, bool, char, or void." `std/set.peb` almost
-      certainly hits the same gap (uses the same `hash_fn` field
-      shape via `hmap`) — not separately re-tested, expect the
-      identical failure. Not yet fixed; `functionTypeResultCType`
-      (`internal/backend/emit.go`) needs a `uint`/`u64` case mirroring
-      the existing parameter-side `isUint` support exactly.
-      CORRECTED, much bigger than originally scoped: function types have
-      NO real backend representation anywhere, not just in locals.
-      Original entry claimed struct fields already worked ("confirmed
-      throughout `std/hmap.peb`/`std/set.peb`") — that claim was wrong,
-      based only on the CHECKER accepting those files
-      (`check.Check`), never on actually running them through
-      `backend.Emit`. Directly verified today: `types.Function` has
-      exactly ONE reference in the entire `internal/backend/emit.go`
-      (the whole backend package — confirmed only one non-test `.go`
-      file there), and it's purely for a human-readable error message in
-      `describeType`, not real C emission. A function-typed struct FIELD
-      fails identically to a function-typed local: `type Table = struct
-      { op fn(i32, i32) i32; }; ... var t Table = Table.{ op = add };`
-      fails with `struct type pebble_struct_N_t: field type fn(i32,
-      i32) i32 is not supported, want i32 or bool`. There is no C
-      function-pointer typedef mechanism, no function-value emission,
-      nothing — this needs a real, standalone feature (comparable in
-      size to the float-expression work, not a one-case fix), threading
-      function-pointer C types through struct fields, locals, and likely
-      parameters/results.
-
-      **Sobering correction this forces**: `std/hmap.peb`/`std/set.peb`
-      being marked "checks clean, 0 diagnostics" earlier this session
-      meant exactly that — clean at the CHECKER level — and should NOT
-      have been read as "compiles and runs." Both files have a
-      function-typed field (`hash_fn fn (K) u64;`) and almost certainly
-      do not compile to real C yet. This needs independent re-verification
-      via `backend.Emit` (not just `check.Check`) once function types are
-      actually supported, before trusting either file end-to-end.
+- [x] Function types: fully done, all four slices (2ab27d6, 0b6ed32,
+      0643cca, b5c139c) — locals, values, indirect calls, struct
+      fields, parameters, results, and `uint`/`u64` in every position.
+      `std/hmap.peb`'s `hash_fn fn (K) u64;` field now compiles and
+      runs through `backend.Emit`. `std/set.peb` uses the identical
+      `hash_fn` shape via `hmap` and should be re-verified the same way
+      before being trusted end-to-end (not separately re-tested).
+- [ ] **Generic struct DATA fields have no backend representation —
+      found while re-verifying `std/hmap.peb` end-to-end via
+      `backend.Emit` after the u64 function-type fix landed.**
+      `HashMap[K, V]`'s `key K` / `value V` (and other type-parameter
+      -dependent fields like `entries`) fail at `buildStructTypedef`
+      with an unresolvable field type — confirmed this is NOT the
+      function-typed `hash_fn` field (isolated separately: a generic
+      struct with only a function-typed field works; a generic struct
+      with a plain `uint`-typed data field, mirroring `HashMap`'s
+      shape, fails identically). Distinct and much larger than the
+      function-types work: needs real per-specialization struct-field
+      type resolution for generic structs, comparable in size to the
+      function-types feature itself, not a one-case fix.
+- [ ] **Generic struct METHOD calls are rejected by design, confirmed
+      via the pre-existing `TestEmitRejectsGenericMethodCall`** — found
+      in the same `hmap.peb` re-verification. `HashMap[K,V]`'s
+      `m.insert(...)` / `m.get(...)` are methods on a `[K,V]`-generic
+      receiver; the backend explicitly rejects generic method calls
+      today (free generic functions like `hmap::new[int, int](...)`
+      already work fine — only the method-call form is blocked). A
+      full `hmap.peb` consumer (construct + insert + get) cannot
+      compile-and-run until both this and the generic-struct-data
+      -fields gap above are fixed.
+- [ ] **`std/hash.peb` has a pre-existing checker bug, found in passing
+      earlier this session while building an `hmap.peb` re-verification
+      test (was not formally tracked until now).** `hash = hash ^
+      (*(data + i) as u64);` fails with `T0505: cannot unify semantic
+      type kind 1 with kind 2`. Not yet investigated in detail — this
+      entry exists so it isn't lost again.
 - **Tagged-union field access on the matched variant (`case Ok: return
       self.Ok;`) is pattern matching — still deferred, confirmed by
       spec text, not merely a sequencing choice.** Previously framed as
