@@ -1761,10 +1761,15 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 // field symbols in the struct's source declaration order — NOT the
 // construction-site order a RecordConstruct's Fields carry, which is why the
 // order is resolved here rather than from any construction node. Each field's
-// type comes from TypeDecl.MemberTypes when the declaration has a concrete
-// member template. Generic declarations may leave an entry unresolved until
-// specialization, so the usage-derived fieldTypes map remains a fallback for
-// those entries; a member with neither source is rejected rather than guessed.
+// type comes from TypeDecl.MemberTypes. For a generic instantiation the
+// TypeKey.Nominal arguments are the instantiation's concrete type arguments,
+// so a member whose recorded type is one of the struct's own type parameters
+// (the checker records the parameter's TypeID for a directly parameter-typed
+// field) is substituted against those arguments — resolving Pair[K, V]'s `key
+// K` to Pair[int, int]'s int and Pair[int, bool]'s int independently, from the
+// instantiation's own evidence rather than the per-symbol fallback below.
+// Members whose template the checker left unresolved (unless the usage-derived
+// fieldTypes map provides a type) are rejected rather than guessed.
 func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID, fieldTypes map[symbol.SymbolID]types.TypeID) (structInfo, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
@@ -1773,7 +1778,7 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 	if key.Kind() != types.Nominal {
 		return structInfo{}, fmt.Errorf("type %s is a %v, want a struct type", structTypeName(id), key.Kind())
 	}
-	decl, _, ok := key.Nominal()
+	decl, arguments, ok := key.Nominal()
 	if !ok {
 		return structInfo{}, fmt.Errorf("type %s has no nominal declaration", structTypeName(id))
 	}
@@ -1781,11 +1786,22 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 	if !ok {
 		return structInfo{}, fmt.Errorf("struct type %s has no TypeDeclaration for symbol %d in the unit", structTypeName(id), decl)
 	}
+	var substitutions map[symbol.SymbolID]types.TypeID
+	if len(arguments) > 0 {
+		substitutions = structSubstitutions(snapshot, decl, arguments)
+	}
 	fields := make([]structFieldInfo, len(typeDecl.Members))
 	for i, member := range typeDecl.Members {
 		fieldType := types.TypeID(0)
 		if i < len(typeDecl.MemberTypes) {
 			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType != 0 && substitutions != nil {
+			substituted, err := snapshot.Substitute(fieldType, substitutions)
+			if err != nil {
+				return structInfo{}, fmt.Errorf("struct type %s field symbol %d type substitution: %v", structTypeName(id), member, err)
+			}
+			fieldType = substituted
 		}
 		if fieldType == 0 {
 			fieldType, ok = fieldTypes[member]
@@ -1796,6 +1812,69 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 		fields[i] = structFieldInfo{member: member, typ: fieldType}
 	}
 	return structInfo{typ: id, decl: decl, fields: fields}, nil
+}
+
+// structSubstitutions builds the per-instantiation substitution map for a
+// generic struct: it maps each of the struct's OWN type parameters (in their
+// declared order, recovered from the struct's generic Nominal key in the
+// snapshot — the Nominal whose arguments are that declaration's TypeParameter
+// TypeIDs) to the concrete type arguments of the instantiation being resolved.
+// The returned map is keyed by parameter declaration symbol, matching
+// types.Snapshot.Substitute's key. A non-generic struct or a struct whose
+// generic declaration key is absent from the snapshot yields nil (callers then
+// fall back to MemberTypes/fieldTypes, which is exactly correct for the
+// non-generic case).
+func structSubstitutions(snapshot *types.Snapshot, decl symbol.SymbolID, arguments []types.TypeID) map[symbol.SymbolID]types.TypeID {
+	parameters := structTypeParameters(snapshot, decl)
+	if len(parameters) == 0 || len(parameters) != len(arguments) {
+		return nil
+	}
+	substitutions := make(map[symbol.SymbolID]types.TypeID, len(parameters))
+	for index, parameter := range parameters {
+		parameterKey, ok := snapshot.Key(parameter)
+		if !ok {
+			return nil
+		}
+		parameterSymbol, ok := parameterKey.TypeParameter()
+		if !ok {
+			return nil
+		}
+		substitutions[parameterSymbol] = arguments[index]
+	}
+	return substitutions
+}
+
+// structTypeParameters recovers the ordered list of a struct declaration's own
+// type-parameter TypeIDs from the snapshot. The checker interns the generic
+// declaration as a Nominal key whose arguments are that declaration's own
+// TypeParameter TypeIDs in parameter order (e.g. Pair[K, V]'s declaration key
+// carries [<K>, <V>]), which is the one Nominal in the snapshot whose arguments
+// are all TypeParameter kinds. Its arguments are therefore the authoritative
+// ordered parameter list needed to zip the instantiation's concrete arguments
+// back onto the struct's parameters.
+func structTypeParameters(snapshot *types.Snapshot, decl symbol.SymbolID) []types.TypeID {
+	for id := range snapshot.IDs() {
+		key, ok := snapshot.Key(id)
+		if !ok || key.Kind() != types.Nominal {
+			continue
+		}
+		candidate, arguments, ok := key.Nominal()
+		if !ok || candidate != decl || len(arguments) == 0 {
+			continue
+		}
+		allParameters := true
+		for _, argument := range arguments {
+			if kind, ok := snapshot.Kind(argument); !ok || kind != types.TypeParameter {
+				allParameters = false
+				break
+			}
+		}
+		if !allParameters {
+			continue
+		}
+		return arguments
+	}
+	return nil
 }
 
 // findTypeDeclaration locates the TypeDecl container (its ordered Members list
@@ -9178,21 +9257,30 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 
 // declaredFieldType resolves one field's own type from a struct type's
 // declared fields, matching the field's member symbol against the struct's
-// TypeDecl.Members list (the declared field order). The FieldDeclaration nodes
-// in the unit carry only the field's symbol, never its type, so the type is
-// resolved from the unit's own node graph: any FieldPlace node carrying the
-// member (its Type is the field's resolved type), or any RecordConstruct of
-// the same declaration whose Fields contain the member (the value node's Type
-// is the field's resolved type) — both are guaranteed consistent for a real
-// fixture, since a struct field has exactly one type. A member that is not in
-// the struct's declared member list, or whose type cannot be resolved from the
+// TypeDecl.Members list (the declared field order). For a generic
+// instantiation the member's recorded type is one of the declaration's own
+// type parameters, so the concrete field type is substituted per instantiation
+// exactly as resolveStructInfo does: the member's MemberTypes entry is the
+// parameter's TypeID and the struct type's Nominal arguments are the concrete
+// type arguments, so Pair[K, V]'s `value V` is Bool for Pair[int, bool] while
+// staying Int for Pair[int, int] in the same program. The two instantiations
+// share the same field symbol, which is why the field type is resolved from
+// the instantiation's own arguments rather than any per-symbol evidence —
+// per-symbol node-graph evidence would let the first instantiation's Int win
+// over the second's Bool. When the member's MemberTypes entry is unresolved
+// (a member whose template wraps a parameter, out of scope here) the type is
+// instead recovered from the unit's own node graph: any FieldPlace node
+// carrying the member (its Type is the field's resolved type), or any
+// RecordConstruct of the same declaration whose Fields contain the member (the
+// value node's Type is the field's resolved type). A member that is not in the
+// struct's declared member list, or whose type cannot be resolved from the
 // unit, reports false.
 func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType types.TypeID, member symbol.SymbolID) (types.TypeID, bool) {
 	key, ok := snapshot.Key(structType)
 	if !ok {
 		return 0, false
 	}
-	decl, _, ok := key.Nominal()
+	decl, arguments, ok := key.Nominal()
 	if !ok {
 		return 0, false
 	}
@@ -9200,15 +9288,24 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 	if !ok {
 		return 0, false
 	}
-	declared := false
-	for _, m := range typeDecl.Members {
-		if m == member {
-			declared = true
-			break
+	for index, declared := range typeDecl.Members {
+		if declared != member {
+			continue
 		}
-	}
-	if !declared {
-		return 0, false
+		fieldType := types.TypeID(0)
+		if index < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[index]
+		}
+		if fieldType != 0 {
+			substitutions := structSubstitutions(snapshot, decl, arguments)
+			if substitutions != nil {
+				if substituted, err := snapshot.Substitute(fieldType, substitutions); err == nil {
+					return substituted, true
+				}
+			}
+			return fieldType, true
+		}
+		break
 	}
 	for _, node := range unit.Nodes() {
 		if node.Kind == tir.FieldPlace && node.Member == member && node.Type != 0 {

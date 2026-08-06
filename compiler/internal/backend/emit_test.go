@@ -371,6 +371,67 @@ func TestEmitRejectsGenericMethodCall(t *testing.T) {
 	}
 }
 
+func TestEmitGenericStructDataFieldsCompileAndRun(t *testing.T) {
+	// Generic struct data fields slice 1: a generic struct whose fields are the
+	// struct's own type parameters (`key K`, `value V`) must emit per
+	// -specialization concrete field types, so Pair[int, int] constructs and
+	// reads both fields back. Before the slice, MemberTypes[i] for `key K` /
+	// `value V` was unresolved (the generic declaration's template is a type
+	// parameter, never a TemplateKnown concrete type), so resolveStructInfo
+	// had no concrete type and the typedef/field read failed. 5 * 10 + 10 = 60
+	// encodes both field values in the exit code, proving key == 5 and
+	// value == 10 independently.
+	emitAndRun(t, `type Pair[K, V] = struct { key K; value V; }; fn main() int { let p Pair[int, int] = Pair[int, int].{ key = 5, value = 10 }; return p.key * 10 + p.value; }`, false, 60, false)
+}
+
+func TestEmitGenericStructTwoSpecializationsCompileAndRun(t *testing.T) {
+	// Two specializations of the SAME generic struct in one program must emit
+	// two DISTINCT, independently-correct C typedefs (pebble_struct_<typeID>_t
+	// per specialization TypeID): Pair[int, int]'s value field is int while
+	// Pair[int, bool]'s is bool. The two share every field symbol (the member
+	// types are the same declaration), so the backend must resolve each
+	// instantiation's field type from ITS OWN construction evidence, not a
+	// per-field-symbol global map. The read of q.value must dispatch to the
+	// bool grammar and the three width field reads to the integer grammar;
+	// 5 + 10 + 6 = 21 confirms all four values end to end.
+	emitAndRun(t, `type Pair[K, V] = struct { key K; value V; }; fn main() int { let p Pair[int, int] = Pair[int, int].{ key = 5, value = 10 }; let q Pair[int, bool] = Pair[int, bool].{ key = 6, value = true }; if q.value { return p.key + p.value + q.key; } else { return 0; } }`, false, 21, false)
+}
+
+func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
+	// The emitted-C shape check: each specialization's typedef field C types
+	// must match its concrete instantiation — int32_t for the int-typed fields
+	// of Pair[int, int] AND of Pair[int, bool]'s key, bool for Pair[int,
+	// bool]'s value — with no generic placeholder and no rejection. The two
+	// typedefs are distinct pebble_struct_<typeID>_t definitions (25 for
+	// Pair[int, int], 26 for Pair[int, bool], 27/28 the key/value field
+	// symbols) from a real fixture dump. The entry's resolved width here is
+	// types.Int, which cType maps to int32_t.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Pair[K, V] = struct { key K; value V; }; fn main() int { let p Pair[int, int] = Pair[int, int].{ key = 5, value = 10 }; let q Pair[int, bool] = Pair[int, bool].{ key = 6, value = true }; if q.value { return p.key + p.value; } else { return 0; } }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t pebble_field_27;\n    int32_t pebble_field_28;\n} pebble_struct_25_t;",
+		"typedef struct {\n    int32_t pebble_field_27;\n    bool pebble_field_28;\n} pebble_struct_26_t;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	// The two specializations are distinct typedef names: the second does not
+	// reuse the first's (a single shared layout would emit only one typedef).
+	if strings.Count(out, "} pebble_struct_25_t;") != 1 || strings.Count(out, "} pebble_struct_26_t;") != 1 {
+		t.Errorf("expected exactly one typedef each for the two specializations:\n%s", out)
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	mainIndex := strings.Index(out, "static int pebble_user_main")
+	if typedefIndex < 0 || mainIndex < 0 || typedefIndex > mainIndex {
+		t.Errorf("struct typedefs do not precede pebble_user_main (definition before use):\n%s", out)
+	}
+}
+
 func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int => 0;", true, 0, false)
 }

@@ -291,12 +291,22 @@ func (s *irBuildState) buildTypes() bool {
 			for _, member := range d.Members {
 				members = append(members, member.Symbol)
 				// Generic declarations keep a parameterized member template until
-				// specialization. Their concrete field type is recovered from the
-				// specialized usage node by the backend; ordinary declarations are
+				// specialization. A member typed as the struct's own type parameter
+				// records that parameter's TypeID here so the backend can substitute
+				// it per instantiation; a member whose template is a composite that
+				// wraps a parameter stays unresolved (0) until the backend recovers
+				// it from the specialized usage node. Ordinary declarations are
 				// always known here and no longer depend on usage evidence.
 				memberType := types.TypeID(0)
-				if template, found := s.handoff.Semantics.Template(member.Type); found && template.Kind == infer.TemplateKnown {
-					memberType = template.Known
+				if template, found := s.handoff.Semantics.Template(member.Type); found {
+					switch template.Kind {
+					case infer.TemplateKnown:
+						memberType = template.Known
+					case infer.TemplateParameter:
+						if parameterType, ok := s.handoff.Semantics.TypeParameter(template.Parameter); ok {
+							memberType = parameterType
+						}
+					}
 				}
 				memberTypes = append(memberTypes, memberType)
 				ms, exists := s.symbol(member.Symbol)
