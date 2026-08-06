@@ -134,12 +134,47 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	node.Symbol = method.Method
 	node.FunctionType = functionType
 	node.Convention = convention
-	node.TypeArgs = make([]types.TypeID, 0, len(method.Arguments))
-	for _, argument := range method.Arguments {
-		if argument.State != infer.TypeFinal || argument.Type == 0 {
+	// A generic method — one declaring type parameters of its own (the resolver
+	// sets Generic only then) — needs a concrete FunctionDeclaration
+	// specialization in the unit with TypeArgs exactly matching this node,
+	// the same contract a free generic function's DirectCall satisfies and what
+	// the backend's findCalledFunctionDeclaration matches against. The full
+	// argument list is receiver-bound first (the method's inherited parameters,
+	// in the containing type's declared order), then the method's own solved
+	// local arguments. Both halves are resolved through the ACTIVE
+	// specialization substitution, so a method call inside a generic method
+	// body (`self.rehash(...)` while rehash[K,V] is being specialized) gets its
+	// concrete arguments from the specialized receiver, not the solve-time
+	// symbolic ones. A non-generic method — one declaring no type parameters of
+	// its own, even when it references its containing type's parameters —
+	// keeps empty TypeArgs and resolves to its symbolic declaration downstream.
+	methodSymbol, hasSymbol := s.symbol(method.Method)
+	signature, hasSignature := s.handoff.Semantics.Signature(method.Method)
+	if hasSymbol && methodSymbol.Generic && hasSignature && len(signature.TypeParams) != 0 {
+		typeArgs, ok := s.methodSpecializationArgs(call, method, signature)
+		if !ok {
 			return false
 		}
-		node.TypeArgs = append(node.TypeArgs, argument.Type)
+		concrete := true
+		for _, argument := range typeArgs {
+			if s.containsTypeParameter(argument, 0) {
+				concrete = false
+				break
+			}
+		}
+		if concrete {
+			instantiation := infer.Instantiation{
+				Generic:   method.Method,
+				Arguments: make([]infer.TypeResult, len(typeArgs)),
+			}
+			for i, argument := range typeArgs {
+				instantiation.Arguments[i] = infer.TypeResult{State: infer.TypeFinal, Type: argument}
+			}
+			if _, ok := s.buildSpecialization(instantiation); !ok {
+				return false
+			}
+		}
+		node.TypeArgs = typeArgs
 	}
 	action, ok := callContextAction(flow, convention)
 	if !ok {
@@ -148,6 +183,101 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	node.ContextAction = action
 	node.Children = append(node.Children, receiver)
 	return s.buildCallChildren(call, node)
+}
+
+// methodSpecializationArgs assembles the full ordered type-argument list for
+// one generic method call: the receiver's concrete nominal arguments first (the
+// method's inherited type parameters, in the containing type's declared order),
+// then the method's own solved local arguments. The method signature lists its
+// type parameters in exactly that order, so the assembled list is directly
+// usable as an infer.Instantiation for buildSpecialization. Both halves are
+// resolved through the active specialization substitution when one is present:
+// a method call inside a generic body (e.g. `self.rehash(...)` while
+// rehash[K,V] is itself being specialized) must read its receiver arguments
+// from the specialized receiver type and substitute its own local arguments
+// with the enclosing specialization's mapping, never the solve-time symbolic
+// ones.
+func (s *irBuildState) methodSpecializationArgs(call *callRecord, method infer.MethodSelection, signature infer.Signature) ([]types.TypeID, bool) {
+	receiverArgs := make([]types.TypeID, 0, len(signature.TypeParams))
+	if receiverType, ok := s.resolveType(call.Receiver); ok {
+		key, found := s.handoff.Semantics.Types().Key(receiverType)
+		if found && key.Kind() == types.Pointer {
+			receiverType, _ = key.Child()
+			key, found = s.handoff.Semantics.Types().Key(receiverType)
+		}
+		if found {
+			if _, nominalArgs, nominal := key.Nominal(); nominal {
+				receiverArgs = append(receiverArgs, nominalArgs...)
+			}
+		}
+	}
+	localArgs := make([]types.TypeID, len(method.Arguments))
+	for i, argument := range method.Arguments {
+		if argument.State != infer.TypeFinal || argument.Type == 0 {
+			return nil, false
+		}
+		localArgs[i] = argument.Type
+		if s.activeSubstitution != nil {
+			substituted, err := s.store.Substitute(argument.Type, s.activeSubstitution)
+			if err != nil {
+				return nil, false
+			}
+			localArgs[i] = substituted
+		}
+	}
+	full := append(receiverArgs, localArgs...)
+	if len(full) != len(signature.TypeParams) {
+		return nil, false
+	}
+	return full, true
+}
+
+// containsTypeParameter reports whether typ contains a TypeParameter anywhere in
+// its structure. A method call whose specialization arguments still reference a
+// type parameter is symbolic — it lives inside a generic body that has not been
+// concretely instantiated — so no concrete FunctionDeclaration is built for it
+// here; the concrete declaration is built instead when the enclosing generic is
+// itself specialized, at which point the active substitution has made these
+// arguments concrete. A type missing from the live store or an over-deep walk
+// reports true (treated as non-concrete, so nothing is built and the call keeps
+// its symbolic TypeArgs).
+func (s *irBuildState) containsTypeParameter(typ types.TypeID, depth uint32) bool {
+	if typ == 0 || depth >= 32 {
+		return true
+	}
+	key, ok := s.store.Key(typ)
+	if !ok {
+		return true
+	}
+	switch key.Kind() {
+	case types.TypeParameter:
+		return true
+	case types.Builtin:
+		return false
+	case types.Pointer, types.Slice, types.Optional:
+		child, _ := key.Child()
+		return s.containsTypeParameter(child, depth+1)
+	case types.Array:
+		_, element, _ := key.Array()
+		return s.containsTypeParameter(element, depth+1)
+	case types.Tuple, types.Nominal:
+		elements, _ := key.Elements()
+		for _, element := range elements {
+			if s.containsTypeParameter(element, depth+1) {
+				return true
+			}
+		}
+		return false
+	case types.Function:
+		_, parameters, result, _, _ := key.Function()
+		for _, parameter := range parameters {
+			if s.containsTypeParameter(parameter, depth+1) {
+				return true
+			}
+		}
+		return s.containsTypeParameter(result, depth+1)
+	}
+	return true
 }
 
 func (s *irBuildState) buildVariantConstruct(call *callRecord, node *tir.Node) bool {

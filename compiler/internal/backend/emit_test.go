@@ -359,16 +359,40 @@ func TestEmitFieldNilAssignmentRoundTripCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, `type P = struct { d *i32; }; fn main() i32 { var value i32 = 7; var p P = P.{ d = &value }; p.d = nil; if p.d == nil { return 1; } else { return 0; } }`, false, 1, false)
 }
 
-func TestEmitRejectsGenericMethodCall(t *testing.T) {
-	unit, snapshot, entryID, sources := buildFixture(t, `type Box = struct { fn echo[T](self Box, value T) T => value; }; fn main() i32 { let box Box = Box.{}; return box.echo(42); }`, "main", false)
-	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, sources, &buf)
-	if err == nil {
-		t.Fatal("Emit accepted a generic method call, want the existing generic-call rejection")
-	}
-	if !strings.Contains(err.Error(), "generic") || !strings.Contains(err.Error(), "type argument") {
-		t.Fatalf("generic-method rejection is not descriptive: %v", err)
-	}
+func TestEmitGenericMethodCallCompilesAndRuns(t *testing.T) {
+	// The exact motivating repro: a generic struct method redeclaring the
+	// struct's own type parameter on itself (`fn get[K](self Box[K]) K`),
+	// called via ordinary method-call syntax with the type argument inferred
+	// from the receiver (never written at the call site). Before the fix, the
+	// checker never built the method's concrete specialization, so the
+	// backend's findCalledFunctionDeclaration had no FunctionDeclaration with
+	// matching TypeArgs and rejected the call as an unloverable generic.
+	emitAndRun(t, `type Box[K] = struct { value K; fn get[K](self Box[K]) K { return self.value; } }; fn main() int { var b Box[int] = Box[int].{ value = 5 }; return b.get(); }`, false, 5, false)
+}
+
+func TestEmitGenericMethodTwoSpecializationsCompileAndRun(t *testing.T) {
+	// TWO specializations of the same generic struct calling the SAME method
+	// in one program must each get their OWN method specialization: Box[int]'s
+	// get returns 5 and Box[bool]'s get returns true. If the two method
+	// specializations collided (shared a symbol/FunctionID), one read would
+	// dispatch to the wrong width and the exit code would be wrong.
+	emitAndRun(t, `type Box[K] = struct { value K; fn get[K](self Box[K]) K { return self.value; } }; fn main() int { var b Box[int] = Box[int].{ value = 5 }; var c Box[bool] = Box[bool].{ value = true }; if c.get() { return b.get(); } return 0; }`, false, 5, false)
+}
+
+func TestEmitGenericMethodExtraTypeParameterParametersCompileAndRun(t *testing.T) {
+	// A method taking parameters beyond self that also depend on the type
+	// parameters (mirroring std/hmap.peb's insert(self, key K, value V)) must
+	// resolve those parameter types end to end: put(4, 5) writes both through
+	// the pointer receiver, and the returned key plus the stored value encode
+	// 4 * 10 + 5 = 45 in the exit code.
+	emitAndRun(t, `type Pair[K, V] = struct { key K; value V; fn put[K, V](self *Pair[K, V], k K, v V) K { self.key = k; self.value = v; return self.key; } }; fn main() int { var p Pair[int, int] = Pair[int, int].{ key = 1, value = 2 }; let got int = p.put(4, 5); return got * 10 + p.value; }`, false, 45, false)
+}
+
+func TestEmitGenericMethodPointerReceiverCompilesAndRuns(t *testing.T) {
+	// A pointer-receiver generic method on a generic struct: the receiver
+	// value is auto-referenced for the `self *Box[K]` parameter, and the
+	// method's own K resolves to the receiver's int.
+	emitAndRun(t, `type Box[K] = struct { value K; fn get[K](self *Box[K]) K { return self.value; } }; fn main() int { var b Box[int] = Box[int].{ value = 7 }; return b.get(); }`, false, 7, false)
 }
 
 func TestEmitGenericStructDataFieldsCompileAndRun(t *testing.T) {
