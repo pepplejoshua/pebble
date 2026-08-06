@@ -41,29 +41,6 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-- [ ] **Narrower residual: struct field-type resolution has no fallback
-      when a struct has ZERO usage evidence anywhere in the whole
-      program.** The `isEnumType` misclassification itself is fixed
-      (this session — a direct declaration-node signal replaces the old
-      usage-evidence guess), and the realistic case (a struct used
-      normally elsewhere, also passed as a `none` optional payload) now
-      compiles and runs correctly. What remains: a struct that is
-      declared but never constructed, never field-accessed, and never
-      referenced ANYWHERE in the reachable program except as an
-      optional's payload type (`var o ?P = none;` with zero other uses
-      of `P`) still fails — `resolveStructInfo`'s `fieldTypes` map,
-      which supplies each field's C type, is populated purely by
-      scanning for `FieldPlace`/`RecordConstruct` usage evidence, with
-      no fallback when none exists (confirmed: `types.Snapshot`, the
-      only type-level data `internal/backend` receives, exposes no
-      per-member/field type introspection at all — `Key`/`Kind`/
-      `Builtins` only — so a positive alternative signal isn't
-      reachable from this package as currently structured). A real
-      fix likely needs richer semantic data threaded into
-      `tir.Unit`/`types.Snapshot` from the checker, not a backend-only
-      change. Low priority — very unlikely to hit a truly unused
-      struct in a real program.
-
 ---
 
 ## Part B — v1 feature-parity checklist
@@ -100,13 +77,36 @@ repeated here.
       `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
       v2's current behavior — explicit naming stays required, no implicit
       `iter` default. Not tracked as a gap.
-- [ ] **DEFERRED TO LAST (explicit standing instruction, 2026-08-04): work
-      through every other tracker item first. When this is finally
-      scoped, start by reading v1's C prototype implementation
-      (`src/codegen.c`/`src/type.c` — believed to represent function
-      values as C function pointers) as a reference, but do not port it
-      literally — the goal is a v2 design that is better and more
-      consistent than v1's, not parity-by-copy.**
+- [ ] **Now the last active item — every other tracker item is closed
+      (2026-08-05). Scoping done, ready to implement.** v1's mechanism
+      confirmed by reading `src/codegen.c`/`src/type.c` in full:
+      a function type becomes a C function-pointer typedef —
+      `typedef <ret> (*name)(ctx_param_if_pebble_convention,
+      params...);` (`emit_type_if_needed`, `TYPE_FUNCTION` case) — and
+      a plain function reference as a value just emits the function's
+      own C name (which decays to a pointer in C, no wrapping needed).
+      v2 has nothing general: `internal/backend/emit.go`'s
+      `buildIndirectCall` exists but is hard-coded exclusively for the
+      built-in `Allocator`'s alloc/realloc/free fields
+      (`PebbleAllocFn`/`PebbleReallocFn`/`PebbleFreeFn`) — a narrow
+      special case, not general function-value support, though its
+      cast-and-call shape is a useful structural precedent. Real scope,
+      four parts: (1) a new `pebble_fnptr_<typeID>_t` typedef category,
+      following v2's existing per-TypeID naming convention (matching
+      slice/optional/struct typedefs) rather than v1's ad-hoc
+      canonical-name strings, with the same `PebbleContext *ctx`
+      first-parameter threading v2 already uses for every
+      Pebble-convention call; (2) threading that type through struct
+      fields, local declarations, function parameters, and function
+      results — the same dispatch-point pattern extended repeatedly
+      this session for optional/slice/tuple types; (3) function values
+      as first-class values (`HoistedFunctionValue`/
+      `GenericFunctionValue`, still on the node-kind audit below) — a
+      bare function name decaying to its own `pebble_fn_<symbolID>` C
+      identifier; (4) general indirect calls through a function-typed
+      value (not just the allocator's narrow case) — needs real new
+      logic. Comparable in size to the float-expression work — multiple
+      sequential pieces, not a single dispatch.
       CORRECTED, much bigger than originally scoped: function types have
       NO real backend representation anywhere, not just in locals.
       Original entry claimed struct fields already worked ("confirmed
