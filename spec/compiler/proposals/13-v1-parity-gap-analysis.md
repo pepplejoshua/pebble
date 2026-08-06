@@ -77,33 +77,30 @@ repeated here.
       `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
       v2's current behavior — explicit naming stays required, no implicit
       `iter` default. Not tracked as a gap.
-- [ ] **In progress, slice 1/3 done (2ab27d6).** Function-typed local
-      variables, bare function references as first-class values
-      (`HoistedFunctionValue`), and general indirect calls through a
-      function-typed value all work end to end now
-      (`pebble_fnptr_<typeID>_t` typedef, matching v2's existing
-      per-TypeID naming convention, `PebbleContext *ctx` threaded
-      exactly like every other Pebble-convention call). Found and fixed
-      a real regression during verification: the naive "any node whose
-      Type is a function type needs a typedef" collection pass also
-      matched the built-in Allocator's alloc/realloc/free field
-      accesses (also function-typed), breaking every allocator call in
-      the program — fixed via a shared `indirectCalleePlace` helper so
-      the allocator-specific `buildIndirectCall` path and the new
-      typedef-collection pass agree on which `IndirectCall`s are the
-      allocator's built-in case versus the general one (the checker
-      sets `IndirectCall.FunctionType` on BOTH shapes, not just the
-      general one as originally assumed — that assumption was the root
-      cause).
+- [ ] **In progress, slices 1 and 2 of 3 done (2ab27d6, 0b6ed32).**
+      Function-typed locals, function values, general indirect calls,
+      and now function-typed STRUCT FIELDS (the originally-motivating
+      case — `std/hmap.peb`/`std/set.peb`'s `hash_fn fn (K) u64;`) all
+      work end to end. `pebble_fnptr_<typeID>_t` typedef, matching v2's
+      per-TypeID naming convention, `PebbleContext *ctx` threaded like
+      every other Pebble-convention call. Two real, subtle bugs found
+      and fixed during slice 2 (documented in full in `0b6ed32`'s
+      message): (1) a struct construction's field values live in
+      `RecordConstruct.Fields`, not `.Children`, so both the
+      reachability walk and the typedef-collection walk needed an
+      explicit case — without it, a function used only via
+      `Table.{ op = add }` was silently never emitted; (2) slice 1's
+      `indirectCalleePlace` allocator-detection fix was only ever wired
+      into the typedef-collection pass, never into `buildIndirectCall`
+      itself, which still used its own separate, less precise check —
+      meaning the exact allocator-collision slice 1 "fixed" was still
+      live in the actual call-building path and would have broken the
+      first function-typed struct field read.
 
-      Remaining, two more slices: **slice 2** — function-typed STRUCT
-      FIELDS (the actual originally-motivating case,
-      `std/hmap.peb`/`std/set.peb`'s `hash_fn fn (K) u64;`), threading
-      the same `pebble_fnptr_<typeID>_t` machinery through struct field
-      declarations/construction/reads. **Slice 3** — function-typed
+      **Remaining, one more slice: slice 3** — function-typed
       PARAMETERS and RESULTS (higher-order functions), plus
       `GenericFunctionValue` (a generic function referenced as a value,
-      still unverified). Once both land, `std/hmap.peb`/`std/set.peb`
+      still unverified). Once it lands, `std/hmap.peb`/`std/set.peb`
       need independent re-verification via `backend.Emit` (not just
       `check.Check`) before being trusted as "done" — flagged as
       suspect earlier this session, still not re-checked.
