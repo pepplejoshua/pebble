@@ -8154,17 +8154,21 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 
 // indirectCalleePlace unwraps an IndirectCall's callee child (Children[0])
 // past any SourceAlias (grouped-expression parens) and a single Load, and
-// reports whether the unwrapped node is the allocator-specific shape — a
-// FieldPlace or FieldValue (an .alloc/.realloc/.free field access) — the
-// ONE signal that reliably distinguishes the allocator's built-in indirect
-// call (which uses the runtime's own pre-existing PebbleAllocFn/
-// PebbleReallocFn/PebbleFreeFn typedefs) from the general case (an ordinary
-// function-typed value). Both buildIndirectCall and collectFunctionTypesWalk
-// call this so the two agree on which case any given IndirectCall is —
-// confirmed via a real fixture that the checker sets IndirectCall.FunctionType
-// on BOTH shapes (not just the general one, contrary to an earlier, unverified
-// assumption), so FunctionType alone cannot distinguish them; the callee's own
-// unwrapped node kind is the only reliable signal.
+// reports whether the unwrapped node is specifically the built-in Allocator's
+// alloc/realloc/free field — NOT merely "any FieldPlace/FieldValue," which is
+// too broad: a function-typed STRUCT FIELD (e.g. `t.op` where `op fn(int,
+// int) int;`, slice 2 of the function-types feature) produces the exact same
+// FieldValue node shape a real allocator field access does (confirmed via a
+// real fixture) — the two are distinguished only by checking the field's
+// actual owner type and member symbol against the runtime's own
+// AllocatorAlloc/AllocatorRealloc/AllocatorFree identities via
+// runtimeFieldName, exactly like the pre-existing allocator-only code already
+// did before this function existed. Both buildIndirectCall and
+// collectFunctionTypesWalk call this so the two agree on which case any given
+// IndirectCall is — confirmed via a real fixture that the checker sets
+// IndirectCall.FunctionType on BOTH the allocator case and the general case
+// (not just the general one, contrary to an earlier, unverified assumption),
+// so FunctionType alone cannot distinguish them.
 func indirectCalleePlace(unit *tir.Unit, node tir.Node) (placeNode tir.Node, isAllocator bool, ok bool) {
 	if len(node.Children) < 1 {
 		return tir.Node{}, false, false
@@ -8180,7 +8184,23 @@ func indirectCalleePlace(unit *tir.Unit, node tir.Node) (placeNode tir.Node, isA
 	if placeNode.Kind == tir.Load && len(placeNode.Children) == 1 {
 		placeNode, _ = unit.Node(placeNode.Children[0])
 	}
-	isAllocator = placeNode.Kind == tir.FieldPlace || (placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1)
+	var owner types.TypeID
+	var member symbol.SymbolID
+	switch {
+	case placeNode.Kind == tir.FieldPlace && len(placeNode.Children) == 1:
+		if base, baseOK := unit.Node(placeNode.Children[0]); baseOK {
+			owner, member = base.Type, placeNode.Member
+		}
+	case placeNode.Kind == tir.FieldValue && len(placeNode.Children) == 1:
+		if base, baseOK := unit.Node(placeNode.Children[0]); baseOK {
+			owner, member = base.Type, placeNode.Member
+		}
+	}
+	if owner != 0 && member != 0 {
+		if _, mapped := runtimeFieldName(unit, owner, member); mapped {
+			isAllocator = member == unit.Runtime().AllocatorAlloc || member == unit.Runtime().AllocatorRealloc || member == unit.Runtime().AllocatorFree
+		}
+	}
 	return placeNode, isAllocator, true
 }
 
