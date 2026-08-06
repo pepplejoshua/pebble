@@ -9328,6 +9328,138 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 200, false)
 }
 
+// --- Struct fields: slice-typed fields constructed inline ---
+
+func TestEmitSliceStructFieldInlineConstructionCompilesAndRuns(t *testing.T) {
+	// The exact repro this gap was filed for: a plain, non-generic struct with
+	// a slice-typed field whose construction value is an inline slice
+	// expression (`Bag.{ items = arr[:] }`). The RecordConstruct's field value
+	// is a bare CheckedSlice node (confirmed against a real fixture dump), so
+	// the construction needs the same two-statement temp-then-construction
+	// shape a slice local's declaration and a slice return use: the checked
+	// slice-start call is hoisted into a temp statement threaded ahead of the
+	// struct declaration line, and the slice compound literal uses that temp
+	// for both its .data offset and its .len. arr[:] = [1,2,3], so b.items[1] =
+	// 2 is the exit code.
+	emitAndRun(t, `type Bag = struct { items []int; };
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var b Bag = Bag.{ items = arr[:] };
+    return b.items[1];
+}`, false, 2, false)
+}
+
+func TestEmitSliceStructFieldInlineConstructionEmitsTempStatement(t *testing.T) {
+	// The emitted C for the inline-construction fixture: the struct field
+	// construction is the two-statement shape — a pebble_field_slice_<nodeID>
+	// temp declaration holding the checked slice-start result, then the struct
+	// declaration whose slice field's compound literal uses that temp for both
+	// .data and .len. The temp name derives from the field value node's NodeID
+	// (symbols 24 (Bag), 25 (items), 27 (arr), 28 (b), field value node 17, and
+	// slice type 24 come from the real fixture dump), distinct from the
+	// pebble_slice_start_<symbol> and pebble_slice_ret_<nodeID> temps so the
+	// three can never collide.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Bag = struct { items []int; };
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var b Bag = Bag.{ items = arr[:] };
+    return b.items[1];
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_24_t;",
+		"pebble_slice_24_t pebble_field_25;",
+		"int32_t pebble_field_slice_17 = pebble_rt_checked_slice_start_i32(0, 3, 3, (PebbleSourceLoc){\"main.peb\"",
+		"pebble_struct_23_t pebble_local_28 = { .pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_27 + pebble_field_slice_17, .len = (size_t)(3 - pebble_field_slice_17) } };",
+		"return pebble_local_28.pebble_field_25.data[pebble_rt_checked_index_i32(1, (int32_t)pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
+func TestEmitSliceStructFieldSliceFromRawCompilesAndRuns(t *testing.T) {
+	// The same gap via SliceFromRaw: a raw-pointer-derived slice (`slice ptr,
+	// n` — the raw-slice builtin, restricted to std-package source) used
+	// directly as a slice-typed field's construction value. The RecordConstruct
+	// field value is a bare SliceFromRaw node (confirmed against a real fixture
+	// dump), whose construction is a single expression with no temp
+	// (buildRawSliceConstruction emits the compound literal directly). The
+	// 1-element slice over the 42 value means b.items[0] = 42 is the exit code.
+	unit, snapshot, entryID, sources := buildStdFixture(t, `type Bag = struct { items []i32; };
+fn main() i32 {
+    var value i32 = 42;
+    var ptr *i32 = &value;
+    var b Bag = Bag.{ items = slice ptr, 1 };
+    return b.items[0];
+}`, "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// The SliceFromRaw construction is a single expression: no temp statement,
+	// and the field value is the compound literal directly.
+	if strings.Contains(out, "pebble_field_slice_") {
+		t.Errorf("emitted C unexpectedly contains a field temp statement:\n%s", out)
+	}
+	if !strings.Contains(out, ".pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_28, .len = (size_t)(1) }") {
+		t.Errorf("emitted C missing the inline SliceFromRaw field construction:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitSliceStructFieldLocalReferenceCompilesAndRuns(t *testing.T) {
+	// The already-working shape must keep working exactly as before: construct
+	// the slice into a local FIRST, then use that local as the field's
+	// construction value. The field value is a SymbolValue naming a slice-typed
+	// local, emitted as the local's own pebble_local_<symbol> C name with no
+	// temp statement. arr[:] = [1,2,3], so b.items[1] = 2 is the exit code.
+	emitAndRun(t, `type Bag = struct { items []int; };
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var s []int = arr[:];
+    var b Bag = Bag.{ items = s };
+    return b.items[1];
+}`, false, 2, false)
+}
+
+func TestEmitGenericSliceStructFieldInlineConstructionCompilesAndRuns(t *testing.T) {
+	// The generic case this gap was originally investigated for: a generic
+	// struct with a slice field instantiated as Bag[int] and constructed inline
+	// (`Bag[int].{ items = arr[:] }`). The root cause is unrelated to
+	// genericity — the field value is the same bare CheckedSlice — so this
+	// general fix must also resolve the generic case. arr[:] = [1,2,3], so
+	// b.items[1] = 2 is the exit code.
+	emitAndRun(t, `type Bag[K] = struct { items []K; };
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var b Bag[int] = Bag[int].{ items = arr[:] };
+    return b.items[1];
+}`, false, 2, false)
+}
+
+func TestEmitSliceStructFieldInlineConstructionAsCallArgumentRejects(t *testing.T) {
+	// An inline slice construction in a pure expression position — a struct
+	// value with such a field used as a call argument — is a clean rejection,
+	// the same discipline buildSliceArgument applies to a bare CheckedSlice
+	// call argument: a C function argument is a pure expression position with
+	// nowhere to place the temp-declaration statement the construction needs.
+	// The slice-typed-local-reference shape remains the supported spelling.
+	emitAndRunRejects(t, `type Bag = struct { items []int; };
+fn read(b Bag) int { return b.items[1]; }
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    return read(Bag.{ items = arr[:] });
+}`, "nowhere to place the temp-declaration statement")
+}
+
 func TestEmitOptionalResultCompilesAndRuns(t *testing.T) {
 	// The exact repro this slice was filed for: an optional-returning helper
 	// called as the direct initializer of a matching optional-typed local.

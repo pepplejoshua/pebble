@@ -6688,12 +6688,20 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 	if initValue.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal) or a call to a struct-returning helper; initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
 	}
-	braceList, err := buildStructBraceList(unit, snapshot, fileSet, initValue, scope, context, width)
+	preStatements, braceList, err := buildStructBraceList(unit, snapshot, fileSet, initValue, scope, indent, context, width)
 	if err != nil {
 		return "", err
 	}
 	scope[statement.Symbol] = localInfo{structType: initValue.Type}
-	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, braceList, indent, statement.Symbol), nil
+	declaration := fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, braceList, indent, statement.Symbol)
+	if preStatements != "" {
+		// A slice-typed field constructed from an inline CheckedSlice needs its
+		// temp-declaration statement threaded ahead of the declaration line (the
+		// brace list itself has nowhere to put it) — the same statement-position
+		// shape buildSliceReturnValue demonstrates for a slice return.
+		return preStatements + "\n" + declaration, nil
+	}
+	return declaration, nil
 }
 
 // buildStructBraceList validates one RecordConstruct node's field list and
@@ -6715,24 +6723,47 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 // struct built inline as a call argument (buildStructValueExpr wraps the same
 // brace list in a compound-literal cast), so field-type validation and the
 // buildExpr/buildBoolExpr dispatch live in exactly one place.
-func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+//
+// The return is two pieces of C text rather than one so a slice-typed field
+// whose construction value is an inline slice construction (`Bag.{ items =
+// arr[:] }`, a bare CheckedSlice, or `slice ptr, n`, a SliceFromRaw) can be
+// supported. A CheckedSlice construction needs the same two-statement
+// temp-then-construction shape a slice local's declaration and a slice return
+// use: the checked-start result is stored in a temp statement first, then the
+// compound-literal construction uses that temp for both its pointer offset and
+// its length subtraction, so the potentially-aborting checked call (and any
+// side-effecting bound expression) is evaluated exactly once. That temp
+// declaration has no place inside a brace list, so it is returned separately
+// as preStatements (already indented) for a caller in a statement position
+// (buildStructLocalDeclaration) to thread ahead of the declaration line; a
+// caller in a pure expression position (buildStructValueExpr) must reject a
+// non-empty preStatements rather than drop it, the same discipline
+// buildSliceArgument applies to an inline slice construction passed as a call
+// argument. A SliceFromRaw field value is a single expression with no temp
+// (buildRawSliceConstruction emits the compound literal directly), so it needs
+// no pre-statement. A slice-typed field whose construction value is a
+// SymbolValue naming an already-declared slice-typed local is the same
+// single-expression forward as before, with empty preStatements. indent indents
+// the temp declarations to match the enclosing declaration line.
+func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
-		return "", fmt.Errorf("%s contains a struct value whose type %d is not in the type snapshot", context, node.Type)
+		return "", "", fmt.Errorf("%s contains a struct value whose type %d is not in the type snapshot", context, node.Type)
 	}
 	decl, _, ok := key.Nominal()
 	if !ok {
-		return "", fmt.Errorf("%s contains a struct value of type %s, which has no nominal declaration", context, structTypeName(node.Type))
+		return "", "", fmt.Errorf("%s contains a struct value of type %s, which has no nominal declaration", context, structTypeName(node.Type))
 	}
 	typeDecl, ok := findTypeDeclaration(unit, decl)
 	if !ok {
-		return "", fmt.Errorf("%s contains a struct value of type %s whose declaration symbol %d has no TypeDeclaration in the unit", context, structTypeName(node.Type), decl)
+		return "", "", fmt.Errorf("%s contains a struct value of type %s whose declaration symbol %d has no TypeDeclaration in the unit", context, structTypeName(node.Type), decl)
 	}
 	members := typeDecl.Members
 	if len(node.Fields) != len(members) {
-		return "", fmt.Errorf("%s contains a struct value of type %s with %d field initializer(s), want %d (one per declared field)", context, structTypeName(node.Type), len(node.Fields), len(members))
+		return "", "", fmt.Errorf("%s contains a struct value of type %s with %d field initializer(s), want %d (one per declared field)", context, structTypeName(node.Type), len(node.Fields), len(members))
 	}
 	inits := make([]string, len(node.Fields))
+	var pres []string
 	for i, field := range node.Fields {
 		declared := false
 		for _, member := range members {
@@ -6742,11 +6773,11 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			}
 		}
 		if !declared {
-			return "", fmt.Errorf("%s contains a struct value of type %s with an initializer for symbol %d, which is not one of its declared fields", context, structTypeName(node.Type), field.Field)
+			return "", "", fmt.Errorf("%s contains a struct value of type %s with an initializer for symbol %d, which is not one of its declared fields", context, structTypeName(node.Type), field.Field)
 		}
 		valueNode, ok := unit.Node(field.Value)
 		if !ok {
-			return "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
+			return "", "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
 		}
 		fieldType, found := declaredFieldType(unit, snapshot, node.Type, field.Field)
 		if !found {
@@ -6757,47 +6788,93 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		case isWidth(snapshot, width, fieldType):
 			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		case isBool(snapshot, fieldType):
 			built, err := buildBoolExpr(unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		case isTuple(snapshot, fieldType):
 			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		case isOptional(snapshot, fieldType):
 			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		case isStruct(snapshot, fieldType):
 			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		case isSlice(snapshot, fieldType):
+			// A slice-typed field's construction value is one of three shapes
+			// (all confirmed against real fixtures): a SymbolValue naming an
+			// already-declared slice-typed local in scope of exactly the
+			// field's type (a single-expression forward, the shape that always
+			// worked); a bare CheckedSlice (`arr[:]` used directly as the
+			// field's value — the general struct-field-construction gap this
+			// case closes, reachable in both non-generic and generic struct
+			// constructions), which needs the same two-statement
+			// temp-then-construction shape a slice local's declaration uses,
+			// so its temp declaration is returned as a pre-statement; or a
+			// bare SliceFromRaw (`slice ptr, n` — restricted to std-package
+			// source, where the raw-pointer slice builtin is available),
+			// whose construction is a single expression (buildRawSliceConstruction
+			// needs no temp) and needs no pre-statement. Anything else is a
+			// clean rejection naming what was found.
 			fieldValue, ok := unit.Node(field.Value)
-			if !ok || fieldValue.Kind != tir.SymbolValue {
-				return "", fmt.Errorf("%s contains a slice field %d initialized from a %s, want a slice local", context, field.Field, fieldValue.Kind)
+			if !ok {
+				return "", "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
 			}
-			local, declared := scope[fieldValue.Symbol]
-			if !declared || local.sliceType != fieldType {
-				return "", fmt.Errorf("%s contains a slice field %d initialized from a nonmatching local", context, field.Field)
+			switch fieldValue.Kind {
+			case tir.SymbolValue:
+				local, declared := scope[fieldValue.Symbol]
+				if !declared || local.sliceType != fieldType {
+					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a nonmatching local", context, field.Field)
+				}
+				expr = fmt.Sprintf("pebble_local_%d", fieldValue.Symbol)
+			case tir.CheckedSlice:
+				if fieldValue.Type != fieldType {
+					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a CheckedSlice of type %s, not a slice-typed value of type %s", context, field.Field, describeType(snapshot, fieldValue.Type), sliceTypeName(fieldType))
+				}
+				// The temp name derives from the field value node's own NodeID
+				// — the only stable identity in hand here (a struct field has
+				// no local symbol to name it from), distinct from the
+				// pebble_slice_start_<symbol> temps a slice local's declaration
+				// uses and the pebble_slice_ret_<nodeID> temps a slice return
+				// uses, so the three can never collide even when a symbol ID
+				// numerically equals a node ID.
+				tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, indent, context, width, fmt.Sprintf("pebble_field_slice_%d", field.Value))
+				if err != nil {
+					return "", "", err
+				}
+				pres = append(pres, tempDecl)
+				expr = constructionExpr
+			case tir.SliceFromRaw:
+				if fieldValue.Type != fieldType {
+					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a SliceFromRaw of type %s, not a slice-typed value of type %s", context, field.Field, describeType(snapshot, fieldValue.Type), sliceTypeName(fieldType))
+				}
+				construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, width, context)
+				if err != nil {
+					return "", "", err
+				}
+				expr = construction
+			default:
+				return "", "", fmt.Errorf("%s contains a slice field %d initialized from a %s, want a slice local or a fresh slice construction (a CheckedSlice or a slice-from-raw)", context, field.Field, fieldValue.Kind)
 			}
-			expr = fmt.Sprintf("pebble_local_%d", fieldValue.Symbol)
 		case isPointer(snapshot, fieldType):
 			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		case isFunctionType(snapshot, fieldType):
@@ -6810,15 +6887,19 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// pebble_fnptr_<typeID>_t C type with no cast needed.
 			built, err := buildFunctionValue(unit, snapshot, fileSet, valueNode, scope, context, width)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			expr = built
 		default:
-			return "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType), wantName(width))
+			return "", "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType), wantName(width))
 		}
 		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
 	}
-	return "{ " + strings.Join(inits, ", ") + " }", nil
+	preStatements := ""
+	if len(pres) > 0 {
+		preStatements = strings.Join(pres, "\n")
+	}
+	return preStatements, "{ " + strings.Join(inits, ", ") + " }", nil
 }
 
 // buildStructValueExpr builds a freshly-constructed struct value as an
@@ -6840,9 +6921,18 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	if node.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (a struct literal)", context, node.Kind)
 	}
-	braceList, err := buildStructBraceList(unit, snapshot, fileSet, node, scope, context, width)
+	preStatements, braceList, err := buildStructBraceList(unit, snapshot, fileSet, node, scope, "", context, width)
 	if err != nil {
 		return "", err
+	}
+	if preStatements != "" {
+		// A slice-typed field whose construction value is an inline CheckedSlice
+		// needs its temp-declaration statement, and this is a pure expression
+		// position (a call argument, a return value, or a nested aggregate
+		// field) with nowhere to place it — the same reason buildSliceArgument
+		// rejects an inline slice construction passed as a call argument. The
+		// slice-typed-local-reference shape (empty preStatements) is unaffected.
+		return "", fmt.Errorf("%s is a struct value with a slice field initialized from an inline slice construction, which is not supported in this position: a C expression has nowhere to place the temp-declaration statement the slice construction needs; construct the slice into a local first and reference that local", context)
 	}
 	return fmt.Sprintf("(%s)%s", structTypeName(node.Type), braceList), nil
 }
