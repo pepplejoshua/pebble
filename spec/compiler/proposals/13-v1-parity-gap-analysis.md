@@ -86,19 +86,18 @@ repeated here.
       runs through `backend.Emit`. `std/set.peb` uses the identical
       `hash_fn` shape via `hmap` and should be re-verified the same way
       before being trusted end-to-end (not separately re-tested).
-- [ ] **Generic struct DATA fields have no backend representation —
-      found while re-verifying `std/hmap.peb` end-to-end via
-      `backend.Emit` after the u64 function-type fix landed.**
-      `HashMap[K, V]`'s `key K` / `value V` (and other type-parameter
-      -dependent fields like `entries`) fail at `buildStructTypedef`
-      with an unresolvable field type — confirmed this is NOT the
-      function-typed `hash_fn` field (isolated separately: a generic
-      struct with only a function-typed field works; a generic struct
-      with a plain `uint`-typed data field, mirroring `HashMap`'s
-      shape, fails identically). Distinct and much larger than the
-      function-types work: needs real per-specialization struct-field
-      type resolution for generic structs, comparable in size to the
-      function-types feature itself, not a one-case fix.
+- [ ] **Generic struct DATA fields — slice 1 done (254a00c): a field
+      directly typed as the struct's own type parameter (`key K`,
+      `value V`) now resolves per-instantiation via a new
+      `types.Snapshot.Substitute`, including two specializations of
+      the same generic struct in one program (previously collided on
+      shared field symbols).** Still open, narrower scope remaining:
+      a field whose type is a COMPOUND type wrapping a parameter (`?K`,
+      `[K]`, `*K`, a nested generic like `Vec[K]`) — `HashMap[K,V]`'s
+      `entries` field (a slice/pointer-shaped type depending on `K`/
+      `V`) and its `Allocator`-typed `backing` field are this shape,
+      still unresolved. Needed before `std/hmap.peb` itself can
+      compile its struct layout.
 - [ ] **Generic struct METHOD calls are rejected by design, confirmed
       via the pre-existing `TestEmitRejectsGenericMethodCall`** — found
       in the same `hmap.peb` re-verification. `HashMap[K,V]`'s
