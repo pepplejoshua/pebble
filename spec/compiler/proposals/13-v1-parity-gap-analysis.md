@@ -41,17 +41,6 @@ imperative program needs.
 
 ## New findings (add here as discovered, remove once fixed)
 
-- [ ] **Optional-typed function parameters are still unsupported.**
-      Results are done (this session — a helper may now return `?T`,
-      mirroring the tuple/struct/slice-result convention). Parameters
-      were deliberately left out of that fix's scope and remain
-      rejected: `fn g(o ?int) int { ... }` fails at `backend.Emit` with
-      "parameter 0 ... has type ?int, want int, bool, char, or str, a
-      tuple/struct type, a slice type, or a pointer type" —
-      `validateHelperSignature`'s parameter-type loop simply has no
-      optional case. Not yet scoped; likely mirrors the result fix's
-      shape (seed the parameter into `localInfo{optional: ...}`, same
-      as an optional local, on function entry).
 - [ ] **Pre-existing bug: `none` for a never-constructed aggregate
       payload misclassifies via `isEnumType`'s no-evidence heuristic.**
       Found as a side effect of testing optional function results
