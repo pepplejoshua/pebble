@@ -493,7 +493,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	structInfos, err := collectStructTypes(unit, snapshot, blockID, helpers)
+	structInfos, err := collectStructTypes(unit, snapshot, blockID, helpers, optionalTypes)
 	if err != nil {
 		return err
 	}
@@ -1274,11 +1274,33 @@ type structInfo struct {
 // by struct TypeID and each resolved to its declared field order, so every
 // distinct struct type yields exactly one typedef, emitted before any function
 // definition in the final output.
-func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]structInfo, error) {
+func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, optionalTypes []types.TypeID) ([]structInfo, error) {
 	fieldTypes := make(map[symbol.SymbolID]types.TypeID)
 	var collected []types.TypeID
 	if err := collectStructTypesWalk(unit, snapshot, entryBlockID, &collected, fieldTypes); err != nil {
 		return nil, err
+	}
+	// An optional type's payload is a source of struct types the body/helper
+	// walks cannot see: `var o ?P = none;` never constructs a P anywhere, so
+	// no FieldPlace/RecordConstruct evidence for it exists, but the
+	// optional's own C struct typedef still names P's typedef as its .value
+	// field type (optionalPayloadCType) and P's typedef must exist for that
+	// to compile — mirroring the Parameters/ResultType scans below, for the
+	// optional-payload source specifically. optionalTypes is the caller's
+	// already-collected list of every optional type reachable in the
+	// program (collectOptionalTypes runs first — see Emit).
+	for _, optionalType := range optionalTypes {
+		key, ok := snapshot.Key(optionalType)
+		if !ok || key.Kind() != types.Optional {
+			continue
+		}
+		payload, ok := key.Child()
+		if !ok {
+			continue
+		}
+		if isStruct(snapshot, payload) && !isEnumType(unit, snapshot, payload) {
+			collected = append(collected, payload)
+		}
 	}
 	for _, helper := range helpers {
 		if err := collectStructTypesWalk(unit, snapshot, helper.block, &collected, fieldTypes); err != nil {
@@ -1969,20 +1991,23 @@ func resolveEnumInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 // isEnumType reports whether id resolves to a plain enum type in the snapshot,
 // as opposed to a struct — the two are indistinguishable in the type snapshot
 // itself (both are Nominal keys carrying only the declaration symbol), so the
-// distinction is resolved from the unit's own node graph: a Nominal type whose
-// declared members carry no struct-field evidence is an enum. A member carries
-// field evidence exactly when it appears as a FieldPlace.Member (a field read,
-// e.g. point.x) or as a RecordConstruct field of the same declaration (a field
-// written at a construction site) — both confirmed shapes for a struct field in
-// real source, and shapes the checker never produces for an enum's variants
-// (those appear as EnumVariantValue / VariantConstruct members instead). The
-// scan is safe for every reachable program because any struct that survives
-// collectStructTypes necessarily has field evidence somewhere in the unit:
-// resolveStructInfo rejects a member with no resolvable type, and the only
-// field types it ever sees come from FieldPlace / RecordConstruct nodes (the
-// 10.24 parameter-only-typedef test's callee reads both its fields for exactly
-// this reason). A struct whose members never appear anywhere can never be
-// collected or resolved, so it never reaches this predicate.
+// distinction is resolved from the unit's own node graph directly: every
+// declared member of a type carries its own member-declaration node — a
+// struct field's is tir.FieldDeclaration, an enum variant's is
+// tir.VariantDeclaration (confirmed unconditional: the checker's type-builder
+// emits one of these for every member of every TypeDeclaration, independent of
+// whether the member is ever actually used anywhere in the reachable program —
+// see buildTypes). This is a direct, positive signal, not a heuristic guess
+// from usage evidence: a type whose first member has a FieldDeclaration node is
+// a struct, and one whose first member has a VariantDeclaration node is an
+// enum, regardless of whether the type is ever constructed or field-accessed
+// anywhere in the program. (An older version of this function guessed from
+// FieldPlace/RecordConstruct usage evidence and defaulted to "enum" when no
+// evidence was found either way — wrong for a struct that is declared but
+// never constructed or field-accessed anywhere, e.g. only ever named as a
+// `none`-optional's payload type, which produced an invalid reference to an
+// enum typedef that was never emitted. The declaration-node signal has no such
+// blind spot: it needs no usage evidence at all.)
 func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
 	if snapshot == nil || unit == nil {
 		return false
@@ -1999,24 +2024,24 @@ func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool 
 	if !ok {
 		return false
 	}
+	members := make(map[symbol.SymbolID]bool, len(typeDecl.Members))
+	for _, m := range typeDecl.Members {
+		members[m] = true
+	}
 	for _, node := range unit.Nodes() {
-		if node.Kind == tir.FieldPlace && node.Member != 0 {
-			for _, m := range typeDecl.Members {
-				if m == node.Member {
-					return false
-				}
-			}
+		if !members[node.Symbol] {
+			continue
 		}
-		if node.Kind == tir.RecordConstruct && node.Symbol == decl {
-			for _, field := range node.Fields {
-				for _, m := range typeDecl.Members {
-					if m == field.Field {
-						return false
-					}
-				}
-			}
+		switch node.Kind {
+		case tir.FieldDeclaration:
+			return false
+		case tir.VariantDeclaration:
+			return true
 		}
 	}
+	// No member-declaration node was found at all (a type with zero declared
+	// members, if that's even expressible) — fall back to true, matching this
+	// function's prior default for the case genuinely no evidence exists.
 	return true
 }
 
@@ -5933,9 +5958,14 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = true, .value = %s };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, valueExpr, indent, statement.Symbol), nil
 	case tir.NoneOptional:
 		// NoneOptional has zero children and the payload value is irrelevant
-		// when absent; zero is fine.
+		// when absent — but the zero-value literal's own shape still has to
+		// match the payload's own C type: a bare 0 is fine for a scalar
+		// (int/bool/enum) .value field, but a struct/tuple .value field needs
+		// the aggregate zero-initializer {0} instead — a bare 0 there
+		// triggers -Wmissing-field-initializers/-Wmissing-braces under this
+		// project's -Werror (see zeroOptionalPayloadLiteral).
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
-		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = false, .value = 0 };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, indent, statement.Symbol), nil
+		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = false, .value = %s };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, zeroOptionalPayloadLiteral(unit, snapshot, payloadType), indent, statement.Symbol), nil
 	case tir.DirectCall:
 		// A call to an optional-returning helper used as the direct
 		// initializer of a matching optional-typed local: `var o ?int =
@@ -5964,6 +5994,29 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 	}
 }
 
+// zeroOptionalPayloadLiteral is the C literal a NoneOptional's irrelevant
+// .value field is initialized with — a bare 0 for a scalar payload type
+// (int/bool/enum, all of which accept a plain 0 as a valid, warning-clean
+// initializer), or the aggregate zero-initializer {0} for a struct/tuple
+// payload (a bare 0 there triggers -Wmissing-field-initializers /
+// -Wmissing-braces under -Werror, since the .value field's own C type is a
+// struct, not a scalar).
+func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloadType types.TypeID) string {
+	if isTuple(snapshot, payloadType) {
+		return "{0}"
+	}
+	// isStruct also reports true for an enum payload (both are Nominal keys,
+	// indistinguishable at this level) — an enum's C type is a plain scalar
+	// C enum, not a struct, so it must NOT take the aggregate {0} literal (a
+	// brace-enclosed initializer around a scalar is itself a clean
+	// -Wmissing-braces target). isEnumType resolves the ambiguity the same
+	// way every other struct/enum-payload site in this file already does.
+	if isStruct(snapshot, payloadType) && !isEnumType(unit, snapshot, payloadType) {
+		return "{0}"
+	}
+	return "0"
+}
+
 func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
@@ -5974,7 +6027,7 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		return "", fmt.Errorf("%s optional value has no payload type", context)
 	}
 	if node.Kind == tir.NoneOptional {
-		return fmt.Sprintf("(%s){ .has_value = false, .value = 0 }", optionalTypeName(node.Type)), nil
+		return fmt.Sprintf("(%s){ .has_value = false, .value = %s }", optionalTypeName(node.Type), zeroOptionalPayloadLiteral(unit, snapshot, payload)), nil
 	}
 	if (node.Kind != tir.SomeOptional && node.Kind != tir.OptionalInject) || len(node.Children) != 1 {
 		return "", fmt.Errorf("%s contains a %s, want some, none, or an implicit-injection (some-without-the-keyword) optional value", context, node.Kind)

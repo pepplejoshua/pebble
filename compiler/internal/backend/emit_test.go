@@ -6225,7 +6225,7 @@ func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 		t.Fatalf("f body: %v", err)
 	}
 	helpers := []helperInfo{{decl: fDecl, block: fBody}}
-	infos, err := collectStructTypes(unit, snapshot, entryBlock, helpers)
+	infos, err := collectStructTypes(unit, snapshot, entryBlock, helpers, nil)
 	if err != nil {
 		t.Fatalf("collectStructTypes failed: %v", err)
 	}
@@ -9063,6 +9063,33 @@ func TestEmitOptionalResultTestsStillPass(t *testing.T) {
 	// same C for a return-position optional value it did before
 	// generalization.
 	emitAndRun(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return 1; } return 0; }", false, 1, false)
+}
+
+func TestEmitNoneOptionalOfConstructedStructCompilesAndRuns(t *testing.T) {
+	// Found during a real-code audit: isEnumType (the function distinguishing
+	// a Nominal type's struct-vs-enum classification) used to guess from
+	// FieldPlace/RecordConstruct usage evidence and defaulted to "enum" when
+	// it found none — wrong for `var o ?P = none;`, since a `none` literal
+	// never actually constructs its payload type, so the struct P was
+	// misclassified as an enum and the optional's .value field referenced an
+	// enum typedef that was never emitted. Fixed by reading each member's
+	// own declaration-node kind directly (tir.FieldDeclaration vs
+	// tir.VariantDeclaration, unconditional evidence, not a usage-evidence
+	// guess). This also required two supporting fixes: collectStructTypes
+	// now also collects a struct type reached only via an optional's payload
+	// (mirroring the existing Parameters/ResultType scans), and a
+	// NoneOptional's irrelevant .value field now uses the correct C
+	// zero-initializer shape for its payload type ({0} for a struct/tuple,
+	// which a bare 0 doesn't satisfy under -Wmissing-field-initializers /
+	// -Wmissing-braces with -Werror; 0 for a scalar/enum payload, unchanged).
+	// P here has real field evidence elsewhere in the program (constructed
+	// by make()) — the deeper, separate case of a struct with ZERO field
+	// evidence anywhere (declared, never constructed, ONLY ever named as a
+	// none optional's payload) is still blocked by a different, narrower gap
+	// (field-type resolution has no fallback when no FieldPlace/
+	// RecordConstruct evidence exists anywhere in the whole program) —
+	// tracked separately, not fixed here.
+	emitAndRun(t, "type P = struct { x int; y int; };\nfn make() P { return P.{ x = 1, y = 2 }; }\nfn main() int {\nvar p P = make();\nvar o ?P = none;\nif o.has_value { return 1; }\nreturn p.x;\n}", false, 1, false)
 }
 
 func TestEmitSliceParameterWritesC(t *testing.T) {
