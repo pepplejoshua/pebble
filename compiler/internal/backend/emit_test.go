@@ -8821,6 +8821,206 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 200, false)
 }
 
+func TestEmitOptionalResultCompilesAndRuns(t *testing.T) {
+	// The exact repro this slice was filed for: an optional-returning helper
+	// called as the direct initializer of a matching optional-typed local.
+	// `return 5;` is an implicit injection whose return child is the bare
+	// payload value (confirmed against a real fixture dump), so the backend
+	// supplies the injection itself; has_value must be true and the unwrapped
+	// value must be 5.
+	emitAndRun(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return 1; } return 0; }", false, 1, false)
+	emitAndRun(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return o!; } return 0; }", false, 5, false)
+}
+
+func TestEmitOptionalResultNoneCompilesAndRuns(t *testing.T) {
+	// `return none;` from an optional-result helper: the caller-side has_value
+	// must be false, so the false path of the if is taken and 0 is returned.
+	// Both the bare tail return and the `some`-explicit form are exercised.
+	emitAndRun(t, "fn f() ?int { return none; } fn main() int { var o ?int = f(); if o.has_value { return 99; } return 0; }", false, 0, false)
+	emitAndRun(t, "fn f() ?int { return some 5; } fn main() int { var o ?int = f(); if o.has_value { return o!; } return 0; }", false, 5, false)
+}
+
+func TestEmitOptionalResultImplicitInjectionCompilesAndRuns(t *testing.T) {
+	// The implicit-injection-in-return path specifically: `return 5;` with no
+	// `some` keyword. The checker emits the bare payload IntegerLiteral as the
+	// return child (no OptionalInject wrapper, unlike a local declaration's
+	// OptionalInject and unlike an aggregate payload's OptionalInject), so the
+	// backend's buildOptionalReturnValue must supply the has_value-true
+	// injection itself. The unwrapped value round-trips to 5.
+	emitAndRun(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return o!; } return 0; }", false, 5, false)
+	// The explicit `some` form is the same C, confirming both spellings lower
+	// identically through the return path.
+	emitAndRun(t, "fn f() ?int { return some 5; } fn main() int { var o ?int = f(); if o.has_value { return o!; } return 0; }", false, 5, false)
+}
+
+func TestEmitOptionalResultForwardsLocalCompilesAndRuns(t *testing.T) {
+	// A SymbolValue return: the helper declares an optional-typed local (itself
+	// implicitly injected from the bare integer 5, exercising the existing
+	// OptionalInject local-declaration path) and `return o;` forwards it,
+	// emitting `return pebble_local_<o>;`. The entry assigns the call to a
+	// matching optional local and unwraps 5.
+	emitAndRun(t, "fn f() ?int { let o ?int = 5; return o; } fn main() int { var o ?int = f(); if o.has_value { return o!; } return 0; }", false, 5, false)
+}
+
+func TestEmitOptionalResultCallsHelperCompilesAndRuns(t *testing.T) {
+	// One optional-returning helper calling another (`return g();`): the
+	// return child is a DirectCall carrying the optional result type, built by
+	// the same buildDirectCall machinery any call uses and forwarded as the
+	// return value — the call already returns the optional's own C type.
+	// g's 5 flows through f to the entry's unwrap.
+	emitAndRun(t, "fn g() ?int { return 5; } fn f() ?int { return g(); } fn main() int { var o ?int = f(); if o.has_value { return o!; } return 0; }", false, 5, false)
+}
+
+func TestEmitOptionalResultBoolPayloadCompilesAndRuns(t *testing.T) {
+	// A bool-payload optional result: the payload is built by buildBoolExpr
+	// (not hardcoded to an integer payload), and the unwrapped bool drives an
+	// if at the call site (`if o!` — the same shape the existing bool optional
+	// tests use for a local). The some-true and none forms both round-trip.
+	emitAndRun(t, "fn f() ?bool { return some true; } fn main() int { var o ?bool = f(); if o! { return 1; } return 0; }", false, 1, false)
+	emitAndRun(t, "fn f() ?bool { return none; } fn main() int { var o ?bool = f(); if !o.has_value { return 1; } return 0; }", false, 1, false)
+}
+
+func TestEmitOptionalResultStructPayloadCompilesAndRuns(t *testing.T) {
+	// A struct-payload optional result: `return some P.{ x = 1, y = 2 };` is a
+	// SomeOptional wrapping a RecordConstruct, built by the shared
+	// buildOptionalValueExpr → buildStructValueExpr dispatch (the same payload
+	// grammar a nested-in-aggregate optional uses). has_value must be true at
+	// the call site and the emitted optional's value field must hold the
+	// constructed struct. The payload field read-back (o!.x) is separately out
+	// of scope — the caller-side FieldValue-on-unwrap read is a pre-existing,
+	// unrelated limitation — so the value round-trip is asserted on the emitted
+	// C (see TestEmitOptionalResultStructPayloadWritesC), which would fail to
+	// compile under -Wall -Wextra -Werror if the payload type dispatch were
+	// wrong. (A `return none;` variant for an aggregate payload is not covered
+	// here: it trips a pre-existing, unrelated isEnumType heuristic that
+	// misclassifies a struct payload as an enum when the struct is never
+	// constructed anywhere in the program — reproducible with a bare
+	// `var o ?P = none;` in main, no helper functions involved.)
+	emitAndRun(t, "type P = struct { x int; y int; };\nfn f() ?P { return some P.{ x = 1, y = 2 }; } fn main() int { var o ?P = f(); if o.has_value { return 1; } return 0; }", false, 1, false)
+}
+
+func TestEmitOptionalResultTuplePayloadCompilesAndRuns(t *testing.T) {
+	// A tuple-payload optional result, in both spellings: the explicit
+	// `return some (1, 2);` (SomeOptional wrapping a TupleValue) and the
+	// implicit `return (1, 2);` whose aggregate payload the checker wraps in an
+	// OptionalInject node (confirmed against a real fixture dump) — the shape
+	// that motivated extending buildOptionalValueExpr to share the SomeOptional
+	// case. has_value must be true at the call site; the tuple element
+	// read-back (o!.0) is separately out of scope, so the value is asserted on
+	// the emitted C, which would fail to compile if the payload dispatch were
+	// wrong.
+	emitAndRun(t, "fn f() ?(int, int) { return some (1, 2); } fn main() int { var o ?(int, int) = f(); if o.has_value { return 1; } return 0; }", false, 1, false)
+	emitAndRun(t, "fn f() ?(int, int) { return (1, 2); } fn main() int { var o ?(int, int) = f(); if o.has_value { return 1; } return 0; }", false, 1, false)
+}
+
+func TestEmitOptionalResultWritesC(t *testing.T) {
+	// The emitted C for the flagship repro: the optional typedef (bool
+	// has_value plus the payload's int32_t value) precedes the helper, the
+	// helper's signature declares its return type as pebble_optional_23_t (the
+	// optional's own typedef, not the entry's scalar int32_t), its return
+	// statement emits the injected compound literal
+	// (pebble_optional_23_t){ .has_value = true, .value = 5 } for the bare
+	// payload `return 5;`, and the call site initializes the local directly
+	// from pebble_fn_24(ctx). Symbols 24 (f), 25 (main), 26 (o local), and
+	// optional type 23 come from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return 1; } return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    int32_t value;\n} pebble_optional_23_t;",
+		"static pebble_optional_23_t pebble_fn_24(PebbleContext *ctx) {",
+		"    return (pebble_optional_23_t){ .has_value = true, .value = 5 };",
+		"pebble_optional_23_t pebble_local_26 = pebble_fn_24(ctx);",
+		"    (void)pebble_local_26;",
+		"if (pebble_local_26.has_value) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	typedefIndex := strings.Index(out, "typedef struct")
+	helperIndex := strings.Index(out, "static pebble_optional_23_t pebble_fn_24")
+	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
+		t.Errorf("optional typedef does not precede the helper function (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
+	// The emitted C for the struct-payload fixture: the struct typedef
+	// precedes the optional typedef that names it as its value field
+	// (definition before use — the same ordering the aggregate-typedef DFS
+	// guarantees for tuple/struct payloads), and the helper's return emits the
+	// nested compound literal with the struct construction as .value. Symbols
+	// 24 (P), 25 (x), 26 (y), 27 (f), 28 (main), 29 (o local), struct type 23,
+	// and optional type 24 come from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "type P = struct { x int; y int; };\nfn f() ?P { return some P.{ x = 1, y = 2 }; } fn main() int { var o ?P = f(); if o.has_value { return 1; } return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    pebble_struct_23_t value;\n} pebble_optional_24_t;",
+		"static pebble_optional_24_t pebble_fn_27(PebbleContext *ctx) {",
+		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_struct_23_t){ .pebble_field_25 = 1, .pebble_field_26 = 2 } };",
+		"pebble_optional_24_t pebble_local_29 = pebble_fn_27(ctx);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	structIndex := strings.Index(out, "typedef struct {\n    int32_t pebble_field_25")
+	optionalIndex := strings.Index(out, "} pebble_optional_24_t;")
+	if structIndex < 0 || optionalIndex < 0 || structIndex > optionalIndex {
+		t.Errorf("struct typedef does not precede the optional typedef that names it (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
+	// The emitted C for the tuple-payload implicit-injection fixture: the
+	// tuple typedef precedes the optional typedef, and the helper's return
+	// emits the nested compound literal with the tuple construction as .value —
+	// the OptionalInject-in-return shape, sharing buildOptionalValueExpr's
+	// SomeOptional case. Symbols 24 (f), 25 (main), 26 (o local), tuple type
+	// 23, and optional type 24 come from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn f() ?(int, int) { return (1, 2); } fn main() int { var o ?(int, int) = f(); if o.has_value { return 1; } return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
+		"typedef struct {\n    bool has_value;\n    pebble_tuple_23_t value;\n} pebble_optional_24_t;",
+		"static pebble_optional_24_t pebble_fn_24(PebbleContext *ctx) {",
+		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_tuple_23_t){ 1, 2 } };",
+		"pebble_optional_24_t pebble_local_26 = pebble_fn_24(ctx);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	tupleIndex := strings.Index(out, "} pebble_tuple_23_t;")
+	optionalIndex := strings.Index(out, "} pebble_optional_24_t;")
+	if tupleIndex < 0 || optionalIndex < 0 || tupleIndex > optionalIndex {
+		t.Errorf("tuple typedef does not precede the optional typedef that names it (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitRejectsOptionalParameterCompilesAndRuns(t *testing.T) {
+	// Optional-typed PARAMETERS remain explicitly out of scope: a helper
+	// taking a ?int parameter is still rejected by validateHelperSignature's
+	// parameter gate (the loop building the "parameter %d ... has type %s,
+	// want..." error), untouched by this slice. The error names the parameter
+	// position, not the result — a regression guard that the optional-result
+	// change did not loosen the parameter check.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn f() ?int { return 5; } fn g(o ?int) int { return 0; } fn main() int { return g(f()); }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "parameter 0")
+}
+
 func TestEmitSliceParameterWritesC(t *testing.T) {
 	// The parameter C type for a slice-taking helper: the C signature declares
 	// the parameter as the slice type's own struct typedef (the same

@@ -119,9 +119,13 @@
 // and `value` (the payload's C type). Force-unwrap is bounds-checked via the
 // runtime helper pebble_rt_checked_unwrap_i32/i64/bool. `none` literals
 // (a tir.NoneOptional) construct an absent optional the same way; reassigning
-// an optional local is rejected cleanly. Optional-typed
-// function parameters, return types, and payload types other than the entry's
-// width or bool are out of scope and rejected cleanly.
+// an optional local is rejected cleanly. A reachable helper may also return an
+// optional (its C return type is the optional's own typedef name), consumed at
+// the call site as the direct initializer of a matching optional-typed local
+// (`var o ?int = f();`). Optional-typed
+// function parameters, and optional payload types other than the entry's
+// width, bool, a tuple/struct type, or an enum, are out of scope and rejected
+// cleanly.
 //
 // Since 10.22, a local may also be declared as a struct whose every field's
 // type is exactly the entry's resolved width or bool, initialized from a
@@ -437,7 +441,8 @@ import (
 // must be Pebble-convention, take parameters of only the entry's resolved
 // width, bool, str, a tuple/struct type, or, since 10.38, a slice type whose
 // element type is the entry's width or bool, and return exactly the
-// entry's resolved width, str, a tuple/struct type, a slice type, or void; a width mismatch at a call site or a parameter
+// entry's resolved width, str, a tuple/struct type, a slice type, an optional
+// type, a pointer type, or void; a width mismatch at a call site or a parameter
 // of any other
 // type is a clean rejection. A void-result helper is supported since 10.33
 // in exactly one position — a bare
@@ -983,6 +988,18 @@ func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 	for _, helper := range helpers {
 		if err := collectOptionalTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
 			return nil, err
+		}
+		// A reachable helper's own result type is a source of optional types
+		// the body walk cannot see: an optional-returning helper's C signature
+		// declares pebble_optional_<typeID>_t, so an optional type that appears
+		// nowhere in any reachable body still needs its typedef emitted — the
+		// same ResultType scan 10.26 added for tuple/struct result types. (For
+		// a reachable optional-returning helper the caller must declare a
+		// matching optional-typed local to consume the result, which the body
+		// walk of that local's Initialize usually finds anyway; this scan
+		// closes the same gap, for the return side.)
+		if isOptional(snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -2005,7 +2022,7 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // every reachable helper must satisfy: Pebble-convention, parameters whose
 // types are exactly the entry's resolved width, bool, str, a tuple type, or a
 // struct type, and a result of exactly the entry's resolved width, str, a tuple
-// type, a struct type, or void. The width
+// type, a struct type, an optional type, or void. The width
 // rule is the same reasoning 10.13 established for locals — a called function
 // of the other width (an i32 helper called from an i64 entry, or vice versa) is
 // a clean width-mismatch rejection, never a coercion, since there is no
@@ -2015,10 +2032,13 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // str local — 10.36), a tuple type (one of the
 // shapes 10.19 supports — element types the entry's width or bool), or a
 // struct type (one of the shapes 10.22 supports — field types the entry's
-// width or bool); a tuple/struct/str result type has the same options. The
+// width or bool); a tuple/struct/str/optional result type has the same options.
+// The
 // tuple/struct's own internal shape is validated wherever
-// its typedef gets built (buildTupleTypedef / buildStructTypedef), not here.
-// Anything else (a pointer, an array, an optional, an enum, a helper of the
+// its typedef gets built (buildTupleTypedef / buildStructTypedef), not here,
+// and an optional result's own payload shape is likewise validated wherever
+// its typedef gets built (buildOptionalTypedef / optionalPayloadCType).
+// Anything else (a pointer, an array, an enum, a helper of the
 // other integer width) is a clean rejection naming the position. A void-result
 // helper is accepted: 10.33 added the one position such a call is legal in —
 // a bare discarded-expression statement (buildExpressionStatement), which the
@@ -2060,8 +2080,8 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		}
 	}
 	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
-	if (!integerResult || cType(resultWidth) == "") && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, char, str, a tuple/struct result type, a slice result type, a pointer result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
+	if (!integerResult || cType(resultWidth) == "") && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
@@ -2209,7 +2229,9 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// helper (10.33) is declared with the C return type "void" and
 		// resultInfo{kind: types.Void}. The tuple/struct
 		// shape is validated wherever its typedef is built (buildTupleTypedef /
-		// buildStructTypedef), exactly like a tuple/struct parameter's.
+		// buildStructTypedef), exactly like a tuple/struct parameter's, and an
+		// optional result's payload shape is likewise validated wherever its
+		// typedef is built (buildOptionalTypedef / optionalPayloadCType).
 		bodyWidth := width
 		if resultWidth, integerResult := resolvedBuiltin(snapshot, helper.decl.ResultType); integerResult && cType(resultWidth) != "" {
 			bodyWidth = resultWidth
@@ -2283,6 +2305,22 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			}
 			returnType = pointerTypeName(snapshot, pointeeTypeID)
 			result = resultInfo{pointerType: helper.decl.ResultType}
+		case isOptional(snapshot, helper.decl.ResultType):
+			// An optional-result helper is declared with the optional type's
+			// own struct typedef name (pebble_optional_<typeID>_t) as its C
+			// return type — the same typedef 10.21 builds for an optional
+			// local, no new typedef shape needed — and resultInfo records the
+			// optional shape so buildBlock's tail-position Return builds its
+			// value via buildOptionalReturnValue (a SymbolValue naming an
+			// optional-typed local, a fresh SomeOptional/NoneOptional/
+			// OptionalInject construction, or a call to another
+			// optional-returning helper) rather than buildExpr, which would
+			// reject an optional-typed value. The payload type is validated
+			// wherever its typedef is built (buildOptionalTypedef via
+			// optionalPayloadCType), exactly like a tuple/struct result's
+			// internal shape.
+			returnType = optionalTypeName(helper.decl.ResultType)
+			result = resultInfo{optionalType: helper.decl.ResultType}
 		}
 		statements, err := buildBlock(unit, snapshot, fileSet, helper.block, scope, 0, bodyWidth, result, unions)
 		if err != nil {
@@ -2548,6 +2586,20 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// below demonstrate — just for construction complexity rather than
 		// deferred cleanup.
 		preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
+	} else if result.optionalType != 0 {
+		// The enclosing function returns an optional (a reachable helper
+		// whose ResultType is an optional type), so the return value is
+		// built under the optional grammar by buildOptionalReturnValue
+		// rather than buildExpr, which rejects an optional-typed value.
+		// Supported return shapes are a SymbolValue naming an
+		// optional-typed local in scope of the matching type, a fresh
+		// SomeOptional / NoneOptional / OptionalInject construction of the
+		// matching type (built by the shared buildOptionalValueExpr), a
+		// DirectCall to another optional-returning helper (a return
+		// forward), or a bare payload value whose implicit injection into
+		// the optional is supplied here; anything else is a clean
+		// rejection.
+		returnValue, err = buildOptionalReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, width)
 	} else if result.kind == types.F32 || result.kind == types.F64 {
 		// A float-returning entry (a main declared to return f32/f64 — the
 		// one float-returning position Float Stage A supports; float helper
@@ -4973,11 +5025,11 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // resultInfo records what the enclosing function's tail return must produce:
 // an ordinary scalar — the entry's resolved integer width, in kind — a str
 // value, in isStr, a char value, in isChar, a tuple, in tuple (its types.TypeID), a struct, in
-// structType, or a slice, in sliceType. The fields are
+// structType, a slice, in sliceType, or an optional, in optionalType. The fields are
 // mutually exclusive, mirroring localInfo: kind is zero for a compound or str
 // or char result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
 // str result, isChar is true only for a char result (whose C return type is
-// the fixed int32_t, independent of the entry's width), and tuple/structType/sliceType are zero
+// the fixed int32_t, independent of the entry's width), and tuple/structType/sliceType/optionalType are zero
 // for a scalar result. It is threaded alongside width through buildBlock and
 // buildIf so a tuple/struct-returning helper's tail-position Return builds its
 // value via buildAggregateReturnValue (a SymbolValue naming a matching
@@ -4985,22 +5037,28 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // slice-returning helper's tail-position Return builds its value via
 // buildSliceReturnValue (a SymbolValue naming a matching slice-typed local, or
 // a fresh CheckedSlice construction emitted as the two-statement temp-then-
-// construction shape), and a
+// construction shape), an optional-returning helper's tail-position Return
+// builds its value via
+// buildOptionalReturnValue (a SymbolValue naming a matching optional-typed
+// local, a fresh SomeOptional/NoneOptional/OptionalInject construction, a call
+// to another optional-returning helper, or a bare payload whose implicit
+// injection is supplied there), and a
 // str-returning helper's tail-position Return builds its value via
 // buildStrOperand (a SymbolValue naming a str local, a string literal, or a
 // call to a str-returning helper) instead of
-// buildExpr, which would reject an aggregate-, slice-, or str-typed value. The entry's own body
+// buildExpr, which would reject an aggregate-, slice-, optional-, or str-typed value. The entry's own body
 // always threads resultInfo{kind: width} (a scalar, unchanged behavior), since
 // the entry's C return type stays the integer entryReturnType regardless of
 // what a helper may return.
 type resultInfo struct {
-	kind        types.BuiltinKind
-	isStr       bool
-	isChar      bool
-	tuple       types.TypeID
-	structType  types.TypeID
-	sliceType   types.TypeID
-	pointerType types.TypeID
+	kind         types.BuiltinKind
+	isStr        bool
+	isChar       bool
+	tuple        types.TypeID
+	structType   types.TypeID
+	sliceType    types.TypeID
+	pointerType  types.TypeID
+	optionalType types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -5091,6 +5149,39 @@ func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fil
 	}
 	scope[statement.Symbol] = localInfo{structType: initValue.Type}
 	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+}
+
+// buildOptionalCallInitializer builds an optional-typed local's declaration
+// whose initializer is a DirectCall to a helper returning the same optional
+// type: `var o ?int = f();`. This mirrors the tuple/struct
+// buildAggregateCallInitializer shape exactly: an optional result, like a
+// tuple/struct result, is a C struct type read back whole at the call site, so
+// the call expression (built by buildDirectCall, the same call-building
+// machinery buildExpr's DirectCall case uses) is the local's whole initializer
+// — a `pebble_optional_<typeID>_t pebble_local_<symbol> = f(ctx, ...);`
+// assignment. The call's result type is the DirectCall node's own Type, which
+// is the callee's resolved result type, and it must be exactly the local's
+// declared type — double-checked against the callee's declared ResultType
+// (defense for hand-built IR), so the emitted C never initializes a local of
+// one optional type from a call returning another. The local's scope entry
+// records its optional type (localInfo with optional set), so a later
+// has_value read or force-unwrap resolves the optional type being unwrapped.
+// Like every local, the declaration is followed by a (void) cast against
+// -Wunused-variable.
+func buildOptionalCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	calleeDecl, err := findCallDeclaration(unit, initValue)
+	if err != nil {
+		return "", err
+	}
+	if calleeDecl.ResultType != initValue.Type {
+		return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+	}
+	callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{optional: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
 }
 
 // buildTupleBraceList validates one TupleValue node's element list and builds
@@ -5786,6 +5877,14 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		// when absent; zero is fine.
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = false, .value = 0 };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, indent, statement.Symbol), nil
+	case tir.DirectCall:
+		// A call to an optional-returning helper used as the direct
+		// initializer of a matching optional-typed local: `var o ?int =
+		// f();` — the one position (alongside some/none and the
+		// integer-to-optional-enum cast) in which an optional-typed local
+		// may be initialized, mirroring the tuple/struct aggregate-call
+		// initializer shape (buildAggregateCallInitializer).
+		return buildOptionalCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 	case tir.OptionalIntegerToEnum:
 		// An integer cast to an optional enum used directly as a local
 		// declaration's initializer (`var c ?Color = 5 as ?Color;`). The
@@ -5818,8 +5917,8 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if node.Kind == tir.NoneOptional {
 		return fmt.Sprintf("(%s){ .has_value = false, .value = 0 }", optionalTypeName(node.Type)), nil
 	}
-	if node.Kind != tir.SomeOptional || len(node.Children) != 1 {
-		return "", fmt.Errorf("%s contains a %s, want some or none optional value", context, node.Kind)
+	if (node.Kind != tir.SomeOptional && node.Kind != tir.OptionalInject) || len(node.Children) != 1 {
+		return "", fmt.Errorf("%s contains a %s, want some, none, or an implicit-injection (some-without-the-keyword) optional value", context, node.Kind)
 	}
 	var value string
 	var err error
@@ -8724,6 +8823,108 @@ func buildSliceReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		return "", construction, err
 	}
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a slice-typed local in scope or a fresh slice construction (a CheckedSlice); only returning an already-declared slice-typed local or constructing a fresh slice from an array inline is supported", context, node.Kind)
+}
+
+// buildOptionalReturnValue builds the C text for an optional-returning
+// function's tail-position return. The enclosing function's result type comes
+// from result.optionalType (set by buildHelperFunctions from the helper's own
+// ResultType), and exactly four return-value shapes are supported (all
+// confirmed against real fixtures):
+//
+//   - a plain SymbolValue naming an already-declared optional-typed local — or
+//     an optional-typed parameter, which seeds the callee's scope identically —
+//     in scope whose declared type is exactly the function's result type,
+//     emitted as the local's own pebble_local_<symbol> C name: forwarding an
+//     already-computed optional value without re-constructing it;
+//   - a fresh SomeOptional / NoneOptional / OptionalInject construction of the
+//     matching optional type (`return some x;`, `return none;`, or the implicit
+//     aggregate-injection form `return (1, 2);` — the checker wraps a
+//     tuple/struct payload's implicit injection in an OptionalInject node, while
+//     a scalar payload's injection arrives as the bare payload value itself,
+//     the fourth shape below), built by the shared buildOptionalValueExpr (the
+//     same builder a nested-in-aggregate optional value uses), which handles
+//     every supported payload grammar and emits the optional's own compound
+//     literal;
+//   - a DirectCall to another optional-returning helper (`return g();` — the
+//     call node carries the optional result type, so it is built by the same
+//     buildDirectCall machinery any call uses and forwarded as the return
+//     value, confirmed reachable from real source);
+//   - a bare payload value whose Type is the optional's payload type rather
+//     than the optional type itself — the scalar implicit-injection shape the
+//     checker produces for `return 5;` in an optional-returning helper (the
+//     payload is injected without an OptionalInject wrapper, unlike the
+//     aggregate shapes above) — injected here as a fresh
+//     `(pebble_optional_<typeID>_t){ .has_value = true, .value = <payload> }`
+//     compound literal, the payload built by the grammar its own type selects.
+//
+// Any other return-value shape is a clean rejection. width is the entry's
+// resolved integer width, threaded through to the inline builders so each
+// payload is built at the width the result type's own typedef uses.
+func buildOptionalReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("entry function body return statement references invalid value node %d", id)
+	}
+	if node.Kind == tir.SymbolValue {
+		info, declared := locals[node.Symbol]
+		if !declared {
+			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is not a local in scope", node.Symbol)
+		}
+		if info.optional != result.optionalType {
+			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not an optional-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), optionalTypeName(result.optionalType))
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	if node.Kind == tir.SomeOptional || node.Kind == tir.NoneOptional || node.Kind == tir.OptionalInject {
+		// A fresh optional value built inline: `return some x;`, `return
+		// none;`, or an implicit aggregate injection `return (1, 2);`
+		// (OptionalInject). buildOptionalValueExpr shares the SomeOptional
+		// and OptionalInject cases — both carry exactly one payload child
+		// and lower to the identical C — and handles the NoneOptional
+		// zero-child form.
+		return buildOptionalValueExpr(unit, snapshot, fileSet, node, locals, "entry function body return statement", width)
+	}
+	if node.Kind == tir.DirectCall {
+		// A return forward of another optional-returning helper's result:
+		// `return g();`. The call's own result type is validated by
+		// validateHelperSignature (the callee's declared ResultType must be
+		// an optional type) and the checker coerces the call's type to the
+		// enclosing function's result type, so a plain buildDirectCall of
+		// the call node is the whole lowering — the call already returns
+		// the optional's own C type.
+		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+	}
+	// The remaining supported shape is the bare scalar payload the checker
+	// produces for implicit injection in a return (`return 5;` in a ?int
+	// helper): the return child carries the payload type, not the optional
+	// type. Inject it here — the same C a SomeOptional/OptionalInject of
+	// this payload would emit, with the payload built by the grammar its own
+	// type selects.
+	key, ok := snapshot.Key(result.optionalType)
+	if !ok {
+		return "", fmt.Errorf("entry function body return statement returns a value of type %s in an optional-returning function whose result type %d is not in the type snapshot", describeType(snapshot, node.Type), result.optionalType)
+	}
+	payload, ok := key.Child()
+	if !ok {
+		return "", fmt.Errorf("entry function body return statement returns a value of type %s in an optional-returning function whose result type %s has no payload type", describeType(snapshot, node.Type), optionalTypeName(result.optionalType))
+	}
+	if node.Type != payload {
+		return "", fmt.Errorf("entry function body return statement returns a %s, want an optional-typed value of type %s (a reference to an optional-typed local, some/none, a call to an optional-returning helper) or a payload value of type %s", describeType(snapshot, node.Type), optionalTypeName(result.optionalType), describeType(snapshot, payload))
+	}
+	var value string
+	var err error
+	switch {
+	case isWidth(snapshot, width, payload):
+		value, err = buildExpr(unit, snapshot, fileSet, id, locals, width)
+	case isBool(snapshot, payload):
+		value, err = buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
+	default:
+		return "", fmt.Errorf("entry function body return statement implicitly injects a payload value of type %s, want %s or bool", describeType(snapshot, payload), wantName(width))
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s){ .has_value = true, .value = %s }", optionalTypeName(result.optionalType), value), nil
 }
 
 // buildBoolExpr builds the C text for a bool value node, used both for a bool
