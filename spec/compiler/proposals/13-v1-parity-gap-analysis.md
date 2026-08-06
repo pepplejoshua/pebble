@@ -77,36 +77,36 @@ repeated here.
       `N0001: undefined name "iter"`). Direct decision (2026-08-05): keep
       v2's current behavior — explicit naming stays required, no implicit
       `iter` default. Not tracked as a gap.
-- [ ] **Now the last active item — every other tracker item is closed
-      (2026-08-05). Scoping done, ready to implement.** v1's mechanism
-      confirmed by reading `src/codegen.c`/`src/type.c` in full:
-      a function type becomes a C function-pointer typedef —
-      `typedef <ret> (*name)(ctx_param_if_pebble_convention,
-      params...);` (`emit_type_if_needed`, `TYPE_FUNCTION` case) — and
-      a plain function reference as a value just emits the function's
-      own C name (which decays to a pointer in C, no wrapping needed).
-      v2 has nothing general: `internal/backend/emit.go`'s
-      `buildIndirectCall` exists but is hard-coded exclusively for the
-      built-in `Allocator`'s alloc/realloc/free fields
-      (`PebbleAllocFn`/`PebbleReallocFn`/`PebbleFreeFn`) — a narrow
-      special case, not general function-value support, though its
-      cast-and-call shape is a useful structural precedent. Real scope,
-      four parts: (1) a new `pebble_fnptr_<typeID>_t` typedef category,
-      following v2's existing per-TypeID naming convention (matching
-      slice/optional/struct typedefs) rather than v1's ad-hoc
-      canonical-name strings, with the same `PebbleContext *ctx`
-      first-parameter threading v2 already uses for every
-      Pebble-convention call; (2) threading that type through struct
-      fields, local declarations, function parameters, and function
-      results — the same dispatch-point pattern extended repeatedly
-      this session for optional/slice/tuple types; (3) function values
-      as first-class values (`HoistedFunctionValue`/
-      `GenericFunctionValue`, still on the node-kind audit below) — a
-      bare function name decaying to its own `pebble_fn_<symbolID>` C
-      identifier; (4) general indirect calls through a function-typed
-      value (not just the allocator's narrow case) — needs real new
-      logic. Comparable in size to the float-expression work — multiple
-      sequential pieces, not a single dispatch.
+- [ ] **In progress, slice 1/3 done (2ab27d6).** Function-typed local
+      variables, bare function references as first-class values
+      (`HoistedFunctionValue`), and general indirect calls through a
+      function-typed value all work end to end now
+      (`pebble_fnptr_<typeID>_t` typedef, matching v2's existing
+      per-TypeID naming convention, `PebbleContext *ctx` threaded
+      exactly like every other Pebble-convention call). Found and fixed
+      a real regression during verification: the naive "any node whose
+      Type is a function type needs a typedef" collection pass also
+      matched the built-in Allocator's alloc/realloc/free field
+      accesses (also function-typed), breaking every allocator call in
+      the program — fixed via a shared `indirectCalleePlace` helper so
+      the allocator-specific `buildIndirectCall` path and the new
+      typedef-collection pass agree on which `IndirectCall`s are the
+      allocator's built-in case versus the general one (the checker
+      sets `IndirectCall.FunctionType` on BOTH shapes, not just the
+      general one as originally assumed — that assumption was the root
+      cause).
+
+      Remaining, two more slices: **slice 2** — function-typed STRUCT
+      FIELDS (the actual originally-motivating case,
+      `std/hmap.peb`/`std/set.peb`'s `hash_fn fn (K) u64;`), threading
+      the same `pebble_fnptr_<typeID>_t` machinery through struct field
+      declarations/construction/reads. **Slice 3** — function-typed
+      PARAMETERS and RESULTS (higher-order functions), plus
+      `GenericFunctionValue` (a generic function referenced as a value,
+      still unverified). Once both land, `std/hmap.peb`/`std/set.peb`
+      need independent re-verification via `backend.Emit` (not just
+      `check.Check`) before being trusted as "done" — flagged as
+      suspect earlier this session, still not re-checked.
       CORRECTED, much bigger than originally scoped: function types have
       NO real backend representation anywhere, not just in locals.
       Original entry claimed struct fields already worked ("confirmed
