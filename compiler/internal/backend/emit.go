@@ -9825,9 +9825,11 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // snapshot's bool builtin:
 //
 //   - BoolLiteral — the C literal true/false (requires #include <stdbool.h>).
+//
 //   - SymbolValue whose Symbol is a bool local in scope (the locals map
 //     records types.Bool for it) — pebble_local_<symbol ID>, the same C name
 //     buildLeadingStatement gave that local's declaration.
+//
 //   - PrefixValue with operator ! (syntax.Bang, confirmed against a real
 //     fixture — a bool `!` is a PrefixValue, not the CheckedNegate integer
 //     negation uses) and exactly one operand that is itself a bool value in
@@ -9835,6 +9837,7 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 //     recursing into this same builder, so a negated comparison (e.g.
 //     !(i < 5)) is now accepted: its operand is a SourceAlias wrapping a
 //     BinaryValue, both handled below.
+//
 //   - BinaryValue with one of the six comparison operators — delegated to
 //     buildComparison, the same path a top-level if/while condition uses, so
 //     a comparison can serve as an operand of && / || as well as stand alone.
@@ -9844,36 +9847,41 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 //     comparison operands are bool values — take the bool-equality path.
 //     (A BinaryValue with any other operator is rejected by buildComparison's
 //     operator check.)
+//
 //   - ShortCircuitValue with operator && (syntax.LogicalAnd) or ||
 //     (syntax.LogicalOr) — <(left) && (right)> / <(left) || (right)>,
 //     parenthesized so nested combinations produce unambiguous C regardless of
 //     depth. Both operands are built by recursing into this same builder, so
-//     && and || combine literals, bool locals, ! negations, comparisons, and
-//     nested && / || freely. Plain C && and || are the correct lowering: both
-//     languages short-circuit, and every operand this builder produces is
-//     side-effect-free (no calls, no mutation inside an expression), so
-//     nothing observable changes whether or not the right operand is
-//     evaluated. The operand tree already encodes the language's &&-vs-||
-//     precedence (confirmed: Pebble's grammar gives || precedence 1 and &&
-//     precedence 2), so this builder never re-derives precedence.
+//     && and || combine literals, bool locals, ! negations, comparisons,
+//     bool-returning calls, and nested && / || freely. Plain C && and || are
+//     the correct lowering: both languages short-circuit the same way, so a
+//     call operand is evaluated exactly when Pebble would evaluate it (a
+//     skipped right operand is skipped in both languages). The operand tree
+//     already encodes the language's &&-vs-|| precedence (confirmed: Pebble's
+//     grammar gives || precedence 1 and && precedence 2), so this builder
+//     never re-derives precedence.
+//
 //   - SourceAlias — a transparent wrapper (the grouped-expression parens), so
 //     it is unwrapped and its single child built by recursing into this same
 //     builder. A parenthesized comparison operand of && / || is exactly this
 //     shape (confirmed against a real fixture: flag && (1 < 2) has the
 //     comparison wrapped in a SourceAlias, while the unparenthesized
 //     1 < 2 && 3 < 4 wraps nothing).
+//
 //   - Load of a TuplePlace — a tuple-typed local's bool element read (`t.1`
 //     in a bool position), the same Load(TuplePlace) shape buildExpr's Load
 //     case handles but with the element's own type gated to bool here, so the
 //     read emits pebble_local_<symbol>._<ordinal> via buildTupleElement. (A
 //     plain bool local read is a SymbolValue, not a Load.)
 //
-// A bool-returning call needs no DirectCall case here and has none: a called
-// function may only resolve to the entry's integer width or void (see
-// validateHelperSignature), and void-result calls are deliberately out of
-// scope this slice, so no reachable DirectCall can carry the bool builtin and
-// no bool call can reach this builder — confirmed by construction, not
-// assumed.
+//   - DirectCall / MethodCall — a call to a bool-returning helper function or
+//     method used directly as a bool value (confirmed checker-reachable: a
+//     plain helper with a bool result type is admitted by
+//     validateHelperSignature, so `if id(true) { ... }` lowers the condition
+//     to a bool-typed DirectCall, and a bool-returning method call lowers to a
+//     bool-typed MethodCall). The call is built by the same buildDirectCall
+//     machinery a scalar-width call uses, and its result is a C bool, which
+//     this position accepts directly.
 //
 // A SymbolValue referencing anything else — an integer local, a global, a
 // parameter — and any other node kind at any position is a clean rejection
@@ -9897,6 +9905,8 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.DirectCall, tir.MethodCall:
+		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
 	case tir.IndirectCall:
 		// A call through a function-typed value whose result is bool
 		// (confirmed checker-reachable: `if f(true) { ... }` lowers the

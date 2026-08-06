@@ -9737,6 +9737,47 @@ func TestEmitFunctionTypedLocalBoolSignatureCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var f fn(bool) bool = id; if f(false) { return 1; } else { return 2; } }", false, 2, false)
 }
 
+func TestEmitBoolReturningDirectCallInIfConditionCompilesAndRuns(t *testing.T) {
+	// The exact repro: a plain bool-returning helper called directly in a bool
+	// position. validateHelperSignature admits a bool result, so the if
+	// condition lowers to a bool-typed DirectCall, which buildBoolExpr now
+	// builds through buildDirectCall. The branch taken proves the call's C
+	// bool result drives the condition correctly.
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { if id(true) { return 1; } else { return 2; } }", true, 1, false)
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { if id(false) { return 1; } else { return 2; } }", true, 2, false)
+}
+
+func TestEmitBoolReturningDirectCallInWhileConditionCompilesAndRuns(t *testing.T) {
+	// The same direct call used as a while-loop condition: `while id(n < 2)`
+	// calls id with a comparison argument, so the condition is a DirectCall
+	// whose argument is itself a bool value built by the same builder. The
+	// loop must run exactly twice, proving the call result keeps the loop
+	// going and then stops it.
+	emitAndRunBounded(t, "fn id(b bool) bool { return b; } fn main() int { var n int = 0; while id(n < 2) { n = n + 1; } return n; }", true, 2, false)
+}
+
+func TestEmitBoolReturningDirectCallWithShortCircuitCompilesAndRuns(t *testing.T) {
+	// A bool-returning call composed with && / || / ! in the same condition:
+	// the new DirectCall case must compose with the existing operand tree.
+	// The && cases prove short-circuit composition (the false-left case skips
+	// the right operand exactly as Pebble would), and the || / ! cases prove
+	// the call also works on the right of an operator and under negation.
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var flag bool = true; if id(true) && flag { return 1; } else { return 2; } }", true, 1, false)
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var flag bool = true; if id(false) && flag { return 1; } else { return 2; } }", true, 2, false)
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var flag bool = false; if id(true) || flag { return 1; } else { return 2; } }", true, 1, false)
+	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { if !id(false) { return 1; } else { return 2; } }", true, 1, false)
+}
+
+func TestEmitBoolReturningMethodCallInConditionCompilesAndRuns(t *testing.T) {
+	// A bool-returning method call in a bool position lowers to a bool-typed
+	// MethodCall (the receiver becomes the self parameter through
+	// buildCallArguments), which buildBoolExpr builds through buildDirectCall
+	// just like the DirectCall case. Both the true and false branch results
+	// confirm the method result drives the condition.
+	emitAndRun(t, "type Box = struct { value bool; fn isTrue(self Box) bool => self.value; }; fn main() int { let box Box = Box.{ value = true }; if box.isTrue() { return 1; } else { return 2; } }", true, 1, false)
+	emitAndRun(t, "type Box = struct { value bool; fn isTrue(self Box) bool => self.value; }; fn main() int { let box Box = Box.{ value = false }; if box.isTrue() { return 1; } else { return 2; } }", true, 2, false)
+}
+
 func TestEmitFunctionTypedLocalWritesC(t *testing.T) {
 	// Confirm the emitted C directly: the typedef shape
 	// (typedef <ret> (*pebble_fnptr_<id>_t)(PebbleContext *ctx, ...);), the
