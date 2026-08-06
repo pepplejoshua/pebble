@@ -142,18 +142,21 @@ repeated here.
       rejections. `std/hash.peb`'s real `hash_bytes` body (mirrored,
       not the actual file — see below) now compiles and runs
       end-to-end via `backend.Emit`.
-- [ ] **`hash_str`/`hash_ptr`/`hash_char` in `std/hash.peb` use casts
-      the checker actually forbids — found while verifying the
-      `hash_bytes` fix above, previously masked because the
-      pointer-arithmetic error aborted the module's diagnostics before
-      reaching these.** `char as u64` (`hash_str:11`, `hash_char:86`)
-      and `ptr as u64` (`hash_ptr:81`) both fail with `C0601: cannot
-      cast value: no valid conversion exists between these types` —
-      `internal/check/compatibility.go`'s cast classification treats
-      `char`/pointer → integer as `compatibleForbidden`. Needs a
-      design decision (a real bit-reinterpret cast path for char/
-      pointer, or a different hashing approach in the stdlib) before
-      it can be fixed either in the checker or in `hash.peb` itself.
+- [x] `char as <integer>` explicit cast fixed (`5a53a4d`) — one
+      direction only (`integer as char` deliberately stays forbidden,
+      no validity check exists for it). Unblocks `hash_char` and half
+      of `hash_str`'s cast (both `std/hash.peb`, not yet re-verified
+      against the real file — fixed via a standalone mirrored fixture
+      per this session's usual pattern).
+- [ ] **DECIDED (2026-08-06), deferred as non-pressing: `*T as
+      uint`/`*T as u64` explicit cast (one direction only), mirroring
+      the `char as <integer>` fix above exactly.** The reverse
+      (`uint`/`u64 as *T`) must stay forbidden — allowing it would let
+      user code reconstruct a pointer from an arbitrary integer,
+      reopening the pointer-arithmetic backdoor
+      `open-language-decisions.md` §1.5/§3.8 deliberately closed.
+      `std/hash.peb`'s `hash_ptr` stays unsupported until this lands;
+      acceptable for now. Not yet scoped for dispatch.
 - **Tagged-union field access on the matched variant (`case Ok: return
       self.Ok;`) is pattern matching — still deferred, confirmed by
       spec text, not merely a sequencing choice.** Previously framed as
