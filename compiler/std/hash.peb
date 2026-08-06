@@ -87,13 +87,13 @@ fn hash_char(val char) u64 {
 }
 
 // Byte Array Hashing (FNV-1a for raw bytes)
-fn hash_bytes(data *u8, len uint) u64 {
+fn hash_bytes(data []u8) u64 {
     var hash u64 = 14695981039346656037; // FNV offset basis
     let fnv_prime u64 = 1099511628211;
 
     var i = 0;
-    loop 0..len : i {
-        hash = hash ^ (*(data + i) as u64);
+    loop 0..data.len : i {
+        hash = hash ^ (data[i] as u64);
         hash = hash * fnv_prime;
     }
 
