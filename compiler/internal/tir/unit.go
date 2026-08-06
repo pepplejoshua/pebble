@@ -147,10 +147,11 @@ func (u *Unit) TypeDeclarations() []TypeDecl {
 	out := make([]TypeDecl, len(u.typeDecls))
 	for i, d := range u.typeDecls {
 		out[i] = TypeDecl{
-			Symbol:  d.Symbol,
-			Span:    d.Span,
-			Members: append([]symbol.SymbolID(nil), d.Members...),
-			Node:    d.Node,
+			Symbol:      d.Symbol,
+			Span:        d.Span,
+			Members:     append([]symbol.SymbolID(nil), d.Members...),
+			MemberTypes: append([]types.TypeID(nil), d.MemberTypes...),
+			Node:        d.Node,
 		}
 	}
 	return out

@@ -89,10 +89,11 @@ func (b *Builder) AddTypeDecl(t TypeDecl) error {
 	}
 	b.components += add
 	b.typeDecls = append(b.typeDecls, TypeDecl{
-		Symbol:  t.Symbol,
-		Span:    t.Span,
-		Members: append([]symbol.SymbolID(nil), t.Members...),
-		Node:    t.Node,
+		Symbol:      t.Symbol,
+		Span:        t.Span,
+		Members:     append([]symbol.SymbolID(nil), t.Members...),
+		MemberTypes: append([]types.TypeID(nil), t.MemberTypes...),
+		Node:        t.Node,
 	})
 	return nil
 }

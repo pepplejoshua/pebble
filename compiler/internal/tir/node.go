@@ -319,10 +319,11 @@ type ImportDecl struct {
 
 // TypeDecl is the immutable type declaration container stored in a Unit.
 type TypeDecl struct {
-	Symbol  symbol.SymbolID
-	Span    source.Span
-	Members []symbol.SymbolID
-	Node    NodeID
+	Symbol      symbol.SymbolID
+	Span        source.Span
+	Members     []symbol.SymbolID
+	MemberTypes []types.TypeID
+	Node        NodeID
 }
 
 // FunctionDecl is the immutable function declaration container stored in a Unit.

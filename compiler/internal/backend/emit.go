@@ -1567,8 +1567,10 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 // field symbols in the struct's source declaration order — NOT the
 // construction-site order a RecordConstruct's Fields carry, which is why the
 // order is resolved here rather than from any construction node. Each field's
-// type comes from the fieldTypes map accumulated by the walk; a member with no
-// recorded type is a clean rejection, not a guessed layout.
+// type comes from TypeDecl.MemberTypes when the declaration has a concrete
+// member template. Generic declarations may leave an entry unresolved until
+// specialization, so the usage-derived fieldTypes map remains a fallback for
+// those entries; a member with neither source is rejected rather than guessed.
 func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID, fieldTypes map[symbol.SymbolID]types.TypeID) (structInfo, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
@@ -1587,9 +1589,15 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 	}
 	fields := make([]structFieldInfo, len(typeDecl.Members))
 	for i, member := range typeDecl.Members {
-		fieldType, ok := fieldTypes[member]
-		if !ok {
-			return structInfo{}, fmt.Errorf("struct type %s field symbol %d has no resolvable type in the unit", structTypeName(id), member)
+		fieldType := types.TypeID(0)
+		if i < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType == 0 {
+			fieldType, ok = fieldTypes[member]
+			if !ok {
+				return structInfo{}, fmt.Errorf("struct type %s field symbol %d has no resolvable type in the unit", structTypeName(id), member)
+			}
 		}
 		fields[i] = structFieldInfo{member: member, typ: fieldType}
 	}

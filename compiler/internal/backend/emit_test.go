@@ -9092,6 +9092,13 @@ func TestEmitNoneOptionalOfConstructedStructCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type P = struct { x int; y int; };\nfn make() P { return P.{ x = 1, y = 2 }; }\nfn main() int {\nvar p P = make();\nvar o ?P = none;\nif o.has_value { return 1; }\nreturn p.x;\n}", false, 1, false)
 }
 
+func TestEmitNoneOptionalOfUnusedStructCompilesAndRuns(t *testing.T) {
+	// P is only named as the payload of an absent optional. Its fields have no
+	// FieldPlace or RecordConstruct usage evidence, so this exercises the
+	// declaration-level member type carried by TypeDecl.
+	emitAndRun(t, "type P = struct { x int; y int; }; fn main() int { var o ?P = none; if o.has_value { return 1; } return 0; }", false, 0, false)
+}
+
 func TestEmitSliceParameterWritesC(t *testing.T) {
 	// The parameter C type for a slice-taking helper: the C signature declares
 	// the parameter as the slice type's own struct typedef (the same

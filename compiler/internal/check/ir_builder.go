@@ -287,8 +287,18 @@ func (s *irBuildState) buildTypes() bool {
 				return false
 			}
 			members := make([]symbol.SymbolID, 0, len(d.Members))
+			memberTypes := make([]types.TypeID, 0, len(d.Members))
 			for _, member := range d.Members {
 				members = append(members, member.Symbol)
+				// Generic declarations keep a parameterized member template until
+				// specialization. Their concrete field type is recovered from the
+				// specialized usage node by the backend; ordinary declarations are
+				// always known here and no longer depend on usage evidence.
+				memberType := types.TypeID(0)
+				if template, found := s.handoff.Semantics.Template(member.Type); found && template.Kind == infer.TemplateKnown {
+					memberType = template.Known
+				}
+				memberTypes = append(memberTypes, memberType)
 				ms, exists := s.symbol(member.Symbol)
 				if !exists {
 					return false
@@ -301,7 +311,7 @@ func (s *irBuildState) buildTypes() bool {
 					return false
 				}
 			}
-			if err := s.builder.AddTypeDecl(tir.TypeDecl{Symbol: id, Span: sym.Span, Members: members, Node: nodeID}); err != nil {
+			if err := s.builder.AddTypeDecl(tir.TypeDecl{Symbol: id, Span: sym.Span, Members: members, MemberTypes: memberTypes, Node: nodeID}); err != nil {
 				return false
 			}
 			for _, parameter := range d.Parameters {
