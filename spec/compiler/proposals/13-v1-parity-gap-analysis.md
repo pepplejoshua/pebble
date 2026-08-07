@@ -212,6 +212,36 @@ same staleness, also fixed).
       exists — this is specifically the helper-signature validation
       gate not being widened for float the way it now has been for
       uint this session).
+- [ ] **[generator] LIKELY THE BIGGEST GAP FOUND IN THIS SWEEP: direct
+      calls to an `extern fn` declaration are entirely unimplemented in
+      the backend.** Found via `examples/extern_mem_funcs.peb`'s
+      `malloc(sizeof int)` (a `DirectCall` to `malloc`, declared
+      `extern`) — emission fails with `called function symbol 24
+      concrete specialization not found`. Root-caused precisely: the
+      TIR shows symbol 24's declaration node is `tir.ExternDeclaration`,
+      not `tir.FunctionDeclaration`; `findFunctionDeclaration`
+      (`emit.go:661`) only matches `FunctionDeclaration` nodes, so it
+      misses externs entirely, and the generic-specialization fallback
+      `findCalledFunctionByResult` (`emit.go:693`, reached via
+      `findCallDeclaration`, `emit.go:703`) also misses since `malloc`
+      isn't generic either. **`emit.go` has ZERO references to
+      `ExternDeclaration` anywhere** — `buildDirectCall` (`emit.go:9994`)
+      and `validateHelperSignature` (`emit.go:2618`) both reject any
+      non-Pebble calling convention outright. The checker correctly
+      accepts the program (`call_validation.go:177` validates C
+      -convention externs) — this is purely a backend gap, confirmed not
+      a checker issue. This likely blocks any program that directly
+      calls an `extern fn` from Pebble source (not through a Pebble
+      -level wrapper that itself never got emit-tested calling the
+      extern — e.g. `std/io.peb`'s `open()`/`read_all()`/etc. call
+      `fopen`/`fread`/`fseek` directly and have never actually been
+      emit-tested end-to-end, only check-tested so far, since
+      `examples/read_file.peb` still fails at CHECK on unrelated bugs
+      and never reaches emit). Given the blast radius (blocks basically
+      all real file I/O and any libc-based program), this is probably
+      the single highest-priority item on this entire tracker once
+      scoped — recommend prioritizing it over several of the smaller
+      items above.
 - [ ] **[checker] Qualified static-method calls on a nominal type
       (`TypeName.method(...)`) are entirely broken — not just for
       generics.** Found via a full `count_lines.peb` triage (which
