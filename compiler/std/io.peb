@@ -12,7 +12,7 @@ extern {
     // Core file ops
     fn fopen(path str, mode str) *FILE;  // const char* -> str
     fn fread(buffer *void, size uint, count uint, file *FILE) uint;  // size_t/bytes
-    fn fwrite(data *void, size uint, count uint, file *FILE) uint;
+    fn fwrite(data str, size uint, count uint, file *FILE) uint;
     fn fclose(file *FILE) i32;  // Returns 0 on success
     fn feof(file *FILE) i32;  // Non-zero if EOF
     fn ferror(file *FILE) i32;  // Non-zero if error
@@ -103,12 +103,12 @@ fn read_all(file *FILE) string::String {
     }
 
     var s = string::new();
-    var needed uint = size + 1; // +1 for null terminator
+    var needed uint = (size as uint) + 1; // +1 for null terminator
     if needed > s.capacity {
         s.grow(needed);
     }
 
-    var bytes_read = fread(s.data, 1, size, file);
+    var bytes_read = fread(s.data.data as *void, 1, size as uint, file);
     if bytes_read != size as uint {
         // Partial read; error
         string::delete(&s);
@@ -117,7 +117,7 @@ fn read_all(file *FILE) string::String {
     }
 
     s.len = bytes_read;
-    *(s.data + s.len) = '\0';
+    s.data[s.len] = '\0';
     fseek(file, pos, SeekStart); // Restore
 
     return s;
@@ -125,10 +125,10 @@ fn read_all(file *FILE) string::String {
 
 fn read_line(file *FILE) string::String {
     var s = string::new();
-    var ch char;
+    var ch char = '\0';
 
     while true {
-        var bytes = read(file, &ch, 1);
+        var bytes = read(file, &ch as *void, 1);
         if bytes == 0 {
             if is_eof(file) {
                 if s.len > 0 {
@@ -147,8 +147,8 @@ fn read_line(file *FILE) string::String {
         s.push_char(ch);
         if ch == '\n' {
             // strip trailing \n
-            s.len += -1;
-            *(s.data + s.len) = '\0';
+            s.len -= 1;
+            s.data[s.len] = '\0';
             return s;
         }
     }
@@ -156,15 +156,13 @@ fn read_line(file *FILE) string::String {
     return string::new();
 }
 
-// Write binary
-fn write_bytes(file *FILE, data *void, size uint) uint {
+// Write
+fn write_bytes(file *FILE, data str, size uint) uint {
     return fwrite(data, 1, size, file);
 }
 
-// Write
 fn write(file *FILE, data str, size uint) uint {
-    // Bytes written (use data as *void if binary)
-    return write_bytes(file, data as *void, size);
+    return write_bytes(file, data, size);
 }
 
 // Positioning
