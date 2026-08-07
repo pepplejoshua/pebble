@@ -509,15 +509,66 @@ not a real check failure). `math` found a genuine new gap:
       read_file.peb` confirms the `DirectCall` struct-return error is
       completely gone — `std/io.peb`'s early-return paths (`read_all`,
       `read_line`, `get_file_error`, etc.) now emit correctly.
-- [ ] **[generator] New backend gap exposed by the `DirectCall` fix
-      above: an `int`-vs-`i32` width mismatch in `main`'s own body.**
-      `pebc: emission failed: entry function body expression contains a
-      SymbolValue of type int, want i32` — surfaces when compiling
-      `examples/read_file.peb` end-to-end now that `std/io.peb`'s
-      helpers all emit successfully. Not yet root-caused (exact
-      expression/line not pinned down) or scoped for dispatch. Not a
-      regression — emission never previously reached this far in
-      `main`'s own body.
+- [x] **CLOSED (`214fa3d`) — `int`-vs-`i32` width mismatch, root-caused
+      as two stacked gaps, not the range loop originally suspected.**
+      `std/io.peb`'s `let SeekEnd = 2;` (an untyped-literal global
+      constant, staying at the abstract `int` builtin) is passed to
+      `fseek`'s `whence i32` parameter. (1) The backend had NO
+      mechanism at all for lowering a reference to ANY `let` global
+      constant — globals aren't in locals scope, and the initializer
+      was never represented in the TIR for a reference site to rebuild
+      from. Fixed: `buildDeclarations` now records every `let` global's
+      initializer; a reference is rebuilt as a fresh copy of the
+      initializer (`buildValueRecord`, a new unmemoized core split out
+      of `buildValueBase`) rather than an unresolvable `SymbolValue`,
+      registered with an empty source-map ref so multiple inlined
+      copies of one declaration don't collide (`MapSource` rejects a
+      second, different node mapped to the same syntax ref — this was
+      the exact cause of a regression hit mid-fix, described below).
+      (2) Separately, the backend's width gate required an exact
+      builtin match, rejecting an abstract-`int`-typed node even where
+      `int` and `i32` share a C representation. Fixed: new
+      `isAbstractInt` + a width-gate exception in `buildExpr`. This is
+      now a GENERAL capability — a `let` global of any type is inlined
+      at each reference site, not narrowly scoped to int constants
+      (confirmed this was never actually usable end-to-end for enum/
+      char/pointer/optional-typed globals either, just differently
+      broken — a bare `SymbolValue` naming a global was never
+      resolvable by the backend regardless of type). Causation
+      confirmed (revert reproduces the exact original error; restore
+      passes past it to a new, unrelated gap, below). Full `go test
+      ./...` stays green (including 4 pre-existing `check`-package
+      tests and 1 `backend`-package test whose assertions reflected the
+      old, now-superseded `SymbolValue`-child/rejection shape —
+      corrected, not silently weakened; see the commit message for the
+      full list).
+      **Process note**: this fix took three dispatch rounds. Attempt 1
+      (flash) introduced a real regression (`MapSource` duplicate
+      -registration — importing `std:io` at all broke `buildBlocks`,
+      even with zero constant references) which I caught via direct
+      verification before committing (never assume a dispatch's own
+      "done" report without independently re-testing the exact
+      repro). Attempt 2 (also flash, resumed same session) left debug
+      `fmt.Fprintf`/`os.Stderr` instrumentation in place without
+      imports, breaking the build. Escalated to Luna (same resumed
+      session) for attempt 3, which correctly root-caused and fixed
+      the regression but stopped before adding the required tests;
+      verified the core fix was correct via causation-check myself,
+      then wrote the tests directly per the established exception for
+      a verified-but-untested stalled dispatch.
+- [ ] **[generator] New backend gap exposed by the fix above: a
+      discarded non-void call used as a bare statement.** `pebc:
+      emission failed: entry function body block arm discarded
+      -expression statement discards a call to symbol 53 whose result
+      type is i32, want a call to a void-returning function (a call to
+      a non-void-returning function used as a bare statement is not
+      supported yet)`. Surfaces compiling `examples/read_file.peb`
+      further now that the `int`-vs-`i32` gap above is closed — std/
+      io.peb's `read_all` calls `fseek(...)` as a bare statement (its
+      `i32` return value intentionally discarded, an ordinary C idiom).
+      Not yet root-caused precisely (exact backend function/line not
+      pinned down) or scoped for dispatch. Not a regression — emission
+      never previously reached this point.
 - [ ] **[checker] Masked `C0621` generic-requirement-propagation gap in
       `std/math.peb`'s `clamp[T]`, exposed by the float-constant fix
       (`b4410cb`).** Before that fix, `math.peb` failed outright on its
