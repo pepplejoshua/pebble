@@ -1,6 +1,6 @@
 fn find_min(items []int) int {
     var min_val = items[0];
-    loop 1..items.len {
+    loop 1..items.len : iter {
         if items[iter] < min_val {
             min_val = items[iter];
         }
@@ -10,7 +10,7 @@ fn find_min(items []int) int {
 
 fn find_max(items []int) int {
     var max_val = items[0];
-    loop 1..items.len {
+    loop 1..items.len : iter {
         if items[iter] > max_val {
             max_val = items[iter];
         }
