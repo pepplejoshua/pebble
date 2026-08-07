@@ -134,9 +134,10 @@ fn search(arr []int, target int) bool {
 ### Types
 
 #### Primitive Types
-- `int`, `i8`, `i16`, `i32`, `i64`, `isize` - Signed integers
-- `u8`, `u16`, `u32`, `u64`, `usize` - Unsigned integers
-- `float` - 64-bit floating point
+- `int`, `uint` - Machine-sized signed and unsigned integers
+- `i8`, `i16`, `i32`, `i64` - Fixed-size signed integers
+- `u8`, `u16`, `u32`, `u64` - Fixed-size unsigned integers
+- `f32`, `f64` - 32-bit and 64-bit floating point
 - `bool` - Boolean values (`true`/`false`)
 - `char` - Single character
 - `str` - String literals (null-terminated C strings)
@@ -169,8 +170,8 @@ var suffix = arr[2:];    // From index 2 to end
 **Structs:**
 ```go
 type Point = struct {
-    x float;
-    y float;
+    x f64;
+    y f64;
 };
 
 var p Point = Point.{ x = 10.0, y = 20.0 };
@@ -185,8 +186,8 @@ type Entry[K, V] = struct {
 
 type HashMap[K, V] = struct {
     entries *Entry[K, V];
-    len     usize;       // number of OCCUPIED entries
-    cap     usize;       // number of slots in table
+    len     uint;       // number of OCCUPIED entries
+    cap     uint;       // number of slots in table
     hash_fn fn (K) u64;
     eq_fn   fn (K, K) bool;
     backing Allocator;
@@ -369,7 +370,7 @@ defer print "first";
 **Explicit Casting:**
 ```go
 var x int = 42;
-var y float = x as float;
+var y f64 = x as f64;
 var ptr *void = &x as *void;
 ```
 
@@ -424,19 +425,19 @@ fn main() void {
 **Extern Declarations:**
 ```go
 // Single extern function
-extern fn strlen(s str) usize;
+extern fn strlen(s str) uint;
 
 // Extern block
 extern {
-    fn malloc(size usize) *void;
+    fn malloc(size uint) *void;
     fn free(ptr *void) void;
-    fn memcpy(dst *void, src *void, n usize) *void;
+    fn memcpy(dst *void, src *void, n uint) *void;
 }
 
 // Extern with library name
 extern "libm.so" {
-    fn sqrt(x float) float;
-    fn pow(base float, exp float) float;
+    fn sqrt(x f64) f64;
+    fn pow(base f64, exp f64) f64;
 }
 
 // Extern opaque types
@@ -460,7 +461,7 @@ fn "c" callback(value int) void {
 }
 
 // Pebble calling convention (default, receives context)
-fn allocate_data(size usize) *void {
+fn allocate_data(size uint) *void {
     // `context` is implicitly available
     return context.default_allocator.alloc(
         context.default_allocator.ptr,
