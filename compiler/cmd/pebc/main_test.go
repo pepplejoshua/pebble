@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +96,108 @@ func TestRunStdImportEmitsRunnableC(t *testing.T) {
 	if err := compileEmittedC(t, dir, emitted, "std", 42); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunFlagCompilesAndRuns(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("skipping: cc not on PATH (%v)", err)
+	}
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { print 42; return 7; }\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-run", sourcePath}, &stdout, &stderr); code != 7 {
+		t.Fatalf("run returned %d, want 7; stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "42\n" {
+		t.Fatalf("stdout = %q, want %q", got, "42\n")
+	}
+}
+
+func TestRunFlagWithOutputPath(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("skipping: cc not on PATH (%v)", err)
+	}
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { print 1; return 0; }\n")
+	outPath := filepath.Join(dir, "out.c")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-run", "-o", outPath, sourcePath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run returned %d; stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "1\n" {
+		t.Fatalf("stdout = %q, want %q", got, "1\n")
+	}
+	emitted, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("output file %q was not written: %v", outPath, err)
+	}
+	if !strings.Contains(string(emitted), "pebble_rt.h") {
+		t.Fatalf("emitted C at %q looks wrong:\n%s", outPath, emitted)
+	}
+}
+
+func TestRunAutoDetectsRuntimeRoot(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("skipping: cc not on PATH (%v)", err)
+	}
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoRoot); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWD)
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { print 99; return 0; }\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-run", sourcePath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run returned %d; stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "99\n" {
+		t.Fatalf("stdout = %q, want %q", got, "99\n")
+	}
+}
+
+func TestRunFlagReportsCompileError(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("skipping: cc not on PATH (%v)", err)
+	}
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { return 0; }\n")
+	var stderr bytes.Buffer
+	if code := run([]string{"-run", "-runtime-root", filepath.Join(dir, "bogus"), sourcePath}, &bytes.Buffer{}, &stderr); code == 0 {
+		t.Fatal("run unexpectedly succeeded")
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("run produced no diagnostic")
+	}
+}
+
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "runtime", "include")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", errors.New("cannot locate repo root")
 }
 
 func writeFile(t *testing.T, path, contents string) {
