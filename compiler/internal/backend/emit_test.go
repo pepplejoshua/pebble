@@ -316,6 +316,69 @@ func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 21, false)
 }
 
+// TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns is the exact
+// motivating repro for the compatible-integer-width parameter gate: a generic
+// helper identity[T] called with an i32 local from an fn main() int entry
+// (whose own resolved width is the abstract int builtin, NOT i32 — the two are
+// distinct builtins sharing the int32_t C representation). The specialization
+// identity[i32] has an i32-typed parameter, which the pre-fix
+// validateHelperSignature rejected with "called function symbol ... has type
+// i32, want int". The program must compile under -Wall -Wextra -Werror and run,
+// returning the value identity passed through.
+func TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r; }`, false, 5, false)
+}
+
+// TestEmitGenericClampShapeSpecializedAtConcreteWidthCompilesAndRuns mirrors
+// the real std/math.peb motivating case (clamp[T] = max(lo, min(x, hi))) with
+// the generic helper DEFINED INLINE so the test needs no std import: a
+// two-level generic chain (min/max) whose specializations all substitute the
+// concrete i32 width, called from an fn main() int entry with i32 locals and
+// the result stored into an i32 local before returning (the shape that reaches
+// emission — a direct `return clamp(...)` from an int entry hits a checker-level
+// int-vs-i32 unification conflict instead). The clamp of (5, 10, 20) is 10.
+func TestEmitGenericClampShapeSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `fn min[T](a T, b T) T { if a < b { return a; } return b; } fn max[T](a T, b T) T { if a > b { return a; } return b; } fn clamp[T](x T, lo T, hi T) T { return max(lo, min(x, hi)); } fn main() int { var x i32 = 5; var lo i32 = 10; var hi i32 = 20; var r i32 = clamp(x, lo, hi); return r; }`, false, 10, false)
+}
+
+// TestEmitGenericHelperConcreteWidthWritesInt32TParams asserts the emitted-C
+// shape for the widened case, not just that Emit succeeds: the generic
+// specialization identity[i32] must be declared AND defined as
+// `int32_t pebble_fn_24_3(PebbleContext *ctx, int32_t pebble_local_26)` — the
+// parameter declared at the entry's C representation (int32_t, since int and
+// i32 share it) and the body returning it — and the int-declared entry must
+// keep its plain-int pebble_user_main. Symbols 24 (identity[i32]) and 26 (its
+// parameter) come from the fixture's typed-IR construction, deterministic for
+// this exact source.
+func TestEmitGenericHelperConcreteWidthWritesInt32TParams(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r; }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24_3(PebbleContext *ctx, int32_t pebble_local_26);",
+		"static int32_t pebble_fn_24_3(PebbleContext *ctx, int32_t pebble_local_26) {",
+		"return pebble_local_26;",
+		"static int pebble_user_main(PebbleContext *ctx) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestEmitRejectsGenericHelperSpecializedAtMismatchedConcreteWidth is the
+// regression guard for the widening: only a concrete width that SHARES the
+// entry's C representation is admitted. An i64 specialization called from an
+// int-declared entry (i64 has no int32_t representation, so
+// isCompatibleIntegerWidth is false and isWidth is too) must still be a clean
+// rejection naming the found type, never silently emitted at a guessed width.
+func TestEmitRejectsGenericHelperSpecializedAtMismatchedConcreteWidth(t *testing.T) {
+	emitAndRunRejects(t, `fn identity[T](x T) T { return x; } fn main() int { var a i64 = 5; var r i64 = identity(a); return 0; }`, "called function symbol 24 parameter 0 (symbol 26) has type i64, want int")
+}
+
 func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdFixture(t, "fn main() i32 { var value i32 = 42; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }", "main")
 	var buf bytes.Buffer

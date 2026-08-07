@@ -2858,8 +2858,14 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// width or bool — the same gate 10.37 enforces for a slice local — so
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
-		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
+		// lowering. A scalar parameter whose own resolved integer width shares
+		// the entry's C representation (isCompatibleIntegerWidth — the shape a
+		// generic specialization produces: clamp[i32] has i32-typed parameters
+		// even when the entry is declared `int`, and int/i32 are distinct
+		// builtins sharing int32_t) is admitted too; helperSignature declares
+		// it at that shared C type and buildCallArgument builds its call-site
+		// argument at the parameter's own width, so no cast is ever needed.
+		if !isWidth(snapshot, width, param.Type) && !isCompatibleIntegerWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type (a parameter may be the entry's integer width, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
@@ -3096,6 +3102,25 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 		case isWidth(snapshot, width, param.Type):
 			params = append(params, cType(width)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{kind: width}
+		case isCompatibleIntegerWidth(snapshot, width, param.Type):
+			// A parameter whose own resolved integer width shares the entry's
+			// C representation (a generic specialization substituted its type
+			// parameter with a concrete fixed-width integer — clamp[i32] from
+			// an `int`-declared entry: a distinct builtin from the entry's own
+			// width that is textually the same C type). The C parameter is
+			// declared with cType(width), which is byte-identical to the
+			// parameter's own cType (the compatibility check guarantees the
+			// two match), and the parameter seeds the callee's locals scope at
+			// its OWN width (localInfo{kind: paramWidth}, exactly as a local
+			// declared at that width is seeded by buildScalarInitializeCore),
+			// so a reference to the parameter inside the body resolves through
+			// the existing buildExpr machinery at the parameter's own width
+			// unchanged, and a call site's argument — built by
+			// buildCallArgument at that same parameter width — passes an
+			// identically-typed C value.
+			paramWidth, _ := resolvedBuiltin(snapshot, param.Type)
+			params = append(params, cType(paramWidth)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: paramWidth}
 		case isUint(snapshot, param.Type):
 			params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{kind: types.Uint}
@@ -9558,8 +9583,13 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	// (a literal as its decimal text, a SymbolValue as its already-declared C
 	// name) with no cast needed; the gate below still rejects a genuinely
 	// mismatched fixed-width node (an i64 value inside an i32 context), which
-	// is the mismatch it exists to catch.
-	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) && !(isAbstractInt(snapshot, node.Type) && cType(width) != "") {
+	// is the mismatch it exists to catch. Symmetrically, isCompatibleIntegerWidth
+	// accepts a node carrying ANY concrete fixed-width integer builtin whose C
+	// representation matches the requested width (an i32-typed value inside an
+	// `int` context — the shape a generic specialization produces), for the same
+	// reason: the two share a C type, so the value is emitted as-is with no
+	// cast.
+	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) && !(isAbstractInt(snapshot, node.Type) && cType(width) != "") && !isCompatibleIntegerWidth(snapshot, width, node.Type) {
 		wantName, _ := builtinName(width)
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
 	}
@@ -12608,6 +12638,28 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 // exact-match so every other call site keeps its existing meaning.
 func isAbstractInt(snapshot *types.Snapshot, id types.TypeID) bool {
 	return snapshot != nil && id == snapshot.Builtins().Int
+}
+
+// isCompatibleIntegerWidth reports whether id resolves to an integer builtin
+// (ANY fixed-width integer, not just the abstract `int` one) whose C
+// representation shares width's own: cType(builtin) == cType(width). It is the
+// symmetric twin of the isAbstractInt leniency buildExpr's width gate applies
+// for the reverse direction: isAbstractInt lets an abstract-`int`-typed VALUE
+// be emitted where a concrete width is requested, and this predicate lets a
+// CONCRETE-width-typed value/parameter (typically the substitution a generic
+// specialization performed — `clamp[T]` instantiated at `i32` has i32-typed
+// parameters) be accepted where the surrounding context's own width — an
+// `int`-declared entry's resolved `int` builtin — is expected, since `int` and
+// `i32` share the int32_t representation. The gate deliberately does NOT accept
+// a genuinely mismatched fixed width (an i64 value in an int/i32 context), which
+// is the mismatch it exists to catch. isWidth itself stays exact-match so every
+// other call site keeps its existing meaning.
+func isCompatibleIntegerWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) bool {
+	if snapshot == nil || cType(width) == "" {
+		return false
+	}
+	builtin, ok := resolvedBuiltin(snapshot, id)
+	return ok && cType(builtin) != "" && cType(builtin) == cType(width)
 }
 
 func isUint(snapshot *types.Snapshot, id types.TypeID) bool {
