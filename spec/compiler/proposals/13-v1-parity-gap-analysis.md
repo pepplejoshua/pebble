@@ -257,23 +257,43 @@ same staleness, also fixed).
       gap as the already-tracked, previously-deferred **ptr-to-uint/u64
       explicit cast** item below — now confirmed to actually block two
       real example programs, so it should probably be un-deferred.
-- [ ] **[checker] `std/io.peb` itself does not check clean — independent
-      of any example file.** Running `pebc` on `examples/read_file.peb`
-      (which imports `std:io`) surfaces errors entirely inside
-      `std/io.peb` itself, not the example: `T0505` "cannot unify
-      semantic type kind 1 with kind 1" at lines 106, 120, 131, 150,
-      151 (`var needed uint = size + 1;`, `*(s.data + s.len) = '\0';`
-      [x2], `var bytes = read(file, &ch, 1);`), a `T0508` "exact numeric
-      literal does not fit the required builtin type" at line 150
-      (`s.len += -1;`), and a `C0602` "binding initializer is invalid"
-      at line 128 (`var ch char;`). This looks like `std/io.peb` has
-      never actually been gotten to compile — it needs its own
-      dedicated fix arc, the same scale of work `std/hmap.peb` got.
-      `examples/read_file.peb`'s own `contents.as_str()` call (String
-      has no such method — real API is `as_slice`/etc, see
-      `std/string.peb`) is a separate, smaller, genuinely example-side
-      bug on top of this, but fixing it alone won't get the example
-      running while `std/io.peb` itself doesn't check.
+- [x] **`std/io.peb` fixed (`524eee4`) — was stale relative to a
+      `string.peb` refactor (`String.data` became `[]char`, a slice, no
+      longer a raw `*char`) and the "no uninitialized locals" rule.**
+      Six mechanical fixes (cast `ftell`'s `i64` before `uint`
+      arithmetic/`fread`, route through `s.data.data as *void` for
+      `fread` matching `string.peb`'s own pattern, replace raw pointer
+      arithmetic with slice indexing, initialize the `var ch char`
+      local, cast `&ch` to `*void` for `read()`, fix `s.len += -1` to
+      `s.len -= 1`) plus a signature change (`fwrite`/`write_bytes` now
+      take `str` directly instead of illegally casting `str as *void` —
+      str↔pointer casts are forbidden by design; extern functions
+      marshal `str` at the FFI boundary instead, matching `fopen`/`stat`'s
+      existing pattern). Verified: `std/io.peb` now checks fully clean.
+      `examples/read_file.peb` still fails, but ONLY on its own two
+      separate, unrelated bugs (below) — no error traces to `io.peb`
+      anymore.
+- [ ] **[v1-parity, not a v2 bug] `main` cannot take an `argv []str`
+      parameter — the v2 checker only accepts a ZERO-parameter entry
+      point** (`entry_validation.go:75`,
+      `len(signature.Parameters) == 0`). `examples/read_file.peb`'s
+      `fn main(argv []str) int { ... }` is rejected with `C0620
+      configured entry point does not satisfy entry-point requirements`.
+      Confirmed this is a genuine v1-parity gap, not by-design: the old
+      v1 C backend explicitly supported 0/1 (`argv []str`)/2
+      (`argc int, argv []str`) parameter `main` signatures
+      (`10-c-backend-implementation-plan.md:2212-2238`, itself flagged
+      there as `REDESIGN` — v1's own 2-param path had a bug passing raw
+      `argv` despite `[]str` verification). Not yet scoped for
+      dispatch — needs both a checker-side entry-point-arity widening
+      and a codegen-side `argc`/`argv`→`[]str` adapter in `main()`'s C
+      wrapper.
+- [ ] `examples/read_file.peb`'s `contents.as_str()` call — `String` has
+      no such method (real current API is `as_slice`/etc, see
+      `std/string.peb`); a separate, small, example-side staleness bug,
+      not yet fixed (blocked behind the `argv` gap above anyway — no
+      point fixing this alone while the file can't even be a valid entry
+      point).
 - [x] Stale example files fixed directly (not compiler gaps — verified
       each compiles+runs after the fix, or is blocked only by one of
       the real gaps above): `extern_mem_funcs.peb` (`usize`→`uint`,
