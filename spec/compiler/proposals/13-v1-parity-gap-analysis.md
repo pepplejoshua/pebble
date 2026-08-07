@@ -327,28 +327,27 @@ not a real check failure). `math` found a genuine new gap:
       left blocking `std/result.peb` and `count_lines.peb` now
       (`count_lines.peb` also still has its own unrelated `usize`
       staleness, not yet fixed).
-- [ ] **[std-file bug, not a compiler gap] `std/result.peb` itself uses
-      wrong switch-case syntax: bare `case Ok:`/`case Err:` instead of
-      the dot-shorthand `case .Ok:`/`case .Err:` (or qualified
-      `case Result.Ok:`).** Confirmed via `switch_validation.go:103-108`
-      (`caseVariantMember` documents base-less `.name` as the intended
-      form) and reproduced directly: a copy of `std/result.peb` with
-      only `case Ok:`→`case .Ok:` applied has its `N0001 undefined name
-      "Ok"` errors vanish entirely. `examples/count_lines.peb` has the
-      same bug in its own switch (2 instances) — likely the same
-      staleness pattern as every other example this sweep found. Small,
-      mechanical, fixable now — unlike the two real gaps above and
-      below, this one doesn't need new compiler capability.
-- [ ] **[checker or generator, unclear] `std/hash.peb`'s `hash_ptr`
-      function needs an explicit pointer→u64 cast, which the checker's
-      conversion matrix (`classifyComposite` in `compatibility.go`)
-      deliberately forbids (pointer→pointer only).** This blocks both
-      `examples/std_hash.peb` and `examples/std_set.peb` (the latter
-      only because `std:hash.peb` is checked as a whole module even
-      though `set.peb` itself doesn't use `hash_ptr`). This is the same
-      gap as the already-tracked, previously-deferred **ptr-to-uint/u64
-      explicit cast** item below — now confirmed to actually block two
-      real example programs, so it should probably be un-deferred.
+- [x] **CLOSED (`608c645`) — `std/result.peb`'s bare `case Ok:`/
+      `case Err:` switch-case syntax fixed to dot-shorthand `case .Ok:`/
+      `case .Err:`** (8 case labels total across `is_ok`/`unwrap_or`/
+      `map`), plus the same bug in `examples/count_lines.peb`'s own
+      switch (2 instances). Verified: the `N0001 undefined name "Ok"`
+      errors are gone from both files.
+- [x] **CLOSED (`a6d83e7`) — `std/hash.peb`'s `hash_ptr` explicit
+      pointer→u64 cast, same gap as the ptr-to-uint/u64 item below.**
+      `*T as uint`/`*T as u64` now classify `compatibleExplicit`
+      (`compatibility.go`, new `coercionPointerToInteger` kind) and
+      lower to a plain unchecked C cast (`emit.go`, new
+      `tir.PointerToInteger` node in both `buildExpr` and
+      `buildUintExpr`). One direction only — `uint`/`u64 as *T` stays
+      forbidden by design (would reopen the pointer-arithmetic backdoor
+      `open-language-decisions.md` closed), covered by explicit
+      regression tests. Confirmed via causation-check (reverted, saw
+      the original `C0601` on real `std/hash.peb`, restored). Re
+      -verified 2026-08-07: `examples/std_hash.peb`/`examples/
+      std_set.peb` no longer show the `C0601` pointer-cast error —
+      `std_hash.peb` now hits only the already-tracked pre-existing
+      `hmap.peb` C0618 warnings.
 - [x] **`std/io.peb` fixed (`524eee4`) — was stale relative to a
       `string.peb` refactor (`String.data` became `[]char`, a slice, no
       longer a raw `*char`) and the "no uninitialized locals" rule.**
@@ -368,24 +367,27 @@ not a real check failure). `math` found a genuine new gap:
 - [ ] **[v1-parity, not a v2 bug] `main` cannot take an `argv []str`
       parameter — the v2 checker only accepts a ZERO-parameter entry
       point** (`entry_validation.go:75`,
-      `len(signature.Parameters) == 0`). `examples/read_file.peb`'s
-      `fn main(argv []str) int { ... }` is rejected with `C0620
-      configured entry point does not satisfy entry-point requirements`.
-      Confirmed this is a genuine v1-parity gap, not by-design: the old
-      v1 C backend explicitly supported 0/1 (`argv []str`)/2
-      (`argc int, argv []str`) parameter `main` signatures
-      (`10-c-backend-implementation-plan.md:2212-2238`, itself flagged
-      there as `REDESIGN` — v1's own 2-param path had a bug passing raw
-      `argv` despite `[]str` verification). Not yet scoped for
-      dispatch — needs both a checker-side entry-point-arity widening
-      and a codegen-side `argc`/`argv`→`[]str` adapter in `main()`'s C
-      wrapper.
-- [ ] `examples/read_file.peb`'s `contents.as_str()` call — `String` has
-      no such method (real current API is `as_slice`/etc, see
-      `std/string.peb`); a separate, small, example-side staleness bug,
-      not yet fixed (blocked behind the `argv` gap above anyway — no
-      point fixing this alone while the file can't even be a valid entry
-      point).
+      `len(signature.Parameters) == 0`). Confirmed this is a genuine
+      v1-parity gap, not by-design: the old v1 C backend explicitly
+      supported 0/1 (`argv []str`)/2 (`argc int, argv []str`) parameter
+      `main` signatures (`10-c-backend-implementation-plan.md:2212
+      -2238`, itself flagged there as `REDESIGN` — v1's own 2-param path
+      had a bug passing raw `argv` despite `[]str` verification). Not
+      yet scoped for dispatch — needs both a checker-side entry-point
+      -arity widening and a codegen-side `argc`/`argv`→`[]str` adapter
+      in `main()`'s C wrapper. **Note:** `examples/read_file.peb` was
+      originally written against this shape and blocked by it, but has
+      since been rewritten (`a1b69dc`) to a zero-parameter `main` with a
+      hardcoded demo path, sidestepping the gap rather than closing it —
+      this item is no longer blocking any file in the tree, but the
+      underlying checker limitation is still real and unimplemented.
+- [x] **STALE, file rewritten — `examples/read_file.peb`'s
+      `contents.as_str()` call no longer exists.** Same rewrite
+      (`a1b69dc`) replaced it with a char-by-char loop over
+      `contents.as_slice()` (`String`'s real API). File now fully
+      compiles and runs; its only remaining diagnostic was the
+      (separately tracked, now also closed) `std/io.peb` C0618
+      warning.
 - [x] Stale example files fixed directly (not compiler gaps — verified
       each compiles+runs after the fix, or is blocked only by one of
       the real gaps above): `extern_mem_funcs.peb` (`usize`→`uint`,
@@ -602,16 +604,16 @@ repeated here.
       of `hash_str`'s cast (both `std/hash.peb`, not yet re-verified
       against the real file — fixed via a standalone mirrored fixture
       per this session's usual pattern).
-- [ ] **UN-DEFERRED (2026-08-07): `*T as uint`/`*T as u64` explicit
+- [x] **CLOSED (`a6d83e7`) — `*T as uint`/`*T as u64` explicit
       cast (one direction only), mirroring the `char as <integer>` fix
       above exactly.** Originally decided 2026-08-06 as "non-pressing"
       and deferred; the 2026-08-07 parallel diagnostic fleet sweep
-      (Part A.1 above) confirmed this is now the sole blocker on TWO
+      (Part A.1 above) confirmed this was the sole blocker on TWO
       real example programs (`examples/std_hash.peb`,
-      `examples/std_set.peb` — the latter only because `std:hash.peb`
-      is checked as a whole module even though `set.peb` itself doesn't
-      call `hash_ptr`). Worth scoping for dispatch soon. The reverse
-      (`uint`/`u64 as *T`) must stay forbidden — allowing it would let
+      `examples/std_set.peb`), un-deferred, then implemented and
+      verified same-day — see the duplicate entry above (`std/
+      hash.peb`'s `hash_ptr`) for the implementation detail. The reverse
+      (`uint`/`u64 as *T`) stays forbidden — allowing it would let
       user code reconstruct a pointer from an arbitrary integer,
       reopening the pointer-arithmetic backdoor
       `open-language-decisions.md` §1.5/§3.8 deliberately closed.
