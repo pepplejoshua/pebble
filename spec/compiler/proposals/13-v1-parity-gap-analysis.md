@@ -153,6 +153,117 @@ entry's own text says otherwise (nearly all of them touch
 
 ---
 
+## Part A.1 — `std/*.peb` and `examples/*.peb` sweep (parallel orc diagnostic fleet, 2026-08-07)
+
+With `std/hmap.peb` closed, a fleet of parallel orc workers ran the
+built `pebc` binary directly against the remaining 9 `examples/*.peb`
+files (no synthetic wrapper needed — they already have their own
+`main`). Findings triaged into: real compiler gaps (below), and stale
+example files fixed directly (not compiler gaps — `usize`/`isize`/
+`float` were deliberately removed per
+`spec/compiler/05-types-and-inference.md:74`, and `README.md` had the
+same staleness, also fixed).
+
+- [ ] **[generator] An inline slice construction (`arr[start:end]`) is
+      rejected as a call argument.** Found via `examples/prime_sieve.peb`:
+      `sieve(primes[:], limit)` fails at emit with "argument 0 is an
+      inline slice construction (a CheckedSlice), which is not
+      supported as a call argument: a C function argument is a pure
+      expression position...". The checker accepts it fine. Worked
+      around in the example (bind to a `let` local first, then pass
+      the local — the same shape every other call-argument position
+      already requires), but the underlying gap is real and likely
+      affects other examples/programs that construct a slice inline at
+      a call site.
+- [ ] **[generator] `examples/extern_mem_funcs.peb` still fails at emit
+      after its `usize`→`uint` and explicit-cast fixes landed**, with
+      `called function symbol 24 concrete specialization not found`
+      (at `findCalledFunctionByResult`, `emit.go:687`). Not yet root
+      -caused — the dispatch that found the `usize`/cast issues ran out
+      of scope before digging into this one. Needs its own targeted
+      investigation (likely related to `print` on a dereferenced raw
+      pointer, or an extern function specialization lookup gap — pure
+      speculation, confirm before fixing).
+- [ ] **[generator] `examples/slice_minmax.peb` fails at emit with
+      `uint expression place: field 4294967295 is not declared`** after
+      its missing-iterator-binding fix landed (`loop 1..items.len : iter`
+      referencing `items[iter]`). `4294967295` (`0xFFFFFFFF`) looks like
+      an uninitialized/sentinel field index — worth checking whether
+      this is a regression in the large uint-routing change that just
+      landed (this session, closing the `std/hmap.peb` arc) rather than
+      a pre-existing gap, since it involves the exact "uint iterator
+      indexing" shape that change touched. Investigate before assuming
+      it's unrelated.
+- [ ] **[generator] `f32`/`f64` helper parameters and return values are
+      rejected outright.** `validateHelperSignature` (`emit.go:2617`,
+      with the rejection explicitly acknowledged in a comment at
+      `emit.go:2688`: "a float (which `validateHelperSignature` rejects
+      for an ordinary helper anyway)") admits width/`uint`/`u64`/`bool`/
+      `char`/`str`/tuple/struct/slice/pointer/optional/function-type
+      parameters but not `f32`/`f64`. Found via
+      `examples/leibniz_pi_approx.peb`'s `approximate_pi(precision f64) f64`
+      — after fixing its `float`→`f64` staleness and the mixed-int/float
+      arithmetic (both genuinely fixed, checker now passes clean), emission
+      fails with `called function symbol 24 parameter 1 (symbol 26) has
+      type f64, want int, bool, char, or str, ...`. This is a real,
+      fairly significant gap — no ordinary helper function can currently
+      take or return a float at all, only `main` (Stage A float support
+      elsewhere in the backend, e.g. locals/struct fields, already
+      exists — this is specifically the helper-signature validation
+      gate not being widened for float the way it now has been for
+      uint this session).
+- [ ] **[checker or generator, unclear] `std/hash.peb`'s `hash_ptr`
+      function needs an explicit pointer→u64 cast, which the checker's
+      conversion matrix (`classifyComposite` in `compatibility.go`)
+      deliberately forbids (pointer→pointer only).** This blocks both
+      `examples/std_hash.peb` and `examples/std_set.peb` (the latter
+      only because `std:hash.peb` is checked as a whole module even
+      though `set.peb` itself doesn't use `hash_ptr`). This is the same
+      gap as the already-tracked, previously-deferred **ptr-to-uint/u64
+      explicit cast** item below — now confirmed to actually block two
+      real example programs, so it should probably be un-deferred.
+- [ ] **[checker] `std/io.peb` itself does not check clean — independent
+      of any example file.** Running `pebc` on `examples/read_file.peb`
+      (which imports `std:io`) surfaces errors entirely inside
+      `std/io.peb` itself, not the example: `T0505` "cannot unify
+      semantic type kind 1 with kind 1" at lines 106, 120, 131, 150,
+      151 (`var needed uint = size + 1;`, `*(s.data + s.len) = '\0';`
+      [x2], `var bytes = read(file, &ch, 1);`), a `T0508` "exact numeric
+      literal does not fit the required builtin type" at line 150
+      (`s.len += -1;`), and a `C0602` "binding initializer is invalid"
+      at line 128 (`var ch char;`). This looks like `std/io.peb` has
+      never actually been gotten to compile — it needs its own
+      dedicated fix arc, the same scale of work `std/hmap.peb` got.
+      `examples/read_file.peb`'s own `contents.as_str()` call (String
+      has no such method — real API is `as_slice`/etc, see
+      `std/string.peb`) is a separate, smaller, genuinely example-side
+      bug on top of this, but fixing it alone won't get the example
+      running while `std/io.peb` itself doesn't check.
+- [x] Stale example files fixed directly (not compiler gaps — verified
+      each compiles+runs after the fix, or is blocked only by one of
+      the real gaps above): `extern_mem_funcs.peb` (`usize`→`uint`,
+      missing explicit casts on `malloc`/`free`, still blocked by the
+      `concrete specialization not found` gap above), `prime_sieve.peb`
+      (`primes[:]` via a named local — compiles and runs, verified,
+      committed `8ea3936`), `README.md` (same `usize`/`isize`/`float`
+      staleness throughout its type list and code examples — committed
+      `52d9c59`). In progress: `leibniz_pi_approx.peb` (`float`→`f64`,
+      plus a mixed-int/float-arithmetic follow-up), `slice_minmax.peb`
+      (missing `: iter` binding — fixed, but now blocked by the field
+      -4294967295 gap above), `read_file.peb` (stale `String.as_str()`
+      call — std/string.peb deliberately has no such method).
+      `count_lines.peb` not yet triaged in detail (a large cascade of
+      ~60+ checker errors: `usize`, `Result.ok`/`err` constructors,
+      bare `case Ok:` instead of `case .Ok:`/`case Result.Ok:`, `Stats`
+      struct field access — likely mostly stale-example-API issues
+      given the pattern so far, but not yet confirmed file-by-file).
+      `bubble_sort.peb` — a genuine `[generator]` gap, not example
+      staleness: `validateHelperSignature` in `emit.go` rejects
+      array-typed helper parameters/return values (`[5]int`); fix
+      dispatched, in progress as of this writing.
+
+---
+
 ## Part B — v1 feature-parity checklist
 
 Verified today by writing and compiling real Pebble source against v2,
@@ -275,15 +386,19 @@ repeated here.
       of `hash_str`'s cast (both `std/hash.peb`, not yet re-verified
       against the real file — fixed via a standalone mirrored fixture
       per this session's usual pattern).
-- [ ] **DECIDED (2026-08-06), deferred as non-pressing: `*T as
-      uint`/`*T as u64` explicit cast (one direction only), mirroring
-      the `char as <integer>` fix above exactly.** The reverse
+- [ ] **UN-DEFERRED (2026-08-07): `*T as uint`/`*T as u64` explicit
+      cast (one direction only), mirroring the `char as <integer>` fix
+      above exactly.** Originally decided 2026-08-06 as "non-pressing"
+      and deferred; the 2026-08-07 parallel diagnostic fleet sweep
+      (Part A.1 above) confirmed this is now the sole blocker on TWO
+      real example programs (`examples/std_hash.peb`,
+      `examples/std_set.peb` — the latter only because `std:hash.peb`
+      is checked as a whole module even though `set.peb` itself doesn't
+      call `hash_ptr`). Worth scoping for dispatch soon. The reverse
       (`uint`/`u64 as *T`) must stay forbidden — allowing it would let
       user code reconstruct a pointer from an arbitrary integer,
       reopening the pointer-arithmetic backdoor
       `open-language-decisions.md` §1.5/§3.8 deliberately closed.
-      `std/hash.peb`'s `hash_ptr` stays unsupported until this lands;
-      acceptable for now. Not yet scoped for dispatch.
 - **Tagged-union field access on the matched variant (`case Ok: return
       self.Ok;`) is pattern matching — still deferred, confirmed by
       spec text, not merely a sequencing choice.** Previously framed as
