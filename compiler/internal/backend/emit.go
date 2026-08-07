@@ -1757,7 +1757,15 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 		}
 		max := 0
 		for _, d := range deps {
-			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || isStruct(snapshot, d)) && !isEnumType(unit, snapshot, d) {
+			// A compiler-builtin runtime type (Allocator, Context) is Nominal
+			// like an ordinary struct but is NOT an aggregate this pass orders:
+			// its C typedef (PebbleAllocator / PebbleContext) is hand-written in
+			// pebble_rt.h, never emitted here, so it must not count as a nesting
+			// level (a struct field whose type is Allocator is a leaf, not a
+			// dependency — mirroring collectStructTypesWalk's runtimeType==0
+			// guard). Without it a struct containing a runtime-typed field would
+			// be miscounted as nested and rejected by the depth check below.
+			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || (isStruct(snapshot, d) && runtimeType(unit, snapshot, d) == 0)) && !isEnumType(unit, snapshot, d) {
 				if v := depth(d, active) + 1; v > max {
 					max = v
 				}
@@ -1803,7 +1811,16 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			}
 		}
 		for _, dep := range deps {
-			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || isStruct(snapshot, dep)) && !isEnumType(unit, snapshot, dep) {
+			// A compiler-builtin runtime type (Allocator, Context) is Nominal
+			// like an ordinary struct but is NOT an aggregate this pass orders:
+			// its C typedef (PebbleAllocator / PebbleContext) is hand-written in
+			// pebble_rt.h, never emitted here, and structByType has no entry for
+			// it (it has no TypeDeclaration, so collectStructTypes never
+			// collects it), so recursing would push a zero-valued structInfo
+			// into the postorder and buildStructTypedef would reject it. Skip it
+			// entirely — mirroring collectStructTypesWalk's runtimeType==0 guard
+			// (a runtime type needs no typedef of its own).
+			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || (isStruct(snapshot, dep) && runtimeType(unit, snapshot, dep) == 0)) && !isEnumType(unit, snapshot, dep) {
 				if err := dfs(dep); err != nil {
 					return err
 				}
@@ -6958,6 +6975,21 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				return "", "", err
 			}
 			expr = built
+		case runtimeType(unit, snapshot, fieldType) != 0:
+			// A field of a compiler-builtin runtime type (Allocator, Context) is
+			// initialized from the same runtime-value grammar a runtime-typed
+			// local's declaration uses (buildRuntimeValue: `context.default_allocator`,
+			// a runtime-typed local, or a load of a runtime-typed field) — NOT the
+			// nested-aggregate grammar the isStruct case below would send it to
+			// (Allocator is Nominal like a struct, but its value is never a
+			// RecordConstruct). The C field's type is PebbleAllocator /
+			// PebbleContext (see structFieldCType), so the built expression matches
+			// the field type with no cast.
+			built, err := buildRuntimeValueNode(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
 		case isStruct(snapshot, fieldType):
 			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
@@ -9613,6 +9645,16 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		}
 		return fmt.Sprintf("%s%s%s", baseExpr, access, field), nil
 	}
+	// Reading a field whose OWN type is a compiler-builtin runtime type (e.g.
+	// `let a = holder.backing;`, where backing is Allocator): the C field is
+	// declared with its hand-written C type (PebbleAllocator, see
+	// structFieldCType), so the read is exactly the ordinary C field projection
+	// with no width/bool coercion — the runtime value's type matches the C
+	// field type directly. Without this case the width/bool check below would
+	// reject the field.
+	if runtimeType(unit, snapshot, fieldType) != 0 {
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	}
 	if wantBool {
 		if !isBool(snapshot, fieldType) {
 			return "", fmt.Errorf("field %d has type %s, want bool", place.Member, describeType(snapshot, fieldType))
@@ -11640,6 +11682,16 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 	}
 	if isOptional(snapshot, id) {
 		return optionalTypeName(id), nil
+	}
+	// A field of a compiler-builtin runtime type (Allocator, Context) is
+	// declared with its hand-written C type (PebbleAllocator / PebbleContext,
+	// defined in pebble_rt.h, never emitted as a pebble_struct_<id>_t typedef —
+	// orderAggregateTypes skips runtime types for exactly this reason), so it
+	// must be resolved before the isStruct case, which would otherwise name a
+	// nonexistent pebble_struct_<id>_t. Mirrors how a runtime-typed local,
+	// parameter, and result are declared via runtimeTypeName.
+	if runtimeType(unit, snapshot, id) != 0 {
+		return runtimeTypeName(unit, snapshot, id), nil
 	}
 	if isStruct(snapshot, id) {
 		if isEnumType(unit, snapshot, id) {

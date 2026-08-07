@@ -258,6 +258,57 @@ func TestEmitRuntimeAllocatorUnparenthesizedRoundTrip(t *testing.T) {
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = a.alloc(a.ptr, 4) as *i32; *p = 42; let value = *p; a.free(a.ptr, p as *void); return value; }", 42)
 }
 
+func TestEmitStructWithAllocatorFieldCompilesAndRuns(t *testing.T) {
+	// The standalone synthetic repro of the runtime-builtin struct-field-typedef
+	// gap: a struct with an Allocator-typed field (mirroring std/hmap.peb's
+	// HashMap[K,V].backing Allocator), constructed from context.default_allocator
+	// exactly as hmap's new/with_capacity do. Allocator is a compiler builtin
+	// with a hand-written PebbleAllocator C type (never a per-TypeID
+	// pebble_struct_<id>_t typedef), so orderAggregateTypes must skip it
+	// entirely from the typedef-emission postorder while the struct's OWN real
+	// fields still get typedefs; the Allocator field itself is declared with
+	// PebbleAllocator and initialized from the runtime context. Reading the
+	// Allocator field back into a local (`let a = h.backing`) exercises the
+	// runtime-typed field-read path too. The program must compile and run.
+	emitAndRun(t, "type Holder = struct { value int; backing Allocator; }; fn main() int { var h Holder = Holder.{ value = 41, backing = context.default_allocator }; let a = h.backing; return h.value + 1; }", false, 42, false)
+}
+
+func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the struct's own typedef carries its real
+	// field AND the Allocator field declared as the hand-written PebbleAllocator
+	// (NOT a per-TypeID pebble_struct_<id>_t, whose typedef orderAggregateTypes
+	// now skips), the construction initializes it from the runtime context's
+	// default allocator, and exactly ONE struct typedef is emitted — no typedef
+	// for the Allocator type itself. This is the "skipped entirely, not a
+	// zero-valued placeholder" behavior the orderAggregateTypes fix guarantees.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Holder = struct { value int; backing Allocator; }; fn main() int { var h Holder = Holder.{ value = 41, backing = context.default_allocator }; return h.value + 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleAllocator pebble_field_",
+		"(*ctx).allocator",
+		"int32_t pebble_field_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "typedef struct {") != 1 {
+		t.Errorf("emitted C must contain exactly one struct typedef (for Holder, not the skipped Allocator runtime type):\n%s", out)
+	}
+	openIdx := strings.Index(out, "typedef struct {")
+	closeIdx := strings.Index(out[openIdx:], "} pebble_struct_")
+	block := out[openIdx : openIdx+closeIdx]
+	for _, line := range strings.Split(block, "\n") {
+		if strings.Contains(line, "pebble_field_") && strings.Contains(line, "pebble_struct_") {
+			t.Errorf("emitted C declares a struct field with a per-TypeID pebble_struct_ type; the Allocator field must use PebbleAllocator:\n%s", out)
+		}
+	}
+}
+
 func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
 	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")
@@ -5209,24 +5260,21 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// insert call cycle is genuine mutual recursion. Forward declarations now
 	// make the cycle itself a non-issue: Emit must NOT fail with a recursion
 	// error. The optional-uint-payload gap (hmap's insert declares `var
-	// tombstone_index ?uint = none;`) is now FIXED, and the pointer-payload
-	// optional gap (hmap's get_by_ref returns `?*V` — an optional whose
-	// payload is a POINTER type — and its typedef/value-building sites were
-	// widened to an isPointer case) is now FIXED too: Emit progresses past the
-	// ?*V optional typedef and value, and fails on a DIFFERENT, separate,
-	// unrelated gap — a struct-typed STRUCT FIELD whose struct type is only
-	// reachable as a field type and never collected: HashMap[K,V]'s `backing
-	// Allocator` field (Allocator from std:mem) is never constructed or
-	// referenced by name anywhere reachable, so collectStructTypes never
-	// collects it, yet orderAggregateTypes's dependency postorder follows the
-	// field into it and emits a zero structInfo, whose buildStructTypedef
-	// rejects with "struct type 0 is not in the type snapshot". This was
-	// previously MASKED by the earlier pointer-payload error (both errors are
-	// in the same postorder; the ?*int optional typedef failed first at HEAD).
-	// This test pins that precise residual gap (so a future session fixing
-	// struct-field-reachable struct collection knows exactly what remains)
-	// rather than fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture
-	// pattern (os.ReadFile of the real module sources, fixtureProvider,
+	// tombstone_index ?uint = none;`) is now FIXED, the pointer-payload
+	// optional gap (hmap's get_by_ref returns `?*V`) is now FIXED, and the
+	// runtime-builtin (Allocator) struct-field-typedef gap (HashMap's `backing
+	// Allocator` field produced a zero-valued structInfo whose buildStructTypedef
+	// rejected with "struct type 0 is not in the type snapshot") is now FIXED —
+	// orderAggregateTypes skips compiler-builtin runtime types entirely, and the
+	// runtime field is emitted with its hand-written PebbleAllocator C type.
+	// Emit now progresses past all of those and fails on a DIFFERENT, separate,
+	// pre-existing gap: HashMap's own `len uint` and `cap uint` fields, rejected
+	// by structFieldCType ("field type uint is not supported, want int or bool")
+	// since this backend emits exactly the entry's width or bool as struct
+	// fields. This test pins that precise residual gap (so a future session
+	// fixing struct fields of non-entry-width integer types knows exactly what
+	// remains) rather than fixing it. Mirrors TestCheckStdHmapU64HashFnTypes'
+	// fixture pattern (os.ReadFile of the real module sources, fixtureProvider,
 	// StandardRoot: "std").
 	hmap, err := os.ReadFile("../../std/hmap.peb")
 	if err != nil {
@@ -5269,7 +5317,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the optional-uint and pointer-payload gaps are gone, but this test expected the remaining struct-field-reachable-struct gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, and runtime-Allocator-field-typedef gaps are gone, but this test expected the remaining uint-struct-field gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
@@ -5277,14 +5325,18 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	if strings.Contains(err.Error(), "payload type") {
 		t.Fatalf("Emit still fails with an optional-payload error; the pointer-payload fix did not land: %v", err)
 	}
-	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
-	// payload, and the (fixed) pointer-payload optional: a struct-typed struct
-	// field (HashMap's backing Allocator) whose struct type is only reachable
-	// as a field type and is never collected for a C typedef.
-	if !strings.Contains(err.Error(), "struct type 0 is not in the type snapshot") {
-		t.Fatalf("Emit failed with an unexpected non-recursion non-payload error: %v", err)
+	if strings.Contains(err.Error(), "struct type 0 is not in the type snapshot") {
+		t.Fatalf("Emit still fails with the runtime-builtin struct-field-typedef error; the orderAggregateTypes runtime-type skip did not land: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on the struct-field-reachable-struct gap (recursion, optional-uint, and pointer-payload optionals are fixed): %v", err)
+	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
+	// payload, the (fixed) pointer-payload optional, and the (fixed)
+	// runtime-Allocator struct-field typedef: HashMap's own uint-typed fields
+	// (len and cap), rejected because structFieldCType emits exactly the entry's
+	// width or bool as struct field types.
+	if !strings.Contains(err.Error(), "field type uint is not supported, want int or bool") {
+		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef error: %v", err)
+	}
+	t.Logf("full std:hmap consumer now blocks only on the uint-struct-field gap (recursion, optional-uint, pointer-payload optionals, and runtime-Allocator struct-field typedefs are fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
