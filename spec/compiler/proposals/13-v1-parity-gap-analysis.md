@@ -579,29 +579,84 @@ repeated here.
       user code reconstruct a pointer from an arbitrary integer,
       reopening the pointer-arithmetic backdoor
       `open-language-decisions.md` §1.5/§3.8 deliberately closed.
-- **Tagged-union field access on the matched variant (`case Ok: return
-      self.Ok;`) is pattern matching — still deferred, confirmed by
-      spec text, not merely a sequencing choice.** Previously framed as
-      "mechanical, fix now, pattern matching is a separate later
-      conversation" — that framing undersold how entangled the two
-      actually are. `06b-validation-and-typed-ir.md` line 850 states
-      switch narrowing explicitly: "A tagged-union case narrows only its
-      dominated case region" — meaning `self.Ok` is only ever meant to
-      be legal INSIDE a `case Ok:` body that has narrowed `self` to that
-      variant, not as unconditional field access on any union value
-      (confirmed the `member operation is invalid` / `C0605` root cause:
-      `internal/check/member_validation.go`'s `memberField` case only
-      matches members of `symbol.SymbolKind` `SymbolField`, but union
-      members are registered as `SymbolVariant`
-      (`internal/symbol/resolve.go:242`) — so naively making that check
-      also accept `SymbolVariant` would make `d.Int` legal on ANY union
-      value unconditionally, which is a different, weaker, almost
-      certainly wrong design than the flow-sensitive narrowing the spec
-      actually describes). Implementing this for real is flow-sensitive
-      type narrowing inside a dominated case region — a genuine,
-      nontrivial feature, not a validator tweak. Stays deferred per the
-      already-decided sequencing (after enums/unions are otherwise
-      working and everything else on this tracker is done).
+- [x] **CLOSED (2026-08-07, three slices, `08122fc`/`65699e2`/`a82ed63`)
+      — tagged-union field access on the matched variant
+      (`self.Ok` inside `case .Ok:`).** Previously deferred as a
+      genuine, nontrivial flow-sensitive-narrowing feature, not a
+      validator tweak — the user explicitly greenlit implementing it
+      this session. Broken into three independently-dispatched,
+      independently-verified slices after the first attempt at one
+      giant combined brief stalled three times in a row with zero code
+      written despite correct investigation each time (a 185-line
+      brief with several open design questions — decomposing into
+      short, decisive, single-file briefs immediately unstuck it):
+      - **Slice A (checker, `08122fc`):**
+        `member_validation.go`'s `memberField` case now accepts a
+        union-variant read when `switch_validation.go`'s new
+        `switchCaseNarrowing` confirms the access sits inside its
+        narrowest enclosing switch-case arm (smallest case-arm span
+        containing the access, owned by the same callable so a nested
+        closure can't inherit the narrowing — reuses the existing
+        `variantBySyntax` case-arm-to-variant mapping, extracted into
+        a shared `collectVariantBySyntax` rather than duplicated) AND
+        that arm is narrowed to the matching variant. Outside any
+        matching case, or in the wrong case, stays a clean `C0605`
+        rejection — narrowing, not a blanket unlock.
+      - **Slice B (IR, `65699e2`, no production code needed):**
+        turned out to be unnecessary — `ir_builder_place.go`'s
+        pre-existing `memberSymbol` fallback already matches ANY
+        member by name with no `SymbolKind` filter, so it already
+        resolved a validated variant read to a real `FieldPlace`
+        (confirmed for both a plain union and a generic one). The
+        dispatched "fix" was genuine dead code, caught during
+        adversarial causation-checking and dropped before commit;
+        only a pinning test was kept, confirming the existing
+        behavior is correct.
+      - **Slice C (backend, `a82ed63`):** `self.Ok` now emits
+        `pebble_local_<sym>.payload.pebble_field_<member>` — the
+        exact projection the union's own construction side
+        (`buildUnionConstruction`) already fills, found by
+        investigating the already-working `Result[T, E].{ Ok = value
+        }` record-construction path rather than guessing a new C
+        layout. Also needed along the way: the union payload gate
+        widened from width/bool to width/bool/str (real `Result`
+        usage has `str` payloads), enum/union-typed helper parameters
+        supported end to end (there was previously no case for one at
+        all), and a real regression caught and fixed during this
+        slice's own verification — `isEnumType`'s no-evidence
+        fallback wrongly matched method-only structs (no
+        `FieldDeclaration` nodes) when used to exclude enum-shaped
+        types from struct-type collection; a new, stricter
+        `isDefinitelyEnumType` (positive `VariantDeclaration`
+        evidence, no fallback) fixed it.
+
+      **Verified end-to-end**: `unwrap_or(Result[int,str].{Ok=42}, 0)
+      + unwrap_or(Result[int,str].{Err="bad"}, 100)` compiles and
+      runs, returns 142. The narrowing boundary (wrong case / outside
+      any switch) still correctly rejects. Every slice's causation
+      independently confirmed by reverting to HEAD and reproducing the
+      original error, then restoring.
+
+      **Two new, real, separate gaps found as stretch-goal
+      byproducts, NOT part of this closure, reported not chased:**
+      1. `std/result.peb`'s own `is_ok`/`unwrap_or`/`map`/`set_error`
+         methods are STILL checker-blocked — the narrowing
+         implemented here doesn't yet cover a self-referential GENERIC
+         receiver (`self Result[T, E]`, referencing the union through
+         the method's own redeclared type parameters — confirmed the
+         non-generic, non-self-referential case works fine). Narrowed
+         WRITES (`self.Err = error`, needed by `set_error`) are
+         SEPARATELY checker-blocked too — Slice A's `narrowedUnionVariantAccess`
+         only widened the READ-side `memberField` validation; a write
+         through a narrowed place needs its own equivalent check
+         somewhere in assignment/place validation, not yet scoped.
+      2. `[generator]` A pre-existing, unrelated, currently-UNREACHABLE
+         backend gap: str-typed `FieldPlace` reads (e.g. `return
+         r.Err;` where `E = str`) have no `buildStrOperand` case in
+         whatever function builds a `Load(FieldPlace)` for a str
+         field — only matters once gap 1 above closes (the only
+         programs that would reach it, `std/result.peb`'s real
+         methods, are currently blocked by gap 1 first).
 - **Untagged `union` construction/read/write has no accepted design at
       all — separate from tagged unions, explicitly "Undecided" in
       `open-language-decisions.md` §1.3, not merely unimplemented.**
