@@ -80,23 +80,33 @@ imperative program needs.
 - [x] Ordinary struct fields widened to any fixed-width integer
       (`485f57f`) — `HashMap`'s own `len uint`/`cap uint` fields now
       typedef, construct, and read correctly.
-- [ ] **A full `std/hmap.peb` consumer now hits a distinct gap:
-      `orderAggregateTypes`'s own dependency walk reads a struct's
-      field types directly from `structByType[id].fields` rather than
-      through `resolveStructInfo`'s per-instantiation substitution, so
-      a struct reached only through that walk can still carry an
-      unresolved type-parameter field.** `Entry[K,V]`'s `key K`/`value
-      V` fields, reached via `HashMap`'s `entries []Entry[K,V]` field,
-      aren't substituted to their concrete arguments in this specific
-      code path: `"struct type pebble_struct_147_t: field type
-      type-parameter(symbol 37) is not supported."` Every OTHER
-      struct-field-resolution path (construction, direct reads,
-      nested fields) was fixed for exactly this substitution problem
-      earlier this session (generic struct data fields, slices 1/2a) —
-      this is the same underlying issue surfacing in one more, not yet
-      covered, code path. This is now the last known blocker on
-      `std/hmap.peb` compiling and running end-to-end. Not yet scoped
-      in detail.
+- [x] Generic struct field substitution now selects the correct
+      canonical declaration key (`88e0149`) — **corrected diagnosis
+      from the prior entry**: the real bug wasn't in
+      `orderAggregateTypes`'s own walk; `Entry[int,int]` was already
+      being correctly discovered and resolved. The type snapshot holds
+      MULTIPLE all-type-parameter Nominal keys for one generic struct
+      when it's referenced from other generic contexts (every generic
+      method naming `Entry[K, V]` with its own K/V interns a distinct
+      such key) — `structTypeParameters`' first-match scan grabbed
+      whichever key was interned earliest, often a method's own
+      inherited parameters rather than `Entry`'s actual declaration
+      parameters, so the substitution map used mismatched symbol IDs
+      and silently left fields unsubstituted. Now selects the
+      candidate whose argument symbols actually match the
+      declaration's own field-referenced parameters.
+- [ ] **A full `std/hmap.peb` consumer now hits a genuinely different,
+      substantial, known limitation: enum-typed struct fields are not
+      implemented.** `Entry[K, V]`'s `state EntryState` field hits the
+      pre-existing, deliberate rejection in `structFieldCType`:
+      `"field type ... is an enum type; enum-typed struct fields are
+      not supported yet."` Unlike every other gap fixed in this
+      session's `std/hmap.peb` arc (each a narrow gate-widening), this
+      is assessed as a real, separate feature — construction,
+      assignment, reads, AND comparisons of an enum-typed struct field
+      all need real work, not just a type-gate change. This is now the
+      last known blocker on `std/hmap.peb` compiling and running
+      end-to-end. Not yet scoped in detail.
 
 ---
 
