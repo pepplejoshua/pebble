@@ -10080,6 +10080,22 @@ func TestEmitSliceParameterCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn first(s []i32) i32 { return s[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return first(s); }", false, 2, false)
 }
 
+func TestEmitUintBoundedRangeLoopReadsSliceLenCompilesAndRuns(t *testing.T) {
+	// The exact shape examples/slice_minmax.peb uses (and the regression test
+	// for the emit gap that file surfaced): a uint-bounded range loop whose end
+	// bound is a slice's `.len` structural field — `loop 1..items.len : iter {`
+	// — with the uint-typed iterator used to index the same slice inside the
+	// body (`items[iter]`). The `.len` bound lowers to Load(FieldPlace) with
+	// the StructuralFieldLen sentinel member; before the fix, buildPlaceLValue
+	// fell through to declaredFieldType and failed with "field 4294967295 is
+	// not declared". The loop's start `1` is anchored to the uint end bound, so
+	// the iterator is a uint64_t C counter and the body index routes through
+	// the uint index path. sub = arr[1:4] = [7, 99, 12], whose min is 7 — the
+	// exit code — proving the loop actually iterates the slice at runtime, not
+	// just that it emits.
+	emitAndRun(t, "fn find_min(items []int) int { var min_val = items[0]; loop 1..items.len : iter { if items[iter] < min_val { min_val = items[iter]; } } return min_val; } fn main() int { var arr [5]int = [42, 7, 99, 12, 3]; var sub []int = arr[1:4]; return find_min(sub); }", false, 7, false)
+}
+
 func TestEmitSliceParameterBoolElementCompilesAndRuns(t *testing.T) {
 	// A bool-element slice parameter: the element-typed index read routes
 	// through the slice's bool element and drives the return. s = a[1:3] =

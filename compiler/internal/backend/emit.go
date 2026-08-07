@@ -10489,12 +10489,41 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			typ = pointee
 			access = "->"
 		}
-		if n.Member == tir.StructuralFieldHasValue {
-			key, found := snapshot.Key(typ)
-			if !found || key.Kind() != types.Optional {
-				return "", 0, fmt.Errorf("unsupported structural field has_value")
+		if n.Member == tir.StructuralFieldLen || n.Member == tir.StructuralFieldData || n.Member == tir.StructuralFieldHasValue {
+			// A structural field — `.len`/`.data` on a slice, `.len` on a str,
+			// or `.has_value` on an optional — is a sentinel member symbol (see
+			// tir.StructuralFieldLen et al.), never a real struct field index,
+			// so it must be projected before declaredFieldType would reject it
+			// as undeclared. This mirrors buildStructFieldRead's handling of
+			// the same sentinels; the `.len`/`.data`/`.has_value` field of the
+			// underlying runtime aggregate is projected with the same `.` or
+			// `->` access already resolved for a pointer receiver.
+			name := "len"
+			if n.Member == tir.StructuralFieldData {
+				name = "data"
+			} else if n.Member == tir.StructuralFieldHasValue {
+				name = "has_value"
 			}
-			return fmt.Sprintf("%s%shas_value", base, access), snapshot.Builtins().Bool, nil
+			key, found := snapshot.Key(typ)
+			if !found {
+				return "", 0, fmt.Errorf("structural field receiver type %d is not in the type snapshot", typ)
+			}
+			if key.Kind() == types.Slice && (name == "len" || name == "data") {
+				// `.len`/`.data` on a slice: the projection's type is the
+				// resolved uint / pointer-to-element the checker assigned the
+				// field access itself (n.Type), so a Load of it routes through
+				// buildUintExpr / the pointer grammar by its own type.
+				return fmt.Sprintf("%s%s%s", base, access, name), n.Type, nil
+			}
+			if name == "len" {
+				if builtin, ok := key.Builtin(); ok && builtin == types.Str {
+					return fmt.Sprintf("%s%s%s", base, access, "len"), n.Type, nil
+				}
+			}
+			if name == "has_value" && key.Kind() == types.Optional {
+				return fmt.Sprintf("%s%s%s", base, access, name), snapshot.Builtins().Bool, nil
+			}
+			return "", 0, fmt.Errorf("unsupported structural field %s", name)
 		}
 		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
 		if !ok {
