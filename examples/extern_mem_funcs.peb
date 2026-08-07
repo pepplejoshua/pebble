@@ -1,11 +1,11 @@
-extern fn malloc(size usize) *void;
+extern fn malloc(size uint) *void;
 extern fn free(ptr *void) void;
 
 fn main() int {
-    var num *int = malloc(sizeof int);
+    var num *int = malloc(sizeof int) as *int;
     *num = 42;
     print *num;
 
-    free(num);
+    free(num as *void);
     return 0;
 }
