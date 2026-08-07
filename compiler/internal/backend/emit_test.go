@@ -5107,30 +5107,179 @@ func TestEmitFloatToIntegerReleaseReturnsSentinel(t *testing.T) {
 	runCompiledBinary(t, binary, 1, false, false)
 }
 
-func TestEmitRejectsSelfRecursion(t *testing.T) {
-	// Recursion is legal, checker-accepted Pebble (confirmed against a real
-	// fixture), so this is a genuine backend-scope boundary: the reachability
-	// walk follows helper's call back to helper and must reject the cycle
-	// cleanly, naming the chain, rather than emit a C definition that calls
-	// itself before it is defined (there's no forward-declaration mechanism).
-	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i32 { return helper(); } fn main() i32 { return helper(); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
+func TestEmitSelfRecursionCompilesAndRuns(t *testing.T) {
+	// Direct recursion: helper calls itself with a decrementing argument and a
+	// base case, so the recursion terminates. fact(5) = 120 is the process
+	// exit code. Before forward declarations this was a clean rejection
+	// (TestEmitRejectsSelfRecursion); now every reachable helper gets a C
+	// prototype before any definition, so a self-recursive call is legal C
+	// and the backend emits and runs it end-to-end.
+	emitAndRun(t, "fn fact(n i32) i32 { if n == 0 { return 1; } else { return n * fact(n - 1); } } fn main() i32 { return fact(5); }", false, 120, false)
 }
 
-func TestEmitRejectsMutualRecursion(t *testing.T) {
-	// Two functions that call each other: a calls b and b calls a, so a can
-	// reach itself through b. The walk must reject the cycle naming the chain
-	// (symbol 24 -> symbol 25 -> symbol 24), not emit either function.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn a() i32 { return b(); } fn b() i32 { return a(); } fn main() i32 { return a(); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
+func TestEmitMutualRecursionCompilesAndRuns(t *testing.T) {
+	// Mutual/indirect recursion: a calls b and b calls a — a genuine
+	// two-function call cycle. isEven(10) is true, so the exit code is 1.
+	// Before forward declarations this was a clean rejection
+	// (TestEmitRejectsMutualRecursion); now the prototype pass makes the
+	// cycle legal C regardless of definition order, and the base cases
+	// terminate the recursion.
+	emitAndRun(t, "fn isEven(n i32) i32 { if n == 0 { return 1; } else { return isOdd(n - 1); } } fn isOdd(n i32) i32 { if n == 0 { return 0; } else { return isEven(n - 1); } } fn main() i32 { return isEven(10); }", false, 1, false)
+}
+
+func TestEmitThreeHopRecursionCompilesAndRuns(t *testing.T) {
+	// The exact shape std/hmap.peb's insert/maybe_grow/rehash cycle has: three
+	// helper functions calling each other in a cycle (insert -> maybe_grow ->
+	// rehash -> insert) with a base case that terminates the recursion. Each
+	// call is a direct recursive edge; the prototype pass must declare all
+	// three before any definition so the cycle compiles no matter the
+	// definition order. insert(1) counts up by one each hop until n > 10,
+	// so the exit code is 11. Bounded execution in case the cycle never
+	// terminates.
+	emitAndRunBounded(t, "fn insert(n i32) i32 { if n == 0 { return 0; } else { return maybe_grow(n); } } fn maybe_grow(n i32) i32 { if n > 10 { return n; } else { return rehash(n); } } fn rehash(n i32) i32 { return insert(n + 1); } fn main() i32 { return insert(1); }", false, 11, false)
+}
+
+func TestEmitRecursionWritesPrototypesBeforeDefinitions(t *testing.T) {
+	// The emitted-C shape for the three-hop cycle: every reachable helper must
+	// be forward-declared (a static prototype ending in `;`) BEFORE any
+	// helper definition (a static function ending in `{`), and each definition
+	// must come after its own prototype — that is the mechanism that makes the
+	// recursive calls legal C regardless of definition order. In particular,
+	// rehash calls insert, whose definition follows rehash's, so insert's
+	// prototype must appear before rehash's definition for the emitted C to
+	// compile warning-free under -Wall -Wextra -Werror.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn insert(n i32) i32 { if n == 0 { return 0; } else { return maybe_grow(n); } } fn maybe_grow(n i32) i32 { if n > 10 { return n; } else { return rehash(n); } } fn rehash(n i32) i32 { return insert(n + 1); } fn main() i32 { return insert(1); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// Every helper has parameters, so the prototype and the definition both
+	// begin "static int32_t pebble_fn_<id>(PebbleContext *ctx" and differ only
+	// in their terminator (the prototype ends its parameter list with a `;`,
+	// the definition with a `{`). Walk the shared prefix from each occurrence
+	// to the next `;` or `{` to classify it.
+	var firstDefinitionAt, lastPrototypeAt int
+	for _, symbolID := range []string{"24", "26", "28"} {
+		prefix := "static int32_t pebble_fn_" + symbolID + "(PebbleContext *ctx"
+		var prototypeAt, definitionAt int
+		for from := 0; ; {
+			index := strings.Index(out[from:], prefix)
+			if index < 0 {
+				break
+			}
+			absolute := from + index
+			rest := out[absolute+len(prefix):]
+			if semi := strings.Index(rest, ";"); semi >= 0 && (strings.Index(rest, "{") < 0 || semi < strings.Index(rest, "{")) {
+				prototypeAt = absolute
+			} else if brace := strings.Index(rest, "{"); brace >= 0 {
+				definitionAt = absolute
+			}
+			from = absolute + len(prefix)
+		}
+		if prototypeAt == 0 {
+			t.Errorf("emitted C missing prototype for pebble_fn_%s:\n%s", symbolID, out)
+		}
+		if definitionAt == 0 {
+			t.Errorf("emitted C missing definition for pebble_fn_%s:\n%s", symbolID, out)
+		}
+		if prototypeAt >= definitionAt {
+			t.Errorf("prototype for pebble_fn_%s does not precede its definition:\n%s", symbolID, out)
+		}
+		if firstDefinitionAt == 0 || definitionAt < firstDefinitionAt {
+			firstDefinitionAt = definitionAt
+		}
+		if prototypeAt > lastPrototypeAt {
+			lastPrototypeAt = prototypeAt
+		}
+	}
+	// Every prototype must come before every definition: the last prototype's
+	// `;` must precede the first definition's `{`.
+	if firstDefinitionAt == 0 || lastPrototypeAt == 0 {
+		t.Fatalf("emitted C has no helper prototypes/definitions:\n%s", out)
+	}
+	if lastPrototypeAt >= firstDefinitionAt {
+		t.Errorf("a prototype does not precede all definitions:\n%s", out)
+	}
+}
+
+func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
+	// The real motivating case that discovered this gap: a full std/hmap.peb
+	// consumer (new + insert + get) whose insert -> maybe_grow -> rehash ->
+	// insert call cycle is genuine mutual recursion. Forward declarations now
+	// make the cycle itself a non-issue: Emit must NOT fail with a recursion
+	// error. It instead fails on a DIFFERENT, out-of-scope gap: hmap's insert
+	// declares `var tombstone_index ?uint = none;` — an optional whose payload
+	// type is uint, and this backend's optional typedef only supports int or
+	// bool payloads. This test pins that precise new gap (so a future session
+	// fixing optional-uint payloads knows exactly what remains) rather than
+	// fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern
+	// (os.ReadFile of the real module sources, fixtureProvider, StandardRoot:
+	// "std").
+	hmap, err := os.ReadFile("../../std/hmap.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := os.ReadFile("../../std/mem.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{
+		"main.peb":     []byte(`import "std:hmap"; fn userHash(x int) u64 => x as u64; fn userEq(a int, b int) bool => a == b; fn main() int { var m = hmap::new[int, int](userHash, userEq); m.insert(5, 7); let v = m.get(5)!; return v; }`),
+		"std/hmap.peb": hmap,
+		"std/mem.peb":  mem,
+	}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed on std:hmap consumer: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("check succeeded without an IR unit")
+	}
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == "main" {
+			entryID = candidate.ID
+		}
+	}
+	if entryID == 0 {
+		t.Fatal("missing symbol \"main\"")
+	}
+	var buf bytes.Buffer
+	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
+	if err == nil {
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion gap is gone, but this test expected the remaining optional-uint-payload gap")
+	}
+	if strings.Contains(err.Error(), "recursion") {
+		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
+	}
+	// The precise remaining gap, beyond recursion: hmap's insert declares an
+	// optional whose payload type is uint (var tombstone_index ?uint = none;),
+	// and this backend only supports int/bool optional payloads.
+	if !strings.Contains(err.Error(), "payload type uint is not supported") {
+		t.Fatalf("Emit failed with an unexpected non-recursion error: %v", err)
+	}
+	t.Logf("full std:hmap consumer now blocks only on the optional-uint-payload gap (recursion is fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
-	// The cycle can close through the entry itself: main calls helper, helper
-	// calls main back. main is on the walk's DFS path, so the walk must reject
-	// the cycle rather than re-emit the entry as a helper.
+	// The one cycle shape still rejected: a helper calling the entry function
+	// (main) back closes a cycle through the entry, which is emitted under the
+	// fixed C name pebble_user_main — not as a pebble_fn_<symbolID> helper the
+	// forward-declaration pass covers — so the backend cannot lower a call to
+	// it and rejects the cycle cleanly rather than emit a call to an
+	// undeclared C identifier.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i32 { return main(); } fn main() i32 { return helper(); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursion is not supported")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "recursive call through the entry function is not supported")
 }
 
 func TestEmitVoidHelperStatementCompilesAndRuns(t *testing.T) {

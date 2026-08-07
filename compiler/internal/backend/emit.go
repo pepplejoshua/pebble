@@ -448,10 +448,13 @@ import (
 // in exactly one position — a bare
 // discarded-expression statement (`helper();`, see buildExpressionStatement)
 // — while a call that is part of a
-// cycle (a function that can reach itself, directly or through others — the
-// recursion boundary) is a clean rejection naming what was found, since this
-// backend has no forward-declaration mechanism to order recursive or
-// out-of-definition-order calls yet.
+// cycle among helpers (a helper that can reach itself, directly or through
+// others — the recursion boundary) is now supported: every reachable helper
+// gets a C forward declaration before any definition, so recursive calls need
+// no ordering. The one cycle shape still rejected is a cycle passing through
+// the entry function itself (the entry is emitted under the fixed C name
+// pebble_user_main, not as a pebble_fn_<symbolID> helper the forward-
+// declaration pass covers).
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, w io.Writer) error {
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
@@ -479,7 +482,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		if err := validateEmptyBody(unit, block); err != nil {
 			return err
 		}
-		return emitEntryC(w, "", "", voidEntryUserMain, voidEntryMainBody)
+		return emitEntryC(w, "", "", "", voidEntryUserMain, voidEntryMainBody)
 	}
 	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
 	if err != nil {
@@ -595,6 +598,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return err
 	}
 	typedefs = appendTypedefBlock(sliceTypedefs, typedefs)
+	helperPrototypes, err := buildHelperPrototypes(unit, snapshot, helpers, result)
+	if err != nil {
+		return err
+	}
 	helpersText, err := buildHelperFunctions(unit, snapshot, fileSet, helpers, result, unions)
 	if err != nil {
 		return err
@@ -603,7 +610,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	return emitEntryC(w, typedefs, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
+	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
 }
 
 // appendTypedefBlock appends a second typedef block onto a first, joining them
@@ -748,7 +755,9 @@ func findFunctionBody(unit *tir.Unit, decl tir.Node, what string) (tir.Node, tir
 // body Block (for buildBlock). The emission order of the returned slice is a
 // post-order of the reachability walk — every callee precedes its caller — so
 // a called function's C definition always precedes its use in the generated
-// file.
+// file (the one place that still matters: a non-recursive chain has no
+// forward dependency anyway, and recursive calls are covered by the
+// prototypes buildHelperPrototypes emits before every definition).
 type helperInfo struct {
 	decl  tir.Node
 	block tir.NodeID
@@ -781,10 +790,15 @@ type reachabilityWalk struct {
 // validateHelperSignature) and its body located (findFunctionBody) before
 // recursing. The returned slice is a post-order of the walk — callees before
 // callers — which is the emission order that keeps every call in the emitted
-// C text forward (definition before use), since this backend has no
-// forward-declaration mechanism. A cycle (a function that can reach itself,
-// directly or through others) is a clean rejection naming the cycle, not
-// attempted.
+// C text forward (definition before use); since buildHelperPrototypes now
+// emits a forward declaration for every reachable helper before any
+// definition, that ordering is no longer a correctness requirement — a cycle
+// (a function that can reach itself, directly or through others) is simply
+// skipped, not rejected, so recursive and mutually-recursive functions are
+// discovered and emitted like any other reachable helper. A cycle passing
+// THROUGH the entry function is the one cycle shape still rejected (the entry
+// has the fixed C name pebble_user_main, not a pebble_fn_<symbolID> helper
+// name the forward-declaration pass covers).
 func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDecl tir.Node, entryBlockID tir.NodeID, width types.BuiltinKind) ([]helperInfo, error) {
 	walk := &reachabilityWalk{
 		unit:     unit,
@@ -809,22 +823,48 @@ func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDec
 // already fully walked (done) is a shared subgraph — a diamond, where two
 // callers reach one callee — and is skipped, not re-walked, so each helper is
 // emitted exactly once. A callee already on the current DFS path (stack) is a
-// cycle and is rejected, naming the call chain that closes on itself.
+// cycle — direct or mutual recursion — and is skipped the same way: it is
+// already being walked on this path and will be marked done when its own walk
+// completes, so the full reachable set is still discovered without infinite
+// re-walking, and the recursive call is legal C because every helper has a
+// forward-declared prototype. The one exception is a cycle passing THROUGH
+// the entry function (a helper calling the entry back, or the entry calling
+// itself): the entry is emitted under the fixed C name pebble_user_main, not
+// as a pebble_fn_<symbolID> helper the forward-declaration pass covers, so a
+// call to it has no valid C name and that cycle shape is rejected cleanly.
 func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 	if w.done[decl.Function] {
 		return nil
 	}
 	if inStack := indexOfFunction(w.stack, decl.Function); inStack >= 0 {
+		if decl.Symbol == w.entry {
+			// The call edge just followed closes a cycle THROUGH THE ENTRY
+			// FUNCTION (the DFS root, always on the stack): a helper calling
+			// the entry back, or the entry calling itself. This one cycle
+			// shape is still rejected: the entry is emitted under the fixed C
+			// name pebble_user_main (after the helpers, with no prototype), so
+			// a call to it cannot be lowered to a valid C name — it is not a
+			// pebble_fn_<symbolID> helper the forward-declaration pass covers.
+			cycle := append(append([]tir.FunctionID(nil), w.stack[inStack:]...), decl.Function)
+			parts := make([]string, len(cycle))
+			for i, id := range cycle {
+				parts[i] = fmt.Sprintf("function %d", id)
+			}
+			return fmt.Errorf("recursive call through the entry function is not supported: the call chain %s is a cycle passing through the entry, which is emitted under the fixed C name pebble_user_main (not as a pebble_fn_<symbolID> helper the forward-declaration pass covers), so this backend cannot lower a call to it; recursion among helper functions (direct or mutual) is supported via forward declarations", strings.Join(parts, " -> "))
+		}
 		// The function is already on the current DFS path, so the call edge
 		// just followed closes a cycle: decl can reach itself through
-		// stack[inStack:] -> decl. Forward-declaration ordering for recursive
-		// calls is real future work, not this slice's problem.
-		cycle := append(append([]tir.FunctionID(nil), w.stack[inStack:]...), decl.Function)
-		parts := make([]string, len(cycle))
-		for i, id := range cycle {
-			parts[i] = fmt.Sprintf("function %d", id)
-		}
-		return fmt.Errorf("recursion is not supported yet: the call chain %s is a cycle (a function that can reach itself, directly or through others), and this backend has no forward-declaration mechanism to order recursive calls yet", strings.Join(parts, " -> "))
+		// stack[inStack:] -> decl. This is the recursive-call shape
+		// (direct or mutual) this backend now supports — since every
+		// reachable helper gets a C forward declaration (prototype) before
+		// any definition, a recursive call no longer needs any ordering
+		// guarantee. The callee is skipped rather than re-walked: it is
+		// already on this path, its own visit will mark it done when it
+		// completes, and the walk has already discovered (and will emit)
+		// every function it reaches. The full reachable set is therefore
+		// still discovered — a cycle is a "don't re-walk" signal, not an
+		// error.
+		return nil
 	}
 	w.stack = append(w.stack, decl.Function)
 	var calls []tir.Node
@@ -2630,284 +2670,13 @@ func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.Builtin
 func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, helpers []helperInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	texts := make([]string, 0, len(helpers))
 	for _, helper := range helpers {
-		scope := make(map[symbol.SymbolID]localInfo, len(helper.decl.Parameters))
-		params := make([]string, 0, len(helper.decl.Parameters))
+		params, scope, bodyWidth, returnType, result, err := helperSignature(unit, snapshot, helper, width)
+		if err != nil {
+			return "", err
+		}
 		casts := make([]string, 0, len(helper.decl.Parameters))
 		for _, param := range helper.decl.Parameters {
-			switch {
-			case isWidth(snapshot, width, param.Type):
-				params = append(params, cType(width)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{kind: width}
-			case isUint(snapshot, param.Type):
-				params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{kind: types.Uint}
-			case isU64(snapshot, param.Type):
-				// A u64-typed parameter seeds the callee's locals scope as a
-				// u64 local (localInfo{kind: types.U64}), exactly as a u64
-				// local's Initialize does, so a reference to the parameter
-				// inside the body resolves through the existing buildExpr
-				// machinery at the u64 width unchanged. The C parameter is
-				// declared as the fixed uint64_t — the same C type a u64
-				// local is declared with — so passing a u64 by value is
-				// trivially valid C.
-				params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{kind: types.U64}
-			case isBool(snapshot, param.Type):
-				params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{kind: types.Bool}
-			case isChar(snapshot, param.Type):
-				// A char-typed parameter seeds the callee's locals scope as a
-				// char local (localInfo.isChar), exactly as a char local's
-				// Initialize does, so a reference to the parameter inside the
-				// body resolves through the existing buildCharOperand
-				// machinery unchanged (read in any of the six comparisons,
-				// forwarded by a char-returning helper's return, or passed to
-				// another char parameter). The C parameter is declared as the
-				// fixed int32_t — the same C type a char local is declared
-				// with, no typedef involved — so passing a char by value is
-				// trivially valid C.
-				params = append(params, "int32_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{isChar: true}
-			case isTuple(snapshot, param.Type):
-				// A tuple-typed parameter seeds the callee's locals scope as a
-				// tuple local (localInfo.tuple), exactly as a tuple local's
-				// Initialize does, so element reads inside the body resolve
-				// through the existing Load(TuplePlace) machinery unchanged.
-				// The C parameter is declared with the tuple's own struct
-				// typedef name, so passing the whole tuple by value is trivially
-				// valid C (a call site passes a tuple-typed local's own name).
-				params = append(params, tupleTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{tuple: param.Type}
-			case isStruct(snapshot, param.Type):
-				// A struct-typed parameter seeds the callee's locals scope as a
-				// struct local (localInfo.structType), exactly as a struct
-				// local's Initialize does, so field reads inside the body
-				// resolve through the existing Load(FieldPlace) machinery
-				// unchanged, declared with the struct's own struct typedef name.
-				params = append(params, runtimeTypeName(unit, snapshot, param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{structType: param.Type, runtimeType: param.Type}
-			case isSlice(snapshot, param.Type):
-				// A slice-typed parameter (10.38) seeds the callee's locals
-				// scope as a slice local (localInfo.sliceType), exactly as a
-				// slice local's Initialize does, so an index of the parameter
-				// inside the body (`s[0]`) resolves through the existing
-				// Load(CheckedIndexPlace) machinery a slice local uses
-				// unchanged, declared with the slice type's own struct typedef
-				// name (pebble_slice_<typeID>_t — the same typedef 10.37
-				// builds for a slice local, no new typedef shape needed). The
-				// element type is validated to be the entry's width or bool by
-				// validateHelperSignature, so the typedef always builds.
-				params = append(params, sliceTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{sliceType: param.Type}
-			case isOptional(snapshot, param.Type):
-				// An optional-typed parameter seeds the callee's locals scope
-				// as an optional local (localInfo.optional), exactly as an
-				// optional local's Initialize does, so a reference to the
-				// parameter inside the body — a `.has_value` read, a `!`
-				// force-unwrap, forwarding it in a return or as another
-				// call's argument — resolves through the existing optional-
-				// local machinery (buildOptionalHasValue, the
-				// CheckedOptionalUnwrap path, buildOptionalReturnValue)
-				// completely unchanged, no new read-path code. The C
-				// parameter is declared with the optional type's own struct
-				// typedef name (pebble_optional_<typeID>_t — the same
-				// typedef 10.21 builds for an optional local, no new typedef
-				// shape needed), so passing the whole optional by value is
-				// trivially valid C (a call site passes an optional-typed
-				// value of the same C type). The payload type is validated
-				// wherever its typedef is built (buildOptionalTypedef via
-				// optionalPayloadCType) — the same coverage an optional
-				// local's payload gets.
-				params = append(params, optionalTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{optional: param.Type}
-			case isStr(snapshot, param.Type):
-				// A str-typed parameter seeds the callee's locals scope as a
-				// str local (localInfo.isStr), exactly as a str local's
-				// Initialize does, so a reference to the parameter inside the
-				// body resolves through the existing buildStrOperand machinery
-				// unchanged (read in a ==/!= comparison, forwarded by a
-				// str-returning helper's return, or passed to another str
-				// parameter). The C parameter is declared as the runtime ABI's
-				// fixed PebbleStr type — the same C type a str local is declared
-				// with, no typedef involved — so passing a str by value is
-				// trivially valid C.
-				params = append(params, "PebbleStr"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{isStr: true}
-			case isPointer(snapshot, param.Type):
-				// A pointer-typed parameter seeds the callee's locals scope
-				// as a pointer local (localInfo.pointerType). The C parameter
-				// is declared with the pointer type's own C type name
-				// (pointee_c_type *), so passing a pointer by value is
-				// trivially valid C. pointerTypeName takes the pointee, not
-				// the pointer type itself, so the pointee must be extracted
-				// first.
-				paramPointeeTypeID, paramPointeeOK := pointerPointeeType(snapshot, param.Type)
-				ctypeName := ""
-				if paramPointeeOK {
-					ctypeName = pointerTypeName(snapshot, paramPointeeTypeID)
-				}
-				if ctypeName == "" {
-					return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has unsupported pointer type %s", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type))
-				}
-				params = append(params, ctypeName+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{pointerType: param.Type}
-			case isFunctionType(snapshot, param.Type):
-				// A function-typed parameter (function-types slice 3) seeds
-				// the callee's locals scope as a function-typed local
-				// (localInfo.functionType — the SAME field a function-typed
-				// local's Initialize uses), so a reference to the parameter
-				// inside the body — as an indirect call's callee (`f(x, y)`),
-				// forwarded as another function-typed parameter's argument, or
-				// returned by a function-result helper — resolves through the
-				// existing buildFunctionValue machinery unchanged (its
-				// SymbolValue case reads localInfo.functionType exactly like
-				// buildFunctionLocalDeclaration's scope entry does). The C
-				// parameter is declared with the function type's own pointer
-				// typedef (pebble_fnptr_<typeID>_t, slice 1's functionTypeName
-				// — the same C type a function-typed local is declared with),
-				// so passing a function value by value is trivially valid C
-				// (a call site passes a function value of the same C type).
-				// The function type's own signature is validated by
-				// validateHelperSignature above, so the typedef always builds.
-				params = append(params, functionTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
-				scope[param.Symbol] = localInfo{functionType: param.Type}
-			default:
-				// validateHelperSignature rules any unsupported parameter out
-				// before a reachable helper is ever built, so this branch is
-				// defense for hand-built IR only.
-				return "", fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, or an optional type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
-			}
 			casts = append(casts, fmt.Sprintf("    (void)pebble_local_%d;", param.Symbol))
-		}
-		// A helper whose ResultType is a tuple/struct is declared with its
-		// aggregate's own typedef name as the C return type instead of the
-		// entry's scalar cType(width), and its body is built with a resultInfo
-		// recording that aggregate so the tail-position Return is built by
-		// buildAggregateReturnValue rather than buildExpr. A scalar-result
-		// helper is unchanged: cType(width) and resultInfo{kind: width}, so its
-		// emitted text is byte-identical to before this slice. A void-result
-		// helper (10.33) is declared with the C return type "void" and
-		// resultInfo{kind: types.Void}. The tuple/struct
-		// shape is validated wherever its typedef is built (buildTupleTypedef /
-		// buildStructTypedef), exactly like a tuple/struct parameter's, and an
-		// optional result's payload shape is likewise validated wherever its
-		// typedef is built (buildOptionalTypedef / optionalPayloadCType).
-		bodyWidth := width
-		if resultWidth, integerResult := resolvedBuiltin(snapshot, helper.decl.ResultType); integerResult && cType(resultWidth) != "" {
-			bodyWidth = resultWidth
-		}
-		returnType := cType(bodyWidth)
-		result := resultInfo{kind: bodyWidth}
-		switch {
-		case isVoid(snapshot, helper.decl.ResultType):
-			// A void-result helper (10.33) is declared with the C return type
-			// "void" — a void call has no value to return, so its body's tail
-			// is an ImplicitReturn that emits nothing (buildBlock's ImplicitReturn
-			// case). resultInfo records types.Void so buildBlock knows the tail
-			// is a legal fall-through rather than a missing return, and the
-			// helper is only ever reached by a bare discarded-expression
-			// statement call (buildExpressionStatement), never as a value.
-			returnType = "void"
-			result = resultInfo{kind: types.Void}
-		case isBool(snapshot, helper.decl.ResultType):
-			// A bool-result helper (added for the function-types slice, whose
-			// required bool-parameter/bool-result function-type test needs a
-			// bool-returning function to be emittable as a helper) is declared
-			// with the C return type "bool" and resultInfo{kind: types.Bool} so
-			// buildBlock's tail-position Return builds its value via
-			// buildBoolExpr rather than buildExpr, which would reject a
-			// bool-typed value.
-			returnType = "bool"
-			result = resultInfo{kind: types.Bool}
-		case isChar(snapshot, helper.decl.ResultType):
-			// A char-result helper (10.41) is declared with the fixed C
-			// int32_t as its C return type — the same C type a char local is
-			// declared with, independent of the entry's resolved width, no
-			// typedef involved — and resultInfo records the char shape so
-			// buildBlock's tail-position Return builds its value via
-			// buildCharOperand (a char literal, a SymbolValue naming a
-			// char-typed local, or a call to another char-returning helper)
-			// rather than buildExpr, which would reject a char-typed value.
-			returnType = "int32_t"
-			result = resultInfo{isChar: true}
-		case isTuple(snapshot, helper.decl.ResultType):
-			returnType = tupleTypeName(helper.decl.ResultType)
-			result = resultInfo{tuple: helper.decl.ResultType}
-		case isStruct(snapshot, helper.decl.ResultType):
-			returnType = runtimeTypeName(unit, snapshot, helper.decl.ResultType)
-			result = resultInfo{structType: helper.decl.ResultType}
-		case isStr(snapshot, helper.decl.ResultType):
-			// A str-result helper (10.36) is declared with the runtime ABI's
-			// fixed PebbleStr as its C return type — the same C type a str
-			// local is declared with, no typedef involved — and resultInfo
-			// records the str shape so buildBlock's tail-position Return builds
-			// its value via buildStrOperand (a SymbolValue naming a str local, a
-			// string literal, or a call to another str-returning helper) rather
-			// than buildExpr, which would reject a str-typed value.
-			returnType = "PebbleStr"
-			result = resultInfo{isStr: true}
-		case isSlice(snapshot, helper.decl.ResultType):
-			// A slice-result helper (10.38) is declared with the slice type's
-			// own struct typedef name (pebble_slice_<typeID>_t) as its C return
-			// type — the same typedef 10.37 builds for a slice local, no new
-			// typedef shape needed — and resultInfo records the slice shape so
-			// buildBlock's tail-position Return builds its value via
-			// buildSliceReturnValue (a SymbolValue naming a slice-typed local,
-			// or a fresh CheckedSlice construction) rather than buildExpr,
-			// which would reject a slice-typed value. The element type is
-			// validated to be the entry's width or bool by
-			// validateHelperSignature, so the typedef always builds.
-			returnType = sliceTypeName(helper.decl.ResultType)
-			result = resultInfo{sliceType: helper.decl.ResultType}
-		case isPointer(snapshot, helper.decl.ResultType):
-			// A pointer-result helper is declared with the pointer type's own
-			// C type name as its return type. pointerTypeName takes the
-			// pointee, not the pointer type itself (it appends " *" to the
-			// pointee's own C type), so the pointee must be extracted first.
-			// The body's tail-position Return builds its value via buildExpr
-			// (which now handles pointer-typed nodes: AddressOf, SymbolValue,
-			// NilPointer, DirectCall). resultInfo records the pointer shape
-			// so buildBlock's tail-position Return can build the value
-			// correctly.
-			pointeeTypeID, ok := pointerPointeeType(snapshot, helper.decl.ResultType)
-			if !ok {
-				return "", fmt.Errorf("called function symbol %d has unsupported pointer result type %s", helper.decl.Symbol, describeType(snapshot, helper.decl.ResultType))
-			}
-			returnType = pointerTypeName(snapshot, pointeeTypeID)
-			result = resultInfo{pointerType: helper.decl.ResultType}
-		case isOptional(snapshot, helper.decl.ResultType):
-			// An optional-result helper is declared with the optional type's
-			// own struct typedef name (pebble_optional_<typeID>_t) as its C
-			// return type — the same typedef 10.21 builds for an optional
-			// local, no new typedef shape needed — and resultInfo records the
-			// optional shape so buildBlock's tail-position Return builds its
-			// value via buildOptionalValue (a SymbolValue naming an
-			// optional-typed local, a fresh SomeOptional/NoneOptional/
-			// OptionalInject construction, or a call to another
-			// optional-returning helper) rather than buildExpr, which would
-			// reject an optional-typed value. The payload type is validated
-			// wherever its typedef is built (buildOptionalTypedef via
-			// optionalPayloadCType), exactly like a tuple/struct result's
-			// internal shape.
-			returnType = optionalTypeName(helper.decl.ResultType)
-			result = resultInfo{optionalType: helper.decl.ResultType}
-		case isFunctionType(snapshot, helper.decl.ResultType):
-			// A function-result helper (function-types slice 3) is declared
-			// with the function type's own pointer typedef
-			// (pebble_fnptr_<typeID>_t) as its C return type — the same
-			// typedef slice 1 builds for a function-typed local, no new typedef
-			// shape needed — and resultInfo records the function-result shape
-			// (resultInfo.functionType, mirroring how resultInfo.optionalType
-			// was added for optional results) so buildBlock's tail-position
-			// Return builds its value via buildFunctionValue (a bare function
-			// reference, a function-typed local or parameter forward, a
-			// function-typed struct field forward, or a call to another
-			// function-result helper) rather than buildExpr, which would
-			// reject a function-typed value. The function type's own signature
-			// is validated by validateHelperSignature above, so the typedef
-			// always builds.
-			returnType = functionTypeName(helper.decl.ResultType)
-			result = resultInfo{functionType: helper.decl.ResultType}
 		}
 		statements, err := buildBlock(unit, snapshot, fileSet, helper.block, scope, 0, bodyWidth, result, unions)
 		if err != nil {
@@ -2924,6 +2693,343 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		texts = append(texts, fmt.Sprintf(helperFunction, returnType, helperCName(helper.decl), paramList, castText, statements))
 	}
 	return strings.Join(texts, "\n"), nil
+}
+
+// helperSignature computes one reachable helper's C signature — the single
+// source of truth shared by the forward-declaration pass
+// (buildHelperPrototypes) and the definition pass (buildHelperFunctions), so
+// the ~150-line parameter/result-type switch logic lives in exactly one place
+// and a prototype and its definition can never disagree on a parameter's C
+// type or the C return type. It returns:
+//   - params: the C declaration of each parameter, in order (each
+//     "<cType> pebble_local_<id>"; the prototype and the definition both use
+//     the identical parameter names, so the two can never mismatch).
+//   - scope: the locals-scope seeding the parameters produce — one
+//     localInfo per parameter symbol, exactly the entry a definition's body
+//     (buildBlock) needs to resolve references to its own parameters; the
+//     prototype pass discards it, the definition pass seeds its scope with it.
+//   - bodyWidth: the width the helper's body is built at — the entry's width
+//     unless the helper's own result type is another supported integer
+//     builtin (an i64 helper inside an i32 entry builds at i64).
+//   - returnType: the C return type (cType(bodyWidth) for a scalar result,
+//     the aggregate typedef name for a tuple/struct/slice/optional/function-
+//     typed result, the fixed int32_t / bool / PebbleStr / void / pointer C
+//     type names for the other result shapes).
+//   - result: the resultInfo describing the result shape, so a definition's
+//     tail-position Return is built by the right builder (buildExpr,
+//     buildAggregateReturnValue, buildCharOperand, buildOptionalValue, etc.).
+//
+// A helper whose ResultType is a tuple/struct is declared with its
+// aggregate's own typedef name as the C return type instead of the entry's
+// scalar cType(width), and its body is built with a resultInfo recording that
+// aggregate so the tail-position Return is built by buildAggregateReturnValue
+// rather than buildExpr. A scalar-result helper is unchanged: cType(width) and
+// resultInfo{kind: width}, so its emitted text is byte-identical to before
+// this slice. A void-result helper (10.33) is declared with the C return type
+// "void" and resultInfo{kind: types.Void}. The tuple/struct shape is
+// validated wherever its typedef is built (buildTupleTypedef /
+// buildStructTypedef), exactly like a tuple/struct parameter's, and an
+// optional result's payload shape is likewise validated wherever its typedef
+// is built (buildOptionalTypedef / optionalPayloadCType).
+func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo, width types.BuiltinKind) (params []string, scope map[symbol.SymbolID]localInfo, bodyWidth types.BuiltinKind, returnType string, result resultInfo, err error) {
+	scope = make(map[symbol.SymbolID]localInfo, len(helper.decl.Parameters))
+	params = make([]string, 0, len(helper.decl.Parameters))
+	for _, param := range helper.decl.Parameters {
+		switch {
+		case isWidth(snapshot, width, param.Type):
+			params = append(params, cType(width)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: width}
+		case isUint(snapshot, param.Type):
+			params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: types.Uint}
+		case isU64(snapshot, param.Type):
+			// A u64-typed parameter seeds the callee's locals scope as a
+			// u64 local (localInfo{kind: types.U64}), exactly as a u64
+			// local's Initialize does, so a reference to the parameter
+			// inside the body resolves through the existing buildExpr
+			// machinery at the u64 width unchanged. The C parameter is
+			// declared as the fixed uint64_t — the same C type a u64
+			// local is declared with — so passing a u64 by value is
+			// trivially valid C.
+			params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: types.U64}
+		case isBool(snapshot, param.Type):
+			params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: types.Bool}
+		case isChar(snapshot, param.Type):
+			// A char-typed parameter seeds the callee's locals scope as a
+			// char local (localInfo.isChar), exactly as a char local's
+			// Initialize does, so a reference to the parameter inside the
+			// body resolves through the existing buildCharOperand
+			// machinery unchanged (read in any of the six comparisons,
+			// forwarded by a char-returning helper's return, or passed to
+			// another char parameter). The C parameter is declared as the
+			// fixed int32_t — the same C type a char local is declared
+			// with, no typedef involved — so passing a char by value is
+			// trivially valid C.
+			params = append(params, "int32_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{isChar: true}
+		case isTuple(snapshot, param.Type):
+			// A tuple-typed parameter seeds the callee's locals scope as a
+			// tuple local (localInfo.tuple), exactly as a tuple local's
+			// Initialize does, so element reads inside the body resolve
+			// through the existing Load(TuplePlace) machinery unchanged.
+			// The C parameter is declared with the tuple's own struct
+			// typedef name, so passing the whole tuple by value is trivially
+			// valid C (a call site passes a tuple-typed local's own name).
+			params = append(params, tupleTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{tuple: param.Type}
+		case isStruct(snapshot, param.Type):
+			// A struct-typed parameter seeds the callee's locals scope as a
+			// struct local (localInfo.structType), exactly as a struct
+			// local's Initialize does, so field reads inside the body
+			// resolve through the existing Load(FieldPlace) machinery
+			// unchanged, declared with the struct's own struct typedef name.
+			params = append(params, runtimeTypeName(unit, snapshot, param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{structType: param.Type, runtimeType: param.Type}
+		case isSlice(snapshot, param.Type):
+			// A slice-typed parameter (10.38) seeds the callee's locals
+			// scope as a slice local (localInfo.sliceType), exactly as a
+			// slice local's Initialize does, so an index of the parameter
+			// inside the body (`s[0]`) resolves through the existing
+			// Load(CheckedIndexPlace) machinery a slice local uses
+			// unchanged, declared with the slice type's own struct typedef
+			// name (pebble_slice_<typeID>_t — the same typedef 10.37
+			// builds for a slice local, no new typedef shape needed). The
+			// element type is validated to be the entry's width or bool by
+			// validateHelperSignature, so the typedef always builds.
+			params = append(params, sliceTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{sliceType: param.Type}
+		case isOptional(snapshot, param.Type):
+			// An optional-typed parameter seeds the callee's locals scope
+			// as an optional local (localInfo.optional), exactly as an
+			// optional local's Initialize does, so a reference to the
+			// parameter inside the body — a `.has_value` read, a `!`
+			// force-unwrap, forwarding it in a return or as another
+			// call's argument — resolves through the existing optional-
+			// local machinery (buildOptionalHasValue, the
+			// CheckedOptionalUnwrap path, buildOptionalReturnValue)
+			// completely unchanged, no new read-path code. The C
+			// parameter is declared with the optional type's own struct
+			// typedef name (pebble_optional_<typeID>_t — the same
+			// typedef 10.21 builds for an optional local, no new typedef
+			// shape needed), so passing the whole optional by value is
+			// trivially valid C (a call site passes an optional-typed
+			// value of the same C type). The payload type is validated
+			// wherever its typedef is built (buildOptionalTypedef via
+			// optionalPayloadCType) — the same coverage an optional
+			// local's payload gets.
+			params = append(params, optionalTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{optional: param.Type}
+		case isStr(snapshot, param.Type):
+			// A str-typed parameter seeds the callee's locals scope as a
+			// str local (localInfo.isStr), exactly as a str local's
+			// Initialize does, so a reference to the parameter inside the
+			// body resolves through the existing buildStrOperand machinery
+			// unchanged (read in a ==/!= comparison, forwarded by a
+			// str-returning helper's return, or passed to another str
+			// parameter). The C parameter is declared as the runtime ABI's
+			// fixed PebbleStr type — the same C type a str local is declared
+			// with, no typedef involved — so passing a str by value is
+			// trivially valid C.
+			params = append(params, "PebbleStr"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{isStr: true}
+		case isPointer(snapshot, param.Type):
+			// A pointer-typed parameter seeds the callee's locals scope
+			// as a pointer local (localInfo.pointerType). The C parameter
+			// is declared with the pointer type's own C type name
+			// (pointee_c_type *), so passing a pointer by value is
+			// trivially valid C. pointerTypeName takes the pointee, not
+			// the pointer type itself, so the pointee must be extracted
+			// first.
+			paramPointeeTypeID, paramPointeeOK := pointerPointeeType(snapshot, param.Type)
+			ctypeName := ""
+			if paramPointeeOK {
+				ctypeName = pointerTypeName(snapshot, paramPointeeTypeID)
+			}
+			if ctypeName == "" {
+				return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has unsupported pointer type %s", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type))
+			}
+			params = append(params, ctypeName+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{pointerType: param.Type}
+		case isFunctionType(snapshot, param.Type):
+			// A function-typed parameter (function-types slice 3) seeds
+			// the callee's locals scope as a function-typed local
+			// (localInfo.functionType — the SAME field a function-typed
+			// local's Initialize uses), so a reference to the parameter
+			// inside the body — as an indirect call's callee (`f(x, y)`),
+			// forwarded as another function-typed parameter's argument, or
+			// returned by a function-result helper — resolves through the
+			// existing buildFunctionValue machinery unchanged (its
+			// SymbolValue case reads localInfo.functionType exactly like
+			// buildFunctionLocalDeclaration's scope entry does). The C
+			// parameter is declared with the function type's own pointer
+			// typedef (pebble_fnptr_<typeID>_t, slice 1's functionTypeName
+			// — the same C type a function-typed local is declared with),
+			// so passing a function value by value is trivially valid C
+			// (a call site passes a function value of the same C type).
+			// The function type's own signature is validated by
+			// validateHelperSignature above, so the typedef always builds.
+			params = append(params, functionTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{functionType: param.Type}
+		default:
+			// validateHelperSignature rules any unsupported parameter out
+			// before a reachable helper is ever built, so this branch is
+			// defense for hand-built IR only.
+			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, or an optional type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		}
+	}
+	bodyWidth = width
+	if resultWidth, integerResult := resolvedBuiltin(snapshot, helper.decl.ResultType); integerResult && cType(resultWidth) != "" {
+		bodyWidth = resultWidth
+	}
+	returnType = cType(bodyWidth)
+	result = resultInfo{kind: bodyWidth}
+	switch {
+	case isVoid(snapshot, helper.decl.ResultType):
+		// A void-result helper (10.33) is declared with the C return type
+		// "void" — a void call has no value to return, so its body's tail
+		// is an ImplicitReturn that emits nothing (buildBlock's ImplicitReturn
+		// case). resultInfo records types.Void so buildBlock knows the tail
+		// is a legal fall-through rather than a missing return, and the
+		// helper is only ever reached by a bare discarded-expression
+		// statement call (buildExpressionStatement), never as a value.
+		returnType = "void"
+		result = resultInfo{kind: types.Void}
+	case isBool(snapshot, helper.decl.ResultType):
+		// A bool-result helper (added for the function-types slice, whose
+		// required bool-parameter/bool-result function-type test needs a
+		// bool-returning function to be emittable as a helper) is declared
+		// with the C return type "bool" and resultInfo{kind: types.Bool} so
+		// buildBlock's tail-position Return builds its value via
+		// buildBoolExpr rather than buildExpr, which would reject a
+		// bool-typed value.
+		returnType = "bool"
+		result = resultInfo{kind: types.Bool}
+	case isChar(snapshot, helper.decl.ResultType):
+		// A char-result helper (10.41) is declared with the fixed C
+		// int32_t as its C return type — the same C type a char local is
+		// declared with, independent of the entry's resolved width, no
+		// typedef involved — and resultInfo records the char shape so
+		// buildBlock's tail-position Return builds its value via
+		// buildCharOperand (a char literal, a SymbolValue naming a
+		// char-typed local, or a call to another char-returning helper)
+		// rather than buildExpr, which would reject a char-typed value.
+		returnType = "int32_t"
+		result = resultInfo{isChar: true}
+	case isTuple(snapshot, helper.decl.ResultType):
+		returnType = tupleTypeName(helper.decl.ResultType)
+		result = resultInfo{tuple: helper.decl.ResultType}
+	case isStruct(snapshot, helper.decl.ResultType):
+		returnType = runtimeTypeName(unit, snapshot, helper.decl.ResultType)
+		result = resultInfo{structType: helper.decl.ResultType}
+	case isStr(snapshot, helper.decl.ResultType):
+		// A str-result helper (10.36) is declared with the runtime ABI's
+		// fixed PebbleStr as its C return type — the same C type a str
+		// local is declared with, no typedef involved — and resultInfo
+		// records the str shape so buildBlock's tail-position Return builds
+		// its value via buildStrOperand (a SymbolValue naming a str local, a
+		// string literal, or a call to another str-returning helper) rather
+		// than buildExpr, which would reject a str-typed value.
+		returnType = "PebbleStr"
+		result = resultInfo{isStr: true}
+	case isSlice(snapshot, helper.decl.ResultType):
+		// A slice-result helper (10.38) is declared with the slice type's
+		// own struct typedef name (pebble_slice_<typeID>_t) as its C return
+		// type — the same typedef 10.37 builds for a slice local, no new
+		// typedef shape needed — and resultInfo records the slice shape so
+		// buildBlock's tail-position Return builds its value via
+		// buildSliceReturnValue (a SymbolValue naming a slice-typed local,
+		// or a fresh CheckedSlice construction) rather than buildExpr,
+		// which would reject a slice-typed value. The element type is
+		// validated to be the entry's width or bool by
+		// validateHelperSignature, so the typedef always builds.
+		returnType = sliceTypeName(helper.decl.ResultType)
+		result = resultInfo{sliceType: helper.decl.ResultType}
+	case isPointer(snapshot, helper.decl.ResultType):
+		// A pointer-result helper is declared with the pointer type's own
+		// C type name as its return type. pointerTypeName takes the
+		// pointee, not the pointer type itself (it appends " *" to the
+		// pointee's own C type), so the pointee must be extracted first.
+		// The body's tail-position Return builds its value via buildExpr
+		// (which now handles pointer-typed nodes: AddressOf, SymbolValue,
+		// NilPointer, DirectCall). resultInfo records the pointer shape
+		// so buildBlock's tail-position Return can build the value
+		// correctly.
+		pointeeTypeID, ok := pointerPointeeType(snapshot, helper.decl.ResultType)
+		if !ok {
+			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d has unsupported pointer result type %s", helper.decl.Symbol, describeType(snapshot, helper.decl.ResultType))
+		}
+		returnType = pointerTypeName(snapshot, pointeeTypeID)
+		result = resultInfo{pointerType: helper.decl.ResultType}
+	case isOptional(snapshot, helper.decl.ResultType):
+		// An optional-result helper is declared with the optional type's
+		// own struct typedef name (pebble_optional_<typeID>_t) as its C
+		// return type — the same typedef 10.21 builds for an optional
+		// local, no new typedef shape needed — and resultInfo records the
+		// optional shape so buildBlock's tail-position Return builds its
+		// value via buildOptionalValue (a SymbolValue naming an
+		// optional-typed local, a fresh SomeOptional/NoneOptional/
+		// OptionalInject construction, or a call to another
+		// optional-returning helper) rather than buildExpr, which would
+		// reject an optional-typed value. The payload type is validated
+		// wherever its typedef is built (buildOptionalTypedef via
+		// optionalPayloadCType), exactly like a tuple/struct result's
+		// internal shape.
+		returnType = optionalTypeName(helper.decl.ResultType)
+		result = resultInfo{optionalType: helper.decl.ResultType}
+	case isFunctionType(snapshot, helper.decl.ResultType):
+		// A function-result helper (function-types slice 3) is declared
+		// with the function type's own pointer typedef
+		// (pebble_fnptr_<typeID>_t) as its C return type — the same
+		// typedef slice 1 builds for a function-typed local, no new typedef
+		// shape needed — and resultInfo records the function-result shape
+		// (resultInfo.functionType, mirroring how resultInfo.optionalType
+		// was added for optional results) so buildBlock's tail-position
+		// Return builds its value via buildFunctionValue (a bare function
+		// reference, a function-typed local or parameter forward, a
+		// function-typed struct field forward, or a call to another
+		// function-result helper) rather than buildExpr, which would
+		// reject a function-typed value. The function type's own signature
+		// is validated by validateHelperSignature above, so the typedef
+		// always builds.
+		returnType = functionTypeName(helper.decl.ResultType)
+		result = resultInfo{functionType: helper.decl.ResultType}
+	}
+	return params, scope, bodyWidth, returnType, result, nil
+}
+
+// buildHelperPrototypes builds one C forward declaration (prototype) per
+// reachable helper, in the same order as the definitions buildHelperFunctions
+// emits, using the exact same helperSignature source of truth — a prototype
+// and its definition always agree on every parameter's C type and the C
+// return type, and reuse the identical pebble_local_<id> parameter names, so
+// the mandated -Wall -Wextra -Werror build cannot warn about a prototype
+// disagreeing with its definition. The prototypes are emitted before ANY
+// definition, which is what makes recursive/mutually-recursive calls legal C:
+// a function's own body (or another function's body) may call a function
+// whose definition comes later in the file, because the earlier prototype
+// already declares it. The parameter names are the same ones the definition
+// uses, so no -Wunused-parameter or other pedantry can fire on the prototype
+// text itself (parameter names in a declaration are inert, but keeping them
+// identical is the conservative choice). Every helper is reachable (the
+// reachability walk emits exactly the reachable set), so a prototype never
+// precedes a static function with no call site, and no -Wunused-function
+// warning appears.
+func buildHelperPrototypes(unit *tir.Unit, snapshot *types.Snapshot, helpers []helperInfo, width types.BuiltinKind) (string, error) {
+	prototypes := make([]string, 0, len(helpers))
+	for _, helper := range helpers {
+		params, _, _, returnType, _, err := helperSignature(unit, snapshot, helper, width)
+		if err != nil {
+			return "", err
+		}
+		paramList := ""
+		if len(params) > 0 {
+			paramList = ", " + strings.Join(params, ", ")
+		}
+		prototypes = append(prototypes, fmt.Sprintf(helperPrototype, returnType, helperCName(helper.decl), paramList))
+	}
+	return strings.Join(prototypes, "\n"), nil
 }
 
 // validateEmptyBody accepts only a block with no statements, or the single
@@ -11996,6 +12102,19 @@ const helperFunction = `static %s %s(PebbleContext *ctx%s) {
 %s%s
 }`
 
+// helperPrototype is the C text of one reachable helper's forward
+// declaration: the same `static <return> pebble_fn_<symbolID>(PebbleContext
+// *ctx, ...)` shape as its definition (helperFunction) but terminated by a
+// semicolon — a C prototype. %s is the C return type, %d the callee's symbol
+// ID, and the third %s the comma-separated parameter declaration list (the
+// same ", <cType> pebble_local_<id>" list the definition uses, empty for a
+// zero-parameter callee). Every reachable helper gets a prototype BEFORE any
+// definition, which is the standard C fix for recursive and
+// mutually-recursive functions: a call anywhere in the file (including inside
+// a function whose own definition comes earlier) always has a preceding
+// prototype in scope, so no call ever references an undeclared identifier.
+const helperPrototype = `static %s %s(PebbleContext *ctx%s);`
+
 // The supported entry shapes share one adapter skeleton: the pebble_rt.h
 // include, the Pebble-convention pebble_user_main taking the context, and a
 // hosted C main that builds a default context and drives it. Only the
@@ -12063,10 +12182,14 @@ func entryReturnType(width types.BuiltinKind) string {
 // program references, written before every function definition (helpers and
 // pebble_user_main) since
 // C requires a type to be defined before any function's body can use it; it is
-// empty when the program has no tuples, optionals, or structs. helpers is the
+// empty when the program has no tuples, optionals, or structs. prototypes is
+// the C text of one forward declaration (C prototype) per reachable helper,
+// written before the helper definitions so a recursive or mutually-recursive
+// call anywhere in the file always has a preceding declaration in scope; it is
+// empty when the program has no helpers. helpers is the
 // C text of every reachable helper function (each a static
-// pebble_fn_<symbolID> definition), written before pebble_user_main so a
-// called function's definition precedes its use; it is empty when the program
+// pebble_fn_<symbolID> definition), written after the prototypes and before
+// pebble_user_main; it is empty when the program
 // has no helpers, in which case the emitted text is byte-identical to the
 // pre-10.17 skeleton. <stdbool.h> is included unconditionally: it provides
 // the C bool keyword and the true / false literals the moment any bool local
@@ -12076,7 +12199,7 @@ func entryReturnType(width types.BuiltinKind) string {
 // <inttypes.h> PRI* macros for its fixed-width integer specifiers, so both
 // headers are needed the moment any print is emitted, and adding them for
 // programs with no print at all is harmless.
-func emitEntryC(w io.Writer, typedefs, helpers, userMain, mainBody string) error {
+func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody string) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -12086,6 +12209,11 @@ func emitEntryC(w io.Writer, typedefs, helpers, userMain, mainBody string) error
 	}
 	if typedefs != "" {
 		if _, err := fmt.Fprint(w, "\n"+typedefs+"\n"); err != nil {
+			return err
+		}
+	}
+	if prototypes != "" {
+		if _, err := fmt.Fprint(w, "\n"+prototypes+"\n"); err != nil {
 			return err
 		}
 	}
