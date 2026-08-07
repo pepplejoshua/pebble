@@ -164,26 +164,22 @@ example files fixed directly (not compiler gaps — `usize`/`isize`/
 `spec/compiler/05-types-and-inference.md:74`, and `README.md` had the
 same staleness, also fixed).
 
-- [ ] **[generator] An inline slice construction (`arr[start:end]`) is
-      rejected as a call argument.** Found via `examples/prime_sieve.peb`:
-      `sieve(primes[:], limit)` fails at emit with "argument 0 is an
-      inline slice construction (a CheckedSlice), which is not
-      supported as a call argument: a C function argument is a pure
-      expression position...". The checker accepts it fine. Worked
-      around in the example (bind to a `let` local first, then pass
-      the local — the same shape every other call-argument position
-      already requires), but the underlying gap is real and likely
-      affects other examples/programs that construct a slice inline at
-      a call site.
-- [ ] **[generator] `examples/extern_mem_funcs.peb` still fails at emit
-      after its `usize`→`uint` and explicit-cast fixes landed**, with
-      `called function symbol 24 concrete specialization not found`
-      (at `findCalledFunctionByResult`, `emit.go:687`). Not yet root
-      -caused — the dispatch that found the `usize`/cast issues ran out
-      of scope before digging into this one. Needs its own targeted
-      investigation (likely related to `print` on a dereferenced raw
-      pointer, or an extern function specialization lookup gap — pure
-      speculation, confirm before fixing).
+- [x] **PARTIALLY CLOSED (`69742fb`)** — inline slice construction as a
+      call argument (`f(a[1:3])`) now works whenever the call itself is
+      in a leading-statement position (a bare call statement, or any
+      local's declaration initializer — scalar, slice, struct, tuple,
+      array, optional, str, or pointer), verified compiled and run, not
+      just emitted. `examples/prime_sieve.peb` itself is left using its
+      existing `let`-bound workaround (untouched, still correct). The
+      narrow boundary that's STILL a clean rejection, by design (would
+      need the full `buildDirectCall`-signature-changing refactor to
+      lift): a slice construction nested inside a pure expression
+      position — `print f(a[1:3])`, `return f(a[1:3])`, `f(g(a[1:3]))`.
+- [x] CLOSED — `examples/extern_mem_funcs.peb`'s "concrete specialization
+      not found" was the extern-fn direct-call gap, fully resolved by
+      the extern-call implementation (`6e75c3c`) and the example itself
+      closed (`ae4b7c0`) — see that entry above. (Stale duplicate entry
+      removed; this was never deleted when that work landed.)
 - [x] `buildPlaceLValue`'s `FieldPlace` case missing structural-field
       (`.len`/`.data`) handling — fixed (`a31cf99`). `examples/
       slice_minmax.peb` now fully closed (`0fc2480`): compiles and runs
@@ -288,12 +284,22 @@ same staleness, also fixed).
       — or (2) plain top-level generic helper functions (`fn
       result_ok[T, E](value T) Result[T, E] { return Result[T, E].{ Ok
       = value }; }`), which is the more idiomatic Pebble shape.
-      **Recommendation: rewrite `std/result.peb`'s public API around
-      one of these instead of implementing the checker feature** — this
-      unblocks `std/result.peb` and `count_lines.peb` immediately, and
-      the real static-method-call feature can stay a longer-term,
-      lower-priority item since nothing currently blocks on it once
-      `result.peb` itself is rewritten.
+      **DONE (`b9d9738`): `std/result.peb`'s public API rewritten
+      around option (2)** — `ok`/`err` replaced with top-level
+      `result_ok[T, E]`/`result_err[T, E]`, `map` constructs records
+      directly. `examples/count_lines.peb`'s call sites updated to
+      match. Nothing in the tree depends on the qualified-static-call
+      feature anymore — the real checker feature above stays open but
+      is now a genuinely low-priority, purely architectural item, not
+      blocking anything. **Note: `std/result.peb` itself still does
+      NOT check clean in isolation** — `is_ok`/`unwrap_or`/`map`/
+      `set_error` all read `self.Ok`/`self.Err`, which is the
+      SEPARATE, already-tracked, deliberately-deferred union-variant
+      -payload-access gap (flow-sensitive type narrowing — see that
+      entry elsewhere in this doc). That gap, not this one, is what's
+      left blocking `std/result.peb` and `count_lines.peb` now
+      (`count_lines.peb` also still has its own unrelated `usize`
+      staleness, not yet fixed).
 - [ ] **[std-file bug, not a compiler gap] `std/result.peb` itself uses
       wrong switch-case syntax: bare `case Ok:`/`case Err:` instead of
       the dot-shorthand `case .Ok:`/`case .Err:` (or qualified
