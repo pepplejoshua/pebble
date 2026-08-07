@@ -1694,7 +1694,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// the helper's C signature even if no reachable body ever constructs a
 		// struct of that type, so its typedef must be discovered here too.
 		for _, param := range helper.decl.Parameters {
-			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 {
+			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
 			// A pointer-typed parameter whose pointee is a struct (including
@@ -1702,7 +1702,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 			// pointee's typedef in its own C signature, the same reason a
 			// plain struct parameter does above.
 			if isPointer(snapshot, param.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) {
 					collected = append(collected, pointee)
 				}
 			}
@@ -1717,11 +1717,11 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// produce a struct to return — and resolveStructInfo still needs the
 		// field types the body walk accumulates — so this closes the same class
 		// of gap 10.24's Parameters scan closed, for the return side.)
-		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 {
+		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) {
 			collected = append(collected, helper.decl.ResultType)
 		}
 		if isPointer(snapshot, helper.decl.ResultType) {
-			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 {
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) {
 				collected = append(collected, pointee)
 			}
 		}
@@ -2395,9 +2395,9 @@ type unionInfo struct {
 // construction site's payload child Type (the checker anchors every
 // construction of a variant to its one declared payload type, so all sites of
 // a variant agree — confirmed against real fixtures at three payload shapes),
-// and must be exactly the entry's resolved width or bool — a tuple/struct/
-// array/optional/str/nested-enum payload is a clean rejection naming what is
-// unsupported, never guessed at, enforced here in the collection walk where
+// and must be exactly the entry's resolved width, bool, or str — a tuple/
+// struct/array/optional/nested-enum payload is a clean rejection naming what
+// is unsupported, never guessed at, enforced here in the collection walk where
 // each variant's payload type is first resolved. width is threaded so the
 // payload gate can be enforced against the entry's own width. The returned
 // unionInfos are deduplicated by union TypeID and each resolved to its
@@ -2444,10 +2444,10 @@ func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // variant must carry the same payload type (the checker enforces one declared
 // type per variant, so this is guaranteed for real source; a mismatch is a
 // clean rejection for hand-built IR, never a guessed layout). The payload type
-// is gated here — it must be exactly the entry's resolved width or bool, since
-// this backend emits exactly those two C types as union members; any other
-// payload (a tuple/struct/array/optional/str/nested-enum) is a clean rejection
-// naming what is unsupported.
+// is gated here — it must be exactly the entry's resolved width, bool, or str,
+// since this backend emits exactly those three C types as union members; any
+// other payload (a tuple/struct/array/optional/nested-enum) is a clean
+// rejection naming what is unsupported.
 func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, nodeID tir.NodeID, out *[]types.TypeID, payloads map[types.TypeID]map[symbol.SymbolID]types.TypeID) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
@@ -2463,14 +2463,14 @@ func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types
 		// fixtures at three payload shapes: an i32 literal, a bool literal, and
 		// an i32 expression referencing a local).
 		if len(node.Children) != 1 {
-			return fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload of %s or bool", node.Member, len(node.Children), wantName(width))
+			return fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload of %s, bool, or str", node.Member, len(node.Children), wantName(width))
 		}
 		payloadNode, ok := unit.Node(node.Children[0])
 		if !ok {
 			return fmt.Errorf("union variant symbol %d references invalid payload node %d", node.Member, node.Children[0])
 		}
-		if !isWidth(snapshot, width, payloadNode.Type) && !isBool(snapshot, payloadNode.Type) {
-			return fmt.Errorf("union variant symbol %d carries a payload of type %s; only a payload of %s or bool is supported", node.Member, describeType(snapshot, payloadNode.Type), wantName(width))
+		if !isWidth(snapshot, width, payloadNode.Type) && !isBool(snapshot, payloadNode.Type) && !isStr(snapshot, payloadNode.Type) {
+			return fmt.Errorf("union variant symbol %d carries a payload of type %s; only a payload of %s, bool, or str is supported", node.Member, describeType(snapshot, payloadNode.Type), wantName(width))
 		}
 		byMember, seen := payloads[node.Type]
 		if !seen {
@@ -2642,6 +2642,116 @@ func containsVariant(variants []symbol.SymbolID, id symbol.SymbolID) bool {
 	return false
 }
 
+// isDefinitelyEnumType reports whether id is a Nominal type whose declared
+// members are enum variants by positive declaration-node evidence: at least
+// one member carries a VariantDeclaration node and none carries a
+// FieldDeclaration node. This is the precise form of isEnumType WITHOUT its
+// no-evidence fallback (which reports true for a type whose members carry no
+// declaration node at all — a method-only struct has no FieldDeclaration
+// nodes — and would therefore wrongly exclude such a real struct from
+// struct-type collection). It is used only where a false positive would
+// wrongly drop a struct type from collection; isEnumType remains the shared
+// "is this enum-shaped" test everywhere else.
+func isDefinitelyEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if unit == nil || snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	members := make(map[symbol.SymbolID]bool, len(typeDecl.Members))
+	for _, m := range typeDecl.Members {
+		members[m] = true
+	}
+	sawVariant := false
+	for _, node := range unit.Nodes() {
+		if !members[node.Symbol] {
+			continue
+		}
+		switch node.Kind {
+		case tir.FieldDeclaration:
+			return false
+		case tir.VariantDeclaration:
+			sawVariant = true
+		}
+	}
+	return sawVariant
+}
+
+// isTaggedUnionType reports whether id is a tagged-union type in this program:
+// an enum-shaped Nominal type (see isEnumType) carrying at least one
+// payload-carrying construction somewhere in the unit. This is exactly the
+// signal collectUnionTypes uses (a payload-carrying VariantConstruct is the
+// one node shape that references a tagged-union type), so it agrees with which
+// types get a pebble_union_<typeID>_t typedef pair: an enum-shaped type with
+// no payload-carrying construction (a plain enum, or a union every variant of
+// which is payload-less) is emitted as a plain pebble_enum_<typeID>_t typedef
+// instead (see collectEnumTypes / buildUnionTypedef).
+func isTaggedUnionType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if !isEnumType(unit, snapshot, id) {
+		return false
+	}
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.VariantConstruct && node.Type == id && len(node.Children) >= 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// unionVariantPayloadMember reports whether (ownerType, member) is the payload
+// member of a tagged-union variant in this program: ownerType is a tagged-union
+// type, member is one of its declared variants, and a payload-carrying
+// construction of that exact variant exists in the unit — the condition under
+// which the union's typedef declares the C union member
+// pebble_field_<member> under its .payload union (see resolveUnionInfo /
+// buildUnionTypedef). This is the read-side test for a narrowed union-variant
+// payload access (`self.Ok` inside `case .Ok:`, Slice A): a variant never
+// constructed anywhere has no union member, so reading it would emit a
+// projection no C union member satisfies — a clean rejection, never guessed C.
+func unionVariantPayloadMember(unit *tir.Unit, snapshot *types.Snapshot, ownerType types.TypeID, member symbol.SymbolID) bool {
+	if !isTaggedUnionType(unit, snapshot, ownerType) {
+		return false
+	}
+	key, ok := snapshot.Key(ownerType)
+	if !ok {
+		return false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	declared := false
+	for _, m := range typeDecl.Members {
+		if m == member {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return false
+	}
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.VariantConstruct && node.Type == ownerType && node.Member == member && len(node.Children) >= 1 {
+			return true
+		}
+	}
+	return false
+}
+
 // indexOfFunction returns the position of id in ids, or -1 if absent.
 func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 	for i, candidate := range ids {
@@ -2749,8 +2859,8 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type (a parameter may be the entry's integer width, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(unit, snapshot, width, param.Type); err != nil {
@@ -3043,6 +3153,27 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			// valid C (a call site passes a tuple-typed local's own name).
 			params = append(params, tupleTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{tuple: param.Type}
+		case isEnumType(unit, snapshot, param.Type):
+			// An enum/union-typed parameter seeds the callee's locals scope
+			// as an enum local (localInfo.enumType), exactly as an
+			// enum/union local's Initialize does, so a switch subject
+			// referencing the parameter and a narrowed union-variant payload
+			// read (`r.Ok` inside `case .Ok:` — the Load(FieldPlace) shape
+			// buildStructFieldRead resolves) inside the body resolve through
+			// the existing enum/union machinery unchanged. The C parameter is
+			// declared with the type's own typedef name — pebble_union_
+			// <typeID>_t for a tagged union (a payload-carrying construction
+			// exists somewhere in the reachable program, so the union typedef
+			// pair is emitted; see isTaggedUnionType), pebble_enum_<typeID>_t
+			// for a plain enum — so passing the whole value by value is
+			// trivially valid C (a call site passes an enum/union-typed
+			// value of the same C type).
+			ctypeName := enumTypeName(param.Type)
+			if isTaggedUnionType(unit, snapshot, param.Type) {
+				ctypeName = unionTypeName(param.Type)
+			}
+			params = append(params, ctypeName+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{enumType: param.Type}
 		case isStruct(snapshot, param.Type):
 			// A struct-typed parameter seeds the callee's locals scope as a
 			// struct local (localInfo.structType), exactly as a struct
@@ -8250,7 +8381,8 @@ func buildUnionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // legal C: the tag alone determines which member, if any, is meaningful. A
 // payload-carrying construction's payload expression is built by the grammar
 // its own type selects — buildExpr for a payload of the entry's width,
-// buildBoolExpr for a bool payload — and the payload union member is named
+// buildBoolExpr for a bool payload, buildStrOperand for a str payload — and
+// the payload union member is named
 // pebble_field_<member> exactly as the union's typedef declares it. The node's
 // Type is the union type and its Member the variant symbol (both confirmed
 // against real fixtures); the member must be one of the union's declared
@@ -8295,6 +8427,14 @@ func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		var err error
 		if isBool(snapshot, payloadNode.Type) {
 			payloadExpr, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+		} else if isStr(snapshot, payloadNode.Type) {
+			// A str-typed payload (`Result[int, str].{ Err = "bad" }`): built
+			// by the str grammar (buildStrOperand — a string literal, a
+			// reference to a str-typed local, or a call to a str-returning
+			// helper), emitted as a PebbleStr value, the same C type the
+			// union's payload member is declared with (see unionMemberCType),
+			// so the designated initializer needs no cast.
+			payloadExpr, err = buildStrOperand(unit, snapshot, fileSet, node.Children[0], scope, width)
 		} else {
 			payloadExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
 		}
@@ -10555,7 +10695,12 @@ func buildTupleElement(unit *tir.Unit, snapshot *types.Snapshot, symbolID symbol
 // type). The field's own type is resolved from the struct's declared fields by
 // matching FieldPlace.Member (see declaredFieldType), not assumed from the
 // place's own Type. The emitted C is
-// pebble_local_<symbol>.pebble_field_<member>.
+// pebble_local_<symbol>.pebble_field_<member>. Since Slice C, a FieldPlace
+// whose receiver is a TAGGED UNION and whose Member is one of its constructed
+// variants (the narrowed union-variant payload read `self.Ok` inside `case
+// .Ok:`) is lowered instead to
+// pebble_local_<symbol>.payload.pebble_field_<member> — the exact projection
+// the union's construction side fills (see buildUnionConstruction).
 func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	baseExpr, structType, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
 	if err != nil {
@@ -10593,6 +10738,25 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			return baseExpr + access + name, nil
 		}
 		return "", fmt.Errorf("unsupported structural field %s", name)
+	}
+	// A narrowed union-variant payload read (`self.Ok` inside `case .Ok:`,
+	// the checker's Slice A acceptance): the Member is one of the receiver's
+	// tagged-union variants, not a real struct field. This must come BEFORE
+	// declaredFieldType below, whose member lookup would MIS-report a variant
+	// as a field — a TypeDeclaration's Members list carries variants and its
+	// MemberTypes the variant's payload type, so the lookup would succeed with
+	// the wrong kind of member and emit a pebble_field_<member> projection no
+	// real struct field satisfies. The payload lives in the union typedef's
+	// .payload union under pebble_field_<member> — the exact member the
+	// construction side designates (see buildUnionConstruction) — so the read
+	// is the same projection the tag-matched construction wrote:
+	// base.payload.pebble_field_<member> (with the same . / -> access a
+	// pointer receiver resolves). The read's value type is the variant's
+	// payload type, already resolved onto the place node's own Type by the
+	// checker — the C type of the emitted projection is the payload member's
+	// declared C type (unionMemberCType), which agrees.
+	if unionVariantPayloadMember(unit, snapshot, structType, place.Member) {
+		return fmt.Sprintf("%s%spayload%spebble_field_%d", baseExpr, access, access, place.Member), nil
 	}
 	fieldType, ok := declaredFieldType(unit, snapshot, structType, place.Member)
 	if runtimeType(unit, snapshot, structType) != 0 {
@@ -10793,6 +10957,20 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 				return fmt.Sprintf("%s%s%s", base, access, name), snapshot.Builtins().Bool, nil
 			}
 			return "", 0, fmt.Errorf("unsupported structural field %s", name)
+		}
+		// A narrowed union-variant payload projection (`self.Ok` inside `case
+		// .Ok:`, Slice A) used as an lvalue — the write-side twin of
+		// buildStructFieldRead's read case (set_error's `self.Err = error` on
+		// a *Result receiver lowers to a Store whose place is a FieldPlace of
+		// the Err variant). The variant's payload lives in the union typedef's
+		// .payload union under pebble_field_<member>, so the lvalue is the
+		// exact projection the construction side fills. This must come before
+		// declaredFieldType, whose member lookup would MIS-report a variant as
+		// a real field (a TypeDeclaration's Members carries variants). The
+		// lvalue's type is the variant's payload type, already resolved onto
+		// the place node's own Type by the checker.
+		if unionVariantPayloadMember(unit, snapshot, typ, n.Member) {
+			return fmt.Sprintf("%s%spayload%spebble_field_%d", base, access, access, n.Member), n.Type, nil
 		}
 		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
 		if !ok {
@@ -11142,6 +11320,29 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 			return "", "", err
 		}
 		return "", expr, nil
+	case isEnumType(unit, snapshot, param.Type):
+		// An enum/union-typed parameter: the argument is a reference to an
+		// already-declared enum/union-typed local in scope of exactly the
+		// parameter's type (a SymbolValue — e.g. unwrap_or(a, 0) passing the
+		// union local a), emitted as the local's own pebble_local_<symbol> C
+		// name. The type's own typedef (pebble_enum_<typeID>_t /
+		// pebble_union_<typeID>_t) makes passing the whole value by value
+		// trivially valid C, matching the C type the parameter is declared
+		// with (see helperSignature). An inline variant construction or a
+		// reference to a nonmatching local is a clean rejection, never a
+		// guessed lowering.
+		argNode, ok := unit.Node(argID)
+		if !ok {
+			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) references invalid node %d", calleeSymbol, position, param.Symbol, argID)
+		}
+		if argNode.Kind != tir.SymbolValue {
+			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) of type %s is a %s, want a reference to an enum/union-typed local of exactly that type in scope (binding the value into a local first is required)", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), argNode.Kind)
+		}
+		info, declared := locals[argNode.Symbol]
+		if !declared || info.enumType != param.Type {
+			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) passes symbol %d, which is not a local of the parameter's enum/union type %s", calleeSymbol, position, param.Symbol, argNode.Symbol, describeType(snapshot, param.Type))
+		}
+		return "", fmt.Sprintf("pebble_local_%d", argNode.Symbol), nil
 	case isStruct(snapshot, param.Type):
 		expr, err := buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, false, calleeSymbol, position, width)
 		if err != nil {
@@ -13214,9 +13415,10 @@ func buildUnionTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 
 // unionMemberCType is the C type one tagged-union payload member of the given
 // payload type is declared with in its union's struct typedef: int32_t /
-// int64_t for a payload of the entry's resolved width, bool for a bool payload.
-// Any other payload type is a clean rejection naming what was found, since this
-// backend emits exactly those two C types as union members.
+// int64_t for a payload of the entry's resolved width, bool for a bool payload,
+// and the runtime ABI's fixed PebbleStr for a str payload. Any other payload
+// type is a clean rejection naming what was found, since this backend emits
+// exactly those three C types as union members.
 func unionMemberCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isWidth(snapshot, width, id) {
 		return cType(width), nil
@@ -13224,12 +13426,15 @@ func unionMemberCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
+	if isStr(snapshot, id) {
+		return "PebbleStr", nil
+	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
-			return "", fmt.Errorf("payload type %s is not supported, want %s or bool", name, wantName(width))
+			return "", fmt.Errorf("payload type %s is not supported, want %s, bool, or str", name, wantName(width))
 		}
 	}
-	return "", fmt.Errorf("payload type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+	return "", fmt.Errorf("payload type %s is not supported, want %s, bool, or str", describeType(snapshot, id), wantName(width))
 }
 
 // buildEnumTypedefs builds the C text of one enum typedef per plain enum type

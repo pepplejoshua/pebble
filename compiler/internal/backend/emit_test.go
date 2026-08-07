@@ -9727,14 +9727,39 @@ func TestEmitUnionWritesC(t *testing.T) {
 }
 
 func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
-	// A tagged-union payload that is not exactly the entry's resolved width or
-	// bool — a tuple, struct, array, optional, str, or nested enum — is
+	// A tagged-union payload that is not exactly the entry's resolved width,
+	// bool, or str — a tuple, struct, array, optional, or nested enum — is
 	// reachable from real source (the checker accepts such a variant
 	// declaration and construction) but is a clean rejection naming what is
 	// unsupported, never guessed at. The rejection happens in the union-type
 	// collection walk, where each constructed variant's payload type is first
 	// resolved from its construction site.
-	emitAndRunRejects(t, "type C = union enum { empty void; value (i32, i32); }; fn main() i32 {\nvar c C = C.value((1, 2));\nreturn 0;\n}", "carries a payload of type (int, int); only a payload of i32 or bool is supported")
+	emitAndRunRejects(t, "type C = union enum { empty void; value (i32, i32); }; fn main() i32 {\nvar c C = C.value((1, 2));\nreturn 0;\n}", "carries a payload of type (int, int); only a payload of i32, bool, or str is supported")
+}
+
+func TestEmitNarrowedUnionVariantPayloadReadCompilesAndRuns(t *testing.T) {
+	// Slice C's end-to-end program: a narrowed union-variant payload read
+	// (`r.Ok` inside `case .Ok:`) must emit the payload projection the union's
+	// construction side fills — pebble_local_<sym>.payload.pebble_field_<m> —
+	// inside a helper whose union-typed parameter is passed by value. The
+	// union also carries a str-typed payload (Err = "bad"), so the union
+	// payload gate now admits str (PebbleStr member). unwrap_or(a, 0) reads
+	// the Ok payload 42; unwrap_or(b, 100) falls to its def; 42 + 100 = 142.
+	emitAndRun(t, `type Result[T, E] = union enum {
+    Ok T;
+    Err E;
+};
+fn unwrap_or(r Result[int, str], def int) int {
+    switch r {
+        case .Ok: return r.Ok;
+        case .Err: return def;
+    }
+}
+fn main() int {
+    let a = Result[int, str].{ Ok = 42 };
+    let b = Result[int, str].{ Err = "bad" };
+    return unwrap_or(a, 0) + unwrap_or(b, 100);
+}`, false, 142, false)
 }
 
 func emitAndRunRejects(t *testing.T, sourceText, wantSubstring string) {
