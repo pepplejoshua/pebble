@@ -196,6 +196,7 @@ func validateRequirements(handoff *solveHandoff, records *solvedRecords, diagnos
 		resultSpans[owner][key] = group.span
 		result[owner] = append(result[owner], group.requirement)
 	}
+	propagateGenericRequirements(handoff, result, resultSpans)
 	for owner := range result {
 		requirements := result[owner]
 		sort.SliceStable(requirements, func(i, j int) bool {
@@ -214,4 +215,92 @@ func validateRequirements(handoff *solveHandoff, records *solvedRecords, diagnos
 		result[owner] = requirements
 	}
 	return result, !failed
+}
+
+// propagateGenericRequirements transitively carries a callee generic's
+// requirements onto the caller generic's own type parameter when the caller
+// invokes the callee with that parameter as the argument. A generic function
+// whose body only exercises an operator through a call to another generic
+// (for example clamp[T] calling min[T]/max[T]) otherwise records no
+// requirement on its own type parameter, so neither its body-internal
+// instantiations nor its external call sites would ever be checked against
+// the requirement. The caller's own parameter inherits the callee's
+// requirement, and the enclosing declaration's external instantiation sites
+// are then validated against it exactly like directly-observed operator use.
+func propagateGenericRequirements(handoff *solveHandoff, result map[symbol.SymbolID][]Requirement, resultSpans map[symbol.SymbolID]map[[2]uint32]source.Span) {
+	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil {
+		return
+	}
+	typeSnapshot := handoff.Semantics.Types()
+	instantiations := handoff.Solution.Instantiations()
+	if len(instantiations) == 0 {
+		return
+	}
+	ownerCache := make(map[symbol.SyntaxRef]symbol.SymbolID)
+	ownerOf := func(site symbol.SyntaxRef) symbol.SymbolID {
+		if owner, ok := ownerCache[site]; ok {
+			return owner
+		}
+		owner := instantiationOwner(handoff, site)
+		ownerCache[site] = owner
+		return owner
+	}
+	// addPropagated returns whether a brand-new (owner, parameter, kind) group
+	// was added, which is what drives the transitive fixpoint: only a new
+	// group can enable further propagation through another call.
+	addPropagated := func(owner symbol.SymbolID, requirement Requirement, span source.Span) bool {
+		if resultSpans[owner] == nil {
+			resultSpans[owner] = make(map[[2]uint32]source.Span)
+		}
+		key := [2]uint32{uint32(requirement.Parameter), uint32(requirement.Kind)}
+		if existing, exists := resultSpans[owner][key]; exists {
+			if earlierSpan(span, existing) {
+				for index := range result[owner] {
+					if result[owner][index].Parameter == requirement.Parameter && result[owner][index].Kind == requirement.Kind {
+						result[owner][index] = requirement
+						break
+					}
+				}
+				resultSpans[owner][key] = span
+			}
+			return false
+		}
+		resultSpans[owner][key] = span
+		result[owner] = append(result[owner], requirement)
+		return true
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, instantiation := range instantiations {
+			owner := ownerOf(instantiation.Site)
+			if owner == 0 {
+				continue
+			}
+			for _, requirement := range result[instantiation.Generic] {
+				ordinal := parameterOrdinal(handoff, instantiation.Generic, requirement.Parameter)
+				if ordinal < 0 || ordinal >= len(instantiation.Arguments) {
+					continue
+				}
+				argument := instantiation.Arguments[ordinal]
+				if argument.State != infer.TypeFinal {
+					continue
+				}
+				key, ok := typeSnapshot.Key(argument.Type)
+				if !ok {
+					continue
+				}
+				parameter, rigid := key.TypeParameter()
+				if !rigid {
+					continue
+				}
+				propagated := requirement
+				propagated.Owner = owner
+				propagated.Parameter = parameter
+				propagated.Subject = argument.Type
+				if addPropagated(owner, propagated, requirementOriginSpan(handoff, requirement)) {
+					changed = true
+				}
+			}
+		}
+	}
 }

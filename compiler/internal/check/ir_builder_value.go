@@ -383,10 +383,39 @@ func (s *irBuildState) buildGenericFunctionValue(record *expressionRecord, node 
 		if argument.State != infer.TypeFinal || argument.Type == 0 {
 			return false
 		}
-		typeArgs[i] = argument.Type
+		typeArg := argument.Type
+		if s.activeSubstitution != nil {
+			substituted, err := s.store.Substitute(typeArg, s.activeSubstitution)
+			if err != nil {
+				return false
+			}
+			typeArg = substituted
+		}
+		typeArgs[i] = typeArg
 	}
-	if _, ok := s.buildSpecialization(instantiation); !ok {
-		return false
+	// A bare generic reference inside a generic body (wrap[T] taking max[T] as
+	// a value) is solved against the enclosing function's own type parameter.
+	// Resolve the type arguments through the active specialization substitution
+	// and build the callee's concrete specialization only once they are fully
+	// concrete; a symbolic reference keeps its symbolic TypeArgs and builds
+	// nothing, since its concrete specialization is built when the enclosing
+	// generic is specialized.
+	concrete := true
+	for _, typeArg := range typeArgs {
+		if s.containsTypeParameter(typeArg, 0) {
+			concrete = false
+			break
+		}
+	}
+	if concrete {
+		concreteInstantiation := instantiation
+		concreteInstantiation.Arguments = make([]infer.TypeResult, len(typeArgs))
+		for i, typeArg := range typeArgs {
+			concreteInstantiation.Arguments[i] = infer.TypeResult{State: infer.TypeFinal, Type: typeArg}
+		}
+		if _, ok := s.buildSpecialization(concreteInstantiation); !ok {
+			return false
+		}
 	}
 	ref, err := s.builder.AddInstantiation(tir.Instantiation{
 		Site:        record.Header.Syntax,

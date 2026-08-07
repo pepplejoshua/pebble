@@ -53,12 +53,53 @@ func (s *irBuildState) buildDirectCall(call *callRecord, flow *contextFlowRecord
 		if !found {
 			return false
 		}
-		node.TypeArgs = make([]types.TypeID, 0, len(instantiation.Arguments))
+		typeArgs := make([]types.TypeID, 0, len(instantiation.Arguments))
 		for _, argument := range instantiation.Arguments {
 			if argument.State != infer.TypeFinal || argument.Type == 0 {
 				return false
 			}
-			node.TypeArgs = append(node.TypeArgs, argument.Type)
+			typeArg := argument.Type
+			if s.activeSubstitution != nil {
+				substituted, err := s.store.Substitute(typeArg, s.activeSubstitution)
+				if err != nil {
+					return false
+				}
+				typeArg = substituted
+			}
+			typeArgs = append(typeArgs, typeArg)
+		}
+		node.TypeArgs = typeArgs
+		// A direct generic call inside a generic body is solved against the
+		// enclosing function's own type parameter (clamp[T] calling
+		// min(x, hi)), so the solve-time arguments are symbolic. Resolve them
+		// through the active specialization substitution and, when they become
+		// concrete, build the callee's own specialization so the unit carries a
+		// runnable declaration the backend's findCalledFunctionDeclaration can
+		// match. Symbolic calls (a generic body built without a substitution)
+		// keep their symbolic TypeArgs and build nothing; their concrete
+		// specialization is built when the enclosing generic is specialized.
+		concrete := true
+		for _, typeArg := range typeArgs {
+			if s.containsTypeParameter(typeArg, 0) {
+				concrete = false
+				break
+			}
+		}
+		if concrete {
+			signature, hasSignature := s.handoff.Semantics.Signature(call.Target.Symbol)
+			if !hasSignature || len(signature.TypeParams) != len(typeArgs) {
+				return false
+			}
+			concreteInstantiation := infer.Instantiation{
+				Generic:   call.Target.Symbol,
+				Arguments: make([]infer.TypeResult, len(typeArgs)),
+			}
+			for i, typeArg := range typeArgs {
+				concreteInstantiation.Arguments[i] = infer.TypeResult{State: infer.TypeFinal, Type: typeArg}
+			}
+			if _, ok := s.buildSpecialization(concreteInstantiation); !ok {
+				return false
+			}
 		}
 	}
 	return s.buildCallChildren(call, node)

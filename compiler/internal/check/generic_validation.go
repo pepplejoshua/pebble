@@ -104,7 +104,11 @@ func validateGenericInstantiations(handoff *solveHandoff, records *solvedRecords
 			if ordinal < 0 || ordinal >= len(instantiation.Arguments) {
 				continue
 			}
-			if !concreteSatisfiesRequirement(requirement, instantiation.Arguments[ordinal], handoff.Semantics) {
+			argument := instantiation.Arguments[ordinal]
+			if deferredGenericRequirement(handoff, requirements, instantiation, requirement, argument) {
+				continue
+			}
+			if !concreteSatisfiesRequirement(requirement, argument, handoff.Semantics) {
 				bad, failedRequirement = true, requirement
 				break
 			}
@@ -125,4 +129,57 @@ func validateGenericInstantiations(handoff *solveHandoff, records *solvedRecords
 		}
 	}
 	return !failed
+}
+
+// instantiationOwner returns the generic declaration whose body contains the
+// instantiation site, or 0 when the site sits outside any generic body. The
+// retained call record for a direct generic call and the bracket expression
+// record for a bare generic value both carry the enclosing generic's owner on
+// their header.
+func instantiationOwner(handoff *solveHandoff, site symbol.SyntaxRef) symbol.SymbolID {
+	if handoff == nil {
+		return 0
+	}
+	for _, record := range handoff.Records.Records() {
+		if record.Call != nil && record.Call.Target.Site == site && record.Call.Target.Symbol != 0 {
+			return record.Header.Owner
+		}
+	}
+	for _, record := range handoff.Records.Records() {
+		if record.Expression != nil && record.Expression.Kind == expressionBracket && record.Header.Syntax == site {
+			return record.Header.Owner
+		}
+	}
+	return 0
+}
+
+// deferredGenericRequirement reports whether an instantiation argument is the
+// enclosing generic declaration's own still-abstract type parameter, with the
+// same requirement already carried by that declaration. Such a site cannot be
+// judged against the argument: the requirement it provokes is enforced where
+// the enclosing generic is itself instantiated with a concrete type, which
+// validateGenericInstantiations independently checks once requirement
+// propagation has made the enclosing declaration carry the requirement.
+func deferredGenericRequirement(handoff *solveHandoff, requirements map[symbol.SymbolID][]Requirement, instantiation infer.Instantiation, requirement Requirement, argument infer.TypeResult) bool {
+	if handoff == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || argument.State != infer.TypeFinal {
+		return false
+	}
+	key, ok := handoff.Semantics.Types().Key(argument.Type)
+	if !ok {
+		return false
+	}
+	parameter, rigid := key.TypeParameter()
+	if !rigid {
+		return false
+	}
+	owner := instantiationOwner(handoff, instantiation.Site)
+	if owner == 0 {
+		return false
+	}
+	for _, candidate := range requirements[owner] {
+		if candidate.Kind == requirement.Kind && candidate.Parameter == parameter {
+			return true
+		}
+	}
+	return false
 }

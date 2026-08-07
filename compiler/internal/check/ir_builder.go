@@ -126,7 +126,12 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 // buildSpecializations triggers a real, built specialization for every
 // generic instantiation the program actually uses, so the published
 // unit contains runnable typed IR for each one instead of only the
-// never-runnable symbolic declaration. Structurally recursive
+// never-runnable symbolic declaration. A symbolic instantiation — one whose
+// type arguments still reference a generic body's own type parameter
+// (clamp[T] calling min(x, hi) with its own T) — is skipped here: its
+// concrete specialization is built when the enclosing generic is itself
+// specialized, at which point buildDirectCall resolves the call's type
+// arguments through the active substitution. Structurally recursive
 // instantiations are handled by buildSpecialization's own cache
 // (07.2/07.3f); this just ensures every top-level instantiation is
 // reached at least once.
@@ -135,7 +140,21 @@ func (s *irBuildState) buildSpecializations() bool {
 		return true
 	}
 	for _, instantiation := range s.handoff.Solution.Instantiations() {
+		if !s.concreteInstantiation(instantiation) {
+			continue
+		}
 		if _, ok := s.buildSpecialization(instantiation); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// concreteInstantiation reports whether an instantiation's type arguments are
+// all fully concrete, with no type parameter anywhere in their structure.
+func (s *irBuildState) concreteInstantiation(instantiation infer.Instantiation) bool {
+	for _, argument := range instantiation.Arguments {
+		if argument.State != infer.TypeFinal || argument.Type == 0 || s.containsTypeParameter(argument.Type, 0) {
 			return false
 		}
 	}

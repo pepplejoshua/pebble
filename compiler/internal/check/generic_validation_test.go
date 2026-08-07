@@ -161,6 +161,108 @@ fn check() void {
 	}
 }
 
+// TestGenericTransitiveRequirementPropagation covers a generic function whose
+// only use of a requirement-bearing operator is through calling ANOTHER generic
+// function with its own type parameter, never with the operator directly. The
+// callee's requirement must be propagated onto the caller's own type parameter
+// so the caller's external instantiation sites are checked, and the caller's
+// body-internal instantiations (whose arguments are the still-abstract type
+// parameter) must be deferred rather than rejected. The typed IR must build so
+// the program actually runs.
+func TestGenericTransitiveRequirementPropagation(t *testing.T) {
+	result, diagnostics := checkGenericFixture(t, `
+fn min[T](a T, b T) T { if a < b { return a; } return b; }
+fn max[T](a T, b T) T { if a > b { return a; } return b; }
+fn clamp[T](x T, lo T, hi T) T { return max(lo, min(x, hi)); }
+fn check() void {
+	let x i32 = 5;
+	let lo i32 = 0;
+	let hi i32 = 10;
+	let r i32 = clamp(x, lo, hi);
+}
+`)
+	if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeGenericInstantiation) {
+		t.Fatalf("clamp generic wrapper was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+	}
+	if result.IR() == nil {
+		t.Fatalf("clamp generic wrapper produced no typed IR: %+v", diagnostics.Items())
+	}
+}
+
+// TestGenericTransitiveRequirementChain proves the propagation is transitive
+// through more than one generic hop: outer[T] calls mid[T] which calls min[T].
+func TestGenericTransitiveRequirementChain(t *testing.T) {
+	result, diagnostics := checkGenericFixture(t, `
+fn min[T](a T, b T) T { if a < b { return a; } return b; }
+fn mid[T](a T, b T) T { return min(a, b); }
+fn outer[T](a T, b T) T { return mid(a, b); }
+fn check() void {
+	let r i32 = outer(1, 2);
+}
+`)
+	if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeGenericInstantiation) {
+		t.Fatalf("transitive generic chain was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+	}
+	if result.IR() == nil {
+		t.Fatalf("transitive generic chain produced no typed IR: %+v", diagnostics.Items())
+	}
+}
+
+// TestGenericTransitiveNumericRequirement proves the same propagation applies
+// to a non-Ordered requirement kind (Numeric) reached only through a call.
+func TestGenericTransitiveNumericRequirement(t *testing.T) {
+	result, diagnostics := checkGenericFixture(t, `
+fn add[T](a T, b T) T { return a + b; }
+fn double[T](x T) T { return add(x, x); }
+fn check() void {
+	let r i32 = double(5);
+}
+`)
+	if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeGenericInstantiation) {
+		t.Fatalf("numeric generic wrapper was rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+	}
+}
+
+// TestGenericTransitiveRequirementRejectsUnordered is the regression guard that
+// the fix does not disable the check entirely: a function shaped like clamp
+// called with a concrete type that does not satisfy Ordered (a struct) must
+// still fail with C0621.
+func TestGenericTransitiveRequirementRejectsUnordered(t *testing.T) {
+	result, diagnostics := checkGenericFixture(t, `
+type Pair = struct { value i32; };
+fn min[T](a T, b T) T { if a < b { return a; } return b; }
+fn max[T](a T, b T) T { if a > b { return a; } return b; }
+fn clamp[T](x T, lo T, hi T) T { return max(lo, min(x, hi)); }
+fn check() void {
+	let x Pair = Pair.{ value = 5 };
+	let lo Pair = Pair.{ value = 0 };
+	let hi Pair = Pair.{ value = 10 };
+	let r Pair = clamp(x, lo, hi);
+}
+`)
+	if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeGenericInstantiation) {
+		t.Fatalf("unordered clamp instantiation was accepted: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+	}
+}
+
+// TestGenericTransitiveRequirementRejectsNonNumeric guards the Numeric
+// propagation the same way: a generic wrapper over an additive generic must
+// still reject a non-numeric concrete type with C0621.
+func TestGenericTransitiveRequirementRejectsNonNumeric(t *testing.T) {
+	result, diagnostics := checkGenericFixture(t, `
+type Pair = struct { value i32; };
+fn add[T](a T, b T) T { return a + b; }
+fn double[T](x T) T { return add(x, x); }
+fn check() void {
+	let x Pair = Pair.{ value = 5 };
+	let r Pair = double(x);
+}
+`)
+	if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeGenericInstantiation) {
+		t.Fatalf("non-numeric wrapper instantiation was accepted: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+	}
+}
+
 // expectedSourceSpan resolves a needle within the fixture source to the exact
 // byte span the parser assigns to the authored construct. Spans are matched
 // against the same source string handed to the provider, so byte offsets line
