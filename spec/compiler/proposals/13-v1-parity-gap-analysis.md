@@ -364,23 +364,38 @@ not a real check failure). `math` found a genuine new gap:
       `examples/read_file.peb` still fails, but ONLY on its own two
       separate, unrelated bugs (below) — no error traces to `io.peb`
       anymore.
-- [ ] **[v1-parity, not a v2 bug] `main` cannot take an `argv []str`
-      parameter — the v2 checker only accepts a ZERO-parameter entry
-      point** (`entry_validation.go:75`,
-      `len(signature.Parameters) == 0`). Confirmed this is a genuine
-      v1-parity gap, not by-design: the old v1 C backend explicitly
-      supported 0/1 (`argv []str`)/2 (`argc int, argv []str`) parameter
-      `main` signatures (`10-c-backend-implementation-plan.md:2212
-      -2238`, itself flagged there as `REDESIGN` — v1's own 2-param path
-      had a bug passing raw `argv` despite `[]str` verification). Not
-      yet scoped for dispatch — needs both a checker-side entry-point
-      -arity widening and a codegen-side `argc`/`argv`→`[]str` adapter
-      in `main()`'s C wrapper. **Note:** `examples/read_file.peb` was
-      originally written against this shape and blocked by it, but has
-      since been rewritten (`a1b69dc`) to a zero-parameter `main` with a
-      hardcoded demo path, sidestepping the gap rather than closing it —
-      this item is no longer blocking any file in the tree, but the
-      underlying checker limitation is still real and unimplemented.
+- [x] **PARTIALLY CLOSED, Slice A only (`dcc935f`) — checker-side
+      widening: `fn main(argv []str) int` is now accepted as a valid
+      entry point.** The v2 checker previously only accepted a
+      ZERO-parameter entry point (`entry_validation.go`,
+      `len(signature.Parameters) == 0`). Confirmed a genuine v1-parity
+      gap, not by-design: the old v1 C backend explicitly supported 0/1
+      (`argv []str`)/2 (`argc int, argv []str`) parameter `main`
+      signatures (`10-c-backend-implementation-plan.md:2212-2238`,
+      itself flagged there as `REDESIGN` — v1's own 2-param path had a
+      bug passing raw `argv` despite `[]str` verification, which is why
+      **only the one-parameter form was implemented here** — the
+      2-param form stays deliberately rejected). New
+      `validArgvParameter` helper resolves the parameter's type and
+      confirms it's `[]str` specifically (not "any one parameter").
+      Verified end-to-end against a real fixture: `fn main(argv []str)
+      int { return 0; }` now reaches emission (no more `C0620`) — this
+      slice deliberately stops at the checker boundary; a program
+      declaring `argv` but not reading it now compiles past check
+      entirely, which is the complete, useful deliverable of this
+      slice on its own. **Still open (Slice B, not yet dispatched):**
+      backend/IR support for actually READING `argv`'s contents inside
+      `main`'s body — `pebble_user_main` and both C entry templates
+      (`voidEntryUserMain`/`integerEntryUserMain` in `emit.go`) still
+      hard-wire zero parameters at the C level, and the real C `main`'s
+      `argc`/`argv` are still discarded (`(void)argc; (void)argv;`) —
+      needs an `argc`/`argv`→`[]str` adapter threaded through the IR
+      builder and both entry templates. Larger, multi-layer, not yet
+      scoped. **Note:** `examples/read_file.peb` was originally written
+      against this shape and blocked by it, but has since been
+      rewritten (`a1b69dc`) to a zero-parameter `main` with a hardcoded
+      demo path, sidestepping the gap rather than closing it — this
+      item is no longer blocking any file in the tree.
 - [x] **STALE, file rewritten — `examples/read_file.peb`'s
       `contents.as_str()` call no longer exists.** Same rewrite
       (`a1b69dc`) replaced it with a char-by-char loop over
