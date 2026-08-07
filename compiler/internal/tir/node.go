@@ -118,6 +118,7 @@ const (
 	OptionalIntegerToEnum
 	CheckedIntegerToEnum
 	PointerCast
+	PointerToInteger
 
 	// Evaluation sequencing.
 	TempBind
@@ -545,6 +546,7 @@ var nodeMetas = [nodeKindCount]nodeMeta{
 	{OptionalIntegerToEnum, "OptionalIntegerToEnum", CategoryValue},
 	{CheckedIntegerToEnum, "CheckedIntegerToEnum", CategoryValue},
 	{PointerCast, "PointerCast", CategoryValue},
+	{PointerToInteger, "PointerToInteger", CategoryValue},
 
 	{TempBind, "TempBind", CategoryNonvalue},
 	{TempRead, "TempRead", CategoryValue},

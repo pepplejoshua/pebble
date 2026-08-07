@@ -11,8 +11,8 @@ import (
 // for all 86 tags.
 func TestNodeKindInventory(t *testing.T) {
 	kinds := NodeKinds()
-	if len(kinds) != 86 {
-		t.Fatalf("expected 86 node kinds, got %d", len(kinds))
+	if len(kinds) != 87 {
+		t.Fatalf("expected 87 node kinds, got %d", len(kinds))
 	}
 	if FirstNodeKind != Module {
 		t.Fatalf("FirstNodeKind = %v, want Module", FirstNodeKind)
@@ -61,7 +61,7 @@ func TestNodeKindInventory(t *testing.T) {
 		{BoolLiteral, AddressOf, "values"},
 		{StoragePlace, Load, "places"},
 		{DirectCall, VariantConstruct, "calls"},
-		{IntegerCast, PointerCast, "coercions"},
+		{IntegerCast, PointerToInteger, "coercions"},
 		{TempBind, Sequence, "sequencing"},
 	}
 	for _, b := range blocks {

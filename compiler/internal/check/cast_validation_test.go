@@ -131,6 +131,57 @@ func TestValidateCastRecordsAcceptsCharToInteger(t *testing.T) {
 	}
 }
 
+func TestValidateCastRecordsAcceptsPointerToInteger(t *testing.T) {
+	// The forward pointer -> integer direction: `ptr as u64` (the
+	// std/hash.peb hash_ptr shape) must now classify compatibleExplicit and be
+	// accepted, mirroring the char -> integer rule exactly.
+	source := `fn f(ptr *i32) u64 { return ptr as u64; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal pointer->u64 cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsAcceptsPointerToUint(t *testing.T) {
+	source := `fn f(ptr *i32) uint { return ptr as uint; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal pointer->uint cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsRejectsIntegerToPointer(t *testing.T) {
+	// The reverse pointer direction, integer -> pointer, is deliberately out
+	// of scope and must STILL be rejected with a clean C0601 — an arbitrary
+	// integer is not necessarily a valid pointer. Regression guard proving the
+	// new rule did not accidentally open it up.
+	source := `fn f(v u64) *i32 { return v as *i32; }`
+	diagnostics, result := run06bFixture(t, source)
+	if result.Successful() {
+		t.Fatal("forbidden u64->*i32 cast was accepted")
+	}
+	if got := countCode(diagnostics, CodeConversion); got != 1 {
+		t.Fatalf("expected exactly one C0601, got %d: %+v", got, diagnostics.Items())
+	}
+	if hasCode(diagnostics, CodeGeneration) {
+		t.Fatalf("forbidden cast leaked the C0619 internal-error path: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsRejectsUintToPointer(t *testing.T) {
+	source := `fn f(v uint) *i32 { return v as *i32; }`
+	diagnostics, result := run06bFixture(t, source)
+	if result.Successful() {
+		t.Fatal("forbidden uint->*i32 cast was accepted")
+	}
+	if got := countCode(diagnostics, CodeConversion); got != 1 {
+		t.Fatalf("expected exactly one C0601, got %d: %+v", got, diagnostics.Items())
+	}
+	if hasCode(diagnostics, CodeGeneration) {
+		t.Fatalf("forbidden cast leaked the C0619 internal-error path: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateCastRecordsRejectsIntegerToChar(t *testing.T) {
 	// The reverse integer -> char direction is deliberately out of scope and
 	// must STILL be rejected with a clean C0601 — an arbitrary integer is not

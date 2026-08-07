@@ -8996,6 +8996,51 @@ func TestEmitCharToIntegerWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitPointerToIntegerU64CompilesAndRuns(t *testing.T) {
+	// The exact minimal repro of the pointer-to-integer shape: `let n u64 = p
+	// as u64;` reads out a pointer's address as a u64. The address itself is
+	// non-deterministic (it depends on the stack), so the deterministic
+	// assertion is that the cast compiles and runs AND the pointer still
+	// dereferences to 42 afterwards — the cast node is emitted as the u64
+	// local's initializer, and if that emission were broken the whole program
+	// would fail to compile or misbehave.
+	emitAndRun(t, "fn main() i32 { var x i32 = 42; let p *i32 = &x; let n u64 = p as u64; return *p; }", false, 42, false)
+}
+
+func TestEmitPointerToIntegerUintCompilesAndRuns(t *testing.T) {
+	// The uint twin: `let n uint = p as uint;`. uint is the platform-native
+	// pointer-width builtin the backend routes through buildUintExpr, so this
+	// exercises the buildUintExpr PointerToInteger lowering (a plain C cast to
+	// uint64_t) as opposed to buildExpr's.
+	emitAndRun(t, "fn main() i32 { var x i32 = 42; let p *i32 = &x; let n uint = p as uint; return *p; }", false, 42, false)
+}
+
+func TestEmitPointerToIntegerHashPtrCompilesAndRuns(t *testing.T) {
+	// The real motivating case from std/hash.peb:80-82 — `fn hash_ptr[T](ptr
+	// *T) u64 { return hash_u64(ptr as u64); }` — as a standalone fixture
+	// (std/hash.peb itself is untouched). The `ptr as u64` is a
+	// PointerToInteger whose destination (u64) is the argument width of
+	// hash_u64, exactly the shape the std module needs. The cast's address
+	// result is discarded; the deterministic assertion is the deref through
+	// the original pointer still returns 42.
+	emitAndRun(t, "fn hash_u64(val u64) u64 { return val; }\nfn hash_ptr[T](ptr *T) u64 { return hash_u64(ptr as u64); }\nfn main() i32 { var x i32 = 42; let p *i32 = &x; let h u64 = hash_ptr(p); return *p; }", false, 42, false)
+}
+
+func TestEmitPointerToIntegerWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the PointerToInteger lowers to a plain C
+	// cast of the pointer expression to the destination C type,
+	// (uint64_t)(...), with no runtime helper.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var x i32 = 42; let p *i32 = &x; let n u64 = p as u64; return *p; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(uint64_t)(pebble_local_") {
+		t.Errorf("emitted C missing the pointer-to-integer cast (uint64_t)(pebble_local_...):\n%s", out)
+	}
+}
+
 // --- 10.46: integer-to-enum casts (CheckedIntegerToEnum) ---
 
 // emitAndRunRelease drives one .peb entry source through buildFixture, Emit,

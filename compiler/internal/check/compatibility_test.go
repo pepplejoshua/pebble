@@ -191,6 +191,12 @@ func TestClassifyCompositeMatrix(t *testing.T) {
 	}{
 		{"identical pointer", ids["ptrA"], ids["ptrA"], compatibleIdentity},
 		{"different pointer payload", ids["ptrA"], ids["ptrB"], compatibleExplicit},
+		{"pointer to integer", ids["ptrA"], f.integer, compatibleExplicit},
+		{"pointer to u32", ids["ptrA"], s.Types().Builtins().U32, compatibleExplicit},
+		{"pointer to u64", ids["ptrA"], s.Types().Builtins().U64, compatibleExplicit},
+		{"pointer to uint", ids["ptrA"], s.Types().Builtins().Uint, compatibleExplicit},
+		{"integer to pointer", f.integer, ids["ptrA"], compatibleForbidden},
+		{"u32 to pointer", s.Types().Builtins().U32, ids["ptrA"], compatibleForbidden},
 		{"different array payload", ids["arrayA"], ids["arrayB"], compatibleForbidden},
 		{"different array length", ids["arrayA"], ids["arrayA5"], compatibleForbidden},
 		{"different slices", ids["sliceA"], ids["sliceB"], compatibleForbidden},
@@ -274,6 +280,12 @@ func TestCoercionFor(t *testing.T) {
 		{"char to integer u64", f.b, s.Types().Builtins().U64, coercionCharToInteger},
 		{"integer to char", f.integer, f.b, coercionNone},
 		{"u32 to char", s.Types().Builtins().U32, f.b, coercionNone},
+		// 9. pointer conversions
+		{"pointer to integer i32", ids["ptrA"], f.integer, coercionPointerToInteger},
+		{"pointer to u64", ids["ptrA"], s.Types().Builtins().U64, coercionPointerToInteger},
+		{"pointer to uint", ids["ptrA"], builtins.Uint, coercionPointerToInteger},
+		{"integer to pointer", f.integer, ids["ptrA"], coercionNone},
+		{"u64 to pointer", builtins.U64, ids["ptrA"], coercionNone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

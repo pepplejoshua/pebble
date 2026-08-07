@@ -2794,6 +2794,32 @@ let value i32 = c as i32;
 	_ = records
 }
 
+func TestBuildValuePointerToInteger(t *testing.T) {
+	state, records := testBuildValue(t, `
+var x i32 = 42;
+let p *i32 = &x;
+let value u64 = p as u64;
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for pointer-to-integer cast")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.PointerToInteger || len(node.Children) != 1 {
+		t.Fatalf("pointer-to-integer node = %+v", node)
+	}
+	child := unit.Nodes()[node.Children[0]-1]
+	if child.Kind != tir.SymbolValue {
+		t.Fatalf("pointer-to-integer child = %+v", child)
+	}
+	_ = records
+}
+
 func TestBuildValueOptionalIntegerToEnum(t *testing.T) {
 	state, records := testBuildValue(t, `
 type Color = enum { red, blue };

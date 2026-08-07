@@ -757,7 +757,7 @@ func (v *verifier) verifyNode(id NodeID) {
 			v.expectChildCategory(id, n, 0, CategoryValue)
 		}
 
-	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, CharToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum, PointerCast:
+	case IntegerCast, IntegerToFloat, FloatToInteger, FloatCast, OptionalInject, EnumToInteger, CharToInteger, OptionalIntegerToEnum, CheckedIntegerToEnum, PointerCast, PointerToInteger:
 		v.allowOnly(id, n, "Children")
 		v.expectChildCount(id, n, 1, 1)
 		v.expectChildCategory(id, n, 0, CategoryValue)

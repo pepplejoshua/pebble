@@ -6818,6 +6818,21 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			return "", err
 		}
 		return "(" + cType(types.Uint) + ")(" + childExpr + ")", nil
+	case tir.PointerToInteger:
+		// A pointer value cast to uint (`ptr as uint`), the uint twin of
+		// buildExpr's PointerToInteger case: the whole cast lowers to a plain
+		// C cast to uint's own C type (uint64_t) of the single child pointer
+		// expression, built by buildExpr (whose pointer branch handles every
+		// pointer-value shape). The destination is uint by construction
+		// (buildUintExpr's gate above already required node.Type to be uint).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains a PointerToInteger with %d children, want exactly one", len(node.Children))
+		}
+		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, width)
+		if err != nil {
+			return "", err
+		}
+		return "(" + cType(types.Uint) + ")(" + childExpr + ")", nil
 	case tir.Load:
 		// A by-value read of a uint-typed place — a uint struct field read
 		// (`var old_cap = self.cap;`, the std/hmap.peb rehash shape, lowered
@@ -9310,6 +9325,34 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains a CharToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
 		childExpr, err := buildCharOperand(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
+		if err != nil {
+			return "", err
+		}
+		return "(" + cType(destinationWidth) + ")(" + childExpr + ")", nil
+	case tir.PointerToInteger:
+		// A pointer value cast to an integer (`ptr as u64`), lowered as a
+		// plain, unchecked C cast of the pointer value's expression to the
+		// destination integer type. This mirrors EnumToInteger/CharToInteger
+		// exactly: the reverse direction, integer-to-pointer, stays forbidden
+		// (compatibleForbidden) by the checker, so this node can only ever
+		// represent a well-typed pointer whose bit pattern is being read out
+		// as an integer address — always well-defined and needing no runtime
+		// helper. The destination width is resolved from the node's own Type;
+		// the single child is the pointer value being cast, built by buildExpr
+		// (which routes any pointer-typed child through its pointer branch),
+		// and the emitted C is `(<destination C type>)(<pointer expression>)`.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a PointerToInteger with %d children, want exactly one", len(node.Children))
+		}
+		destination, ok := snapshot.Key(node.Type)
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a PointerToInteger with invalid destination type %d", node.Type)
+		}
+		destinationWidth, ok := destination.Builtin()
+		if !ok || cType(destinationWidth) == "" {
+			return "", fmt.Errorf("entry function body expression contains a PointerToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
+		}
+		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
