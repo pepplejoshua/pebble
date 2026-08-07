@@ -4,9 +4,9 @@ import "std:string";
 import "std:result";
 
 type Stats = struct {
-    lines usize;
-    words usize;
-    chars usize;
+    lines uint;
+    words uint;
+    chars uint;
 };
 
 type StatsResult = result::Result[Stats, str];
