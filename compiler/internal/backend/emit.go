@@ -6950,9 +6950,21 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			fieldType = valueNode.Type
 		}
 		var expr string
+		fieldWidth, integerField := resolvedBuiltin(snapshot, fieldType)
 		switch {
-		case isWidth(snapshot, width, fieldType):
-			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
+		case integerField && cType(fieldWidth) != "" && !isUint(snapshot, fieldType):
+			// Any fixed-width integer field other than uint (uint flows
+			// through its own dedicated grammar below) is built at its OWN
+			// resolved width, mirroring buildCallArgument/buildComparisonOperand
+			// and the optional-payload widening (d737242) — so an i64 field
+			// inside an i32 function builds its value at i64, not i32.
+			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, fieldWidth, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isUint(snapshot, fieldType):
+			built, err := buildUintExpr(unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -7072,7 +7084,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			}
 			expr = built
 		default:
-			return "", "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want %s or bool", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType), wantName(width))
+			return "", "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, or function type", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType))
 		}
 		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
 	}
@@ -9587,8 +9599,9 @@ func buildTupleElement(unit *tir.Unit, snapshot *types.Snapshot, symbolID symbol
 // `point.x` (confirmed against a real fixture): the FieldPlace carries the
 // field's own member symbol in Member and its single child is the StoragePlace
 // naming the struct local. wantBool selects which grammar the field must
-// satisfy — bool (the buildBoolExpr path) or the entry's width (the buildExpr
-// path). The field's own type is resolved from the struct's declared fields by
+// satisfy — bool (the buildBoolExpr path) or any fixed-width integer (uint,
+// u64, the entry's width, or any other — each carried by the field's own C
+// type). The field's own type is resolved from the struct's declared fields by
 // matching FieldPlace.Member (see declaredFieldType), not assumed from the
 // place's own Type. The emitted C is
 // pebble_local_<symbol>.pebble_field_<member>.
@@ -9659,10 +9672,23 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if !isBool(snapshot, fieldType) {
 			return "", fmt.Errorf("field %d has type %s, want bool", place.Member, describeType(snapshot, fieldType))
 		}
-	} else if !isWidth(snapshot, width, fieldType) && !isPointer(snapshot, fieldType) {
-		return "", fmt.Errorf("field %d has type %s, want %s", place.Member, describeType(snapshot, fieldType), wantName(width))
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
 	}
-	return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	// A fixed-width integer field of ANY width, not just the ambient entry's
+	// own: the C field is declared at the field's own resolved width (see
+	// structFieldCType — a uint or u64 field is uint64_t), so the projection
+	// pebble_local_<sym>.pebble_field_<member> carries the field's own C type
+	// and is valid in a surrounding context of that same width. This mirrors
+	// the generic resolvedBuiltin/cType widening already applied to optional
+	// payloads (d737242), slice elements, function-type parameters/results,
+	// and the struct-field typedef itself.
+	if fieldWidth, integerField := resolvedBuiltin(snapshot, fieldType); integerField && cType(fieldWidth) != "" {
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	}
+	if isPointer(snapshot, fieldType) {
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	}
+	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, or pointer", place.Member, describeType(snapshot, fieldType))
 }
 
 // buildDereferencePlaceRead builds the C text for reading through a
@@ -11641,7 +11667,8 @@ func buildStructTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.B
 // pebble_local_<symbolID> / pebble_fn_<symbolID> discipline) makes a C-field
 // name collision impossible even if a source field name were a C keyword or
 // duplicated another identifier. Each field's C type comes from
-// structFieldCType, which validates the field is the entry's width or bool.
+// structFieldCType, which validates the field is a fixed-width integer, bool,
+// a supported compound type, or a runtime type.
 // A structInfo whose TypeID is not a Nominal type in the snapshot is a clean
 // rejection, not a guessed layout (defense for hand-built IR; collectStructTypes
 // has already resolved every collected TypeID through resolveStructInfo).
@@ -11665,14 +11692,17 @@ func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 }
 
 // structFieldCType is the C field type a struct field of the given type is
-// declared with in its struct's typedef: int32_t / int64_t for a field of the
-// entry's resolved width, bool for a bool field. Any other field type — a str
-// field, a nested struct field, a tuple/array/optional/enum field — is a clean
-// rejection naming what was found, since this backend emits exactly those two
-// C types as struct fields.
+// declared with in its struct's typedef: any fixed-width integer builtin (the
+// entry's resolved width, uint, u64, or any other fixed-width integer, each
+// resolved to its OWN width by the generic resolvedBuiltin/cType pattern — so
+// a uint or u64 field is uint64_t), bool for a bool field, the field's own
+// tuple/optional/struct/pointer/slice/function-type typedef, or a
+// compiler-builtin runtime type's hand-written C type. Any other field type —
+// a str field, a char field, an enum field — is a clean rejection naming what
+// was found, since this backend emits exactly those C types as struct fields.
 func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
-	if isWidth(snapshot, width, id) {
-		return cType(width), nil
+	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
+		return cType(fieldWidth), nil
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
@@ -11728,10 +11758,10 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
-			return "", fmt.Errorf("field type %s is not supported, want %s or bool", name, wantName(width))
+			return "", fmt.Errorf("field type %s is not supported, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, function type, or runtime type", name)
 		}
 	}
-	return "", fmt.Errorf("field type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+	return "", fmt.Errorf("field type %s is not supported, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, function type, or runtime type", describeType(snapshot, id))
 }
 
 // optionalPayloadCType is the C field type an optional payload of the given

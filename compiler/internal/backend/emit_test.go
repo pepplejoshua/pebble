@@ -309,6 +309,32 @@ func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitStructWithUintFieldCompilesAndRuns(t *testing.T) {
+	// An ordinary (non-generic) struct field typed as uint -- the same narrow
+	// entry-width/bool-only gate already widened this session for optional
+	// payloads (d737242), slice elements (f85b4a0), and function-type
+	// parameters/results (b5c139c), now widened for structFieldCType's own
+	// scalar field-type gate: structFieldCType (the typedef), buildStructBraceList's
+	// field-construction case, and buildStructFieldRead all gained a uint case.
+	// Confirmed via the real std/hmap.peb motivating shape: HashMap's own
+	// len/cap uint fields (see TestEmitStdHmapInsertGetFullConsumer).
+	emitAndRun(t, "type Counter = struct { n uint; }; fn main() i32 { var c Counter = Counter.{ n = 5 }; return c.n as i32; }", false, 5, false)
+}
+
+func TestEmitStructWithUintFieldWritesUint64T(t *testing.T) {
+	// Emitted-C shape check: the uint field's typedef must declare uint64_t,
+	// not the entry width's own C type or a rejection.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Counter = struct { n uint; }; fn main() i32 { var c Counter = Counter.{ n = 5 }; return c.n as i32; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "uint64_t pebble_field_") {
+		t.Errorf("expected a uint64_t struct field in emitted C, got:\n%s", out)
+	}
+}
+
 func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
 	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")
@@ -5317,7 +5343,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, and runtime-Allocator-field-typedef gaps are gone, but this test expected the remaining uint-struct-field gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, and uint-struct-field gaps are gone, but this test expected the remaining type-parameter-field gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
@@ -5328,15 +5354,26 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	if strings.Contains(err.Error(), "struct type 0 is not in the type snapshot") {
 		t.Fatalf("Emit still fails with the runtime-builtin struct-field-typedef error; the orderAggregateTypes runtime-type skip did not land: %v", err)
 	}
-	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
-	// payload, the (fixed) pointer-payload optional, and the (fixed)
-	// runtime-Allocator struct-field typedef: HashMap's own uint-typed fields
-	// (len and cap), rejected because structFieldCType emits exactly the entry's
-	// width or bool as struct field types.
-	if !strings.Contains(err.Error(), "field type uint is not supported, want int or bool") {
-		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef error: %v", err)
+	if strings.Contains(err.Error(), "field type uint is not supported") {
+		t.Fatalf("Emit still fails with the uint-struct-field error; the structFieldCType widening did not land: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on the uint-struct-field gap (recursion, optional-uint, pointer-payload optionals, and runtime-Allocator struct-field typedefs are fixed): %v", err)
+	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
+	// payload, the (fixed) pointer-payload optional, the (fixed)
+	// runtime-Allocator struct-field typedef, and the (fixed) uint-typed
+	// struct field (HashMap's own len/cap): a struct reached only through
+	// orderAggregateTypes's dependency walk (structByType[id].fields, read
+	// directly rather than through resolveStructInfo's per-instantiation
+	// substitution) still carries an unresolved type-parameter field --
+	// Entry[K,V]'s key K / value V fields, reached via HashMap's entries
+	// []Entry[K,V] field, are not substituted to their concrete int/int
+	// arguments in this code path, unlike every other struct-field-resolution
+	// path fixed earlier this session. A distinct, separate, not-yet-fixed
+	// generic-struct-fields gap specific to orderAggregateTypes's own field
+	// walk.
+	if !strings.Contains(err.Error(), "field type type-parameter") {
+		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field error: %v", err)
+	}
+	t.Logf("full std:hmap consumer now blocks only on an unresolved type-parameter field reached via orderAggregateTypes's own dependency walk (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, and uint struct fields are all fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
@@ -6754,14 +6791,14 @@ func TestEmitI64StructWritesC(t *testing.T) {
 }
 
 func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {
-	// A struct whose field type is neither the entry's width nor bool — here a
-	// str field — is reachable from real source (the checker builds the
-	// declaration and construction fine), so this is a genuine backend-scope
-	// rejection. The struct typedef pass inspects each field's resolved type
-	// first and rejects the str field with a clear error naming the wanted
-	// types, so no C is written.
+	// A struct whose field type is neither a fixed-width integer nor a
+	// supported compound type — here a str field — is reachable from real
+	// source (the checker builds the declaration and construction fine), so
+	// this is a genuine backend-scope rejection. The struct typedef pass
+	// inspects each field's resolved type first and rejects the str field with
+	// a clear error naming the wanted types, so no C is written.
 	unit, snapshot, entryID, _ := buildFixture(t, "type S = struct { s str; };\nfn main() i32 { let x S = S.{ s = \"hi\" }; return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "field type str is not supported, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, function type, or runtime type")
 }
 
 func TestEmitRejectsStructWholeReassignment(t *testing.T) {
