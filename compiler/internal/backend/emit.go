@@ -5054,6 +5054,26 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if !ok {
 				return "", fmt.Errorf("%s reassignment references invalid value node %d", context, statement.Children[1])
 			}
+			if valueNode.Kind == tir.SliceFromRaw {
+				// A bare SliceFromRaw directly as the slice-field reassignment
+				// value — `self.data = slice ptr, new_cap;`, the std/string.peb
+				// grow shape: the Store's value is a SliceFromRaw node (not a
+				// reference to a slice-typed local), whose construction is a
+				// single compound-literal expression (buildRawSliceConstruction,
+				// the same construction a slice-typed local declaration's
+				// SliceFromRaw initializer uses), so
+				// `lvalue = <construction>;` is the direct, uncoerced C store.
+				// The construction is for valueNode.Type, which must be exactly
+				// the place's resolved slice type (defense for hand-built IR).
+				if valueNode.Type != elementType {
+					return "", fmt.Errorf("%s reassigns a slice-typed place of type %s from a SliceFromRaw of type %s", context, sliceTypeName(elementType), describeType(snapshot, valueNode.Type))
+				}
+				construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, valueNode, scope, width, context)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("%s = %s", lvalue, construction), nil
+			}
 			if valueNode.Kind != tir.SymbolValue {
 				return "", fmt.Errorf("%s reassigns a slice-typed place from a %s, want a reference to a slice-typed local in scope", context, valueNode.Kind)
 			}

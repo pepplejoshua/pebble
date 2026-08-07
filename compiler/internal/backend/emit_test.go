@@ -10549,6 +10549,31 @@ fn main() i32 {
 	compileAndRun(t, buf.Bytes(), 42, false)
 }
 
+func TestEmitSliceFieldReassignmentFromRawCompilesAndRuns(t *testing.T) {
+	// A bare SliceFromRaw as a slice-field REASSIGNMENT value — the
+	// std/string.peb grow shape (`self.data = slice ptr, new_cap;`), where the
+	// Store's value is a SliceFromRaw node rather than a reference to a
+	// slice-typed local. Before the fix, buildStoreCore's isSlice branch
+	// rejected anything but a SymbolValue with "reassigns a slice-typed place
+	// from a SliceFromRaw, want a reference to a slice-typed local in scope".
+	// The 1-element slice over the 42 value means b.items[0] = 42 is the exit
+	// code, proving the whole SliceFromRaw reassignment works at runtime, not
+	// just that it emits.
+	unit, snapshot, entryID, sources := buildStdFixture(t, `type Bag = struct { items []i32; };
+fn main() i32 {
+    var value i32 = 42;
+    var ptr *i32 = &value;
+    var b Bag = Bag.{ items = slice ptr, 1 };
+    b.items = slice ptr, 1;
+    return b.items[0];
+}`, "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
 func TestEmitSliceStructFieldLocalReferenceCompilesAndRuns(t *testing.T) {
 	// The already-working shape must keep working exactly as before: construct
 	// the slice into a local FIRST, then use that local as the field's
