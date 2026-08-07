@@ -77,16 +77,26 @@ imperative program needs.
       already did; `structFieldCType`/`buildStructBraceList`/
       `buildStructFieldRead` gained runtime-type cases mirroring the
       existing runtime-typed-local pattern).
-- [ ] **A full `std/hmap.peb` consumer now hits a different,
-      precisely-pinned, pre-existing gap: ordinary struct fields only
-      support the entry width or `bool`, not `uint`.** `HashMap`'s own
-      `len uint`/`cap uint` fields are rejected by `structFieldCType`:
-      `"field type uint is not supported, want int or bool."` This is
-      the same narrow entry-width/bool-only pattern already widened
-      elsewhere this session (optional payloads, slice elements,
-      function-type parameters/results) but never yet for ordinary
-      struct fields specifically. This is now the last known blocker
-      on `std/hmap.peb` compiling and running end-to-end.
+- [x] Ordinary struct fields widened to any fixed-width integer
+      (`485f57f`) — `HashMap`'s own `len uint`/`cap uint` fields now
+      typedef, construct, and read correctly.
+- [ ] **A full `std/hmap.peb` consumer now hits a distinct gap:
+      `orderAggregateTypes`'s own dependency walk reads a struct's
+      field types directly from `structByType[id].fields` rather than
+      through `resolveStructInfo`'s per-instantiation substitution, so
+      a struct reached only through that walk can still carry an
+      unresolved type-parameter field.** `Entry[K,V]`'s `key K`/`value
+      V` fields, reached via `HashMap`'s `entries []Entry[K,V]` field,
+      aren't substituted to their concrete arguments in this specific
+      code path: `"struct type pebble_struct_147_t: field type
+      type-parameter(symbol 37) is not supported."` Every OTHER
+      struct-field-resolution path (construction, direct reads,
+      nested fields) was fixed for exactly this substitution problem
+      earlier this session (generic struct data fields, slices 1/2a) —
+      this is the same underlying issue surfacing in one more, not yet
+      covered, code path. This is now the last known blocker on
+      `std/hmap.peb` compiling and running end-to-end. Not yet scoped
+      in detail.
 
 ---
 
