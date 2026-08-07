@@ -10877,13 +10877,82 @@ func TestEmitSliceParameterWritesC(t *testing.T) {
 
 func TestEmitRejectsSliceConstructionAsCallArgument(t *testing.T) {
 	// An inline slice construction used directly as a call argument (f(a[1:3]))
-	// is confirmed checker-reachable (the DirectCall's child is a bare
-	// CheckedSlice) but deliberately out of scope: a C function argument is a
-	// pure expression position with nowhere to place the temp-declaration
-	// statement the construction needs, so it is a clean rejection naming what
-	// was found — not a GNU statement-expression workaround.
+	// in a PURE EXPRESSION position — here a return value, `return f(a[1:3]);`
+	// — is confirmed checker-reachable (the DirectCall's child is a bare
+	// CheckedSlice) but has nowhere to place the temp-declaration statement the
+	// construction needs: a C function argument is a pure expression position,
+	// so this remains a clean rejection naming what was found — not a GNU
+	// statement-expression workaround. The leading-statement positions (a bare
+	// call statement or a local's declaration initializer) now DO support it
+	// (see TestEmitSliceConstructionAsCallArgumentCompilesAndRuns); this test
+	// pins the remaining expression-position boundary.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return f(a[1:3]); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline slice construction")
+}
+
+func TestEmitSliceConstructionAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// The leading-statement-argument slice: an inline slice construction passed
+	// directly as a call argument works when the CALL ITSELF is in a
+	// leading-statement position, because that position has a natural place for
+	// the temp-declaration statement the construction needs (the same pre-
+	// threading buildScalarInitializeCore demonstrates). This is the exact shape
+	// examples/prime_sieve.peb needs (sieve(primes[:], limit)) — previously
+	// worked around there by binding the slice to a local first. The fixture
+	// exercises BOTH supported positions: a bare void call statement
+	// (mark(b[2:4])) and a scalar local's declaration initializer
+	// (let r = first(a[1:3])). a[1] is 20, so the exit code 20 (returned only
+	// when the mark() call actually set b[2] through the bool slice) proves
+	// both slices were constructed and passed correctly at runtime, not just
+	// emitted.
+	emitAndRun(t, `fn first(x []int) int { return x[0]; }
+fn mark(x []bool) void { x[0] = true; }
+fn main() int {
+    var a [5]int = [10, 20, 30, 40, 50];
+    var b [5]bool = [false; 5];
+    mark(b[2:4]);
+    let r = first(a[1:3]);
+    if b[2] {
+        return r;
+    } else {
+        return 0;
+    }
+}`, false, 20, false)
+}
+
+func TestEmitSliceConstructionAsCallArgumentEmitsTempStatement(t *testing.T) {
+	// The emitted C for the inline-construction call statement: the slice
+	// argument is the two-statement temp-then-construction shape a slice local's
+	// declaration and the return side already use — a pebble_slice_arg_<nodeID>
+	// temp declaration holding the checked slice-start result, emitted as a
+	// statement line directly before the call, then the call whose argument is
+	// the slice compound literal using that temp for both .data and .len.
+	// b[2:4] over a 5-element bool array: checked start (2, 4, 5), .data offset
+	// 2, .len 2.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn mark(x []bool) void { x[0] = true; }
+fn main() int {
+    var b [5]bool = [false; 5];
+    mark(b[2:4]);
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_slice_arg_",
+		"pebble_rt_checked_slice_start_i32(2, 4, 5, (PebbleSourceLoc){\"main.peb\"",
+		"pebble_local_",
+		".len = (size_t)(4 - pebble_slice_arg_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, ".data = pebble_local_") {
+		t.Errorf("emitted C missing slice compound literal .data offset:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
 func TestEmitRejectsSliceParameterUnsupportedElementType(t *testing.T) {

@@ -4695,13 +4695,16 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 			if !ok || cType(kind) == "" {
 				return "", "", fmt.Errorf("%s declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
 			}
-			callExpr, err := buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+			callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, child, scope, width)
 			if err != nil {
 				return "", "", err
 			}
 			optionalType := child.Type
 			tempName := fmt.Sprintf("pebble_optional_temp_%d", statement.Symbol)
 			pre := fmt.Sprintf("%s %s = %s;", optionalTypeName(optionalType), tempName, callExpr)
+			if callPre != "" {
+				pre = callPre + "\n" + pre
+			}
 			unwrapSuffix := optionalUnwrapSuffix(snapshot, initValue.Type)
 			if unwrapSuffix == "" {
 				return "", "", fmt.Errorf("%s declares a local of type %s initialized from an optional unwrap with a payload type %s, which has no runtime unwrap helper", context, describeType(snapshot, initValue.Type), describeType(snapshot, initValue.Type))
@@ -4787,6 +4790,24 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	// in the initializer is the local's own width). The scope entry records
 	// the local's own width so a later reference or reassignment is
 	// validated and emitted as that width's integer.
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
+		// An integer local declared directly from a call — `let x =
+		// f(a[1:3]);` — routed through buildDirectCallWithPre so an inline
+		// slice-construction call argument's temp declaration is threaded as
+		// the pre (a local declaration is a leading-statement position,
+		// mirroring how the CheckedOptionalUnwrap case above threads a
+		// force-unwrap temp). The call's result type is initValue.Type,
+		// which resolvedBuiltin above already confirmed resolves to this
+		// local's own kind, so the declaration is valid without buildExpr's
+		// width re-check (buildExpr's DirectCall case emits the identical
+		// call text for a non-slice call).
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", "", err
+		}
+		scope[statement.Symbol] = localInfo{kind: kind}
+		return callPre, fmt.Sprintf("%s pebble_local_%d = %s", cType(kind), statement.Symbol, callExpr), nil
+	}
 	initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind, width)
 	if err != nil {
 		return "", "", err
@@ -5993,9 +6014,16 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	if !isVoid(snapshot, calleeDecl.ResultType) {
 		return "", fmt.Errorf("%s discarded-expression statement discards a call to symbol %d whose result type is %s, want a call to a void-returning function (a call to a non-void-returning function used as a bare statement is not supported yet)", context, expr.Symbol, describeType(snapshot, calleeDecl.ResultType))
 	}
-	callExpr, err := buildDirectCall(unit, snapshot, fileSet, expr, scope, width)
+	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, expr, scope, width)
 	if err != nil {
 		return "", err
+	}
+	// A bare call statement is a leading-statement position, so an inline
+	// slice-construction argument's temp declaration is emitted as a preceding
+	// statement line at the same indent (the buildScalarInitializeCore pre
+	// threading shape).
+	if callPre != "" {
+		return indent + callPre + "\n" + indent + callExpr + ";", nil
 	}
 	return indent + callExpr + ";", nil
 }
@@ -6420,16 +6448,16 @@ func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fil
 		}
 		return "", fmt.Errorf("%s declares a %s-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, what, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
 	}
-	callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
 	if err != nil {
 		return "", err
 	}
 	if wantTuple {
 		scope[statement.Symbol] = localInfo{tuple: initValue.Type}
-		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
 	scope[statement.Symbol] = localInfo{structType: initValue.Type}
-	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+	return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 }
 
 func buildArrayCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
@@ -6440,12 +6468,12 @@ func buildArrayCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	if calleeDecl.ResultType != initValue.Type {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a call whose result type is %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, calleeDecl.ResultType))
 	}
-	callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
 	if err != nil {
 		return "", err
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type, arrayWrapped: true}
-	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, arrayTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+	return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, arrayTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 }
 
 // buildOptionalCallInitializer builds an optional-typed local's declaration
@@ -6473,12 +6501,12 @@ func buildOptionalCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, file
 	if calleeDecl.ResultType != initValue.Type {
 		return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
 	}
-	callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
 	if err != nil {
 		return "", err
 	}
 	scope[statement.Symbol] = localInfo{optional: initValue.Type}
-	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+	return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 }
 
 // buildTupleBraceList validates one TupleValue node's element list and builds
@@ -6809,12 +6837,12 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		if calleeDecl.ResultType != initValue.Type {
 			return "", fmt.Errorf("%s declares a slice-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, sliceTypeName(initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
-		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
 	if initValue.Kind == tir.SliceFromRaw {
 		construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, initValue, scope, width, context)
@@ -8340,12 +8368,12 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if calleeDecl.ResultType != initValue.Type {
 			return "", fmt.Errorf("%s declares a str-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
 		scope[statement.Symbol] = localInfo{isStr: true}
-		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol), nil
+		return withLeadingPre(callPre, indent, fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
 	if initValue.Kind != tir.StringLiteral {
 		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal) or a call to a str-returning helper; initializing a str local from another value is not supported yet", context, initValue.Kind)
@@ -8449,12 +8477,12 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		// A call to a pointer-returning helper used as the direct
 		// initializer of a matching pointer-typed local: `let p *i32 =
 		// helperReturningPointer();`.
-		callText, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callText, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
-		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, callText, indent, statement.Symbol), nil
+		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, callText, indent, statement.Symbol)), nil
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an optional whose payload is a pointer used as
 		// the direct initializer of a matching pointer-typed local:
@@ -8477,14 +8505,14 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", fmt.Errorf("%s force-unwrap initializer references invalid child node %d", context, initValue.Children[0])
 		}
 		if child.Kind == tir.DirectCall || child.Kind == tir.MethodCall {
-			callText, err := buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+			callPre, callText, err := buildDirectCallWithPre(unit, snapshot, fileSet, child, scope, width)
 			if err != nil {
 				return "", err
 			}
 			tempName := fmt.Sprintf("pebble_temp_%d", statement.Children[0])
 			unwrapText := fmt.Sprintf("pebble_rt_checked_unwrap_ptr(%s.has_value, %s.value, %s)", tempName, tempName, buildSourceLoc(fileSet, initValue.Span))
 			scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
-			return fmt.Sprintf("%s%s %s = %s;\n%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(child.Type), tempName, callText, indent, ctypeName, statement.Symbol, unwrapText, indent, statement.Symbol), nil
+			return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s %s = %s;\n%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(child.Type), tempName, callText, indent, ctypeName, statement.Symbol, unwrapText, indent, statement.Symbol)), nil
 		}
 		unwrapText, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, width, width)
 		if err != nil {
@@ -9972,9 +10000,16 @@ func buildFunctionIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	}
 	args := make([]string, 0, len(parameters))
 	for i, id := range node.Children[1:] {
-		arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, locals, width)
+		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, locals, width)
 		if err != nil {
 			return "", err
+		}
+		if pre != "" {
+			// An indirect call is a pure expression position (it may appear
+			// anywhere a function value's result is consumed), so an inline
+			// slice-construction argument's temp declaration has nowhere to
+			// go; reject cleanly rather than drop it.
+			return "", fmt.Errorf("entry function body indirect call argument %d is an inline slice construction, which is not supported as an indirect call argument: a C expression has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", i)
 		}
 		args = append(args, arg)
 	}
@@ -10176,7 +10211,40 @@ func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // returning call used as a matching local's declaration initializer) — the
 // context and argument handling are identical; only the call's result type
 // differs, and that is decided by the caller, never here.
+//
+// This wrapper is the EXPRESSION-position entry point every call site not
+// itself in a leading-statement position uses (19 call sites). It delegates to
+// buildDirectCallWithPre and rejects a non-empty pre: an inline slice
+// construction passed as a call argument (f(a[1:3])) needs a temp-declaration
+// statement before the call, which a pure C expression position has nowhere to
+// place, so in such a position the call is a clean rejection naming what was
+// found (the checker has already coerced the argument, so this only fires for
+// real source — confirmed via the return f(a[1:3]) fixture).
 func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	pre, expr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+	if err != nil {
+		return "", err
+	}
+	if pre != "" {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this expression position: a C function argument is a pure expression position with nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", node.Symbol)
+	}
+	return expr, nil
+}
+
+// buildDirectCallWithPre is the leading-statement-position twin of
+// buildDirectCall: it builds the identical call expression but ALSO returns an
+// indent-free pre-statement that the caller must emit BEFORE the call whenever
+// an argument is an inline slice construction (f(a[1:3])) — the
+// temp-declaration statement the slice construction needs (the same
+// two-statement temp-then-construction shape 10.37's slice local declaration
+// uses). Only the leading-statement call sites call this — a bare call
+// statement (buildExpressionStatement) and each local's declaration-initializer
+// builder — positions that already have a natural place for a preceding
+// statement, mirroring how buildScalarInitializeCore's pre mechanism threads a
+// force-unwrap temp. Every other call site keeps calling buildDirectCall, which
+// rejects a non-empty pre. The returned pre has no indent; the caller prepends
+// its own.
+func buildDirectCallWithPre(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
 	// A C-convention call (direct call to an extern fn declaration) is
 	// lowered differently from a Pebble-convention call: no context parameter
 	// is threaded, the callee is called by its real C name (malloc, not
@@ -10185,7 +10253,7 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	// discarded-statement — already matches).
 	if node.Convention == types.C {
 		if node.ContextAction != tir.ContextNone {
-			return "", fmt.Errorf("entry function body expression contains a C-convention call that records ContextAction %s, want NoContext", node.ContextAction)
+			return "", "", fmt.Errorf("entry function body expression contains a C-convention call that records ContextAction %s, want NoContext", node.ContextAction)
 		}
 		var calleeDecl tir.Node
 		var err error
@@ -10199,31 +10267,31 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		}
 		if err != nil {
 			if len(node.TypeArgs) != 0 {
-				return "", fmt.Errorf("entry function body expression contains a generic call with no matching specialization")
+				return "", "", fmt.Errorf("entry function body expression contains a generic call with no matching specialization")
 			}
-			return "", err
+			return "", "", err
 		}
 		if calleeDecl.Kind != tir.ExternDeclaration {
-			return "", fmt.Errorf("entry function body expression contains a C-convention call to symbol %d, which is not an extern declaration", calleeDecl.Symbol)
+			return "", "", fmt.Errorf("entry function body expression contains a C-convention call to symbol %d, which is not an extern declaration", calleeDecl.Symbol)
 		}
 		calleeName, err := externCName(calleeDecl)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
+		callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if callArgs == "" {
-			return fmt.Sprintf("%s()", calleeName), nil
+			return callPre, fmt.Sprintf("%s()", calleeName), nil
 		}
-		return fmt.Sprintf("%s(%s)", calleeName, callArgs), nil
+		return callPre, fmt.Sprintf("%s(%s)", calleeName, callArgs), nil
 	}
 	if node.Convention != types.Pebble {
-		return "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
+		return "", "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
 	}
 	if node.ContextAction != tir.ContextForward {
-		return "", fmt.Errorf("entry function body expression contains a call that records ContextAction %s, want ForwardCurrentContext (this backend only lowers Pebble-convention calls that thread the context)", node.ContextAction)
+		return "", "", fmt.Errorf("entry function body expression contains a call that records ContextAction %s, want ForwardCurrentContext (this backend only lowers Pebble-convention calls that thread the context)", node.ContextAction)
 	}
 	// The callee's own declaration supplies the parameter list that decides
 	// each argument's grammar below (the reachability walk in
@@ -10242,19 +10310,35 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	}
 	if err != nil {
 		if len(node.TypeArgs) != 0 {
-			return "", fmt.Errorf("entry function body expression contains a generic call with no matching specialization")
+			return "", "", fmt.Errorf("entry function body expression contains a generic call with no matching specialization")
 		}
-		return "", err
+		return "", "", err
 	}
-	callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
+	callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	calleeName := helperCName(calleeDecl)
 	if callArgs == "" {
-		return fmt.Sprintf("%s(ctx)", calleeName), nil
+		return callPre, fmt.Sprintf("%s(ctx)", calleeName), nil
 	}
-	return fmt.Sprintf("%s(ctx, %s)", calleeName, callArgs), nil
+	return callPre, fmt.Sprintf("%s(ctx, %s)", calleeName, callArgs), nil
+}
+
+// withLeadingPre turns a statement body and an optional indent-free
+// pre-statement into the full statement text: when pre is non-empty the pre is
+// emitted as a preceding line at the same indent as the statement, otherwise
+// the body is returned unchanged. It is the mechanical threading shape the
+// leading-statement call sites use for an inline slice-construction call
+// argument's temp declaration (the same shape buildLeadingStatement uses for
+// buildScalarInitializeCore's pre), shared by every local-declaration
+// initializer that calls buildDirectCallWithPre so the pre check lives in one
+// place. body must carry its own leading indent; pre must not.
+func withLeadingPre(pre, indent, body string) string {
+	if pre != "" {
+		return indent + pre + "\n" + body
+	}
+	return body
 }
 
 // buildTuplePlaceRead builds the C text for reading one element of a tuple
@@ -10933,36 +11017,43 @@ func fieldPlaceStructType(unit *tir.Unit, node tir.Node) (types.TypeID, bool) {
 // fixedCount rather than equality. Returns the joined argument text, empty
 // when the callee takes no parameters (the caller then emits
 // pebble_fn_<id>(ctx) with no argument list).
-func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
 	variadic := callee.Variadic
 	fixedCount := len(callee.Parameters)
 	if variadic {
 		if len(callee.Parameters) == 0 {
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose callee is variadic but declares no parameters (a variadic callee must declare its trailing slice parameter)", call.Symbol)
+			return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose callee is variadic but declares no parameters (a variadic callee must declare its trailing slice parameter)", call.Symbol)
 		}
 		fixedCount--
 		if len(call.Children) < fixedCount {
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want at least %d (the variadic callee declares %d fixed parameter(s) plus a trailing slice parameter)", call.Symbol, len(call.Children), fixedCount, fixedCount)
+			return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want at least %d (the variadic callee declares %d fixed parameter(s) plus a trailing slice parameter)", call.Symbol, len(call.Children), fixedCount, fixedCount)
 		}
 	} else if len(call.Children) != len(callee.Parameters) {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want %d (the callee declares %d parameter(s))", call.Symbol, len(call.Children), len(callee.Parameters), len(callee.Parameters))
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d passing %d argument(s), want %d (the callee declares %d parameter(s))", call.Symbol, len(call.Children), len(callee.Parameters), len(callee.Parameters))
 	}
+	var pres []string
 	args := make([]string, 0, len(call.Children))
 	for i := 0; i < fixedCount; i++ {
-		arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], locals, width)
+		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], locals, width)
 		if err != nil {
-			return "", err
+			return "", "", err
+		}
+		if pre != "" {
+			pres = append(pres, pre)
 		}
 		args = append(args, arg)
 	}
 	if variadic {
-		sliceArg, err := buildVariadicSliceArgument(unit, snapshot, fileSet, call, callee.Parameters[fixedCount], call.Children[fixedCount:], locals, width)
+		pre, sliceArg, err := buildVariadicSliceArgument(unit, snapshot, fileSet, call, callee.Parameters[fixedCount], call.Children[fixedCount:], locals, width)
 		if err != nil {
-			return "", err
+			return "", "", err
+		}
+		if pre != "" {
+			pres = append(pres, pre)
 		}
 		args = append(args, sliceArg)
 	}
-	return strings.Join(args, ", "), nil
+	return strings.Join(pres, "\n"), strings.Join(args, ", "), nil
 }
 
 // buildCallArgument builds one call-site argument expression for one callee
@@ -10979,7 +11070,16 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // The checker has already coerced the argument to the parameter's type, so a
 // mismatch here is hand-built IR. position is the call-site argument index,
 // used only to name the offending argument in rejection messages.
-func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+//
+// The return is a (pre, expr) pair: expr is the argument's C expression, and
+// pre is an optional indent-free pre-statement the caller must emit BEFORE the
+// enclosing call expression. Only an inline slice-construction argument
+// (f(a[1:3]), via buildSliceArgument) ever produces a non-empty pre — the
+// two-statement temp-then-construction shape the construction needs — and every
+// other argument shape is a pure expression (pre == ""). The pre is only
+// consumable when the enclosing call is itself in a leading-statement position;
+// buildDirectCall's expression-position wrapper rejects it upstream.
+func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
 	// A parameter's own resolved integer width, when the parameter is an
 	// integer builtin the backend emits (the entry's width, uint, u64, or
 	// any other fixed-width integer). Deciding the argument grammar from the
@@ -10993,13 +11093,25 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 	// arithmetic), not through the general buildExpr path.
 	paramWidth, integerParam := resolvedBuiltin(snapshot, param.Type)
 	if integerParam && cType(paramWidth) != "" && !isUint(snapshot, param.Type) {
-		return buildExpr(unit, snapshot, fileSet, argID, locals, paramWidth, width)
+		expr, err := buildExpr(unit, snapshot, fileSet, argID, locals, paramWidth, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	}
 	switch {
 	case isUint(snapshot, param.Type):
-		return buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
+		expr, err := buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isBool(snapshot, param.Type):
-		return buildBoolExpr(unit, snapshot, fileSet, argID, locals, width)
+		expr, err := buildBoolExpr(unit, snapshot, fileSet, argID, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isFloat(snapshot, param.Type):
 		// An f32/f64 parameter: the argument is a float value built by
 		// buildFloatExpr at the parameter's OWN float kind — a reference to
@@ -11007,7 +11119,11 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// directly (f(3.5)), or a call to a float-returning helper (f(g()))
 		// — emitted at the same C float type (floatCType) the parameter is
 		// declared with, so passing a float by value is trivially valid C.
-		return buildFloatExpr(unit, snapshot, fileSet, argID, locals, resolvedFloatKind(snapshot, param.Type))
+		expr, err := buildFloatExpr(unit, snapshot, fileSet, argID, locals, resolvedFloatKind(snapshot, param.Type))
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isChar(snapshot, param.Type):
 		// A char parameter: the argument is a char value built by
 		// buildCharOperand — a reference to a char-typed local in scope, a
@@ -11015,13 +11131,29 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// helper (f(g())) — emitted as an int32_t value, the same C type
 		// the parameter is declared with, so passing a char by value is
 		// trivially valid C.
-		return buildCharOperand(unit, snapshot, fileSet, argID, locals, width)
+		expr, err := buildCharOperand(unit, snapshot, fileSet, argID, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isTuple(snapshot, param.Type):
-		return buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, true, calleeSymbol, position, width)
+		expr, err := buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, true, calleeSymbol, position, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isStruct(snapshot, param.Type):
-		return buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, false, calleeSymbol, position, width)
+		expr, err := buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, false, calleeSymbol, position, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isArray(snapshot, param.Type):
-		return buildArrayArgument(unit, snapshot, fileSet, width, param.Type, argID, locals, calleeSymbol, position)
+		expr, err := buildArrayArgument(unit, snapshot, fileSet, width, param.Type, argID, locals, calleeSymbol, position)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isStr(snapshot, param.Type):
 		// A str parameter: the argument is a str value built by
 		// buildStrOperand — a reference to a str-typed local in scope, a
@@ -11029,22 +11161,22 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// helper (f(g())) — emitted as a PebbleStr value, the same C type
 		// the parameter is declared with, so passing a str by value is
 		// trivially valid C.
-		return buildStrOperand(unit, snapshot, fileSet, argID, locals, width)
+		expr, err := buildStrOperand(unit, snapshot, fileSet, argID, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isSlice(snapshot, param.Type):
-		// A slice parameter (10.38): the argument must be a reference to an
+		// A slice parameter (10.38): the argument is a reference to an
 		// already-declared slice-typed local in scope of the matching type,
 		// emitted as the local's own pebble_local_<symbol> C name — the
 		// slice type's own struct typedef makes passing the whole slice by
 		// value trivially valid C, no construction needed at the call site
-		// (confirmed checker-reachable: f(s) passes a plain SymbolValue).
-		// An inline slice construction used directly as a call argument
-		// (f(a[1:3])) is also confirmed checker-reachable but is
-		// deliberately out of scope this slice: a C function argument is a
-		// pure expression position with nowhere to place the
-		// temp-declaration statement the construction needs, so it is a
-		// clean rejection naming what was found, not a workaround (see
-		// buildSliceArgument).
-		return buildSliceArgument(unit, snapshot, argID, locals, param.Type, calleeSymbol, position)
+		// (confirmed checker-reachable: f(s) passes a plain SymbolValue) —
+		// or, since the leading-statement call-argument slice, an inline
+		// slice construction (f(a[1:3])) whose temp declaration is returned
+		// as the pre (see buildSliceArgument).
+		return buildSliceArgument(unit, snapshot, fileSet, argID, locals, param.Type, calleeSymbol, position, width)
 	case isOptional(snapshot, param.Type):
 		// An optional parameter: the argument is an optional value built by
 		// buildOptionalValue — a SymbolValue naming an optional-typed local
@@ -11055,13 +11187,21 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// emitted as the optional's own compound literal or a forwarded
 		// C name/call, the same C type the parameter is declared with, so
 		// passing an optional by value is trivially valid C.
-		return buildOptionalValue(unit, snapshot, fileSet, argID, locals, param.Type, fmt.Sprintf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d)", calleeSymbol, position, param.Symbol), width)
+		expr, err := buildOptionalValue(unit, snapshot, fileSet, argID, locals, param.Type, fmt.Sprintf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d)", calleeSymbol, position, param.Symbol), width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isPointer(snapshot, param.Type):
 		// A pointer parameter: the argument is a pointer value built by
 		// buildExpr, which handles every pointer-value shape (AddressOf,
 		// a reference to a pointer-typed local, nil, or a call to a
 		// pointer-returning helper).
-		return buildExpr(unit, snapshot, fileSet, argID, locals, width, width)
+		expr, err := buildExpr(unit, snapshot, fileSet, argID, locals, width, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	case isFunctionType(snapshot, param.Type):
 		// A function-typed parameter (function-types slice 3): the argument
 		// is a function value built by buildFunctionValue — a bare top-level
@@ -11076,14 +11216,18 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// trivially valid C.
 		argNode, ok := unit.Node(argID)
 		if !ok {
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) references invalid argument node %d", calleeSymbol, position, param.Symbol, argID)
+			return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) references invalid argument node %d", calleeSymbol, position, param.Symbol, argID)
 		}
-		return buildFunctionValue(unit, snapshot, fileSet, argNode, locals, fmt.Sprintf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d)", calleeSymbol, position, param.Symbol), width)
+		expr, err := buildFunctionValue(unit, snapshot, fileSet, argNode, locals, fmt.Sprintf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d)", calleeSymbol, position, param.Symbol), width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
 	default:
 		// validateHelperSignature rules any unsupported parameter out
 		// before a reachable helper is ever built, so this branch is
 		// defense for hand-built IR only.
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, or a pointer type", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, or a pointer type", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 	}
 }
 
@@ -11175,36 +11319,43 @@ func buildArrayArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // -Wall -Wextra -Werror harness (the same shape a SliceFromRaw construction of
 // a nil pointer with count 0, `slice ptr, 0`, already produces — see
 // buildRawSliceConstruction).
-func buildVariadicSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, sliceParam tir.Parameter, variadicIDs []tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildVariadicSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, sliceParam tir.Parameter, variadicIDs []tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
 	sliceType := sliceParam.Type
 	if !isSlice(snapshot, sliceType) {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter %d (symbol %d) has type %s, want a slice type", call.Symbol, len(call.Children)-1, sliceParam.Symbol, describeType(snapshot, sliceType))
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter %d (symbol %d) has type %s, want a slice type", call.Symbol, len(call.Children)-1, sliceParam.Symbol, describeType(snapshot, sliceType))
 	}
 	key, ok := snapshot.Key(sliceType)
 	if !ok {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter type %d is not in the type snapshot", call.Symbol, sliceType)
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter type %d is not in the type snapshot", call.Symbol, sliceType)
 	}
 	elementType, ok := key.Child()
 	if !ok {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter type %s has no element type", call.Symbol, describeType(snapshot, sliceType))
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter type %s has no element type", call.Symbol, describeType(snapshot, sliceType))
 	}
 	elemCType, err := sliceElementCType(unit, snapshot, width, elementType)
 	if err != nil {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter has an unsupported slice element type: %v", call.Symbol, err)
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter has an unsupported slice element type: %v", call.Symbol, err)
 	}
 	firstVariadic := len(call.Children) - len(variadicIDs)
 	elems := make([]string, 0, len(variadicIDs))
 	for j, argID := range variadicIDs {
-		expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, locals, width)
+		pre, expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, locals, width)
 		if err != nil {
-			return "", err
+			return "", "", err
+		}
+		if pre != "" {
+			// Defense: an inline slice-construction variadic element cannot
+			// be placed — a slice element type is itself rejected above by
+			// sliceElementCType, so no supported variadic element can ever
+			// produce a pre. Reject rather than silently drop it.
+			return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic argument %d requires a temp declaration, which a variadic call's collected-element compound literal cannot place", call.Symbol, firstVariadic+j)
 		}
 		elems = append(elems, expr)
 	}
 	if len(elems) == 0 {
-		return fmt.Sprintf("(%s){ .data = NULL, .len = (size_t)0 }", sliceTypeName(sliceType)), nil
+		return "", fmt.Sprintf("(%s){ .data = NULL, .len = (size_t)0 }", sliceTypeName(sliceType)), nil
 	}
-	return fmt.Sprintf("(%s){ .data = (%s[]){ %s }, .len = (size_t)(%d) }", sliceTypeName(sliceType), elemCType, strings.Join(elems, ", "), len(elems)), nil
+	return "", fmt.Sprintf("(%s){ .data = (%s[]){ %s }, .len = (size_t)(%d) }", sliceTypeName(sliceType), elemCType, strings.Join(elems, ", "), len(elems)), nil
 }
 
 // buildAggregateArgument builds one call-site argument for a tuple- or
@@ -11274,45 +11425,63 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 }
 
 // buildSliceArgument builds one call-site argument for a slice-typed parameter
-// (10.38). Exactly one argument shape is supported:
+// (10.38). Two argument shapes are supported:
 //
 //   - a plain SymbolValue naming an already-declared slice-typed local in scope
 //     whose declared type is exactly the parameter's slice type, emitted as the
 //     local's own pebble_local_<symbol> C name — the slice type's own struct
 //     typedef makes passing the whole slice by value trivially valid C, so no
 //     construction is needed at the call site (confirmed checker-reachable via
-//     a real fixture: f(s) passes a plain SymbolValue).
+//     a real fixture: f(s) passes a plain SymbolValue);
+//   - an inline slice construction used directly as a call argument — f(a[1:3]),
+//     a bare CheckedSlice, confirmed checker-reachable via a real fixture —
+//     emitted as the same two-statement temp-then-construction shape 10.37's
+//     local declaration and the return side use (a temp holding the checked-
+//     start result, then the compound literal using that temp), with the temp
+//     declaration returned as a separate pre-statement for the caller to place
+//     before the consuming expression. This is only sound because a C function
+//     argument is otherwise a pure expression position with nowhere to place
+//     the temp-declaration statement, so the pre is rejected upstream in
+//     buildDirectCall's expression-position wrapper (buildDirectCall) and only
+//     threaded through when the enclosing call is itself in a leading-statement
+//     position (a bare call statement or a local's declaration initializer) —
+//     this backend still does not reach for a GNU statement-expression or any
+//     other workaround to make an inline construction fit an arbitrary
+//     expression position.
 //
-// An inline slice construction used directly as a call argument — f(a[1:3]),
-// a bare CheckedSlice, confirmed checker-reachable via a real fixture — is
-// deliberately out of scope this slice and rejected cleanly: a C function
-// argument is a pure expression position with nowhere to place the
-// temp-declaration statement the slice construction needs (the same reason the
-// return side must emit two statements), and this backend does not reach for a
-// GNU statement-expression or any other workaround to make it fit. Any other
-// argument shape — a local that is not slice-typed, a SourceAlias-wrapped
-// argument, or any other node kind — is likewise a clean rejection naming what
-// was found, matching buildAggregateArgument's own discipline.
-func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, calleeSymbol symbol.SymbolID, position int) (string, error) {
+// Any other argument shape — a local that is not slice-typed, a SourceAlias-
+// wrapped argument, or any other node kind — is likewise a clean rejection
+// naming what was found, matching buildAggregateArgument's own discipline. The
+// returned pre is indent-free (buildSliceConstruction is called with an empty
+// indent); the caller prepends its own indent. width is the entry's resolved
+// integer width, threaded through so the temp is declared at the correct width.
+func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, calleeSymbol symbol.SymbolID, position int, width types.BuiltinKind) (string, string, error) {
 	node, ok := unit.Node(argID)
 	if !ok {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references invalid node %d", calleeSymbol, position, argID)
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references invalid node %d", calleeSymbol, position, argID)
 	}
 	context := fmt.Sprintf("entry function body expression contains a call to symbol %d whose argument %d", calleeSymbol, position)
 	if node.Kind == tir.CheckedSlice {
-		return "", fmt.Errorf("%s is an inline slice construction (a CheckedSlice), which is not supported as a call argument: a C function argument is a pure expression position with nowhere to place the temp-declaration statement the slice construction needs; pass an already-declared slice-typed local instead", context)
+		if node.Type != wantType {
+			return "", "", fmt.Errorf("%s is an inline slice construction (a CheckedSlice) of type %s, not a slice-typed value of type %s", context, describeType(snapshot, node.Type), sliceTypeName(wantType))
+		}
+		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, node, locals, "", context, width, fmt.Sprintf("pebble_slice_arg_%d", argID))
+		if err != nil {
+			return "", "", err
+		}
+		return tempDecl, constructionExpr, nil
 	}
 	if node.Kind != tir.SymbolValue {
-		return "", fmt.Errorf("%s is a %s, want a reference to a slice-typed local in scope; only passing an already-declared slice-typed local is supported", context, node.Kind)
+		return "", "", fmt.Errorf("%s is a %s, want a reference to a slice-typed local in scope; only passing an already-declared slice-typed local is supported", context, node.Kind)
 	}
 	info, declared := locals[node.Symbol]
 	if !declared {
-		return "", fmt.Errorf("%s references symbol %d, which is not a local in scope", context, node.Symbol)
+		return "", "", fmt.Errorf("%s references symbol %d, which is not a local in scope", context, node.Symbol)
 	}
 	if info.sliceType != wantType {
-		return "", fmt.Errorf("%s passes symbol %d, which is a local of type %s, not a slice-typed local of type %s", context, node.Symbol, describeType(snapshot, node.Type), sliceTypeName(wantType))
+		return "", "", fmt.Errorf("%s passes symbol %d, which is a local of type %s, not a slice-typed local of type %s", context, node.Symbol, describeType(snapshot, node.Type), sliceTypeName(wantType))
 	}
-	return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 }
 
 // buildAggregateReturnValue builds the C expression text for a tuple/struct-
