@@ -260,9 +260,40 @@ same staleness, also fixed).
       case. This is a substantial, foundational gap: it blocks
       `std/result.peb` entirely (its whole public API is `ok`/`err`
       constructors) and likely any other std/user code following the
-      same "constructor static method" idiom. Not yet scoped for
-      dispatch — likely a real checker feature (self-less methods +
-      qualified-call resolution), not a small widening.
+      same "constructor static method" idiom. **Now fully scoped**
+      (2026-08-07 investigation): root-caused exactly —
+      `finishCall` (`check/call_facts.go:398`) looks up
+      `w.valuesBySyntax[m.base]` for the receiver, but when the member
+      base is a type `Path` (not a value expression), `suppressAll()`
+      (`check/expression_facts.go:152`) already prevented any value
+      from being produced for it, so the receiver lookup fails,
+      `failExpression` fires, no call record is created, and the
+      solver reports an unresolved variable → `C0619`. The self-less
+      -method rejection is CATEGORICAL, not a narrow bug: three
+      independent rejection points (`finishCall`'s receiver lookup,
+      `validateCallRecords:93` unconditionally rejecting
+      `Receiver == 0`, `ir_builder_calls.go:105`'s `buildValue(0)`
+      failing) — no "static method" concept exists anywhere in the
+      method model. Confirmed a genuine missing feature, not a
+      deliberate design decision (`open-language-decisions.md` doesn't
+      list it; nothing in spec forbids it). Real implementation plan:
+      8 files across 3 layers (facts/`call_facts.go`+`member_facts.go`,
+      validation/`call_validation.go`+`record.go`, IR/
+      `ir_builder_calls.go`, plus an `infer` package constraint) —
+      MEDIUM-LARGE, ~2-4 focused sub-tasks. **However: a much cheaper
+      path exists and should be tried FIRST.** Two alternatives already
+      work TODAY with zero compiler changes: (1) record-construction
+      syntax, already functional via `aggregateTaggedVariant` —
+      `Result[int, str].{ Ok = 42 }` / `Result[int, str].{ Err = "bad" }`
+      — or (2) plain top-level generic helper functions (`fn
+      result_ok[T, E](value T) Result[T, E] { return Result[T, E].{ Ok
+      = value }; }`), which is the more idiomatic Pebble shape.
+      **Recommendation: rewrite `std/result.peb`'s public API around
+      one of these instead of implementing the checker feature** — this
+      unblocks `std/result.peb` and `count_lines.peb` immediately, and
+      the real static-method-call feature can stay a longer-term,
+      lower-priority item since nothing currently blocks on it once
+      `result.peb` itself is rewritten.
 - [ ] **[std-file bug, not a compiler gap] `std/result.peb` itself uses
       wrong switch-case syntax: bare `case Ok:`/`case Err:` instead of
       the dot-shorthand `case .Ok:`/`case .Err:` (or qualified
