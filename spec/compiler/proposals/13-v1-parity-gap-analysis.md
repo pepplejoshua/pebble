@@ -212,6 +212,41 @@ same staleness, also fixed).
       exists — this is specifically the helper-signature validation
       gate not being widened for float the way it now has been for
       uint this session).
+- [ ] **[checker] Qualified static-method calls on a nominal type
+      (`TypeName.method(...)`) are entirely broken — not just for
+      generics.** Found via a full `count_lines.peb` triage (which
+      revealed `std/result.peb` itself doesn't check in isolation —
+      import it alone into a bare `fn main() int { return 0; }` and its
+      own errors surface). `std/result.peb`'s `Result[U, E].ok(...)`/
+      `.err(...)` constructor pattern fails with `C0619` (generic case)
+      or `N0001: type has no member` (through a type alias). Reproduced
+      standalone, bounded precisely: `Box[int].mk(5)` on a fresh generic
+      struct → `C0619`; **`Box.mk(5)` on a plain NON-generic struct also
+      fails** → `C0619` — so this isn't specifically a generics gap, the
+      qualified-call form itself doesn't resolve. Also confirmed a
+      self-less method declaration (`fn mk(x int) Box { ... }`, no
+      `self` parameter) is independently rejected with `C0604 method
+      self parameter is invalid` — meaning the entire "static
+      constructor method, called via `TypeName.method(...)`" pattern is
+      unimplemented today, not merely a generic-specialization edge
+      case. This is a substantial, foundational gap: it blocks
+      `std/result.peb` entirely (its whole public API is `ok`/`err`
+      constructors) and likely any other std/user code following the
+      same "constructor static method" idiom. Not yet scoped for
+      dispatch — likely a real checker feature (self-less methods +
+      qualified-call resolution), not a small widening.
+- [ ] **[std-file bug, not a compiler gap] `std/result.peb` itself uses
+      wrong switch-case syntax: bare `case Ok:`/`case Err:` instead of
+      the dot-shorthand `case .Ok:`/`case .Err:` (or qualified
+      `case Result.Ok:`).** Confirmed via `switch_validation.go:103-108`
+      (`caseVariantMember` documents base-less `.name` as the intended
+      form) and reproduced directly: a copy of `std/result.peb` with
+      only `case Ok:`→`case .Ok:` applied has its `N0001 undefined name
+      "Ok"` errors vanish entirely. `examples/count_lines.peb` has the
+      same bug in its own switch (2 instances) — likely the same
+      staleness pattern as every other example this sweep found. Small,
+      mechanical, fixable now — unlike the two real gaps above and
+      below, this one doesn't need new compiler capability.
 - [ ] **[checker or generator, unclear] `std/hash.peb`'s `hash_ptr`
       function needs an explicit pointer→u64 cast, which the checker's
       conversion matrix (`classifyComposite` in `compatibility.go`)
@@ -260,7 +295,15 @@ same staleness, also fixed).
       `bubble_sort.peb` — a genuine `[generator]` gap, not example
       staleness: `validateHelperSignature` in `emit.go` rejects
       array-typed helper parameters/return values (`[5]int`); fix
-      dispatched, in progress as of this writing.
+      dispatched, in progress as of this writing. `count_lines.peb` —
+      fully triaged (see the qualified-static-call and `case Ok:`
+      findings above/below): stale-example fault is `usize` plus the
+      `case Ok:`/`case Err:` syntax bug; but even after fixing both,
+      the file can't check clean until the qualified-static-call gap
+      and the (already-deferred) union-variant-payload-access gap are
+      implemented — it also transitively imports `std:io`, so it was
+      independently hitting the `std/io.peb` gap above too (same root
+      cause, being fixed there).
 
 ---
 
