@@ -759,6 +759,88 @@ func TestEmitGenericStructNestedFieldTwoSpecializationsWriteConcreteCTypedefs(t 
 	}
 }
 
+func TestEmitGenericStructDataFieldsCrossModuleContextCompileAndRun(t *testing.T) {
+	// Generic struct data fields slice 1 (254a00c) substituted a directly
+	// parameter-typed field from the struct's generic declaration key in the
+	// snapshot — but only when that declaration key was the FIRST
+	// all-TypeParameter-arg Nominal key for the declaration in allocation
+	// order. A generic struct referenced from another generic context (a
+	// method, or a generic function that names the struct with ITS OWN type
+	// parameters) interns a SEPARATE all-TypeParameter key per context, so a
+	// plain first-match scan could return a function/method context's key —
+	// whose parameter symbols never match the declaration's own field
+	// MemberTypes (each context's parameters are distinct symbols) — leaving
+	// `val K` unsubstituted and buildStructTypedef rejecting the
+	// type-parameter field. This is the exact std/hmap.peb Entry[int,int]
+	// root cause: HashMap's entries []Entry[K,V] field reaches Entry's key K /
+	// value V, and hmap's eight methods each intern an Entry[K,V] key with
+	// their own inherited K/V symbols before Entry's canonical key lands.
+	// This fixture is the minimal repro: Inner[K] (a direct parameter field
+	// plus a method, which adds another all-TypeParameter key), Outer[K]
+	// carrying an Inner[K] field, and a generic function newo[K] that
+	// constructs Outer[K] with newo's OWN K — the function-context key interns
+	// before Inner's canonical key. Before structTypeParameters selected the
+	// canonical key (whose parameters are the ones the declaration's own field
+	// MemberTypes reference), Emit failed with "field type type-parameter(...)
+	// is not supported"; now the emitted Inner[int] typedef carries the
+	// concrete int32_t field and the program compiles and runs to 5.
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	provider := fixtureProvider{
+		"main.peb": []byte(`import "std:lib"; fn main() int { var o = lib::newo[int](5); return o.inner.val; }`),
+		"std/lib.peb": []byte(`type Inner[K] = struct {
+    val K;
+    fn bump[K](self *Inner[K]) void { self.val = self.val; }
+};
+type Outer[K] = struct {
+    inner Inner[K];
+    fn touch[K](self *Outer[K]) void { self.inner.val = self.inner.val; }
+};
+fn newo[K](v K) Outer[K] {
+    return Outer[K].{ inner = Inner[K].{ val = v } };
+}`),
+	}
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("check succeeded without an IR unit")
+	}
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == "main" {
+			entryID = candidate.ID
+		}
+	}
+	if entryID == 0 {
+		t.Fatal("missing symbol \"main\"")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, unit.Snapshot(), entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed on the cross-module generic struct data-field fixture; structTypeParameters must substitute the declaration's own parameters, not a generic-function context's: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "type-parameter") {
+		t.Errorf("emitted C still carries an unsubstituted type-parameter field:\n%s", out)
+	}
+	// The Inner[int] typedef's val field must be the concrete int32_t (the
+	// shape that failed before the fix).
+	if !strings.Contains(out, "    int32_t pebble_field_") {
+		t.Errorf("emitted C missing Inner[int]'s concrete int32_t val field:\n%s", out)
+	}
+	// The end-to-end proof: reading o.inner.val through both struct layers
+	// must compile under -Wall -Wextra -Werror and exit 5.
+	compileAndRun(t, buf.Bytes(), 5, false)
+}
+
 func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int => 0;", true, 0, false)
 }
@@ -5287,21 +5369,33 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// make the cycle itself a non-issue: Emit must NOT fail with a recursion
 	// error. The optional-uint-payload gap (hmap's insert declares `var
 	// tombstone_index ?uint = none;`) is now FIXED, the pointer-payload
-	// optional gap (hmap's get_by_ref returns `?*V`) is now FIXED, and the
+	// optional gap (hmap's get_by_ref returns `?*V`) is now FIXED, the
 	// runtime-builtin (Allocator) struct-field-typedef gap (HashMap's `backing
 	// Allocator` field produced a zero-valued structInfo whose buildStructTypedef
 	// rejected with "struct type 0 is not in the type snapshot") is now FIXED —
 	// orderAggregateTypes skips compiler-builtin runtime types entirely, and the
-	// runtime field is emitted with its hand-written PebbleAllocator C type.
-	// Emit now progresses past all of those and fails on a DIFFERENT, separate,
-	// pre-existing gap: HashMap's own `len uint` and `cap uint` fields, rejected
-	// by structFieldCType ("field type uint is not supported, want int or bool")
-	// since this backend emits exactly the entry's width or bool as struct
-	// fields. This test pins that precise residual gap (so a future session
-	// fixing struct fields of non-entry-width integer types knows exactly what
-	// remains) rather than fixing it. Mirrors TestCheckStdHmapU64HashFnTypes'
-	// fixture pattern (os.ReadFile of the real module sources, fixtureProvider,
-	// StandardRoot: "std").
+	// runtime field is emitted with its hand-written PebbleAllocator C type —
+	// the uint-struct-field gap (HashMap's `len uint` / `cap uint`) is now
+	// FIXED (structFieldCType accepts any fixed-width integer), and the
+	// type-parameter-field gap is now FIXED: Entry[int,int]'s `key K` / `value
+	// V` fields are substituted to their concrete int/int arguments by
+	// structTypeParameters, which now selects the declaration's canonical
+	// generic key (the all-TypeParameter key whose parameter symbols match the
+	// declaration's own field MemberTypes) instead of whichever all-TypeParameter
+	// key was interned first (hmap's eight methods each intern an Entry[K,V]
+	// key with their own inherited K/V symbols before Entry's canonical key
+	// lands, so a plain first-match scan left key/value as unresolved type
+	// parameters). Emit now progresses past ALL of those and fails on a
+	// DIFFERENT, separate, pre-existing gap: Entry's `state EntryState` field,
+	// rejected by structFieldCType ("field type ... is an enum type;
+	// enum-typed struct fields are not supported yet") since this backend
+	// emits exactly fixed-width integers, bool, and the supported compound
+	// types as struct fields, not plain-enum typedefs. This test pins that
+	// precise residual gap (so a future session fixing enum-typed struct
+	// fields — the typedef field C type, enum literal field assignment, and
+	// enum field comparison — knows exactly what remains) rather than fixing
+	// it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern (os.ReadFile
+	// of the real module sources, fixtureProvider, StandardRoot: "std").
 	hmap, err := os.ReadFile("../../std/hmap.peb")
 	if err != nil {
 		t.Fatal(err)
@@ -5343,7 +5437,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, and uint-struct-field gaps are gone, but this test expected the remaining type-parameter-field gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, uint-struct-field, and type-parameter-field gaps are gone, but this test expected the remaining enum-typed-struct-field gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
@@ -5357,23 +5451,23 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	if strings.Contains(err.Error(), "field type uint is not supported") {
 		t.Fatalf("Emit still fails with the uint-struct-field error; the structFieldCType widening did not land: %v", err)
 	}
+	if strings.Contains(err.Error(), "field type type-parameter") {
+		t.Fatalf("Emit still fails with the type-parameter-field error; the structTypeParameters canonical-key substitution did not land: %v", err)
+	}
 	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
 	// payload, the (fixed) pointer-payload optional, the (fixed)
-	// runtime-Allocator struct-field typedef, and the (fixed) uint-typed
-	// struct field (HashMap's own len/cap): a struct reached only through
-	// orderAggregateTypes's dependency walk (structByType[id].fields, read
-	// directly rather than through resolveStructInfo's per-instantiation
-	// substitution) still carries an unresolved type-parameter field --
-	// Entry[K,V]'s key K / value V fields, reached via HashMap's entries
-	// []Entry[K,V] field, are not substituted to their concrete int/int
-	// arguments in this code path, unlike every other struct-field-resolution
-	// path fixed earlier this session. A distinct, separate, not-yet-fixed
-	// generic-struct-fields gap specific to orderAggregateTypes's own field
-	// walk.
-	if !strings.Contains(err.Error(), "field type type-parameter") {
-		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field error: %v", err)
+	// runtime-Allocator struct-field typedef, the (fixed) uint-typed struct
+	// field (HashMap's own len/cap), and the (fixed) type-parameter-field
+	// substitution (Entry[K,V]'s key K / value V now resolve to their
+	// concrete int/int arguments): Entry's `state EntryState` field, rejected
+	// by structFieldCType because a plain-enum-typed struct field has no
+	// emitted C field type yet. A distinct, separate, not-yet-fixed gap —
+	// enum-typed struct fields — that the full hmap consumer surfaces once the
+	// type-parameter substitution is correct.
+	if !strings.Contains(err.Error(), "is an enum type; enum-typed struct fields are not supported") {
+		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field non-type-parameter error: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on an unresolved type-parameter field reached via orderAggregateTypes's own dependency walk (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, and uint struct fields are all fixed): %v", err)
+	t.Logf("full std:hmap consumer now blocks only on an enum-typed struct field (Entry's state EntryState) reached after the type-parameter-field substitution is fixed (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, uint struct fields, and direct type-parameter fields are all fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {

@@ -1888,7 +1888,7 @@ func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 	}
 	var substitutions map[symbol.SymbolID]types.TypeID
 	if len(arguments) > 0 {
-		substitutions = structSubstitutions(snapshot, decl, arguments)
+		substitutions = structSubstitutions(unit, snapshot, decl, arguments)
 	}
 	fields := make([]structFieldInfo, len(typeDecl.Members))
 	for i, member := range typeDecl.Members {
@@ -1960,8 +1960,8 @@ func instantiatedFieldType(unit *tir.Unit, structType types.TypeID, member symbo
 // generic declaration key is absent from the snapshot yields nil (callers then
 // fall back to MemberTypes/fieldTypes, which is exactly correct for the
 // non-generic case).
-func structSubstitutions(snapshot *types.Snapshot, decl symbol.SymbolID, arguments []types.TypeID) map[symbol.SymbolID]types.TypeID {
-	parameters := structTypeParameters(snapshot, decl)
+func structSubstitutions(unit *tir.Unit, snapshot *types.Snapshot, decl symbol.SymbolID, arguments []types.TypeID) map[symbol.SymbolID]types.TypeID {
+	parameters := structTypeParameters(unit, snapshot, decl)
 	if len(parameters) == 0 || len(parameters) != len(arguments) {
 		return nil
 	}
@@ -1988,7 +1988,37 @@ func structSubstitutions(snapshot *types.Snapshot, decl symbol.SymbolID, argumen
 // are all TypeParameter kinds. Its arguments are therefore the authoritative
 // ordered parameter list needed to zip the instantiation's concrete arguments
 // back onto the struct's parameters.
-func structTypeParameters(snapshot *types.Snapshot, decl symbol.SymbolID) []types.TypeID {
+//
+// That one-Nominal uniqueness assumption does NOT hold in a program where the
+// generic declaration is referenced from other generic contexts: every
+// generic function or method that names the declaration with its OWN type
+// parameters interns a SEPARATE all-TypeParameter Nominal key (e.g.
+// Entry[K, V] referenced from rehash[K, V]'s body interns a key whose
+// arguments are rehash's own K/V TypeParameters, distinct from Entry's own),
+// so a plain first-match scan returns whichever all-TypeParameter key was
+// interned earliest — frequently a method/function context's, whose parameter
+// symbols never match the field MemberTypes the substitution must rewrite.
+// The declaration's OWN parameters are exactly the TypeParameters its own
+// field MemberTypes reference (a directly parameter-typed field records the
+// parameter's TypeID; each generic context's parameters are distinct symbols),
+// so the scan prefers the candidate whose argument symbols include every
+// field-referenced parameter symbol, falling back to the first all-TypeParameter
+// key only when the declaration has no directly parameter-typed field (in which
+// case no field's type depends on the substitution anyway).
+func structTypeParameters(unit *tir.Unit, snapshot *types.Snapshot, decl symbol.SymbolID) []types.TypeID {
+	referenced := map[symbol.SymbolID]bool{}
+	if typeDecl, ok := findTypeDeclaration(unit, decl); ok {
+		for _, memberType := range typeDecl.MemberTypes {
+			if kind, ok := snapshot.Kind(memberType); ok && kind == types.TypeParameter {
+				if key, ok := snapshot.Key(memberType); ok {
+					if symbolID, ok := key.TypeParameter(); ok {
+						referenced[symbolID] = true
+					}
+				}
+			}
+		}
+	}
+	var fallback []types.TypeID
 	for id := range snapshot.IDs() {
 		key, ok := snapshot.Key(id)
 		if !ok || key.Kind() != types.Nominal {
@@ -2008,9 +2038,30 @@ func structTypeParameters(snapshot *types.Snapshot, decl symbol.SymbolID) []type
 		if !allParameters {
 			continue
 		}
-		return arguments
+		if fallback == nil {
+			fallback = arguments
+		}
+		matches := true
+		for symbolID := range referenced {
+			found := false
+			for _, argument := range arguments {
+				if key, ok := snapshot.Key(argument); ok {
+					if argumentSymbol, ok := key.TypeParameter(); ok && argumentSymbol == symbolID {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return arguments
+		}
 	}
-	return nil
+	return fallback
 }
 
 // findTypeDeclaration locates the TypeDecl container (its ordered Members list
@@ -9927,7 +9978,7 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 			fieldType = typeDecl.MemberTypes[index]
 		}
 		if fieldType != 0 {
-			substitutions := structSubstitutions(snapshot, decl, arguments)
+			substitutions := structSubstitutions(unit, snapshot, decl, arguments)
 			if substitutions != nil {
 				if substituted, err := snapshot.Substitute(fieldType, substitutions); err == nil {
 					return substituted, true
