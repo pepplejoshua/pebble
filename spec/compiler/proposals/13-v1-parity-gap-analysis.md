@@ -227,24 +227,28 @@ same staleness, also fixed).
       silently corrupting state; confirmed race-clean under
       `go test -race`). `examples/extern_mem_funcs.peb` fully closed
       (`ae4b7c0`) — compiles and runs, prints 42, exit 0.
-- [ ] **[checker] An anonymous closure LITERAL using `=>` arrow shorthand
-      fails a false "non-void function can fall through without
-      returning" (`C0607`) when passed as a call argument — a NAMED
-      top-level function using the identical `=> expr` shorthand works
-      perfectly fine.** Found via `examples/std_hash.peb` and
-      `examples/std_set.peb`, both of which pass
-      `fn (a, b str) bool => a == b` as a call argument (a comparator
-      callback). Precisely bounded and reproduced in isolation
-      (`/tmp/closure_repro.peb`, not committed):
-      `fn eq(a str, b str) bool => a == b;` at the top level compiles
-      and runs correctly (emits a real function with a real `return`
-      statement), but the exact same body written as an inline closure
-      literal argument (`call_it(fn (a, b str) bool => a == b)`) fails
-      `C0607` at check. The implicit-return desugaring the `=>`
-      shorthand applies to a named declaration is evidently not being
-      applied to a closure-literal expression — a genuine, narrow
-      `[checker]` bug, not example staleness. Blocks both
-      `std_hash.peb` and `std_set.peb`. Not yet scoped for dispatch.
+- [x] **CLOSED (`1265121`)** — closure-literal `=>` arrow shorthand
+      false `C0607`. Root cause: `syntax.FunctionTerm` (a closure
+      literal) has its own dispatch branch entirely separate from
+      `callableChildren` (named `FunctionDecl`/`ExternFunction`
+      declarations), and that branch was simply missing the arrow-body
+      implicit-return wiring block `callableChildren` already had —
+      added it. `examples/std_hash.peb` and `examples/std_set.peb` both
+      now check clean past this error (confirmed: the `C0607` is
+      completely gone from both). Neither is fully "done" yet, though —
+      both still surface only PRE-EXISTING, unrelated `C0618`
+      "unreachable statement" WARNINGS inside `std/hmap.peb`/
+      `std/set.peb` themselves (a trailing `return none;`/`return
+      false;` after a `while true { ... }` loop the checker can't
+      statically prove never falls through — needed to satisfy the
+      must-return check, so likely NOT safely removable without
+      triggering the opposite error; not investigated further, low
+      priority). `pebc`'s CLI currently exits 1 on ANY diagnostic
+      including warnings (`diagnostics.Len() > 0`, not diagnostic
+      severity), so both examples still show a nonzero exit from the
+      CLI despite genuinely passing check — this is a `pebc` CLI
+      strictness quirk, not a compiler correctness gap. Not scoped
+      further; flagged here for whoever picks it up next.
 - [ ] **[checker] Qualified static-method calls on a nominal type
       (`TypeName.method(...)`) are entirely broken — not just for
       generics.** Found via a full `count_lines.peb` triage (which
