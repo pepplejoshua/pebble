@@ -5158,6 +5158,139 @@ func TestEmitF32LocalDeclaresAndReturns(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 3, false)
 }
 
+func TestEmitF64HelperParamAndReturnCompilesAndRuns(t *testing.T) {
+	// The required f64-helper-parameter/return test: a reachable helper takes
+	// an f64 parameter, multiplies it by an f64 literal (real float
+	// arithmetic over the parameter), and returns an f64 result, called from
+	// the entry with an f64 literal argument, the result stored into an f64
+	// local via a DirectCall initializer and printed. This exercises every
+	// widened path at once: validateHelperSignature admitting the f64
+	// parameter and result, helperSignature declaring the parameter as a C
+	// double (seeded localInfo{kind: types.F64}) and the result as a C
+	// double (resultInfo{kind: types.F64}), buildCallArgument building the
+	// 2.5 argument via buildFloatExpr at the f64 kind, buildScalarInitializeCore
+	// building the call initializer via buildFloatExpr's DirectCall case, and
+	// buildReturnStatement building `return value * 2.0;` via buildFloatExpr's
+	// BinaryValue case. 2.5 * 3.0 = 7.5, which prints as 7.500000.
+	out := emitAndRunCapture(t, `
+fn scale(value f64, factor f64) f64 { return value * factor; }
+fn main() i32 { let result f64 = scale(2.5, 3.0); print result; return 0; }`, false, 0, false)
+	if want := "7.500000\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitF32HelperParamAndReturnCompilesAndRuns(t *testing.T) {
+	// The f32 twin of the f64 test: an f32 helper parameter and result are
+	// declared as C float (not double) and built at the f32 kind. 1.5 * 4.0
+	// = 6.0f, which prints as 6.000000 (f32 promotes to double in the
+	// variadic %f print call).
+	out := emitAndRunCapture(t, `
+fn scale(value f32, factor f32) f32 { return value * factor; }
+fn main() i32 { let result f32 = scale(1.5, 4.0); print result; return 0; }`, false, 0, false)
+	if want := "6.000000\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitMixedIntFloatHelperParamsCompilesAndRuns(t *testing.T) {
+	// A helper mixing an integer parameter and an f64 parameter — the exact
+	// signature shape leibniz_pi_approx.peb's approximate_pi uses — so the
+	// integer argument still flows through buildExpr at the entry width while
+	// the float argument flows through buildFloatExpr at the f64 kind.
+	// `(mult as f64) * base` mixes an IntegerToFloat cast into the float
+	// arithmetic inside the helper body. 3 as f64 * 1.5 = 4.5.
+	out := emitAndRunCapture(t, `
+fn scaled(mult int, base f64) f64 { return (mult as f64) * base; }
+fn main() int { let r f64 = scaled(3, 1.5); print r; return 0; }`, false, 0, false)
+	if want := "4.500000\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitFloatHelperReturnForwardCompilesAndRuns(t *testing.T) {
+	// A float-returning helper whose body returns another float-returning
+	// helper's call directly (a return forward): buildReturnStatement's float
+	// dispatch builds the DirectCall via buildFloatExpr's DirectCall case,
+	// which must build the f64 argument (a reference to the outer helper's own
+	// f64 parameter) at the f64 kind. outer(1.0) = inner(1.0) + 1.0 = 2.0.
+	out := emitAndRunCapture(t, `
+fn inner(x f64) f64 { return x + 1.0; }
+fn outer(x f64) f64 { return inner(x); }
+fn main() i32 { let r f64 = outer(1.0); print r; return 0; }`, false, 0, false)
+	if want := "2.000000\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitFloatNegationInHelperCompilesAndRuns(t *testing.T) {
+	// A float helper body that negates its f64 parameter (`return -x;`) and
+	// an entry that negates a float local: the checker lowers a float negate
+	// to a PrefixValue (only an integer negate becomes CheckedNegate), so
+	// buildFloatExpr's PrefixValue case emits the plain C `-`. neg(2.5) =
+	// -2.5, prints as -2.500000.
+	out := emitAndRunCapture(t, `
+fn neg(x f64) f64 { return -x; }
+fn main() i32 { let r f64 = neg(2.5); let s f64 = -r; print s; return 0; }`, false, 0, false)
+	if want := "2.500000\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitLeibnizPiApproximationCompilesAndRuns(t *testing.T) {
+	// The leibniz_pi_approx.peb shape end-to-end, with the file's staleness
+	// fixed (float -> f64, `n as f64` for the mixed-int/float term): an f64
+	// helper taking an int and an f64 parameter accumulates the Leibniz
+	// series in a while loop (breaking when the term drops below the
+	// precision), returns pi as an f64, and the entry stores the result in an
+	// f64 local, prints it alongside the actual pi and the error. This is the
+	// exact program from the task; the checked-in example file itself must
+	// stay untouched (it still uses the undefined `float` type), so this test
+	// carries the fixed form. 100000 terms of the slowly-converging Leibniz
+	// series give 3.1415826535897198 (about 1e-5 off), so the printed values
+	// are pinned below.
+	out := emitAndRunCaptureBounded(t, `
+fn approximate_pi(max_terms int, precision f64) f64 {
+    var sum f64 = 0.0;
+    var n = 0;
+    var sign = 1.0;
+    while n < max_terms {
+        var term f64 = sign / (2.0 * (n as f64) + 1.0);
+        sum = sum + term;
+        sign = -sign;
+        n = n + 1;
+        if term < 0.0 {
+            term = -term;
+        }
+        if term < precision {
+            break;
+        }
+    }
+    return sum * 4.0;
+}
+
+fn main() int {
+    let max_terms = 100000;
+    let precision = 0.000001;
+    let pi_approx = approximate_pi(max_terms, precision);
+    let actual_pi = 3.1415926535;
+    var error = actual_pi - pi_approx;
+    if error < 0.0 {
+        error = -error;
+    }
+
+    print "Approximated pi:"; print pi_approx;
+    print "Actual pi:"; print actual_pi;
+    print "Error:"; print error;
+
+    return 0;
+}`, false, 0, false)
+	want := "Approximated pi:\n3.141583\nActual pi:\n3.141593\nError:\n0.000010\n"
+	if out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
 func TestEmitReassignsF64LocalAndReturns(t *testing.T) {
 	// Required test 4: a Store reassigns an already-declared f64 local
 	// (x = 2.5;), so buildStoreCore's float case must build the new value via
@@ -5847,7 +5980,7 @@ func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
 	// its result, here also i64) must be a clean rejection naming the width,
 	// never a coercion. The parameter check fires before the result check.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, char, or str")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "has type i64, want i32, bool, char, str, f32, f64")
 }
 
 func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {

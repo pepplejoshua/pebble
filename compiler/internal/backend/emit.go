@@ -2734,7 +2734,10 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// compared/returned exactly as one), a str value (built by
 		// buildStrOperand — since 10.36 a
 		// str parameter is seeded like a str local and read/compared/returned
-		// exactly as one), a tuple/struct type (read back through the
+		// exactly as one), an f32/f64 value (built by buildFloatExpr at the
+		// parameter's own float kind — since this slice a float parameter is
+		// seeded like a float local and read/compared/returned/passed exactly
+		// as one), a tuple/struct type (read back through the
 		// Load(TuplePlace)/Load(FieldPlace) machinery), or, since 10.38, a
 		// slice type (read back through the same Load(CheckedIndexPlace)
 		// machinery a slice local uses), nothing else. This is
@@ -2746,8 +2749,8 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, uint, u64, bool, char, str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(unit, snapshot, width, param.Type); err != nil {
@@ -2789,8 +2792,8 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// clean rejection at typedef build time, never a guessed layout.
 	}
 	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
-	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isArray(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) && !isFunctionType(snapshot, decl.ResultType) {
-		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, a function result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
+	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isFloat(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isArray(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) && !isFunctionType(snapshot, decl.ResultType) {
+		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, f32, f64, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, a function result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(unit, snapshot, width, decl.ResultType); err != nil {
@@ -3013,6 +3016,23 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			// trivially valid C.
 			params = append(params, "int32_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{isChar: true}
+		case isFloat(snapshot, param.Type):
+			// An f32/f64-typed parameter seeds the callee's locals scope as
+			// a float local (localInfo{kind: kind}, where kind is the
+			// parameter's own f32/f64 kind — the exact localInfo shape
+			// buildScalarInitializeCore records for a float local of that
+			// kind), so a reference to the parameter inside the body
+			// resolves through the existing buildFloatExpr machinery at that
+			// same float kind unchanged (read in any of the six comparisons,
+			// used in float arithmetic, forwarded by a float-returning
+			// helper's return, or passed to another float parameter). The C
+			// parameter is declared at the parameter's own float C type
+			// (floatCType — float for f32, double for f64), the same C type
+			// a float local is declared with, no typedef involved — so
+			// passing a float by value is trivially valid C.
+			floatKind := resolvedFloatKind(snapshot, param.Type)
+			params = append(params, floatCType(floatKind)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: floatKind}
 		case isTuple(snapshot, param.Type):
 			// A tuple-typed parameter seeds the callee's locals scope as a
 			// tuple local (localInfo.tuple), exactly as a tuple local's
@@ -3123,7 +3143,7 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			// validateHelperSignature rules any unsupported parameter out
 			// before a reachable helper is ever built, so this branch is
 			// defense for hand-built IR only.
-			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, or an optional type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	bodyWidth = width
@@ -3164,6 +3184,21 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 		// rather than buildExpr, which would reject a char-typed value.
 		returnType = "int32_t"
 		result = resultInfo{isChar: true}
+	case isFloat(snapshot, helper.decl.ResultType):
+		// An f32/f64-result helper (this slice) is declared with the C
+		// return type of the result's own float kind (floatCType — float
+		// for f32, double for f64, the same C type a float local is
+		// declared with, no typedef involved) and resultInfo records the
+		// float kind (resultInfo{kind: kind}) — the exact resultInfo shape
+		// the entry's own f32/f64-returning main threads — so buildBlock's
+		// tail-position Return builds its value via buildFloatExpr (a float
+		// literal, a SymbolValue naming a float-typed local of the same
+		// kind, float arithmetic, or a call to another float-returning
+		// helper) rather than buildExpr, which would reject a float-typed
+		// value.
+		floatKind := resolvedFloatKind(snapshot, helper.decl.ResultType)
+		returnType = floatCType(floatKind)
+		result = resultInfo{kind: floatKind}
 	case isTuple(snapshot, helper.decl.ResultType):
 		returnType = tupleTypeName(helper.decl.ResultType)
 		result = resultInfo{tuple: helper.decl.ResultType}
@@ -10934,7 +10969,8 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // parameter, deciding the child's grammar from the parameter's resolved type
 // exactly as an ordinary call's per-argument loop always has — the entry's
 // width parameters take buildExpr, uint parameters take buildUintExpr, bool
-// parameters take buildBoolExpr, char parameters take buildCharOperand, str
+// parameters take buildBoolExpr, f32/f64 parameters take buildFloatExpr at the
+// parameter's own float kind, char parameters take buildCharOperand, str
 // parameters take buildStrOperand, tuple/struct parameters take
 // buildAggregateArgument, slice parameters take buildSliceArgument, pointer
 // parameters take buildExpr (which handles every pointer-value shape), and
@@ -10964,6 +11000,14 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		return buildUintExpr(unit, snapshot, fileSet, argID, locals, width)
 	case isBool(snapshot, param.Type):
 		return buildBoolExpr(unit, snapshot, fileSet, argID, locals, width)
+	case isFloat(snapshot, param.Type):
+		// An f32/f64 parameter: the argument is a float value built by
+		// buildFloatExpr at the parameter's OWN float kind — a reference to
+		// a float-typed local in scope of the same kind, a float literal
+		// directly (f(3.5)), or a call to a float-returning helper (f(g()))
+		// — emitted at the same C float type (floatCType) the parameter is
+		// declared with, so passing a float by value is trivially valid C.
+		return buildFloatExpr(unit, snapshot, fileSet, argID, locals, resolvedFloatKind(snapshot, param.Type))
 	case isChar(snapshot, param.Type):
 		// A char parameter: the argument is a char value built by
 		// buildCharOperand — a reference to a char-typed local in scope, a
@@ -11039,7 +11083,7 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// validateHelperSignature rules any unsupported parameter out
 		// before a reachable helper is ever built, so this branch is
 		// defense for hand-built IR only.
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, or a pointer type", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 	}
 }
 
@@ -11824,17 +11868,19 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 // for an f64 position) and every node in an accepted expression tree must
 // carry exactly that builtin — a node carrying the other float kind, or a
 // non-float value, is a clean rejection naming the wanted kind, never a
-// coercion. There is deliberately NO DirectCall/MethodCall case: a float-
-// returning helper is not reachable in this stage (validateHelperSignature
-// rejects one, since floatCType's "" guards the same place cType's did for
-// non-integers before 169cc3c), so a float-typed call in this position would
-// be a clean rejection by the default case anyway. Float arithmetic,
-// comparisons, and casts are likewise out of scope and named in the
-// rejection. Shared by the three positions a float value can appear in this
-// stage: a float local's declaration initializer (buildScalarInitializeCore),
-// a float local's reassignment (buildStoreCore), and a float-returning
-// entry's tail-position return value (buildBlock / buildSwitchCaseBody
-// dispatch on resultInfo.kind).
+// coercion. Since this slice widened float helper parameters and results, a
+// DirectCall/MethodCall to a float-returning helper is a supported float
+// value (a float local's call initializer, a float call argument, a float
+// comparison operand, a print operand, or a float-returning helper's
+// tail-position return forward) built by the same buildDirectCall machinery a
+// scalar-width call uses. Float arithmetic, comparisons, and casts are
+// likewise supported. Shared by the positions a float value can appear in: a
+// float local's declaration initializer (buildScalarInitializeCore), a float
+// local's reassignment (buildStoreCore), a float call argument
+// (buildCallArgument), a float comparison operand (buildComparison), a print
+// operand (buildPrint), and a float-returning entry's or helper's
+// tail-position return value (buildBlock / buildSwitchCaseBody dispatch on
+// resultInfo.kind).
 func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
@@ -11867,6 +11913,35 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
 		return buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+	case tir.PrefixValue:
+		// A unary minus on a float (`-x`, `-3.5`) arrives as a PrefixValue
+		// with operator -: the checker only lowers a negate to CheckedNegate
+		// when an operand is an integer, so a float negate is a PrefixValue.
+		// Float negation is a defined C operation (the IEEE 754 sign flip;
+		// only the -0.0 boundary is sign-flipped, which is exactly the
+		// intended semantics), so the plain C `-` operator is a direct,
+		// correct lowering of the built child.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a PrefixValue with %d operand(s), want exactly one", len(node.Children))
+		}
+		if node.Operator != syntax.Minus {
+			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want -", node.Operator)
+		}
+		child, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "(-" + child + ")", nil
+	case tir.DirectCall, tir.MethodCall:
+		// A call to a float-returning helper used directly as a float value
+		// (a float local's call initializer, a float call argument, a float
+		// comparison operand, a print operand, or a float-returning helper's
+		// tail-position return forward). The call node's own Type is the
+		// callee's resolved result type, gated to the same float kind above;
+		// the call is built by the same buildDirectCall machinery a
+		// scalar-width call uses, so context and argument handling are
+		// identical.
+		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
 	case tir.BinaryValue:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body float arithmetic has %d operands, want exactly two", len(node.Children))
@@ -11961,7 +12036,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		}
 		return "(" + floatCType(destinationWidth) + ")(" + childExpr + ")", nil
 	default:
-		return "", fmt.Errorf("entry function body expression contains a %s, want a float literal or a reference to a %s local declared earlier in the body", node.Kind, wantName(width))
+		return "", fmt.Errorf("entry function body expression contains a %s, want a float literal, a reference to a %s local declared earlier in the body, float arithmetic, a negation, or a call to a float-returning function", node.Kind, wantName(width))
 	}
 }
 
