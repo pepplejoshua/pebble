@@ -103,21 +103,38 @@ imperative program needs.
       each gained an enum case, reusing the existing general
       `buildEnumValue` machinery rather than inventing new enum
       -value semantics).
-- [ ] **A full `std/hmap.peb` consumer now hits a genuinely different,
-      substantial gap: slices of STRUCT elements are not supported.**
-      `HashMap[K,V]`'s `entries []Entry[K, V]` field is a slice whose
-      element type is a struct — the slice-element machinery
-      (`sliceElementCType`/`isSupportedSliceElementType`, widened
-      earlier this session to fixed-width integers/char/bool) does not
-      yet support struct (or any aggregate) elements at all:
-      `"slice element type nominal(symbol 36) is not supported; only
-      a fixed-width integer, char, or bool slice elements are
-      supported."` This is comparable in size to the generic
-      -struct-data-fields work earlier this session, not a narrow gate
-      widening — struct-element slice construction, indexing/reads,
-      and index-writes would all need real support. This is now the
-      last known blocker on `std/hmap.peb` compiling and running
-      end-to-end. Not yet scoped in detail.
+- [x] **[generator]** Struct/tuple/optional-element slices fixed
+      (`ffa50d1`) — mirrors `arrayElementCType`'s existing support
+      (arrays already handled this); needed a genuine new mechanism
+      beyond that precedent, though: a real C incomplete-type forward
+      declaration for an aggregate used as a slice element, since a
+      slice's own typedef is emitted before the aggregate typedef
+      block it needs to point into.
+- [ ] **[generator] A full `std/hmap.peb` consumer now hits the uint
+      expression grammar: no `SizeofType` case, and no checked
+      -arithmetic runtime helper for a `uint` operand mixed with a
+      `sizeof` result.** `rehash`/`with_capacity` compute `new_cap *
+      (sizeof Entry[K, V])`. This is now the last known blocker on
+      `std/hmap.peb` compiling and running end-to-end. Not yet scoped
+      in detail — likely another narrow gate-widening in the same
+      family as this session's other `uint`/checked-arithmetic fixes,
+      but confirm rather than assume (the `sizeof` operand specifically
+      hasn't been exercised in this position before).
+
+---
+
+**Note on labeling (2026-08-06):** entries above are now tagged
+`[checker]` or `[generator]` where the distinction was confirmed.
+`[generator]` (backend/`emit.go` C-emission code) has been the large
+majority of this session's fixes — the checker already accepted these
+programs; a specific C-emission code path just hadn't been taught the
+shape yet. `[checker]` fixes (generic struct method call
+specialization, the cross-module frozen-snapshot bug) were rarer but
+more serious: actual logic bugs in code that's supposed to already be
+authoritative, not missing coverage. Older, unlabeled entries above
+this note predate the convention; assume `[generator]` unless the
+entry's own text says otherwise (nearly all of them touch
+`internal/backend/emit.go`).
 
 ---
 
