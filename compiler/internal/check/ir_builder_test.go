@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
+	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
@@ -2035,6 +2036,51 @@ func findSymbolID(t *testing.T, handoff *solveHandoff, name string, kinds ...sym
 	}
 	t.Fatalf("symbol %s not found", name)
 	return 0
+}
+
+// TestBuildPlaceNarrowedUnionVariantRead covers the checker-accepted self.Ok
+// read inside its matching switch case arm (Slice A). The IR builder must lower
+// it to a FieldPlace whose Member is the Ok variant's own real symbol ID — not
+// 0, and not a structural-field sentinel carrying SyntheticRole/Origin.
+func TestBuildPlaceNarrowedUnionVariantRead(t *testing.T) {
+	state, _ := testBuildValue(t, `type Data = union enum { Ok i32; Err str; };
+fn get(self Data) int {
+    switch self {
+    case .Ok: return self.Ok;
+    case .Err: return 0;
+    }
+    return 0;
+}`)
+	okSymbol := findSymbolID(t, state.handoff, "Ok", symbol.SymbolVariant)
+	var okValue valueID
+	for _, retained := range state.handoff.Records.Records() {
+		if retained.Member != nil && retained.Member.Base != 0 && retained.Member.Name == "Ok" {
+			okValue = retained.Member.Result
+			break
+		}
+	}
+	if okValue == 0 {
+		t.Fatal("narrowed variant member record missing")
+	}
+	value, ok := state.buildValue(okValue)
+	if !ok {
+		t.Fatal("buildValue failed for narrowed variant read")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := unit.Nodes()[value-1]
+	if load.Kind != tir.Load || len(load.Children) != 1 {
+		t.Fatalf("variant read = %+v, want Load over a FieldPlace", load)
+	}
+	place := unit.Nodes()[load.Children[0]-1]
+	if place.Kind != tir.FieldPlace || place.Member != okSymbol {
+		t.Fatalf("variant read place = %+v, want FieldPlace of variant %d", place, okSymbol)
+	}
+	if place.SyntheticRole != "" || place.Origin != (source.Span{}) {
+		t.Fatalf("variant read place = %+v, want no synthetic role/origin", place)
+	}
 }
 
 // requireCallValueID locates the expression result of a call matching match.
