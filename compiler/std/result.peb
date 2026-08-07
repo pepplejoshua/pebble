@@ -12,22 +12,22 @@ type Result[T, E] = union enum {
 
     fn is_ok(self Result[T, E]) bool {
         switch self {
-            case Ok: return true;
-            case Err: return false;
+            case .Ok: return true;
+            case .Err: return false;
         }
     }
 
     fn unwrap_or(self Result[T, E], def T) T {
         switch self {
-            case Ok: return self.Ok;
-            case Err: return def;
+            case .Ok: return self.Ok;
+            case .Err: return def;
         }
     }
 
     fn map[U](self Result[T, E], f fn(T) U) Result[U, E] {
         switch self {
-            case Ok: return Result[U, E].ok(f(self.Ok));
-            case Err: return Result[U, E].err(self.Err);
+            case .Ok: return Result[U, E].ok(f(self.Ok));
+            case .Err: return Result[U, E].err(self.Err);
         }
     }
 

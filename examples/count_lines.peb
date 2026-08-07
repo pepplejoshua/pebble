@@ -83,7 +83,7 @@ fn main() int {
     loop 0..file_paths.len : i {
         var result = count_file(file_paths[i]);
         switch result {
-            case Ok: {
+            case .Ok: {
                 var stats = result.Ok;
                 total_stats.lines += stats.lines;
                 total_stats.words += stats.words;
@@ -91,7 +91,7 @@ fn main() int {
                 successful_files++;
                 print `{file_paths[i]}: {stats.lines} lines, {stats.words} words, {stats.chars} chars`;
             }
-            case Err: {
+            case .Err: {
                 print `Error reading {file_paths[i]}: {result.Err}`;
             }
         }
