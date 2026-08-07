@@ -455,20 +455,38 @@ not a real check failure). `math` found a genuine new gap:
       after an exhaustively-returning `while true`" shape, deletion is
       the correct fix, not a workaround — worth revisiting those two
       files with the same treatment.
-- [ ] **[generator] New backend gap exposed by the `io.peb` fix above:
-      `std/string.peb:18`'s `self.data = slice ptr, new_cap;` inside
-      `grow()` fails emission** — `pebc: emission failed: entry function
-      body block reassigns a slice-typed place from a SliceFromRaw, want
-      a reference to a slice-typed local in scope`. Reassigning a
-      slice-typed struct field directly from an inline `slice ptr, len`
-      construction isn't supported as a Store target (only reassignment
-      from an existing slice-typed local works today). This was always
-      latent — `examples/read_file.peb`'s check stage previously exited
-      early on the now-removed `io.peb` C0618 warning, so emission never
-      reached this code path before. Confirmed pre-existing, not a
-      regression from `ce86705`. Blocks `examples/read_file.peb` (via
-      `std:io` → `std:string`'s `grow()`) and any other consumer of
-      `String` that triggers a grow. Not yet scoped for dispatch.
+- [x] **CLOSED (`d7bbadc`) — `std/string.peb:18`'s `self.data = slice
+      ptr, new_cap;` inside `grow()` now emits.** `buildStoreCore`'s
+      `isSlice` branch only accepted a `SymbolValue` (reference to an
+      already-declared slice-typed local) as the reassignment value;
+      added a `SliceFromRaw` case reusing the existing
+      `buildRawSliceConstruction` helper (already used for the
+      slice-local-declaration case), type-checked against the field's
+      declared slice type before use. New end-to-end test
+      (`TestEmitSliceFieldReassignmentFromRawCompilesAndRuns`) compiles
+      under `-Wall -Wextra -Werror`, runs, and asserts the reassigned
+      value reads back correctly. Causation confirmed (revert
+      reproduces the exact original error; restore passes again).
+      Re-running `examples/read_file.peb` confirms the `SliceFromRaw`
+      error is completely gone — replaced by a new, different,
+      unrelated gap (below), not a regression.
+- [ ] **[generator] New backend gap exposed by the `SliceFromRaw` fix
+      above: a struct-typed `return` statement can't directly return a
+      `DirectCall`** — `pebc: emission failed: entry function body
+      return statement returns a DirectCall, want a reference to a
+      struct-typed local in scope or a struct literal (a
+      RecordConstruct); only returning an already-declared struct-typed
+      local or constructing a fresh struct literal inline is
+      supported`. Hit via `std/io.peb`'s many `return string::new();`
+      early-return paths (`read_all`, `read_line`, `get_file_error`,
+      etc.) — a struct-returning helper call (`string::new()`) used
+      directly as a return value, not first bound to a local. This was
+      always latent — emission never previously reached this far in
+      `examples/read_file.peb` because the `SliceFromRaw` gap above
+      failed first. Not a regression. Blocks `examples/read_file.peb`
+      and any `String`-returning function called directly in a
+      `return`. Not yet root-caused precisely (exact function/line not
+      pinned down) or scoped for dispatch.
 - [ ] **[checker] Masked `C0621` generic-requirement-propagation gap in
       `std/math.peb`'s `clamp[T]`, exposed by the float-constant fix
       (`b4410cb`).** Before that fix, `math.peb` failed outright on its
