@@ -104,3 +104,50 @@ func TestValidateMemberRecordsRejectsWrongFieldCategoryAndTupleOrdinal(t *testin
 		t.Fatal("wrong field category or tuple ordinal was not rejected")
 	}
 }
+
+func TestValidateMemberRecordsAcceptsNarrowedUnionVariantAccess(t *testing.T) {
+	source := `
+type Data = union enum { Ok i32; Err str; };
+fn get(self Data) int {
+    switch self {
+    case .Ok: return self.Ok;
+    case .Err: return 0;
+    }
+    return 0;
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if !validateMemberRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("union variant read in its narrowed case arm was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsRejectsUnionVariantAccessInWrongCase(t *testing.T) {
+	source := `
+type Data = union enum { Ok i32; Err str; };
+fn get(self Data) int {
+    switch self {
+    case .Err: return self.Ok;
+    case .Ok: return 0;
+    }
+    return 0;
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("union variant read in a different case arm was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsRejectsUnionVariantAccessOutsideSwitch(t *testing.T) {
+	source := `
+type Data = union enum { Ok i32; Err str; };
+fn get(self Data) int {
+    return self.Ok;
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("union variant read outside any switch was not rejected: %+v", diagnostics.Items())
+	}
+}

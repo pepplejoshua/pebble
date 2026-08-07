@@ -95,7 +95,7 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 					break
 				}
 			}
-			if !matched {
+			if !matched && !narrowedUnionVariantAccess(handoff, resolution, declaration, member) {
 				report(member.Header)
 			}
 		case memberTuple:
@@ -110,4 +110,30 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 		}
 	}
 	return !failed
+}
+
+// narrowedUnionVariantAccess accepts a member access that matched no real
+// field of its base's declaration only when that declaration is a union and
+// the access reads one of its variants by name (self.Ok) while lexically
+// inside a switch-case arm narrowed to that exact variant.
+func narrowedUnionVariantAccess(handoff *solveHandoff, resolution *symbol.Result, declaration symbol.SymbolID, member *memberRecord) bool {
+	if handoff == nil || resolution == nil || member == nil || declaration == 0 {
+		return false
+	}
+	typeDecl, ok := handoff.Semantics.TypeDeclaration(declaration)
+	if !ok || (typeDecl.Nominal != infer.NominalEnum && typeDecl.Nominal != infer.NominalTaggedUnion) {
+		return false
+	}
+	variant := false
+	for _, id := range resolution.Members(declaration) {
+		selected, found := resolution.Symbols.Symbol(id)
+		if found && selected.Kind == symbol.SymbolVariant && selected.Name == member.Name {
+			variant = true
+			break
+		}
+	}
+	if !variant {
+		return false
+	}
+	return switchCaseNarrowing(handoff, resolution, member)
 }
