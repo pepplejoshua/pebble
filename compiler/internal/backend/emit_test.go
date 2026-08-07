@@ -8105,6 +8105,18 @@ func TestEmitStructReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { let p Point = Point.{ x = 20, y = 22 }; return p; } fn main() i32 { let q Point = makeP(); return q.x + q.y; }", false, 42, false)
 }
 
+func TestEmitStructReturningHelperForwardsCallCompilesAndRuns(t *testing.T) {
+	// A struct-returning helper whose tail return is a DirectCall to another
+	// struct-returning helper (`return helper();` — the return-forwarding
+	// shape io.peb's `return string::new();` uses), with no intermediate
+	// local: makeP's return value is built from the call itself rather than
+	// from a SymbolValue or RecordConstruct. The entry assigns makeP's call
+	// to a matching local and reads both fields back, so a real field of the
+	// returned struct must come through end-to-end. 20 + 22 = 42 is the
+	// process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn helper() Point { return Point.{ x = 20, y = 22 }; } fn makeP() Point { return helper(); } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", false, 42, false)
+}
+
 func TestEmitTupleReturningHelperWithBoolElementCompilesAndRuns(t *testing.T) {
 	// A mixed width/bool tuple result: the bool element is built by
 	// buildBoolExpr inside the tuple's brace list (proving the element grammar
@@ -8309,14 +8321,6 @@ func TestEmitRejectsTupleReturningHelperInAnotherHelpersReturn(t *testing.T) {
 	// buildAggregateReturnValue, which rejects the DirectCall value cleanly,
 	// naming what was found.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn makeT2() (i32, i32) { return makeT(); } fn main() i32 { let t (i32, i32) = makeT2(); return t.0 + t.1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
-}
-
-func TestEmitRejectsStructReturningHelperInAnotherHelpersReturn(t *testing.T) {
-	// The struct side of the return-forwarding rejection: `return makeP();`
-	// from another struct-returning helper is a DirectCall return value,
-	// rejected by buildAggregateReturnValue naming what was found.
-	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn makeP2() Point { return makeP(); } fn main() i32 { let p Point = makeP2(); return p.x; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
 }
 

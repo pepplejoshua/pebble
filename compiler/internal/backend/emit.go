@@ -3701,10 +3701,14 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// aggregate grammar by buildAggregateReturnValue rather than
 		// buildExpr, which rejects an aggregate-typed value. Supported
 		// return shapes are a SymbolValue naming an aggregate-typed local
-		// in scope of the matching type, or a fresh inline TupleValue /
+		// in scope of the matching type, a fresh inline TupleValue /
 		// RecordConstruct of the matching type (both built via 10.25's
-		// expression builders); anything else is a clean rejection.
-		returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, width)
+		// expression builders), or a DirectCall to a struct-returning helper
+		// (a return forward); anything else is a clean rejection. The
+		// builder returns a (pre, expr) pair — the DirectCall shape's
+		// construction pre is threaded into the statement sequence ahead of
+		// the final return line, exactly as the slice path below does.
+		preReturn, returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
 	} else if result.arrayType != 0 {
 		returnValue, err = buildArrayReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, width)
 	} else if result.sliceType != 0 {
@@ -4145,7 +4149,7 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		} else if result.isStr {
 			returnValue, err = buildStrOperand(unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
 		} else if result.tuple != 0 || result.structType != 0 {
-			returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, bodyNode.Children[0], locals, result, width)
+			preReturn, returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
 		} else if result.sliceType != 0 {
 			// A slice-returning function's bare single-statement case body
 			// returning a fresh slice construction: the construction needs the
@@ -11709,8 +11713,8 @@ func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // returning function's tail-position return value (10.26). The enclosing
 // function's result type comes from result (mutually exclusive tuple /
 // structType, set by buildHelperFunctions from the helper's own ResultType),
-// and exactly two return-value shapes are supported (both confirmed against
-// real fixtures):
+// and the return-value shapes supported are (all confirmed against real
+// fixtures):
 //
 //   - a plain SymbolValue naming an already-declared aggregate-typed local in
 //     scope whose declared type is exactly the function's result type, emitted
@@ -11721,58 +11725,94 @@ func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 //     Point.{ x = 20, y = 22 }), emitted as a C99 compound-literal expression
 //     by buildTupleValueExpr / buildStructValueExpr (the same 10.25 expression
 //     builders an inline call argument uses), so the return statement emits
-//     e.g. `return (pebble_tuple_23_t){ 20, 22 };`.
+//     e.g. `return (pebble_tuple_23_t){ 20, 22 };`;
+//   - (struct branch only) a DirectCall to another struct-returning helper
+//     (return helperReturningStruct();), the return-forwarding shape io.peb's
+//     `return string::new();` uses. The callee's declared ResultType is
+//     double-checked against the function's result type (defense for hand-built
+//     IR), then the call is built by buildDirectCallWithPre — the same
+//     call-building machinery a struct-typed local's call initializer uses. The
+//     call's argument building may require a temp-declaration pre-statement (an
+//     inline slice-construction argument); since a return is a pure expression
+//     position with nowhere to place that statement, the pre is returned
+//     separately for the caller to thread into its statement sequence before the
+//     final `return <expr>;` line, the same (pre, expr) convention
+//     buildSliceReturnValue and buildScalarInitializeCore use.
 //
-// An inline construct whose own Type is not exactly the function's result type
-// (defense for hand-built IR — the checker coerces every return value to the
-// function's declared result type) is a clean rejection, so the emitted C never
-// returns a value of the wrong aggregate type. Any other return-value shape —
-// most notably a DirectCall, i.e. `return helperReturningTuple();` from another
-// tuple/struct-returning helper, which is confirmed reachable from real source
-// but deliberately out of scope this slice (a call may only be a tuple/struct-
-// returning helper's direct-initializer use, never this return-forwarding
-// position) — is a clean rejection naming what was found. width is the entry's
-// resolved integer width, threaded through to the inline builders so each
-// element/field is built at the width the result type's own typedef uses.
-func buildAggregateReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, width types.BuiltinKind) (string, error) {
+// The function returns a (pre, expr) pair: expr is the return value's C
+// expression and pre is the optional pre-statement the caller must emit BEFORE
+// the `return <expr>;` line (empty for every shape but a DirectCall with a
+// construction-needing argument). pre carries its own leading indent (indent,
+// threaded in from the caller, is prepended to it), matching how
+// buildSliceReturnValue returns its pre-indented temp declaration. An inline
+// construct whose own Type is not exactly the function's result type (defense
+// for hand-built IR — the checker coerces every return value to the function's
+// declared result type) is a clean rejection, so the emitted C never returns a
+// value of the wrong aggregate type; the struct branch's DirectCall shape is
+// likewise rejected when the callee's declared ResultType differs from the
+// function's result type. Any other return-value shape is a clean rejection
+// naming what was found — including a DirectCall in the tuple branch, where
+// only the SymbolValue and TupleValue shapes above are supported. width is the
+// entry's resolved integer width, threaded through to the inline builders so
+// each element/field is built at the width the result type's own typedef uses.
+func buildAggregateReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, indent string, width types.BuiltinKind) (string, string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
-		return "", fmt.Errorf("entry function body return statement references invalid value node %d", id)
+		return "", "", fmt.Errorf("entry function body return statement references invalid value node %d", id)
 	}
 	if node.Kind == tir.SymbolValue {
 		info, declared := locals[node.Symbol]
 		if !declared {
-			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is not a local in scope", node.Symbol)
+			return "", "", fmt.Errorf("entry function body return statement returns symbol %d, which is not a local in scope", node.Symbol)
 		}
 		if result.tuple != 0 {
 			if info.tuple != result.tuple {
-				return "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a tuple-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
+				return "", "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a tuple-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
 			}
-			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+			return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 		}
 		if info.structType != result.structType {
-			return "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a struct-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), structTypeName(result.structType))
+			return "", "", fmt.Errorf("entry function body return statement returns symbol %d, which is a local of type %s, not a struct-typed local of type %s", node.Symbol, describeType(snapshot, node.Type), structTypeName(result.structType))
 		}
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
 	if result.tuple != 0 {
 		context := "entry function body return statement"
 		if node.Kind == tir.TupleValue {
 			if node.Type != result.tuple {
-				return "", fmt.Errorf("%s returns a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
+				return "", "", fmt.Errorf("%s returns a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
 			}
-			return buildTupleValueExpr(unit, snapshot, fileSet, node, locals, context, width)
+			expr, err := buildTupleValueExpr(unit, snapshot, fileSet, node, locals, context, width)
+			return "", expr, err
 		}
-		return "", fmt.Errorf("%s returns a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only returning an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
+		return "", "", fmt.Errorf("%s returns a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only returning an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
 	}
 	context := "entry function body return statement"
 	if node.Kind == tir.RecordConstruct {
 		if node.Type != result.structType {
-			return "", fmt.Errorf("%s returns a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
+			return "", "", fmt.Errorf("%s returns a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
 		}
-		return buildStructValueExpr(unit, snapshot, fileSet, node, locals, context, width)
+		expr, err := buildStructValueExpr(unit, snapshot, fileSet, node, locals, context, width)
+		return "", expr, err
 	}
-	return "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only returning an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
+	if node.Kind == tir.DirectCall {
+		calleeDecl, err := findCallDeclaration(unit, node)
+		if err != nil {
+			return "", "", err
+		}
+		if calleeDecl.ResultType != result.structType {
+			return "", "", fmt.Errorf("%s returns a call to symbol %d whose declared result type %s does not match the function's result type %s", context, node.Symbol, describeType(snapshot, calleeDecl.ResultType), structTypeName(result.structType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		if callPre != "" {
+			callPre = indent + callPre
+		}
+		return callPre, callExpr, nil
+	}
+	return "", "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope, a struct literal (a RecordConstruct), or a call to a struct-returning helper (a DirectCall); only returning an already-declared struct-typed local, constructing a fresh struct literal inline, or forwarding a struct-returning helper call is supported", context, node.Kind)
 }
 
 func buildArrayReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, arrayType types.TypeID, width types.BuiltinKind) (string, error) {
