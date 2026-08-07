@@ -441,6 +441,42 @@ not a real check failure). `math` found a genuine new gap:
       implemented — it also transitively imports `std:io`, so it was
       independently hitting the `std/io.peb` gap above too (same root
       cause, being fixed there).
+- [x] **CLOSED (`ce86705`) — `std/io.peb`'s `read_line` C0618 unreachable
+      -statement warning removed.** Same pattern as the `hmap.peb`/
+      `set.peb` C0618 warnings noted above, now empirically resolved for
+      this shape: the trailing `return string::new();` after
+      `read_line`'s `while true { ... }` loop is genuinely dead (every
+      internal path already returns), so deleting it is safe — confirmed
+      no new C0607 (missing return) appears, and a full `go test ./...`
+      run stays green. This also answers the open question left by the
+      `hmap.peb`/`set.peb` note above: at least for the "trailing return
+      after an exhaustively-returning `while true`" shape, deletion is
+      the correct fix, not a workaround — worth revisiting those two
+      files with the same treatment.
+- [ ] **[generator] New backend gap exposed by the `io.peb` fix above:
+      `std/string.peb:18`'s `self.data = slice ptr, new_cap;` inside
+      `grow()` fails emission** — `pebc: emission failed: entry function
+      body block reassigns a slice-typed place from a SliceFromRaw, want
+      a reference to a slice-typed local in scope`. Reassigning a
+      slice-typed struct field directly from an inline `slice ptr, len`
+      construction isn't supported as a Store target (only reassignment
+      from an existing slice-typed local works today). This was always
+      latent — `examples/read_file.peb`'s check stage previously exited
+      early on the now-removed `io.peb` C0618 warning, so emission never
+      reached this code path before. Confirmed pre-existing, not a
+      regression from `ce86705`. Blocks `examples/read_file.peb` (via
+      `std:io` → `std:string`'s `grow()`) and any other consumer of
+      `String` that triggers a grow. Not yet scoped for dispatch.
+- [ ] **[checker] Masked `C0621` generic-requirement-propagation gap in
+      `std/math.peb`'s `clamp[T]`, exposed by the float-constant fix
+      (`b4410cb`).** Before that fix, `math.peb` failed outright on its
+      `let PI`/`let E` float constants (`C0616`), which short-circuited
+      before reaching `validateGenericInstantiations`
+      (`run06b` gates it behind `validateBindings` succeeding) — so this
+      gap in `clamp[T]`'s calls to `min`/`max` was fully masked. Proven
+      pre-existing and unrelated to floats specifically: a float-free
+      repro reproduces the same `C0621` on both the fixed and pristine
+      binaries. Not yet root-caused in detail or scoped for dispatch.
 
 ---
 
