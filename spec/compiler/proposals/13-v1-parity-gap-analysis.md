@@ -569,16 +569,64 @@ not a real check failure). `math` found a genuine new gap:
       Not yet root-caused precisely (exact backend function/line not
       pinned down) or scoped for dispatch. Not a regression — emission
       never previously reached this point.
-- [ ] **[checker] Masked `C0621` generic-requirement-propagation gap in
-      `std/math.peb`'s `clamp[T]`, exposed by the float-constant fix
-      (`b4410cb`).** Before that fix, `math.peb` failed outright on its
-      `let PI`/`let E` float constants (`C0616`), which short-circuited
-      before reaching `validateGenericInstantiations`
-      (`run06b` gates it behind `validateBindings` succeeding) — so this
-      gap in `clamp[T]`'s calls to `min`/`max` was fully masked. Proven
-      pre-existing and unrelated to floats specifically: a float-free
-      repro reproduces the same `C0621` on both the fixed and pristine
-      binaries. Not yet root-caused in detail or scoped for dispatch.
+- [x] **CLOSED (`f011286`) — masked `C0621` generic-requirement
+      -propagation gap in `std/math.peb`'s `clamp[T]`, exposed by the
+      float-constant fix (`b4410cb`).** Root cause: `clamp[T] { return
+      max(lo, min(x, hi)); }` never uses `<`/`>` directly — only calls
+      `min[T]`/`max[T]`, which do — so `clamp`'s own type parameter `T`
+      never accumulated an `Ordered` requirement of its own, yet
+      `validateGenericInstantiations` checked the INNER calls against
+      `clamp`'s still-abstract `T` at check time (correctly failing,
+      since an unresolved type parameter has no concrete builtin/enum
+      identity) instead of deferring to `clamp`'s own external
+      instantiation sites (which the same validator already
+      independently checks). Two-part checker fix: (1) new
+      `propagateGenericRequirements` (`requirement_validation.go`) —
+      a fixpoint pass copying a callee's requirement onto a caller's
+      own rigid type parameter wherever an instantiation's argument is
+      that parameter, repeating until stable (so multi-hop chains like
+      `outer→mid→min` propagate correctly); (2) new
+      `deferredGenericRequirement` (`generic_validation.go`) — skips
+      judging an inner call's argument against the enclosing
+      declaration's own type parameter when that declaration already
+      carries the (now-propagated) same requirement, deferring
+      enforcement to its own external call sites. A necessary second
+      layer in the typed-IR builder (`ir_builder.go`/
+      `ir_builder_calls.go`/`ir_builder_value.go`): `buildSpecializations`
+      now skips a symbolic top-level instantiation (new
+      `concreteInstantiation`, reusing the existing
+      `containsTypeParameter`); `buildDirectCall`/
+      `buildGenericFunctionValue` resolve their own type arguments
+      through the active specialization substitution when building
+      inside an already-concrete specialization, building the callee's
+      own matching concrete specialization once resolved — otherwise
+      the backend would have nothing to match `min[i32]`/`max[i32]`
+      against even after the checker accepted the shape. Six new tests
+      cover the exact `clamp[T]` shape, a 2-hop transitive chain, a
+      different requirement kind (`Numeric`), and two regression
+      guards proving a bad concrete type (a struct) is still correctly
+      rejected for both `Ordered` and `Numeric` — confirming the fix
+      defers checking rather than disabling it. Causation confirmed
+      (revert reproduces the exact original two `C0621` errors;
+      restore passes all six new tests). Re-verified against the real
+      `std/math.peb`: `math::clamp` called with concrete `i32` locals
+      no longer produces `C0621` at all — reaches emission and hits a
+      different, separate, pre-existing backend limitation instead
+      (below), not a regression.
+- [ ] **[generator] New backend gap exposed by the fix above: a generic
+      helper's specialized parameter width vs. the entry's own declared
+      width.** `pebc: emission failed: called function symbol 66
+      parameter 0 (symbol 68) has type i32, want int, bool, char, str,
+      f32, f64, ... (a parameter may be the entry's integer width, ...)`
+      — surfaces calling `math::clamp` (specialized at `i32`) from an
+      `fn main() int { ... }` entry, whose own declared width is the
+      abstract `int` builtin, not `i32` — the backend's helper
+      -parameter validator only accepts the ENTRY's own resolved width
+      for a scalar parameter, not an arbitrary concrete width a generic
+      specialization produced. Not yet root-caused precisely (exact
+      validator function/line not pinned down) or scoped for dispatch.
+      Not a regression — the `C0621` fix above is what let emission
+      reach this point at all for `clamp`'s real call site.
 
 ---
 
