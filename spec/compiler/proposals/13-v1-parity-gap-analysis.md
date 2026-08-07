@@ -385,12 +385,19 @@ same staleness, also fixed).
       note). Not yet closed: `read_file.peb` (stale `String.as_str()`
       call — std/string.peb deliberately has no such method; also
       still has its own separate `argv`-in-`main` unsupported-entry
-      -point issue). `count_lines.peb` not yet triaged in detail (a
-      large cascade of ~60+ checker errors: `usize`, `Result.ok`/`err`
-      constructors, bare `case Ok:` instead of `case .Ok:`/
-      `case Result.Ok:`, `Stats` struct field access — likely mostly
-      stale-example-API issues given the pattern so far, but not yet
-      confirmed file-by-file).
+      -point issue). `count_lines.peb` — fully triaged (its own separate
+      "Part A.1 sweep" note below has the full ~60-error root-cause
+      breakdown: `usize`, the `case Ok:` syntax bug, the qualified
+      -static-call gap, `std/io.peb`, union-payload-access). `usize`
+      fixed (`1f6103e`) — genuinely confirmed further progress, not
+      just a no-op: the file now surfaces real remaining issues past
+      that fix, specifically the exact same stale
+      pointer-arithmetic-on-`[]char`-slice pattern already fixed in
+      `std/io.peb` (`contents.data + contents.len - 1` should be
+      `contents.data[contents.len - 1]`, not yet applied to this
+      example) plus errors tracing to the deliberately-deferred union
+      -payload-access gap. Not chased further — fundamentally blocked
+      on that deferred feature regardless of any other fixes here.
       `bubble_sort.peb` — a genuine `[generator]` gap, not example
       staleness: `validateHelperSignature` in `emit.go` rejected
       array-typed helper parameters/return values (`[5]int`); FIXED and
