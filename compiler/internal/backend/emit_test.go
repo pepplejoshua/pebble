@@ -5509,6 +5509,27 @@ func TestEmitVoidHelperStatementCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", false, 1, false)
 }
 
+func TestEmitArrayHelperParameterAndResultCompilesAndRuns(t *testing.T) {
+	output := emitAndRunCaptureBounded(t, `fn sort_once(values [5]int) [5]int {
+    if values[0] > values[1] {
+        let first = values[0];
+        values[0] = values[1];
+        values[1] = first;
+    }
+    return values;
+}
+fn main() int {
+    var values [5]int = [2, 1, 3, 4, 5];
+    let sorted = sort_once(values);
+    print sorted[0];
+    print sorted[1];
+    return 0;
+}`, false, 0, false)
+	if output != "1\n2\n" {
+		t.Fatalf("array helper output = %q, want %q", output, "1\n2\n")
+	}
+}
+
 func TestEmitVoidHelperStatementWithParamCompilesAndRuns(t *testing.T) {
 	// A void helper with a parameter and a non-trivial self-contained body: it
 	// computes internally (sum 0..x into a local) and returns void, so the
@@ -5733,14 +5754,8 @@ func TestEmitI64ParameterizedHelperCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn add(a i64, b i64) i64 { return a + b; } fn main() i64 { return add(20, 22); }", false, 42, false)
 }
 
-func TestEmitRejectsUnsupportedParameterType(t *testing.T) {
-	// An array parameter is reachable from real source (the checker accepts
-	// it), so this is a genuine backend-scope rejection, not hand-built IR:
-	// validateHelperSignature must reject the parameter because its type is
-	// neither the entry's width, bool, char, str, nor a tuple/struct type,
-	// naming the parameter position.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32, bool, char, or str")
+func TestEmitArrayHelperLiteralArgumentCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", false, 1, false)
 }
 
 func TestEmitRejectsParameterWidthMismatch(t *testing.T) {

@@ -605,6 +605,12 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return err
 	}
 	typedefs = appendTypedefBlock(typedefs, unionTypedefs)
+	arrayTypes := collectHelperArrayTypes(snapshot, helpers)
+	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, arrayTypes)
+	if err != nil {
+		return err
+	}
+	typedefs = appendTypedefBlock(typedefs, arrayTypedefs)
 	sliceTypedefs, err := buildSliceTypedefs(unit, snapshot, sliceInfos, result)
 	if err != nil {
 		return err
@@ -774,6 +780,24 @@ func findFunctionBody(unit *tir.Unit, decl tir.Node, what string) (tir.Node, tir
 type helperInfo struct {
 	decl  tir.Node
 	block tir.NodeID
+}
+
+func collectHelperArrayTypes(snapshot *types.Snapshot, helpers []helperInfo) []types.TypeID {
+	seen := make(map[types.TypeID]bool)
+	var ids []types.TypeID
+	for _, helper := range helpers {
+		for _, param := range helper.decl.Parameters {
+			if isArray(snapshot, param.Type) && !seen[param.Type] {
+				seen[param.Type] = true
+				ids = append(ids, param.Type)
+			}
+		}
+		if isArray(snapshot, helper.decl.ResultType) && !seen[helper.decl.ResultType] {
+			seen[helper.decl.ResultType] = true
+			ids = append(ids, helper.decl.ResultType)
+		}
+	}
+	return ids
 }
 
 // reachabilityWalk carries the mutable state of the recursive reachability
@@ -2614,12 +2638,22 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// a parameter of a slice type whose element is unsupported (a slice of
 		// tuples, str, and so on) is a clean rejection, not a guessed
 		// lowering.
-		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
+		if !isWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) {
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, uint, u64, bool, char, str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(unit, snapshot, width, param.Type); err != nil {
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a slice type with an unsupported element type: %v", decl.Symbol, i, param.Symbol, err)
+			}
+		}
+		if isArray(snapshot, param.Type) {
+			key, ok := snapshot.Key(param.Type)
+			if !ok {
+				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has array type missing from the type snapshot", decl.Symbol, i, param.Symbol)
+			}
+			_, element, ok := key.Array()
+			if !ok || !isSupportedSliceElementType(unit, snapshot, element) {
+				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has an unsupported array element type", decl.Symbol, i, param.Symbol)
 			}
 		}
 		// A function-typed parameter's own signature needs no per-signature gate
@@ -2647,12 +2681,22 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// clean rejection at typedef build time, never a guessed layout.
 	}
 	resultWidth, integerResult := resolvedBuiltin(snapshot, decl.ResultType)
-	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) && !isFunctionType(snapshot, decl.ResultType) {
+	if (!integerResult || cType(resultWidth) == "") && !isBool(snapshot, decl.ResultType) && !isChar(snapshot, decl.ResultType) && !isStr(snapshot, decl.ResultType) && !isTuple(snapshot, decl.ResultType) && !isStruct(snapshot, decl.ResultType) && !isArray(snapshot, decl.ResultType) && !isSlice(snapshot, decl.ResultType) && !isVoid(snapshot, decl.ResultType) && !isPointer(snapshot, decl.ResultType) && !isOptional(snapshot, decl.ResultType) && !isFunctionType(snapshot, decl.ResultType) {
 		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, a function result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
 		if err := validateSliceElementType(unit, snapshot, width, decl.ResultType); err != nil {
 			return fmt.Errorf("called function symbol %d has a slice result type with an unsupported element type: %v", decl.Symbol, err)
+		}
+	}
+	if isArray(snapshot, decl.ResultType) {
+		key, ok := snapshot.Key(decl.ResultType)
+		if !ok {
+			return fmt.Errorf("called function symbol %d has array result type missing from the type snapshot", decl.Symbol)
+		}
+		_, element, ok := key.Array()
+		if !ok || !isSupportedSliceElementType(unit, snapshot, element) {
+			return fmt.Errorf("called function symbol %d has an unsupported array result element type", decl.Symbol)
 		}
 	}
 	if isFunctionType(snapshot, decl.ResultType) {
@@ -2879,6 +2923,9 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			// unchanged, declared with the struct's own struct typedef name.
 			params = append(params, runtimeTypeName(unit, snapshot, param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{structType: param.Type, runtimeType: param.Type}
+		case isArray(snapshot, param.Type):
+			params = append(params, arrayTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{array: param.Type, arrayWrapped: true}
 		case isSlice(snapshot, param.Type):
 			// A slice-typed parameter (10.38) seeds the callee's locals
 			// scope as a slice local (localInfo.sliceType), exactly as a
@@ -3015,6 +3062,9 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 	case isStruct(snapshot, helper.decl.ResultType):
 		returnType = runtimeTypeName(unit, snapshot, helper.decl.ResultType)
 		result = resultInfo{structType: helper.decl.ResultType}
+	case isArray(snapshot, helper.decl.ResultType):
+		returnType = arrayTypeName(helper.decl.ResultType)
+		result = resultInfo{arrayType: helper.decl.ResultType}
 	case isStr(snapshot, helper.decl.ResultType):
 		// A str-result helper (10.36) is declared with the runtime ABI's
 		// fixed PebbleStr as its C return type — the same C type a str
@@ -3381,6 +3431,8 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// RecordConstruct of the matching type (both built via 10.25's
 		// expression builders); anything else is a clean rejection.
 		returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, width)
+	} else if result.arrayType != 0 {
+		returnValue, err = buildArrayReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, width)
 	} else if result.sliceType != 0 {
 		// The enclosing function returns a slice (a reachable helper whose
 		// ResultType is a slice type), so the return value is built under
@@ -5573,6 +5625,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			return buildTupleLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isArray(snapshot, initValue.Type) {
+			if initValue.Kind == tir.DirectCall {
+				return buildArrayCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			}
 			return buildArrayLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isOptional(snapshot, initValue.Type) {
@@ -6033,6 +6088,7 @@ type localInfo struct {
 	optional     types.TypeID
 	structType   types.TypeID
 	enumType     types.TypeID
+	arrayWrapped bool
 	sliceType    types.TypeID
 	pointerType  types.TypeID
 	runtimeType  types.TypeID
@@ -6140,6 +6196,7 @@ type resultInfo struct {
 	pointerType  types.TypeID
 	optionalType types.TypeID
 	functionType types.TypeID
+	arrayType    types.TypeID
 }
 
 // cloneLocals returns a fresh copy of the given set of in-scope locals. Every
@@ -6230,6 +6287,22 @@ func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fil
 	}
 	scope[statement.Symbol] = localInfo{structType: initValue.Type}
 	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+}
+
+func buildArrayCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	calleeDecl, err := findCallDeclaration(unit, initValue)
+	if err != nil {
+		return "", err
+	}
+	if calleeDecl.ResultType != initValue.Type {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a call whose result type is %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, calleeDecl.ResultType))
+	}
+	callExpr, err := buildDirectCall(unit, snapshot, fileSet, initValue, scope, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{array: initValue.Type, arrayWrapped: true}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, arrayTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
 }
 
 // buildOptionalCallInitializer builds an optional-typed local's declaration
@@ -10334,7 +10407,11 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			// for scalars the node's own Type is the correct types.TypeID.
 			typ = n.Type
 		}
-		return fmt.Sprintf("pebble_local_%d", n.Symbol), typ, nil
+		base := fmt.Sprintf("pebble_local_%d", n.Symbol)
+		if info.array != 0 && info.arrayWrapped {
+			base += ".data"
+		}
+		return base, typ, nil
 	case tir.TuplePlace:
 		if len(n.Children) != 1 {
 			return "", 0, fmt.Errorf("tuple place wants one base")
@@ -10677,6 +10754,8 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		return buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, true, calleeSymbol, position, width)
 	case isStruct(snapshot, param.Type):
 		return buildAggregateArgument(unit, snapshot, fileSet, argID, locals, param.Type, false, calleeSymbol, position, width)
+	case isArray(snapshot, param.Type):
+		return buildArrayArgument(unit, snapshot, fileSet, width, param.Type, argID, locals, calleeSymbol, position)
 	case isStr(snapshot, param.Type):
 		// A str parameter: the argument is a str value built by
 		// buildStrOperand — a reference to a str-typed local in scope, a
@@ -10740,6 +10819,68 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// defense for hand-built IR only.
 		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, or a pointer type", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 	}
+}
+
+func buildArrayArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, width types.BuiltinKind, arrayType types.TypeID, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, calleeSymbol symbol.SymbolID, position int) (string, error) {
+	node, ok := unit.Node(argID)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d references invalid argument node %d", calleeSymbol, position, argID)
+	}
+	key, ok := snapshot.Key(arrayType)
+	if !ok {
+		return "", fmt.Errorf("array parameter type %s is not in the type snapshot", describeType(snapshot, arrayType))
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("array parameter type %s has no length and element type", describeType(snapshot, arrayType))
+	}
+	if node.Kind == tir.DirectCall {
+		if node.Type != arrayType {
+			return "", fmt.Errorf("array argument call has type %s, want %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+		}
+		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+	}
+	if node.Kind == tir.ArrayValue {
+		if uint64(len(node.Children)) != length {
+			return "", fmt.Errorf("array argument has %d element(s), want %d", len(node.Children), length)
+		}
+		values := make([]string, len(node.Children))
+		for i, childID := range node.Children {
+			child, ok := unit.Node(childID)
+			if !ok {
+				return "", fmt.Errorf("array argument references invalid element node %d", childID)
+			}
+			var value string
+			var err error
+			if isBool(snapshot, element) {
+				value, err = buildBoolExpr(unit, snapshot, fileSet, childID, locals, width)
+			} else if elementWidth, integer := resolvedBuiltin(snapshot, element); integer && cType(elementWidth) != "" {
+				value, err = buildExpr(unit, snapshot, fileSet, childID, locals, elementWidth, width)
+			} else {
+				return "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, child.Type))
+			}
+			if err != nil {
+				return "", err
+			}
+			values[i] = value
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+	}
+	if node.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is a %s, want an array local or array-returning call", calleeSymbol, position, node.Kind)
+	}
+	info, declared := locals[node.Symbol]
+	if !declared || info.array != arrayType {
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is not a local of type %s", calleeSymbol, position, describeType(snapshot, arrayType))
+	}
+	if info.arrayWrapped {
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	values := make([]string, length)
+	for i := range values {
+		values[i] = fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i)
+	}
+	return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
 }
 
 // buildVariadicSliceArgument builds the ONE C argument expression a variadic
@@ -10976,6 +11117,42 @@ func buildAggregateReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		return buildStructValueExpr(unit, snapshot, fileSet, node, locals, context, width)
 	}
 	return "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only returning an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
+}
+
+func buildArrayReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, arrayType types.TypeID, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("array return references invalid value node %d", id)
+	}
+	if node.Type != arrayType {
+		return "", fmt.Errorf("array return has type %s, want %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+	}
+	if node.Kind == tir.DirectCall {
+		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+	}
+	if node.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("array return is a %s, want an array local or array-returning call", node.Kind)
+	}
+	info, declared := locals[node.Symbol]
+	if !declared || info.array != arrayType {
+		return "", fmt.Errorf("array return references symbol %d, which is not a local of type %s", node.Symbol, describeType(snapshot, arrayType))
+	}
+	if info.arrayWrapped {
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	key, ok := snapshot.Key(arrayType)
+	if !ok {
+		return "", fmt.Errorf("array return type %s is not in the type snapshot", describeType(snapshot, arrayType))
+	}
+	length, _, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("array return type %s has no length and element type", describeType(snapshot, arrayType))
+	}
+	values := make([]string, length)
+	for i := range values {
+		values[i] = fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i)
+	}
+	return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
 }
 
 // buildSliceReturnValue builds the C text pieces for a slice-returning
@@ -11947,6 +12124,10 @@ func tupleTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_tuple_%d_t", id)
 }
 
+func arrayTypeName(id types.TypeID) string {
+	return fmt.Sprintf("pebble_array_%d_t", id)
+}
+
 // optionalTypeName is the deterministic C name of one distinct optional type's
 // struct typedef: pebble_optional_<typeID>_t, derived from the optional
 // type's own stable types.TypeID, mirroring the tuple naming discipline.
@@ -12164,6 +12345,26 @@ func buildTupleTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 			return "", err
 		}
 		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+func buildArrayTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+	texts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		key, ok := snapshot.Key(id)
+		if !ok {
+			return "", fmt.Errorf("array type %d is not in the type snapshot", id)
+		}
+		length, element, ok := key.Array()
+		if !ok {
+			return "", fmt.Errorf("type %s is not an array type", describeType(snapshot, id))
+		}
+		ctype, err := arrayElementCType(unit, snapshot, width, element)
+		if err != nil {
+			return "", fmt.Errorf("array type %s: %v", describeType(snapshot, id), err)
+		}
+		texts = append(texts, fmt.Sprintf("typedef struct {\n    %s data[%d];\n} %s;", ctype, length, arrayTypeName(id)))
 	}
 	return strings.Join(texts, "\n"), nil
 }
