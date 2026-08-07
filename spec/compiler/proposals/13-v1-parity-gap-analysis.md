@@ -56,17 +56,24 @@ imperative program needs.
       through the entry function itself (`main`'s fixed C name has no
       forward-declared prototype) — not a real-world blocker, `main`
       calling back into itself recursively isn't a normal shape.
-- [ ] **A full `std/hmap.peb` consumer (`new` + `insert` + `get`) now
-      hits a different, precisely-pinned limitation: optional payloads
-      only support `int`/`bool`, not `uint`.** `insert` declares `var
-      tombstone_index ?uint = none;`; the optional typedef builder
-      rejects it: `"optional type pebble_optional_58_t: payload type
-      uint is not supported, want int or bool."` This is now the last
-      known blocker on `std/hmap.peb` compiling and running
-      end-to-end. Not yet scoped in detail — likely a narrow widening
-      of the optional-payload-type gate (mirroring how slice element
-      types and struct fields were each widened earlier this session),
-      but confirm rather than assume.
+- [x] Optional payload types widened to any fixed-width integer
+      (`d737242`) — `std/hmap.peb`'s `var tombstone_index ?uint =
+      none;` (`insert`) now works, including `some`/`none`
+      construction, `.has_value`, and force-unwrap (a new runtime
+      `pebble_rt_checked_unwrap_u64` was needed, since only i32/i64/
+      bool existed). A full `new`+`insert`+`get` consumer progresses
+      past this to a different gap instead (below).
+- [ ] **A full `std/hmap.peb` consumer now hits a pointer-payload
+      optional: `get_by_ref` returns `?*V`.** Confirmed via the real
+      consumer test — not yet investigated in detail. This is now the
+      last known blocker on `std/hmap.peb` compiling and running
+      end-to-end (`get` itself calls `get_by_ref` and force-unwraps/
+      re-wraps its result, so this gap is reachable from the ordinary
+      `new`+`insert`+`get` path, not just `get_by_ref` directly). Not
+      yet scoped — confirm whether this is the same
+      `optionalPayloadCType`/value-building family just widened (a
+      pointer payload is a different TypeKey shape than a fixed-width
+      integer, so likely needs its own case) or a distinct gap.
 
 ---
 
