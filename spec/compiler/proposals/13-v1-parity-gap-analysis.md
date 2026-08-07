@@ -48,22 +48,25 @@ imperative program needs.
       the generic-method-calls fix). `rehash`/`get_by_ref`/`get`/
       `insert`/`maybe_grow`/`contains`/`remove`/`clear` all now build
       cleanly — confirmed via a real Go-harness `Emit` compile.
+- [x] Recursive and mutually-recursive function calls fixed
+      (`d9a8da3`) — every reachable helper now gets a C forward
+      declaration before any definition, so `insert -> maybe_grow ->
+      rehash -> insert` (and direct self-recursion) compile and run
+      correctly. The one cycle shape still rejected is a cycle passing
+      through the entry function itself (`main`'s fixed C name has no
+      forward-declared prototype) — not a real-world blocker, `main`
+      calling back into itself recursively isn't a normal shape.
 - [ ] **A full `std/hmap.peb` consumer (`new` + `insert` + `get`) now
-      hits a different, honest, well-diagnosed limitation instead of
-      a crash: this backend has no forward-declaration mechanism for
-      recursive/mutually-recursive function calls.** `insert ->
-      maybe_grow -> rehash -> insert` is a genuine call cycle
-      (`rehash` re-inserts old entries via `self.insert(...)` while
-      growing); `Emit` cleanly rejects it: `"recursion is not
-      supported yet: the call chain function 26 -> function 27 ->
-      function 28 -> function 26 is a cycle ... this backend has no
-      forward-declaration mechanism to order recursive calls yet."`
-      This is the last known blocker on `std/hmap.peb` compiling and
-      running end-to-end. Not yet scoped — likely needs real C forward
-      declarations for the whole reachable call graph, not a small
-      fix (see how `10-c-backend-and-runtime.md`/prior sessions
-      discuss the current single-pass "emit definitions in dependency
-      order" assumption this backend relies on everywhere else).
+      hits a different, precisely-pinned limitation: optional payloads
+      only support `int`/`bool`, not `uint`.** `insert` declares `var
+      tombstone_index ?uint = none;`; the optional typedef builder
+      rejects it: `"optional type pebble_optional_58_t: payload type
+      uint is not supported, want int or bool."` This is now the last
+      known blocker on `std/hmap.peb` compiling and running
+      end-to-end. Not yet scoped in detail — likely a narrow widening
+      of the optional-payload-type gate (mirroring how slice element
+      types and struct fields were each widened earlier this session),
+      but confirm rather than assume.
 
 ---
 
