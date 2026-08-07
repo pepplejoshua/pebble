@@ -188,24 +188,15 @@ same staleness, also fixed).
       (`.len`/`.data`) handling — fixed (`a31cf99`). `examples/
       slice_minmax.peb` now fully closed (`0fc2480`): compiles and runs
       correctly end-to-end, verified via the new `pebc -run` flag.
-- [ ] **[generator] `f32`/`f64` helper parameters and return values are
-      rejected outright.** `validateHelperSignature` (`emit.go:2617`,
-      with the rejection explicitly acknowledged in a comment at
-      `emit.go:2688`: "a float (which `validateHelperSignature` rejects
-      for an ordinary helper anyway)") admits width/`uint`/`u64`/`bool`/
-      `char`/`str`/tuple/struct/slice/pointer/optional/function-type
-      parameters but not `f32`/`f64`. Found via
-      `examples/leibniz_pi_approx.peb`'s `approximate_pi(precision f64) f64`
-      — after fixing its `float`→`f64` staleness and the mixed-int/float
-      arithmetic (both genuinely fixed, checker now passes clean), emission
-      fails with `called function symbol 24 parameter 1 (symbol 26) has
-      type f64, want int, bool, char, or str, ...`. This is a real,
-      fairly significant gap — no ordinary helper function can currently
-      take or return a float at all, only `main` (Stage A float support
-      elsewhere in the backend, e.g. locals/struct fields, already
-      exists — this is specifically the helper-signature validation
-      gate not being widened for float the way it now has been for
-      uint this session).
+- [x] **CLOSED (`30a5d95`) — `f32`/`f64` helper parameters and return
+      values.** `validateHelperSignature`/`helperSignature`/
+      `buildCallArgument` widened for float, mirroring the `uint`
+      widening pattern exactly; `buildFloatExpr` additionally gained
+      `PrefixValue` (unary negation) and `DirectCall`/`MethodCall`
+      (a float-returning helper call used as a float value) cases real
+      programs need. `examples/leibniz_pi_approx.peb` fully closed
+      (`f0950b7`) — compiles and runs, converging to pi (`3.141583`,
+      error `0.000010`), exit 0.
 - [x] **CLOSED (`6e75c3c`) — was likely the biggest gap found this
       sweep: direct calls to an `extern fn` declaration.** `emit.go` had
       zero references to `tir.ExternDeclaration` anywhere.
@@ -346,18 +337,23 @@ same staleness, also fixed).
       (`usize` + two missing explicit casts — blocked until the
       extern-call backend gap above landed; both fixed, file fully
       compiles and runs, committed `ae4b7c0` alongside the backend fix
-      `6e75c3c`). In progress: `leibniz_pi_approx.peb` (`float`→`f64`,
-      plus a mixed-int/float-arithmetic follow-up — now blocked on the
-      f32/f64 helper-param gap below), `read_file.peb` (stale
-      `String.as_str()` call — std/string.peb deliberately has no such
-      method), `std_hash.peb` (`usize`→`uint` fixed but not yet
-      committed — now blocked on the arrow-closure-literal checker bug
-      above, not landed in the working tree as of this writing).
-      `count_lines.peb` not yet triaged in detail (a large cascade of
-      ~60+ checker errors: `usize`, `Result.ok`/`err` constructors,
-      bare `case Ok:` instead of `case .Ok:`/`case Result.Ok:`, `Stats`
-      struct field access — likely mostly stale-example-API issues
-      given the pattern so far, but not yet confirmed file-by-file).
+      `6e75c3c`), `leibniz_pi_approx.peb` (`float`→`f64` plus a mixed
+      -int/float-arithmetic fix — blocked until the f32/f64 helper
+      -param backend gap above landed; both fixed, file fully compiles
+      and runs (converges to pi, `3.141583`), committed `f0950b7`
+      alongside the backend fix `30a5d95`), `std_hash.peb`
+      (`usize`→`uint`, committed `325dac6` — now checks clean past both
+      that and the arrow-closure-literal bug above, but still surfaces
+      pre-existing unrelated `std/hmap.peb` warnings; see that entry's
+      note). Not yet closed: `read_file.peb` (stale `String.as_str()`
+      call — std/string.peb deliberately has no such method; also
+      still has its own separate `argv`-in-`main` unsupported-entry
+      -point issue). `count_lines.peb` not yet triaged in detail (a
+      large cascade of ~60+ checker errors: `usize`, `Result.ok`/`err`
+      constructors, bare `case Ok:` instead of `case .Ok:`/
+      `case Result.Ok:`, `Stats` struct field access — likely mostly
+      stale-example-API issues given the pattern so far, but not yet
+      confirmed file-by-file).
       `bubble_sort.peb` — a genuine `[generator]` gap, not example
       staleness: `validateHelperSignature` in `emit.go` rejected
       array-typed helper parameters/return values (`[5]int`); FIXED and
