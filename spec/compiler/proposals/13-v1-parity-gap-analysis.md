@@ -164,6 +164,33 @@ example files fixed directly (not compiler gaps — `usize`/`isize`/
 `spec/compiler/05-types-and-inference.md:74`, and `README.md` had the
 same staleness, also fixed).
 
+## Part A.2 — remaining `std/*.peb` files sweep in isolation (2026-08-07)
+
+With the examples sweep (Part A.1) mostly done, swept the 8 `std/*.peb`
+files not yet individually check-verified this session (`func`,
+`hash`, `libc`, `math`, `mem`, `set`, `string`, `vec` — `hmap`, `io`,
+`result` were already deep-dived earlier). Each checked in isolation
+via a minimal `import "std:<module>"; fn main() int { return 0; }`
+fixture. Results: `func`, `hash`, `libc`, `mem`, `string`, `vec` all
+**PASS** (check clean, emit, compile, and run). `set` fails only on
+the already-tracked `C0618` unreachable-statement warning (see the
+`std/hmap.peb`/`std/set.peb` note under the closure-literal entry
+above — `pebc`'s CLI treats any diagnostic, even a warning, as fatal;
+not a real check failure). `math` found a genuine new gap:
+
+- [ ] **[checker] Float literals cannot be used in a top-level `let`
+      constant binding.** `std/math.peb:18-19`: `let PI = 3.141593;` /
+      `let E = 2.718282;` fail with `C0616: binding initializer is
+      invalid`. `math.peb`'s only import (`std:libc`) passes standalone,
+      so this is genuinely `math.peb`'s own code, not a transitively
+      -imported gap. Not yet root-caused precisely — a diagnostic sweep
+      response flagged `constant.go`'s `literal()` function (~line 480)
+      as having no `FloatLiteral` case (floats aren't currently
+      constant-evaluable), but this was reported inline in a diagnostic
+      response, not independently verified by reading the actual code —
+      confirm before fixing. Blocks `std/math.peb` entirely (its two
+      named constants). Not yet scoped for dispatch.
+
 - [x] **PARTIALLY CLOSED (`69742fb`)** — inline slice construction as a
       call argument (`f(a[1:3])`) now works whenever the call itself is
       in a leading-statement position (a bare call statement, or any
