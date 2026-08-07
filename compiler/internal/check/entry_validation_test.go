@@ -39,6 +39,36 @@ func TestRun06bAcceptsConfiguredVoidAndIntEntries(t *testing.T) {
 	}
 }
 
+func TestRun06bAcceptsArgvStrEntry(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn entry(argv []str) int { return 0; }")})
+	id := entrySymbol(t, inputs, "entry")
+	handoff := run06a(inputs, diagnostics, Config{})
+	result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
+	if !result.Successful() || hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
+		t.Fatalf("argv []str entry rejected: result=%v diagnostics=%+v", result.Successful(), diagnostics.Items())
+	}
+}
+
+func TestRun06bRejectsWrongArgvTypeEntries(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{"wrong_element_type", `fn entry(argv []int) int { return 0; }`},
+		{"two_parameters", `fn entry(argc int, argv []str) int { return 0; }`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(test.source)})
+			id := entrySymbol(t, inputs, "entry")
+			handoff := run06a(inputs, diagnostics, Config{})
+			result := run06b(handoff, diagnostics, Config{Entry: EntryPoint{Mode: EntryRequired, Symbol: id}}, inputs.Types)
+			if result.Successful() || !hasValidationDiagnostic(diagnostics, CodeEntryPoint) {
+				t.Fatalf("%s: ineligible entry was accepted: result=%v diagnostics=%+v", test.name, result.Successful(), diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestRun06bRejectsIneligibleConfiguredEntries(t *testing.T) {
 	for _, test := range []struct {
 		name   string

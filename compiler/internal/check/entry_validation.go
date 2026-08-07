@@ -72,10 +72,34 @@ func validateEntry(handoff *solveHandoff, records *solvedRecords, requirements m
 	builtins := handoff.Semantics.Types().Builtins()
 	validResult := resultOK && resultTemplate.Kind == infer.TemplateKnown && (resultTemplate.Known == builtins.Void || resultTemplate.Known == builtins.Int)
 	valid := entry.Kind == symbol.SymbolFunction && !entry.Generic && entry.Module == handoff.Compilation.Root &&
-		signature.Convention == types.Pebble && !signature.Variadic && len(signature.Parameters) == 0 && validResult &&
+		signature.Convention == types.Pebble && !signature.Variadic && (len(signature.Parameters) == 0 || validArgvParameter(handoff, signature)) && validResult &&
 		len(callable.Captures) == 0 && len(requirements[entryID]) == 0
 	if !valid {
 		report("configured entry point does not satisfy entry-point requirements")
 	}
 	return !failed
+}
+
+func validArgvParameter(handoff *solveHandoff, signature infer.Signature) bool {
+	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || len(signature.Parameters) != 1 {
+		return false
+	}
+	paramType, ok := handoff.Solution.SymbolType(signature.Parameters[0])
+	if !ok || paramType.State != infer.TypeFinal || paramType.Type == 0 {
+		return false
+	}
+	paramKey, ok := handoff.Semantics.Types().Key(paramType.Type)
+	if !ok || paramKey.Kind() != types.Slice {
+		return false
+	}
+	elementID, ok := paramKey.Child()
+	if !ok {
+		return false
+	}
+	elementKey, ok := handoff.Semantics.Types().Key(elementID)
+	if !ok {
+		return false
+	}
+	builtin, ok := elementKey.Builtin()
+	return ok && builtin == types.Str
 }
