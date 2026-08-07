@@ -63,17 +63,26 @@ imperative program needs.
       `pebble_rt_checked_unwrap_u64` was needed, since only i32/i64/
       bool existed). A full `new`+`insert`+`get` consumer progresses
       past this to a different gap instead (below).
-- [ ] **A full `std/hmap.peb` consumer now hits a pointer-payload
-      optional: `get_by_ref` returns `?*V`.** Confirmed via the real
-      consumer test — not yet investigated in detail. This is now the
-      last known blocker on `std/hmap.peb` compiling and running
-      end-to-end (`get` itself calls `get_by_ref` and force-unwraps/
-      re-wraps its result, so this gap is reachable from the ordinary
-      `new`+`insert`+`get` path, not just `get_by_ref` directly). Not
-      yet scoped — confirm whether this is the same
-      `optionalPayloadCType`/value-building family just widened (a
-      pointer payload is a different TypeKey shape than a fixed-width
-      integer, so likely needs its own case) or a distinct gap.
+- [x] Pointer-payload optionals (`?*T`) fixed (`64faff4`) —
+      `get_by_ref`'s `?*V` (and `get`'s force-unwrap/re-wrap of it) now
+      work: typedef, `some`/`none` construction, `.has_value`, and
+      force-unwrap (a new runtime `pebble_rt_checked_unwrap_ptr`, plus
+      two backend sites the earlier `uint`-payload fix never needed —
+      a pointer-typed local declared directly from a force-unwrap, and
+      the general-expression-position unwrap).
+- [ ] **A full `std/hmap.peb` consumer now hits a genuinely separate
+      gap: `HashMap`'s `Allocator`-typed `backing` field is never
+      collected for a typedef.** `Allocator` is a compiler builtin
+      with a hand-written C shape (`runtime/include/pebble_rt.h`), not
+      a generated per-TypeID struct — the struct-type collection/
+      dependency-ordering pass doesn't know to skip it when it's only
+      reachable as a field type, so it tries to build a typedef for it
+      like an ordinary struct and fails: `"struct type 0 is not in the
+      type snapshot."` This was previously MASKED by the pointer
+      -payload error above (both errors sit in the same dependency
+      postorder; the `?*V` failure fired first). This is now the last
+      known blocker on `std/hmap.peb` compiling and running
+      end-to-end. Not yet scoped in detail.
 
 ---
 
