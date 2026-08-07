@@ -5409,53 +5409,35 @@ func TestEmitRecursionWritesPrototypesBeforeDefinitions(t *testing.T) {
 }
 
 func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
-	// The real motivating case that discovered this gap: a full std/hmap.peb
-	// consumer (new + insert + get) whose insert -> maybe_grow -> rehash ->
-	// insert call cycle is genuine mutual recursion. Forward declarations now
-	// make the cycle itself a non-issue: Emit must NOT fail with a recursion
-	// error. The optional-uint-payload gap (hmap's insert declares `var
-	// tombstone_index ?uint = none;`) is now FIXED, the pointer-payload
-	// optional gap (hmap's get_by_ref returns `?*V`) is now FIXED, the
-	// runtime-builtin (Allocator) struct-field-typedef gap (HashMap's `backing
-	// Allocator` field produced a zero-valued structInfo whose buildStructTypedef
-	// rejected with "struct type 0 is not in the type snapshot") is now FIXED —
-	// orderAggregateTypes skips compiler-builtin runtime types entirely, and the
-	// runtime field is emitted with its hand-written PebbleAllocator C type —
-	// the uint-struct-field gap (HashMap's `len uint` / `cap uint`) is now
-	// FIXED (structFieldCType accepts any fixed-width integer), the
-	// type-parameter-field gap is now FIXED: Entry[int,int]'s `key K` / `value
-	// V` fields are substituted to their concrete int/int arguments by
-	// structTypeParameters, which now selects the declaration's canonical
-	// generic key (the all-TypeParameter key whose parameter symbols match the
-	// declaration's own field MemberTypes) instead of whichever all-TypeParameter
-	// key was interned first (hmap's eight methods each intern an Entry[K,V]
-	// key with their own inherited K/V symbols before Entry's canonical key
-	// lands, so a plain first-match scan left key/value as unresolved type
-	// parameters), and the enum-typed-struct-field gap (Entry's `state
-	// EntryState` field, previously rejected by structFieldCType as
-	// "enum-typed struct fields are not supported yet") is now FIXED —
-	// structFieldCType returns the enum's own pebble_enum_<typeID>_t typedef,
-	// buildStructBraceList builds the field's variant-literal construction via
-	// buildEnumValue, buildStoreCore builds the field write (entry.state =
-	// .Occupied), buildStructFieldRead returns the plain field projection, and
-	// buildComparison's enum branch reads the field through buildEnumValue's
-	// new Load(FieldPlace) case. The slice-of-struct-element gap (HashMap's
-	// `entries []Entry[K, V]` — a slice whose element type is the Entry STRUCT,
-	// previously rejected by sliceElementCType / buildSliceTypedef) is now
-	// FIXED: sliceElementCType / isSupportedSliceElementType accept struct (and
-	// tuple/optional) elements, the slice typedef's data field points at the
-	// struct's own typedef (with a forward typedef declaration so the slice
-	// block can reference it before the aggregate block defines it), and the
-	// by-value index read, address-of index, and indexed field write shapes all
-	// lower. Emit now progresses past ALL of those and fails on a DIFFERENT,
-	// separate, pre-existing gap: the uint expression grammar. rehash and
-	// with_capacity compute `new_cap * (sizeof Entry[K, V])` — a uint-typed
-	// CheckedArithmetic over a SizeofType operand — and buildExpr has no
-	// SizeofType case. This test pins that precise residual gap (so a future
-	// session fixing uint expressions knows exactly what remains) rather than
-	// fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern
-	// (os.ReadFile of the real module sources, fixtureProvider, StandardRoot:
-	// "std").
+	// The real motivating case for the entire std/hmap.peb arc — roughly two
+	// dozen fixes across this session's slices: a full std/hmap.peb consumer
+	// (new + insert + get on HashMap[int, int]) that exercises every one of
+	// the gaps that were found and fixed on the way to a real hashmap:
+	// insert -> maybe_grow -> rehash -> insert genuine mutual recursion
+	// (forward declarations make the cycle a non-issue), the optional-uint
+	// payload (tombstone_index ?uint), the pointer-payload optional
+	// (get_by_ref's ?*V), the runtime-builtin (Allocator) struct-field
+	// typedef (HashMap's backing Allocator), the uint-typed struct fields
+	// (len/cap), the type-parameter-field substitution (Entry[K,V]'s key K /
+	// value V), the enum-typed struct field (Entry's state EntryState), the
+	// slice-of-struct element (HashMap's `entries []Entry[K, V]`), and —
+	// the last blocker, fixed this session — the uint expression grammar:
+	// rehash/with_capacity compute `new_cap * (sizeof Entry[K, V])` (a
+	// uint-typed CheckedArithmetic over a SizeofType operand), which the
+	// general buildExpr path rejected until uint values were routed through
+	// buildUintExpr everywhere (local declarations, reassignments, returns,
+	// range-loop bounds, slice/array/str indices, optional payloads, struct
+	// field reads/writes) and buildUintExpr gained the SizeofType, IntegerCast,
+	// Load, and CheckedOptionalUnwrap cases it needed.
+	//
+	// The consumer inserts seven keys — enough to force maybe_grow to rehash
+	// (load factor 7/8 > 0.7) with a doubled capacity, exercising the
+	// `new_cap * (sizeof Entry[K, V])` shape with a non-trivial new_cap — and
+	// then reads back two keys and returns their sum (10 + 70 = 80), asserting
+	// the full pipeline compiles AND RUNS end-to-end, not just that Emit
+	// returns no error. Mirrors TestCheckStdHmapU64HashFnTypes' fixture
+	// pattern (os.ReadFile of the real module sources, fixtureProvider,
+	// StandardRoot: "std").
 	hmap, err := os.ReadFile("../../std/hmap.peb")
 	if err != nil {
 		t.Fatal(err)
@@ -5467,7 +5449,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
 	provider := fixtureProvider{
-		"main.peb":     []byte(`import "std:hmap"; fn userHash(x int) u64 => x as u64; fn userEq(a int, b int) bool => a == b; fn main() int { var m = hmap::new[int, int](userHash, userEq); m.insert(5, 7); let v = m.get(5)!; return v; }`),
+		"main.peb":     []byte(`import "std:hmap"; fn userHash(x int) u64 => x as u64; fn userEq(a int, b int) bool => a == b; fn main() int { var m = hmap::new[int, int](userHash, userEq); m.insert(1, 10); m.insert(2, 20); m.insert(3, 30); m.insert(4, 40); m.insert(5, 50); m.insert(6, 60); m.insert(7, 70); let v1 = m.get(1)!; let v7 = m.get(7)!; return v1 + v7; }`),
 		"std/hmap.peb": hmap,
 		"std/mem.peb":  mem,
 	}
@@ -5496,52 +5478,13 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
-	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, uint-struct-field, type-parameter-field, enum-typed-struct-field, and slice-of-struct-element gaps are gone, but this test expected the remaining uint-expression gap")
+	if err != nil {
+		t.Fatalf("Emit failed on the full std:hmap consumer: %v", err)
 	}
-	if strings.Contains(err.Error(), "recursion") {
-		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
-	}
-	if strings.Contains(err.Error(), "payload type") {
-		t.Fatalf("Emit still fails with an optional-payload error; the pointer-payload fix did not land: %v", err)
-	}
-	if strings.Contains(err.Error(), "struct type 0 is not in the type snapshot") {
-		t.Fatalf("Emit still fails with the runtime-builtin struct-field-typedef error; the orderAggregateTypes runtime-type skip did not land: %v", err)
-	}
-	if strings.Contains(err.Error(), "field type uint is not supported") {
-		t.Fatalf("Emit still fails with the uint-struct-field error; the structFieldCType widening did not land: %v", err)
-	}
-	if strings.Contains(err.Error(), "field type type-parameter") {
-		t.Fatalf("Emit still fails with the type-parameter-field error; the structTypeParameters canonical-key substitution did not land: %v", err)
-	}
-	if strings.Contains(err.Error(), "is an enum type; enum-typed struct fields are not supported") {
-		t.Fatalf("Emit still fails with the enum-typed-struct-field error; the enum-typed struct field fix did not land: %v", err)
-	}
-	if strings.Contains(err.Error(), "slice element type nominal(") || strings.Contains(err.Error(), "is not supported; only a fixed-width integer, char, or bool slice elements are supported") {
-		t.Fatalf("Emit still fails with the slice-of-struct-element error; the slice-of-struct-elements fix did not land: %v", err)
-	}
-	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
-	// payload, the (fixed) pointer-payload optional, the (fixed)
-	// runtime-Allocator struct-field typedef, the (fixed) uint-typed struct
-	// field (HashMap's own len/cap), the (fixed) type-parameter-field
-	// substitution (Entry[K,V]'s key K / value V now resolve to their concrete
-	// int/int arguments), the (fixed) enum-typed struct field (Entry's state
-	// EntryState), and the (fixed) slice-of-struct element (HashMap's `entries
-	// []Entry[K, V]` now emits a slice typedef whose data field points at the
-	// Entry struct's own typedef): the uint expression grammar. rehash /
-	// with_capacity build `new_cap * (sizeof Entry[K, V])` — a uint-typed
-	// CheckedArithmetic over a SizeofType operand — and buildExpr has no
-	// SizeofType case (it is rejected with "entry function body expression
-	// contains a SizeofType"), nor does the uint path of the checked-arithmetic
-	// runtime helpers exist (checkedSuffix has no Uint mapping, so a uint
-	// `*` would emit a nonexistent pebble_rt_checked_mul_ helper). This is a
-	// distinct, separate, not-yet-fixed gap — uint expressions (sizeof and
-	// uint arithmetic) — that the full hmap consumer surfaces once
-	// slice-of-struct elements work.
-	if !strings.Contains(err.Error(), "contains a SizeofType") {
-		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field non-type-parameter non-enum-field non-slice-of-struct error: %v", err)
-	}
-	t.Logf("full std:hmap consumer now blocks only on the uint expression grammar (sizeof and uint checked arithmetic; rehash/with_capacity compute `new_cap * (sizeof Entry[K, V])`) reached after the slice-of-struct-elements fix landed (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, uint struct fields, direct type-parameter fields, enum-typed struct fields, and slice-of-struct elements are all fixed): %v", err)
+	// The capstone of the session's std/hmap.peb arc: the full consumer must
+	// not only emit — it must compile clean under -Wall -Wextra -Werror and
+	// RUN, returning the inserted value sum (m.get(1)! + m.get(7)! = 80).
+	compileAndRun(t, buf.Bytes(), 80, false)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
@@ -6491,13 +6434,17 @@ func TestEmitOptionalLocalInsideHelperCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn helper() i32 { let x ?i32 = some 42; return x!; } fn main() i32 { return helper(); }", false, 42, false)
 }
 
-func TestEmitRejectsOptionalLocalStore(t *testing.T) {
-	// Reassigning an optional-typed local (x = some 5) is out of scope this
-	// slice. The Store's place names an optional-typed local, so
-	// buildLeadingStatement rejects it with a clear error naming the
-	// reassignment, not a guessed lowering.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var x ?i32 = some 1; x = some 2; return x!; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning an optional is not supported")
+func TestEmitOptionalLocalStoreCompilesAndRuns(t *testing.T) {
+	// Reassigning an optional-typed local (x = some 5) is now supported —
+	// the std/hmap.peb insert shape (`tombstone_index = some index;`) needed
+	// it, and buildStoreCore's optional-local case routes the new value
+	// through buildOptionalValue, the same machinery an optional local's own
+	// declaration initializer uses, emitting a plain whole-struct C
+	// assignment. This was previously a clean rejection
+	// ("reassigning an optional is not supported yet"); it is now a real
+	// compile-and-run case: x is reassigned from some 1 to some 2, and the
+	// force-unwrap returns 2.
+	emitAndRun(t, "fn main() i32 { var x ?i32 = some 1; x = some 2; return x!; }", false, 2, false)
 }
 
 func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {

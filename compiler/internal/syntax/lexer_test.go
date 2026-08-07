@@ -2,7 +2,6 @@ package syntax
 
 import (
 	"bytes"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -167,7 +166,7 @@ func lexText(t *testing.T, text string) ([]TokenKind, *diagnostic.DiagnosticSet)
 			return tokens, diagnostics
 		}
 		if len(tokens) > len(text)+16 {
-			t.Fatal(fmt.Sprintf("lexer did not terminate: %v", tokens))
+			t.Fatalf("lexer did not terminate: %v", tokens)
 		}
 	}
 }

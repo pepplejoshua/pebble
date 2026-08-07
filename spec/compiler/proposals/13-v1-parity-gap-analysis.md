@@ -110,16 +110,31 @@ imperative program needs.
       declaration for an aggregate used as a slice element, since a
       slice's own typedef is emitted before the aggregate typedef
       block it needs to point into.
-- [ ] **[generator] A full `std/hmap.peb` consumer now hits the uint
-      expression grammar: no `SizeofType` case, and no checked
-      -arithmetic runtime helper for a `uint` operand mixed with a
-      `sizeof` result.** `rehash`/`with_capacity` compute `new_cap *
-      (sizeof Entry[K, V])`. This is now the last known blocker on
-      `std/hmap.peb` compiling and running end-to-end. Not yet scoped
-      in detail — likely another narrow gate-widening in the same
-      family as this session's other `uint`/checked-arithmetic fixes,
-      but confirm rather than assume (the `sizeof` operand specifically
-      hasn't been exercised in this position before).
+- [x] **[generator]** `uint` expression grammar completed — the full
+      `std/hmap.peb` consumer (`new` + `insert` + `get`, including a
+      real `maybe_grow`-triggered `rehash`) now compiles under `-Wall
+      -Wextra -Werror` and **runs correctly end-to-end**
+      (`TestEmitStdHmapInsertGetFullConsumer`, asserted via a real
+      `cc` compile + execution, not just `Emit` succeeding). This
+      closes the entire `std/hmap.peb` arc: every position that can
+      hold a `uint` value now routes through `buildUintExpr` — local
+      declarations/reassignments, `return`, range-loop bounds,
+      slice/array/str indices (read, lvalue, and bound), struct-field
+      reads, optional payloads and their force-unwrap, and compound
+      assignment (`self.len += 1;`) — and `buildUintExpr` itself
+      gained `SizeofType` (now resolving ANY type's real C type via
+      the new `sizeofCTypeName`, not just the three builtin widths —
+      this fixed a genuine memory-corruption bug: `sizeof Entry[K, V]`
+      previously fell through to `sizeof(uint64_t)`, under-allocating
+      `rehash`'s new table), `IntegerCast`, `Load`, and
+      `CheckedOptionalUnwrap` cases. Also needed along the way: a
+      bare `return;` in a void helper, a slice-typed field's
+      whole-value read/reassignment, an optional-typed local's
+      whole-value reassignment (previously a clean rejection — see
+      `TestEmitOptionalLocalStoreCompilesAndRuns`, which replaces the
+      old `TestEmitRejectsOptionalLocalStore`), and a pointer-to-struct
+      receiver for a function-typed field read (`self.hash_fn(key)`
+      through a `*HashMap` method parameter).
 
 ---
 

@@ -3323,6 +3323,22 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 // construct in error messages.
 func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, returnNode tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(returnNode.Children) != 1 {
+		if len(returnNode.Children) == 0 && result.kind == types.Void {
+			// A bare `return;` inside a void-returning helper's body — the
+			// std/hmap.peb maybe_grow shape (`if self.cap == 0 { self.rehash(8);
+			// return; }`): a return with no value is only legal in a void
+			// function, and lowers to a plain C `return;` after any deferred
+			// statements fire, exactly as the void helper's ImplicitReturn tail
+			// emits nothing but its deferred statements.
+			deferText, err := buildDeferredStatements(unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
+			if err != nil {
+				return "", err
+			}
+			if deferText != "" {
+				return deferText + "\n" + indent + "return;", nil
+			}
+			return indent + "return;", nil
+		}
 		return "", fmt.Errorf("%s return statement has %d argument(s), want exactly one expression", context, len(returnNode.Children))
 	}
 	var returnValue string
@@ -3417,6 +3433,17 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// return shapes are a float literal or a SymbolValue naming a
 		// float-typed local in scope of the same float kind.
 		returnValue, err = buildFloatExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind)
+	} else if result.kind == types.Uint {
+		// A uint-returning helper (a reachable helper whose ResultType is
+		// uint — helperSignature records resultInfo{kind: types.Uint} and
+		// declares the C return type uint64_t), so the return value is built
+		// under the uint grammar by buildUintExpr rather than buildExpr,
+		// which rejects a uint-typed checked-arithmetic tree over a
+		// SizeofType operand and has no uint arithmetic. Supported return
+		// shapes are a SymbolValue naming a uint-typed local in scope, a
+		// uint-typed checked-arithmetic tree, a sizeof result, or an
+		// integer literal.
+		returnValue, err = buildUintExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else {
 		returnValue, err = buildExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width, width)
 	}
@@ -3995,14 +4022,30 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		return "", err
 	}
 	// The loop's own scope is a clone of the enclosing set seeded with the
-	// iterator as an ordinary local of the entry's width — the same seeding
-	// pattern a helper's parameters use — so a SymbolValue reference to the
-	// iterator inside the body (and a Store reassigning it, were the checker
-	// to permit one) resolves through the existing machinery with zero changes
-	// to buildExpr. The clone discipline keeps the iterator and anything the
-	// body declares out of this block's own scope map.
+	// iterator as an ordinary local of the loop's bound type — the same
+	// seeding pattern a helper's parameters use — so a SymbolValue reference
+	// to the iterator inside the body (and a Store reassigning it, were the
+	// checker to permit one) resolves through the existing machinery with zero
+	// changes to buildExpr. The clone discipline keeps the iterator and
+	// anything the body declares out of this block's own scope map. The
+	// iterator's type is the bounds' own type, not necessarily the entry's
+	// width: a range loop's two bounds always share one concrete integer type
+	// (the checker anchors the start bound to the end bound's type), and when
+	// that type is uint (std/hmap.peb's `loop 0..new_cap : i { ... }` over a
+	// uint capacity) the iterator must be a uint64_t declared at uint's own C
+	// type — declaring it at the entry width and comparing it against a
+	// uint64_t bound would trip -Wsign-compare under the mandated -Wall
+	// -Wextra -Werror. The body's references to the iterator then resolve at
+	// that same type (uint routes through buildUintExpr, any other
+	// non-entry-width integer through buildExpr at its own width).
+	boundType := width
+	if startNode, startOK := unit.Node(rangeNode.Children[0]); startOK {
+		if resolved, integer := resolvedBuiltin(snapshot, startNode.Type); integer && cType(resolved) != "" {
+			boundType = resolved
+		}
+	}
 	loopScope := cloneLocals(locals)
-	loopScope[rangeNode.Symbol] = localInfo{kind: width}
+	loopScope[rangeNode.Symbol] = localInfo{kind: boundType}
 	bodyText, err := buildLoopBody(unit, snapshot, fileSet, rangeNode.Children[2], loopScope, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
@@ -4012,7 +4055,7 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		rangeOp = "<="
 	}
 	indent := strings.Repeat("    ", depth+1)
-	return fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d++) {\n%s\n%s}", indent, cType(width), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endText, rangeNode.Symbol, bodyText, indent), nil
+	return fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d++) {\n%s\n%s}", indent, cType(boundType), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endText, rangeNode.Symbol, bodyText, indent), nil
 }
 
 // buildRangeBound builds one bound (the start or the end) of a range loop. A
@@ -4050,6 +4093,27 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 			return "", fmt.Errorf("entry function body block range loop bound references symbol %d, which is not a local in scope", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	// Any other bound is built at its OWN resolved integer width rather than
+	// the ambient entry width, exactly as buildComparisonOperand and
+	// buildCallArgument resolve their operands: a range loop's two bounds
+	// always share one concrete integer type (the checker anchors the start
+	// bound to the end bound's type), and that type need not be the entry's
+	// width — std/hmap.peb's rehash/with_capacity loop over a uint-typed
+	// capacity (`loop 0..new_cap : i { ... }`), where the checker anchors
+	// the `0` start bound to uint, so the literal reaches this path as a
+	// uint-typed IntegerLiteral that buildExpr's entry-width gate would
+	// reject. uint is deliberately routed through buildUintExpr (the
+	// dedicated uint grammar), excluded from the general buildExpr path the
+	// same way buildCallArgument/buildComparisonOperand exclude it; any
+	// other non-entry-width integer bound flows through buildExpr at the
+	// bound's own resolved width.
+	boundWidth, integerBound := resolvedBuiltin(snapshot, node.Type)
+	if integerBound && cType(boundWidth) != "" && !isUint(snapshot, node.Type) {
+		return buildExpr(unit, snapshot, fileSet, id, locals, boundWidth, width)
+	}
+	if isUint(snapshot, node.Type) {
+		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
 	}
 	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 }
@@ -4361,11 +4425,11 @@ func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
 		return pre, core, statement.Symbol, nil
 	}
-	core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", width)
+	pre, core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", width)
 	if err != nil {
 		return "", "", 0, err
 	}
-	return "", core, statement.Symbol, nil
+	return pre, core, statement.Symbol, nil
 }
 
 // buildForUpdateClause validates and builds the C update-clause text for a
@@ -4422,10 +4486,39 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // (localInfo{kind: kind} for an integer or float, localInfo{kind: types.Bool} for a
 // bool, or localInfo{isChar: true} for a char) so a later reference or
 // reassignment resolves against the same type.
-func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, string, error) {
+	// Check for a CheckedOptionalUnwrap whose child is a DirectCall or
+	// MethodCall — a force-unwrap of a call result (`let v = m.get(5)!;`).
+	// The call result must be materialized into a temp C variable so the
+	// unwrap helper can reference its .has_value and .value fields without
+	// evaluating the call twice. The temp is declared as the optional's own
+	// C struct type and lives in the enclosing block scope, threaded as a
+	// pre-statement before the local's own declaration.
+	if initValue.Kind == tir.CheckedOptionalUnwrap && len(initValue.Children) == 1 {
+		if child, ok := unit.Node(initValue.Children[0]); ok && (child.Kind == tir.DirectCall || child.Kind == tir.MethodCall) {
+			kind, ok := resolvedBuiltin(snapshot, initValue.Type)
+			if !ok || cType(kind) == "" {
+				return "", "", fmt.Errorf("%s declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
+			}
+			callExpr, err := buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			optionalType := child.Type
+			tempName := fmt.Sprintf("pebble_optional_temp_%d", statement.Symbol)
+			pre := fmt.Sprintf("%s %s = %s;", optionalTypeName(optionalType), tempName, callExpr)
+			unwrapSuffix := optionalUnwrapSuffix(snapshot, initValue.Type)
+			if unwrapSuffix == "" {
+				return "", "", fmt.Errorf("%s declares a local of type %s initialized from an optional unwrap with a payload type %s, which has no runtime unwrap helper", context, describeType(snapshot, initValue.Type), describeType(snapshot, initValue.Type))
+			}
+			core := fmt.Sprintf("%s pebble_local_%d = pebble_rt_checked_unwrap_%s(%s.has_value, %s.value, %s)", cType(kind), statement.Symbol, unwrapSuffix, tempName, tempName, buildSourceLoc(fileSet, initValue.Span))
+			scope[statement.Symbol] = localInfo{kind: kind}
+			return pre, core, nil
+		}
+	}
 	kind, ok := resolvedBuiltin(snapshot, initValue.Type)
 	if !ok {
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
+		return "", "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
 	}
 	switch kind {
 	case types.Bool:
@@ -4433,10 +4526,10 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// (the bool grammar is genuinely different from the integer one).
 		initExpr, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		scope[statement.Symbol] = localInfo{kind: types.Bool}
-		return fmt.Sprintf("bool pebble_local_%d = %s", statement.Symbol, initExpr), nil
+		return "", fmt.Sprintf("bool pebble_local_%d = %s", statement.Symbol, initExpr), nil
 	case types.Char:
 		// A char local: emitted as the fixed C int32_t (the language's char
 		// is a full Unicode scalar value, always int32_t regardless of the
@@ -4446,10 +4539,10 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// reference or reassignment is validated and emitted as a char.
 		initExpr, err := buildCharOperand(unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		scope[statement.Symbol] = localInfo{isChar: true}
-		return fmt.Sprintf("int32_t pebble_local_%d = %s", statement.Symbol, initExpr), nil
+		return "", fmt.Sprintf("int32_t pebble_local_%d = %s", statement.Symbol, initExpr), nil
 	case types.F32, types.F64:
 		// A float local (f32 or f64, Stage A): emitted at the local's own
 		// declared float C type (floatCType — float for f32, double for f64),
@@ -4460,16 +4553,37 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// reassignment is validated and emitted as that kind's float.
 		initExpr, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		scope[statement.Symbol] = localInfo{kind: kind}
-		return fmt.Sprintf("%s pebble_local_%d = %s", floatCType(kind), statement.Symbol, initExpr), nil
+		return "", fmt.Sprintf("%s pebble_local_%d = %s", floatCType(kind), statement.Symbol, initExpr), nil
+	case types.Uint:
+		// A uint local: emitted at uint's own C type (cType — uint64_t, the
+		// platform-native pointer-width type), its value built by buildUintExpr
+		// (the dedicated uint grammar: sizeof results, checked uint
+		// arithmetic, a reference to an in-scope uint-typed local, an
+		// integer literal, or — the std/hmap.peb rehash/with_capacity shape —
+		// a uint-typed checked-arithmetic tree over a SizeofType operand,
+		// which buildExpr's general grammar rejects). This mirrors how every
+		// other uint value position routes (call arguments, comparison
+		// operands, struct field construction, optional payloads); before
+		// this fix a uint local's initializer fell through to buildExpr,
+		// which has no SizeofType case. The scope entry records the uint kind
+		// (localInfo{kind: types.Uint}, exactly as helperSignature seeds a
+		// uint parameter) so a later reference or reassignment is validated
+		// and emitted as a uint.
+		initExpr, err := buildUintExpr(unit, snapshot, fileSet, statement.Children[0], scope, width)
+		if err != nil {
+			return "", "", err
+		}
+		scope[statement.Symbol] = localInfo{kind: types.Uint}
+		return "", fmt.Sprintf("%s pebble_local_%d = %s", cType(types.Uint), statement.Symbol, initExpr), nil
 	}
 	if cType(kind) == "" {
 		// Anything that is not bool/char and not an integer builtin the
 		// backend emits (str, void) is a clean rejection naming the type,
 		// matching buildLeadingStatement's own rule.
-		return "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
+		return "", "", fmt.Errorf("%s local declaration declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
 	}
 	// An integer local of any builtin width, not just the entry's own:
 	// emitted at the local's own declared width (cType(kind)), so e.g. an
@@ -4480,10 +4594,10 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	// validated and emitted as that width's integer.
 	initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind, width)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	scope[statement.Symbol] = localInfo{kind: kind}
-	return fmt.Sprintf("%s pebble_local_%d = %s", cType(kind), statement.Symbol, initExpr), nil
+	return "", fmt.Sprintf("%s pebble_local_%d = %s", cType(kind), statement.Symbol, initExpr), nil
 }
 
 // buildStoreCore builds the value text for a reassignment of a local already
@@ -4579,6 +4693,29 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
+		if isSlice(snapshot, elementType) {
+			// A slice-typed field (or indexed element) write — `self.entries =
+			// new_entries;`, the std/hmap.peb rehash shape: the target is a
+			// struct field declared at its own pebble_slice_<typeID>_t (see
+			// structFieldCType), and the new value is a reference to an
+			// already-declared slice-typed local of the matching type, emitted
+			// as the local's own pebble_local_<symbol> C name — the same
+			// whole-struct-copy value shape buildSliceArgument accepts for a
+			// slice call argument, so `lvalue = pebble_local_<symbol>;` is the
+			// direct, uncoerced C store.
+			valueNode, ok := unit.Node(statement.Children[1])
+			if !ok {
+				return "", fmt.Errorf("%s reassignment references invalid value node %d", context, statement.Children[1])
+			}
+			if valueNode.Kind != tir.SymbolValue {
+				return "", fmt.Errorf("%s reassigns a slice-typed place from a %s, want a reference to a slice-typed local in scope", context, valueNode.Kind)
+			}
+			valueInfo, declared := scope[valueNode.Symbol]
+			if !declared || valueInfo.sliceType != elementType {
+				return "", fmt.Errorf("%s reassigns a slice-typed place of type %s from symbol %d, which is not a slice-typed local in scope of that type", context, sliceTypeName(elementType), valueNode.Symbol)
+			}
+			return fmt.Sprintf("%s = %s", lvalue, fmt.Sprintf("pebble_local_%d", valueNode.Symbol)), nil
+		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, or enum", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
@@ -4596,8 +4733,24 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	// integer local, or an integer assigned to a bool local — is rejected by
 	// the appropriate builder.
 	switch targetInfo.kind {
-	case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
+	case types.Int, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
 		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind, width)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+	case types.Uint:
+		// A Store whose place names a uint-typed local is a uint
+		// reassignment: the new value is built by buildUintExpr at uint's
+		// own grammar (sizeof results, checked uint arithmetic, a reference
+		// to an in-scope uint-typed local), mirroring how a uint local's
+		// declaration initializer routes (buildScalarInitializeCore) and
+		// how every other uint value position routes — the general
+		// buildExpr path has no SizeofType case and no uint-typed checked
+		// arithmetic. std/hmap.peb's insert reassigns its uint local index
+		// (`index = (index + 1) % self.cap;`), the exact shape that
+		// motivates this case.
+		storeValue, err := buildUintExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -4721,7 +4874,21 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
 		}
 		if targetInfo.optional != 0 {
-			return "", fmt.Errorf("%s reassigns symbol %d, an optional-typed local of type %s; reassigning an optional is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.optional))
+			// A Store whose place names an optional-typed local is a
+			// whole-value reassignment — `tombstone_index = some index;`, the
+			// std/hmap.peb insert shape — whose new value is an optional value
+			// built by the same buildOptionalValue machinery an optional
+			// local's declaration initializer uses (a SomeOptional / none, a
+			// forward of an in-scope optional-typed local, or a call to an
+			// optional-returning helper), emitted as
+			// `pebble_local_<sym> = <optional value>;` where the value is the
+			// optional's own C type (pebble_optional_<typeID>_t), so the whole
+			// reassignment is a plain C struct assignment.
+			storeValue, err := buildOptionalValue(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.optional, context, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
 		}
 		if targetInfo.structType != 0 {
 			return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
@@ -4819,8 +4986,11 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// is a clean rejection naming the local's type.
 		lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 		switch targetInfo.kind {
-		case types.Int, types.Uint, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
+		case types.Int, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
 			core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context, width)
+			return "", core, err
+		case types.Uint:
+			core, err := buildCompoundUintCore(unit, snapshot, fileSet, statement, lvalue, scope, context, width)
 			return "", core, err
 		case types.F32, types.F64:
 			core, err := buildCompoundFloatCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
@@ -4839,6 +5009,14 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, statement.Children[0], scope, width)
 	if err != nil {
 		return "", "", err
+	}
+	if isUint(snapshot, elementType) {
+		// A uint-typed field (or indexed element) compound assignment —
+		// `self.len += 1;`, the std/hmap.peb insert shape: the value is built
+		// by buildUintExpr and combined with the plain C operator, exactly as
+		// a uint-typed local's compound assignment does (buildCompoundUintCore).
+		core, err := buildCompoundUintCore(unit, snapshot, fileSet, statement, lvalue, scope, context, width)
+		return "", core, err
 	}
 	if !isWidth(snapshot, width, elementType) {
 		return "", "", fmt.Errorf("%s compound assignment combines into an element of type %s, want %s", context, describeType(snapshot, elementType), wantName(width))
@@ -4897,6 +5075,30 @@ func buildCompoundFloatCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	}
 	op, _ := arithmeticOperator(statement.Operator)
 	value, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[1], scope, placeWidth)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s = (%s %s %s)", lvalue, lvalue, op, value), nil
+}
+
+// buildCompoundUintCore builds the combined-value text for a compound
+// assignment whose place resolves to uint: the new value is built by
+// buildUintExpr (the dedicated uint grammar — sizeof results, checked uint
+// arithmetic, references to in-scope uint locals, integer casts) and combined
+// with the plain C operator arithmeticOperator picks for the operator, `x = (x
+// + y)` — the same unchecked lowering buildUintExpr uses for every uint
+// arithmetic in this backend, exactly as buildCompoundFloatCore is the plain
+// unchecked lowering for floats. This covers both the uint-typed struct field
+// the std/hmap.peb insert shape uses (`self.len += 1;` — a FieldPlace whose
+// resolved element type is uint) and a uint-typed local (`sum += 1`). A uint
+// place has no checked runtime helper (checkedSuffix maps no width to uint), so
+// the plain C operator is the whole lowering, never a malformed helper name.
+func buildCompoundUintCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if statement.Operator == syntax.Percent {
+		return "", fmt.Errorf("%s compound assignment uses %%%% on a uint place, want +, -, *, or / (%% is integral-only)", context)
+	}
+	op, _ := arithmeticOperator(statement.Operator)
+	value, err := buildUintExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
 	if err != nil {
 		return "", err
 	}
@@ -5456,7 +5658,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// buildFunctionLocalDeclaration).
 			return buildFunctionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
-		core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, context, width)
+		pre, core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, context, width)
 		if err != nil {
 			return "", err
 		}
@@ -5468,6 +5670,13 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// core (`<cType> pebble_local_<id> = <expr>`); the indent, the
 		// statement-terminating `;`, and the (void) cast turn it into this
 		// full statement, byte-identical to before this helper was extracted.
+		// A non-empty pre (a temp declaration for a force-unwrap of a call
+		// result, e.g. `let v = m.get(5)!;`) is threaded as an extra leading
+		// statement, the same mechanical shape buildForInitClause returns its
+		// OptionalIntegerToEnum pre.
+		if pre != "" {
+			return indent + pre + "\n" + indent + core + ";\n" + indent + fmt.Sprintf("(void)pebble_local_%d;", statement.Symbol), nil
+		}
 		return indent + core + ";\n" + indent + fmt.Sprintf("(void)pebble_local_%d;", statement.Symbol), nil
 	case tir.Store:
 		// A Store reassigns a local declared earlier in this block or an
@@ -6399,6 +6608,31 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, construction, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.Load {
+		// A by-value read of a slice-typed struct field used as a slice
+		// local's declaration initializer — `var old_entries = self.entries;`,
+		// the std/hmap.peb rehash shape — lowered by the checker to a Load of
+		// a FieldPlace naming the slice field (the same Load(FieldPlace)
+		// shape a slice field read in any other value position uses). The
+		// emitted C is a whole-struct copy declaration,
+		// `pebble_slice_<typeID>_t pebble_local_<symbol> = <lvalue>;`, where
+		// the lvalue is the field projection built by buildPlaceLValue, and
+		// its resolved type must be exactly the local's declared type
+		// (defense for hand-built IR). Like every local, the declaration is
+		// followed by a (void) cast against -Wunused-variable.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares a slice-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, sliceTypeName(initValue.Type), len(initValue.Children))
+		}
+		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s slice-field read: %v", context, err)
+		}
+		if elementType != initValue.Type {
+			return "", fmt.Errorf("%s declares a slice-typed local of type %s initialized from a read of element type %s", context, sliceTypeName(initValue.Type), describeType(snapshot, elementType))
+		}
+		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
+	}
 	tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol))
 	if err != nil {
 		return "", err
@@ -6456,18 +6690,107 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		litWidth, _ := resolvedBuiltin(snapshot, node.Type)
 		return integerLiteralText(node.Literal.IntegerNum, litWidth), nil
 	case tir.SizeofType:
-		if node.TypeArg == snapshot.Builtins().I32 || node.TypeArg == snapshot.Builtins().Int {
-			return "sizeof(int32_t)", nil
+		// The result of `sizeof T` for a uint expression. The emitted C is
+		// `sizeof(<T's C type>)` where the C type is resolved from the
+		// SizeofType's TypeArg: a fixed-width integer at its own C type
+		// (int32_t for int/i32, int64_t for i64, uint64_t for uint/u64 — the
+		// original three-width dispatch), or any aggregate's own typedef name
+		// — the std/hmap.peb rehash/with_capacity shape (`new_cap * (sizeof
+		// Entry[K, V])`) where the TypeArg is the Entry STRUCT type, which
+		// must lower to sizeof(pebble_struct_<typeID>_t), never the default
+		// sizeof(uint64_t) the builtin-only three-width dispatch would fall
+		// through to (that would size the allocation 8 bytes per Entry
+		// instead of 12, corrupting the rehash table).
+		typeName, err := sizeofCTypeName(unit, snapshot, node.TypeArg)
+		if err != nil {
+			return "", err
 		}
-		if node.TypeArg == snapshot.Builtins().I64 {
-			return "sizeof(int64_t)", nil
-		}
-		return "sizeof(uint64_t)", nil
+		return "sizeof(" + typeName + ")", nil
 	case tir.SymbolValue:
 		if _, ok := locals[node.Symbol]; !ok {
 			return "", fmt.Errorf("uint expression references unknown symbol %d", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.IntegerCast:
+		// An integer value cast to uint (`x as uint`), the std/hmap.peb
+		// insert/get shape (`(hash as uint) % self.cap`). The destination is
+		// uint by construction (buildUintExpr's gate above already required
+		// node.Type to be uint), so the whole cast lowers to a plain C cast
+		// to uint's own C type (uint64_t). The single child is built at its
+		// OWN width: a uint-typed child recurses into this same builder (a
+		// uint-to-uint cast is a no-op but must still be accepted), and any
+		// other fixed-width integer child — u64 for hmap's hash (the
+		// checker anchors the hash to u64, so the child is a u64-typed
+		// SymbolValue or call) — is built by buildExpr at the child's own
+		// resolved width, since u64 (and every other non-uint integer)
+		// flows through the general path.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains an IntegerCast with %d children, want exactly one", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("uint expression IntegerCast references invalid child node %d", node.Children[0])
+		}
+		childWidth, integerChild := resolvedBuiltin(snapshot, child.Type)
+		var childExpr string
+		var err error
+		if isUint(snapshot, child.Type) {
+			childExpr, err = buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		} else if integerChild && cType(childWidth) != "" {
+			childExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
+		} else {
+			return "", fmt.Errorf("uint expression IntegerCast child has type %s, want a fixed-width integer", describeType(snapshot, child.Type))
+		}
+		if err != nil {
+			return "", err
+		}
+		return "(" + cType(types.Uint) + ")(" + childExpr + ")", nil
+	case tir.Load:
+		// A by-value read of a uint-typed place — a uint struct field read
+		// (`var old_cap = self.cap;`, the std/hmap.peb rehash shape, lowered
+		// to Load(FieldPlace)), a uint-typed tuple element, or a uint element
+		// of a slice/array — used as a uint value. The Load's Type is already
+		// gated to uint by buildUintExpr's entry check, so the whole read is
+		// the place's C lvalue built by buildPlaceLValue (the same projection
+		// a uint field write or address-of targets), whose resolved type must
+		// be uint (defense for hand-built IR).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains a Load with %d children, want exactly one place", len(node.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", fmt.Errorf("uint expression place: %v", err)
+		}
+		if !isUint(snapshot, placeType) {
+			return "", fmt.Errorf("uint expression reads a place of type %s, want uint", describeType(snapshot, placeType))
+		}
+		return lvalue, nil
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an optional whose payload is uint (`tombstone_index!`
+		// where tombstone_index is `?uint`, the std/hmap.peb insert shape). The
+		// unwrap is bounds-checked via the runtime helper selected from the
+		// PAYLOAD's own type (optionalUnwrapSuffix maps a uint payload to the
+		// u64 helper, since uint's .value field is uint64_t) — passing the
+		// optional local's has_value and value fields. The single child is a
+		// SymbolValue naming the optional-typed local.
+		unwrapSuffix := optionalUnwrapSuffix(snapshot, node.Type)
+		if unwrapSuffix == "" {
+			return "", fmt.Errorf("uint expression contains a CheckedOptionalUnwrap of a %s payload, which has no runtime unwrap helper", describeType(snapshot, node.Type))
+		}
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("uint expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+		}
+		if child.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("uint expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
+		}
+		if info, declared := locals[child.Symbol]; !declared || info.optional == 0 {
+			return "", fmt.Errorf("uint expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value, %s)", unwrapSuffix, child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
 	case tir.CheckedArithmetic:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("uint arithmetic has %d operands", len(node.Children))
@@ -6644,6 +6967,17 @@ func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if _, declared := scope[boundNode.Symbol]; declared {
 			return fmt.Sprintf("pebble_local_%d", boundNode.Symbol)
 		}
+	}
+	if isUint(snapshot, boundNode.Type) {
+		// A uint-typed slice bound (a range-loop iterator or uint local whose
+		// type the checker anchored to uint): built by the dedicated uint
+		// grammar, mirroring the slice/array index dispatch — the general
+		// buildExpr path rejects non-entry-width types.
+		expr, err := buildUintExpr(unit, snapshot, fileSet, nodeID, scope, width)
+		if err != nil {
+			return ""
+		}
+		return expr
 	}
 	expr, err := buildExpr(unit, snapshot, fileSet, nodeID, scope, width, width)
 	if err != nil {
@@ -6822,10 +7156,12 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		// project's -Werror (see zeroOptionalPayloadLiteral).
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = false, .value = %s };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, zeroOptionalPayloadLiteral(unit, snapshot, payloadType), indent, statement.Symbol), nil
-	case tir.DirectCall:
+	case tir.DirectCall, tir.MethodCall:
 		// A call to an optional-returning helper used as the direct
 		// initializer of a matching optional-typed local: `var o ?int =
-		// f();` — the one position (alongside some/none and the
+		// f();` or a method call (`let ptr = self.get_by_ref(key);`, the
+		// std/hmap.peb get shape — a MethodCall whose result type is the
+		// optional type) — the one position (alongside some/none and the
 		// integer-to-optional-enum cast) in which an optional-typed local
 		// may be initialized, mirroring the tuple/struct aggregate-call
 		// initializer shape (buildAggregateCallInitializer).
@@ -8542,6 +8878,14 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 				return "", fmt.Errorf("str index references symbol %d, which is not a local in scope", indexNode.Symbol)
 			}
 			index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
+		} else if isUint(snapshot, indexNode.Type) {
+			// A uint-typed str index (a uint-typed local or loop iterator):
+			// built by the dedicated uint grammar, mirroring the slice/array
+			// index dispatch.
+			index, err = buildUintExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+			if err != nil {
+				return "", fmt.Errorf("str index: %v", err)
+			}
 		} else {
 			index, err = buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, width)
 			if err != nil {
@@ -9449,7 +9793,8 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		}
 		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context, width)
 	case tir.FieldValue:
-		// A function-typed struct field read (`t.op`, function-types slice 2):
+		// A function-typed struct field read (`t.op`, function-types slice 2;
+		// `self.hash_fn`/`self.eq_fn`, the std/hmap.peb insert/get shapes):
 		// the receiver is a struct-typed local in scope (a SymbolValue),
 		// emitted as its own pebble_local_<symbol> C name, and the field is
 		// read as pebble_field_<member> — the exact same designated-field-name
@@ -9458,10 +9803,11 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// buildFieldPlaceRead's identical trailing access), just reached
 		// through buildFunctionValue instead of the width/bool-only field
 		// -read path (buildFieldPlaceRead), since a function-typed field's
-		// value isn't a scalar. Only a plain struct-typed local receiver is
-		// supported in this slice (not a pointer-to-struct receiver, a nested
-		// field, or another function-typed expression's field) — anything
-		// else is a clean rejection naming what was found.
+		// value isn't a scalar. A pointer-to-struct receiver (`self.hash_fn`
+		// where self is a `*HashMap` method parameter) is supported too: the
+		// C projection uses `->` instead of `.`, exactly as buildPlaceLValue's
+		// FieldPlace case and buildStructFieldRead resolve a pointer receiver.
+		// Anything else is a clean rejection naming what was found.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a FieldValue with %d child(ren), want exactly one (the struct receiver)", context, len(node.Children))
 		}
@@ -9473,10 +9819,21 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 			return "", fmt.Errorf("%s reads a function-typed field from a %s receiver, want a reference to a struct-typed local declared earlier in the body", context, receiver.Kind)
 		}
 		info, declared := locals[receiver.Symbol]
-		if !declared || (info.structType == 0 && info.runtimeType == 0) {
-			return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a struct-typed local declared earlier in the body", context, receiver.Symbol)
+		if !declared {
+			return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a local declared earlier in the body", context, receiver.Symbol)
 		}
-		return fmt.Sprintf("pebble_local_%d.pebble_field_%d", receiver.Symbol, node.Member), nil
+		access := "."
+		if info.structType == 0 && info.runtimeType == 0 {
+			// A pointer-to-struct receiver: the pointer's pointee must be a
+			// struct type (info.pointerType records the pointer type, and
+			// pointerPointeeType extracts its pointee), and the field read
+			// uses the `->` access the C pointer gives.
+			if _, ok := pointerPointeeType(snapshot, info.pointerType); !ok {
+				return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a struct-typed local declared earlier in the body", context, receiver.Symbol)
+			}
+			access = "->"
+		}
+		return fmt.Sprintf("pebble_local_%d%spebble_field_%d", receiver.Symbol, access, node.Member), nil
 	case tir.Load:
 		// A function-typed field read used as an rvalue in a position other
 		// than an indirect call's direct callee (e.g. a local declaration's
@@ -9499,8 +9856,9 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// form) — the receiver is a StoragePlace naming a struct-typed local
 		// in scope, and the field is read the same
 		// pebble_local_<symbol>.pebble_field_<member> way FieldValue's case
-		// does. Only a plain struct-typed local receiver is supported in
-		// this slice, matching the FieldValue case's own restriction.
+		// does. A pointer-to-struct receiver (`self.hash_fn` where self is a
+		// `*HashMap` method parameter) is supported too, using `->` access,
+		// exactly as the FieldValue case resolves it.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a FieldPlace with %d child(ren), want exactly one (the struct receiver)", context, len(node.Children))
 		}
@@ -9512,10 +9870,17 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 			return "", fmt.Errorf("%s reads a function-typed field from a %s receiver, want a reference to a struct-typed local declared earlier in the body", context, receiverPlace.Kind)
 		}
 		info, declared := locals[receiverPlace.Symbol]
-		if !declared || (info.structType == 0 && info.runtimeType == 0) {
-			return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a struct-typed local declared earlier in the body", context, receiverPlace.Symbol)
+		if !declared {
+			return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a local declared earlier in the body", context, receiverPlace.Symbol)
 		}
-		return fmt.Sprintf("pebble_local_%d.pebble_field_%d", receiverPlace.Symbol, node.Member), nil
+		access := "."
+		if info.structType == 0 && info.runtimeType == 0 {
+			if _, ok := pointerPointeeType(snapshot, info.pointerType); !ok {
+				return "", fmt.Errorf("%s reads a function-typed field from symbol %d, which is not a struct-typed local declared earlier in the body", context, receiverPlace.Symbol)
+			}
+			access = "->"
+		}
+		return fmt.Sprintf("pebble_local_%d%spebble_field_%d", receiverPlace.Symbol, access, node.Member), nil
 	default:
 		return "", fmt.Errorf("%s contains a %s, want a reference to a function-typed local or a bare function value", context, node.Kind)
 	}
@@ -9682,6 +10047,16 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 					return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
 				}
 				index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
+			} else if isUint(snapshot, indexNode.Type) {
+				// A uint-typed slice index (the loop iterator from a
+				// `loop 0..new_cap : i { ... }` whose bounds the checker
+				// anchored to uint, or a uint-typed local used as an index):
+				// built by the dedicated uint grammar, not the general
+				// buildExpr path which rejects non-entry-width types.
+				index, err = buildUintExpr(unit, snapshot, fileSet, place.Children[1], locals, width)
+				if err != nil {
+					return "", fmt.Errorf("slice index: %v", err)
+				}
 			} else {
 				index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width, width)
 				if err != nil {
@@ -9731,6 +10106,14 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			return "", fmt.Errorf("array index references symbol %d, which is not a local in scope", indexNode.Symbol)
 		}
 		index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
+	} else if isUint(snapshot, indexNode.Type) {
+		// A uint-typed array index (a uint-typed local or loop iterator):
+		// built by the dedicated uint grammar, not the general buildExpr
+		// path which rejects non-entry-width types.
+		index, err = buildUintExpr(unit, snapshot, fileSet, place.Children[1], locals, width)
+		if err != nil {
+			return "", fmt.Errorf("array index: %v", err)
+		}
 	} else {
 		var err error
 		index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width, width)
@@ -10021,6 +10404,18 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 				return "", 0, fmt.Errorf("symbol %d is not a local in scope", indexNode.Symbol)
 			}
 			idx = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
+		} else if isUint(snapshot, indexNode.Type) {
+			// A uint-typed index (`self.entries[index]` where index is a uint
+			// local, or the uint-typed loop iterator `new_entries[i]` from a
+			// `loop 0..new_cap : i { ... }` whose bounds the checker anchored
+			// to uint): the index flows through the dedicated buildUintExpr
+			// grammar, exactly as every other uint value position routes —
+			// the general buildExpr path's entry-width gate would reject a
+			// uint-typed value with "of type uint, want <entry width>".
+			idx, err = buildUintExpr(unit, snapshot, fileSet, n.Children[1], locals, width)
+			if err != nil {
+				return "", 0, err
+			}
 		} else {
 			idx, err = buildExpr(unit, snapshot, fileSet, n.Children[1], locals, width, width)
 			if err != nil {
@@ -11646,6 +12041,60 @@ func sliceTypeName(id types.TypeID) string {
 // counter.
 func enumTypeName(id types.TypeID) string {
 	return fmt.Sprintf("pebble_enum_%d_t", id)
+}
+
+// sizeofCTypeName resolves one type to the C type name a `sizeof T` lowers to
+// — the type's own C storage type: a fixed-width integer at its own cType
+// (int32_t for int/i32, int64_t for i64, uint64_t for uint/u64, and so on),
+// bool as bool, char as the fixed int32_t, str as PebbleStr, a tuple/optional/
+// struct/slice/enum as its own typedef name (tupleTypeName/optionalTypeName/
+// structTypeName/sliceTypeName/enumTypeName), and a runtime type as its
+// hand-written C type (runtimeTypeName). This is the general form of the
+// SizeofType case's original builtin-only three-width dispatch; it exists so
+// `sizeof` of an aggregate type (std/hmap.peb's `sizeof Entry[K, V]`, where
+// the TypeArg is the Entry struct type) sizes the storage by the aggregate's
+// OWN typedef, never the fallback sizeof(uint64_t) the builtin-only dispatch
+// would produce. Anything without a C type this backend emits is a clean
+// rejection naming the type.
+func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (string, error) {
+	if isBool(snapshot, id) {
+		return "bool", nil
+	}
+	if isChar(snapshot, id) {
+		return "int32_t", nil
+	}
+	if isStr(snapshot, id) {
+		return "PebbleStr", nil
+	}
+	if width, integer := resolvedBuiltin(snapshot, id); integer && cType(width) != "" {
+		return cType(width), nil
+	}
+	if runtimeType(unit, snapshot, id) != 0 {
+		return runtimeTypeName(unit, snapshot, id), nil
+	}
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id), nil
+	}
+	if isOptional(snapshot, id) {
+		return optionalTypeName(id), nil
+	}
+	if isSlice(snapshot, id) {
+		return sliceTypeName(id), nil
+	}
+	if isEnumType(unit, snapshot, id) {
+		return enumTypeName(id), nil
+	}
+	if isStruct(snapshot, id) {
+		return structTypeName(id), nil
+	}
+	if isPointer(snapshot, id) {
+		if pointee, ok := pointerPointeeType(snapshot, id); ok {
+			if name := pointerTypeName(snapshot, pointee); name != "" {
+				return name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("sizeof of type %s is not supported, want a fixed-width integer, bool, char, str, tuple, optional, slice, enum, struct, or pointer", describeType(snapshot, id))
 }
 
 // unionTypeName is the deterministic C name of one distinct tagged-union type's
