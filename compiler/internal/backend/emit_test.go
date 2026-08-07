@@ -3748,11 +3748,16 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsVariableReturn(t *testing.T) {
-	// A variable reference lowers to a SymbolValue, which is not a supported
-	// expression node for the i32 entry's return value.
-	unit, snapshot, entryID, _ := buildFixture(t, "let x i32 = 1; fn main() i32 { return x; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+func TestEmitReturnsGlobalLetConstantCompilesAndRuns(t *testing.T) {
+	// A reference to a top-level `let` global constant is no longer a bare
+	// SymbolValue naming storage the backend has no mechanism to lower (see
+	// globalLetInitializers in ir_builder.go) — it's inlined to a fresh copy
+	// of its initializer at each reference site, so `return x;` for a global
+	// `let x i32 = 1;` now lowers to the same IntegerLiteral shape `return
+	// 1;` would, which was always a supported return value. This supersedes
+	// the old TestEmitRejectsVariableReturn, which asserted the PRE-fix
+	// rejection for this exact shape.
+	emitAndRun(t, "let x i32 = 1; fn main() i32 { return x; }", false, 1, false)
 }
 
 func TestEmitRejectsNonI32ReturnValue(t *testing.T) {
@@ -10576,6 +10581,31 @@ fn main() i32 {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitGlobalLetConstantAsFixedWidthArgumentCompilesAndRuns(t *testing.T) {
+	// A top-level `let` global constant with an untyped literal initializer
+	// stays at the abstract `int` builtin (not i32) until a use site pins it
+	// to a concrete width — the std/io.peb `let SeekEnd = 2;` shape, passed
+	// directly as an argument to a fixed-width `i32` parameter (mirroring
+	// `fseek`'s `whence i32`). Before the fix, buildExpr's width gate
+	// rejected the abstract-int-typed SymbolValue outright ("of type int,
+	// want i32"); the checker side also needed a way to lower a reference to
+	// a `let` global at all (globals aren't in locals scope), which the
+	// buildDeclarations/buildValueRecord change provides by inlining a fresh
+	// copy of the constant's initializer at each reference site. echo(Seed)
+	// returning 7 proves the constant's value round-trips correctly through
+	// a real i32-typed call argument, not just that it emits.
+	unit, snapshot, entryID, sources := buildStdFixture(t, `let Seed = 7;
+fn echo(x i32) i32 { return x; }
+fn main() i32 {
+    return echo(Seed);
+}`, "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 7, false)
 }
 
 func TestEmitSliceStructFieldLocalReferenceCompilesAndRuns(t *testing.T) {

@@ -29,6 +29,21 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 	if !ok {
 		return 0, false
 	}
+	nid, ok := s.buildValueRecord(id, record, record.Header.Syntax)
+	if !ok {
+		return 0, false
+	}
+	s.values[id] = nid
+	return nid, true
+}
+
+// buildValueRecord is buildValueBase's core: it builds one value's typed-IR
+// node (and, recursively, its children) WITHOUT memoizing the result. buildValueBase
+// memoizes around it; a caller that needs a fresh copy per site — a `let`
+// global constant inlined at each reference — calls it directly, because a
+// TIR node may be owned by only one function, and the same constant referenced
+// from two helpers must not share a node.
+func (s *irBuildState) buildValueRecord(id valueID, record *expressionRecord, ref symbol.SyntaxRef) (tir.NodeID, bool) {
 	typ, ok := s.resolveType(id)
 	if !ok {
 		return 0, false
@@ -79,6 +94,13 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 			return 0, false
 		}
 	case expressionName, expressionPath:
+		if initializer, ok := s.globalLetInitializers[record.Symbol]; ok {
+			initializerRecord, found := s.expressionsByResult[initializer]
+			if !found {
+				return 0, false
+			}
+			return s.buildValueRecord(initializer, initializerRecord, symbol.SyntaxRef{})
+		}
 		if !s.buildSymbolValue(record, &node) {
 			return 0, false
 		}
@@ -322,11 +344,13 @@ func (s *irBuildState) buildValueBase(id valueID) (tir.NodeID, bool) {
 	if node.Kind == 0 {
 		return 0, false
 	}
-	nid, ok := s.addNode(node, record.Header.Syntax)
+	if ref == (symbol.SyntaxRef{}) {
+		node.Syntax = symbol.SyntaxRef{}
+	}
+	nid, ok := s.addNode(node, ref)
 	if !ok {
 		return 0, false
 	}
-	s.values[id] = nid
 	return nid, true
 }
 

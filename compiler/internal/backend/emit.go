@@ -9552,7 +9552,20 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	if isFunctionType(snapshot, node.Type) {
 		return buildFunctionValue(unit, snapshot, fileSet, node, locals, "entry function body expression", width)
 	}
-	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) {
+	// A node carrying the abstract `int` builtin (types.Int) is accepted at any
+	// integer width. The checker deliberately leaves a value at this unanchored
+	// type when nothing pins it to a fixed width — an untyped integer literal,
+	// a range-loop iterator never used in a width-anchoring position, or a
+	// `let`-declared global constant with an untyped literal initializer — and
+	// this backend already treats such nodes as width-compatible in the narrow
+	// positions buildRangeBound/buildComparisonOperand/buildCharOperand
+	// special-case. `int` shares i32's C type (int32_t), so an `int`-typed node
+	// is emitted at whatever integer width the surrounding position requests
+	// (a literal as its decimal text, a SymbolValue as its already-declared C
+	// name) with no cast needed; the gate below still rejects a genuinely
+	// mismatched fixed-width node (an i64 value inside an i32 context), which
+	// is the mismatch it exists to catch.
+	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) && !(isAbstractInt(snapshot, node.Type) && cType(width) != "") {
 		wantName, _ := builtinName(width)
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
 	}
@@ -12589,6 +12602,18 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 	}
 	builtin, ok := key.Builtin()
 	return ok && builtin == width && cType(width) != ""
+}
+
+// isAbstractInt reports whether id is the snapshot's abstract `int` builtin
+// (types.Int) — the unanchored keyword type the checker leaves a value at when
+// nothing pins it to a fixed width. It is a DISTINCT builtin from types.I32
+// (each is its own BuiltinKind), but it shares i32's C representation
+// (int32_t), so an `int`-typed value is emitted at whatever integer width the
+// surrounding position requests without a cast. The width gate in buildExpr
+// admits such a node at any integer width (see there); isWidth itself stays
+// exact-match so every other call site keeps its existing meaning.
+func isAbstractInt(snapshot *types.Snapshot, id types.TypeID) bool {
+	return snapshot != nil && id == snapshot.Builtins().Int
 }
 
 func isUint(snapshot *types.Snapshot, id types.TypeID) bool {

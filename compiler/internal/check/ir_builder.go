@@ -179,6 +179,7 @@ type irBuildState struct {
 	store                        *types.Store
 	cache                        *specializationCache
 	activeSubstitution           map[symbol.SymbolID]types.TypeID
+	globalLetInitializers        map[symbol.SymbolID]valueID
 	places                       map[symbol.SyntaxRef]*placeRecord
 	expressionsByResult          map[valueID]*expressionRecord
 	aggregatesByRecord           map[recordID]*aggregateRecord
@@ -389,6 +390,7 @@ func (s *irBuildState) typeKey(typ types.TypeID) (types.TypeKey, bool) {
 func (s *irBuildState) buildDeclarations() bool {
 	s.functionRegions = make(map[symbol.SymbolID]controlID)
 	s.functionDecls = nil
+	s.globalLetInitializers = make(map[symbol.SymbolID]valueID)
 	mappedParameterRefs := make(map[symbol.SyntaxRef]struct{})
 	for _, retained := range s.handoff.Records.Records() {
 		if retained.Callable != nil {
@@ -457,6 +459,19 @@ func (s *irBuildState) buildDeclarations() bool {
 				}
 				if err := s.builder.AddGlobalDecl(tir.GlobalDecl{Symbol: b.Symbol, Span: sym.Span, Type: typ, Node: node}); err != nil {
 					return false
+				}
+				// A `let` (immutable) global constant's VALUE is inlined at
+				// each reference site by buildValueBase, so the backend never
+				// needs a global-storage scheme: the initializer is a
+				// compile-time constant (std/io.peb's MODE_* and Seek* are all
+				// literals), and rebinding a `let` is a checker error, so
+				// every reference observes the same value. Recording the
+				// initializer's value here (only for immutable `let`, never
+				// mutable `var`, whose value could change) is what lets a
+				// reference rebuild the constant instead of emitting a
+				// SymbolValue for a storage the backend has no machinery for.
+				if b.Kind == bindingGlobalLet && b.InitializerPresent && b.Initializer != 0 {
+					s.globalLetInitializers[b.Symbol] = b.Initializer
 				}
 			case bindingLocalLet, bindingLocalVar:
 				if _, ok := s.addNode(tir.Node{Kind: tir.LocalDeclaration, Span: sym.Span, Symbol: b.Symbol}, b.Header.Syntax); !ok {

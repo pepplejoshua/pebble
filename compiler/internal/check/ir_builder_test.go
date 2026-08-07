@@ -424,6 +424,70 @@ func TestBuildUnitImport(t *testing.T) {
 	recordIRBuilderUnit(unit)
 }
 
+// TestBuildUnitImportsUnusedGlobalLetConstants is a regression guard for a
+// bug the `let` global constant inlining fix (buildDeclarations/
+// buildValueRecord) briefly introduced: recording every `let` global's
+// initializer in globalLetInitializers during buildDeclarations must not
+// break buildBlocks for a module that imports globals it never references.
+func TestBuildUnitImportsUnusedGlobalLetConstants(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{
+		"main.peb":   []byte("import \"./consts\";\nfn main() void {}\n"),
+		"consts.peb": []byte("let SeekStart = 0;\nlet SeekCurrent = 1;\nlet SeekEnd = 2;\nlet ModeRead = \"r\";\n"),
+	})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
+	if !ok || unit == nil {
+		t.Fatalf("buildUnit rejected a module importing unused let globals: %+v", diagnostics.Items())
+	}
+	recordIRBuilderUnit(unit)
+}
+
+// TestBuildUnitReferencesGlobalLetConstantFromTwoFunctions proves the "fresh
+// copy per reference site" mechanism actually works: two different helpers
+// referencing the same `let` global constant must each get their own TIR
+// node (a TIR node may be owned by only one function), not a shared one —
+// this is exactly the shape that triggered the "duplicate source map entry"
+// regression (multiple inlined copies re-registering the same original
+// declaration's syntax location) before it was fixed.
+func TestBuildUnitReferencesGlobalLetConstantFromTwoFunctions(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+let Seed i32 = 7;
+
+fn first() i32 { return Seed; }
+fn second() i32 { return Seed + Seed; }
+
+fn main() void {}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid setup: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	requirements, ok := validateRequirements(handoff, records, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	unit, ok := buildUnit(handoff, records, requirements, diagnostics, Config{}, inputs.Types)
+	if !ok || unit == nil {
+		t.Fatalf("buildUnit rejected two functions referencing the same let global: %+v", diagnostics.Items())
+	}
+	recordIRBuilderUnit(unit)
+}
+
 func TestBuildUnitLocalDeclaration(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void { var local i32 = 1; }\n")})
 	handoff := run06a(inputs, diagnostics, Config{})
@@ -1679,7 +1743,12 @@ func TestBuildValueSourceAlias(t *testing.T) {
 }
 
 func TestBuildValueInterpolatedString(t *testing.T) {
-	state, records := testBuildValue(t, "let name str = \"Ada\";\nlet count i32 = 2;\nlet msg str = `hello {name}, you have {count} items!`;")
+	// name/count/msg are function-LOCAL bindings deliberately — see the
+	// comment on TestBuildValueCheckedOptionalUnwrap: a top-level `let`
+	// global would now be inlined to its initializer (a StringLiteral/
+	// IntegerLiteral) rather than producing the SymbolValue parts this test
+	// means to exercise.
+	state, records := testBuildValue(t, "fn main() void {\n\tlet name str = \"Ada\";\n\tlet count i32 = 2;\n\tlet msg str = `hello {name}, you have {count} items!`;\n}")
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionInterpolated })
 	nid, ok := state.buildValue(id)
 	if !ok {
@@ -2153,10 +2222,17 @@ let result i32 = add(1, 2);
 }
 
 func TestBuildValueIndirectCall(t *testing.T) {
+	// function/result are function-LOCAL bindings deliberately — see the
+	// comment on TestBuildValueCheckedOptionalUnwrap: a top-level `let`
+	// global would now be inlined to its initializer (a HoistedFunctionValue)
+	// rather than producing the SymbolValue callee this test means to
+	// exercise.
 	state, records := testBuildValue(t, `
 fn add(left i32, right i32) i32 => left + right;
-let function fn(i32, i32) i32 = add;
-let result i32 = function(3, 4);
+fn main() void {
+	let function fn(i32, i32) i32 = add;
+	let result i32 = function(3, 4);
+}
 `)
 	functionID := findSymbolID(t, state.handoff, "function", symbol.SymbolBinding)
 	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
@@ -2204,10 +2280,16 @@ let result i32 = function(3, 4);
 }
 
 func TestBuildValueMethodCall(t *testing.T) {
+	// box/result are function-LOCAL bindings deliberately — see the comment
+	// on TestBuildValueCheckedOptionalUnwrap: a top-level `let` global would
+	// now be inlined to its initializer (a RecordConstruct) rather than
+	// producing the SymbolValue receiver this test means to exercise.
 	state, records := testBuildValue(t, `
 type Box = struct { value i32; fn get(self Box) i32 => self.value; };
-let box Box = Box.{ value = 1 };
-let result i32 = box.get();
+fn main() void {
+	let box Box = Box.{ value = 1 };
+	let result i32 = box.get();
+}
 `)
 	boxID := findSymbolID(t, state.handoff, "box", symbol.SymbolBinding)
 	id := requireCallValueID(t, state, records, func(c *callRecord) bool {
@@ -2656,9 +2738,18 @@ let tuple (i64, f64) = (a, b);
 }
 
 func TestBuildValueCheckedOptionalUnwrap(t *testing.T) {
+	// x and y are function-LOCAL bindings deliberately, not top-level `let`
+	// globals: a global `let` reference is now inlined to its initializer at
+	// each reference site (see globalLetInitializers in ir_builder.go — the
+	// backend has no storage mechanism for a global constant, so it must
+	// rebuild the value at each use), which would make x's own child node a
+	// SomeOptional (the inlined initializer) rather than the SymbolValue this
+	// test means to exercise. Locals are unaffected by that inlining.
 	state, records := testBuildValue(t, `
-let x ?i32 = some 5;
-let y i32 = x!;
+fn main() void {
+	let x ?i32 = some 5;
+	let y i32 = x!;
+}
 `)
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionPostfix })
 	nid, ok := state.buildValue(id)
@@ -2790,10 +2881,16 @@ func TestBuildValueCheckedSlice(t *testing.T) {
 }
 
 func TestBuildValueEnumToInteger(t *testing.T) {
+	// color/value are function-LOCAL bindings deliberately — see the comment
+	// on TestBuildValueCheckedOptionalUnwrap: a top-level `let` global would
+	// now be inlined to its initializer (EnumVariantValue here) rather than
+	// producing the SymbolValue child this test means to exercise.
 	state, records := testBuildValue(t, `
 type Color = enum { red, blue };
-let color Color = Color.red;
-let value i32 = color as i32;
+fn main() void {
+	let color Color = Color.red;
+	let value i32 = color as i32;
+}
 `)
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
 	nid, ok := state.buildValue(id)
@@ -2816,9 +2913,15 @@ let value i32 = color as i32;
 }
 
 func TestBuildValueCharToInteger(t *testing.T) {
+	// c/value are function-LOCAL bindings deliberately — see the comment on
+	// TestBuildValueCheckedOptionalUnwrap: a top-level `let` global would now
+	// be inlined to its initializer (CharLiteral here) rather than producing
+	// the SymbolValue child this test means to exercise.
 	state, records := testBuildValue(t, `
-let c char = 'A';
-let value i32 = c as i32;
+fn main() void {
+	let c char = 'A';
+	let value i32 = c as i32;
+}
 `)
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
 	nid, ok := state.buildValue(id)
@@ -2841,10 +2944,16 @@ let value i32 = c as i32;
 }
 
 func TestBuildValuePointerToInteger(t *testing.T) {
+	// x/p/value are function-LOCAL bindings deliberately — see the comment on
+	// TestBuildValueCheckedOptionalUnwrap: a top-level `let` global would now
+	// be inlined to its initializer (AddressOf here) rather than producing
+	// the SymbolValue child this test means to exercise.
 	state, records := testBuildValue(t, `
-var x i32 = 42;
-let p *i32 = &x;
-let value u64 = p as u64;
+fn main() void {
+	var x i32 = 42;
+	let p *i32 = &x;
+	let value u64 = p as u64;
+}
 `)
 	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
 	nid, ok := state.buildValue(id)
