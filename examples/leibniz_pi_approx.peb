@@ -1,11 +1,11 @@
 // Approximate pi using Leibniz formula: pi/4 = sum_{n=0}^∞ (-1)^n / (2n+1)
 // We compute partial sums, store in an array, and stop after N terms or precision threshold
-fn approximate_pi(max_terms int, precision float) float {
-    var sum float = 0.0;
+fn approximate_pi(max_terms int, precision f64) f64 {
+    var sum f64 = 0.0;
     var n = 0;
     var sign = 1.0;
     while n < max_terms {
-        var term float = sign / (2.0 * n + 1.0);
+        var term f64 = sign / (2.0 * (n as f64) + 1.0);
         sum = sum + term;
         sign = -sign;  // Flip sign each time
         n = n + 1;
