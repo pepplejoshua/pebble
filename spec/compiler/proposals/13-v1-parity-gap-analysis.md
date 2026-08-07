@@ -184,39 +184,10 @@ same staleness, also fixed).
       investigation (likely related to `print` on a dereferenced raw
       pointer, or an extern function specialization lookup gap — pure
       speculation, confirm before fixing).
-- [ ] **[generator] FULLY ROOT-CAUSED, ready to dispatch:
-      `buildPlaceLValue`'s `FieldPlace` case doesn't handle the
-      structural-field sentinels for `.len`/`.data`.** Found via
-      `examples/slice_minmax.peb`'s `loop 1..items.len : iter { ... }`
-      — emit fails with `uint expression place: field 4294967295 is not
-      declared`. `4294967295` (`0xFFFFFFFF`) is `tir.StructuralFieldLen`
-      (`tir/node.go:20`, `^symbol.SymbolID(0)`) — a DELIBERATE sentinel
-      the checker uses to mark a `FieldPlace` as `.len`/`.data`/
-      `.has_value` access rather than a real struct field (confirmed via
-      a TIR dump using a small standalone dumper tool,
-      `compiler/cmd/tirdump/main.go` — built from `check.Check` +
-      `Unit.Dump`, not currently wired into any build target, harmless
-      to keep or remove). `buildStructFieldRead` (`emit.go:10261`)
-      already handles all three sentinels correctly (`StructuralFieldLen`
-      /`StructuralFieldData`/`StructuralFieldHasValue`) — this is the
-      path a normal, non-uint `.len` read goes through and it works
-      fine. But `buildPlaceLValue`'s own `FieldPlace` case
-      (`emit.go:10432`, a SEPARATE, sibling implementation) only handles
-      `StructuralFieldHasValue` — it's missing the `StructuralFieldLen`/
-      `StructuralFieldData` branch entirely, falling through to
-      `declaredFieldType` and failing. `buildUintExpr`'s new `Load` case
-      (added this session, part of closing the `std/hmap.peb` arc) is
-      the first caller to reach a `.len` FieldPlace through
-      `buildPlaceLValue` specifically (every other `.len` read path goes
-      through `buildStructFieldRead` instead) — so this is arguably a
-      latent gap in `buildPlaceLValue` exposed by, not strictly caused
-      by, the uint-routing work. **The fix is small and precise: add the
-      same `StructuralFieldLen`/`StructuralFieldData` branch
-      `buildStructFieldRead` already has (lines ~10261-10281) into
-      `buildPlaceLValue`'s `FieldPlace` case, right next to its existing
-      `StructuralFieldHasValue` handling.** Not yet dispatched — queued
-      behind the in-flight ptr-to-uint cast dispatch (both touch
-      `emit.go`, can't run concurrently).
+- [x] `buildPlaceLValue`'s `FieldPlace` case missing structural-field
+      (`.len`/`.data`) handling — fixed (`a31cf99`). `examples/
+      slice_minmax.peb` now fully closed (`0fc2480`): compiles and runs
+      correctly end-to-end, verified via the new `pebc -run` flag.
 - [ ] **[generator] `f32`/`f64` helper parameters and return values are
       rejected outright.** `validateHelperSignature` (`emit.go:2617`,
       with the rejection explicitly acknowledged in a comment at
@@ -355,11 +326,14 @@ same staleness, also fixed).
       (`primes[:]` via a named local — compiles and runs, verified,
       committed `8ea3936`), `README.md` (same `usize`/`isize`/`float`
       staleness throughout its type list and code examples — committed
-      `52d9c59`). In progress: `leibniz_pi_approx.peb` (`float`→`f64`,
-      plus a mixed-int/float-arithmetic follow-up), `slice_minmax.peb`
-      (missing `: iter` binding — fixed, but now blocked by the field
-      -4294967295 gap above), `read_file.peb` (stale `String.as_str()`
-      call — std/string.peb deliberately has no such method).
+      `52d9c59`), `slice_minmax.peb` (missing `: iter` binding, which
+      surfaced the real `buildPlaceLValue` structural-field gap above —
+      both fixed, file fully compiles and runs, committed `0fc2480`
+      alongside the backend fix `a31cf99`). In progress:
+      `leibniz_pi_approx.peb` (`float`→`f64`, plus a mixed-int/float
+      -arithmetic follow-up — now blocked on the f32/f64 helper-param
+      gap below), `read_file.peb` (stale `String.as_str()` call — std/
+      string.peb deliberately has no such method).
       `count_lines.peb` not yet triaged in detail (a large cascade of
       ~60+ checker errors: `usize`, `Result.ok`/`err` constructors,
       bare `case Ok:` instead of `case .Ok:`/`case Result.Ok:`, `Stats`
