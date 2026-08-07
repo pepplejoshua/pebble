@@ -152,8 +152,6 @@ fn read_line(file *FILE) string::String {
             return s;
         }
     }
-
-    return string::new();
 }
 
 // Write
