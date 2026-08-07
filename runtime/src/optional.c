@@ -46,3 +46,10 @@ uint64_t pebble_rt_checked_unwrap_u64(bool has_value, uint64_t value, PebbleSour
     }
     return value;
 }
+
+void *pebble_rt_checked_unwrap_ptr(bool has_value, void *value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}

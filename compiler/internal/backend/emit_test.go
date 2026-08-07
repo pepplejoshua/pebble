@@ -5209,16 +5209,25 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// insert call cycle is genuine mutual recursion. Forward declarations now
 	// make the cycle itself a non-issue: Emit must NOT fail with a recursion
 	// error. The optional-uint-payload gap (hmap's insert declares `var
-	// tombstone_index ?uint = none;`) is now FIXED — Emit progresses past the
-	// insert body's uint-payload optional typedef and value — and fails on a
-	// DIFFERENT, out-of-scope gap: hmap's get_by_ref returns `?*V` — an
-	// optional whose payload is a POINTER type — and this backend's optional
-	// typedef only supports fixed-width integer, bool, tuple, struct, and enum
-	// payloads. This test pins that precise new gap (so a future session
-	// fixing pointer-payload optionals knows exactly what remains) rather than
-	// fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern
-	// (os.ReadFile of the real module sources, fixtureProvider, StandardRoot:
-	// "std").
+	// tombstone_index ?uint = none;`) is now FIXED, and the pointer-payload
+	// optional gap (hmap's get_by_ref returns `?*V` — an optional whose
+	// payload is a POINTER type — and its typedef/value-building sites were
+	// widened to an isPointer case) is now FIXED too: Emit progresses past the
+	// ?*V optional typedef and value, and fails on a DIFFERENT, separate,
+	// unrelated gap — a struct-typed STRUCT FIELD whose struct type is only
+	// reachable as a field type and never collected: HashMap[K,V]'s `backing
+	// Allocator` field (Allocator from std:mem) is never constructed or
+	// referenced by name anywhere reachable, so collectStructTypes never
+	// collects it, yet orderAggregateTypes's dependency postorder follows the
+	// field into it and emits a zero structInfo, whose buildStructTypedef
+	// rejects with "struct type 0 is not in the type snapshot". This was
+	// previously MASKED by the earlier pointer-payload error (both errors are
+	// in the same postorder; the ?*int optional typedef failed first at HEAD).
+	// This test pins that precise residual gap (so a future session fixing
+	// struct-field-reachable struct collection knows exactly what remains)
+	// rather than fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture
+	// pattern (os.ReadFile of the real module sources, fixtureProvider,
+	// StandardRoot: "std").
 	hmap, err := os.ReadFile("../../std/hmap.peb")
 	if err != nil {
 		t.Fatal(err)
@@ -5260,19 +5269,22 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the optional-uint-payload gap is gone, but this test expected the remaining pointer-payload gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the optional-uint and pointer-payload gaps are gone, but this test expected the remaining struct-field-reachable-struct gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
 	}
-	// The precise remaining gap, beyond recursion and the (fixed) optional-uint
-	// payload: hmap's get_by_ref returns `?*V` — an optional whose payload is
-	// a pointer type — and this backend only supports fixed-width integer,
-	// bool, tuple, struct, and enum optional payloads.
-	if !strings.Contains(err.Error(), "payload type *int is not supported") {
-		t.Fatalf("Emit failed with an unexpected non-recursion error: %v", err)
+	if strings.Contains(err.Error(), "payload type") {
+		t.Fatalf("Emit still fails with an optional-payload error; the pointer-payload fix did not land: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on the pointer-payload-optional gap (recursion and optional-uint are fixed): %v", err)
+	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
+	// payload, and the (fixed) pointer-payload optional: a struct-typed struct
+	// field (HashMap's backing Allocator) whose struct type is only reachable
+	// as a field type and is never collected for a C typedef.
+	if !strings.Contains(err.Error(), "struct type 0 is not in the type snapshot") {
+		t.Fatalf("Emit failed with an unexpected non-recursion non-payload error: %v", err)
+	}
+	t.Logf("full std:hmap consumer now blocks only on the struct-field-reachable-struct gap (recursion, optional-uint, and pointer-payload optionals are fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
@@ -6338,6 +6350,115 @@ func TestEmitRejectsOptionalUnwrapOfU8Payload(t *testing.T) {
 	// residual precisely rather than emitting a call to a nonexistent helper.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var o ?u8 = some 5; return o! as i32; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "has no runtime unwrap helper")
+}
+
+func TestEmitOptionalPointerSomeHasValueCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro for pointer-payload optionals: a helper returns
+	// `?*int` built from `some &y` / `none`, consumed in the entry via a
+	// direct-call initializer and a `.has_value` read. The optional's .value
+	// field is the pointee's pointer C type (int32_t *), the AddressOf child
+	// flows through buildExpr's pointer path, and the has_value tag round-trips
+	// through the call-returned optional struct. Only the tag is observed (the
+	// pointed-to local is dead after the helper returns, so dereferencing
+	// would be garbage — a language-semantics property, not a backend bug), so
+	// exit 1 proves the some arm ran.
+	emitAndRun(t, "fn find(x int) ?*int { var y int = x; if x > 0 { return some &y; } return none; } fn main() int { var v int = 5; let r = find(v); if r.has_value { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitOptionalPointerForceUnwrapCompilesAndRuns(t *testing.T) {
+	// The force-unwrap path for a pointer payload: `find(&v)!` unwraps an
+	// optional-pointer call result (hoisted into a pebble_temp_<id> optional
+	// local so the call runs exactly once) through the new
+	// pebble_rt_checked_unwrap_ptr runtime helper, and the resulting pointer is
+	// dereferenced. The pointer names a live local in the entry's frame, so
+	// `*p` reads 5, not garbage (unlike the dangling &y shape).
+	emitAndRun(t, "fn find(p *int) ?*int { return some p; } fn main() int { var v int = 5; let p = find(&v)!; return *p; }", false, 5, false)
+}
+
+func TestEmitOptionalPointerNoneHasValueCompilesAndRuns(t *testing.T) {
+	// The none side of a pointer-payload optional: get_by_ref-style `return
+	// none;` produces a { .has_value = false, .value = 0 } optional (a null
+	// pointer constant 0 is a warning-clean initializer for the int32_t *
+	// .value field), and the has_value read drives an if to the else arm.
+	// Exit 0 proves the none path — not the some path — was taken.
+	emitAndRun(t, "fn find(x int) ?*int { var y int = x; if x > 0 { return some &y; } return none; } fn main() int { var v int = -1; let r = find(v); if r.has_value { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitOptionalPointerNoneLocalDeclCompilesAndRuns(t *testing.T) {
+	// zeroOptionalPayloadLiteral's pointer-payload shape, in the one position
+	// that exercises it as a local declaration's initializer: `var o ?*int =
+	// none;`. The .value field's zero literal must be warning-clean against
+	// the int32_t * field type (a bare 0, the null pointer constant — no
+	// -Wmissing-braces shape needed for a scalar pointer). Exit 0 proves the
+	// none tag.
+	emitAndRun(t, "fn main() int { var o ?*int = none; if o.has_value { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitOptionalPointerSomeLocalDeclAndDerefCompilesAndRuns(t *testing.T) {
+	// A some-initialized pointer-payload optional local (`var o ?*int = some
+	// &y;`), unwrapped and dereferenced: `*(o!)` exercises the pointer-typed
+	// CheckedOptionalUnwrap (via pebble_rt_checked_unwrap_ptr) feeding the
+	// null-checked dereference, including the SourceAlias (grouped-expression
+	// parens) the deref path introduces. y is alive in the entry frame, so the
+	// deref reads 7. Exit 7.
+	emitAndRun(t, "fn main() int { var y int = 7; var o ?*int = some &y; if !o.has_value { return 99; } return *(o!); }", false, 7, false)
+}
+
+func TestEmitOptionalPointerNoneForceUnwrapPanics(t *testing.T) {
+	// A force-unwrap of an absent pointer-payload optional must panic with
+	// PEBBLE_PANIC_UNWRAP_FAILED, exactly like every other payload width: the
+	// pebble_rt_checked_unwrap_ptr helper has no null special-case — a null
+	// payload VALUE is a valid unwrap result; only has_value=false faults.
+	// find(-1) returns none, so the unwrap panics and the process terminates
+	// abnormally.
+	emitAndRun(t, "fn find(x int) ?*int { var y int = x; if x > 0 { return some &y; } return none; } fn main() int { var v int = -1; let p = find(v)!; return 1; }", false, 0, true)
+}
+
+func TestEmitOptionalPointerTypedefWritesPointeePointerCType(t *testing.T) {
+	// The emitted-C shape check for the pointer payload: the optional typedef
+	// declares the .value field as the pointee's pointer C type (int32_t * for
+	// ?*int, via pointerTypeName), never a rejection or a scalar, and the some
+	// construction assigns the AddressOf expression into it; the force-unwrap
+	// routes to the new pebble_rt_checked_unwrap_ptr helper.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var y int = 7; var o ?*int = some &y; if !o.has_value { return 99; } return *(o!); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "typedef struct {\n    bool has_value;\n    int32_t * value;\n} pebble_optional_") {
+		t.Errorf("emitted C does not declare the pointer payload's .value field as int32_t *:\n%s", out)
+	}
+	if strings.Contains(out, "int32_t value;") {
+		t.Errorf("emitted C declared a scalar .value field for a pointer payload:\n%s", out)
+	}
+	if !strings.Contains(out, ".has_value = true, .value = (int32_t *)(&pebble_local_") {
+		t.Errorf("emitted C is missing the pointer-payload some construction (.value = AddressOf):\n%s", out)
+	}
+	if !strings.Contains(out, "pebble_rt_checked_unwrap_ptr(") {
+		t.Errorf("emitted C is missing the pointer-width force-unwrap helper call:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 7, false)
+}
+
+func TestEmitOptionalPointerHmapGetByRefGetShapeCompilesAndRuns(t *testing.T) {
+	// The real motivating fixture, mirroring std/hmap.peb's actual
+	// get_by_ref/get shape WITHOUT touching the std module: get_by_ref returns
+	// `?*int` built from `some &entry.value` (the address of a struct field
+	// through a struct-pointer parameter) / `none`, and get consumes it via
+	// `let ptr = get_by_ref(...)`, a `!ptr.has_value` guard, and `return some
+	// *(ptr!);` — the exact statement sequence hmap.get performs. The exit
+	// code 5 requires the whole chain to round-trip: get_by_ref's optional
+	// pointer → get's has_value check → force-unwrap → dereference → some int.
+	emitAndRun(t, "type Entry = struct { value int; }; fn get_by_ref(entry *Entry, key int) ?*int { if key < 0 { return none; } return some &entry.value; } fn get(entry *Entry, key int) ?int { let ptr = get_by_ref(entry, key); if !ptr.has_value { return none; } return some *(ptr!); } fn main() int { var e Entry = Entry.{ value = 5 }; let r = get(&e, 1); if r.has_value { return r!; } else { return 0; } }", false, 5, false)
+}
+
+func TestEmitOptionalPointerHmapGetByRefGetShapeNoneCompilesAndRuns(t *testing.T) {
+	// The none side of the same hmap-shaped fixture: get_by_ref returns none
+	// for a negative key, get sees !ptr.has_value and returns `none` (an
+	// int-payload optional), and main's has_value check falls to the else arm.
+	// Exit 0 proves both none paths (the ?*int and the ?int) round-trip.
+	emitAndRun(t, "type Entry = struct { value int; }; fn get_by_ref(entry *Entry, key int) ?*int { if key < 0 { return none; } return some &entry.value; } fn get(entry *Entry, key int) ?int { let ptr = get_by_ref(entry, key); if !ptr.has_value { return none; } return some *(ptr!); } fn main() int { var e Entry = Entry.{ value = 5 }; let r = get(&e, -1); if r.has_value { return 99; } else { return 0; } }", false, 0, false)
 }
 
 func TestEmitStructTwoFieldReadBackCompilesAndRuns(t *testing.T) {

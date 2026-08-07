@@ -6676,6 +6676,17 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 				return "", err
 			}
 			valueExpr = expr
+		case isPointer(snapshot, payloadType):
+			// A pointer payload's value is built by the same buildExpr path a
+			// pointer-typed value takes anywhere else (AddressOf, NilPointer,
+			// a pointer-typed local reference, or a pointer-returning call) —
+			// buildExpr's isPointer bypass handles the shape regardless of the
+			// ambient width args, so no width is threaded here.
+			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
 		default:
 			return "", fmt.Errorf("%s declares an optional-typed local of type %s whose payload is %s, want a fixed-width integer, bool, tuple, struct, or enum", context, optionalTypeName(initValue.Type), describeType(snapshot, payloadType))
 		}
@@ -6771,6 +6782,12 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		value, err = buildTupleValueExpr(unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	case isStruct(snapshot, payload):
 		value, err = buildStructValueExpr(unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+	case isPointer(snapshot, payload):
+		// A pointer payload's value is built by the same buildExpr path a
+		// pointer-typed value takes anywhere else (AddressOf, NilPointer, a
+		// pointer-typed local reference, or a pointer-returning call), whose
+		// isPointer bypass ignores the ambient width args.
+		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
 	default:
 		return "", fmt.Errorf("%s optional payload %s is unsupported", context, describeType(snapshot, payload))
 	}
@@ -7644,6 +7661,43 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		}
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, callText, indent, statement.Symbol), nil
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an optional whose payload is a pointer used as
+		// the direct initializer of a matching pointer-typed local:
+		// `let p *i32 = o!;`. When the unwrapped optional is a call result
+		// (`let p *i32 = find(x)!;`), the call must be evaluated exactly once
+		// (a call result is a C struct read back by value; naively embedding
+		// it twice would run the call twice), so its result is hoisted into a
+		// pebble_temp_<id> optional local first — the same evaluate-once /
+		// reuse-twice pattern buildOptionalIntegerToEnumDeclaration uses for
+		// its hoisted source temp, and only possible here because a local
+		// declaration is a statement position with room for a preceding line.
+		// A SymbolValue/Load child (an unwrap of an optional-typed local)
+		// needs no hoisting and unwraps inline via buildExpr's pointer-branch
+		// CheckedOptionalUnwrap case.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s force-unwrap initializer has %d child(ren), want exactly one optional value", context, len(initValue.Children))
+		}
+		child, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s force-unwrap initializer references invalid child node %d", context, initValue.Children[0])
+		}
+		if child.Kind == tir.DirectCall || child.Kind == tir.MethodCall {
+			callText, err := buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+			if err != nil {
+				return "", err
+			}
+			tempName := fmt.Sprintf("pebble_temp_%d", statement.Children[0])
+			unwrapText := fmt.Sprintf("pebble_rt_checked_unwrap_ptr(%s.has_value, %s.value, %s)", tempName, tempName, buildSourceLoc(fileSet, initValue.Span))
+			scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+			return fmt.Sprintf("%s%s %s = %s;\n%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(child.Type), tempName, callText, indent, ctypeName, statement.Symbol, unwrapText, indent, statement.Symbol), nil
+		}
+		unwrapText, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, width, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, unwrapText, indent, statement.Symbol), nil
 	case tir.IndirectCall:
 		callText, err := buildIndirectCall(unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
@@ -7666,7 +7720,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, childText, indent, statement.Symbol), nil
 	default:
-		return "", fmt.Errorf("%s declares a pointer-typed local initialized from a %s, want an AddressOf expression, another pointer local, a pointer-returning call, a pointer-to-pointer cast, or nil", context, initValue.Kind)
+		return "", fmt.Errorf("%s declares a pointer-typed local initialized from a %s, want an AddressOf expression, another pointer local, a pointer-returning call, a pointer-to-pointer cast, a pointer-payload optional force-unwrap, or nil", context, initValue.Kind)
 	}
 }
 
@@ -8425,6 +8479,52 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains an unsupported pointer Load")
 		case tir.DirectCall:
 			return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		case tir.CheckedOptionalUnwrap:
+			// A force-unwrap of an optional whose payload is a pointer
+			// (`let p *i32 = o!;` or an inline `*(o!)`): the unwrap is only
+			// the has_value check via the runtime helper (no overflow/width
+			// concerns for a pointer payload), selected from the PAYLOAD's own
+			// type by optionalUnwrapSuffix ("ptr" here). The helper's void *
+			// result converts implicitly to any object pointer type in C.
+			unwrapSuffix := optionalUnwrapSuffix(snapshot, node.Type)
+			if unwrapSuffix == "" {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of a %s payload, which has no runtime unwrap helper", describeType(snapshot, node.Type))
+			}
+			if len(node.Children) != 1 {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+			}
+			child, ok := unit.Node(node.Children[0])
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+			}
+			if child.Kind == tir.Load && len(child.Children) == 1 {
+				if _, ok := unit.Node(child.Children[0]); !ok {
+					return "", fmt.Errorf("invalid optional place")
+				}
+				expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], locals, width)
+				if err != nil {
+					return "", err
+				}
+				if !isOptional(snapshot, typ) {
+					return "", fmt.Errorf("optional unwrap base is not optional")
+				}
+				return fmt.Sprintf("pebble_rt_checked_unwrap_%s(%s.has_value, %s.value, %s)", unwrapSuffix, expr, expr, buildSourceLoc(fileSet, node.Span)), nil
+			}
+			if child.Kind != tir.SymbolValue {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
+			}
+			if info, declared := locals[child.Symbol]; !declared || info.optional == 0 {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
+			}
+			return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value, %s)", unwrapSuffix, child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
+		case tir.SourceAlias:
+			// A SourceAlias is transparent — it records grouped-expression
+			// parens — so a pointer-typed one unwraps to its single child,
+			// exactly as the general-value SourceAlias case below does.
+			if len(node.Children) != 1 {
+				return "", fmt.Errorf("entry function body expression contains a pointer-typed SourceAlias with %d child(ren), want exactly one", len(node.Children))
+			}
+			return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		case tir.PointerCast:
 			if len(node.Children) != 1 {
 				return "", fmt.Errorf("entry function body expression contains a PointerCast with %d children, want exactly one", len(node.Children))
@@ -10397,6 +10497,13 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		value, err = buildUintExpr(unit, snapshot, fileSet, id, locals, width)
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
+	case isPointer(snapshot, payload):
+		// A bare pointer payload implicitly injected into a ?*T optional (a
+		// return/argument whose payload value is the pointer itself, e.g. a
+		// `return &y;` inside a ?*int helper with no explicit some keyword) —
+		// built by the same buildExpr pointer path any pointer-typed value
+		// takes, whose isPointer bypass ignores the ambient width args.
+		value, err = buildExpr(unit, snapshot, fileSet, id, locals, width, width)
 	default:
 		return "", fmt.Errorf("%s implicitly injects a payload value of type %s, want a fixed-width integer or bool", context, describeType(snapshot, payload))
 	}
@@ -11584,7 +11691,9 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 // name, and, since the OptionalIntegerToEnum slice, the payload's own enum
 // typedef (pebble_enum_<typeID>_t) for an enum payload — the destination
 // shape of an integer cast to an optional enum (`5 as ?Color`), whose optional
-// struct must carry the enum value field. Any other payload type is a clean
+// struct must carry the enum value field. A pointer payload (the std/hmap.peb
+// get_by_ref shape, `?*V`) is declared with the pointee's own pointer C type,
+// `<pointee> *` via pointerTypeName. Any other payload type is a clean
 // rejection naming what was found, since this backend emits exactly those C
 // types as optional value fields.
 func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
@@ -11602,6 +11711,16 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 			return enumTypeName(id), nil
 		}
 		return structTypeName(id), nil
+	}
+	if isPointer(snapshot, id) {
+		pointee, ok := pointerPointeeType(snapshot, id)
+		if !ok {
+			return "", fmt.Errorf("payload type %s has no pointer pointee", describeType(snapshot, id))
+		}
+		if name := pointerTypeName(snapshot, pointee); name != "" {
+			return name, nil
+		}
+		return "", fmt.Errorf("payload type %s has a pointee %s whose C type is unsupported", describeType(snapshot, id), describeType(snapshot, pointee))
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
@@ -12012,6 +12131,13 @@ func floatCType(width types.BuiltinKind) string {
 func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 	if isBool(snapshot, id) {
 		return "bool"
+	}
+	if isPointer(snapshot, id) {
+		// A pointer payload's .value field is `<pointee> *` and the unwrap is
+		// only the has_value check (a null payload value is a perfectly valid
+		// unwrap result, so there is no dereference at this point) — one
+		// void *-based helper serves every pointee.
+		return "ptr"
 	}
 	payloadWidth, ok := resolvedBuiltin(snapshot, id)
 	if !ok {

@@ -608,6 +608,9 @@ static void test_checked_unwrap_normal(void) {
     assert(pebble_rt_checked_unwrap_bool(true, true, (PebbleSourceLoc){0}) == true);
     assert(pebble_rt_checked_unwrap_bool(true, false, (PebbleSourceLoc){0}) == false);
     assert(pebble_rt_checked_unwrap_u64(true, 18446744073709551615ULL, (PebbleSourceLoc){0}) == 18446744073709551615ULL);
+    int value = 7;
+    assert(pebble_rt_checked_unwrap_ptr(true, &value, (PebbleSourceLoc){0}) == &value);
+    assert(pebble_rt_checked_unwrap_ptr(true, NULL, (PebbleSourceLoc){0}) == NULL);
 }
 
 static void trigger_unwrap_absent_i32(void) {
@@ -624,6 +627,10 @@ static void trigger_unwrap_absent_bool(void) {
 
 static void trigger_unwrap_absent_u64(void) {
     (void)pebble_rt_checked_unwrap_u64(false, 0, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_ptr(void) {
+    (void)pebble_rt_checked_unwrap_ptr(false, NULL, (PebbleSourceLoc){0});
 }
 
 /* The overflow-panic fork checks are SAFE-mode-only: in RELEASE mode the
@@ -1006,7 +1013,7 @@ int main(void) {
     test_checked_unwrap_normal();
     printf("ok: checked unwrap normal results\n");
 
-    /* Unwrapping an absent optional panics in EVERY configuration, all four
+    /* Unwrapping an absent optional panics in EVERY configuration, all five
      * payload types — same reasoning as division by zero and array bounds.
      */
     if (verify_checked_overflow_panics("i32 unwrap of absent optional", trigger_unwrap_absent_i32) != 0) {
@@ -1023,6 +1030,10 @@ int main(void) {
     }
     if (verify_checked_overflow_panics("u64 unwrap of absent optional", trigger_unwrap_absent_u64) != 0) {
         fprintf(stderr, "smoke_test: checked u64 unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("ptr unwrap of absent optional", trigger_unwrap_absent_ptr) != 0) {
+        fprintf(stderr, "smoke_test: checked ptr unwrap subprocess check FAILED\n");
         return 1;
     }
     printf("ok: unwrap of absent optional panics in subprocess\n");
