@@ -620,20 +620,35 @@ not a real check failure). `math` found a genuine new gap:
       no longer produces `C0621` at all — reaches emission and hits a
       different, separate, pre-existing backend limitation instead
       (below), not a regression.
-- [ ] **[generator] New backend gap exposed by the fix above: a generic
-      helper's specialized parameter width vs. the entry's own declared
-      width.** `pebc: emission failed: called function symbol 66
-      parameter 0 (symbol 68) has type i32, want int, bool, char, str,
-      f32, f64, ... (a parameter may be the entry's integer width, ...)`
-      — surfaces calling `math::clamp` (specialized at `i32`) from an
-      `fn main() int { ... }` entry, whose own declared width is the
-      abstract `int` builtin, not `i32` — the backend's helper
-      -parameter validator only accepts the ENTRY's own resolved width
-      for a scalar parameter, not an arbitrary concrete width a generic
-      specialization produced. Not yet root-caused precisely (exact
-      validator function/line not pinned down) or scoped for dispatch.
-      Not a regression — the `C0621` fix above is what let emission
-      reach this point at all for `clamp`'s real call site.
+- [x] **CLOSED (`c0e0306`) — a generic helper's specialized parameter
+      width vs. the entry's own declared width.** `math::clamp`
+      (specialized at `i32`) called from an `fn main() int { ... }`
+      entry, whose own declared width is the abstract `int` builtin,
+      not `i32`, failed — the backend's helper-parameter validator
+      (`validateHelperSignature`) only accepted the ENTRY's own
+      resolved width for a scalar parameter (exact `BuiltinKind` match
+      via `isWidth`), not an arbitrary concrete width a generic
+      specialization produced (`clamp[i32]`'s parameters are genuinely
+      `i32`, a distinct builtin from `int` sharing the same C
+      representation `int32_t` — the same asymmetry the `int`-vs-`i32`
+      fix above addressed for the reverse direction). New symmetric
+      twin `isCompatibleIntegerWidth` (accepts ANY integer builtin
+      whose `cType(...)` matches the requested width, not just the
+      abstract `int` one) wired into `validateHelperSignature`'s
+      parameter gate, `helperSignature`'s parameter-declaration switch
+      (new case declaring the C parameter at its own concrete width),
+      and `buildExpr`'s general width gate. `isWidth` itself untouched;
+      a genuinely mismatched width (`i64` in an `int`/`i32` context) is
+      still cleanly rejected, confirmed by a new regression test. Four
+      new tests: the exact repro (run, returns correct value); the real
+      `clamp[T]` shape defined inline (run, returns the correctly
+      clamped value); an emitted-C shape assertion (genuinely
+      `int32_t`, not a guessed width); the mismatched-width regression
+      guard. Causation confirmed (revert reproduces the exact original
+      error; restore passes again). Re-verified against the real
+      `std/math.peb`: `math::clamp` called with concrete `i32` locals
+      from a real `fn main() int` entry now compiles AND RUNS
+      end-to-end, returning the correct clamped value.
 
 ---
 
