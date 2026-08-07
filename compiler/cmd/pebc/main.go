@@ -110,7 +110,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		defer file.Close()
 		out = file
 	}
-	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, out); err != nil {
+	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, resolution, out); err != nil {
 		fmt.Fprintf(stderr, "pebc: emission failed: %v\n", err)
 		return 1
 	}

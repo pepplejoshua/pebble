@@ -117,6 +117,41 @@ func buildFixture(t *testing.T, sourceText, entryName string, requireEntry bool)
 	return unit, unit.Snapshot(), entryID, sources
 }
 
+// buildFixtureWithSymbols is buildFixture for programs that call C-convention
+// extern functions: an extern call lowers to its real C name (malloc, not
+// pebble_fn_<symbolID>), which requires the symbol table to map the extern
+// declaration's SymbolID back to its authored identifier, so this helper also
+// returns the symbol.Result the backend must be given.
+func buildFixtureWithSymbols(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet, *symbol.Result) {
+	t.Helper()
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "facts"}, fixtureProvider{"main.peb": []byte(sourceText)}, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == "main" {
+			entryID = candidate.ID
+		}
+	}
+	if entryID == 0 {
+		t.Fatalf("missing symbol %q", "main")
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{Entry: check.EntryPoint{Mode: check.EntryRequired, Symbol: entryID}})
+	if !result.Successful() {
+		t.Fatalf("check failed: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("check succeeded without an IR unit")
+	}
+	return unit, unit.Snapshot(), entryID, sources, resolution
+}
+
 func buildStdFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, *types.Snapshot, symbol.SymbolID, *source.FileSet) {
 	t.Helper()
 	sources := source.NewFileSet()
@@ -209,8 +244,56 @@ func TestCheckStdVecHasNoGenericPointerReceiverShapeErrors(t *testing.T) {
 func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { var values []i32 = mem::new_slice[i32](3); values[0] = 42; return values[0]; }`, "main")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitExternCallNoArgumentsCompilesAndRuns(t *testing.T) {
+	// A minimal extern call with no arguments (`extern fn rand() int; ...
+	// rand();`) — the simplest shape that reproduces the original bug (a
+	// direct call to an extern fn declaration failed at emit with "called
+	// function symbol N concrete specialization not found"). The call must
+	// lower to the function's real C name (rand, not a pebble_fn_<symbolID>
+	// helper name), pass no hidden context (unlike a Pebble-convention call),
+	// and produce no pebble_fn_<symbolID> prototype or definition. rand is a
+	// real libc function declared by <stdlib.h>, so the whole pipeline
+	// compiles AND RUNS; the discarded result keeps the test deterministic.
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern fn rand() int; fn main() int { var x int = rand(); return 0; }`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	emitted := buf.String()
+	if !strings.Contains(emitted, "rand()") {
+		t.Errorf("emitted C does not call the real C name rand():\n%s", emitted)
+	}
+	if strings.Contains(emitted, "pebble_fn_") {
+		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", emitted)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
+func TestEmitExternCallWithArgumentsAndReturnCompilesAndRuns(t *testing.T) {
+	// An extern call with arguments and a return value, mirroring
+	// malloc/free's real shape (malloc takes a uint size and returns *void;
+	// free takes *void and returns void): the malloc result is cast to *int
+	// and stored, dereferenced and printed (the example asserts 42), then
+	// freed. Exercises the C-convention argument lowering (no context
+	// threaded), the real-C-name call emission for both a value-returning and
+	// a void extern, and the resulting program compiles AND RUNS.
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern fn malloc(size uint) *void; extern fn free(ptr *void) void; fn main() int { var num *int = malloc(sizeof int) as *int; *num = 42; print *num; free(num as *void); return 42; }`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	emitted := buf.String()
+	if !strings.Contains(emitted, "malloc(sizeof(int32_t))") {
+		t.Errorf("emitted C does not call the real C name malloc with sizeof(int32_t):\n%s", emitted)
+	}
+	if strings.Contains(emitted, "pebble_fn_") {
+		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", emitted)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
 }
@@ -218,7 +301,7 @@ func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
 func TestEmitGenericReachabilityUsesSpecializationIdentity(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, `fn add_one[T](x T, y T) T => x; fn main() i32 { var a i32 = add_one[i32](40, 1); let p *i32 = &a; let b *i32 = add_one[*i32](p, p); return a + *b; }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 80, false)
@@ -227,7 +310,7 @@ func TestEmitGenericReachabilityUsesSpecializationIdentity(t *testing.T) {
 func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, `fn choose[T](x T) i32 => 7; fn main() i32 { var a i32 = choose[i32](1); var b i32 = choose[bool](true); let p *i32 = &a; var c i32 = choose[*i32](p); return a + b + c; }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 21, false)
@@ -236,7 +319,7 @@ func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
 func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdFixture(t, "fn main() i32 { var value i32 = 42; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }", "main")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
@@ -283,7 +366,7 @@ func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
 	// zero-valued placeholder" behavior the orderAggregateTypes fix guarantees.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Holder = struct { value int; backing Allocator; }; fn main() int { var h Holder = Holder.{ value = 41, backing = context.default_allocator }; return h.value + 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -326,7 +409,7 @@ func TestEmitStructWithUintFieldWritesUint64T(t *testing.T) {
 	// not the entry width's own C type or a rejection.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Counter = struct { n uint; }; fn main() i32 { var c Counter = Counter.{ n = 5 }; return c.n as i32; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -364,7 +447,7 @@ func TestEmitStructEnumFieldWritesC(t *testing.T) {
 	// pebble_field_<member> projection.
 	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type EntryState = enum { Empty, Tombstone, Occupied };\ntype Entry = struct { key i32; value i32; state EntryState; };\nfn main() i32 {\nvar e Entry = Entry.{ key = 1, value = 2, state = .Empty };\nif e.state == .Empty { return 1; }\nreturn 0;\n}")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -385,7 +468,7 @@ func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
 	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), wantCode, false)
@@ -394,7 +477,7 @@ func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 func TestEmitEmptyEntryWritesC(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -408,7 +491,7 @@ func TestEmitEmptyEntryWritesC(t *testing.T) {
 func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 0, false)
@@ -417,7 +500,7 @@ func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
 func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -434,7 +517,7 @@ func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
 func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 42; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
@@ -555,7 +638,7 @@ func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
 	// types.Int, which cType maps to int32_t.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Pair[K, V] = struct { key K; value V; }; fn main() int { let p Pair[int, int] = Pair[int, int].{ key = 5, value = 10 }; let q Pair[int, bool] = Pair[int, bool].{ key = 6, value = true }; if q.value { return p.key + p.value; } else { return 0; } }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -644,7 +727,7 @@ func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *tes
 	// pointee (one specialization's won and the other was silently wrong).
 	unit, snapshot, entryID, sources := buildFixture(t, `type Ref[K] = struct { ptr *K; }; fn main() int { var r Ref[int] = Ref[int].{ ptr = nil }; var s Ref[bool] = Ref[bool].{ ptr = nil }; var x int = 7; var y bool = true; var p *int = &x; var q *bool = &y; r.ptr = p; s.ptr = q; if s.ptr == nil { return 0; } else { if *s.ptr { return *r.ptr; } else { return 1; } } }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -673,7 +756,7 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	// 29/30, field symbol 26 from a real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Box[K] = struct { value ?K; }; fn main() int { var b Box[int] = Box[int].{ value = some 5 }; var c Box[bool] = Box[bool].{ value = some true }; var d Box[bool] = Box[bool].{ value = none }; if c.value! { if d.value! { return 1; } else { return b.value!; } } else { return 0; } }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -735,7 +818,7 @@ func TestEmitGenericStructNestedFieldWritesInnerTypedefFirst(t *testing.T) {
 	// real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Inner[T] = struct { val T; }; type Outer[K] = struct { inner Inner[K]; }; fn main() int { var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } }; return o.inner.val; }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -782,7 +865,7 @@ func TestEmitGenericStructNestedFieldTwoSpecializationsWriteConcreteCTypedefs(t 
 	// field symbols 26 (val) / 29 (inner) from a real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Inner[T] = struct { val T; }; type Outer[K] = struct { inner Inner[K]; }; fn main() int { var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } }; var b Outer[bool] = Outer[bool].{ inner = Inner[bool].{ val = true } }; if b.inner.val { return o.inner.val; } else { return 0; } }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -870,7 +953,7 @@ fn newo[K](v K) Outer[K] {
 		t.Fatal("missing symbol \"main\"")
 	}
 	var buf bytes.Buffer
-	if err := Emit(unit, unit.Snapshot(), entryID, sources, &buf); err != nil {
+	if err := Emit(unit, unit.Snapshot(), entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed on the cross-module generic struct data-field fixture; structTypeParameters must substitute the declaration's own parameters, not a generic-function context's: %v", err)
 	}
 	out := buf.String()
@@ -974,7 +1057,7 @@ func TestEmitCheckedArithmeticOverflowEmitsRealSourceLoc(t *testing.T) {
 	// confirm the overflow still panics.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 2147483647 + 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -1023,7 +1106,7 @@ func TestEmitLocalOverflowStillAborts(t *testing.T) {
 func TestEmitIfElseEntryWritesC(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if 1 < 2 { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -1161,7 +1244,7 @@ func TestEmitLogicalAndWritesC(t *testing.T) {
 	// against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var x i32 = 7; if x < 10 && 1 < 2 { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -1184,7 +1267,7 @@ func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
 	// flag local.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var flag bool = true; if flag && (1 < 2) { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -1232,7 +1315,7 @@ func TestEmitNestedIfEntryWritesC(t *testing.T) {
 	// collapsing all levels onto one.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if 1 < 2 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -1294,7 +1377,7 @@ func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int
 	t.Helper()
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), wantCode, wantAbnormal)
@@ -1309,7 +1392,7 @@ func emitAndRunBounded(t *testing.T, sourceText string, requireEntry bool, wantC
 	t.Helper()
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRunBounded(t, buf.Bytes(), wantCode, wantAbnormal)
@@ -1534,7 +1617,7 @@ func emitAndRunCapture(t *testing.T, sourceText string, requireEntry bool, wantC
 	t.Helper()
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	return compileAndRunCapture(t, buf.Bytes(), wantCode, wantAbnormal)
@@ -1559,7 +1642,7 @@ func emitAndRunCaptureBounded(t *testing.T, sourceText string, requireEntry bool
 	t.Helper()
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	return compileAndRunCaptureBounded(t, buf.Bytes(), wantCode, wantAbnormal)
@@ -2880,7 +2963,7 @@ func runtimeSourceRoot(t *testing.T) string {
 func assertEmitRejects(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, entryID symbol.SymbolID) {
 	t.Helper()
 	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, nil, &buf)
+	err := Emit(unit, snapshot, entryID, nil, nil, &buf)
 	if err == nil {
 		t.Fatal("Emit succeeded for an unsupported entry shape")
 	}
@@ -2994,7 +3077,7 @@ func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
 	// written back as the assignment target.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 5; i += 1; return i; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3049,7 +3132,7 @@ func TestEmitCheckedShiftOutOfRangeAbortsInSafeMode(t *testing.T) {
 func TestEmitCheckedShiftMasksCountInReleaseMode(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 1 << 35; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	binary := compileEmittedCRelease(t, buf.Bytes())
@@ -3059,7 +3142,7 @@ func TestEmitCheckedShiftMasksCountInReleaseMode(t *testing.T) {
 func TestEmitCheckedShiftNegativeCountMasksInReleaseMode(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var one i32 = 1; var amount i32 = -1; return (one << amount) >> 31; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	binary := compileEmittedCRelease(t, buf.Bytes())
@@ -3088,7 +3171,7 @@ func TestEmitCompoundReleaseWrapsOverflow(t *testing.T) {
 	// wrap is happening through the runtime's own checked helper.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 2147483647; i += 1; if i < 0 { return 77; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	binary := compileEmittedCRelease(t, buf.Bytes())
@@ -3138,7 +3221,7 @@ func TestEmitCompoundI64LocalCombinesViaI64Helper(t *testing.T) {
 	// TestEmitCompoundI64OverflowStillAborts.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { var x i64 = 9223372036854775800; x += 5; return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3347,7 +3430,7 @@ func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
 	// the recursive build from quietly collapsing all levels onto one.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i < 5 { sum = sum + i; } i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3455,7 +3538,7 @@ func TestEmitBoolLocalIfWritesC(t *testing.T) {
 	// Symbol 25 is the flag local, confirmed against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var flag bool = true; if flag { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3493,7 +3576,7 @@ func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
 	// come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var done bool = false; var i i32 = 0; var sum i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3609,7 +3692,7 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 	// (pebble_local_<id>), matching the same rule.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if (1 < 2) == (3 < 4) { return 1; } else { return 2; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3624,7 +3707,7 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 	}
 	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var a bool = true; var b bool = false; if a == b { return 1; } else { return 2; } }", "main", false)
 	buf.Reset()
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
@@ -3651,7 +3734,7 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 	// the i local, confirmed against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; while !(i >= 5) { i = i + 1; } return i; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3715,13 +3798,13 @@ func TestEmitRejectsUnknownEntrySymbol(t *testing.T) {
 func TestEmitNilArguments(t *testing.T) {
 	empty := &tir.Unit{}
 	snapshot := &types.Snapshot{}
-	if err := Emit(nil, snapshot, 0, nil, &bytes.Buffer{}); err == nil {
+	if err := Emit(nil, snapshot, 0, nil, nil, &bytes.Buffer{}); err == nil {
 		t.Fatal("Emit accepted nil unit")
 	}
-	if err := Emit(empty, nil, 0, nil, &bytes.Buffer{}); err == nil {
+	if err := Emit(empty, nil, 0, nil, nil, &bytes.Buffer{}); err == nil {
 		t.Fatal("Emit accepted nil snapshot")
 	}
-	if err := Emit(empty, snapshot, 0, nil, nil); err == nil {
+	if err := Emit(empty, snapshot, 0, nil, nil, nil); err == nil {
 		t.Fatal("Emit accepted nil writer")
 	}
 }
@@ -3783,7 +3866,7 @@ func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
 	// jump at the wrong depth.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 10 { if i == 5 { break; } sum = sum + i; i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3805,7 +3888,7 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 	// fixture's indentation.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 5 { i = i + 1; if i == 3 { continue; } sum = sum + i; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3892,7 +3975,7 @@ func TestEmitUnsuffixedU64MaxLiteralCompilesAndRuns(t *testing.T) {
 	// and print the full value, not a truncated or misinterpreted one.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 18446744073709551615; print y; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3912,7 +3995,7 @@ func TestEmitUnsuffixedU32MaxLiteralCompilesAndRuns(t *testing.T) {
 	// the suffix and the program must print the full value.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u32 = 4294967295; print y; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -3933,7 +4016,7 @@ func TestEmitSmallUnsignedLiteralRegressionCompilesAndRuns(t *testing.T) {
 	// harmless "u" suffix) and prints the correct value.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 123456789; print y; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	if got := compileAndRunCapture(t, buf.Bytes(), 0, false); got != "123456789\n" {
@@ -3950,7 +4033,7 @@ func TestEmitLargeSignedLiteralNoUnsignedSuffix(t *testing.T) {
 	// warning-free unsuffixed) and print the correct value.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let y i64 = 9223372036854775807; print y; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4092,7 +4175,7 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	// cast to const char *, and the bool emits the "true"/"false" ternary.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { print 1, true, 'x', \"hi\", 3.5; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4320,7 +4403,7 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	// in the emitted text.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4334,7 +4417,7 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	}
 	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..=3 : i { sum = sum + i; } return sum; }", "main", false)
 	buf.Reset()
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
@@ -4360,7 +4443,7 @@ func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
 func assertEmitRejectsContaining(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, entryID symbol.SymbolID, wantSubstring string) {
 	t.Helper()
 	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, nil, &buf)
+	err := Emit(unit, snapshot, entryID, nil, nil, &buf)
 	if err == nil {
 		t.Fatalf("Emit succeeded for an unsupported entry shape, want rejection containing %q", wantSubstring)
 	}
@@ -4533,7 +4616,7 @@ func TestEmitForLoopWritesC(t *testing.T) {
 	// (total) and 26 (step) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; step = step + 1 { total = total + step; } return total; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4663,7 +4746,7 @@ func TestEmitI64ReturnEntryWritesC(t *testing.T) {
 	// a wide return value is not truncated, not the i32 entry's "int".
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { return 42; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4693,7 +4776,7 @@ func TestEmitI64CheckedAddWritesC(t *testing.T) {
 	// the runtime function-name selection rather than staying hardcoded _i32.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { return 1 + 2; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4742,7 +4825,7 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	// established, so the assertions are exact.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { var i i64 = 0; var sum i64 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4801,7 +4884,7 @@ func TestEmitHelperPlusHelperWritesC(t *testing.T) {
 	// and 25 (main) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i32 { return 21; } fn main() i32 { return helper() + helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4839,7 +4922,7 @@ func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
 	// real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i32 { var done bool = false; var sum i32 = 0; var i i32 = 0; while !done { sum = sum + i; i = i + 1; if i == 5 { done = true; } } if sum > 3 { return sum; } else { return sum + 1; } } fn main() i32 { return helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4876,7 +4959,7 @@ func TestEmitTwoLevelCallChainWritesC(t *testing.T) {
 	// forward-definition requirement. Symbols come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper1() i32 { return helper2(); } fn helper2() i32 { return 20; } fn main() i32 { return helper1(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -4905,7 +4988,7 @@ func TestEmitI64HelperWritesC(t *testing.T) {
 	// the i64 checked helper, mirroring the entry-width threading.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i64 { return 21; } fn main() i64 { return helper() + helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5033,7 +5116,7 @@ func TestEmitF64LocalDeclaresAndReturns(t *testing.T) {
 	// re-rounded) literal.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x f64 = 3.14; return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5059,7 +5142,7 @@ func TestEmitF32LocalDeclaresAndReturns(t *testing.T) {
 	// code 3.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f32 { var x f32 = 3.9; return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5085,7 +5168,7 @@ func TestEmitReassignsF64LocalAndReturns(t *testing.T) {
 	// from the reassignment).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x f64 = 1.25; x = 2.5; return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5129,7 +5212,7 @@ func TestEmitFloatArithmeticInFloatReturnPosition(t *testing.T) {
 	// arithmetic, with no checked runtime helper needed.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { return 1.0 + 2.0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	if !strings.Contains(buf.String(), "1.0 + 2.0") {
@@ -5151,7 +5234,7 @@ func TestEmitFloatArithmeticOperatorsCompileAndRun(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			unit, snapshot, entryID, sources := buildFixture(t, test.source, "main", false)
 			var buf bytes.Buffer
-			if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+			if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 				t.Fatalf("Emit failed: %v", err)
 			}
 			if !strings.Contains(buf.String(), test.emitted) {
@@ -5190,7 +5273,7 @@ func TestEmitIntegerToFloatCastCompilesAndRuns(t *testing.T) {
 	// needs (no checked runtime primitive).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x i32 = 3; return (x as f64) + 0.5; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5219,7 +5302,7 @@ func TestEmitFloatCastNarrowingCompilesAndRuns(t *testing.T) {
 	// assertion pins the (float) cast on the f64 local.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f32 { var x f64 = 16777217.5; return (x as f32); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5237,7 +5320,7 @@ func TestEmitFloatCastWideningCompilesAndRuns(t *testing.T) {
 	// f64 arithmetic.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x f32 = 1.5; return (x as f64) + 1.0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5256,7 +5339,7 @@ func TestEmitChainedIntegerToFloatAndFloatCastCompilesAndRuns(t *testing.T) {
 	// cast.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() f64 { var x i32 = 33; var f f32 = 1.5; var g f32 = (x as f32) / f; return (g as f64) + 1.0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5283,7 +5366,7 @@ func TestEmitFloatToIntegerCompilesAndRuns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			unit, snapshot, entryID, sources := buildFixture(t, tc.src, "main", false)
 			var buf bytes.Buffer
-			if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+			if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 				t.Fatalf("Emit failed: %v", err)
 			}
 			out := buf.String()
@@ -5305,7 +5388,7 @@ func TestEmitFloatToIntegerBoundaryPanics(t *testing.T) {
 func TestEmitFloatToIntegerReleaseReturnsSentinel(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x f64 = 2147483648.0; return (x as i32) + 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	binary := compileEmittedCRelease(t, buf.Bytes())
@@ -5355,7 +5438,7 @@ func TestEmitRecursionWritesPrototypesBeforeDefinitions(t *testing.T) {
 	// compile warning-free under -Wall -Wextra -Werror.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn insert(n i32) i32 { if n == 0 { return 0; } else { return maybe_grow(n); } } fn maybe_grow(n i32) i32 { if n > 10 { return n; } else { return rehash(n); } } fn rehash(n i32) i32 { return insert(n + 1); } fn main() i32 { return insert(1); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5477,7 +5560,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 		t.Fatal("missing symbol \"main\"")
 	}
 	var buf bytes.Buffer
-	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
+	err = Emit(unit, unit.Snapshot(), entryID, sources, nil, &buf)
 	if err != nil {
 		t.Fatalf("Emit failed on the full std:hmap consumer: %v", err)
 	}
@@ -5571,7 +5654,7 @@ func TestEmitVoidHelperWritesC(t *testing.T) {
 	// call's own position in program order.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() void {} fn main() i32 { helper(); return 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5605,7 +5688,7 @@ func TestEmitUnreachableFunctionNotEmitted(t *testing.T) {
 	// is emitted, and the program runs to exit 21.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i32 { return 21; } fn unused() i32 { return 99; } fn main() i32 { return helper(); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5653,7 +5736,7 @@ func TestEmitAddParametersWritesC(t *testing.T) {
 	// helper, 25 is main, matching the other 10.17/10.18 fixtures.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { return add(20, 22); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5690,7 +5773,7 @@ func TestEmitBoolParameterWritesC(t *testing.T) {
 	// real fixture dump (choose=24, flag=25, x=26, y=27, main=28).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn choose(flag bool, x i32, y i32) i32 { if flag { return x; } else { return y; } } fn main() i32 { return choose(true, 10, 20); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5818,7 +5901,7 @@ func TestEmitTupleThreeElementWritesC(t *testing.T) {
 	// real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5867,7 +5950,7 @@ func TestEmitTupleBoolElementDrivesIfWritesC(t *testing.T) {
 	// local, confirmed against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let t (i32, bool) = (1, true); if t.1 { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5901,7 +5984,7 @@ func TestEmitTupleElementAsCallArgumentWritesC(t *testing.T) {
 	// 25/26 (its parameters), and 28 (t) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let t (i32, i32) = (20, 22); return add(t.1, t.1); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5944,7 +6027,7 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 	// threads into the tuple layout, not just the scalar declarations.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { let t (i64, i64) = (20, 22); return t.1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -5995,7 +6078,7 @@ func TestEmitCheckedArrayIndexEmitsRealSourceLoc(t *testing.T) {
 	// fixture must still compile and run correctly end to end.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6019,7 +6102,7 @@ func TestEmitI64ArrayCompilesAndRuns(t *testing.T) {
 func TestEmitArrayWritesC(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6079,7 +6162,7 @@ func TestEmitArrayRepeatWritesC(t *testing.T) {
 	// fixture dump). The element reads are unchanged from 10.20.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [5; 3]; return a[0] + a[1] + a[2]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6106,7 +6189,7 @@ func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
 	// (5 + 5 + 5 = 15).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn five() i32 { return 5; } fn main() i32 { let a [3]i32 = [five(); 3]; return a[0] + a[1] + a[2]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6211,7 +6294,7 @@ func TestEmitTupleParameterWritesC(t *testing.T) {
 	// 23 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn sumT(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); return sumT(t); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6313,7 +6396,7 @@ func TestEmitOptionalUnwrapNoneEmitsRealSourceLoc(t *testing.T) {
 	// of `none` still aborts.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?i32 = none; return x!; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6377,7 +6460,7 @@ func TestEmitOptionalSomeUnwrapWritesC(t *testing.T) {
 	// Symbol IDs come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?i32 = some 42; return x!; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6403,7 +6486,7 @@ func TestEmitOptionalI64WritesC(t *testing.T) {
 	// entry's width threads into the optional layout.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { let x ?i64 = some 22; return x!; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6425,7 +6508,7 @@ func TestEmitOptionalBoolWritesC(t *testing.T) {
 	// field and the unwrap must use pebble_rt_checked_unwrap_bool.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?bool = some true; if x! { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6522,7 +6605,7 @@ func TestEmitOptionalUintTypedefWritesUint64T(t *testing.T) {
 	// "u"-suffixed literal into it.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var o ?uint = some 5; return o! as i32; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6641,7 +6724,7 @@ func TestEmitOptionalPointerTypedefWritesPointeePointerCType(t *testing.T) {
 	// routes to the new pebble_rt_checked_unwrap_ptr helper.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var y int = 7; var o ?*int = some &y; if !o.has_value { return 99; } return *(o!); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6795,7 +6878,7 @@ func TestEmitNestedTypedefOrderWritesAndCompiles(t *testing.T) {
 	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let t (Point, i32) = (p, 1); return t.0.x + t.0.y; }"
 	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -6822,7 +6905,7 @@ func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 	// real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 2, x = 1 }; return point.x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6852,7 +6935,7 @@ func TestEmitStructBoolFieldWritesC(t *testing.T) {
 	// from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = true }; if p.b { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6875,7 +6958,7 @@ func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
 	// 31 (p) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return add(p.x, p.y); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -6901,7 +6984,7 @@ func TestEmitI64StructWritesC(t *testing.T) {
 	// width threads into the struct layout, not just the scalar declarations.
 	unit, snapshot, entryID, sources := buildFixture(t, "type T = struct { a i64; b i64; };\nfn main() i64 { let t T = T.{ a = 20, b = 22 }; return t.b; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7020,7 +7103,7 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 	// tuple type 23; struct: Point=24, x=25, y=26, f=27, struct type 23).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f((20, 22)); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7030,7 +7113,7 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 
 	unit, snapshot, entryID, sources = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(Point.{ y = 22, x = 20 }); }", "main", false)
 	buf.Reset()
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
@@ -7067,7 +7150,7 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7271,7 +7354,7 @@ func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7296,7 +7379,7 @@ func TestEmitStrWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; if s == \"hi\" { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7318,7 +7401,7 @@ func TestEmitStrNotEqualWritesC(t *testing.T) {
 	// confirmed against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s != t { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7408,7 +7491,7 @@ func TestEmitStrOrderingWritesC(t *testing.T) {
 	// s and t locals, confirmed against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s < t { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7429,7 +7512,7 @@ func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
 	// existing equality lowering.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s == t { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7475,7 +7558,7 @@ func TestEmitStrReassignmentWritesC(t *testing.T) {
 	// the s local, confirmed against the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"ho\"; if s != \"hi\" && s == \"ho\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7571,7 +7654,7 @@ func TestEmitStrParameterWritesC(t *testing.T) {
 	// come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"hi\"); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7651,7 +7734,7 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 	// parameter), and 27 (the entry's s local) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn greet(name str) str { return name; } fn main() i32 { let s str = greet(\"hi\"); if s == \"hi\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7691,7 +7774,7 @@ func TestEmitStrIndexWritesC(t *testing.T) {
 	// (s) and 26 (c) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7711,7 +7794,7 @@ func TestEmitStrIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
 	// zero-valued placeholder.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"hi\"; let c char = s[5]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7738,7 +7821,7 @@ func TestEmitStrIndexLiteralBaseWritesC(t *testing.T) {
 	// inline PebbleStr compound literal, not a local reference.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let c char = \"hi\"[0]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7824,7 +7907,7 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { let s str = \"hi\"; let c char = s[0]; return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7917,7 +8000,7 @@ func TestEmitTupleReturningHelperWritesC(t *testing.T) {
 	// local), and tuple type 23 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7950,7 +8033,7 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -7979,7 +8062,7 @@ func TestEmitTupleReturningHelperForwardsLocalWritesC(t *testing.T) {
 	// local), 27 (t local), and tuple type 23 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn makeT() (i32, i32) { let x (i32, i32) = (20, 22); return x; } fn main() i32 { let t (i32, i32) = makeT(); return t.0 + t.1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8209,7 +8292,7 @@ func TestEmitSwitchWritesC(t *testing.T) {
 	// stacked case labels and body structure.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8234,7 +8317,7 @@ func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
 	// with no warnings. This exercises the full cc compilation path.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 10, false)
@@ -8275,7 +8358,7 @@ func TestEmitTopLevelGuardIfWritesC(t *testing.T) {
 	// buildLeadingIf produces, byte-identical in style to buildLoopIf's.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper(x i32) i32 { if x > 0 { return 1; } return 0; } fn main() i32 { return helper(1); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8538,7 +8621,7 @@ func TestEmitDeferredStoreCOutput(t *testing.T) {
 	// defer statement's own position in program order.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var x i32 = 0; defer x = x + 1; return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8591,7 +8674,7 @@ func TestEmitDeferredVoidCallOutsideLoopDoesNotFireCompilesAndRuns(t *testing.T)
 	// exit code with no trace of the helper in the emitted C.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() void {} fn main() i32 { var x i32 = 0; var i i32 = 0; while i < 5 { if i == 0 { defer helper(); } i = i + 1; } return x; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8608,7 +8691,7 @@ func TestEmitDeferredVoidCallCOutput(t *testing.T) {
 	// DeferRegister is a pure registration marker).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() void {} fn main() i32 { defer helper(); return 1; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8849,7 +8932,7 @@ func TestEmitEnumWritesC(t *testing.T) {
 		t.Fatalf("fixture has %d variants, want 3 (red, green, blue)", len(variants))
 	}
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8929,7 +9012,7 @@ func TestEmitEnumToIntegerWritesC(t *testing.T) {
 	// no runtime helper and no intermediate enum-typedef step.
 	unit, snapshot, entryID, enumType, variants, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 { return Color.green as i32; }")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -8987,7 +9070,7 @@ func TestEmitCharToIntegerWritesC(t *testing.T) {
 	// (uint32_t)(...), with no runtime helper.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let c char = 'A'; let n u32 = c as u32; return n as i32; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9032,7 +9115,7 @@ func TestEmitPointerToIntegerWritesC(t *testing.T) {
 	// (uint64_t)(...), with no runtime helper.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var x i32 = 42; let p *i32 = &x; let n u64 = p as u64; return *p; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9051,7 +9134,7 @@ func emitAndRunRelease(t *testing.T, sourceText string, wantCode int, wantAbnorm
 	t.Helper()
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	binary := compileEmittedCRelease(t, buf.Bytes())
@@ -9142,7 +9225,7 @@ func TestEmitCheckedIntegerToEnumWritesC(t *testing.T) {
 	// and the result narrowed back to the enum typedef.
 	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 1 as Color;\nreturn c as i32;\n}")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9248,7 +9331,7 @@ func TestEmitOptionalIntegerToEnumForLoopInitializerCompilesAndRuns(t *testing.T
 	emitAndRunBounded(t, "type Color = enum { red, green, blue }; fn main() i32 {\nfor var c ?Color = 5 as ?Color; c.has_value; { break; }\nreturn 0;\n}", false, 0, false)
 	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nfor var c ?Color = 1 as ?Color; c.has_value; { break; }\nreturn 1;\n}", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileEmittedCRelease(t, buf.Bytes())
@@ -9282,7 +9365,7 @@ func TestEmitOptionalIntegerToEnumWritesC(t *testing.T) {
 	// emitted before the optional typedef that names it as the value field.
 	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c ?Color = 1 as ?Color;\nreturn c! as i32;\n}")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9476,7 +9559,7 @@ func TestEmitUnionWritesC(t *testing.T) {
 		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(variants))
 	}
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9676,7 +9759,7 @@ func TestEmitU64CheckedArithmeticWritesU64Helper(t *testing.T) {
 	// really reaches the runtime function-name selection.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn addU(x u64, y u64) u64 { return x + y; } fn main() int { let r u64 = addU(40, 2); return r as int; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9733,7 +9816,7 @@ func TestEmitU64HashBytesFnv1aCompilesAndRuns(t *testing.T) {
 	src := "fn hash_bytes(data []u8) u64 { var hash u64 = 14695981039346656037; let fnv_prime u64 = 1099511628211; loop 0..3 : i { hash = hash ^ (data[i] as u64); hash = hash * fnv_prime; } return hash; } fn main() int { var data [3]u8 = [1, 2, 3]; var s []u8 = data[:]; var h u64 = hash_bytes(s); if h == 0 { return 1; } return 0; }"
 	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9776,7 +9859,7 @@ func TestEmitU64SliceConstructionWritesU64Helper(t *testing.T) {
 	// inside a u64-returning helper must call pebble_rt_checked_slice_start_u64.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f() u64 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; return s[1] as u64; } fn main() int { return f() as int; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9859,7 +9942,7 @@ func TestEmitU8SliceWritesUint8CType(t *testing.T) {
 	// is what's actually emitted.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var arr [3]u8 = [1 as u8, 2 as u8, 3 as u8]; var s []u8 = arr[:]; return s[1] as int; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9889,7 +9972,7 @@ func TestEmitSliceRangeOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
 	// still aborts on an invalid range (end bound past the array length).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn getEnd() i32 { return 10; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var e i32 = getEnd(); var s []i32 = a[0:e]; return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9908,7 +9991,7 @@ func TestEmitSliceIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
 	// checked-index call instead of the zero-valued placeholder.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[5]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9927,7 +10010,7 @@ func TestEmitSliceEmittedCDirectly(t *testing.T) {
 	// indexing expression (including inline checked-index call and .len cast).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -9986,7 +10069,7 @@ func TestEmitSliceOfStructElementsEmittedCShape(t *testing.T) {
 	// definition complete the same C type.
 	unit, snapshot, entryID, sources := buildFixture(t, "type P = struct { x i32; y i32; };\nfn main() i32 { var a [3]P = [P.{ x = 1, y = 2 }, P.{ x = 3, y = 4 }, P.{ x = 5, y = 6 }]; var s []P = a[:]; return s[1].x + s[1].y; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10037,7 +10120,7 @@ func TestEmitSliceOfStructElementsFromRawStdCompilesAndRuns(t *testing.T) {
 	// struct-element index read work.
 	unit, snapshot, entryID, sources := buildStdFixture(t, "type P = struct { x i32; y i32; };\nfn main() i32 { var arr [3]P = [P.{ x = 1, y = 2 }, P.{ x = 3, y = 4 }, P.{ x = 5, y = 6 }]; let s []P = slice &arr[0], 3; return s[2].x + s[2].y; }", "main")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 11, false)
@@ -10179,7 +10262,7 @@ func TestEmitSliceReturningHelperWritesC(t *testing.T) {
 	// come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn view() []i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return a[1:3]; } fn main() i32 { var s []i32 = view(); return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10205,7 +10288,7 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	// emitted C end-to-end.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn view() []i64 { var a [5]i64 = [100, 200, 300, 400, 500]; return a[1:3]; } fn main() i64 { var s []i64 = view(); return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10259,7 +10342,7 @@ fn main() int {
     return b.items[1];
 }`, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10293,7 +10376,7 @@ fn main() i32 {
     return b.items[0];
 }`, "main")
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10457,7 +10540,7 @@ func TestEmitOptionalResultWritesC(t *testing.T) {
 	// optional type 23 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f() ?int { return 5; } fn main() int { var o ?int = f(); if o.has_value { return 1; } return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10490,7 +10573,7 @@ func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
 	// and optional type 24 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type P = struct { x int; y int; };\nfn f() ?P { return some P.{ x = 1, y = 2 }; } fn main() int { var o ?P = f(); if o.has_value { return 1; } return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10520,7 +10603,7 @@ func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
 	// 23, and optional type 24 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f() ?(int, int) { return (1, 2); } fn main() int { var o ?(int, int) = f(); if o.has_value { return 1; } return 0; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10642,7 +10725,7 @@ func TestEmitSliceParameterWritesC(t *testing.T) {
 	// dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn first(s []i32) i32 { return s[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return first(s); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10865,7 +10948,7 @@ func TestEmitArrayElementWriteWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; a[0] = 9; return a[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -10891,7 +10974,7 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; s[0] = 9; return s[0]; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -11057,7 +11140,7 @@ func TestEmitCharWritesC(t *testing.T) {
 	// (main's c local) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f(c char) char { return c; } fn main() i32 { var c char = 'a'; c = f('b'); if c == 'b' { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -11158,7 +11241,7 @@ func TestEmitPointerEmittedCContainsCheckedDeref(t *testing.T) {
 	// dereference operations, not raw C dereferences.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y i32 = 5; let p *i32 = &y; return *p; }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -11317,7 +11400,7 @@ func TestEmitFunctionTypedLocalWritesC(t *testing.T) {
 	// indirect call threading ctx as the first argument.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; return f(1, 2); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -11390,7 +11473,7 @@ func TestEmitFunctionTypedStructFieldWritesC(t *testing.T) {
 	// typedef), and the field value is assigned bare (no cast).
 	unit, snapshot, entryID, sources := buildFixture(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn main() int { var t Table = Table.{ op = add }; return t.op(1, 2); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -11471,7 +11554,7 @@ func TestEmitFunctionTypedParameterResultWritesC(t *testing.T) {
 	// call through the parameter threads ctx.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { return apply(add, 1, 2); }", "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
@@ -11541,7 +11624,7 @@ func TestEmitU64FunctionTypeWritesC(t *testing.T) {
 	src := "fn hashOf(x int) u64 { return x as u64; } fn udToInt(x u64) int { return x as int; } fn main() int { var f fn(int) u64 = hashOf; var g fn(u64) int = udToInt; var r u64 = f(5); return r as int; }"
 	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
 	var buf bytes.Buffer
-	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()

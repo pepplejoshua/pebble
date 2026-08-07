@@ -456,7 +456,27 @@ import (
 // the entry function itself (the entry is emitted under the fixed C name
 // pebble_user_main, not as a pebble_fn_<symbolID> helper the forward-
 // declaration pass covers).
-func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, w io.Writer) error {
+// emitSymbols is the symbol result Emit resolves extern declarations against,
+// scoped to one Emit invocation: it is set at the top of Emit and cleared by a
+// deferred call when Emit returns, so a lookahead to the next Emit can never
+// observe a stale table. It is package-level shared mutable state by deliberate
+// tradeoff, NOT an oversight: this package assumes Emit is called
+// single-threaded and non-reentrant (one Emit runs to completion before the
+// next begins), so a package-level scoped slot is safe and avoids threading
+// the table through the ~19-call-site buildDirectCall/externCName chain every
+// builder in this file would otherwise have to carry. Emit itself guards this
+// invariant: if a future caller ever does call Emit reentrantly or
+// concurrently, Emit panics loudly rather than silently corrupting state. A
+// future caller that needs concurrent compilation (a watch-mode compiler, a
+// language server, parallel test execution) must thread this symbol table
+// through the builders properly instead — that is a known, deliberate cost of
+// the current design, documented here so it is not mistaken for an oversight.
+var emitSymbols *symbol.Result
+
+func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, symbols *symbol.Result, w io.Writer) error {
+	if emitSymbols != nil {
+		panic("backend: Emit called reentrantly/concurrently — this package's backend state is not safe for concurrent Emit calls")
+	}
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
 	}
@@ -466,6 +486,8 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if w == nil {
 		return fmt.Errorf("cannot emit C: nil writer")
 	}
+	emitSymbols = symbols
+	defer func() { emitSymbols = nil }()
 
 	decl, err := findEntryDeclaration(unit, entrySymbol)
 	if err != nil {
@@ -483,7 +505,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		if err := validateEmptyBody(unit, block); err != nil {
 			return err
 		}
-		return emitEntryC(w, "", "", "", voidEntryUserMain, voidEntryMainBody)
+		return emitEntryC(w, "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit))
 	}
 	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
 	if err != nil {
@@ -629,7 +651,23 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody)
+	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit))
+}
+
+// hasCExterns reports whether the unit declares at least one C-convention
+// extern function. When it does, the emitted C's preamble includes the common
+// libc headers (stdlib/string/stdio/math) so a call to malloc, free, fopen, and
+// friends is declared before use and survives the mandated -Wall -Wextra -Werror
+// build. The headers are added wholesale whenever any C extern exists rather
+// than tracked per function — precisely matching which libc header each extern
+// needs is real complexity for zero real benefit right now.
+func hasCExterns(unit *tir.Unit) bool {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.ExternDeclaration && node.Convention == types.C {
+			return true
+		}
+	}
+	return false
 }
 
 // appendTypedefBlock appends a second typedef block onto a first, joining them
@@ -660,12 +698,12 @@ func findEntryDeclaration(unit *tir.Unit, entrySymbol symbol.SymbolID) (tir.Node
 // excluded, since generic calls are not lowered here.
 func findFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, what string) (tir.Node, error) {
 	for _, node := range unit.Nodes() {
-		if node.Kind != tir.FunctionDeclaration || node.Symbol != symbolID || len(node.TypeArgs) != 0 {
+		if (node.Kind != tir.FunctionDeclaration && node.Kind != tir.ExternDeclaration) || node.Symbol != symbolID || len(node.TypeArgs) != 0 {
 			continue
 		}
 		return node, nil
 	}
-	return tir.Node{}, fmt.Errorf("%s not found in unit: no non-generic FunctionDeclaration for symbol %d", what, symbolID)
+	return tir.Node{}, fmt.Errorf("%s not found in unit: no non-generic FunctionDeclaration or ExternDeclaration for symbol %d", what, symbolID)
 }
 
 func findCalledFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, typeArgs []types.TypeID) (tir.Node, error) {
@@ -698,6 +736,25 @@ func helperCName(decl tir.Node) string {
 		return fmt.Sprintf("pebble_fn_%d_%d", decl.Symbol, decl.Function)
 	}
 	return fmt.Sprintf("pebble_fn_%d", decl.Symbol)
+}
+
+// externCName returns the real C name an extern function must be called by
+// (malloc, free, fopen — never a pebble_fn_<symbolID> helper name). The name
+// is resolved from the symbol table threaded into Emit (emitSymbols), mapping
+// the extern declaration's stable symbol.SymbolID back to the authored
+// identifier. A nil or missing symbol table is a clean error, never a guessed
+// name: an extern call without its real C name would emit an undeclared
+// identifier that fails the mandated -Werror build, so failing loudly here is
+// strictly better.
+func externCName(decl tir.Node) (string, error) {
+	if emitSymbols == nil || emitSymbols.Symbols == nil {
+		return "", fmt.Errorf("extern function symbol %d has no symbol-table lookup (Emit was called without a symbol result, so an extern call cannot be lowered to its real C name)", decl.Symbol)
+	}
+	s, ok := emitSymbols.Symbols.Symbol(decl.Symbol)
+	if !ok {
+		return "", fmt.Errorf("extern function symbol %d is not in the symbol table", decl.Symbol)
+	}
+	return s.Name, nil
 }
 
 func findCallDeclaration(unit *tir.Unit, call tir.Node) (tir.Node, error) {
@@ -924,6 +981,20 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 				return fmt.Errorf("called function symbol %d is a generic call with %d type argument(s), which this backend cannot lower without a built specialization", call.Symbol, len(call.TypeArgs))
 			}
 			return err
+		}
+		// An extern callee (a call to a C-convention extern fn declaration) is
+		// not emitted as a pebble_fn_<symbolID> helper: it has no body
+		// (HasBody is false) and no Pebble-style C definition to emit — the
+		// libc header the preamble adds declares it, and the call site lowers
+		// to the function's real C name. It is validated (C convention, and
+		// every parameter and the result typed by a C spelling this backend
+		// can emit) and then skipped: no body walk, no order entry, so no
+		// helper prototype or definition is ever generated for it.
+		if calleeDecl.Kind == tir.ExternDeclaration {
+			if err := validateExternSignature(w.unit, calleeDecl, w.snapshot); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := validateHelperSignature(w.unit, calleeDecl, w.snapshot, w.width); err != nil {
 			return err
@@ -2614,6 +2685,43 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // statement) produces. A void call in any value position is still rejected by
 // the value builders themselves (buildExpr's width gate and
 // buildAggregateCallInitializer's result-type match), never silently emitted.
+// validateExternSignature checks a C-convention extern declaration the entry
+// (or a helper) actually calls: it must be C-convention (the checker already
+// enforces this, so a mismatch is hand-built IR), non-variadic (a C-convention
+// variadic function type is rejected by the checker too), and every parameter
+// and the result must be typed by a C spelling this backend can emit at a call
+// site — a fixed-width integer builtin (including uint/u64, each resolved to
+// its own C type), bool, char, str (PebbleStr), a pointer to a supported
+// pointee, f32/f64, or a void result. This mirrors validateHelperSignature's
+// own gate but narrowed to the shapes an extern call site can actually
+// produce: the parameter grammar is exactly buildCallArgument's and the result
+// flows into whatever consumes the call. No pebble_fn_<symbolID> prototype,
+// definition, or body lookup is ever attempted for an extern, and it is never
+// added to the reachable-helper emission order (see reachabilityWalk.visit).
+func validateExternSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snapshot) error {
+	if decl.Kind != tir.ExternDeclaration {
+		return fmt.Errorf("called function symbol %d is not an extern declaration", decl.Symbol)
+	}
+	if decl.Convention != types.C {
+		return fmt.Errorf("called extern function symbol %d uses %s calling convention, want C", decl.Symbol, callingConventionName(decl.Convention))
+	}
+	if decl.HasBody {
+		return fmt.Errorf("called extern function symbol %d has a body, which this backend does not emit for an extern declaration", decl.Symbol)
+	}
+	if decl.Variadic {
+		return fmt.Errorf("called extern function symbol %d is variadic, which this backend does not support yet", decl.Symbol)
+	}
+	for i, param := range decl.Parameters {
+		if _, err := externCType(snapshot, param.Type); err != nil {
+			return fmt.Errorf("called extern function symbol %d parameter %d (symbol %d) %v", decl.Symbol, i, param.Symbol, err)
+		}
+	}
+	if _, err := externCType(snapshot, decl.ResultType); err != nil {
+		return fmt.Errorf("called extern function symbol %d result type %v", decl.Symbol, err)
+	}
+	return nil
+}
+
 func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snapshot, width types.BuiltinKind) error {
 	if decl.Convention != types.Pebble {
 		return fmt.Errorf("called function symbol %d uses %s calling convention, want Pebble", decl.Symbol, callingConventionName(decl.Convention))
@@ -10034,6 +10142,48 @@ func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // context and argument handling are identical; only the call's result type
 // differs, and that is decided by the caller, never here.
 func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	// A C-convention call (direct call to an extern fn declaration) is
+	// lowered differently from a Pebble-convention call: no context parameter
+	// is threaded, the callee is called by its real C name (malloc, not
+	// pebble_fn_<symbolID>), and the result is the function's own C return
+	// type (which the consuming expression — a cast, assignment, or
+	// discarded-statement — already matches).
+	if node.Convention == types.C {
+		if node.ContextAction != tir.ContextNone {
+			return "", fmt.Errorf("entry function body expression contains a C-convention call that records ContextAction %s, want NoContext", node.ContextAction)
+		}
+		var calleeDecl tir.Node
+		var err error
+		if len(node.TypeArgs) != 0 {
+			calleeDecl, err = findCalledFunctionDeclaration(unit, node.Symbol, node.TypeArgs)
+		} else {
+			calleeDecl, err = findFunctionDeclaration(unit, node.Symbol, "called function")
+			if err != nil {
+				calleeDecl, err = findCalledFunctionByResult(unit, node.Symbol, node.Type)
+			}
+		}
+		if err != nil {
+			if len(node.TypeArgs) != 0 {
+				return "", fmt.Errorf("entry function body expression contains a generic call with no matching specialization")
+			}
+			return "", err
+		}
+		if calleeDecl.Kind != tir.ExternDeclaration {
+			return "", fmt.Errorf("entry function body expression contains a C-convention call to symbol %d, which is not an extern declaration", calleeDecl.Symbol)
+		}
+		calleeName, err := externCName(calleeDecl)
+		if err != nil {
+			return "", err
+		}
+		callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
+		if err != nil {
+			return "", err
+		}
+		if callArgs == "" {
+			return fmt.Sprintf("%s()", calleeName), nil
+		}
+		return fmt.Sprintf("%s(%s)", calleeName, callArgs), nil
+	}
 	if node.Convention != types.Pebble {
 		return "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))
 	}
@@ -13187,6 +13337,46 @@ func floatCType(width types.BuiltinKind) string {
 	return ""
 }
 
+// externCType returns the C spelling an extern declaration's parameter or
+// result of the given type is declared with, so the emitted call site agrees
+// with the libc header's own declaration. It accepts exactly the shapes an
+// extern call site can build and consume: a fixed-width integer builtin (each
+// resolved to its own C type, uint/u64 to uint64_t), bool, char (int32_t, the
+// same convention a char value/local uses), str (PebbleStr), f32/f64, a
+// pointer to a supported pointee (via pointerTypeName), or void (result only).
+// Any other type — a tuple, struct, slice, optional, function type, or an
+// opaque struct pointer whose pointee this backend cannot spell — is a clean
+// rejection naming what was found, never a guessed C type.
+func externCType(snapshot *types.Snapshot, id types.TypeID) (string, error) {
+	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
+		if c := cType(builtin); c != "" {
+			return c, nil
+		}
+		if c := floatCType(builtin); c != "" {
+			return c, nil
+		}
+		switch builtin {
+		case types.Void:
+			return "void", nil
+		case types.Bool:
+			return "bool", nil
+		case types.Char:
+			return "int32_t", nil
+		}
+	}
+	if isStr(snapshot, id) {
+		return "PebbleStr", nil
+	}
+	if isPointer(snapshot, id) {
+		if pointee, ok := pointerPointeeType(snapshot, id); ok {
+			if name := pointerTypeName(snapshot, pointee); name != "" {
+				return name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("has type %s, which this backend cannot spell as a C extern parameter or result (want a fixed-width integer, uint, u64, bool, char, str, f32/f64, a pointer to a supported type, or void)", describeType(snapshot, id))
+}
+
 // optionalUnwrapSuffix returns the pebble_rt_checked_unwrap_* helper suffix
 // for an optional payload of the given type: "i32" for an int/i32 payload,
 // "i64" for an i64 payload, "u64" for a uint or u64 payload (both carry the
@@ -13451,13 +13641,26 @@ func entryReturnType(width types.BuiltinKind) string {
 // <inttypes.h> PRI* macros for its fixed-width integer specifiers, so both
 // headers are needed the moment any print is emitted, and adding them for
 // programs with no print at all is harmless.
-func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody string) error {
+func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody string, hasExterns bool) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <inttypes.h>
 `); err != nil {
 		return err
+	}
+	if hasExterns {
+		// A unit that calls any C-convention extern fn declares the common
+		// libc headers so the real C names (malloc, free, fopen, ...) are
+		// declared before use. None of these redeclare anything pebble_rt.h
+		// already defines (that header only pulls in stdbool/stddef/stdint),
+		// so there is no alias/redeclaration conflict to resolve.
+		if _, err := fmt.Fprint(w, `#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+`); err != nil {
+			return err
+		}
 	}
 	if typedefs != "" {
 		if _, err := fmt.Fprint(w, "\n"+typedefs+"\n"); err != nil {
