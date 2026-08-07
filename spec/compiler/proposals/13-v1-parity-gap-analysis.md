@@ -343,9 +343,13 @@ same staleness, also fixed).
       struct field access — likely mostly stale-example-API issues
       given the pattern so far, but not yet confirmed file-by-file).
       `bubble_sort.peb` — a genuine `[generator]` gap, not example
-      staleness: `validateHelperSignature` in `emit.go` rejects
-      array-typed helper parameters/return values (`[5]int`); fix
-      dispatched, in progress as of this writing. `count_lines.peb` —
+      staleness: `validateHelperSignature` in `emit.go` rejected
+      array-typed helper parameters/return values (`[5]int`); FIXED and
+      verified (`f394a10`, escalated to Luna after two flash stalls —
+      the real fix needed a C struct-wrapper typedef mechanism for
+      arrays-by-value, genuinely harder than the other gate-widenings
+      this session): compiles under `-Wall -Wextra -Werror` and runs,
+      printing the correctly sorted values, exit 0. `count_lines.peb` —
       fully triaged (see the qualified-static-call and `case Ok:`
       findings above/below): stale-example fault is `usize` plus the
       `case Ok:`/`case Err:` syntax bug; but even after fixing both,
