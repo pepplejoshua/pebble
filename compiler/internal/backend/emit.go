@@ -4542,7 +4542,20 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
-		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, or pointer", context, describeType(snapshot, elementType))
+		if isEnumType(unit, snapshot, elementType) {
+			// An enum-typed field (or indexed element) write — `entry.state =
+			// .Occupied;`, the std/hmap.peb insert shape: the C field is declared
+			// at its own pebble_enum_<typeID>_t (see structFieldCType), and the
+			// new value is a variant literal built by the same buildEnumValue an
+			// enum-typed local's reassignment uses, so `lvalue = pebble_variant_<m>;`
+			// is the direct, uncoerced C store.
+			storeValue, err := buildEnumValue(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
+		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, or enum", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
 	if !declared {
@@ -7053,6 +7066,22 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				return "", "", err
 			}
 			expr = built
+		case isEnumType(unit, snapshot, fieldType):
+			// An enum-typed field's construction value (Entry's `state = .Empty`,
+			// std/hmap.peb's insert) is a variant literal — an EnumVariantValue or
+			// a zero-payload VariantConstruct — built by the same buildEnumValue an
+			// enum-typed local's declaration uses, NOT the nested-aggregate grammar
+			// the isStruct case below would send it to (a plain enum is Nominal
+			// exactly like a struct — see isEnumType — but its value is never a
+			// RecordConstruct, so buildNestedAggregateValue's SymbolValue-or-nested-
+			// construction dispatch would mishandle it). The variant literal lowers
+			// to the variant's C enum constant, whose type matches the field's own
+			// pebble_enum_<typeID>_t C type with no cast needed.
+			built, err := buildEnumValue(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
 		case isStruct(snapshot, fieldType):
 			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
@@ -7243,14 +7272,17 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 }
 
 // buildEnumValue builds the C expression text for a plain enum value node of
-// five shapes (all confirmed against real fixtures): an EnumVariantValue
+// six shapes (all confirmed against real fixtures): an EnumVariantValue
 // (Color.green, a variant literal with no payload), a zero-payload
 // VariantConstruct (Color.red(), the parenthesized-call form of a plain
 // enum's payload-less variant), a SymbolValue naming an enum-typed local
 // declared earlier in the body (emitted as its pebble_local_<symbolID> C name),
 // a SourceAlias (transparent grouped-expression parens, e.g. `(2 as Color)`,
-// unwrapped to its single child), and — since CheckedIntegerToEnum support
-// landed — an integer cast to an enum (`5 as Color`, built by
+// unwrapped to its single child), a Load of an enum-typed struct field
+// (`entry.state`, the enum-typed-struct-field shape — the projection carries
+// the field's own pebble_enum_<typeID>_t C type), and — since
+// CheckedIntegerToEnum support landed — an integer cast to an enum (`5 as
+// Color`, built by
 // buildCheckedIntegerToEnumExpr through the checked runtime primitive). A
 // variant literal emits its C enum constant
 // pebble_variant_<member>, whose value is the variant's ordinal in the enum's
@@ -7335,6 +7367,31 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d whose payload %s is not the enum type %s the unwrap yields", child.Symbol, describeType(snapshot, payload), enumTypeName(node.Type))
 		}
 		return fmt.Sprintf("(%s)pebble_rt_checked_unwrap_i32(pebble_local_%d.has_value, pebble_local_%d.value, %s)", enumTypeName(node.Type), child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
+	case tir.Load:
+		// A struct field read of an enum-typed field (`entry.state`, the
+		// std/hmap.peb insert comparison shape) — lowered by the checker to a
+		// Load of a FieldPlace whose single child names the struct local,
+		// exactly the shape buildExpr's Load case routes to
+		// buildStructFieldRead. The projection
+		// pebble_local_<sym>.pebble_field_<m> carries the field's own
+		// pebble_enum_<typeID>_t C type, which is directly comparable to
+		// another enum value's constant. The Load's own Type must be the enum
+		// type (the checker guarantees it for real source; a mismatch is a
+		// clean rejection for hand-built IR).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
+		}
+		if place.Kind != tir.FieldPlace {
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a FieldPlace (an enum-typed struct field read)", place.Kind)
+		}
+		if !isEnumType(unit, snapshot, node.Type) {
+			return "", fmt.Errorf("entry function body expression contains a Load of type %s, want an enum type", describeType(snapshot, node.Type))
+		}
+		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
 	}
@@ -9739,7 +9796,17 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	if isPointer(snapshot, fieldType) {
 		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
 	}
-	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, or pointer", place.Member, describeType(snapshot, fieldType))
+	if isEnumType(unit, snapshot, fieldType) {
+		// A plain enum-typed field (`entry.state`): the C field is declared at
+		// the field's own pebble_enum_<typeID>_t (see structFieldCType), whose
+		// C representation is just the variant's ordinal (a plain C enum
+		// value), so the read is exactly the ordinary C field projection with
+		// no width/bool coercion — the same direct projection the pointer case
+		// two lines above uses, and the shape buildComparison's enum branch
+		// consumes as an enum comparison operand.
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	}
+	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum", place.Member, describeType(snapshot, fieldType))
 }
 
 // buildDereferencePlaceRead builds the C text for reading through a
@@ -11747,9 +11814,11 @@ func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 // entry's resolved width, uint, u64, or any other fixed-width integer, each
 // resolved to its OWN width by the generic resolvedBuiltin/cType pattern — so
 // a uint or u64 field is uint64_t), bool for a bool field, the field's own
-// tuple/optional/struct/pointer/slice/function-type typedef, or a
+// tuple/optional/struct/pointer/slice/function-type typedef, a plain enum
+// field's own enum typedef (pebble_enum_<typeID>_t, the same C type an
+// enum-typed local/parameter/result is declared with), or a
 // compiler-builtin runtime type's hand-written C type. Any other field type —
-// a str field, a char field, an enum field — is a clean rejection naming what
+// a str field, a char field — is a clean rejection naming what
 // was found, since this backend emits exactly those C types as struct fields.
 func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
@@ -11776,7 +11845,7 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 	}
 	if isStruct(snapshot, id) {
 		if isEnumType(unit, snapshot, id) {
-			return "", fmt.Errorf("field type %s is an enum type; enum-typed struct fields are not supported yet", enumTypeName(id))
+			return enumTypeName(id), nil
 		}
 		return structTypeName(id), nil
 	}

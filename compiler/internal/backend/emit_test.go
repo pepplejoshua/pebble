@@ -335,6 +335,52 @@ func TestEmitStructWithUintFieldWritesUint64T(t *testing.T) {
 	}
 }
 
+func TestEmitStructEnumFieldCompilesAndRuns(t *testing.T) {
+	// The standalone synthetic repro of the enum-typed-struct-field gap: a
+	// struct with a plain-enum-typed field mirroring std/hmap.peb's Entry
+	// exactly (type EntryState = enum { Empty, Tombstone, Occupied }; struct
+	// Entry { key, value, state EntryState }). All four required operations
+	// are exercised through a real program whose exit code depends on each
+	// one working: CONSTRUCTION places the variant's C enum constant into the
+	// field's own pebble_enum_<typeID>_t (state starts .Empty); a FIELD READ
+	// (e.state == .Empty) compares the projected field directly against a
+	// variant literal and gates the pointer write; a FIELD ASSIGNMENT
+	// mutating the already-constructed instance (e.state = .Tombstone) fires
+	// only if the pointer write took; and a write THROUGH a POINTER to the
+	// struct (mutate(&e)'s e->state = .Occupied, the slot.state = .Occupied
+	// shape from hmap's insert) mutates through the -> projection. The final
+	// != comparison returns 0 only if state really is Tombstone; any one of
+	// the four breaking changes the exit code.
+	emitAndRun(t, "type EntryState = enum { Empty, Tombstone, Occupied };\ntype Entry = struct { key i32; value i32; state EntryState; };\nfn mutate(e *Entry) void { e.state = .Occupied; }\nfn main() i32 {\nvar e Entry = Entry.{ key = 1, value = 2, state = .Empty };\nif e.state == .Empty { mutate(&e); }\nif e.state == .Occupied { e.state = .Tombstone; }\nif e.state != .Tombstone { return 1; }\nreturn 0;\n}", false, 0, false)
+}
+
+func TestEmitStructEnumFieldWritesC(t *testing.T) {
+	// Emitted-C shape check: the struct field whose type is a plain enum is
+	// declared with the enum's OWN typedef name — pebble_enum_<typeID>_t, the
+	// identical C type an enum-typed local/parameter/result uses (see
+	// enumTypeName) — no new typedef machinery. The construction initializes
+	// the field from the variant's C enum constant, the enum typedef itself is
+	// still emitted, and the read/compare/assign all use the plain
+	// pebble_field_<member> projection.
+	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type EntryState = enum { Empty, Tombstone, Occupied };\ntype Entry = struct { key i32; value i32; state EntryState; };\nfn main() i32 {\nvar e Entry = Entry.{ key = 1, value = 2, state = .Empty };\nif e.state == .Empty { return 1; }\nreturn 0;\n}")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef enum {",
+		enumTypeName(enumType) + " pebble_field_",
+		"= pebble_variant_",
+		".pebble_field_",
+		" == pebble_variant_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
 	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")
@@ -5376,7 +5422,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// orderAggregateTypes skips compiler-builtin runtime types entirely, and the
 	// runtime field is emitted with its hand-written PebbleAllocator C type —
 	// the uint-struct-field gap (HashMap's `len uint` / `cap uint`) is now
-	// FIXED (structFieldCType accepts any fixed-width integer), and the
+	// FIXED (structFieldCType accepts any fixed-width integer), the
 	// type-parameter-field gap is now FIXED: Entry[int,int]'s `key K` / `value
 	// V` fields are substituted to their concrete int/int arguments by
 	// structTypeParameters, which now selects the declaration's canonical
@@ -5385,17 +5431,25 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// key was interned first (hmap's eight methods each intern an Entry[K,V]
 	// key with their own inherited K/V symbols before Entry's canonical key
 	// lands, so a plain first-match scan left key/value as unresolved type
-	// parameters). Emit now progresses past ALL of those and fails on a
-	// DIFFERENT, separate, pre-existing gap: Entry's `state EntryState` field,
-	// rejected by structFieldCType ("field type ... is an enum type;
-	// enum-typed struct fields are not supported yet") since this backend
-	// emits exactly fixed-width integers, bool, and the supported compound
-	// types as struct fields, not plain-enum typedefs. This test pins that
-	// precise residual gap (so a future session fixing enum-typed struct
-	// fields — the typedef field C type, enum literal field assignment, and
-	// enum field comparison — knows exactly what remains) rather than fixing
-	// it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern (os.ReadFile
-	// of the real module sources, fixtureProvider, StandardRoot: "std").
+	// parameters), and the enum-typed-struct-field gap (Entry's `state
+	// EntryState` field, previously rejected by structFieldCType as
+	// "enum-typed struct fields are not supported yet") is now FIXED —
+	// structFieldCType returns the enum's own pebble_enum_<typeID>_t typedef,
+	// buildStructBraceList builds the field's variant-literal construction via
+	// buildEnumValue, buildStoreCore builds the field write (entry.state =
+	// .Occupied), buildStructFieldRead returns the plain field projection, and
+	// buildComparison's enum branch reads the field through buildEnumValue's
+	// new Load(FieldPlace) case. Emit now progresses past ALL of those and
+	// fails on a DIFFERENT, separate, pre-existing gap: HashMap's `entries
+	// []Entry[K, V]` is a slice whose element type is the Entry STRUCT
+	// (symbol 36), and the slice machinery (sliceElementCType /
+	// isSupportedSliceElementType, and buildSliceTypedef via them) supports
+	// only fixed-width integer, char, and bool slice elements — slices of
+	// structs (or any nominal type) are not supported yet. This test pins that
+	// precise residual gap (so a future session fixing slice-of-struct
+	// elements knows exactly what remains) rather than fixing it. Mirrors
+	// TestCheckStdHmapU64HashFnTypes' fixture pattern (os.ReadFile of the real
+	// module sources, fixtureProvider, StandardRoot: "std").
 	hmap, err := os.ReadFile("../../std/hmap.peb")
 	if err != nil {
 		t.Fatal(err)
@@ -5437,7 +5491,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, uint-struct-field, and type-parameter-field gaps are gone, but this test expected the remaining enum-typed-struct-field gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, uint-struct-field, type-parameter-field, and enum-typed-struct-field gaps are gone, but this test expected the remaining slice-of-struct-element gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
@@ -5454,20 +5508,25 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	if strings.Contains(err.Error(), "field type type-parameter") {
 		t.Fatalf("Emit still fails with the type-parameter-field error; the structTypeParameters canonical-key substitution did not land: %v", err)
 	}
+	if strings.Contains(err.Error(), "is an enum type; enum-typed struct fields are not supported") {
+		t.Fatalf("Emit still fails with the enum-typed-struct-field error; the enum-typed struct field fix did not land: %v", err)
+	}
 	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
 	// payload, the (fixed) pointer-payload optional, the (fixed)
 	// runtime-Allocator struct-field typedef, the (fixed) uint-typed struct
-	// field (HashMap's own len/cap), and the (fixed) type-parameter-field
-	// substitution (Entry[K,V]'s key K / value V now resolve to their
-	// concrete int/int arguments): Entry's `state EntryState` field, rejected
-	// by structFieldCType because a plain-enum-typed struct field has no
-	// emitted C field type yet. A distinct, separate, not-yet-fixed gap —
-	// enum-typed struct fields — that the full hmap consumer surfaces once the
-	// type-parameter substitution is correct.
-	if !strings.Contains(err.Error(), "is an enum type; enum-typed struct fields are not supported") {
-		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field non-type-parameter error: %v", err)
+	// field (HashMap's own len/cap), the (fixed) type-parameter-field
+	// substitution (Entry[K,V]'s key K / value V now resolve to their concrete
+	// int/int arguments), and the (fixed) enum-typed struct field (Entry's
+	// state EntryState): HashMap's `entries []Entry[K, V]` — a slice whose
+	// element type is the Entry STRUCT — rejected by sliceElementCType /
+	// buildSliceTypedef because the slice machinery supports only fixed-width
+	// integer, char, and bool slice elements, not a nominal (struct) element.
+	// A distinct, separate, not-yet-fixed gap — slice-of-struct elements —
+	// that the full hmap consumer surfaces once enum-typed struct fields work.
+	if !strings.Contains(err.Error(), "slice element type nominal(") || !strings.Contains(err.Error(), "is not supported; only a fixed-width integer, char, or bool slice elements are supported") {
+		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field non-type-parameter non-enum-field error: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on an enum-typed struct field (Entry's state EntryState) reached after the type-parameter-field substitution is fixed (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, uint struct fields, and direct type-parameter fields are all fixed): %v", err)
+	t.Logf("full std:hmap consumer now blocks only on a slice whose element type is a struct (HashMap's entries []Entry[K, V], symbol 36 = Entry) reached after the enum-typed struct field fix landed (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, uint struct fields, direct type-parameter fields, and enum-typed struct fields are all fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
