@@ -3,6 +3,7 @@ package check
 import (
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
@@ -22,6 +23,7 @@ const (
 	constantBoolean
 	constantCharacter
 	constantString
+	constantFloat
 	constantEnum
 )
 
@@ -31,6 +33,7 @@ type constantValue struct {
 	Boolean     bool
 	Character   rune
 	String      string
+	Float       float64
 	EnumType    symbol.SymbolID
 	EnumVariant symbol.SymbolID
 	EnumOrdinal uint32
@@ -505,6 +508,16 @@ func (e *constantEvaluator) literal(ref symbol.SyntaxRef, node syntax.Node) cons
 			return constantResult{State: constantUnavailable}
 		}
 		return constantResult{State: constantKnown, Value: constantValue{Kind: constantString, String: decoded.Text}}
+	case syntax.FloatLiteral:
+		text, ok := e.text(node.Span())
+		if !ok {
+			return constantResult{State: constantUnavailable}
+		}
+		parsed, err := strconv.ParseFloat(string(text), 64)
+		if err != nil {
+			return e.failure(ref, "floating constant could not be parsed")
+		}
+		return constantResult{State: constantKnown, Value: constantValue{Kind: constantFloat, Float: parsed}}
 	default:
 		return e.failure(ref, fmt.Sprintf("%s is not an accepted constant literal", node.Token()))
 	}

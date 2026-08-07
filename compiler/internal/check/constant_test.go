@@ -110,6 +110,30 @@ let enum_order = Color.red < Color.blue;
 	}
 }
 
+func TestConstantFloatLiteralAcceptedAtGlobalScope(t *testing.T) {
+	inputs, diagnostics := constantInputs(t, checkProvider{"main.peb": []byte(`
+let PI = 3.141593;
+let E = 2.718282;
+let Exponent = 1.5e-8;
+`)})
+	evaluator := newConstantEvaluator(inputs, diagnostics, Config{})
+	for name, want := range map[string]float64{
+		"PI": 3.141593, "E": 2.718282, "Exponent": 1.5e-8,
+	} {
+		result := evaluator.evaluate(constantInitializer(t, evaluator, name))
+		if result.State != constantKnown || result.Value.Kind != constantFloat || result.Value.Float != want {
+			t.Fatalf("%s = %+v, want %v", name, result, want)
+		}
+	}
+	if diagnostics.Len() != 0 {
+		t.Fatalf("diagnostics = %+v", diagnostics.Items())
+	}
+	globalDiagnostics, handoff, records := runGlobalValidation(t, "let PI = 3.141593;")
+	if !validateBindings(handoff, records, globalDiagnostics, Config{}) || hasValidationDiagnostic(globalDiagnostics, CodeNonconstantGlobal) {
+		t.Fatalf("global float binding was rejected: %+v", globalDiagnostics.Items())
+	}
+}
+
 func TestConstantImportedForwardReferencesAndCycleMemoization(t *testing.T) {
 	inputs, diagnostics := constantInputs(t, checkProvider{
 		"main.peb": []byte("import \"./lib\";\nlet answer = lib::size + forward;\nlet forward = later;\nlet later = 2;\nlet a = b;\nlet b = a;\n"),
@@ -405,7 +429,7 @@ let mutable_reference = mutable;
 `)})
 	evaluator := newConstantEvaluator(inputs, diagnostics, Config{})
 	for _, name := range []string{
-		"float_value", "aggregate", "optional", "cast", "size", "interpolation",
+		"aggregate", "optional", "cast", "size", "interpolation",
 		"divide", "remainder", "negative_shift", "category", "unequal_kinds",
 		"unordered", "call", "pointer", "dereference", "indexing", "tuple", "repeat",
 		"function", "mutable_reference",
