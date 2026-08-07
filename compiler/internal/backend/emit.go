@@ -377,6 +377,7 @@ import (
 	"fmt"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -583,7 +584,18 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	aggTypedefs, err := buildAggregateTypedefs(unit, snapshot, result, ordered.all, ordered.structs)
+	// A slice's .data field is a pointer to its element type, so a slice whose
+	// element is a struct/tuple/optional names that aggregate's typedef in its
+	// own typedef text. The aggregate typedefs are fully defined in the
+	// aggregate block emitted AFTER the slices, so those typedef NAMES must be
+	// declared (incompletely) before the slices — a C forward typedef
+	// declaration — or the emitted slice typedef's `pebble_struct_<id>_t
+	// *data;` field would fail cc with "unknown type name". The aggregate
+	// definitions then carry the matching struct tag (see
+	// sliceElementForwardDeclaredAggregates), so the forward declaration and
+	// the definition complete the same C type.
+	sliceElementAggregates := sliceElementForwardDeclaredAggregates(snapshot, sliceInfos)
+	aggTypedefs, err := buildAggregateTypedefs(unit, snapshot, result, ordered.all, ordered.structs, sliceElementAggregates)
 	if err != nil {
 		return err
 	}
@@ -597,7 +609,8 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs = appendTypedefBlock(sliceTypedefs, typedefs)
+	sliceForwardDecls := buildAggregateForwardDeclarations(snapshot, sliceElementAggregates)
+	typedefs = appendTypedefBlock(sliceForwardDecls, appendTypedefBlock(sliceTypedefs, typedefs))
 	helperPrototypes, err := buildHelperPrototypes(unit, snapshot, helpers, result)
 	if err != nil {
 		return err
@@ -888,7 +901,7 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 			}
 			return err
 		}
-		if err := validateHelperSignature(calleeDecl, w.snapshot, w.width); err != nil {
+		if err := validateHelperSignature(w.unit, calleeDecl, w.snapshot, w.width); err != nil {
 			return err
 		}
 		_, calleeBlock, err := findFunctionBody(w.unit, calleeDecl, "called function")
@@ -1321,12 +1334,13 @@ func resolveSliceInfo(snapshot *types.Snapshot, id types.TypeID) (sliceInfo, err
 // other than a fixed-width integer builtin (the entry's resolved width, uint,
 // u8, u16, u32, u64, i8, i16, i32, or i64 — each resolved to its OWN width by
 // resolvedBuiltin/cType, independent of the ambient `width` of the context the
-// slice is being validated from), char, or bool — the same element gate 10.37
+// slice is being validated from), char, bool, or a tuple/optional/struct type
+// — the same element gate 10.37
 // enforces for a slice-typed local (see buildSliceLocalDeclaration and
 // sliceElementCType), applied here to a slice-typed function parameter or
-// result type so a helper signature naming a slice of tuples, str, or any
+// result type so a helper signature naming a slice of str or any
 // other unsupported element is a clean rejection before any body is built.
-func validateSliceElementType(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
+func validateSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return fmt.Errorf("slice type %d is not in the type snapshot", id)
@@ -1335,8 +1349,8 @@ func validateSliceElementType(snapshot *types.Snapshot, width types.BuiltinKind,
 	if !ok {
 		return fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
 	}
-	if !isSupportedSliceElementType(snapshot, element) {
-		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, or bool", describeType(snapshot, element))
+	if !isSupportedSliceElementType(unit, snapshot, element) {
+		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
 	}
 	return nil
 }
@@ -1344,16 +1358,26 @@ func validateSliceElementType(snapshot *types.Snapshot, width types.BuiltinKind,
 // isSupportedSliceElementType reports whether a slice element type is one this
 // backend can emit: a fixed-width integer builtin (resolved to its own width by
 // resolvedBuiltin/cType — the entry's width, uint, u8, u16, u32, u64, i8, i16,
-// i32, or i64), char (the fixed int32_t), or bool. This is the single shared
-// element gate sliceElementCType, buildSliceConstruction, and the index
-// read/write value grammars all consult, mirroring how the function-types work
-// admitted integer parameters/results by resolvedBuiltin/cType generically
-// instead of a width-specific predicate list.
-func isSupportedSliceElementType(snapshot *types.Snapshot, id types.TypeID) bool {
+// i32, or i64), char (the fixed int32_t), bool, or — matching the aggregate
+// element types arrayElementCType/sliceElementCType already accept — a tuple,
+// optional, or struct (an enum element is a Nominal type exactly like a struct
+// element, and is deliberately excluded here, mirroring the enum rejection in
+// both element-C-type builders). This is the single shared element gate
+// sliceElementCType, buildSliceConstruction, and the index read/write value
+// grammars all consult, mirroring how the function-types work admitted integer
+// parameters/results by resolvedBuiltin/cType generically instead of a
+// width-specific predicate list.
+func isSupportedSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
 	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
 		return true
 	}
-	return isChar(snapshot, id) || isBool(snapshot, id)
+	if isChar(snapshot, id) || isBool(snapshot, id) {
+		return true
+	}
+	if isEnumType(unit, snapshot, id) {
+		return false
+	}
+	return isTuple(snapshot, id) || isOptional(snapshot, id) || isStruct(snapshot, id)
 }
 
 // collectFunctionTypes resolves, in first-encountered order, every function
@@ -2566,7 +2590,7 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // statement) produces. A void call in any value position is still rejected by
 // the value builders themselves (buildExpr's width gate and
 // buildAggregateCallInitializer's result-type match), never silently emitted.
-func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width types.BuiltinKind) error {
+func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snapshot, width types.BuiltinKind) error {
 	if decl.Convention != types.Pebble {
 		return fmt.Errorf("called function symbol %d uses %s calling convention, want Pebble", decl.Symbol, callingConventionName(decl.Convention))
 	}
@@ -2594,7 +2618,7 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, or str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type (a parameter may be the entry's integer width, uint, u64, bool, char, str, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
-			if err := validateSliceElementType(snapshot, width, param.Type); err != nil {
+			if err := validateSliceElementType(unit, snapshot, width, param.Type); err != nil {
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a slice type with an unsupported element type: %v", decl.Symbol, i, param.Symbol, err)
 			}
 		}
@@ -2627,7 +2651,7 @@ func validateHelperSignature(decl tir.Node, snapshot *types.Snapshot, width type
 		return fmt.Errorf("called function symbol %d has result type %s, want its own integer width, bool, char, str, a tuple/struct result type, a slice result type, a pointer result type, an optional result type, a function result type, or void", decl.Symbol, describeType(snapshot, decl.ResultType))
 	}
 	if isSlice(snapshot, decl.ResultType) {
-		if err := validateSliceElementType(snapshot, width, decl.ResultType); err != nil {
+		if err := validateSliceElementType(unit, snapshot, width, decl.ResultType); err != nil {
 			return fmt.Errorf("called function symbol %d has a slice result type with an unsupported element type: %v", decl.Symbol, err)
 		}
 	}
@@ -6186,7 +6210,7 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	if isEnumType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type %s is an enum type; enum-typed array elements are not supported yet", context, describeType(snapshot, initValue.Type), enumTypeName(elementType))
 	}
-	if !isSupportedSliceElementType(snapshot, elementType) && !isTuple(snapshot, elementType) && !isArray(snapshot, elementType) && !isOptional(snapshot, elementType) && !isStruct(snapshot, elementType) {
+	if !isSupportedSliceElementType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, or an aggregate element type", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
@@ -6536,8 +6560,8 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !ok {
 		return "", "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
 	}
-	if !isSupportedSliceElementType(snapshot, sliceElementType) {
-		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, or bool", context, describeType(snapshot, sliceElementType))
+	if !isSupportedSliceElementType(unit, snapshot, sliceElementType) {
+		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", context, describeType(snapshot, sliceElementType))
 	}
 	arrayKey, ok := snapshot.Key(baseInfo.array)
 	if !ok {
@@ -6659,10 +6683,13 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 
 // sliceElementCType resolves the C pointer target type for a slice's data
 // field: the element's C type. Any fixed-width integer builtin (resolved to its
-// own width by resolvedBuiltin/cType), char (the fixed int32_t), and bool are
-// supported slice element types, matching isSupportedSliceElementType and
-// arrayElementCType's own scalar handling. Any other element type is a clean
-// rejection naming what was found.
+// own width by resolvedBuiltin/cType), char (the fixed int32_t), bool, tuple
+// (the tuple's own typedef), optional (the optional's own typedef), and struct
+// (the struct's own typedef — an enum element is a Nominal type exactly like a
+// struct element and is rejected here explicitly, since enum-typed slice
+// elements are out of scope) are supported slice element types, matching
+// isSupportedSliceElementType and arrayElementCType's own element handling.
+// Any other element type is a clean rejection naming what was found.
 func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
@@ -6670,10 +6697,22 @@ func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	if isChar(snapshot, id) {
 		return "int32_t", nil
 	}
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id), nil
+	}
+	if isOptional(snapshot, id) {
+		return optionalTypeName(id), nil
+	}
+	if isStruct(snapshot, id) {
+		if isEnumType(unit, snapshot, id) {
+			return "", fmt.Errorf("slice element type %s is an enum type; enum-typed slice elements are not supported yet", enumTypeName(id))
+		}
+		return structTypeName(id), nil
+	}
 	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
 		return cType(elementWidth), nil
 	}
-	return "", fmt.Errorf("slice element type %s is not supported; only a fixed-width integer, char, or bool slice elements are supported", describeType(snapshot, id))
+	return "", fmt.Errorf("slice element type %s is not supported", describeType(snapshot, id))
 }
 
 // buildOptionalLocalDeclaration builds one optional-typed local's declaration:
@@ -6896,11 +6935,14 @@ func mustNode(unit *tir.Unit, id tir.NodeID) tir.Node { n, _ := unit.Node(id); r
 // suite's own harness). Every field type must be exactly the entry's width or
 // bool; anything else (a str field, a nested struct field) is a clean
 // rejection naming the field position, since this backend emits exactly those
-// two C field types. Two initializer shapes are supported (10.26): a
+// two C field types. Three initializer shapes are supported (10.26): a
 // RecordConstruct (a struct literal), emitted as a designated-initializer
-// brace list, or a DirectCall to a struct-returning helper whose result type
+// brace list, a DirectCall to a struct-returning helper whose result type
 // matches the local's declared type, emitted by the same call-building
-// machinery buildExpr's DirectCall case uses (see buildAggregateCallInitializer).
+// machinery buildExpr's DirectCall case uses (see buildAggregateCallInitializer),
+// and — since the slice-of-struct-element slice — a Load of a CheckedIndexPlace,
+// a by-value read of one struct element of an array or slice local (`let e =
+// old_entries[j];`, a whole-struct copy of the bounds-checked element lvalue).
 // Initializing a struct local from any other value — a whole-struct
 // copy of another local, anything else — is a clean rejection. The
 // local's scope entry records its struct type (a localInfo with structType
@@ -6914,6 +6956,39 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 		// helperReturningPoint();` — the one position (10.26) in which calling
 		// a struct-returning helper is supported.
 		return buildAggregateCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, false)
+	}
+	if initValue.Kind == tir.Load {
+		// A by-value read of one struct element of an array or slice local —
+		// `let e = old_entries[j];`, the std/hmap.peb rehash shape — lowered by
+		// the checker to a Load of a CheckedIndexPlace whose single child is the
+		// StoragePlace naming the array/slice local (the exact shape a scalar
+		// element read uses, confirmed against a real fixture). The emitted C is
+		// a whole-struct copy declaration, `pebble_struct_<typeID>_t
+		// pebble_local_<symbol> = <lvalue>;`, where the lvalue is the
+		// bounds-checked element projection built by buildPlaceLValue (the same
+		// lvalue an address-of or field-write through a slice index lowers to),
+		// and its resolved element type must be exactly the local's declared
+		// type (defense for hand-built IR). Like every local, the declaration is
+		// followed by a (void) cast against -Wunused-variable.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, structTypeName(initValue.Type), len(initValue.Children))
+		}
+		place, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load referencing invalid place node %d", context, structTypeName(initValue.Type), initValue.Children[0])
+		}
+		if place.Kind != tir.CheckedIndexPlace {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value struct-element read)", context, structTypeName(initValue.Type), place.Kind)
+		}
+		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s struct-element read: %v", context, err)
+		}
+		if elementType != initValue.Type {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a read of element type %s", context, structTypeName(initValue.Type), describeType(snapshot, elementType))
+		}
+		scope[statement.Symbol] = localInfo{structType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
 	if initValue.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal) or a call to a struct-returning helper; initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
@@ -9589,8 +9664,8 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 				if !isBool(snapshot, element) {
 					return "", fmt.Errorf("slice element type is %s, want bool", describeType(snapshot, element))
 				}
-			} else if !isSupportedSliceElementType(snapshot, element) {
-				return "", fmt.Errorf("slice element type is %s, want a fixed-width integer, char, or bool", describeType(snapshot, element))
+			} else if !isSupportedSliceElementType(unit, snapshot, element) {
+				return "", fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
 			}
 			indexNode, ok := unit.Node(place.Children[1])
 			if !ok {
@@ -9632,8 +9707,8 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if !isBool(snapshot, element) {
 			return "", fmt.Errorf("array element type is %s, want bool", describeType(snapshot, element))
 		}
-	} else if !isSupportedSliceElementType(snapshot, element) {
-		return "", fmt.Errorf("array element type is %s, want a fixed-width integer, char, or bool", describeType(snapshot, element))
+	} else if !isSupportedSliceElementType(unit, snapshot, element) {
+		return "", fmt.Errorf("array element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
 	}
 	indexNode, ok := unit.Node(place.Children[1])
 	if !ok {
@@ -11635,7 +11710,7 @@ func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 func buildTupleTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildTupleTypedef(unit, snapshot, width, id)
+		text, err := buildTupleTypedef(unit, snapshot, width, id, nil)
 		if err != nil {
 			return "", err
 		}
@@ -11644,7 +11719,7 @@ func buildTupleTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 	return strings.Join(texts, "\n"), nil
 }
 
-func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo) (string, error) {
+func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo, tagged map[types.TypeID]bool) (string, error) {
 	structs := make(map[types.TypeID]structInfo, len(infos))
 	for _, info := range infos {
 		structs[info.typ] = info
@@ -11655,11 +11730,11 @@ func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width type
 		var err error
 		switch {
 		case isTuple(snapshot, id):
-			text, err = buildTupleTypedef(unit, snapshot, width, id)
+			text, err = buildTupleTypedef(unit, snapshot, width, id, tagged)
 		case isOptional(snapshot, id):
-			text, err = buildOptionalTypedef(unit, snapshot, width, id)
+			text, err = buildOptionalTypedef(unit, snapshot, width, id, tagged)
 		case isStruct(snapshot, id):
-			text, err = buildStructTypedef(unit, snapshot, width, structs[id])
+			text, err = buildStructTypedef(unit, snapshot, width, structs[id], tagged)
 		}
 		if err != nil {
 			return "", err
@@ -11683,7 +11758,7 @@ func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width type
 // Each field's C type comes from tupleElementCType, which validates the
 // element is the entry's width or bool. A TypeID that is not a tuple type in
 // the snapshot is a clean rejection, not a guessed layout.
-func buildTupleTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func buildTupleTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID, tagged map[types.TypeID]bool) (string, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return "", fmt.Errorf("tuple type %d is not in the type snapshot", id)
@@ -11703,7 +11778,11 @@ func buildTupleTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		}
 		fields[i] = "    " + ctype + fmt.Sprintf(" _%d;", i)
 	}
-	return fmt.Sprintf("typedef struct {\n%s\n} %s;", strings.Join(fields, "\n"), tupleTypeName(id)), nil
+	head := "typedef struct"
+	if tagged[id] {
+		head = "typedef struct " + strings.TrimSuffix(tupleTypeName(id), "_t")
+	}
+	return fmt.Sprintf("%s {\n%s\n} %s;", head, strings.Join(fields, "\n"), tupleTypeName(id)), nil
 }
 
 // buildOptionalTypedefs builds the C text of one struct typedef per optional
@@ -11714,7 +11793,7 @@ func buildTupleTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 func buildOptionalTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildOptionalTypedef(unit, snapshot, width, id)
+		text, err := buildOptionalTypedef(unit, snapshot, width, id, nil)
 		if err != nil {
 			return "", err
 		}
@@ -11734,7 +11813,7 @@ func buildOptionalTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types
 // entry's width, bool for a bool payload, or the payload's enum typedef for an
 // enum payload). A TypeID that is not an optional type in the snapshot is a
 // clean rejection, not a guessed layout.
-func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID, tagged map[types.TypeID]bool) (string, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return "", fmt.Errorf("optional type %d is not in the type snapshot", id)
@@ -11750,7 +11829,11 @@ func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.
 	if err != nil {
 		return "", fmt.Errorf("optional type %s: %v", optionalTypeName(id), err)
 	}
-	return fmt.Sprintf("typedef struct {\n    bool has_value;\n    %s value;\n} %s;", valueCType, optionalTypeName(id)), nil
+	head := "typedef struct"
+	if tagged[id] {
+		head = "typedef struct " + strings.TrimSuffix(optionalTypeName(id), "_t")
+	}
+	return fmt.Sprintf("%s {\n    bool has_value;\n    %s value;\n} %s;", head, valueCType, optionalTypeName(id)), nil
 }
 
 // buildStructTypedefs builds the C text of one struct typedef per struct type
@@ -11761,7 +11844,7 @@ func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.
 func buildStructTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []structInfo) (string, error) {
 	texts := make([]string, 0, len(infos))
 	for _, info := range infos {
-		text, err := buildStructTypedef(unit, snapshot, width, info)
+		text, err := buildStructTypedef(unit, snapshot, width, info, nil)
 		if err != nil {
 			return "", err
 		}
@@ -11790,7 +11873,7 @@ func buildStructTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.B
 // A structInfo whose TypeID is not a Nominal type in the snapshot is a clean
 // rejection, not a guessed layout (defense for hand-built IR; collectStructTypes
 // has already resolved every collected TypeID through resolveStructInfo).
-func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info structInfo) (string, error) {
+func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info structInfo, tagged map[types.TypeID]bool) (string, error) {
 	key, ok := snapshot.Key(info.typ)
 	if !ok {
 		return "", fmt.Errorf("struct type %d is not in the type snapshot", info.typ)
@@ -11806,7 +11889,11 @@ func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 		}
 		fields[i] = "    " + ctype + fmt.Sprintf(" pebble_field_%d;", field.member)
 	}
-	return fmt.Sprintf("typedef struct {\n%s\n} %s;", strings.Join(fields, "\n"), structTypeName(info.typ)), nil
+	head := "typedef struct"
+	if tagged[info.typ] {
+		head = "typedef struct " + strings.TrimSuffix(structTypeName(info.typ), "_t")
+	}
+	return fmt.Sprintf("%s {\n%s\n} %s;", head, strings.Join(fields, "\n"), structTypeName(info.typ)), nil
 }
 
 // structFieldCType is the C field type a struct field of the given type is
@@ -12085,6 +12172,65 @@ func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo) (string, error) {
 		constants[i] = "    " + enumVariantName(variant) + ","
 	}
 	return fmt.Sprintf("typedef enum {\n%s\n} %s;", strings.Join(constants, "\n"), enumTypeName(info.typ)), nil
+}
+
+// sliceElementForwardDeclaredAggregates reports, for every slice type in
+// infos, which aggregate element types (a struct, tuple, or optional — an enum
+// element is excluded: it is rejected by sliceElementCType before any typedef
+// could be emitted) its .data pointer names in the slice's typedef text. Those
+// aggregate typedef names must be DECLARED — even incompletely — before the
+// slice typedef that points at them, because the slice typedef block is
+// emitted before the aggregate block that fully defines them; C resolves a
+// pointer to a declared-but-incomplete type. The returned set marks exactly
+// those aggregate types whose FULL definition must carry the matching struct
+// tag (buildStructTypedef / buildTupleTypedef / buildOptionalTypedef emit
+// `typedef struct pebble_<kind>_<id> {` for them), so the forward declaration
+// and the definition complete the same C type. A slice whose element is a
+// scalar (integer, char, bool) needs no forward declaration: its data field
+// names a builtin C type that needs no typedef.
+func sliceElementForwardDeclaredAggregates(snapshot *types.Snapshot, infos []sliceInfo) map[types.TypeID]bool {
+	out := make(map[types.TypeID]bool)
+	for _, info := range infos {
+		if isStruct(snapshot, info.elementType) || isTuple(snapshot, info.elementType) || isOptional(snapshot, info.elementType) {
+			out[info.elementType] = true
+		}
+	}
+	return out
+}
+
+// buildAggregateForwardDeclarations builds the C text of one incomplete typedef
+// declaration per aggregate type in tagged, ordered by TypeID for deterministic
+// output (each declaration is self-contained, so order does not matter
+// semantically):
+//
+//	typedef struct pebble_struct_<typeID> pebble_struct_<typeID>_t;
+//	typedef struct pebble_tuple_<typeID> pebble_tuple_<typeID>_t;
+//	typedef struct pebble_optional_<typeID> pebble_optional_<typeID>_t;
+//
+// Each declares the struct TAG pebble_<kind>_<typeID> and the typedef name
+// pebble_<kind>_<typeID>_t together, so a later full definition of the same
+// tag (emitted with the matching tag by buildStructTypedef /
+// buildTupleTypedef / buildOptionalTypedef) completes the type, and a pointer
+// field in a slice typedef emitted between the two (`pebble_struct_<typeID>_t
+// *data;`) is valid C against the incomplete declaration.
+func buildAggregateForwardDeclarations(snapshot *types.Snapshot, tagged map[types.TypeID]bool) string {
+	ids := make([]types.TypeID, 0, len(tagged))
+	for id := range tagged {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	decls := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name := structTypeName(id)
+		if isTuple(snapshot, id) {
+			name = tupleTypeName(id)
+		} else if isOptional(snapshot, id) {
+			name = optionalTypeName(id)
+		}
+		tag := strings.TrimSuffix(name, "_t")
+		decls = append(decls, fmt.Sprintf("typedef struct %s %s;", tag, name))
+	}
+	return strings.Join(decls, "\n")
 }
 
 // buildSliceTypedefs builds the C text for every distinct slice type, one

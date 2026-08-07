@@ -5439,17 +5439,23 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// buildEnumValue, buildStoreCore builds the field write (entry.state =
 	// .Occupied), buildStructFieldRead returns the plain field projection, and
 	// buildComparison's enum branch reads the field through buildEnumValue's
-	// new Load(FieldPlace) case. Emit now progresses past ALL of those and
-	// fails on a DIFFERENT, separate, pre-existing gap: HashMap's `entries
-	// []Entry[K, V]` is a slice whose element type is the Entry STRUCT
-	// (symbol 36), and the slice machinery (sliceElementCType /
-	// isSupportedSliceElementType, and buildSliceTypedef via them) supports
-	// only fixed-width integer, char, and bool slice elements — slices of
-	// structs (or any nominal type) are not supported yet. This test pins that
-	// precise residual gap (so a future session fixing slice-of-struct
-	// elements knows exactly what remains) rather than fixing it. Mirrors
-	// TestCheckStdHmapU64HashFnTypes' fixture pattern (os.ReadFile of the real
-	// module sources, fixtureProvider, StandardRoot: "std").
+	// new Load(FieldPlace) case. The slice-of-struct-element gap (HashMap's
+	// `entries []Entry[K, V]` — a slice whose element type is the Entry STRUCT,
+	// previously rejected by sliceElementCType / buildSliceTypedef) is now
+	// FIXED: sliceElementCType / isSupportedSliceElementType accept struct (and
+	// tuple/optional) elements, the slice typedef's data field points at the
+	// struct's own typedef (with a forward typedef declaration so the slice
+	// block can reference it before the aggregate block defines it), and the
+	// by-value index read, address-of index, and indexed field write shapes all
+	// lower. Emit now progresses past ALL of those and fails on a DIFFERENT,
+	// separate, pre-existing gap: the uint expression grammar. rehash and
+	// with_capacity compute `new_cap * (sizeof Entry[K, V])` — a uint-typed
+	// CheckedArithmetic over a SizeofType operand — and buildExpr has no
+	// SizeofType case. This test pins that precise residual gap (so a future
+	// session fixing uint expressions knows exactly what remains) rather than
+	// fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern
+	// (os.ReadFile of the real module sources, fixtureProvider, StandardRoot:
+	// "std").
 	hmap, err := os.ReadFile("../../std/hmap.peb")
 	if err != nil {
 		t.Fatal(err)
@@ -5491,7 +5497,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, uint-struct-field, type-parameter-field, and enum-typed-struct-field gaps are gone, but this test expected the remaining slice-of-struct-element gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion, optional-uint, pointer-payload, runtime-Allocator-field-typedef, uint-struct-field, type-parameter-field, enum-typed-struct-field, and slice-of-struct-element gaps are gone, but this test expected the remaining uint-expression gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
@@ -5511,22 +5517,31 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	if strings.Contains(err.Error(), "is an enum type; enum-typed struct fields are not supported") {
 		t.Fatalf("Emit still fails with the enum-typed-struct-field error; the enum-typed struct field fix did not land: %v", err)
 	}
+	if strings.Contains(err.Error(), "slice element type nominal(") || strings.Contains(err.Error(), "is not supported; only a fixed-width integer, char, or bool slice elements are supported") {
+		t.Fatalf("Emit still fails with the slice-of-struct-element error; the slice-of-struct-elements fix did not land: %v", err)
+	}
 	// The precise remaining gap, beyond recursion, the (fixed) optional-uint
 	// payload, the (fixed) pointer-payload optional, the (fixed)
 	// runtime-Allocator struct-field typedef, the (fixed) uint-typed struct
 	// field (HashMap's own len/cap), the (fixed) type-parameter-field
 	// substitution (Entry[K,V]'s key K / value V now resolve to their concrete
-	// int/int arguments), and the (fixed) enum-typed struct field (Entry's
-	// state EntryState): HashMap's `entries []Entry[K, V]` — a slice whose
-	// element type is the Entry STRUCT — rejected by sliceElementCType /
-	// buildSliceTypedef because the slice machinery supports only fixed-width
-	// integer, char, and bool slice elements, not a nominal (struct) element.
-	// A distinct, separate, not-yet-fixed gap — slice-of-struct elements —
-	// that the full hmap consumer surfaces once enum-typed struct fields work.
-	if !strings.Contains(err.Error(), "slice element type nominal(") || !strings.Contains(err.Error(), "is not supported; only a fixed-width integer, char, or bool slice elements are supported") {
-		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field non-type-parameter non-enum-field error: %v", err)
+	// int/int arguments), the (fixed) enum-typed struct field (Entry's state
+	// EntryState), and the (fixed) slice-of-struct element (HashMap's `entries
+	// []Entry[K, V]` now emits a slice typedef whose data field points at the
+	// Entry struct's own typedef): the uint expression grammar. rehash /
+	// with_capacity build `new_cap * (sizeof Entry[K, V])` — a uint-typed
+	// CheckedArithmetic over a SizeofType operand — and buildExpr has no
+	// SizeofType case (it is rejected with "entry function body expression
+	// contains a SizeofType"), nor does the uint path of the checked-arithmetic
+	// runtime helpers exist (checkedSuffix has no Uint mapping, so a uint
+	// `*` would emit a nonexistent pebble_rt_checked_mul_ helper). This is a
+	// distinct, separate, not-yet-fixed gap — uint expressions (sizeof and
+	// uint arithmetic) — that the full hmap consumer surfaces once
+	// slice-of-struct elements work.
+	if !strings.Contains(err.Error(), "contains a SizeofType") {
+		t.Fatalf("Emit failed with an unexpected non-recursion non-payload non-runtime-typedef non-uint-field non-type-parameter non-enum-field non-slice-of-struct error: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on a slice whose element type is a struct (HashMap's entries []Entry[K, V], symbol 36 = Entry) reached after the enum-typed struct field fix landed (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, uint struct fields, direct type-parameter fields, and enum-typed struct fields are all fixed): %v", err)
+	t.Logf("full std:hmap consumer now blocks only on the uint expression grammar (sizeof and uint checked arithmetic; rehash/with_capacity compute `new_cap * (sizeof Entry[K, V])`) reached after the slice-of-struct-elements fix landed (recursion, optional-uint, pointer-payload optionals, runtime-Allocator struct-field typedefs, uint struct fields, direct type-parameter fields, enum-typed struct fields, and slice-of-struct elements are all fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
@@ -9937,10 +9952,113 @@ func TestEmitSliceEmittedCDirectly(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 2, false)
 }
 
-func TestEmitSliceUnsupportedElementTypeRejects(t *testing.T) {
-	// A slice of tuple elements is unsupported — the checker builds it but
-	// the backend must reject it cleanly.
-	emitAndRunRejects(t, "fn main() i32 { var a [3](i32, i32) = [(1, 2), (3, 4), (5, 6)]; var s [](i32, i32) = a[0:2]; return s[0].0; }", "slice element type")
+func TestEmitSliceOfStructElementsCompilesAndRuns(t *testing.T) {
+	// The standalone synthetic repro of the slice-of-struct-elements gap: a
+	// []P slice constructed from a [3]P array via arr[:], then every index
+	// shape std/hmap.peb's real insert/get/rehash use — a field write through a
+	// slice index (s[1].state = .Occ, matching new_entries[i].state = .Empty),
+	// an address-of slice index for in-place field mutation (let p *P = &s[2];
+	// p.x = 50, matching `let entry = &self.entries[index]; entry.state =
+	// .Occupied`), and a by-value element read into a struct local (let e =
+	// s[1]; e.state == .Occ, matching `let e = old_entries[j];`) — compiles and
+	// runs correctly. The exit code depends on all of them working: 30 (s[1].x
+	// after the s[1].x = 30 write) + 50 (s[2].x after the pointer mutation) =
+	// 80.
+	emitAndRun(t, "type S = enum { Empty, Occ };\ntype P = struct { x i32; y i32; state S; };\nfn main() i32 {\nvar arr [3]P = [P.{ x = 1, y = 2, state = .Empty }, P.{ x = 3, y = 4, state = .Empty }, P.{ x = 5, y = 6, state = .Empty }];\nvar s []P = arr[:];\ns[1].state = .Occ;\ns[1].x = 30;\nlet p *P = &s[2];\np.x = 50;\np.state = .Occ;\nlet e = s[1];\nif e.state == .Occ { return e.x + s[2].x; }\nreturn 0;\n}", false, 80, false)
+}
+
+func TestEmitSliceOfStructElementsEmittedCShape(t *testing.T) {
+	// The emitted-C shape check for a struct-element slice: the slice typedef's
+	// .data field must be a pointer to the struct's OWN typedef name
+	// (pebble_struct_<typeID>_t *data), not a rejection; the element struct's
+	// typedef must be forward-declared BEFORE the slice typedef (C requires the
+	// pointer target's name declared, even incompletely, before the slice block
+	// references it — the slice block is emitted before the aggregate block
+	// that fully defines the struct); and the struct's full definition must
+	// carry the matching struct tag so the forward declaration and the
+	// definition complete the same C type.
+	unit, snapshot, entryID, sources := buildFixture(t, "type P = struct { x i32; y i32; };\nfn main() i32 { var a [3]P = [P.{ x = 1, y = 2 }, P.{ x = 3, y = 4 }, P.{ x = 5, y = 6 }]; var s []P = a[:]; return s[1].x + s[1].y; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// The slice typedef's data field must be a pointer to the struct's own
+	// typedef name.
+	fwdDecl := "typedef struct pebble_struct_"
+	fwdIdx := strings.Index(out, fwdDecl)
+	if fwdIdx < 0 {
+		t.Fatalf("emitted C missing the struct forward typedef declaration:\n%s", out)
+	}
+	// Extract the struct typedef name from the forward declaration
+	// `typedef struct pebble_struct_<id> pebble_struct_<id>_t;`.
+	rest := out[fwdIdx+len(fwdDecl):]
+	tagEnd := strings.Index(rest, " ")
+	if tagEnd < 0 {
+		t.Fatalf("emitted C malformed forward typedef declaration:\n%s", out)
+	}
+	structTag := "pebble_struct_" + rest[:tagEnd]
+	structName := structTag + "_t"
+	if !strings.Contains(out, structName+" *data;") {
+		t.Fatalf("emitted C slice typedef's .data field is not a pointer to the struct's own typedef name %s:\n%s", structName, out)
+	}
+	// The struct's typedef name must be forward-declared before the slice
+	// typedef that points at it.
+	sliceIdx := strings.Index(out, "pebble_slice_")
+	fwd := "typedef struct " + structTag + " " + structName + ";"
+	if sliceIdx < 0 || !strings.Contains(out[:sliceIdx], fwd) {
+		t.Fatalf("emitted C does not forward-declare the struct typedef before the slice typedef:\n%s", out)
+	}
+	// The struct's full definition must carry the matching tag.
+	tag := "typedef struct " + structTag
+	if !strings.Contains(out, tag) {
+		t.Fatalf("emitted C struct definition missing the matching struct tag %s:\n%s", tag, out)
+	}
+	compileAndRun(t, buf.Bytes(), 7, false)
+}
+
+func TestEmitSliceOfStructElementsFromRawStdCompilesAndRuns(t *testing.T) {
+	// The SliceFromRaw shape (`slice ptr, n`) with a struct element — how
+	// std/hmap.peb's rehash/with_capacity actually construct
+	// `let entries []Entry[K, V] = slice ptr, cap;` over an allocator-returned
+	// pointer. SliceFromRaw is checker-restricted to the standard library
+	// package (a C0619 "slice is restricted to the standard library package"
+	// rejection for user modules), so this fixture builds in the std package
+	// like the existing TestEmitSliceFromRawCompilesAndRuns. The slice's data
+	// field points at a contiguous [3]P array (via &arr[0]) and indexes over
+	// it, so the exit code proves the whole SliceFromRaw construction plus a
+	// struct-element index read work.
+	unit, snapshot, entryID, sources := buildStdFixture(t, "type P = struct { x i32; y i32; };\nfn main() i32 { var arr [3]P = [P.{ x = 1, y = 2 }, P.{ x = 3, y = 4 }, P.{ x = 5, y = 6 }]; let s []P = slice &arr[0], 3; return s[2].x + s[2].y; }", "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 11, false)
+}
+
+func TestEmitSliceEnumElementRejects(t *testing.T) {
+	// A slice of enum elements is deliberately unsupported, mirroring the
+	// pre-existing enum-typed ARRAY element restriction: an enum element is a
+	// Nominal type exactly like a struct element, but sliceElementCType /
+	// isSupportedSliceElementType exclude it explicitly (a separate,
+	// already-tracked restriction). The struct/tuple/optional element widening
+	// this test suite gained for slice-of-struct-elements deliberately does
+	// NOT extend to enums, so a slice of an enum element must still be a clean
+	// rejection naming the enum.
+	emitAndRunRejects(t, "type E = enum { A, B }; fn main() i32 { var a [2]E = [E.A, E.B]; var s []E = a[:]; return 0; }", "enum-typed slice elements are not supported yet")
+}
+
+func TestEmitSliceOfTupleElementsCompilesAndRuns(t *testing.T) {
+	// A tuple-element slice, the sibling of the struct-element widening: the
+	// slice element gate (sliceElementCType / isSupportedSliceElementType)
+	// accepts tuples exactly as arrays already do, so `var s [](i32, i32) =
+	// a[0:2]` over a [3](i32, i32) array constructs a slice whose typedef's
+	// data field points at the tuple's own typedef, and an indexed element
+	// read projects through the tuple's positional field (s[1].0). The old
+	// rejection of tuple-element slices is deliberately lifted (this exact
+	// fixture used to be TestEmitSliceUnsupportedElementTypeRejects); the
+	// exit code 3 = s[1].0 proves the whole construction-and-read path.
+	emitAndRun(t, "fn main() i32 { var a [3](i32, i32) = [(1, 2), (3, 4), (5, 6)]; var s [](i32, i32) = a[0:2]; return s[1].0; }", false, 3, false)
 }
 
 // 10.38 — slice-typed function parameters and return values
