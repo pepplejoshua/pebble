@@ -5805,17 +5805,21 @@ func TestEmitVoidHelperWritesC(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 1, false)
 }
 
-func TestEmitRejectsNonVoidDiscardedCallStatement(t *testing.T) {
+func TestEmitNonVoidDiscardedCallStatementCompilesAndRuns(t *testing.T) {
 	// A call to a non-void-returning function used purely as a statement
-	// (`f();` where f returns i32, the result silently discarded) IS reachable
+	// (`f();` where f returns i32, the result silently discarded) is reachable
 	// from real source — the checker's C0612 rejects only a discarded
 	// expression statement whose value is a non-void NON-call expression, and
-	// deliberately permits a discarded call — so the backend must reject it
-	// cleanly, naming the callee and its result type, rather than guessing
-	// how a discarded non-void result would be dropped (a real future gap,
-	// out of this slice's void-only scope).
-	unit, snapshot, entryID, _ := buildFixture(t, "fn f() i32 { return 5; } fn main() i32 { f(); return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "result type is i32, want a call to a void-returning function")
+	// deliberately permits a discarded call. The backend emits it exactly like
+	// a void call (a bare `<call>;` statement), and C discards the returned
+	// value with no warning even under -Wall -Wextra -Werror. The helper's
+	// side effect (its print of the argument) still runs, its 999 result is
+	// safely ignored, and the exit code reflects only the caller's own
+	// subsequent logic (here return 1).
+	output := emitAndRunCapture(t, "fn f(x i32) i32 { print x; return 999; } fn main() i32 { f(42); return 1; }", false, 1, false)
+	if output != "42\n" {
+		t.Fatalf("captured output = %q, want %q", output, "42\n")
+	}
 }
 
 func TestEmitUnreachableFunctionNotEmitted(t *testing.T) {

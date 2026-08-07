@@ -6124,23 +6124,24 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // `helper();` written as its own statement, produced by the checker's
 // controlExpression case with no StatementForm set and a single value child
 // (confirmed against real fixtures). It is the statement-context twin of a
-// value-context call: the single supported shape is a tir.DirectCall to a
-// void-returning function, emitted as `pebble_fn_<calleeSymbolID>(ctx, <args>);`
-// at the given indent, mirroring buildDirectCall's two return shapes exactly
+// value-context call: a tir.DirectCall to a function of ANY result type — a
+// void-returning helper called purely for its side effect, or a call to a
+// non-void-returning function whose result is deliberately discarded (legal
+// Pebble, and ordinary C: discarding a function's return value at a bare call
+// statement is always allowed, never warning even under -Wall -Wextra -Werror)
+// — emitted as `pebble_fn_<calleeSymbolID>(ctx, <args>);` at the given indent,
+// mirroring buildDirectCall's two return shapes exactly
 // (`pebble_fn_<sym>(ctx)` with no arguments, `pebble_fn_<sym>(ctx, <args>)`
 // with some) but as a statement instead of a value expression. The callee is
-// resolved through findFunctionDeclaration and required to be void-returning
-// via the same resolvedBuiltin == types.Void check validateHelperSignature
-// used before this slice rejected void helpers outright — a call whose callee
-// returns anything else is a clean rejection naming the callee and its result
-// type. The call text itself is built by buildDirectCall unchanged, so
-// argument building, context threading, and the convention/context-action
-// checks are identical to a value-context call. Any other ExpressionStatement
-// child — a discarded non-call expression, or a call to a non-void-returning
-// function used purely as a statement (legal Pebble, confirmed the checker
-// produces it, but requiring a decision about how a discarded non-void result
-// is dropped — out of this slice's scope) — is a clean rejection naming what
-// was found. The function is shared by buildLeadingStatement's
+// resolved through findFunctionDeclaration, and its result type places no
+// restriction on the shape: the call is emitted identically whether it returns
+// void or a value, and whatever it returns is discarded by C. The call text
+// itself is built by buildDirectCall unchanged, so argument building, context
+// threading, and the convention/context-action checks are identical to a
+// value-context call. Any other ExpressionStatement child — a discarded
+// non-call expression (anything that is not a DirectCall, MethodCall, or
+// IndirectCall — the latter handled separately above) — is a clean rejection
+// naming what was found. The function is shared by buildLeadingStatement's
 // ExpressionStatement case (which covers both buildBlock's and buildLoopBody's
 // leading-statement sequences) and buildDeferredStatements' deferred-statement
 // case, so the emission logic lives in exactly one place.
@@ -6160,14 +6161,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		return indent + callExpr + ";", nil
 	}
 	if expr.Kind != tir.DirectCall && expr.Kind != tir.MethodCall {
-		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a call to a void-returning function is)", context, expr.Kind)
-	}
-	calleeDecl, err := findCallDeclaration(unit, expr)
-	if err != nil {
-		return "", err
-	}
-	if !isVoid(snapshot, calleeDecl.ResultType) {
-		return "", fmt.Errorf("%s discarded-expression statement discards a call to symbol %d whose result type is %s, want a call to a void-returning function (a call to a non-void-returning function used as a bare statement is not supported yet)", context, expr.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a direct, method, or indirect call is)", context, expr.Kind)
 	}
 	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, expr, scope, width)
 	if err != nil {
