@@ -8,7 +8,7 @@ fn main() int {
         "789"
     ];
 
-    var s = hmap::new[str, usize](
+    var s = hmap::new[str, uint](
         hash::hash_str,
         fn (a, b str) bool => a == b
     );

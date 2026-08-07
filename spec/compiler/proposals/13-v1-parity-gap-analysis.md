@@ -206,36 +206,45 @@ same staleness, also fixed).
       exists — this is specifically the helper-signature validation
       gate not being widened for float the way it now has been for
       uint this session).
-- [ ] **[generator] LIKELY THE BIGGEST GAP FOUND IN THIS SWEEP: direct
-      calls to an `extern fn` declaration are entirely unimplemented in
-      the backend.** Found via `examples/extern_mem_funcs.peb`'s
-      `malloc(sizeof int)` (a `DirectCall` to `malloc`, declared
-      `extern`) — emission fails with `called function symbol 24
-      concrete specialization not found`. Root-caused precisely: the
-      TIR shows symbol 24's declaration node is `tir.ExternDeclaration`,
-      not `tir.FunctionDeclaration`; `findFunctionDeclaration`
-      (`emit.go:661`) only matches `FunctionDeclaration` nodes, so it
-      misses externs entirely, and the generic-specialization fallback
-      `findCalledFunctionByResult` (`emit.go:693`, reached via
-      `findCallDeclaration`, `emit.go:703`) also misses since `malloc`
-      isn't generic either. **`emit.go` has ZERO references to
-      `ExternDeclaration` anywhere** — `buildDirectCall` (`emit.go:9994`)
-      and `validateHelperSignature` (`emit.go:2618`) both reject any
-      non-Pebble calling convention outright. The checker correctly
-      accepts the program (`call_validation.go:177` validates C
-      -convention externs) — this is purely a backend gap, confirmed not
-      a checker issue. This likely blocks any program that directly
-      calls an `extern fn` from Pebble source (not through a Pebble
-      -level wrapper that itself never got emit-tested calling the
-      extern — e.g. `std/io.peb`'s `open()`/`read_all()`/etc. call
-      `fopen`/`fread`/`fseek` directly and have never actually been
-      emit-tested end-to-end, only check-tested so far, since
-      `examples/read_file.peb` still fails at CHECK on unrelated bugs
-      and never reaches emit). Given the blast radius (blocks basically
-      all real file I/O and any libc-based program), this is probably
-      the single highest-priority item on this entire tracker once
-      scoped — recommend prioritizing it over several of the smaller
-      items above.
+- [x] **CLOSED (`6e75c3c`) — was likely the biggest gap found this
+      sweep: direct calls to an `extern fn` declaration.** `emit.go` had
+      zero references to `tir.ExternDeclaration` anywhere.
+      `findFunctionDeclaration` now also matches it; new `externCName`
+      resolves the real C name (`malloc`, not `pebble_fn_24`) via a
+      symbol table now threaded into `Emit` (signature gained a
+      `symbols *symbol.Result` param); new `validateExternSignature`/
+      `externCType` validate C-convention param/result C spellings;
+      `reachabilityWalk.visit` skips extern callees (no body, no
+      helper emitted); `buildDirectCall` gained a C-convention branch
+      (real name, no context threading); the preamble adds
+      `<stdlib.h>/<string.h>/<math.h>` whenever a C extern exists.
+      Design note: the symbol table lives in a package-level
+      `emitSymbols` var scoped to one `Emit` call rather than threaded
+      through `buildDirectCall`'s ~19 call sites and their transitive
+      callers — a deliberate, documented tradeoff (this package assumes
+      single-threaded, non-reentrant `Emit`, matching every current/
+      planned caller; a reentrant call panics loudly instead of
+      silently corrupting state; confirmed race-clean under
+      `go test -race`). `examples/extern_mem_funcs.peb` fully closed
+      (`ae4b7c0`) — compiles and runs, prints 42, exit 0.
+- [ ] **[checker] An anonymous closure LITERAL using `=>` arrow shorthand
+      fails a false "non-void function can fall through without
+      returning" (`C0607`) when passed as a call argument — a NAMED
+      top-level function using the identical `=> expr` shorthand works
+      perfectly fine.** Found via `examples/std_hash.peb` and
+      `examples/std_set.peb`, both of which pass
+      `fn (a, b str) bool => a == b` as a call argument (a comparator
+      callback). Precisely bounded and reproduced in isolation
+      (`/tmp/closure_repro.peb`, not committed):
+      `fn eq(a str, b str) bool => a == b;` at the top level compiles
+      and runs correctly (emits a real function with a real `return`
+      statement), but the exact same body written as an inline closure
+      literal argument (`call_it(fn (a, b str) bool => a == b)`) fails
+      `C0607` at check. The implicit-return desugaring the `=>`
+      shorthand applies to a named declaration is evidently not being
+      applied to a closure-literal expression — a genuine, narrow
+      `[checker]` bug, not example staleness. Blocks both
+      `std_hash.peb` and `std_set.peb`. Not yet scoped for dispatch.
 - [ ] **[checker] Qualified static-method calls on a nominal type
       (`TypeName.method(...)`) are entirely broken — not just for
       generics.** Found via a full `count_lines.peb` triage (which
@@ -329,11 +338,17 @@ same staleness, also fixed).
       `52d9c59`), `slice_minmax.peb` (missing `: iter` binding, which
       surfaced the real `buildPlaceLValue` structural-field gap above —
       both fixed, file fully compiles and runs, committed `0fc2480`
-      alongside the backend fix `a31cf99`). In progress:
-      `leibniz_pi_approx.peb` (`float`→`f64`, plus a mixed-int/float
-      -arithmetic follow-up — now blocked on the f32/f64 helper-param
-      gap below), `read_file.peb` (stale `String.as_str()` call — std/
-      string.peb deliberately has no such method).
+      alongside the backend fix `a31cf99`), `extern_mem_funcs.peb`
+      (`usize` + two missing explicit casts — blocked until the
+      extern-call backend gap above landed; both fixed, file fully
+      compiles and runs, committed `ae4b7c0` alongside the backend fix
+      `6e75c3c`). In progress: `leibniz_pi_approx.peb` (`float`→`f64`,
+      plus a mixed-int/float-arithmetic follow-up — now blocked on the
+      f32/f64 helper-param gap below), `read_file.peb` (stale
+      `String.as_str()` call — std/string.peb deliberately has no such
+      method), `std_hash.peb` (`usize`→`uint` fixed but not yet
+      committed — now blocked on the arrow-closure-literal checker bug
+      above, not landed in the working tree as of this writing).
       `count_lines.peb` not yet triaged in detail (a large cascade of
       ~60+ checker errors: `usize`, `Result.ok`/`err` constructors,
       bare `case Ok:` instead of `case .Ok:`/`case Result.Ok:`, `Stats`
