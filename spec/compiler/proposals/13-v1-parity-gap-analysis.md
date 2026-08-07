@@ -178,18 +178,18 @@ the already-tracked `C0618` unreachable-statement warning (see the
 above — `pebc`'s CLI treats any diagnostic, even a warning, as fatal;
 not a real check failure). `math` found a genuine new gap:
 
-- [ ] **[checker] Float literals cannot be used in a top-level `let`
+- [x] **CLOSED (`b4410cb`) — float literals in a top-level `let`
       constant binding.** `std/math.peb:18-19`: `let PI = 3.141593;` /
-      `let E = 2.718282;` fail with `C0616: binding initializer is
-      invalid`. `math.peb`'s only import (`std:libc`) passes standalone,
-      so this is genuinely `math.peb`'s own code, not a transitively
-      -imported gap. Not yet root-caused precisely — a diagnostic sweep
-      response flagged `constant.go`'s `literal()` function (~line 480)
-      as having no `FloatLiteral` case (floats aren't currently
-      constant-evaluable), but this was reported inline in a diagnostic
-      response, not independently verified by reading the actual code —
-      confirm before fixing. Blocks `std/math.peb` entirely (its two
-      named constants). Not yet scoped for dispatch.
+      `let E = 2.718282;` previously failed with `C0616: binding
+      initializer is invalid`. Root cause confirmed exactly as
+      suspected: `constant.go`'s `literal()` had no `FloatLiteral` case
+      (floats weren't constant-evaluable). Fixed by adding a
+      `constantFloat` kind + `Float float64` field to `constantValue`
+      and a `case syntax.FloatLiteral:` parsing via `strconv.ParseFloat`
+      (fails cleanly with `C0614` on parse error). `math.peb`'s two
+      constants now bind. This fix also unmasked a separate, new
+      `C0621` generic-requirement-propagation gap in `clamp[T]`'s
+      `min`/`max` calls — logged separately below, not yet closed.
 
 - [x] **PARTIALLY CLOSED (`69742fb`)** — inline slice construction as a
       call argument (`f(a[1:3])`) now works whenever the call itself is
