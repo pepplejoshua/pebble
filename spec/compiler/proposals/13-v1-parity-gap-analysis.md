@@ -556,19 +556,26 @@ not a real check failure). `math` found a genuine new gap:
       verified the core fix was correct via causation-check myself,
       then wrote the tests directly per the established exception for
       a verified-but-untested stalled dispatch.
-- [ ] **[generator] New backend gap exposed by the fix above: a
-      discarded non-void call used as a bare statement.** `pebc:
-      emission failed: entry function body block arm discarded
-      -expression statement discards a call to symbol 53 whose result
-      type is i32, want a call to a void-returning function (a call to
-      a non-void-returning function used as a bare statement is not
-      supported yet)`. Surfaces compiling `examples/read_file.peb`
-      further now that the `int`-vs-`i32` gap above is closed — std/
-      io.peb's `read_all` calls `fseek(...)` as a bare statement (its
-      `i32` return value intentionally discarded, an ordinary C idiom).
-      Not yet root-caused precisely (exact backend function/line not
-      pinned down) or scoped for dispatch. Not a regression — emission
-      never previously reached this point.
+- [x] **CLOSED (`c9f99de`) — discarded non-void call used as a bare
+      statement.** `buildExpressionStatement`'s `isVoid` gate rejected
+      a bare discarded-call statement (`f();`) whenever the callee
+      returned anything but void — `std/io.peb`'s `read_all` calls
+      `fseek(file, 0, SeekEnd);` as a bare statement, deliberately
+      discarding its `i32` return value (ordinary C idiom; the checker
+      itself already permits a discarded call statement of any result
+      type, only rejecting a discarded non-call expression). Fixed by
+      removing the `isVoid` check entirely — in C, discarding any
+      function's return value at a bare call statement is always legal
+      and never warns, even under `-Wall -Wextra -Werror`, so the call
+      is now built and emitted identically regardless of result type.
+      New end-to-end test (`TestEmitNonVoidDiscardedCallStatementCompilesAndRuns`)
+      calls a print-then-return helper as a bare statement, captures
+      its output to prove the side effect ran while the discarded
+      result didn't disturb subsequent logic. Causation confirmed
+      (revert reproduces the exact original error; restore passes
+      again). Re-verified against a real `std/io.peb` scratch fixture:
+      the `fseek`-as-bare-statement error is completely gone, reaching
+      the next, separate, already-tracked gap below.
 - [x] **CLOSED (`f011286`) — masked `C0621` generic-requirement
       -propagation gap in `std/math.peb`'s `clamp[T]`, exposed by the
       float-constant fix (`b4410cb`).** Root cause: `clamp[T] { return
