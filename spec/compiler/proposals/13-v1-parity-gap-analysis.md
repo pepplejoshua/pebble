@@ -470,23 +470,39 @@ not a real check failure). `math` found a genuine new gap:
       Re-running `examples/read_file.peb` confirms the `SliceFromRaw`
       error is completely gone — replaced by a new, different,
       unrelated gap (below), not a regression.
-- [ ] **[generator] New backend gap exposed by the `SliceFromRaw` fix
-      above: a struct-typed `return` statement can't directly return a
-      `DirectCall`** — `pebc: emission failed: entry function body
-      return statement returns a DirectCall, want a reference to a
-      struct-typed local in scope or a struct literal (a
-      RecordConstruct); only returning an already-declared struct-typed
-      local or constructing a fresh struct literal inline is
-      supported`. Hit via `std/io.peb`'s many `return string::new();`
-      early-return paths (`read_all`, `read_line`, `get_file_error`,
-      etc.) — a struct-returning helper call (`string::new()`) used
-      directly as a return value, not first bound to a local. This was
-      always latent — emission never previously reached this far in
-      `examples/read_file.peb` because the `SliceFromRaw` gap above
-      failed first. Not a regression. Blocks `examples/read_file.peb`
-      and any `String`-returning function called directly in a
-      `return`. Not yet root-caused precisely (exact function/line not
-      pinned down) or scoped for dispatch.
+- [x] **CLOSED (`4956133`) — a struct-typed `return` statement can now
+      directly return a `DirectCall`.** `buildAggregateReturnValue`'s
+      struct branch only accepted a `SymbolValue` or a `RecordConstruct`;
+      widened to accept a `DirectCall` too, forwarding the callee's
+      result (validated against the function's own result type), built
+      via the existing `buildDirectCallWithPre`. Signature changed from
+      `(string, error)` to `(string, string, error)` (a `(pre, expr)`
+      pair, mirroring `buildSliceReturnValue`'s existing convention),
+      since a return is a pure expression position with nowhere to
+      inline a call's pre-statement. Both call sites
+      (`buildReturnStatement`, `buildSwitchCaseBody`) updated. The tuple
+      branch is untouched — `DirectCall` stays rejected there, by
+      design, out of scope. New end-to-end test
+      (`TestEmitStructReturningHelperForwardsCallCompilesAndRuns`)
+      chains two struct-returning helpers with no intermediate local,
+      compiles and runs, reads real fields back. A pre-existing test
+      asserting the OLD restriction for this exact shape
+      (`TestEmitRejectsStructReturningHelperInAnotherHelpersReturn`) was
+      removed as obsolete — its coverage is superseded by the new
+      positive test. Causation confirmed (revert reproduces the
+      original error; restore passes again). Re-running `examples/
+      read_file.peb` confirms the `DirectCall` struct-return error is
+      completely gone — `std/io.peb`'s early-return paths (`read_all`,
+      `read_line`, `get_file_error`, etc.) now emit correctly.
+- [ ] **[generator] New backend gap exposed by the `DirectCall` fix
+      above: an `int`-vs-`i32` width mismatch in `main`'s own body.**
+      `pebc: emission failed: entry function body expression contains a
+      SymbolValue of type int, want i32` — surfaces when compiling
+      `examples/read_file.peb` end-to-end now that `std/io.peb`'s
+      helpers all emit successfully. Not yet root-caused (exact
+      expression/line not pinned down) or scoped for dispatch. Not a
+      regression — emission never previously reached this far in
+      `main`'s own body.
 - [ ] **[checker] Masked `C0621` generic-requirement-propagation gap in
       `std/math.peb`'s `clamp[T]`, exposed by the float-constant fix
       (`b4410cb`).** Before that fix, `math.peb` failed outright on its
