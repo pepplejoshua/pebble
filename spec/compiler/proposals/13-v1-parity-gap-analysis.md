@@ -70,19 +70,23 @@ imperative program needs.
       two backend sites the earlier `uint`-payload fix never needed —
       a pointer-typed local declared directly from a force-unwrap, and
       the general-expression-position unwrap).
-- [ ] **A full `std/hmap.peb` consumer now hits a genuinely separate
-      gap: `HashMap`'s `Allocator`-typed `backing` field is never
-      collected for a typedef.** `Allocator` is a compiler builtin
-      with a hand-written C shape (`runtime/include/pebble_rt.h`), not
-      a generated per-TypeID struct — the struct-type collection/
-      dependency-ordering pass doesn't know to skip it when it's only
-      reachable as a field type, so it tries to build a typedef for it
-      like an ordinary struct and fails: `"struct type 0 is not in the
-      type snapshot."` This was previously MASKED by the pointer
-      -payload error above (both errors sit in the same dependency
-      postorder; the `?*V` failure fired first). This is now the last
-      known blocker on `std/hmap.peb` compiling and running
-      end-to-end. Not yet scoped in detail.
+- [x] `Allocator`-typed struct fields fixed (`f90be50`) —
+      `HashMap`'s `backing Allocator` field now typedefs, constructs,
+      and reads correctly (`orderAggregateTypes` now skips compiler
+      -builtin runtime types the same way `collectStructTypesWalk`
+      already did; `structFieldCType`/`buildStructBraceList`/
+      `buildStructFieldRead` gained runtime-type cases mirroring the
+      existing runtime-typed-local pattern).
+- [ ] **A full `std/hmap.peb` consumer now hits a different,
+      precisely-pinned, pre-existing gap: ordinary struct fields only
+      support the entry width or `bool`, not `uint`.** `HashMap`'s own
+      `len uint`/`cap uint` fields are rejected by `structFieldCType`:
+      `"field type uint is not supported, want int or bool."` This is
+      the same narrow entry-width/bool-only pattern already widened
+      elsewhere this session (optional payloads, slice elements,
+      function-type parameters/results) but never yet for ordinary
+      struct fields specifically. This is now the last known blocker
+      on `std/hmap.peb` compiling and running end-to-end.
 
 ---
 
