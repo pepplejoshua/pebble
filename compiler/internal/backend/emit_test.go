@@ -5208,11 +5208,14 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	// consumer (new + insert + get) whose insert -> maybe_grow -> rehash ->
 	// insert call cycle is genuine mutual recursion. Forward declarations now
 	// make the cycle itself a non-issue: Emit must NOT fail with a recursion
-	// error. It instead fails on a DIFFERENT, out-of-scope gap: hmap's insert
-	// declares `var tombstone_index ?uint = none;` — an optional whose payload
-	// type is uint, and this backend's optional typedef only supports int or
-	// bool payloads. This test pins that precise new gap (so a future session
-	// fixing optional-uint payloads knows exactly what remains) rather than
+	// error. The optional-uint-payload gap (hmap's insert declares `var
+	// tombstone_index ?uint = none;`) is now FIXED — Emit progresses past the
+	// insert body's uint-payload optional typedef and value — and fails on a
+	// DIFFERENT, out-of-scope gap: hmap's get_by_ref returns `?*V` — an
+	// optional whose payload is a POINTER type — and this backend's optional
+	// typedef only supports fixed-width integer, bool, tuple, struct, and enum
+	// payloads. This test pins that precise new gap (so a future session
+	// fixing pointer-payload optionals knows exactly what remains) rather than
 	// fixing it. Mirrors TestCheckStdHmapU64HashFnTypes' fixture pattern
 	// (os.ReadFile of the real module sources, fixtureProvider, StandardRoot:
 	// "std").
@@ -5257,18 +5260,19 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 	var buf bytes.Buffer
 	err = Emit(unit, unit.Snapshot(), entryID, sources, &buf)
 	if err == nil {
-		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the recursion gap is gone, but this test expected the remaining optional-uint-payload gap")
+		t.Fatalf("Emit unexpectedly succeeded on the full std:hmap consumer; the optional-uint-payload gap is gone, but this test expected the remaining pointer-payload gap")
 	}
 	if strings.Contains(err.Error(), "recursion") {
 		t.Fatalf("Emit still fails with a recursion error; the forward-declaration fix did not land: %v", err)
 	}
-	// The precise remaining gap, beyond recursion: hmap's insert declares an
-	// optional whose payload type is uint (var tombstone_index ?uint = none;),
-	// and this backend only supports int/bool optional payloads.
-	if !strings.Contains(err.Error(), "payload type uint is not supported") {
+	// The precise remaining gap, beyond recursion and the (fixed) optional-uint
+	// payload: hmap's get_by_ref returns `?*V` — an optional whose payload is
+	// a pointer type — and this backend only supports fixed-width integer,
+	// bool, tuple, struct, and enum optional payloads.
+	if !strings.Contains(err.Error(), "payload type *int is not supported") {
 		t.Fatalf("Emit failed with an unexpected non-recursion error: %v", err)
 	}
-	t.Logf("full std:hmap consumer now blocks only on the optional-uint-payload gap (recursion is fixed): %v", err)
+	t.Logf("full std:hmap consumer now blocks only on the pointer-payload-optional gap (recursion and optional-uint are fixed): %v", err)
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
@@ -6234,7 +6238,106 @@ func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
 	// optional typedef pass inspects the payload type first and rejects the
 	// str field with a clear error naming the wanted types, so no C is written.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let x ?str = some \"hi\"; return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a fixed-width integer, bool, tuple, struct, or enum")
+}
+
+func TestEmitOptionalUintSomeUnwrapCompilesAndRuns(t *testing.T) {
+	// The std/hmap.peb-motivating payload width: a uint-payload optional
+	// constructed with some and force-unwrapped. The typedef's .value field is
+	// uint64_t (uint resolves to its OWN C width via the generic
+	// resolvedBuiltin/cType pattern), the payload is built through uint's
+	// dedicated buildUintExpr grammar, and the force-unwrap routes to the new
+	// pebble_rt_checked_unwrap_u64 runtime helper (uint's uint64_t needs a
+	// uint64_t-width unwrap, not the entry-width i32 helper). 5 as int exits
+	// 5.
+	emitAndRun(t, "fn main() i32 { var o ?uint = some 5; return o! as i32; }", false, 5, false)
+}
+
+func TestEmitOptionalUintNoneHasValueCompilesAndRuns(t *testing.T) {
+	// The none side of a uint-payload optional: zeroOptionalPayloadLiteral
+	// must pick a warning-clean zero literal for the uint64_t .value field (a
+	// bare 0, scalar), the local initializes with has_value = false, and the
+	// has_value read drives an if to the else arm. The process exit code 0
+	// proves the none path — not the some path — was taken.
+	emitAndRun(t, "fn main() i32 { var o ?uint = none; if o.has_value { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitOptionalUintSomeHasValueCompilesAndRuns(t *testing.T) {
+	// The same has_value check with a some-initialized uint optional, so the
+	// true arm is taken: proves the has_value tag is set by the some
+	// construction and read back correctly for a uint payload (exit 1).
+	emitAndRun(t, "fn main() i32 { var o ?uint = some 9; if o.has_value { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitOptionalU64SomeUnwrapCompilesAndRuns(t *testing.T) {
+	// u64 shares the uint64_t C representation (and thus the same generic
+	// resolvedBuiltin/cType typedef and the same pebble_rt_checked_unwrap_u64
+	// unwrap helper) as uint, but is a DISTINCT builtin that flows through the
+	// general buildExpr path at its own width rather than buildUintExpr. Exit
+	// 22.
+	emitAndRun(t, "fn main() i32 { var o ?u64 = some 22; return o! as i32; }", false, 22, false)
+}
+
+func TestEmitOptionalU64NoneHasValueCompilesAndRuns(t *testing.T) {
+	// The none side of a u64-payload optional: the .value zero literal (0) and
+	// the has_value=false tag both hold for a u64 payload.
+	emitAndRun(t, "fn main() i32 { var o ?u64 = none; if o.has_value { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitOptionalUintTypedefWritesUint64T(t *testing.T) {
+	// The emitted-C shape check for the uint payload: the optional typedef
+	// declares the .value field as uint64_t (the C type uint resolves to),
+	// never int32_t or a rejection, and the some construction assigns the
+	// "u"-suffixed literal into it.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var o ?uint = some 5; return o! as i32; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "typedef struct {\n    bool has_value;\n    uint64_t value;\n} pebble_optional_") {
+		t.Errorf("emitted C does not declare the uint payload's .value field as uint64_t:\n%s", out)
+	}
+	if strings.Contains(out, "int32_t value;") {
+		t.Errorf("emitted C declared an i32 .value field for a uint payload:\n%s", out)
+	}
+	if !strings.Contains(out, ".has_value = true, .value = 5u") {
+		t.Errorf("emitted C is missing the uint-payload some construction (.value = 5u):\n%s", out)
+	}
+	if !strings.Contains(out, "pebble_rt_checked_unwrap_u64(") {
+		t.Errorf("emitted C is missing the u64-width force-unwrap helper call:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 5, false)
+}
+
+func TestEmitOptionalUintHmapInsertShapeCompilesAndRuns(t *testing.T) {
+	// The real motivating fixture, mirroring std/hmap.peb's actual insert
+	// shape without touching the std module: a none-initialized ?uint local
+	// (tombstone_index), a has_value check, and a force-unwrap into a uint
+	// binding inside the true arm. Since tombstone_index is none, the else
+	// arm runs and the exit code is 3; the false-arm only is exercised
+	// because that is what hmap's first insert does (tombstone_index starts
+	// none).
+	emitAndRun(t, "fn main() i32 { var tombstone_index ?uint = none; var result i32 = 0; if tombstone_index.has_value { let t = tombstone_index!; result = t as i32; } else { result = 3; } return result; }", false, 3, false)
+}
+
+func TestEmitOptionalUintHmapInsertShapeSomeCompilesAndRuns(t *testing.T) {
+	// The same insert-shaped fixture with tombstone_index some-initialized, so
+	// the has_value true arm runs: the force-unwrap binds t as a uint local
+	// and its value (7) is cast to int and returned — the exact statement
+	// sequence hmap.insert's tombstone path performs (`let t =
+	// tombstone_index!; ... slot`). Exit 7.
+	emitAndRun(t, "fn main() i32 { var tombstone_index ?uint = some 7; var result i32 = 0; if tombstone_index.has_value { let t = tombstone_index!; result = t as i32; } else { result = 3; } return result; }", false, 7, false)
+}
+
+func TestEmitRejectsOptionalUnwrapOfU8Payload(t *testing.T) {
+	// The narrower fixed-width integers pass the typedef and some-value gates
+	// (the generic resolvedBuiltin/cType mechanism), but their force-unwrap is
+	// a clean rejection: there is no pebble_rt_checked_unwrap_i8/u8-style
+	// runtime helper family beyond i32/i64/u64/bool yet. This pins that
+	// residual precisely rather than emitting a call to a nonexistent helper.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var o ?u8 = some 5; return o! as i32; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "has no runtime unwrap helper")
 }
 
 func TestEmitStructTwoFieldReadBackCompilesAndRuns(t *testing.T) {

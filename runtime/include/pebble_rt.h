@@ -330,6 +330,7 @@ void *pebble_rt_checked_deref_ptr(void *ptr, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_unwrap_i32(bool has_value, int32_t value, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_unwrap_i64(bool has_value, int64_t value, PebbleSourceLoc loc);
 bool pebble_rt_checked_unwrap_bool(bool has_value, bool value, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_unwrap_u64(bool has_value, uint64_t value, PebbleSourceLoc loc);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend

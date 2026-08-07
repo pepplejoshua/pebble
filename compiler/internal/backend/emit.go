@@ -6634,9 +6634,19 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 			return "", fmt.Errorf("%s declares an optional-typed local from %s with %d child(ren), want exactly one payload expression", context, initValue.Kind, len(initValue.Children))
 		}
 		var valueExpr string
+		payloadWidth, integerPayload := resolvedBuiltin(snapshot, payloadType)
 		switch {
-		case isWidth(snapshot, width, payloadType):
-			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
+		case integerPayload && cType(payloadWidth) != "" && !isUint(snapshot, payloadType):
+			// Any fixed-width integer payload other than uint (uint flows
+			// through its own dedicated grammar below) is built at its OWN
+			// resolved width, mirroring buildCallArgument/buildComparisonOperand.
+			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, payloadWidth, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
+		case isUint(snapshot, payloadType):
+			expr, err := buildUintExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -6667,7 +6677,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 			}
 			valueExpr = expr
 		default:
-			return "", fmt.Errorf("%s declares an optional-typed local of type %s whose payload is %s, want %s or bool", context, optionalTypeName(initValue.Type), describeType(snapshot, payloadType), wantName(width))
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s whose payload is %s, want a fixed-width integer, bool, tuple, struct, or enum", context, optionalTypeName(initValue.Type), describeType(snapshot, payloadType))
 		}
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = { .has_value = true, .value = %s };\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, valueExpr, indent, statement.Symbol), nil
@@ -6749,9 +6759,12 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	}
 	var value string
 	var err error
+	payloadWidth, integerPayload := resolvedBuiltin(snapshot, payload)
 	switch {
-	case isWidth(snapshot, width, payload):
-		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
+	case integerPayload && cType(payloadWidth) != "" && !isUint(snapshot, payload):
+		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, payloadWidth, width)
+	case isUint(snapshot, payload):
+		value, err = buildUintExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isTuple(snapshot, payload):
@@ -8726,9 +8739,16 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an optional-typed local (x!). The child is a
 		// SymbolValue naming the optional local, and this node's Type is the
-		// unwrapped result type (the entry's width, already gated above). The
-		// unwrap is bounds-checked via the runtime helper, passing the
-		// optional local's has_value and value fields.
+		// unwrapped result type (the payload type, already gated above to an
+		// integer builtin this grammar accepts). The unwrap is bounds-checked
+		// via the runtime helper — selected from the PAYLOAD's own type (see
+		// optionalUnwrapSuffix), so a uint/u64 payload routes to
+		// pebble_rt_checked_unwrap_u64 rather than the entry-width helper —
+		// passing the optional local's has_value and value fields.
+		unwrapSuffix := optionalUnwrapSuffix(snapshot, node.Type)
+		if unwrapSuffix == "" {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of a %s payload, which has no runtime unwrap helper", describeType(snapshot, node.Type))
+		}
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
 		}
@@ -8744,7 +8764,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if !isOptional(snapshot, typ) {
 				return "", fmt.Errorf("optional unwrap base is not optional")
 			}
-			return fmt.Sprintf("pebble_rt_checked_unwrap_%s(%s.has_value, %s.value, %s)", checkedSuffix(width), expr, expr, buildSourceLoc(fileSet, node.Span)), nil
+			return fmt.Sprintf("pebble_rt_checked_unwrap_%s(%s.has_value, %s.value, %s)", unwrapSuffix, expr, expr, buildSourceLoc(fileSet, node.Span)), nil
 		}
 		if child.Kind != tir.SymbolValue {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
@@ -8756,7 +8776,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if info.optional == 0 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
 		}
-		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value, %s)", checkedSuffix(width), child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
+		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value, %s)", unwrapSuffix, child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
 	case tir.Load:
 		// A tuple element or struct field read. Reading one element of a
 		// tuple-typed local (`t.1`) is lowered by the checker to a Load of a
@@ -10369,13 +10389,16 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	}
 	var value string
 	var err error
+	payloadWidth, integerPayload := resolvedBuiltin(snapshot, payload)
 	switch {
-	case isWidth(snapshot, width, payload):
-		value, err = buildExpr(unit, snapshot, fileSet, id, locals, width, width)
+	case integerPayload && cType(payloadWidth) != "" && !isUint(snapshot, payload):
+		value, err = buildExpr(unit, snapshot, fileSet, id, locals, payloadWidth, width)
+	case isUint(snapshot, payload):
+		value, err = buildUintExpr(unit, snapshot, fileSet, id, locals, width)
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
 	default:
-		return "", fmt.Errorf("%s implicitly injects a payload value of type %s, want %s or bool", context, describeType(snapshot, payload), wantName(width))
+		return "", fmt.Errorf("%s implicitly injects a payload value of type %s, want a fixed-width integer or bool", context, describeType(snapshot, payload))
 	}
 	if err != nil {
 		return "", err
@@ -11553,17 +11576,20 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 }
 
 // optionalPayloadCType is the C field type an optional payload of the given
-// type is declared with in its optional's struct typedef: int32_t / int64_t
-// for a payload of the entry's resolved width, bool for a bool payload, and,
-// since the OptionalIntegerToEnum slice, the payload's own enum typedef
-// (pebble_enum_<typeID>_t) for an enum payload — the destination shape of an
-// integer cast to an optional enum (`5 as ?Color`), whose optional struct must
-// carry the enum value field. Any other payload type is a clean rejection
-// naming what was found, since this backend emits exactly those C types as
-// optional value fields.
+// type is declared with in its optional's struct typedef: any fixed-width
+// integer builtin (the entry's resolved width, uint, u64, or any other
+// fixed-width integer, each resolved to its OWN width by the generic
+// resolvedBuiltin/cType pattern — so a uint or u64 payload's .value field is
+// uint64_t), bool for a bool payload, the payload's own tuple/struct typedef
+// name, and, since the OptionalIntegerToEnum slice, the payload's own enum
+// typedef (pebble_enum_<typeID>_t) for an enum payload — the destination
+// shape of an integer cast to an optional enum (`5 as ?Color`), whose optional
+// struct must carry the enum value field. Any other payload type is a clean
+// rejection naming what was found, since this backend emits exactly those C
+// types as optional value fields.
 func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
-	if isWidth(snapshot, width, id) {
-		return cType(width), nil
+	if payloadWidth, integerPayload := resolvedBuiltin(snapshot, id); integerPayload && cType(payloadWidth) != "" {
+		return cType(payloadWidth), nil
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
@@ -11579,10 +11605,10 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
-			return "", fmt.Errorf("payload type %s is not supported, want %s or bool", name, wantName(width))
+			return "", fmt.Errorf("payload type %s is not supported, want a fixed-width integer, bool, tuple, struct, or enum", name)
 		}
 	}
-	return "", fmt.Errorf("payload type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+	return "", fmt.Errorf("payload type %s is not supported, want a fixed-width integer, bool, tuple, struct, or enum", describeType(snapshot, id))
 }
 
 // buildUnionTypedefs builds the C text of one tagged-union typedef pair per
@@ -11968,6 +11994,36 @@ func floatCType(width types.BuiltinKind) string {
 		return "float"
 	case types.F64:
 		return "double"
+	}
+	return ""
+}
+
+// optionalUnwrapSuffix returns the pebble_rt_checked_unwrap_* helper suffix
+// for an optional payload of the given type: "i32" for an int/i32 payload,
+// "i64" for an i64 payload, "u64" for a uint or u64 payload (both carry the
+// C type uint64_t, so one runtime helper reads both back at their true
+// width), and "bool" for a bool payload. Any other payload type (a narrower
+// fixed-width integer without a runtime unwrap helper yet, a char, str,
+// tuple, or struct) yields "", a clean rejection for the caller. The helper
+// must be selected from the PAYLOAD's own type rather than the ambient entry
+// width: a uint payload's .value field is uint64_t, which only
+// pebble_rt_checked_unwrap_u64 reads back at its true width, not the
+// entry-width helper.
+func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
+	if isBool(snapshot, id) {
+		return "bool"
+	}
+	payloadWidth, ok := resolvedBuiltin(snapshot, id)
+	if !ok {
+		return ""
+	}
+	switch payloadWidth {
+	case types.Int, types.I32:
+		return "i32"
+	case types.I64:
+		return "i64"
+	case types.Uint, types.U64:
+		return "u64"
 	}
 	return ""
 }
