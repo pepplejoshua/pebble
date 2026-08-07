@@ -165,7 +165,15 @@ let function fn(i32) i64 = fn(value i32) i64 => 1;
 			compatibility++
 		}
 	}
-	if parameterEvidence != 1 || resultEvidence != 1 || functionExpressions != 1 || compatibility != 1 {
+	// compatibility is 2, not 1: one record for the outer `let function
+	// fn(i32) i64 = <closure>;` binding, and a second, newly-retained record
+	// for the closure literal's own `=> 1` arrow-body implicit return (the
+	// false-C0607 fix now correctly wires this the same way a named
+	// function's expression body already does — previously a closure's
+	// arrow body retained no return-type compatibility record at all, which
+	// was part of the bug: it neither validated the return type NOR
+	// satisfied the fall-through control-flow check).
+	if parameterEvidence != 1 || resultEvidence != 1 || functionExpressions != 1 || compatibility != 2 {
 		t.Fatalf("function evidence parameter=%d result=%d expressions=%d compatibility=%d", parameterEvidence, resultEvidence, functionExpressions, compatibility)
 	}
 	if diagnostics.HasErrors() {

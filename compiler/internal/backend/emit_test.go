@@ -11793,3 +11793,36 @@ fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
 		t.Fatalf("check failed on minimal std-module generic indexed field write: %+v", diagnostics.Items())
 	}
 }
+
+// TestEmitClosureLiteralArrowShorthand verifies that an anonymous closure literal
+// using => expr arrow shorthand compiles and runs correctly when passed as a call
+// argument. This is the end-to-end regression for the C0607 false-positive fix
+// where the checker previously rejected fn (a, b str) bool => a == b as a
+// "non-void function can fall through without returning".
+func TestEmitClosureLiteralArrowShorthand(t *testing.T) {
+	emitAndRun(t, `
+fn call_it(f fn (str, str) bool) bool {
+    return f("a", "a");
+}
+fn main() int {
+    var r = call_it(fn (a, b str) bool => a == b);
+    if r { return 1; }
+    return 0;
+}
+`, true, 1, false)
+}
+
+// TestEmitClosureLiteralArrowShorthandFalse compares two strings and returns
+// false, verifying the closure's expression body evaluates correctly.
+func TestEmitClosureLiteralArrowShorthandFalse(t *testing.T) {
+	emitAndRun(t, `
+fn call_it(f fn (str, str) bool) bool {
+    return f("a", "b");
+}
+fn main() int {
+    var r = call_it(fn (a, b str) bool => a == b);
+    if r { return 0; }
+    return 1;
+}
+`, true, 1, false)
+}

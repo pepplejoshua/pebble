@@ -374,6 +374,31 @@ func (w *walker) dispatch(ref symbol.SyntaxRef, node syntax.Node, ctx walkContex
 			callable.Symbol = value.ID
 		}
 		w.beginCallableRegion(ref, items, callable, !unsupported)
+		if node.Data()&syntax.FunctionExpressionBody != 0 {
+			for index := range items {
+				if items[index].ref.Node != bodyNode {
+					continue
+				}
+				items[index].ctx.expressionBodyReturn = true
+				items[index].ctx.expressionBodyRef = items[index].ref
+				itemCtx := items[index].ctx
+				bodyRef := items[index].ref
+				origin := w.originForRef(bodyRef, "return value", itemCtx.callable.Symbol, itemCtx.genericOwner)
+				term, known, ok := w.callableResult(itemCtx, origin)
+				if !ok {
+					continue
+				}
+				destination, published := w.newSlotValue(term, origin)
+				if !published {
+					continue
+				}
+				if known != 0 {
+					destination.Known = known
+					w.knownValues[destination.ID] = known
+				}
+				w.expectations[bodyRef] = w.expectationFor(bodyRef, destination.ID, compatibilityReturn)
+			}
+		}
 		return items
 	default:
 		w.generation.report("unknown syntax node kind in closed dispatch", node.Span())

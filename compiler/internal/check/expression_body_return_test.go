@@ -168,3 +168,49 @@ func appendNodeShape(builder *strings.Builder, unit *tir.Unit, node tir.Node) {
 	}
 	builder.WriteString(")")
 }
+
+// TestClosureLiteralExpressionBodyReturnNoFalseC0607 verifies that an anonymous
+// closure literal using => expr arrow shorthand does not trigger a false C0607
+// (non-void function can fall through without returning). The closure's body
+// must be treated identically to a named function's expression body.
+func TestClosureLiteralExpressionBodyReturnNoFalseC0607(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn call_it(f fn (str, str) bool) bool {
+    return f("a", "a");
+}
+fn main() int {
+    var r = call_it(fn (a, b str) bool => a == b);
+    if r { return 1; }
+    return 0;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("closure literal with => expr should not report C0607: valid=%v diagnostics=%+v", valid, diagnostics.Items())
+	}
+}
+
+// TestClosureLiteralExpressionBodyReturnMismatchReportsCompatibilityDiagnostic
+// confirms that a closure literal with a mismatched expression body reports the
+// same T0505 unify diagnostic as a named function with the same issue.
+func TestClosureLiteralExpressionBodyReturnMismatchReportsCompatibilityDiagnostic(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn take_bool(f fn () bool) {}
+fn main() void {
+    take_bool(fn () bool => "a");
+}
+`)})
+	run06a(inputs, diagnostics, Config{})
+	if !hasValidationDiagnostic(diagnostics, infer.CodeUnification) {
+		t.Fatalf("closure literal return type mismatch reported no T0505: %+v", diagnostics.Items())
+	}
+	blockInputs, blockDiagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn take_bool(f fn () bool) {}
+fn main() void {
+    take_bool(fn () bool { return "a"; });
+}
+`)})
+	run06a(blockInputs, blockDiagnostics, Config{})
+	if !hasValidationDiagnostic(blockDiagnostics, infer.CodeUnification) {
+		t.Fatalf("block-bodied closure literal return mismatch reported no T0505: %+v", blockDiagnostics.Items())
+	}
+}
