@@ -95,16 +95,27 @@ imperative program needs.
       and silently left fields unsubstituted. Now selects the
       candidate whose argument symbols actually match the
       declaration's own field-referenced parameters.
+- [x] Enum-typed struct fields implemented (`36dbf11`) —
+      construction, plain reads, assignment (both directly and through
+      a pointer), and comparisons of a plain-enum-typed struct field
+      all work now (`structFieldCType`, `buildStructBraceList`,
+      `buildStructFieldRead`, `buildStoreCore`, and `buildEnumValue`
+      each gained an enum case, reusing the existing general
+      `buildEnumValue` machinery rather than inventing new enum
+      -value semantics).
 - [ ] **A full `std/hmap.peb` consumer now hits a genuinely different,
-      substantial, known limitation: enum-typed struct fields are not
-      implemented.** `Entry[K, V]`'s `state EntryState` field hits the
-      pre-existing, deliberate rejection in `structFieldCType`:
-      `"field type ... is an enum type; enum-typed struct fields are
-      not supported yet."` Unlike every other gap fixed in this
-      session's `std/hmap.peb` arc (each a narrow gate-widening), this
-      is assessed as a real, separate feature — construction,
-      assignment, reads, AND comparisons of an enum-typed struct field
-      all need real work, not just a type-gate change. This is now the
+      substantial gap: slices of STRUCT elements are not supported.**
+      `HashMap[K,V]`'s `entries []Entry[K, V]` field is a slice whose
+      element type is a struct — the slice-element machinery
+      (`sliceElementCType`/`isSupportedSliceElementType`, widened
+      earlier this session to fixed-width integers/char/bool) does not
+      yet support struct (or any aggregate) elements at all:
+      `"slice element type nominal(symbol 36) is not supported; only
+      a fixed-width integer, char, or bool slice elements are
+      supported."` This is comparable in size to the generic
+      -struct-data-fields work earlier this session, not a narrow gate
+      widening — struct-element slice construction, indexing/reads,
+      and index-writes would all need real support. This is now the
       last known blocker on `std/hmap.peb` compiling and running
       end-to-end. Not yet scoped in detail.
 
