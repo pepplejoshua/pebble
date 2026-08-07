@@ -1,19 +1,17 @@
 import "std:io";
 import "std:string";
 
-fn main(argv []str) int {
-    if argv.len < 2 {
-        print `usage: {argv[0]} <filepath>`;
-        return 0;
-    }
-    var path = argv[1];
+fn main() int {
+    var path = "read_file_demo.txt";
     var file = io::open(path, io::MODE_READ);
 
     if file != nil {
         var contents = io::read_all(file);
         defer string::delete(&contents);
 
-        print contents.as_str();
+        loop 0..contents.len : i {
+            print contents.as_slice()[i];
+        }
     } else {
         print "Cannot read ", path, ".";
     }
