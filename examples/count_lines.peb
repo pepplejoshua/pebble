@@ -38,7 +38,7 @@ fn count_file(filename str) StatsResult {
 
     // Add 1 to line count if file doesn't end with newline and has content
     if contents.len > 0 {
-        var last_char = *(contents.data + contents.len - 1);
+        var last_char = contents.data[contents.len - 1];
         if last_char != '\n' {
             stats.lines++;
         }
@@ -48,7 +48,7 @@ fn count_file(filename str) StatsResult {
     var in_word = false;
     var i = 0;
     while i < contents.len {
-        var c = *(contents.data + i);
+        var c = contents.data[i];
         if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
             in_word = false;
         } else {
