@@ -79,6 +79,12 @@
  *      a pure, mode-independent bounds check, so the SAME in-range /
  *      out-of-range / negative / huge-u64 results are asserted in BOTH
  *      SAFE and RELEASE builds (the query runs unconditionally in main).
+ *  19. UTF-8 char encoding (pebble_rt_char_to_utf8): a Unicode scalar
+ *      encodes to one byte (U+0041 'A'), two bytes (U+00E9 'é'), three
+ *      bytes (U+20AC '€'), and four bytes (U+1F600 '😀'), each asserting
+ *      the returned byte count, the exact encoded bytes, and the
+ *      always-written trailing NUL. Mode-independent, so it runs
+ *      unconditionally in main in both builds.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -497,6 +503,42 @@ static void test_str_char_at_normal(void) {
     assert(pebble_rt_str_char_at_u64(mixed_width_str, 0, (PebbleSourceLoc){0}) == 'a');
     assert(pebble_rt_str_char_at_u64(mixed_width_str, 3, (PebbleSourceLoc){0}) == 0x1F600);
     assert(pebble_rt_str_char_at_u64(mixed_width_str, 4, (PebbleSourceLoc){0}) == 'b');
+}
+
+/* UTF-8 char encoding (the inverse of the str char-at decode above): one
+ * 1-byte, one 2-byte, one 3-byte, and one 4-byte scalar, each asserting the
+ * returned byte count and the exact encoded bytes plus the always-written
+ * trailing NUL. The helper is mode-independent (no validation, no panic
+ * path), so these assertions run unconditionally in main in both builds.
+ */
+static void test_char_to_utf8(void) {
+    uint8_t buf[5];
+
+    /* U+0041 'A': 1 byte + NUL */
+    assert(pebble_rt_char_to_utf8(0x0041, buf) == 1);
+    assert(buf[0] == 0x41);
+    assert(buf[1] == 0x00);
+
+    /* U+00E9 'é': 2 bytes + NUL */
+    assert(pebble_rt_char_to_utf8(0x00E9, buf) == 2);
+    assert(buf[0] == 0xC3);
+    assert(buf[1] == 0xA9);
+    assert(buf[2] == 0x00);
+
+    /* U+20AC '€': 3 bytes + NUL */
+    assert(pebble_rt_char_to_utf8(0x20AC, buf) == 3);
+    assert(buf[0] == 0xE2);
+    assert(buf[1] == 0x82);
+    assert(buf[2] == 0xAC);
+    assert(buf[3] == 0x00);
+
+    /* U+1F600 '😀': 4 bytes + NUL */
+    assert(pebble_rt_char_to_utf8(0x1F600, buf) == 4);
+    assert(buf[0] == 0xF0);
+    assert(buf[1] == 0x9F);
+    assert(buf[2] == 0x98);
+    assert(buf[3] == 0x80);
+    assert(buf[4] == 0x00);
 }
 
 static void trigger_str_char_at_negative_index(void) {
@@ -931,6 +973,9 @@ int main(void) {
         return 1;
     }
     printf("ok: invalid str char-at panics in subprocess\n");
+
+    test_char_to_utf8();
+    printf("ok: char-to-UTF-8 encoding\n");
 
     if (verify_panic_aborts() != 0) {
         fprintf(stderr, "smoke_test: panic subprocess check FAILED\n");

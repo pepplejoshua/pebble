@@ -132,3 +132,35 @@ int pebble_rt_str_cmp(PebbleStr a, PebbleStr b) {
     }
     return 0;
 }
+
+/* Encodes one Unicode scalar as UTF-8 (see pebble_rt.h). Precondition: the
+ * scalar is a valid Unicode scalar value, which the language guarantees for
+ * every `char`, so no validation and no panic path is needed. Writes the
+ * trailing NUL and returns the encoded byte count (1-4). Mode-independent.
+ */
+size_t pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5]) {
+    if (scalar < 0x80) {
+        out[0] = (uint8_t)scalar;
+        out[1] = 0x00;
+        return 1;
+    }
+    if (scalar < 0x800) {
+        out[0] = (uint8_t)(0xC0 | (scalar >> 6));
+        out[1] = (uint8_t)(0x80 | (scalar & 0x3F));
+        out[2] = 0x00;
+        return 2;
+    }
+    if (scalar < 0x10000) {
+        out[0] = (uint8_t)(0xE0 | (scalar >> 12));
+        out[1] = (uint8_t)(0x80 | ((scalar >> 6) & 0x3F));
+        out[2] = (uint8_t)(0x80 | (scalar & 0x3F));
+        out[3] = 0x00;
+        return 3;
+    }
+    out[0] = (uint8_t)(0xF0 | (scalar >> 18));
+    out[1] = (uint8_t)(0x80 | ((scalar >> 12) & 0x3F));
+    out[2] = (uint8_t)(0x80 | ((scalar >> 6) & 0x3F));
+    out[3] = (uint8_t)(0x80 | (scalar & 0x3F));
+    out[4] = 0x00;
+    return 4;
+}

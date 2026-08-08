@@ -403,6 +403,23 @@ int32_t pebble_rt_str_char_at_i32(PebbleStr s, int32_t index, PebbleSourceLoc lo
 int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index, PebbleSourceLoc loc);
 int32_t pebble_rt_str_char_at_u64(PebbleStr s, uint64_t index, PebbleSourceLoc loc);
 
+/* ---- char-to-UTF-8 encoding -------------------------------------------------
+ * Encodes one Pebble `char` — a full Unicode scalar value, carried in an
+ * int32_t, the same representation pebble_rt_str_char_at_* decodes to — as
+ * UTF-8 into a caller-owned buffer. Normal UTF-8 encoding: 1 byte through
+ * U+007F, 2 through U+07FF, 3 through U+FFFF, 4 through U+10FFFF. A trailing
+ * NUL byte is ALWAYS written, so the buffer is directly usable as a C string
+ * (the backend passes it to C `%s`). Returns the number of encoded bytes
+ * (1-4).
+ *
+ * out must be caller-owned with capacity for four encoded bytes plus the
+ * trailing NUL byte. PRECONDITION: scalar is a valid Unicode scalar value —
+ * the language guarantees a `char` always is — so this helper performs no
+ * validation and never panics. Mode-independent: SAFE and RELEASE builds
+ * behave identically.
+ */
+size_t pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5]);
+
 #ifndef PEBBLE_RT_FREESTANDING
 /* ---- hosted argument adaptation --------------------------------------------
  * Adapts host argc/argv into a slice of PebbleStr. The returned slice's
