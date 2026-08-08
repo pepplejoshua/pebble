@@ -859,6 +859,57 @@ not a real check failure). `math` found a genuine new gap:
       declaration's signature never became ready") — regardless of the
       real fix, the diagnostic should point at the true cause once
       found.
+- [ ] **[generator] `<<`/`>>` (`CheckedShift`) have no runtime helper
+      for any width narrower than `i32`/`i64`.** `checkedShiftHelper`
+      (`emit.go`) calls `checkedSuffix(width)`, which only maps
+      `Int`/`I32`/`I64`/`U64` — a `u8`/`u16`/`i8`/`i16` shift (or a
+      `u32` shift, unconfirmed) fails with a misleadingly-worded error
+      (`"CheckedShift with operator <<, want << or >>"`, which reads
+      like an operator-token mismatch but is actually "no runtime
+      helper for this width" — the switch statement matches the
+      operator fine; a later, separate `width`-based check is what
+      returns false). Confirmed `&`/`|` (bitwise AND/OR, which don't
+      need a checked-overflow runtime helper) already work correctly
+      at `u8`. Found investigating UTF-8 encode/decode for the
+      `String`/`char` redesign (see below) — not blocking that work
+      (the encoder can do its shifts at `i32` width and truncate to
+      `u8` only at the final byte store), but a real, separate,
+      narrower-scope gap worth fixing on its own. Not yet scoped for
+      dispatch.
+- [ ] **[std-library redesign, approved, not yet dispatched] `String`
+      becomes byte-oriented (`[]u8` internal storage); a `char` read
+      decodes UTF-8 at the requested position on demand (no O(1)
+      random-access char indexing), the same shape Rust's
+      `String`/`char` split uses.** Direction confirmed by the user
+      (2026-08-07) for the `String`/`char` design mismatch logged
+      above (`e1f7213`) — this entry supersedes that one's "needs a
+      design decision" framing now that the decision is made; the
+      root-cause description there still stands. Investigated the
+      implementation path: no legal Pebble syntax exists to construct
+      a `str` value from a raw byte buffer (`std/string.peb`'s own
+      comment already documents this — `as_str()` was deliberately
+      left unimplemented for exactly this reason), so the redesign
+      cannot reuse the runtime's existing `pebble_rt_str_char_at_*`
+      decoder (which only accepts a `PebbleStr`) — UTF-8 decode AND
+      encode (for `push_char`, which currently just stores one raw
+      `char` per slot and must now encode a scalar into 1-4 output
+      bytes) both need to be written in pure Pebble arithmetic inside
+      `std/string.peb` itself, no new runtime/compiler surface
+      required. Scope: change `String.data` from `[]char` to `[]u8`;
+      add a new byte-position-based char-decode accessor (UTF-8
+      decode, pure Pebble bit arithmetic at `i32`/`u32` width to avoid
+      the narrower-width shift gap above); rewrite `push_char` to
+      UTF-8-encode its argument into 1-4 bytes; update the
+      byte-copy-oriented methods (`push_str`, `substr`, `insert`,
+      `remove`, `starts_with`, `ends_with`, `find`, `eq`) from `[]char`
+      to `[]u8` element type (mostly a type-level change, since their
+      logic already treats elements as raw bytes); replace
+      `as_slice() []char` with a raw-byte accessor plus the new
+      char-decode API; update the two known consumers
+      (`examples/read_file.peb`, `examples/count_lines.peb`) to the
+      new API. Per the user: no requirement for a full ergonomic
+      iteration API in this pass — "String will be later improved to
+      have helpers to make this easier." Not yet dispatched.
 
 ---
 
