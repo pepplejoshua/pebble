@@ -1075,7 +1075,11 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 // slice — every tir.HoistedFunctionValue node (a bare top-level function
 // reference used as a value, e.g. the initializer of a function-typed local or
 // the callee of an indirect call), whose referenced function must be emitted
-// as a helper even though no DirectCall ever invokes it. The typed-IR node
+// as a helper even though no DirectCall ever invokes it, and — since the
+// bool-interpolation print slice — every value part of a tir.InterpolatedString
+// (a helper call used as an interpolated value, e.g. `s.contains(...)` in
+// `print \`found? {s.contains("x")}\`;`, whose parts store their evaluated
+// value nodes in Parts[].Value rather than Children). The typed-IR node
 // graph is
 // single-parented, so this walk terminates and each node is visited at most
 // once per path. A DeferRegister child is skipped here: the deferred statement
@@ -1111,6 +1115,15 @@ func collectDirectCalls(unit *tir.Unit, nodeID tir.NodeID, out *[]tir.Node) erro
 		for _, field := range node.Fields {
 			if err := collectDirectCalls(unit, field.Value, out); err != nil {
 				return err
+			}
+		}
+	}
+	if node.Kind == tir.InterpolatedString {
+		for _, part := range node.Parts {
+			if part.Kind == tir.InterpolationValuePart {
+				if err := collectDirectCalls(unit, part.Value, out); err != nil {
+					return err
+				}
 			}
 		}
 	}

@@ -4681,6 +4681,34 @@ func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitPrintInterpolatedBoolHelperCallCompilesAndRuns(t *testing.T) {
+	// A bool-returning helper call used as an interpolated print value —
+	// `print \`big? {isBig(7)}\`;` — must still be discovered as reachable
+	// and emitted as a pebble_fn_<symbolID> helper: the value parts of an
+	// InterpolatedString are stored in Parts[].Value (not Children), so
+	// collectDirectCalls recurses into them or the helper prototype/definition
+	// is never emitted and the emitted C references an undeclared identifier
+	// (-Wimplicit-function-declaration under the mandated -Werror build). The
+	// compile+cc+run here proves the helper is collected through the value
+	// part; a helper-call expression and a helper-call && combination prove
+	// the whole value part subtree is walked, not just a bare call.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"bool helper call", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { print `big? {isBig(7)}`; return 0; }", "big? true\n"},
+		{"bool helper expression", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { print `big? {isBig(7) && isBig(3)}`; return 0; }", "big? false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
 	// A float operand prints with %f (f32/f64 promote to double in a variadic
 	// call either way, so %f covers both, matching v1). A bare literal resolves
