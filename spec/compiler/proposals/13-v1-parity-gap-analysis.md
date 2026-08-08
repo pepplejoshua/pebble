@@ -167,7 +167,7 @@ an unreachable-statement warning. `pebc` exits with failure for every
 diagnostic, including warnings. A similar dead return was safely removed from
 `std/io.peb`, but each remaining function must be checked on its own.
 
-Removing the two `std/hmap.peb` returns exposes a separate backend gap:
+Removing the two `std/hmap.peb` returns (`baa4a72`) exposes a separate backend gap:
 non-void helper bodies whose final statement is an exhaustive `while true`
 are rejected because the backend expects a trailing return node. The exact
 error is `entry function body ... ends in a While statement`; the same shape
@@ -176,11 +176,11 @@ committed until the backend can emit this valid control-flow shape.
 
 Slices:
 
-1. After the terminal-loop backend gap is fixed, remove only the dead return
-   in `std/hmap.peb` if its loop paths are exhaustive. Compile and run a real
-   hmap consumer.
+1. Completed for `std/hmap.peb` in `baa4a72`; its consumer now reaches the
+   separate `str`-typed struct-field backend rejection below.
 2. Remove only the dead return in `std/set.peb` if its loop paths are
-   exhaustive. Compile and run a real set consumer.
+   exhaustive. Compile and run a real set consumer after the backend gap is
+   fixed.
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
@@ -210,7 +210,30 @@ Slices:
 2. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
    the source cleanup and consumer check for `std/set.peb`.
 
-### 8. A generic struct method cannot inherit the owner type parameter
+### 8. `str`-typed struct fields cannot emit
+
+**Area:** backend generator
+
+**Priority:** medium; blocks `std_hash.peb` and likely other library consumers
+
+**Reproduction:** after the hmap C0618 cleanup, run
+`GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_hash.peb`.
+Emission fails with `struct type pebble_struct_179_t: field type str is not
+supported`. The failing type is `Entry[str, uint]`, whose key field is `str`.
+
+Root cause: the backend's struct-field C-type and record-construction builders
+support scalar, bool, tuple, struct, enum, pointer, slice, function, and runtime
+fields, but explicitly reject `str`. The string runtime representation already
+exists; this is a backend lowering gap, not a language decision.
+
+Slices:
+
+1. Add only `str` struct-field typedef and record-construction lowering with
+   focused emitted-C and compile-run tests. Preserve field ordering and the
+   existing byte-oriented String ABI. Do not widen unrelated aggregate fields.
+2. Run `std_hash.peb`, then audit and run `std_set.peb` for the next boundary.
+
+### 9. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -222,7 +245,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 9. Some checked numeric operations have no `u64` runtime helper
+### 10. Some checked numeric operations have no `u64` runtime helper
 
 **Area:** runtime and backend generator
 
@@ -235,7 +258,7 @@ Confirm each operation is intended by the language contract before work.
 Slices: one operation family per dispatch. Add its runtime helper and smoke
 tests first, then its backend selection and compile-run test.
 
-### 10. Enum-to-integer conversion lacks backend lowering
+### 11. Enum-to-integer conversion lacks backend lowering
 
 **Area:** backend generator
 
@@ -245,7 +268,7 @@ The checker accepts the conversion, but the backend does not lower it. First
 slice: reproduce against current HEAD and identify the exact TIR node and
 missing builder case. Do not implement until the reproduction is recorded.
 
-### 11. Whole dereferenced structs cannot become values
+### 12. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
