@@ -39,17 +39,14 @@ fn my_realloc(context *void, ptr *void, size uint) *void { return nil; }
 fn my_free(context *void, ptr *void) void {}
 ```
 
-**Current failure:** emission stops with `struct type ... has no
-TypeDeclaration for symbol ... in the unit`.
+**Current status:** checker, typed IR, and backend Allocator construction now
+pass. A real `std:mem/arena` consumer is still required for closure.
 
-The checker and typed IR now succeed (`da4559f`). The backend has two stacked
-rejections. First, `collectStructTypesWalk` appends every `RecordConstruct`
-type, including runtime types, and later aggregate collection assumes each has
-a parsed `TypeDeclaration`. Second, after collection skips the runtime type,
-`buildRuntimeLocalDeclaration` accepts only an existing runtime value; it
-rejects a fresh `RecordConstruct`. The C target already exists as
-`PebbleAllocator`, and runtime field reads already map `ptr`, `alloc`,
-`realloc`, and `free`.
+The checker and typed IR now succeed (`da4559f`). Aggregate collection skips
+the runtime type (`f5403b5`), general pointer-bearing function types emit
+correctly (`ac7aa32`), and Allocator `RecordConstruct` values now lower to
+`PebbleAllocator` with ABI-safe callback bridges (`78e70de`). The remaining
+open work is a real `std:mem/arena` consumer check.
 
 Slices:
 
@@ -59,28 +56,9 @@ Slices:
 2. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
    Preserve the existing function-pointer calling convention. Add focused
    emitted-C and compile-run tests. Do not widen general record construction.
+   Completed in `78e70de`.
 3. Compile and run a real `std:mem/arena` consumer, then run full checks and
    the causation checks.
-
-### 2. Pointer-bearing function types are rejected
-
-**Area:** backend generator
-
-**Priority:** high for Allocator; possibly broader function-type parity
-
-**Reproduction:** custom Allocator callbacks require these function types:
-
-```pebble
-fn my_alloc(ctx *void, size uint) *void { return nil; }
-fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
-fn my_free(ctx *void, ptr *void) void {}
-```
-
-After the collection fix (`f5403b5`), emission reached
-`validateFunctionTypeSignature` and rejected `fn(*void, uint) *void` with
-`parameter 0 has type *void`. General pointer-bearing function types are now
-validated and emitted (`ac7aa32`), so Allocator construction reaches the next
-backend boundary: a runtime-typed local initialized from a `RecordConstruct`.
 
 ### 2. Generic `Result[T, E]` methods do not narrow `self`
 
@@ -114,7 +92,7 @@ Slices:
 5. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 
-### 4. Qualified static methods do not exist
+### 3. Qualified static methods do not exist
 
 **Area:** checker facts, validation, inference, and typed IR
 
@@ -140,7 +118,7 @@ Slices, only if this low-priority feature is approved later:
 4. Implement only typed-IR construction.
 5. Add backend and end-to-end tests for plain and generic owners.
 
-### 5. `main(argv []str)` cannot read process arguments
+### 4. `main(argv []str)` cannot read process arguments
 
 **Area:** typed IR and backend generator
 
@@ -158,7 +136,7 @@ Slices:
 2. Carry only that parameter through IR construction.
 3. Add the C `argc`/`argv` to `[]str` adapter and compile-run tests.
 
-### 6. Inline slice construction fails in pure expression positions
+### 5. Inline slice construction fails in pure expression positions
 
 **Area:** backend generator
 
@@ -176,7 +154,7 @@ Slices:
 2. Implement one form only, with one compile-run test.
 3. Repeat for each remaining form. Do not combine all call sites in one task.
 
-### 7. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
+### 6. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
 
 **Area:** Pebble standard library or CLI diagnostic policy
 
@@ -196,7 +174,7 @@ Slices:
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
-### 8. A generic struct method cannot inherit the owner type parameter
+### 7. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -208,7 +186,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 9. Some checked numeric operations have no `u64` runtime helper
+### 8. Some checked numeric operations have no `u64` runtime helper
 
 **Area:** runtime and backend generator
 
@@ -221,7 +199,7 @@ Confirm each operation is intended by the language contract before work.
 Slices: one operation family per dispatch. Add its runtime helper and smoke
 tests first, then its backend selection and compile-run test.
 
-### 10. Enum-to-integer conversion lacks backend lowering
+### 9. Enum-to-integer conversion lacks backend lowering
 
 **Area:** backend generator
 
@@ -231,7 +209,7 @@ The checker accepts the conversion, but the backend does not lower it. First
 slice: reproduce against current HEAD and identify the exact TIR node and
 missing builder case. Do not implement until the reproduction is recorded.
 
-### 11. Whole dereferenced structs cannot become values
+### 10. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
