@@ -7741,6 +7741,240 @@ func TestEmitStrStructFieldCallValueRuns(t *testing.T) {
 	emitAndRun(t, "fn mk() str { return \"hi\"; }\ntype S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = mk(), n = 7 }; return x.n; }", false, 7, false)
 }
 
+func TestEmitStrStructFieldReadEqualityCompilesAndRuns(t *testing.T) {
+	// The str field READ path (the missing Load(FieldPlace) case in
+	// buildStrOperand): a struct's str field is read back and used as a str
+	// operand in an existing str operation. The equality comparison lowers
+	// through buildComparisonOperand's str branch, whose operand is the Load
+	// of the str field, now emitted as the plain PebbleStr projection
+	// pebble_local_<sym>.pebble_field_<member>. The field holds "hi", so
+	// x.s == "hi" is true and the process exits 7 (the else arm would exit 3).
+	emitAndRun(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; if x.s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrStructFieldReadGenericKeyCompilesAndRuns(t *testing.T) {
+	// The exact std/hmap.peb shape without touching the std module: a generic
+	// Entry[K, V] struct specialized with a str key (Entry[str, uint].key),
+	// read back through the Load(FieldPlace) path buildStrOperand now
+	// supports. The specialized field resolves through declaredFieldType's
+	// substitution path, and the equality proves the read carried the str
+	// value (exit 7, else 3).
+	emitAndRun(t, "type Entry[K, V] = struct { key K; value V; };\nfn main() int { let e Entry[str, int] = Entry[str, int].{ key = \"hi\", value = 5 }; if e.key == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrStructFieldReadAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// The str field read as a call-site argument (the exact std/hmap.peb
+	// insert shape, `self.eq_fn(entry.key, key)`): a str-taking helper's
+	// argument is built by buildStrOperand, which now accepts the
+	// Load(FieldPlace) of the str field. The helper returns a==b, so passing
+	// the field value and an equal literal exits 7 (else 3).
+	emitAndRun(t, "type S = struct { s str; n int; };\nfn eq(a str, b str) bool { return a == b; }\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; if eq(x.s, \"hi\") { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrStructFieldReadWritesC(t *testing.T) {
+	// The emitted C for the str field read: the Load(FieldPlace) of the str
+	// field must lower to the plain projection pebble_local_<sym>.pebble_field_
+	// <member> — the field's PebbleStr C type is exactly the str value's C
+	// type, so no cast or coercion wraps the read, and the equality feeds it
+	// straight into pebble_rt_str_eq. Symbols 25 (s), 26 (n), 28 (x) come
+	// from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; if x.s == \"hi\" { return 7; } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_28.pebble_field_25, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {") {
+		t.Errorf("emitted C missing the str field-read projection fed to pebble_rt_str_eq:\n%s", out)
+	}
+}
+
+func TestEmitRejectsStrLoadOfNonStrField(t *testing.T) {
+	// Defense for hand-built IR: a Load whose place is a FieldPlace but whose
+	// loaded type is NOT str must be a clean rejection naming the loaded type
+	// (buildStrOperand is the str grammar; a real-source integer field read
+	// goes through buildExpr's own Load case instead, so this mismatch can
+	// only be hand-built). The crafted argument is a str-typed call-site arg
+	// carrying an i32-typed Load of a FieldPlace, so buildStrOperand's new
+	// Load case validates the place kind first (a FieldPlace, passes) and then
+	// rejects the loaded type.
+	unit, snapshot, entryID := buildStrCallCraftedArgUnit(t, buildStrLoadOfIntFieldArg)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "contains a Load of type i32, want str")
+}
+
+func TestEmitRejectsStrLoadOfNonFieldPlace(t *testing.T) {
+	// Defense for hand-built IR: a str-typed Load whose place is NOT a
+	// FieldPlace (here a bare StoragePlace) must be a clean rejection naming
+	// the found place kind, never a guessed lowering. This preserves the
+	// existing rejection of unrelated str-shaped loads while opening only the
+	// FieldPlace path — real source cannot reach this shape (str slices/arrays
+	// are themselves rejected upstream), so it is hand-built.
+	unit, snapshot, entryID := buildStrCallCraftedArgUnit(t, buildStrLoadOfStoragePlaceArg)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "contains a str Load whose place is a StoragePlace, want a FieldPlace")
+}
+
+// buildStrCallCraftedArgUnit hand-builds a unit whose i32 entry calls a
+// str-taking helper (symbol 24, parameter 25 of type str, body `return 0;`)
+// with a single crafted argument node built by argBuilder. The crafted
+// argument routes through buildCallArgument's str-parameter case into
+// buildStrOperand, exercising the new Load(FieldPlace) case's validation
+// gates for hand-built-IR shapes real source cannot produce. The helper's
+// FunctionType is borrowed from a checker-built str-taking fixture, since the
+// snapshot is read-only and cannot intern a fresh function type.
+func buildStrCallCraftedArgUnit(t *testing.T, argBuilder func(*tir.Builder, *types.Snapshot) (tir.NodeID, error)) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	realUnit, snapshot, entryID, _ := buildFixture(t, "fn f(s str) i32 { return 0; } fn main() i32 { return f(\"hi\"); }", "main", false)
+	var fnType types.TypeID
+	for _, n := range realUnit.Nodes() {
+		if n.Kind == tir.DirectCall {
+			fnType = n.FunctionType
+			break
+		}
+	}
+	if fnType == 0 {
+		t.Fatal("checker-built fixture has no DirectCall to borrow FunctionType from")
+	}
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+	str := snapshot.Builtins().Str
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperFid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := builder.AddNode(tir.Node{
+		Kind:    tir.IntegerLiteral,
+		Type:    i32,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperRet, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: helperFid,
+		Children: []tir.NodeID{zero},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{helperRet},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     24,
+		Function:   helperFid,
+		Parameters: []tir.Parameter{{Symbol: 25, Type: str}},
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(helperFid, helperBlock); err != nil {
+		t.Fatal(err)
+	}
+
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arg, err := argBuilder(builder, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := builder.AddNode(tir.Node{
+		Kind:          tir.DirectCall,
+		Type:          i32,
+		FunctionType:  fnType,
+		Symbol:        24,
+		Convention:    types.Pebble,
+		ContextAction: tir.ContextForward,
+		Children:      []tir.NodeID{arg},
+		Span:          source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{call},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{ret})
+}
+
+// buildStrLoadOfIntFieldArg builds the crafted call argument for
+// TestEmitRejectsStrLoadOfNonStrField: a Load of an i32-typed FieldPlace. The
+// Load's Type is i32 (not str), so buildStrOperand's new Load case passes the
+// FieldPlace-place gate and rejects the loaded type.
+func buildStrLoadOfIntFieldArg(builder *tir.Builder, snapshot *types.Snapshot) (tir.NodeID, error) {
+	storage, err := builder.AddNode(tir.Node{
+		Kind:   tir.StoragePlace,
+		Type:   snapshot.Builtins().I32,
+		Symbol: 27,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		return 0, err
+	}
+	field, err := builder.AddNode(tir.Node{
+		Kind:     tir.FieldPlace,
+		Type:     snapshot.Builtins().I32,
+		Member:   26,
+		Children: []tir.NodeID{storage},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return builder.AddNode(tir.Node{
+		Kind:     tir.Load,
+		Type:     snapshot.Builtins().I32,
+		Children: []tir.NodeID{field},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+}
+
+// buildStrLoadOfStoragePlaceArg builds the crafted call argument for
+// TestEmitRejectsStrLoadOfNonFieldPlace: a str-typed Load whose place is a
+// bare StoragePlace. buildStrOperand's new Load case rejects it at the place
+// gate, proving unrelated str-shaped loads are not broadened.
+func buildStrLoadOfStoragePlaceArg(builder *tir.Builder, snapshot *types.Snapshot) (tir.NodeID, error) {
+	storage, err := builder.AddNode(tir.Node{
+		Kind:   tir.StoragePlace,
+		Type:   snapshot.Builtins().Str,
+		Symbol: 27,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return builder.AddNode(tir.Node{
+		Kind:     tir.Load,
+		Type:     snapshot.Builtins().Str,
+		Children: []tir.NodeID{storage},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+}
+
 func TestEmitRejectsStructWholeReassignment(t *testing.T) {
 	// Reassigning a whole struct-typed local (p = Point.{ ... }) is out of
 	// scope this slice. The Store's place names a struct-typed local, so

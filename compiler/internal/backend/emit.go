@@ -9801,6 +9801,21 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want str", node.Symbol, describeType(snapshot, node.Type))
 		}
 		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+	case tir.Load:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
+		}
+		if place.Kind != tir.FieldPlace {
+			return "", fmt.Errorf("entry function body expression contains a str Load whose place is a %s, want a FieldPlace (a str-typed struct field read)", place.Kind)
+		}
+		if !isStr(snapshot, node.Type) {
+			return "", fmt.Errorf("entry function body expression contains a Load of type %s, want str", describeType(snapshot, node.Type))
+		}
+		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference, a string literal, or a call to a str-returning function", node.Kind)
 	}
@@ -11825,7 +11840,10 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// consumes as an enum comparison operand.
 		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
 	}
-	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum", place.Member, describeType(snapshot, fieldType))
+	if isStr(snapshot, fieldType) {
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	}
+	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum, or str", place.Member, describeType(snapshot, fieldType))
 }
 
 // buildDereferencePlaceRead builds the C text for reading through a
