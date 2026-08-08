@@ -42,19 +42,25 @@ fn my_free(context *void, ptr *void) void {}
 **Current failure:** emission stops with `struct type ... has no
 TypeDeclaration for symbol ... in the unit`.
 
-The checker and typed IR now succeed (`da4559f`). The resulting
-`tir.RecordConstruct.Symbol` names a compiler-injected runtime type, while
-backend aggregate collection assumes every record owner has a parsed
-`TypeDeclaration`. The C target already exists as `PebbleAllocator`, and
-runtime field reads already map `ptr`, `alloc`, `realloc`, and `free`.
+The checker and typed IR now succeed (`da4559f`). The backend has two stacked
+rejections. First, `collectStructTypesWalk` appends every `RecordConstruct`
+type, including runtime types, and later aggregate collection assumes each has
+a parsed `TypeDeclaration`. Second, after collection skips the runtime type,
+`buildRuntimeLocalDeclaration` accepts only an existing runtime value; it
+rejects a fresh `RecordConstruct`. The C target already exists as
+`PebbleAllocator`, and runtime field reads already map `ptr`, `alloc`,
+`realloc`, and `free`.
 
 Slices:
 
-1. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
-   Preserve the existing function-pointer calling convention. Add a focused
-   backend compile-run test. Do not widen general record construction.
-2. Compile and run a real `std:mem/arena` consumer, then run full checks and
-   the causation check.
+1. Change only aggregate collection so a runtime `RecordConstruct` does not
+   enter parsed-struct typedef resolution. Keep recursion through its field
+   values. Add a focused test that pins the next runtime-local rejection.
+2. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
+   Preserve the existing function-pointer calling convention. Add focused
+   emitted-C and compile-run tests. Do not widen general record construction.
+3. Compile and run a real `std:mem/arena` consumer, then run full checks and
+   the causation checks.
 
 ### 2. Generic `Result[T, E]` methods do not narrow `self`
 
