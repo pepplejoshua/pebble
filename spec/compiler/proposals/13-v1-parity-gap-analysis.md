@@ -216,8 +216,9 @@ Slices:
 
 **Priority:** medium; blocks `std_hash.peb` and likely other library consumers
 
-**Construction status:** struct typedefs and construction now emit
-(`3566586`).
+**Construction and read status:** struct typedefs and construction emit
+(`3566586`), and `str` field reads through `Load(FieldPlace)` now emit
+(`b329ab2`).
 
 **Reproduction:** after the hmap C0618 cleanup, run
 `GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_hash.peb`.
@@ -226,17 +227,22 @@ str-typed local reference, a string literal, or a call to a str-returning
 function`. The failing path reads `Entry[str, uint].key`.
 
 Root cause: the backend's struct-field C-type and record-construction builders
-now support `str` as `PebbleStr`. The remaining read path lowers to
-`Load(FieldPlace)` but `buildStrOperand` has no `Load` case. Existing
-`buildStructFieldRead` already projects tagged-union payload fields and can be
-reused for this read. This is a backend lowering gap, not a language decision.
+support `str` as `PebbleStr`. The read path lowers to `Load(FieldPlace)` and
+now reuses `buildStructFieldRead` from `buildStrOperand`. The next exact
+failure is the write path in `buildStoreCore`: `std_hash.peb` assigns a `str`
+key into an indexed hmap entry and is rejected with `reassigns an element of
+type str, want a fixed-width integer, char, bool, pointer, or enum`. This is
+another backend lowering gap, not a language decision.
 
 Slices:
 
 1. Add only `str` `Load(FieldPlace)` lowering through the existing field-read
    projection, with a focused compile-run test. Preserve the byte-oriented
-   String ABI and reject unrelated str-shaped loads.
-2. Run `std_hash.peb`, then audit and run `std_set.peb` for the next boundary.
+   String ABI and reject unrelated str-shaped loads. **Done:** `b329ab2`.
+2. Add only `str` element/field write lowering for the indexed hmap entry
+   shape, with a focused compile-run test. Preserve existing rejection of
+   unsupported aggregate writes.
+3. Run `std_hash.peb`, then audit and run `std_set.peb` for the next boundary.
 
 ### 9. A generic struct method cannot inherit the owner type parameter
 
