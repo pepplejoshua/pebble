@@ -5252,6 +5252,13 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
+		if isStr(snapshot, elementType) {
+			storeValue, err := buildStrOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+		}
 		if isEnumType(unit, snapshot, elementType) {
 			// An enum-typed field (or indexed element) write — `entry.state =
 			// .Occupied;`, the std/hmap.peb insert shape: the C field is declared
@@ -5308,7 +5315,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return fmt.Sprintf("%s = %s", lvalue, fmt.Sprintf("pebble_local_%d", valueNode.Symbol)), nil
 		}
-		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, or enum", context, describeType(snapshot, elementType))
+		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
 	if !declared {

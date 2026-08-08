@@ -7990,6 +7990,14 @@ func TestEmitRejectsStructFieldAssignment(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", false, 5, false)
 }
 
+func TestEmitStructStrFieldAssignmentCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `type Holder = struct { value str; }; fn main() i32 { var h Holder = Holder.{ value = "old" }; var replacement str = "new"; h.value = replacement; if h.value == "new" { return 0; } return 1; }`, false, 0, false)
+}
+
+func TestEmitIndexedStrElementAssignmentCompilesAndRuns(t *testing.T) {
+	emitRuntimeAndRun(t, `type Entry = struct { key str; }; fn main() i32 { var first Entry = Entry.{ key = "old" }; let values []Entry = slice &first, 1; var replacement str = "new"; values[0].key = replacement; if values[0].key == "new" { return 0; } return 1; }`, 0)
+}
+
 func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
 	// Reading a field directly off a struct literal (Point.{ x = 1, y = 2 }.x)
 	// is reachable from real source but lowers to a FieldValue whose base is
