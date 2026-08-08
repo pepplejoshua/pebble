@@ -26,41 +26,35 @@ the permanent record for completed work.
 
 ### 1. `Allocator.{ ... }` record construction cannot compile
 
-**Area:** symbol/checker, then backend generator
+**Area:** backend generator
 
 **Priority:** high; blocks `compiler/std/mem/arena.peb`
 
 **Reproduction:** construct `Allocator.{ ptr = nil, alloc = my_alloc,
-realloc = my_realloc, free = my_free }` with correctly typed functions.
+realloc = my_realloc, free = my_free }` with the runtime signatures:
 
-**Current failure:** `N0001: type has no member` for all four fields.
+```pebble
+fn my_alloc(context *void, size uint) *void { return nil; }
+fn my_realloc(context *void, ptr *void, size uint) *void { return nil; }
+fn my_free(context *void, ptr *void) void {}
+```
 
-`Allocator` is a `SymbolRuntimeType`. Its members come from the compiler
-runtime prelude, not a parsed Pebble declaration. `resolveRecord` in
-`compiler/internal/symbol/visit.go` uses the parsed-declaration member path.
-The earlier attempted fix, commit `c4117b5`, proved that simple deferral is
-not enough: typed IR needs stable field symbols. That fix resolved known
-runtime members from the compiler-owned member table and passed symbol and
-typed-IR tests. It was reverted because it exposed the separate backend gap
-below, not because its checker result was disproved.
+**Current failure:** emission stops with `struct type ... has no
+TypeDeclaration for symbol ... in the unit`.
 
-After typed IR succeeds, the backend rejects the runtime record with
-`struct type has no TypeDeclaration`. `tir.RecordConstruct.Symbol` names a
-runtime type, while aggregate collection assumes a parsed
+The checker and typed IR now succeed (`da4559f`). The resulting
+`tir.RecordConstruct.Symbol` names a compiler-injected runtime type, while
+backend aggregate collection assumes every record owner has a parsed
 `TypeDeclaration`. The C target already exists as `PebbleAllocator`, and
 runtime field reads already map `ptr`, `alloc`, `realloc`, and `free`.
 
 Slices:
 
-1. Re-investigate `c4117b5` against current HEAD. Restore only the narrow
-   runtime-member symbol resolution if it is still correct. Keep parsed type
-   misspelling diagnostics unchanged. Add focused symbol and typed-IR tests.
-   Stop when typed IR is valid; do not touch the backend.
-2. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
+1. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
    Preserve the existing function-pointer calling convention. Add a focused
    backend compile-run test. Do not widen general record construction.
-3. Compile and run a real `std:mem/arena` consumer, then run full checks and
-   the causation checks for both slices.
+2. Compile and run a real `std:mem/arena` consumer, then run full checks and
+   the causation check.
 
 ### 2. Generic `Result[T, E]` methods do not narrow `self`
 
