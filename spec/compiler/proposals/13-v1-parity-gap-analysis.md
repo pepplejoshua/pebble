@@ -208,7 +208,9 @@ Slices:
    compile-run test. Preserve rejection of genuinely fall-through non-void
    bodies.
 2. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
-   the source cleanup and consumer check for `std/set.peb`.
+   the source cleanup and consumer check for `std/set.peb`. `std/set.peb`
+   currently has the same two unreachable trailing returns at lines 132 and
+   160; its consumer is not yet clean.
 
 ### 8. `str`-typed struct fields cannot fully round-trip
 
@@ -222,17 +224,14 @@ Slices:
 
 **Reproduction:** after the hmap C0618 cleanup, run
 `GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_hash.peb`.
-Emission now fails with `entry function body expression contains a Load, want a
-str-typed local reference, a string literal, or a call to a str-returning
-function`. The failing path reads `Entry[str, uint].key`.
+After the read and write slices below, emission now stops earlier on the
+example's `[3]str` local with `array-typed local ... whose element type is str,
+want a fixed-width integer, char, bool, or an aggregate element type`.
 
 Root cause: the backend's struct-field C-type and record-construction builders
 support `str` as `PebbleStr`. The read path lowers to `Load(FieldPlace)` and
-now reuses `buildStructFieldRead` from `buildStrOperand`. The next exact
-failure is the write path in `buildStoreCore`: `std_hash.peb` assigns a `str`
-key into an indexed hmap entry and is rejected with `reassigns an element of
-type str, want a fixed-width integer, char, bool, pointer, or enum`. This is
-another backend lowering gap, not a language decision.
+now reuses `buildStructFieldRead` from `buildStrOperand`. The read and write
+paths are backend lowering gaps, not language decisions.
 
 Slices:
 
@@ -241,7 +240,7 @@ Slices:
    String ABI and reject unrelated str-shaped loads. **Done:** `b329ab2`.
 2. Add only `str` element/field write lowering for the indexed hmap entry
    shape, with a focused compile-run test. Preserve existing rejection of
-   unsupported aggregate writes.
+   unsupported aggregate writes. **Done:** `b2e7093`.
 3. Run `std_hash.peb`, then audit and run `std_set.peb` for the next boundary.
 
 ### 9. A generic struct method cannot inherit the owner type parameter
@@ -289,6 +288,20 @@ missing builder case. Do not implement until the reproduction is recorded.
 a `DereferencePlace` through this struct-value position. A skipped backend
 test records the known reproduction. Investigate the checker and backend
 boundaries before making an implementation plan.
+
+### 13. Array locals with `str` elements are rejected
+
+**Area:** backend generator
+
+**Priority:** medium; blocks `std_hash.peb` and the standard-library sweep
+
+`examples/std_hash.peb` declares `[3]str` and fails during emission with
+`array-typed local ... whose element type is str, want a fixed-width integer,
+char, bool, or an aggregate element type`. The verification queue's old `[]str`
+entry is now a confirmed defect. The next slice must determine whether fixed
+arrays, slices, or both are intended to support the byte-oriented `str` value,
+then add one narrowly scoped backend implementation and compile-run test. No
+language decision is assumed yet.
 
 ## Verification queue
 
