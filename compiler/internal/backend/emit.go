@@ -7241,6 +7241,47 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			return "", fmt.Errorf("unsupported uint arithmetic operator %s", node.Operator)
 		}
 		return fmt.Sprintf("(%s %s %s)", left, op, right), nil
+	case tir.DirectCall:
+		// A call to a uint-returning helper used as a uint value (`var n =
+		// get_count();`, or std/io.peb's read_line shape `var bytes = read(
+		// file, &ch as *void, 1);` — bytes is inferred uint from read's own
+		// declared result type, so its initializer is a DirectCall node the
+		// checker routes through this builder). The emitted C is
+		// `pebble_fn_<callee>(ctx, ...)` — a C function call whose return
+		// type IS the callee's declared uint64_t result (helperSignature
+		// declares a uint-result helper with cType(types.Uint) == uint64_t,
+		// the exact C type a uint value uses, the same pattern the
+		// PointerToInteger/IntegerCast cases above use for their own uint-cast
+		// wrapping), so the expression is directly a uint value, no cast
+		// needed. The callee's declared result type is double-checked to be
+		// uint (defense for hand-built IR — buildUintExpr's entry gate already
+		// required node.Type to be uint, matching the defensive result-type
+		// checks other cases here do, e.g. CheckedOptionalUnwrap's payload
+		// check). The call is built by buildDirectCallWithPre, and a
+		// non-empty pre (an inline slice-construction argument, whose temp
+		// declaration a pure expression position cannot place) is a clean
+		// rejection, never silently dropped: buildUintExpr returns (string,
+		// error) with no pre-threading and is called from pure expression
+		// positions throughout this file (local declarations, returns,
+		// compound assignments, slice/array indices, struct field values,
+		// and more), so the pre-bearing shape is deliberately out of scope
+		// rather than a signature-widening refactor across all its call
+		// sites.
+		calleeDecl, err := findCallDeclaration(unit, node)
+		if err != nil {
+			return "", err
+		}
+		if !isUint(snapshot, calleeDecl.ResultType) {
+			return "", fmt.Errorf("uint expression contains a call to symbol %d whose declared result type %s is not uint", node.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", err
+		}
+		if callPre != "" {
+			return "", fmt.Errorf("uint expression contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this uint expression position: a pure expression position has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", node.Symbol)
+		}
+		return callExpr, nil
 	default:
 		return "", fmt.Errorf("unsupported uint expression node %s", node.Kind)
 	}

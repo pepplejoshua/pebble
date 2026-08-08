@@ -481,6 +481,33 @@ func TestEmitStructWithUintFieldWritesUint64T(t *testing.T) {
 	}
 }
 
+func TestEmitUintHelperCallAsLocalInitializerCompilesAndRuns(t *testing.T) {
+	// A call to a uint-returning helper used as a uint local's declaration
+	// initializer (`var n = get_count();`) — the buildUintExpr DirectCall
+	// gap: the checker routes a uint-typed initializer through buildUintExpr
+	// (mirroring how buildExpr handles every other type), which had no
+	// DirectCall case and rejected the shape with "unsupported uint
+	// expression node DirectCall". The helper's C return type is uint64_t —
+	// the exact C type a uint value uses — so the call emits directly with
+	// no cast, and the program's exit code asserts the actual uint value
+	// came back (get_count's 5 must reach the comparison through the uint
+	// local), not just that Emit succeeded.
+	emitAndRun(t, "fn get_count() uint { return 5; }\nfn main() i32 {\nvar n = get_count();\nif n != 5 { return 1; }\nreturn 0;\n}", false, 0, false)
+}
+
+func TestEmitUintHelperCallWithArgsAsLocalInitializerCompilesAndRuns(t *testing.T) {
+	// The read_line-shaped variant of the buildUintExpr DirectCall gap: a
+	// uint-returning helper taking a pointer and a char address-of cast to
+	// *void, called as a uint local's initializer — the std/io.peb shape
+	// `var bytes = read(file, &ch as *void, 1);` (read's declared result
+	// type is uint, so bytes is inferred uint). The exit code asserts the
+	// returned uint value (1, the max_bytes argument) reached the comparison
+	// through the uint local, and that the pointer/char address-of
+	// arguments — ordinary scalar/pointer shapes whose call produces no
+	// pre-statement — passed through the call correctly.
+	emitAndRun(t, "fn read(file *void, buffer *void, max_bytes uint) uint { return max_bytes; }\nfn main() i32 {\nvar file *void = nil;\nvar ch char = 'a';\nvar bytes = read(file, &ch as *void, 1);\nif bytes != 1 { return 1; }\nreturn 0;\n}", false, 0, false)
+}
+
 func TestEmitStructEnumFieldCompilesAndRuns(t *testing.T) {
 	// The standalone synthetic repro of the enum-typed-struct-field gap: a
 	// struct with a plain-enum-typed field mirroring std/hmap.peb's Entry
