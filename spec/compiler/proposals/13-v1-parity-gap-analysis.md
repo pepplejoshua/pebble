@@ -705,23 +705,31 @@ not a real check failure). `math` found a genuine new gap:
       -slicing tests pass unchanged (no regression to the original
       path). Re-verified against the real `std/string.peb`:
       `String::as_slice()` now compiles and runs end-to-end.
-- [x] **STALE, file rewritten (`d24779f`) — `examples/read_file.peb`'s
-      `contents.as_slice()[i]` indexed directly into a fresh
-      `MethodCall` result inside the loop body.** This hits a
-      deliberate, documented backend limitation: `buildExpr`'s
-      `CheckedIndex` case only accepts a `str`-typed base — indexing a
-      value with no addressable place (a slice/array construction or
-      call result, not a local/field) is confirmed supported for `str`
-      only, and the case's own doc comment explicitly names the
-      non-str shape ("indexing an array literal directly") as a clean,
-      deliberate rejection, not a bug. Sidestepped (not closed) by
-      binding `as_slice()`'s result to a local once before the loop —
-      more idiomatic anyway (avoids re-calling `as_slice()` every
-      iteration), matching the "bind to a local first" guidance already
-      established multiple times this session for genuinely
-      out-of-scope expression positions. The underlying checker
-      -indexing-a-MethodCall-result limitation is still real and
-      unimplemented, but no longer blocks any file in the tree.
+- [ ] **[generator] Indexing directly into a value with no addressable
+      place (a slice/array-typed call result, not a local/field) is
+      unimplemented for anything but `str`.** `buildExpr`'s
+      `CheckedIndex` case only accepts a `str`-typed base — an
+      ordinary, unrestricted operation in the language (`foo()[i]` is
+      not a special or discouraged form; nothing in the language design
+      forbids indexing a computed expression). This is a REAL, missing
+      capability, not a deliberate scope boundary — corrected framing
+      from an earlier note in this doc, which mischaracterized the
+      existing clean rejection ("confirmed reachable from real source,
+      never a guessed lowering") as evidence of intentional
+      out-of-scope status; that phrasing describes defensive
+      engineering (reject cleanly rather than miscompile an
+      unimplemented shape), not a design decision that the shape should
+      stay unsupported. It's the identical class of gap as several
+      other items closed this session (`SliceFromRaw` as a return
+      value, `DirectCall` in `buildUintExpr`, a struct-returning
+      `DirectCall` as a return statement) — each was a real,
+      reachable, cleanly-rejected shape that got fixed, not routed
+      around. `examples/read_file.peb`'s own instance of this gap
+      (`contents.as_slice()[i]`) was sidestepped, not closed, by
+      binding the result to a local first (`d24779f`) — a reasonable
+      standalone improvement regardless (avoids re-calling
+      `as_slice()` every loop iteration), but not a substitute for
+      implementing the real capability. Not yet scoped for dispatch.
 - [ ] **[generator] New, foundational, general gap found verifying
       `read_file.peb` further: `extern { type FILE; }` (an opaque
       extern type with no body) emits as a synthesized
