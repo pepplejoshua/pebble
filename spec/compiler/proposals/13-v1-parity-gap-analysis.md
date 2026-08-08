@@ -649,6 +649,43 @@ not a real check failure). `math` found a genuine new gap:
       `std/math.peb`: `math::clamp` called with concrete `i32` locals
       from a real `fn main() int` entry now compiles AND RUNS
       end-to-end, returning the correct clamped value.
+- [x] **CLOSED (`317f3c0`) — `buildUintExpr` (the specialized builder
+      for a `uint`-typed expression) had no case for `tir.DirectCall`**
+      — found via a further end-to-end re-check of `examples/
+      read_file.peb` after the two fixes above landed. `pebc: emission
+      failed: unsupported uint expression node DirectCall`. Real shape:
+      a call to a `uint`-returning helper used as a `uint` local's
+      declaration initializer (`var bytes = read(file, &ch as *void,
+      1);`, the `std/io.peb` `read_line` shape — `read` returns `uint`).
+      Fixed by adding a `DirectCall` case: resolves and validates the
+      callee's result type is genuinely `uint`, builds via the existing
+      `buildDirectCallWithPre`. Deliberate scope boundary: `buildUintExpr`
+      returns `(string, error)` with no pre-statement threading and is
+      called from ~18 pure-expression positions throughout the file —
+      a non-empty `pre` (only produced for an inline slice-construction
+      argument) is a clean rejection naming the unsupported shape,
+      never silently dropped; a signature-widening refactor across all
+      18 call sites was judged out of scope for this gap. Two new
+      end-to-end tests (a plain repro, and a read_line-shaped variant
+      with pointer/char-address-of arguments) compile and run,
+      asserting the actual `uint` value round-tripped correctly.
+      Causation confirmed (revert reproduces the exact original error;
+      restore passes again). Re-verified against `examples/
+      read_file.peb`: the `DirectCall` error is completely gone,
+      reaching a different, separate, new gap (below). **Note:**
+      `std/io.peb`'s `read_line` is not actually reachable from
+      `read_all` in the real file (confirmed by tracing the call
+      graph) — this fix's real-world relevance is the general
+      DirectCall-as-uint-initializer shape, not specifically
+      `read_all`'s own path.
+- [ ] **[generator] New backend gap exposed by the fix above: a
+      slice-typed place built from a `Load`.** Surfaces re-running
+      `examples/read_file.peb` after the `buildUintExpr` `DirectCall`
+      fix above — a different, separate error about a slice's base
+      being built from a `Load` node, not yet root-caused precisely
+      (exact error text, function/line, and the real source shape
+      triggering it not yet pinned down) or scoped for dispatch. Not a
+      regression — emission never previously reached this point.
 
 ---
 
