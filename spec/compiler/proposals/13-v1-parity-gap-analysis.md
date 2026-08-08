@@ -746,32 +746,66 @@ not a real check failure). `math` found a genuine new gap:
       `as_slice()`'s result to a local) — that workaround stays in
       place (still a reasonable standalone improvement), but the real
       underlying capability is now genuinely implemented too.
-- [ ] **[generator] New, foundational, general gap found verifying
-      `read_file.peb` further: `extern { type FILE; }` (an opaque
-      extern type with no body) emits as a synthesized
-      `pebble_struct_<N>_t*` instead of mapping to its real C type
-      (`FILE`, already available via the `<stdio.h>` preamble
-      `hasCExterns` already includes).** Confirmed via a minimal
-      standalone repro (`extern { type FILE; fn fopen(...) *FILE; fn
-      fclose(file *FILE) i32; } fn main() int { var f = fopen(...);
-      fclose(f); return 0; }`) — `cc` rejects the emitted C outright:
-      `fopen`/`fclose`/etc. all expect a real `FILE *`, but the backend
-      passes a `pebble_struct_23_t *` it invented for the opaque type
-      instead. This blocks `std/io.peb`'s entire `FILE`/`DIR`-based API
-      (`open`, `close`, `read`, `read_all`, `read_line`, `seek`, `tell`,
-      `filesize`, `flush`, `is_eof`, `get_file_error`, `is_dir`, and
-      more) from ever actually compiling to a working binary — not
-      previously reachable in `examples/read_file.peb` because earlier
-      gaps (now all closed) failed first. Confirmed pre-existing, not a
-      regression — verified via `git stash` that the error surfaces
-      identically without today's `read_file.peb` edit, just masked by
-      the (now-fixed) earlier `MethodCall`-indexing rejection. Not yet
-      root-caused precisely (exact function/line handling `extern type`
-      declarations not pinned down) or scoped for dispatch — likely
-      needs the extern-type declaration's OWN name threaded through as
-      the emitted C type instead of synthesizing a struct, for any
-      `extern type` with no body (an opaque type, as opposed to a
-      transparent struct-mapped extern type, if any exists).
+- [x] **CLOSED (`03a159b`) — `extern { type FILE; }` (an opaque extern
+      type) now maps to its real C type name instead of a synthesized
+      struct.** New `opaqueExternTypeName`/`isOpaqueExternType`
+      (resolve a `Nominal` type's declaring symbol via
+      `types.NominalKey`, classify it via the `emitSymbols` table
+      already threaded into `Emit`, same mechanism `externCName` uses
+      for a function's real name) wired into `pointerTypeName` (before
+      the `isStruct` fallback) and `collectStructTypes`'s four
+      typedef-collection sites (no bogus empty struct typedef for the
+      opaque type). A second, necessary fix: a `str` argument to a
+      C-convention extern (`fopen`'s path/mode) was still passed as a
+      whole `PebbleStr` struct — real libc wants `const char *`. New
+      `cConvention bool` threaded through `buildCallArgument` and its
+      three call sites; `externCType`'s own `str` spelling updated to
+      match. Two new tests: a full real-file round trip
+      (`fopen(w)`/`fputs`/`fclose`/`fopen(r)`/`fgetc`/`fclose`/`remove`,
+      compiled and RUN, each step's success encoded in the exit code)
+      and an emitted-C shape assertion. Causation confirmed; full suite
+      green. Independently re-verified beyond the dispatch's own
+      checks: `std/io.peb`'s real `open`/`close` compiles and runs; a
+      byte-level `fputs`/`fgetc` round trip through `std/io.peb`'s own
+      real `extern` declarations reads back correctly.
+- [ ] **[std-library design, not a backend gap] `String`/`std/io.peb`'s
+      `read_all` and `[]char`'s Unicode-scalar-value semantics are
+      architecturally mismatched — multi-byte file reads corrupt
+      data.** Found verifying the `FILE`-opaque-type fix further: a
+      5-byte file (`"ABCDE"`) read via `io::read_all` then indexed via
+      `String::as_slice()` produces garbage — `chars[0]` reads back as
+      `1145258561` (`0x44434241`, the bytes `'A','B','C','D'` packed
+      little-endian into ONE 32-bit slot) and `chars[1]` reads back as
+      `69` (`'E'`, the fifth byte, now at index 1 instead of 4).
+      Root-caused precisely: `char`'s C representation is `int32_t` (4
+      bytes) by design (`str[i]` is documented Unicode-scalar-value
+      indexing, decoded via UTF-8, elsewhere in this codebase's own
+      comments — `char` is a decoded scalar, not a raw byte), and
+      `String::grow` allocates storage sized for that (`(sizeof char) *
+      new_cap`, i.e. 4 bytes per logical char — confirmed
+      `std/string.peb:17`). But `std/io.peb`'s `read_all` populates
+      that SAME buffer via a raw byte-oriented `fread(s.data.data as
+      *void, 1, size as uint, file)` — reading `size` RAW BYTES
+      directly from disk with no UTF-8 decoding, packing them
+      contiguously into a buffer whose `[]char` indexing stride assumes
+      each slot already holds one decoded 4-byte scalar. `String` (used
+      here as a raw growable BYTE buffer for file contents) and
+      `[]char` (a slice of already-decoded Unicode scalars) are
+      fundamentally different things sharing one type. Confirmed NOT
+      caused by today's `FILE`-opaque-type/`str`-argument fix — a
+      single-byte `fgetc` round trip through the SAME extern
+      declarations reads back correctly; the corruption is specific to
+      multi-byte buffer reads via `fread` into a `[]char`-backed
+      `String`. This is a std-library/language-design question, not a
+      backend code-generation gap — needs a decision on whether
+      `String`'s internal storage should be byte-oriented (`[]u8` or
+      similar) with `char`-decoding happening at a read boundary, or
+      whether `read_all`/`fread`'s usage needs to change, not a blind
+      fix. Blocks any real multi-byte file-content usage of
+      `String`/`io::read_all` (`examples/read_file.peb` included —
+      confirmed the garbled character-by-character print output is
+      this exact bug, not a separate one). Flagged for a design
+      decision before scoping a fix.
 - [x] Stale `contents.data + contents.len - 1`/`contents.data + i`
       pointer-arithmetic-on-slice fixed directly in `examples/
       count_lines.peb` (`0c9997b`) — the exact same staleness pattern
