@@ -2,32 +2,32 @@ import "std:mem";
 import "std:libc";
 
 type MemHeader = struct {
-  size usize;
+  size uint;
 };
 
 type FreeSlot = struct {
   ptr *u8;
-  size usize;
+  size uint;
   prev *FreeSlot;
   next *FreeSlot;
 };
 
 type Slab = struct {
   buffer *u8;
-  capacity usize;
-  used usize;
+  capacity uint;
+  used uint;
   next *Slab;
 };
 
 type Arena = struct {
   backing Allocator;
   current *Slab;
-  slab_size usize;
+  slab_size uint;
   free_head *FreeSlot;
   free_current *FreeSlot;
 };
 
-fn init(arena *Arena, initial_capacity usize, backing Allocator) void {
+fn init(arena *Arena, initial_capacity uint, backing Allocator) void {
   var slab *Slab = backing.alloc(backing.ptr, sizeof Slab);
   slab.buffer = backing.alloc(backing.ptr, initial_capacity);
 
@@ -66,7 +66,7 @@ fn add_free_slot(arena *Arena, slot *FreeSlot) void {
   }
 }
 
-fn alloc(ptr *void, size usize) *void {
+fn alloc(ptr *void, size uint) *void {
   var arena = ptr as *Arena;
   let alignment = 8; // Need alignof
 
@@ -159,7 +159,7 @@ fn alloc(ptr *void, size usize) *void {
   return data + sizeof MemHeader;
 }
 
-fn realloc(ptr, data *void, new_size usize) *void {
+fn realloc(ptr, data *void, new_size uint) *void {
   let arena *Arena = ptr;
 
   // Check if address of end of allocation is identical to end of used arena buffer
