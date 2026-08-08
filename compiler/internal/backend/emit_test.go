@@ -10565,6 +10565,94 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 200, false)
 }
 
+func TestEmitReSliceSliceFieldDefaultEndCompilesAndRuns(t *testing.T) {
+	// Re-slicing an EXISTING slice-typed struct field with no start bound and
+	// a runtime end — the exact String::as_slice() shape
+	// (`return self.data[:self.len];` in std/string.peb). The CheckedSlice's
+	// base is a Load(FieldPlace) reading the slice-typed field (NOT a bare
+	// SymbolValue naming an array local), which buildSliceConstruction must
+	// accept: the new slice's .data offsets the base slice's OWN .data
+	// pointer, and the bounds-check helper's upper bound is the base slice's
+	// RUNTIME .len field. arr = [10,20,30,40], self.data[:3] = [10,20,30], so
+	// s[2] = 30 is the exit code.
+	emitAndRun(t, `type Bag = struct {
+    data []int;
+    len uint;
+};
+fn view(self Bag) []int {
+    return self.data[:self.len];
+}
+fn main() int {
+    var arr [4]int = [10, 20, 30, 40];
+    var b Bag = Bag.{ data = arr[:], len = 3 };
+    var s []int = view(b);
+    return s[2];
+}`, false, 30, false)
+}
+
+func TestEmitReSliceSliceFieldExplicitStartCompilesAndRuns(t *testing.T) {
+	// The explicit-start-bound twin of the re-slice fix: `self.data[1:self.len]`
+	// must offset the base slice's own .data pointer by the runtime start, not
+	// decay a raw array — proving the offset math, not just the zero-start
+	// case. arr = [10,20,30,40], self.data[1:4] = [20,30,40], so s[1] = 30 is
+	// the exit code.
+	emitAndRun(t, `type Bag = struct {
+    data []int;
+    len uint;
+};
+fn view(self Bag) []int {
+    return self.data[1:self.len];
+}
+fn main() int {
+    var arr [4]int = [10, 20, 30, 40];
+    var b Bag = Bag.{ data = arr[:], len = 4 };
+    var s []int = view(b);
+    return s[1];
+}`, false, 30, false)
+}
+
+func TestEmitReSliceSliceFieldWritesC(t *testing.T) {
+	// The emitted C for the re-slice fixture: the helper's CheckedSlice over a
+	// Load(FieldPlace) slice base emits the same two-statement shape as the
+	// array base (a temp declaration holding the checked-start result, then
+	// the compound-literal construction using that temp for both .data and
+	// .len), but with the slice-specific pieces: the runtime helper's upper
+	// bound argument is the base slice's RUNTIME .len field
+	// (pebble_local_28.pebble_field_25.len), the construction's .data is the
+	// base slice's OWN .data pointer offset by the temp
+	// (pebble_local_28.pebble_field_25.data + pebble_slice_ret_24), and the
+	// .len is the runtime end bound minus the temp. Symbols 24 (slice type),
+	// 25 (data field), 26 (len field), 28 (self), return value node 24, and
+	// field value node 34 come from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Bag = struct {
+    data []int;
+    len uint;
+};
+fn view(self Bag) []int {
+    return self.data[:self.len];
+}
+fn main() int {
+    var arr [4]int = [10, 20, 30, 40];
+    var b Bag = Bag.{ data = arr[:], len = 3 };
+    var s []int = view(b);
+    return s[2];
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_slice_ret_24 = pebble_rt_checked_slice_start_i32(0, pebble_local_28.pebble_field_26, pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
+		"return (pebble_slice_24_t){ .data = pebble_local_28.pebble_field_25.data + pebble_slice_ret_24, .len = (size_t)(pebble_local_28.pebble_field_26 - pebble_slice_ret_24) };",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 30, false)
+}
+
 // --- Struct fields: slice-typed fields constructed inline ---
 
 func TestEmitSliceStructFieldInlineConstructionCompilesAndRuns(t *testing.T) {

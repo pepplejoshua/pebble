@@ -7338,15 +7338,34 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !ok {
 		return "", "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
 	}
-	if baseNode.Kind != tir.SymbolValue {
-		return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
-	}
-	baseInfo, declared := scope[baseNode.Symbol]
-	if !declared {
-		return "", "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
-	}
-	if baseInfo.array == 0 {
-		return "", "", fmt.Errorf("%s slice base is not an array-typed local", context)
+	// Two base shapes are accepted:
+	//
+	// 1. A SymbolValue naming an ARRAY-typed local in scope (the original,
+	//    unchanged path): the array local decays to a pointer to its first
+	//    element, and the array's length is a compile-time constant
+	//    (arrayLengthLiteral) used both as the default end bound and as the
+	//    upper bound the runtime helper validates the range against.
+	//
+	// 2. A Load of a SLICE-typed place — re-slicing an EXISTING slice value
+	//    (`self.data[:self.len]`, std/string.peb's String::as_slice, lowered
+	//    to a Load(FieldPlace) reading the slice-typed struct field). There is
+	//    no compile-time length for a slice base: the new slice's .data
+	//    pointer must offset the EXISTING slice's own runtime .data, and the
+	//    upper bound is the EXISTING slice's runtime .len field.
+	isSliceBase := baseNode.Kind == tir.Load && isSlice(snapshot, baseNode.Type)
+	var baseInfo localInfo
+	if !isSliceBase {
+		if baseNode.Kind != tir.SymbolValue {
+			return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
+		}
+		var declared bool
+		baseInfo, declared = scope[baseNode.Symbol]
+		if !declared {
+			return "", "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
+		}
+		if baseInfo.array == 0 {
+			return "", "", fmt.Errorf("%s slice base is not an array-typed local", context)
+		}
 	}
 	sliceType := initValue.Type
 	sliceKey, ok := snapshot.Key(sliceType)
@@ -7360,19 +7379,59 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !isSupportedSliceElementType(unit, snapshot, sliceElementType) {
 		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", context, describeType(snapshot, sliceElementType))
 	}
-	arrayKey, ok := snapshot.Key(baseInfo.array)
-	if !ok {
-		return "", "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
-	}
-	length, arrayElementType, ok := arrayKey.Array()
-	if !ok {
-		return "", "", fmt.Errorf("%s base is not an array type", context)
-	}
-	if sliceElementType != arrayElementType {
-		return "", "", fmt.Errorf("%s slice element type %s does not match base array element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
-	}
-	if _, err := arrayLengthLiteral(length, width); err != nil {
-		return "", "", fmt.Errorf("%s: %v", context, err)
+	// Per-base resolve the element type the new slice's element type must
+	// match, plus the base-specific length and data-pointer expressions. The
+	// array base's validations are exactly the original ones; the slice base
+	// is the parallel Load(FieldPlace) path.
+	var lengthLiteral, defaultEnd, dataExpr string
+	if !isSliceBase {
+		arrayKey, ok := snapshot.Key(baseInfo.array)
+		if !ok {
+			return "", "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
+		}
+		length, arrayElementType, ok := arrayKey.Array()
+		if !ok {
+			return "", "", fmt.Errorf("%s base is not an array type", context)
+		}
+		if sliceElementType != arrayElementType {
+			return "", "", fmt.Errorf("%s slice element type %s does not match base array element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
+		}
+		if _, err := arrayLengthLiteral(length, width); err != nil {
+			return "", "", fmt.Errorf("%s: %v", context, err)
+		}
+		lengthLiteral, _ = arrayLengthLiteral(length, width)
+		defaultEnd = fmt.Sprintf("%d", length)
+		dataExpr = fmt.Sprintf("pebble_local_%d", baseNode.Symbol)
+	} else {
+		// A Load of a slice-typed place: the base slice value's own C lvalue
+		// (built by buildPlaceLValue, the same projection a slice-typed struct
+		// field read in any other value position uses). Its .data and .len
+		// sub-fields are the base slice's own storage pointer and runtime
+		// length.
+		if len(baseNode.Children) != 1 {
+			return "", "", fmt.Errorf("%s slice base Load has %d child(ren), want exactly one place", context, len(baseNode.Children))
+		}
+		baseLvalue, baseType, err := buildPlaceLValue(unit, snapshot, fileSet, baseNode.Children[0], scope, width)
+		if err != nil {
+			return "", "", fmt.Errorf("%s slice base read: %v", context, err)
+		}
+		if !isSlice(snapshot, baseType) {
+			return "", "", fmt.Errorf("%s slice base Load reads a place of type %s, want a slice-typed place", context, describeType(snapshot, baseType))
+		}
+		baseSliceKey, ok := snapshot.Key(baseType)
+		if !ok {
+			return "", "", fmt.Errorf("%s base slice type %d is not in the type snapshot", context, baseType)
+		}
+		baseSliceElementType, ok := baseSliceKey.Child()
+		if !ok {
+			return "", "", fmt.Errorf("%s base slice type %s has no element type", context, describeType(snapshot, baseType))
+		}
+		if sliceElementType != baseSliceElementType {
+			return "", "", fmt.Errorf("%s slice element type %s does not match base slice element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, baseSliceElementType))
+		}
+		lengthLiteral = baseLvalue + ".len"
+		defaultEnd = baseLvalue + ".len"
+		dataExpr = baseLvalue + ".data"
 	}
 	// Extract start and end bounds from children. Children layout is
 	// [base, start?, end?] with presence determined by
@@ -7401,12 +7460,11 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		}
 		childIdx++
 	} else {
-		endExpr = fmt.Sprintf("%d", length)
+		endExpr = defaultEnd
 	}
 	if _, err := sliceElementCType(unit, snapshot, width, sliceElementType); err != nil {
 		return "", "", fmt.Errorf("%s: %v", context, err)
 	}
-	lengthLiteral, _ := arrayLengthLiteral(length, width)
 	startArg := startExpr
 	if !initValue.SliceStartPresent {
 		startArg = "0"
@@ -7423,7 +7481,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	// declaring it as a fixed int32_t regardless of width would silently
 	// narrow an i64 entry's checked-start result.
 	tempDecl := fmt.Sprintf("%s%s %s = pebble_rt_checked_slice_start_%s(%s, %s, %s, %s);", indent, cType(width), tempName, checkedSuffix(width), startArg, endArg, lengthLiteral, buildSourceLoc(fileSet, initValue.Span))
-	constructionExpr := fmt.Sprintf("(%s){ .data = pebble_local_%d + %s, .len = (size_t)(%s - %s) }", sliceCType, baseNode.Symbol, tempName, endExpr, tempName)
+	constructionExpr := fmt.Sprintf("(%s){ .data = %s + %s, .len = (size_t)(%s - %s) }", sliceCType, dataExpr, tempName, endExpr, tempName)
 	return tempDecl, constructionExpr, nil
 }
 
