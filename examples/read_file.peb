@@ -9,8 +9,9 @@ fn main() int {
         var contents = io::read_all(file);
         defer string::delete(&contents);
 
+        var chars = contents.as_slice();
         loop 0..contents.len : i {
-            print contents.as_slice()[i];
+            print chars[i];
         }
     } else {
         print "Cannot read ", path, ".";
