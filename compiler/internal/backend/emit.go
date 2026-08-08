@@ -9824,11 +9824,14 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
 		}
-		if place.Kind != tir.FieldPlace {
-			return "", fmt.Errorf("entry function body expression contains a str Load whose place is a %s, want a FieldPlace (a str-typed struct field read)", place.Kind)
-		}
 		if !isStr(snapshot, node.Type) {
 			return "", fmt.Errorf("entry function body expression contains a Load of type %s, want str", describeType(snapshot, node.Type))
+		}
+		if place.Kind == tir.CheckedIndexPlace {
+			return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, false)
+		}
+		if place.Kind != tir.FieldPlace {
+			return "", fmt.Errorf("entry function body expression contains a str Load whose place is a %s, want a FieldPlace (a str-typed struct field read)", place.Kind)
 		}
 		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
 	default:
@@ -11395,8 +11398,8 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if !isBool(snapshot, element) {
 			return "", fmt.Errorf("array element type is %s, want bool", describeType(snapshot, element))
 		}
-	} else if !isSupportedSliceElementType(unit, snapshot, element) {
-		return "", fmt.Errorf("array element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
+	} else if !isStr(snapshot, element) && !isSupportedSliceElementType(unit, snapshot, element) {
+		return "", fmt.Errorf("array element type is %s, want a fixed-width integer, char, bool, str, tuple, optional, or struct", describeType(snapshot, element))
 	}
 	indexNode, ok := unit.Node(place.Children[1])
 	if !ok {

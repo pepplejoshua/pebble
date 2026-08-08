@@ -1374,9 +1374,29 @@ func TestEmitLocalDeclarationsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFixedStrArrayLocalDeclarationCompilesAndRuns(t *testing.T) {
-	// Fixed str arrays are supported for array-literal local declarations only;
-	// array element reads remain outside this backend boundary for now.
+	// Fixed str arrays are supported for array-literal local declarations.
 	emitAndRun(t, `fn main() i32 { let values [2]str = ["first", "second"]; return 0; }`, false, 0, false)
+}
+
+func TestEmitFixedStrArrayElementReadInComparisonCompilesAndRuns(t *testing.T) {
+	// The missing Load(CheckedIndexPlace) case in buildStrOperand: the checker
+	// lowers values[i] for a fixed [N]str local to a str-typed Load whose place
+	// is a CheckedIndexPlace, and the backend now emits the read through
+	// buildArrayPlaceRead as pebble_local_<sym>[pebble_rt_checked_index_...]
+	// — the C subscript yields the array's PebbleStr element directly, so it
+	// feeds a str comparison operand without any coercion. values[0] is "hi",
+	// so the comparison holds and the process exits 7 (else 3).
+	emitAndRun(t, `fn main() i32 { let values [2]str = ["hi", "ho"]; if values[0] == "hi" { return 7; } else { return 3; } }`, false, 7, false)
+}
+
+func TestEmitFixedStrArrayElementReadAsCallArgumentCompilesAndRuns(t *testing.T) {
+	// The same fixed [N]str indexed read used as a call-site argument (the
+	// exact std/hmap.peb insert shape, which passes a str element into a
+	// str-taking helper): the argument is built by buildStrOperand, which now
+	// accepts the Load(CheckedIndexPlace) of the str element. The helper
+	// returns a == b, so passing values[1] ("ho") and an equal literal exits 7
+	// (else 3).
+	emitAndRun(t, "fn eq(a str, b str) bool { return a == b; }\nfn main() i32 { let values [2]str = [\"hi\", \"ho\"]; if eq(values[1], \"ho\") { return 7; } else { return 3; } }", false, 7, false)
 }
 
 func TestEmitLocalReferencingEarlierLocalCompilesAndRuns(t *testing.T) {
