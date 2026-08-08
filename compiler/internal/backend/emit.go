@@ -13122,16 +13122,49 @@ func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, b
 	default:
 		return "", false
 	}
-	suffix := checkedSuffix(width)
-	// Only the i32 and i64 widths have runtime shift helpers; a u64 shift is
-	// cleanly rejected here rather than emitted as a call to a nonexistent
-	// pebble_rt_checked_shl_u64/shr_u64 (checkedSuffix admits u64 for the
-	// +, -, * arithmetic family this slice adds, but the shift family has no
-	// u64 twin yet, so this remains the pre-widening rejection).
-	if suffix == "" || width == types.U64 {
+	// Every width with a runtime shift-helper pair is admitted: the original
+	// i32/i64 pair plus every narrower fixed-width integer (u8, u16, i8, i16,
+	// u32) added when shifts were widened. A u64 (or uint) shift stays a clean
+	// rejection here rather than being emitted as a call to a nonexistent
+	// pebble_rt_checked_shl_u64/shr_u64 (checkedSuffix admits u64 for the +,
+	// -, * arithmetic family this slice adds, but the shift family has no u64
+	// twin yet).
+	suffix := checkedShiftSuffix(width)
+	if suffix == "" {
 		return "", false
 	}
 	return base + "_" + suffix, true
+}
+
+// checkedShiftSuffix returns the pebble_rt_checked_shl/shr_* function-name
+// suffix for the given width: "i32" for an int or i32 entry, "i64" for an
+// i64 entry, and the width's own name for every narrower fixed-width integer
+// (u8, u16, i8, i16, u32 — each of which has its own runtime shift-helper
+// pair). It is the shift-specific twin of checkedSuffix, which deliberately
+// stays narrow: the OTHER checked helper families (arithmetic, index, slice
+// start, float-to-integer) admit only the i32/i64/u64 widths, so widening
+// checkedSuffix globally would emit calls to nonexistent helpers for them
+// (e.g. pebble_rt_checked_add_u8 does not exist). Any width without a
+// runtime shift helper — u64 and uint, whose C representation is uint64_t —
+// yields "", a clean rejection for the caller.
+func checkedShiftSuffix(width types.BuiltinKind) string {
+	switch width {
+	case types.Int, types.I32:
+		return "i32"
+	case types.I64:
+		return "i64"
+	case types.U8:
+		return "u8"
+	case types.U16:
+		return "u16"
+	case types.U32:
+		return "u32"
+	case types.I8:
+		return "i8"
+	case types.I16:
+		return "i16"
+	}
+	return ""
 }
 
 // isWidth reports whether id is the snapshot's builtin for the entry's

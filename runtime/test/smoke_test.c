@@ -231,6 +231,23 @@ static void test_checked_shift_normal(void) {
     assert(pebble_rt_checked_shr_i32(48, 4, (PebbleSourceLoc){0}) == 3);
     assert(pebble_rt_checked_shl_i64(3, 4, (PebbleSourceLoc){0}) == 48);
     assert(pebble_rt_checked_shr_i64(48, 4, (PebbleSourceLoc){0}) == 3);
+
+    /* The narrower-width pairs, both directions, in-range counts. */
+    assert(pebble_rt_checked_shl_u8(5, 2, (PebbleSourceLoc){0}) == 20);
+    assert(pebble_rt_checked_shr_u8(200, 3, (PebbleSourceLoc){0}) == 25);
+    assert(pebble_rt_checked_shl_i8(5, 2, (PebbleSourceLoc){0}) == 20);
+    assert(pebble_rt_checked_shr_i8(-8, 1, (PebbleSourceLoc){0}) == -4);
+    assert(pebble_rt_checked_shl_u16(5, 4, (PebbleSourceLoc){0}) == 80);
+    assert(pebble_rt_checked_shr_u16(40000, 8, (PebbleSourceLoc){0}) == 156);
+    assert(pebble_rt_checked_shl_i16(5, 4, (PebbleSourceLoc){0}) == 80);
+    assert(pebble_rt_checked_shr_i16(-8, 2, (PebbleSourceLoc){0}) == -2);
+    assert(pebble_rt_checked_shl_u32(5, 8, (PebbleSourceLoc){0}) == 1280u);
+    assert(pebble_rt_checked_shr_u32(1280u, 8, (PebbleSourceLoc){0}) == 5u);
+    /* The width boundary: a full-width left shift of the all-ones bit
+     * pattern, and the value staying put at count 0. */
+    assert(pebble_rt_checked_shl_u8(255, 7, (PebbleSourceLoc){0}) == 128);
+    assert(pebble_rt_checked_shl_u16(65535, 15, (PebbleSourceLoc){0}) == 32768);
+    assert(pebble_rt_checked_shr_i8(-128, 7, (PebbleSourceLoc){0}) == -1);
 }
 
 static void test_float_to_integer_normal(void) {
@@ -675,6 +692,28 @@ static void trigger_shift_negative(void) {
     (void)pebble_rt_checked_shr_i64(1, -1, (PebbleSourceLoc){0});
 }
 
+/* Narrower-width out-of-range counts: 8, 16, and 32 at the widths whose own
+ * bounds are [0, 8), [0, 16), and [0, 32) respectively. */
+static void trigger_shift_out_of_range_u8(void) {
+    (void)pebble_rt_checked_shl_u8(1, 8, (PebbleSourceLoc){0});
+}
+
+static void trigger_shift_out_of_range_u16(void) {
+    (void)pebble_rt_checked_shl_u16(1, 16, (PebbleSourceLoc){0});
+}
+
+static void trigger_shift_out_of_range_u32(void) {
+    (void)pebble_rt_checked_shl_u32(1, 32, (PebbleSourceLoc){0});
+}
+
+static void trigger_shift_negative_i8(void) {
+    (void)pebble_rt_checked_shr_i8(1, -1, (PebbleSourceLoc){0});
+}
+
+static void trigger_shift_negative_u8(void) {
+    (void)pebble_rt_checked_shl_u8(1, 255, (PebbleSourceLoc){0});
+}
+
 static void trigger_add_overflow_u64(void) {
     (void)pebble_rt_checked_add_u64(UINT64_MAX, 1, (PebbleSourceLoc){0});
 }
@@ -1082,7 +1121,12 @@ int main(void) {
         return 1;
     }
     if (verify_checked_overflow_panics("i32 shift amount out of range", trigger_shift_out_of_range) != 0 ||
-        verify_checked_overflow_panics("i64 negative shift amount", trigger_shift_negative) != 0) {
+        verify_checked_overflow_panics("i64 negative shift amount", trigger_shift_negative) != 0 ||
+        verify_checked_overflow_panics("u8 shift amount out of range", trigger_shift_out_of_range_u8) != 0 ||
+        verify_checked_overflow_panics("u16 shift amount out of range", trigger_shift_out_of_range_u16) != 0 ||
+        verify_checked_overflow_panics("u32 shift amount out of range", trigger_shift_out_of_range_u32) != 0 ||
+        verify_checked_overflow_panics("i8 negative shift amount", trigger_shift_negative_i8) != 0 ||
+        verify_checked_overflow_panics("u8 negative shift amount", trigger_shift_negative_u8) != 0) {
         fprintf(stderr, "smoke_test: checked shift panic subprocess check FAILED\n");
         return 1;
     }
@@ -1148,6 +1192,18 @@ int main(void) {
         pebble_rt_checked_shr_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) != -1 ||
         pebble_rt_checked_shl_i32(1, -1, (PebbleSourceLoc){0}) != INT32_MIN) {
         fprintf(stderr, "smoke_test: checked shift did not mask the count in RELEASE\n");
+        return 1;
+    }
+    /* RELEASE: the narrower-width pairs mask to their OWN width — 8, 16, or
+     * 32 bits — so an out-of-range or negative count reduces to the correct
+     * residue: 5 << 8 masks to 5 << 0 = 5, and the -1 i8 count masks to 7.
+     */
+    if (pebble_rt_checked_shl_u8(5, 8, (PebbleSourceLoc){0}) != 5 ||
+        pebble_rt_checked_shl_u16(5, 20, (PebbleSourceLoc){0}) != 80 ||
+        pebble_rt_checked_shl_u32(5, 36, (PebbleSourceLoc){0}) != 80u ||
+        pebble_rt_checked_shl_i8(5, -1, (PebbleSourceLoc){0}) != (int8_t)(5 << 7) ||
+        pebble_rt_checked_shr_u8(255, 9, (PebbleSourceLoc){0}) != 127) {
+        fprintf(stderr, "smoke_test: checked narrow shift did not mask the count in RELEASE\n");
         return 1;
     }
     /* RELEASE: the integer-to-enum bounds check is skipped entirely, so an

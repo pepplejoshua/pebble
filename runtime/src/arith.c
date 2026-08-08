@@ -201,6 +201,84 @@ int64_t pebble_rt_checked_shr_i64(int64_t value, int64_t amount, PebbleSourceLoc
     return value >> amount;
 }
 
+/* Narrower-width shift pairs: the same contract at the value's own width.
+ * The value is shifted after being cast to its unsigned twin (defined for
+ * every bit pattern, avoiding the C UB of left-shifting a negative signed
+ * value) and the result cast back; the count is validated against the
+ * operand's own bit width first. The unsigned pairs' count is unsigned too,
+ * so a negative count reaches here wrapped to a value the >= width check
+ * below always catches — no separate < 0 test is needed (and one would
+ * trigger -Wtype-limits under -Wall -Wextra -Werror). */
+uint8_t pebble_rt_checked_shl_u8(uint8_t value, uint8_t amount, PebbleSourceLoc loc) {
+    if (amount >= 8) {
+        pebble_rt_overflow_panic("u8 shift amount out of range", loc);
+    }
+    return (uint8_t)((uint8_t)value << (uint32_t)amount);
+}
+
+uint8_t pebble_rt_checked_shr_u8(uint8_t value, uint8_t amount, PebbleSourceLoc loc) {
+    if (amount >= 8) {
+        pebble_rt_overflow_panic("u8 shift amount out of range", loc);
+    }
+    return (uint8_t)((uint8_t)value >> (uint32_t)amount);
+}
+
+int8_t pebble_rt_checked_shl_i8(int8_t value, int8_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 8) {
+        pebble_rt_overflow_panic("i8 shift amount out of range", loc);
+    }
+    return (int8_t)((uint8_t)value << (uint8_t)amount);
+}
+
+int8_t pebble_rt_checked_shr_i8(int8_t value, int8_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 8) {
+        pebble_rt_overflow_panic("i8 shift amount out of range", loc);
+    }
+    return (int8_t)(value >> (uint8_t)amount);
+}
+
+uint16_t pebble_rt_checked_shl_u16(uint16_t value, uint16_t amount, PebbleSourceLoc loc) {
+    if (amount >= 16) {
+        pebble_rt_overflow_panic("u16 shift amount out of range", loc);
+    }
+    return (uint16_t)((uint16_t)value << (uint32_t)amount);
+}
+
+uint16_t pebble_rt_checked_shr_u16(uint16_t value, uint16_t amount, PebbleSourceLoc loc) {
+    if (amount >= 16) {
+        pebble_rt_overflow_panic("u16 shift amount out of range", loc);
+    }
+    return (uint16_t)((uint16_t)value >> (uint32_t)amount);
+}
+
+int16_t pebble_rt_checked_shl_i16(int16_t value, int16_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 16) {
+        pebble_rt_overflow_panic("i16 shift amount out of range", loc);
+    }
+    return (int16_t)((uint16_t)value << (uint16_t)amount);
+}
+
+int16_t pebble_rt_checked_shr_i16(int16_t value, int16_t amount, PebbleSourceLoc loc) {
+    if (amount < 0 || amount >= 16) {
+        pebble_rt_overflow_panic("i16 shift amount out of range", loc);
+    }
+    return (int16_t)(value >> (uint16_t)amount);
+}
+
+uint32_t pebble_rt_checked_shl_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc) {
+    if (amount >= 32) {
+        pebble_rt_overflow_panic("u32 shift amount out of range", loc);
+    }
+    return (uint32_t)value << amount;
+}
+
+uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc) {
+    if (amount >= 32) {
+        pebble_rt_overflow_panic("u32 shift amount out of range", loc);
+    }
+    return value >> amount;
+}
+
 #else /* PEBBLE_RT_MODE_RELEASE */
 
 int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
@@ -277,6 +355,61 @@ int64_t pebble_rt_checked_shl_i64(int64_t value, int64_t amount, PebbleSourceLoc
 int64_t pebble_rt_checked_shr_i64(int64_t value, int64_t amount, PebbleSourceLoc loc) {
     (void)loc;
     return value >> ((uint64_t)amount & 63u);
+}
+
+/* Narrower-width pairs, RELEASE: mask the count to the operand's own bit
+ * width and shift. Left shifts go through the value's unsigned twin so a
+ * negative signed value is never left-shifted (C UB); right shifts rely on
+ * the de-facto arithmetic shift of the sign-extended int8_t/int16_t, the
+ * same reliance pebble_rt_checked_shr_i32/i64 already make. */
+uint8_t pebble_rt_checked_shl_u8(uint8_t value, uint8_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (uint8_t)((uint8_t)value << ((uint32_t)amount & 7u));
+}
+
+uint8_t pebble_rt_checked_shr_u8(uint8_t value, uint8_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (uint8_t)((uint8_t)value >> ((uint32_t)amount & 7u));
+}
+
+int8_t pebble_rt_checked_shl_i8(int8_t value, int8_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int8_t)((uint8_t)value << ((uint32_t)amount & 7u));
+}
+
+int8_t pebble_rt_checked_shr_i8(int8_t value, int8_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int8_t)(value >> ((uint32_t)amount & 7u));
+}
+
+uint16_t pebble_rt_checked_shl_u16(uint16_t value, uint16_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (uint16_t)((uint16_t)value << ((uint32_t)amount & 15u));
+}
+
+uint16_t pebble_rt_checked_shr_u16(uint16_t value, uint16_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (uint16_t)((uint16_t)value >> ((uint32_t)amount & 15u));
+}
+
+int16_t pebble_rt_checked_shl_i16(int16_t value, int16_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int16_t)((uint16_t)value << ((uint32_t)amount & 15u));
+}
+
+int16_t pebble_rt_checked_shr_i16(int16_t value, int16_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int16_t)(value >> ((uint32_t)amount & 15u));
+}
+
+uint32_t pebble_rt_checked_shl_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return value << ((uint32_t)amount & 31u);
+}
+
+uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return value >> ((uint32_t)amount & 31u);
 }
 
 #endif /* PEBBLE_RT_MODE_SAFE / PEBBLE_RT_MODE_RELEASE */

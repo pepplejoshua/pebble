@@ -3322,6 +3322,87 @@ func TestEmitCheckedShiftNegativeCountMasksInReleaseMode(t *testing.T) {
 	runCompiledBinary(t, binary, 255, false, false)
 }
 
+func TestEmitCheckedShiftsNarrowWidthsCompileAndRun(t *testing.T) {
+	// u8/u16/i8/i16/u32 shifts, both directions, compile AND run: each width
+	// now has its own runtime shift-helper pair (pebble_rt_checked_shl/shr_<w>)
+	// instead of the pre-widening misleading rejection ("CheckedShift with
+	// operator <<, want << or >>" — the op switch matched fine; the missing
+	// width-to-helper mapping was what returned false). The exit code is the
+	// OS-visible low byte, so each fixture's result stays below 256 (or is the
+	// exact two's-complement low byte for a negative result).
+	emitAndRun(t, "fn main() int { var x u8 = 5; var z u8 = x << 2; return z as int; }", false, 20, false)
+	emitAndRun(t, "fn main() int { var x u8 = 200; var z u8 = x >> 3; return z as int; }", false, 25, false)
+	emitAndRun(t, "fn main() int { var x u16 = 5; var z u16 = x << 4; return z as int; }", false, 80, false)
+	emitAndRun(t, "fn main() int { var x u16 = 40000; var z u16 = x >> 8; return z as int; }", false, 156, false)
+	emitAndRun(t, "fn main() int { var x u32 = 5; var z u32 = x << 4; return z as int; }", false, 80, false)
+	emitAndRun(t, "fn main() int { var x i8 = 5; var z i8 = x << 2; return z as int; }", false, 20, false)
+	emitAndRun(t, "fn main() int { var x i16 = 5; var z i16 = x << 4; return z as int; }", false, 80, false)
+	// A negative signed value shifts through the width's own helper: -5 << 2
+	// = -20 (exit code 236, the low byte) and -8 >> 2 = -2 (exit code 254) —
+	// the same arithmetic-shift semantics the i32/i64 helpers already apply.
+	emitAndRun(t, "fn main() int { var x i8 = -5 as i8; var z i8 = x << 2; return z as int; }", false, 236, false)
+	emitAndRun(t, "fn main() int { var x i16 = -8 as i16; var z i16 = x >> 2; return z as int; }", false, 254, false)
+}
+
+func TestEmitCheckedShiftNarrowWidthOutOfRangeAbortsInSafeMode(t *testing.T) {
+	// The narrower widths' bounds checks are width-correct, not promoted-to-i32:
+	// a shift amount >= the operand's own bit width (8, 16, or 32) aborts
+	// through pebble_rt_checked_shl_<w> in PEBBLE_RT_MODE_SAFE, exactly as
+	// 1 << 32 already aborts through the i32 helper.
+	emitAndRun(t, "fn main() int { var x u8 = 5; var z u8 = x << 8; return z as int; }", false, 0, true)
+	emitAndRun(t, "fn main() int { var x u16 = 5; var z u16 = x << 16; return z as int; }", false, 0, true)
+	emitAndRun(t, "fn main() int { var x u32 = 5; var z u32 = x << 32; return z as int; }", false, 0, true)
+	emitAndRun(t, "fn main() int { var x i8 = 5; var z i8 = x << 8; return z as int; }", false, 0, true)
+}
+
+func TestEmitCheckedShiftNarrowWidthMasksCountInReleaseMode(t *testing.T) {
+	// RELEASE masks the count to the operand's own width and always shifts,
+	// matching the i32/i64 helpers: 5 << 8 masks to 5 << 0 = 5, and
+	// 5 << 10 masks to 5 << 2 = 20.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var x u8 = 5; var z u8 = x << 8; return z as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 5, false, false)
+
+	unit, snapshot, entryID, sources = buildFixture(t, "fn main() int { var x u8 = 5; var z u8 = x << 10; return z as int; }", "main", false)
+	buf.Reset()
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary = compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 20, false, false)
+}
+
+func TestEmitCheckedShiftNarrowWidthCallsItsOwnHelper(t *testing.T) {
+	// The emitted C names the width-specific helper, not a promoted-to-i32
+	// call: a u8 shift calls pebble_rt_checked_shl_u8, a u16 shift calls
+	// pebble_rt_checked_shr_u16, and so on — and the value stays at its own
+	// width (uint8_t / uint16_t), so no i32-width helper is ever used.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var x u8 = 5; var z u8 = x << 2; return z as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_shl_u8(pebble_local_25, (uint8_t)(2)") {
+		t.Fatalf("emitted C does not call the u8 shift helper at its own width:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_rt_checked_shl_i32") {
+		t.Fatalf("emitted C promotes a u8 shift to the i32 helper:\n%s", out)
+	}
+}
+
+func TestEmitCheckedShiftU64StillRejected(t *testing.T) {
+	// The u64 shift twin (pebble_rt_checked_shl_u64/shr_u64) is still not
+	// implemented, so a u64 shift stays a clean rejection rather than a call
+	// to a nonexistent helper — this slice adds the narrower-width pairs only.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() int { var x u64 = 5; var z u64 = x << 2; return z as int; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want << or >>")
+}
+
 func TestEmitPostfixIncrementOverflowStillAborts(t *testing.T) {
 	// A postfix i++ overflows identically to i += 1 (it IS i += 1 at the IR
 	// level): 2147483647++ must panic through pebble_rt_checked_add_i32 in

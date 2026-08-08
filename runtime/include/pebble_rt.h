@@ -182,11 +182,31 @@ uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
  * Shift counts outside [0, 32) or [0, 64) are invalid. SAFE mode panics with
  * PEBBLE_PANIC_ARITHMETIC_OVERFLOW; RELEASE mode masks the count to the
  * operand width before shifting, matching native hardware shift behavior.
+ *
+ * The narrower-width pairs (u8/u16/i8/i16/u32) enforce the count against
+ * their own operand width ([0, 8), [0, 16), or [0, 32)) and take value,
+ * count, and result all at the operand's own fixed-width C type — the same
+ * contract at the narrower width. For the unsigned pairs the count is
+ * unsigned too, so a negative count (cast at the call site to the operand's
+ * width) wraps to a value the >= width check always catches in SAFE mode,
+ * and the RELEASE mask (& 7u / & 15u / & 31u) reduces it to the correct
+ * residue regardless.
  */
 int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_shr_i32(int32_t value, int32_t amount, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_shl_i64(int64_t value, int64_t amount, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_shr_i64(int64_t value, int64_t amount, PebbleSourceLoc loc);
+
+uint8_t pebble_rt_checked_shl_u8(uint8_t value, uint8_t amount, PebbleSourceLoc loc);
+uint8_t pebble_rt_checked_shr_u8(uint8_t value, uint8_t amount, PebbleSourceLoc loc);
+int8_t pebble_rt_checked_shl_i8(int8_t value, int8_t amount, PebbleSourceLoc loc);
+int8_t pebble_rt_checked_shr_i8(int8_t value, int8_t amount, PebbleSourceLoc loc);
+uint16_t pebble_rt_checked_shl_u16(uint16_t value, uint16_t amount, PebbleSourceLoc loc);
+uint16_t pebble_rt_checked_shr_u16(uint16_t value, uint16_t amount, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_shl_i16(int16_t value, int16_t amount, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_shr_i16(int16_t value, int16_t amount, PebbleSourceLoc loc);
+uint32_t pebble_rt_checked_shl_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc);
+uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc);
 
 /* ---- checked float-to-integer conversion -----------------------------------
  * Converts f32/f64 values to i32/i64 after checking for NaN and values outside
