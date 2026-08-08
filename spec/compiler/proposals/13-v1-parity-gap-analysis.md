@@ -756,6 +756,59 @@ not a real check failure). `math` found a genuine new gap:
       the emitted C type instead of synthesizing a struct, for any
       `extern type` with no body (an opaque type, as opposed to a
       transparent struct-mapped extern type, if any exists).
+- [x] Stale `contents.data + contents.len - 1`/`contents.data + i`
+      pointer-arithmetic-on-slice fixed directly in `examples/
+      count_lines.peb` (`0c9997b`) — the exact same staleness pattern
+      already fixed in `std/io.peb` (`String.data` became `[]char`, not
+      `*char`). Replaced with slice indexing. Clears the `T0505`/
+      `T0508` errors this staleness caused.
+- [ ] **[checker] New, general bug found sweeping example files further:
+      a function whose declared result type is a type alias to a
+      generic instantiation is misclassified with an invalid calling
+      convention (`C0604 callable declaration is invalid`).** Confirmed
+      via a minimal standalone repro (do not modify `examples/
+      count_lines.peb`'s own shape — this is the real, general bug it
+      happens to hit, not example-specific staleness):
+      ```
+      import "std:result";
+      type StatsResult = result::Result[int, str];
+      fn count_file(filename str) StatsResult {
+          return result::result_ok[int, str](5);
+      }
+      fn main() int { return 0; }
+      ```
+      Root-caused precisely: `declaration_facts.go`'s
+      `handleNamedCallable` has an early-return error branch (`if
+      !prepared || signature.State != infer.DeclarationReady { ...
+      w.retainCallable(record); return; }`) that retains the
+      `callableRecord` WITHOUT ever setting `record.Convention` (only
+      set on the normal path, via `record.Convention,
+      record.Variadic = signature.Convention, signature.Variadic`,
+      which this branch skips entirely) — leaving `Convention` at the
+      Go zero value, which is neither `types.Pebble` (`1`) nor `types.C`
+      (`2`) (`internal/types/key.go`: `Pebble CallingConvention = iota
+      + 1`). `call_validation.go`'s `validateCallableRecords` then sees
+      `callable.BodyPresent && callable.Convention != types.Pebble` →
+      true, reporting the misleading `C0604` "callable declaration is
+      invalid" — the REAL problem is upstream: `count_file`'s signature
+      never reaches `infer.DeclarationReady`, almost certainly because
+      its result type (a local alias to a CROSS-MODULE generic
+      instantiation, `result::Result[Stats, str]` imported from
+      `std:result`) isn't resolving correctly during signature
+      preparation. Blocks `examples/count_lines.peb` (whose
+      `count_file` function is exactly this shape) even after its own
+      unrelated staleness is fixed (above). Not yet root-caused past
+      this point (why signature preparation specifically fails for
+      this alias-to-cross-module-generic-instantiation shape isn't
+      pinned down) or scoped for dispatch — needs real `infer`/`check`
+      package investigation, likely in whatever code prepares a
+      function's `Signature()` before `handleNamedCallable` consumes
+      it. A secondary, smaller finding worth fixing alongside: the
+      `C0604` error MESSAGE itself is misleading for this failure mode
+      (it reports "invalid calling convention" for what's actually "the
+      declaration's signature never became ready") — regardless of the
+      real fix, the diagnostic should point at the true cause once
+      found.
 
 ---
 
