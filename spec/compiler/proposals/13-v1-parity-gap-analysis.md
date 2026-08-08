@@ -784,53 +784,51 @@ not a real check failure). `math` found a genuine new gap:
       already fixed in `std/io.peb` (`String.data` became `[]char`, not
       `*char`). Replaced with slice indexing. Clears the `T0505`/
       `T0508` errors this staleness caused.
-- [ ] **[checker] New, general bug found sweeping example files further:
-      a function whose declared result type is a type alias to a
-      generic instantiation is misclassified with an invalid calling
-      convention (`C0604 callable declaration is invalid`).** Confirmed
-      via a minimal standalone repro (do not modify `examples/
-      count_lines.peb`'s own shape — this is the real, general bug it
-      happens to hit, not example-specific staleness):
-      ```
-      import "std:result";
-      type StatsResult = result::Result[int, str];
-      fn count_file(filename str) StatsResult {
-          return result::result_ok[int, str](5);
-      }
-      fn main() int { return 0; }
-      ```
-      Root-caused precisely: `declaration_facts.go`'s
-      `handleNamedCallable` has an early-return error branch (`if
-      !prepared || signature.State != infer.DeclarationReady { ...
-      w.retainCallable(record); return; }`) that retains the
-      `callableRecord` WITHOUT ever setting `record.Convention` (only
-      set on the normal path, via `record.Convention,
-      record.Variadic = signature.Convention, signature.Variadic`,
-      which this branch skips entirely) — leaving `Convention` at the
-      Go zero value, which is neither `types.Pebble` (`1`) nor `types.C`
-      (`2`) (`internal/types/key.go`: `Pebble CallingConvention = iota
-      + 1`). `call_validation.go`'s `validateCallableRecords` then sees
-      `callable.BodyPresent && callable.Convention != types.Pebble` →
-      true, reporting the misleading `C0604` "callable declaration is
-      invalid" — the REAL problem is upstream: `count_file`'s signature
-      never reaches `infer.DeclarationReady`, almost certainly because
-      its result type (a local alias to a CROSS-MODULE generic
-      instantiation, `result::Result[Stats, str]` imported from
-      `std:result`) isn't resolving correctly during signature
-      preparation. Blocks `examples/count_lines.peb` (whose
-      `count_file` function is exactly this shape) even after its own
-      unrelated staleness is fixed (above). Not yet root-caused past
-      this point (why signature preparation specifically fails for
-      this alias-to-cross-module-generic-instantiation shape isn't
-      pinned down) or scoped for dispatch — needs real `infer`/`check`
-      package investigation, likely in whatever code prepares a
-      function's `Signature()` before `handleNamedCallable` consumes
-      it. A secondary, smaller finding worth fixing alongside: the
-      `C0604` error MESSAGE itself is misleading for this failure mode
-      (it reports "invalid calling convention" for what's actually "the
-      declaration's signature never became ready") — regardless of the
-      real fix, the diagnostic should point at the true cause once
-      found.
+- [x] **CLOSED (`070fe06`) — a function whose declared result type is a
+      type alias to a CROSS-MODULE generic instantiation is no longer
+      misclassified with `C0604`.** Root-caused past the earlier
+      surface-level diagnosis (which correctly identified the `C0604`
+      trigger — an unset `Convention` on a callable record whose
+      signature never reached `infer.DeclarationReady` — but not why):
+      `internal/infer/declaration.go`'s `prepareDeclarations` processed
+      every type declaration in ONE pass sorted by `SymbolID`,
+      interleaving alias resolution with generic nominal constructor
+      template registration in the SAME loop. When an alias's
+      `SymbolID` sorted BEFORE the generic it referenced — which
+      happens naturally for a cross-module reference, since an
+      imported module's symbols resolve after the importing module's
+      own top-level declarations — the alias tried to apply the
+      generic's type constructor before that constructor's own
+      template was registered, `applyTypeConstructor` returned `0`, the
+      alias never resolved, and the function's `signature.Result`
+      stayed `0`, forcing `DeclarationError`. Fixed by splitting the
+      single interleaved pass into two: register every generic nominal
+      constructor template first, then resolve aliases in a second
+      pass. The same-module case (generic's `SymbolID` naturally sorts
+      first) was already correct and stays unaffected — confirmed by a
+      new regression test. Two new tests in `internal/infer`: the exact
+      cross-module repro now reaches `DeclarationReady` with the
+      correct `Pebble` convention and a real result template; the
+      same-module regression guard. Causation confirmed (revert
+      reproduces `State=DeclarationError, Result=0` exactly; restore
+      passes both tests). Re-verified against the real original repro:
+      `C0604` is completely gone — the program now reaches a
+      different, separate, ALREADY-TRACKED pre-existing gap inside
+      `std:result.peb` itself (self-referential generic union-variant
+      narrowing — `self.Ok`/`self.Err` inside `Result[T,E]`'s own
+      generic methods, documented earlier this session as byproduct #1
+      of the union-payload-access work, below) — not a regression, not
+      chased here. The secondary "misleading error message" polish
+      noted earlier was superseded — with the real fix in place, the
+      message no longer misfires for this case at all.
+      **Process note:** the dispatch initially also produced unrelated,
+      unfinished debug instrumentation in `member_validation.go`/
+      `switch_validation.go` while investigating the newly-surfaced
+      `std:result.peb` gap (never reached a real fix before the
+      session stalled on a provider timeout) — reverted before
+      committing as pure debug noise, not a real change. Two leftover
+      `println("DBG ...")` statements in the real fix's own files were
+      also found and removed before verification.
 - [ ] **[generator] `<<`/`>>` (`CheckedShift`) have no runtime helper
       for any width narrower than `i32`/`i64`.** `checkedShiftHelper`
       (`emit.go`) calls `checkedSuffix(width)`, which only maps
@@ -1174,6 +1172,13 @@ repeated here.
          only widened the READ-side `memberField` validation; a write
          through a narrowed place needs its own equivalent check
          somewhere in assignment/place validation, not yet scoped.
+         **Confirmed reachable via a completely ordinary path** (not
+         just `std/result.peb`'s own internal self-check): the `C0604`
+         fix (`070fe06`) closed the gap that previously masked this —
+         any external module that `import "std:result"` and reaches
+         the point of fully type-checking it now hits this gap directly
+         (confirmed via the exact same minimal repro that motivated the
+         `C0604` fix). Still not scoped for dispatch.
       2. `[generator]` A pre-existing, unrelated, currently-UNREACHABLE
          backend gap: str-typed `FieldPlace` reads (e.g. `return
          r.Err;` where `E = str`) have no `buildStrOperand` case in
