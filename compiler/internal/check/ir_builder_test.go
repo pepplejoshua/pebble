@@ -1578,6 +1578,80 @@ func TestBuildValueRecordConstruct(t *testing.T) {
 	}
 }
 
+// TestBuildValueRuntimeAllocatorRecordConstruct covers Allocator.{ ... }
+// construction against the runtime prelude's compiler-owned members. The
+// resolver must bind each field name to the runtime member symbol so the
+// RecordConstruct carries a Field identity for every entry.
+func TestBuildValueRuntimeAllocatorRecordConstruct(t *testing.T) {
+	source := `
+fn my_alloc(ptr *void, size uint) *void { return nil; }
+fn my_realloc(ptr *void, data *void, size uint) *void { return nil; }
+fn my_free(ptr *void, data *void) void {}
+let a Allocator = Allocator.{ ptr = nil, alloc = my_alloc, realloc = my_realloc, free = my_free };
+`
+	state, records := testBuildValue(t, source)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionRecordValue })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.RecordConstruct || len(node.Fields) != 4 {
+		t.Fatalf("Allocator record node = %+v", node)
+	}
+	for _, field := range node.Fields {
+		if field.Field == 0 {
+			t.Fatalf("Allocator record field missing member symbol: %+v", node.Fields)
+		}
+	}
+}
+
+// TestCheckRuntimeAllocatorRecordConstruction drives the full public Check
+// pipeline (06a facts, solve, 06b validation, and typed-IR construction) over
+// the runtime Allocator record literal, proving every compiler-owned member is
+// accepted end to end without a name-resolution failure.
+func TestCheckRuntimeAllocatorRecordConstruction(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn my_alloc(ptr *void, size uint) *void { return nil; }
+fn my_realloc(ptr *void, data *void, size uint) *void { return nil; }
+fn my_free(ptr *void, data *void) void {}
+fn make() Allocator {
+    return Allocator.{ ptr = nil, alloc = my_alloc, realloc = my_realloc, free = my_free };
+}
+fn main() int { return 0; }
+`)})
+	result := Check(inputs, diagnostics, Config{})
+	if !result.Successful() {
+		t.Fatalf("Allocator record construction rejected: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("successful result has nil IR")
+	}
+	recordConstructs := 0
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.RecordConstruct {
+			continue
+		}
+		recordConstructs++
+		if len(node.Fields) != 4 {
+			t.Fatalf("Allocator record construct fields = %+v", node.Fields)
+		}
+		for _, field := range node.Fields {
+			if field.Field == 0 {
+				t.Fatalf("Allocator record construct field missing member: %+v", node.Fields)
+			}
+		}
+	}
+	if recordConstructs != 1 {
+		t.Fatalf("RecordConstruct nodes = %d, want 1", recordConstructs)
+	}
+}
+
 // TestBuildValueTaggedUnionRecordConstruct covers the .{ Int = 42 } construction
 // surface for tagged unions, which finishRecord routes to an
 // aggregateTaggedVariant record: the IR builder must produce the same

@@ -537,6 +537,115 @@ func TestStaticRecordMemberUsesMemberIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllocatorRecordConstructionResolvesFields(t *testing.T) {
+	text := `
+fn my_alloc(ptr *void, size uint) *void { return nil; }
+fn my_realloc(ptr *void, data *void, size uint) *void { return nil; }
+fn my_free(ptr *void, data *void) void {}
+fn main() int {
+    var a = Allocator.{ ptr = nil, alloc = my_alloc, realloc = my_realloc, free = my_free };
+    return 0;
+}`
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	allocator, ok := result.Runtime(RuntimeAllocator)
+	if !ok {
+		t.Fatal("missing Allocator runtime identity")
+	}
+	m, _ := graph.Module(graph.Root)
+	file, _ := sources.File(m.Source)
+	recordFields := 0
+	walkTree(m.Tree, m.Tree.Root(), func(id syntax.NodeID, node syntax.Node) {
+		if node.Kind() != syntax.RecordField {
+			return
+		}
+		children := node.Children()
+		if len(children) == 0 {
+			return
+		}
+		recordFields++
+		ref := SyntaxRef{Module: m.ID, Node: children[0]}
+		resolved, ok := result.Reference(ref)
+		if !ok || resolved.State != ResolutionResolved {
+			t.Fatalf("record field %q = %+v, %t", file.Slice(node.Span()), resolved, ok)
+		}
+		selected, found := result.Symbols.Symbol(resolved.Symbol)
+		if !found || selected.Kind != SymbolField || selected.Containing != allocator {
+			t.Fatalf("record field selected symbol = %+v, %t", selected, found)
+		}
+	})
+	if recordFields != 4 {
+		t.Fatalf("Allocator record fields = %d, want 4", recordFields)
+	}
+}
+
+func TestRuntimeAllocatorUnknownRecordFieldStaysDeferred(t *testing.T) {
+	text := `
+fn my_alloc(ptr *void, size uint) *void { return nil; }
+fn main() int {
+    var a = Allocator.{ ptr = nil, alloc = my_alloc, nope = 1 };
+    return 0;
+}`
+	result, diagnostics, graph, sources := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("diagnostics: %+v", got)
+	}
+	m, _ := graph.Module(graph.Root)
+	file, _ := sources.File(m.Source)
+	deferred := 0
+	walkTree(m.Tree, m.Tree.Root(), func(id syntax.NodeID, node syntax.Node) {
+		if node.Kind() != syntax.RecordField {
+			return
+		}
+		children := node.Children()
+		if len(children) == 0 {
+			return
+		}
+		nameNode, _ := m.Tree.Node(children[0])
+		if nameNode.Kind() != syntax.Name || string(file.Slice(nameNode.Span())) != "nope" {
+			return
+		}
+		ref := SyntaxRef{Module: m.ID, Node: children[0]}
+		resolved, ok := result.Reference(ref)
+		if !ok || resolved.State != ResolutionDeferred || resolved.Symbol != 0 {
+			t.Fatalf("unknown record field resolution = %+v, %t; want deferred with no symbol", resolved, ok)
+		}
+		deferred++
+	})
+	if deferred != 1 {
+		t.Fatalf("unknown Allocator fields deferred = %d, want 1", deferred)
+	}
+}
+
+func TestParsedStructRecordMisspelledFieldStillErrors(t *testing.T) {
+	text := `
+type Point = struct { x i32; };
+fn main() int {
+    var p = Point.{ nope = 1 };
+    return 0;
+}`
+	_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	requireOnlyNameCode(t, diagnostics, CodeUndefinedName)
+}
+
+func TestNonTypeOwnerRecordFieldKeepsEarlyMemberError(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"builtin", `fn main() int { var a = int.{ x = 1 }; return 0; }`},
+		{"type parameter", `fn make[T](x T) T { var r = T.{ x = 1 }; return x; } fn main() int { return 0; }`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": tt.text}, Config{})
+			requireOnlyNameCode(t, diagnostics, CodeUndefinedName)
+		})
+	}
+}
+
 func TestResultAndSyntaxAreImmutableAndDeterministic(t *testing.T) {
 	files := map[string]string{"main.peb": "type Unit=struct{}; fn use(value Unit) Unit { { let local=value; } return value; }"}
 	first, firstDiagnostics, firstGraph, _ := resolveFiles(t, files, Config{})
