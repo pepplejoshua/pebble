@@ -539,26 +539,17 @@ func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
 	}
 }
 
-func TestEmitRuntimeAllocatorRecordConstructBoundaryPin(t *testing.T) {
-	// TEMPORARY boundary pin for Allocator backend Slice 1: constructing an
-	// Allocator literal (Allocator.{ ptr, alloc, realloc, free }) from source is
-	// a RecordConstruct whose Type is the nominal Allocator runtime type.
-	// collectStructTypesWalk previously appended that type to the struct
-	// collection, and resolveStructInfo then failed because the
-	// compiler-injected Allocator has no parsed TypeDeclaration in the unit.
-	// collectStructTypesWalk now skips a RecordConstruct's own type when
-	// runtimeType(unit, snapshot, node.Type) != 0, so the struct collection pass
-	// succeeds — the old "has no TypeDeclaration" error is gone. The pointer-
-	// bearing function-value signature gap (validateFunctionTypeSignature
-	// rejecting a pointer parameter/result, the previous boundary pinned here)
-	// is now CLOSED (the pointer-bearing general function-types slice), so
-	// emission reaches the next independent boundary: a runtime-typed local
-	// initialized from a RecordConstruct is not a supported local-initializer
-	// shape, and the emitter rejects it. That runtime record emission gap is
-	// out of scope for the function-types slices; a future slice must replace
-	// this test with a positive compile-run test when runtime record emission
-	// is implemented.
-	emitAndRunRejects(t, `fn my_alloc(ctx *void, size uint) *void { return nil; }
+func TestEmitRuntimeAllocatorRecordConstructCompilesAndRuns(t *testing.T) {
+	// The exact Slice 1 boundary reproduction, now closed: constructing an
+	// Allocator literal (Allocator.{ ptr, alloc, realloc, free }) from source
+	// is a RecordConstruct whose Type is the nominal Allocator runtime type,
+	// which has no parsed TypeDeclaration (the old "has no TypeDeclaration"
+	// struct-collection failure, then the "declares a runtime-typed local
+	// initialized from a RecordConstruct" runtime-local rejection). The record
+	// is now emitted as a designated-initializer PebbleAllocator local whose
+	// callback fields reference file-scope C bridges into the runtime callback
+	// ABI. The program must compile and run.
+	emitAndRun(t, `fn my_alloc(ctx *void, size uint) *void { return nil; }
 fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
 fn my_free(ctx *void, ptr *void) void {}
 fn main() int {
@@ -569,7 +560,97 @@ fn main() int {
         free = my_free,
     };
     return 0;
-}`, "declares a runtime-typed local initialized from a RecordConstruct")
+}`, false, 0, false)
+}
+
+func TestEmitRuntimeAllocatorRecordConstructWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the Allocator literal lowers to a
+	// PebbleAllocator local declared with a C99 designated-initializer brace
+	// list over the hand-written runtime struct, the ptr field maps to .state,
+	// each callback field names a file-scope bridge (pebble_rt_alloc_adapter_<sym>
+	// / pebble_rt_realloc_adapter_<sym> / pebble_rt_free_adapter_<sym>) with the
+	// exact runtime callback ABI (hidden PebbleContext *ctx first parameter,
+	// size_t sizes) rather than a function-pointer cast (which clang's
+	// -Wcast-function-type-mismatch rejects under the -Wall -Wextra -Werror
+	// build), and the bridges' definitions are emitted.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn my_alloc(ctx *void, size uint) *void { return nil; }
+fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
+fn my_free(ctx *void, ptr *void) void {}
+fn main() int {
+    var a = Allocator.{
+        ptr = nil,
+        alloc = my_alloc,
+        realloc = my_realloc,
+        free = my_free,
+    };
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleAllocator pebble_local_",
+		".state = ",
+		".alloc = pebble_rt_alloc_adapter_",
+		".realloc = pebble_rt_realloc_adapter_",
+		".free = pebble_rt_free_adapter_",
+		"static void *pebble_rt_alloc_adapter_",
+		"static void *pebble_rt_realloc_adapter_",
+		"static void pebble_rt_free_adapter_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitRuntimeAllocatorRecordConstructInitializerNotIgnored(t *testing.T) {
+	// Prove the ptr initializer is actually stored, not zeroed: the literal
+	// stores (&x) as *void into the .state field, reading the field back into a
+	// pointer local and dereferencing it must yield x's value. A construction
+	// whose .state initializer were ignored would leave state NULL and the
+	// dereference would not return 42.
+	emitAndRun(t, `fn my_alloc(ctx *void, size uint) *void { return nil; }
+fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
+fn my_free(ctx *void, ptr *void) void {}
+fn main() int {
+    var x = 42;
+    var a = Allocator.{
+        ptr = (&x) as *void,
+        alloc = my_alloc,
+        realloc = my_realloc,
+        free = my_free,
+    };
+    var p *int = a.ptr as *int;
+    return *p;
+}`, false, 42, false)
+}
+
+func TestEmitRuntimeAllocatorRecordConstructCallbackInvoked(t *testing.T) {
+	// Prove the alloc callback initializer is actually stored and invoked, not
+	// ignored: the literal stores my_alloc (which returns its first argument,
+	// the allocator's own state pointer) in the .alloc field, and calling it
+	// through the existing allocator call lowering must route through the
+	// emitted bridge into my_alloc and return the non-nil state. If the .alloc
+	// initializer were ignored (a zeroed or default field), the call would not
+	// return the non-nil state and the nil comparison would not pass.
+	emitAndRun(t, `fn my_alloc(ctx *void, size uint) *void { return ctx; }
+fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
+fn my_free(ctx *void, ptr *void) void {}
+fn main() int {
+    var x = 42;
+    var a = Allocator.{
+        ptr = (&x) as *void,
+        alloc = my_alloc,
+        realloc = my_realloc,
+        free = my_free,
+    };
+    var p *void = (a.alloc)(a.ptr, 4);
+    if p != nil { return 42; }
+    return 0;
+}`, false, 42, false)
 }
 
 func TestEmitStructWithUintFieldCompilesAndRuns(t *testing.T) {

@@ -473,6 +473,30 @@ import (
 // the current design, documented here so it is not mistaken for an oversight.
 var emitSymbols *symbol.Result
 
+// emitAllocatorAdapters is the collection of file-scope C bridge functions a
+// runtime Allocator record construction's callback fields need, scoped to one
+// Emit invocation exactly like emitSymbols (set at the top of Emit, cleared by
+// the same deferred call, guarded by the same reentrancy panic): keyed by the
+// bridge's C name, deduplicated (two constructions referencing the same source
+// function for the same slot share one bridge), and populated both by
+// collectRuntimeAllocatorAdapters (which runs before any function body is
+// emitted, so every bridge's prototype can be merged into the helper-prototype
+// pass) and again — idempotently — by buildRuntimeAllocatorRecordDeclaration
+// while it builds a construction's C text. Each entry carries the bridge's C
+// prototype and definition, which Emit appends to the helper-prototype and
+// helper-definition regions respectively. A bridge exists only for a callback
+// field whose construction value is a reference to a top-level source function
+// (a HoistedFunctionValue, the shape the checker produces for `alloc =
+// my_alloc`); the bridge has the exact runtime callback ABI (hidden
+// PebbleContext *ctx first parameter, size_t sizes) and forwards into the
+// user's emitted helper, whose own C signature is necessarily different (its
+// source-level ctx *void parameter is a separate C parameter after the implicit
+// PebbleContext *ctx). The bridge is required because no incompatible
+// function-pointer cast may appear in emitted C: the backend's cc build runs
+// -Wall -Wextra -Werror, under which clang's -Wcast-function-type-mismatch
+// rejects a direct cast from the user function's C type to the runtime ABI type.
+var emitAllocatorAdapters map[string]runtimeAllocatorAdapter
+
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, symbols *symbol.Result, w io.Writer) error {
 	if emitSymbols != nil {
 		panic("backend: Emit called reentrantly/concurrently — this package's backend state is not safe for concurrent Emit calls")
@@ -487,7 +511,8 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return fmt.Errorf("cannot emit C: nil writer")
 	}
 	emitSymbols = symbols
-	defer func() { emitSymbols = nil }()
+	emitAllocatorAdapters = make(map[string]runtimeAllocatorAdapter)
+	defer func() { emitSymbols = nil; emitAllocatorAdapters = nil }()
 
 	decl, err := findEntryDeclaration(unit, entrySymbol)
 	if err != nil {
@@ -509,6 +534,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	}
 	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
 	if err != nil {
+		return err
+	}
+	if err := collectRuntimeAllocatorAdapters(unit, snapshot, blockID, helpers); err != nil {
 		return err
 	}
 	tupleTypes, err := collectTupleTypes(unit, snapshot, blockID, helpers)
@@ -650,6 +678,29 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	statements, err := buildBlock(unit, snapshot, fileSet, blockID, nil, 0, result, resultInfo{kind: result}, unions)
 	if err != nil {
 		return err
+	}
+	// Every runtime Allocator callback bridge discovered by the
+	// collectRuntimeAllocatorAdapters walk needs its C prototype declared before
+	// the function body that references it (a helper body that constructs an
+	// Allocator literal names its bridges in the construction's designated
+	// initializers), and its C definition anywhere before the entry body that
+	// also constructs one. Both are appended to the prototype and definition
+	// regions Emit already emits, sorted by bridge name so the output is
+	// deterministic despite the map's nondeterministic iteration order.
+	if len(emitAllocatorAdapters) > 0 {
+		names := make([]string, 0, len(emitAllocatorAdapters))
+		for name := range emitAllocatorAdapters {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		adapterPrototypes := make([]string, 0, len(names))
+		adapterDefinitions := make([]string, 0, len(names))
+		for _, name := range names {
+			adapterPrototypes = append(adapterPrototypes, emitAllocatorAdapters[name].prototype)
+			adapterDefinitions = append(adapterDefinitions, emitAllocatorAdapters[name].definition)
+		}
+		helperPrototypes += "\n" + strings.Join(adapterPrototypes, "\n")
+		helpersText += "\n" + strings.Join(adapterDefinitions, "\n")
 	}
 	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit))
 }
@@ -6556,6 +6607,14 @@ type localInfo struct {
 }
 
 func buildRuntimeLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind == tir.RecordConstruct {
+		// A fresh runtime-typed record construction: only the built-in
+		// Allocator can be constructed from source (`Allocator.{ ptr, alloc,
+		// realloc, free }`), and its RecordConstruct has no parsed
+		// TypeDeclaration (buildStructBraceList would reject it), so it is
+		// emitted here as a designated-initializer PebbleAllocator local.
+		return buildRuntimeAllocatorRecordDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+	}
 	if initValue.Kind != tir.FieldValue && initValue.Kind != tir.Load && initValue.Kind != tir.SymbolValue {
 		return "", fmt.Errorf("%s declares a runtime-typed local initialized from a %s", context, initValue.Kind)
 	}
@@ -6611,6 +6670,230 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		return "(*ctx)", nil
 	}
 	return buildRuntimeValue(unit, snapshot, fileSet, node, scope, width)
+}
+
+// runtimeAllocatorAdapter is one file-scope C bridge function generated for a
+// runtime Allocator callback field whose construction value is a reference to a
+// top-level source function (a HoistedFunctionValue, the shape the checker
+// produces for `alloc = my_alloc`). The bridge has the exact runtime callback
+// ABI — the hidden PebbleContext *ctx first parameter and the runtime's size_t
+// sizes, i.e. PebbleAllocFn / PebbleReallocFn / PebbleFreeFn — and forwards
+// into the user's emitted helper, whose own C signature is necessarily
+// different: the user's source-level `ctx *void` parameter is a separate C
+// parameter after the implicit PebbleContext *ctx, and the source-level `size
+// uint` parameter is uint64_t, not size_t. The runtime ABI's ctx arrives at the
+// bridge holding whatever the allocator call site passed as the first runtime
+// argument (the allocator's state, per the existing allocator call lowering),
+// and the bridge forwards it unchanged into the user's ctx parameter, cast to
+// the user's void * — the "hidden context handling" the runtime callback ABI
+// demands. A bridge must be a real file-scope function rather than a cast from
+// the user function's C type to the runtime ABI type because the backend's cc
+// build runs -Wall -Wextra -Werror, under which clang's
+// -Wcast-function-type-mismatch rejects an incompatible function-pointer cast.
+type runtimeAllocatorAdapter struct {
+	name       string
+	prototype  string
+	definition string
+}
+
+// buildRuntimeAllocatorCallbackAdapter validates one Allocator callback field's
+// construction value (a member of AllocatorAlloc/AllocatorRealloc/AllocatorFree)
+// and, when it is a supported source-level function reference, registers — into
+// the package-level emitAllocatorAdapters map, deduplicated by bridge name — the
+// file-scope C bridge that adapts the user's emitted helper into the field's
+// runtime ABI type, returning the bridge's C name for the construction's
+// designated initializer to reference. Anything else is a clean rejection
+// naming what was found. The checker already requires a callback field's value
+// to be exactly the field's function type (fn(ctx *void, size uint) *void and
+// friends), so the only reachable shape is a HoistedFunctionValue; everything
+// else is defense for hand-built IR.
+func buildRuntimeAllocatorCallbackAdapter(unit *tir.Unit, snapshot *types.Snapshot, member symbol.SymbolID, valueNode tir.Node, context string) (string, error) {
+	if valueNode.Kind != tir.HoistedFunctionValue {
+		return "", fmt.Errorf("%s constructs an Allocator callback field from a %s, want a reference to a top-level function (e.g. `alloc = my_alloc`)", context, valueNode.Kind)
+	}
+	if !isFunctionType(snapshot, valueNode.Type) {
+		return "", fmt.Errorf("%s constructs an Allocator callback field from a %s, want a function value", context, describeType(snapshot, valueNode.Type))
+	}
+	decl, err := findFunctionDeclaration(unit, valueNode.Symbol, "Allocator callback function")
+	if err != nil {
+		return "", err
+	}
+	info := unit.Runtime()
+	name := ""
+	prototype := ""
+	definition := ""
+	switch member {
+	case info.AllocatorAlloc:
+		name = fmt.Sprintf("pebble_rt_alloc_adapter_%d", decl.Symbol)
+		prototype = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size);", name)
+		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size) {\n    return %s(ctx, (void *)ctx, size);\n}", name, helperCName(decl))
+	case info.AllocatorRealloc:
+		name = fmt.Sprintf("pebble_rt_realloc_adapter_%d", decl.Symbol)
+		prototype = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size);", name)
+		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size) {\n    return %s(ctx, (void *)ctx, ptr, new_size);\n}", name, helperCName(decl))
+	case info.AllocatorFree:
+		name = fmt.Sprintf("pebble_rt_free_adapter_%d", decl.Symbol)
+		prototype = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr);", name)
+		definition = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr) {\n    %s(ctx, (void *)ctx, ptr);\n}", name, helperCName(decl))
+	default:
+		return "", fmt.Errorf("%s references Allocator callback field %d, which is not alloc, realloc, or free", context, member)
+	}
+	if _, exists := emitAllocatorAdapters[name]; exists {
+		return name, nil
+	}
+	emitAllocatorAdapters[name] = runtimeAllocatorAdapter{name: name, prototype: prototype, definition: definition}
+	return name, nil
+}
+
+// buildRuntimeAllocatorRecordDeclaration builds one runtime Allocator literal's
+// C local declaration:
+//
+//	PebbleAllocator pebble_local_<sym> = { .state = <ptr>, .alloc = <bridge>,
+//	                                        .realloc = <bridge>, .free = <bridge> };
+//	(void)pebble_local_<sym>;
+//
+// a C99 designated-initializer brace list over the hand-written runtime
+// PebbleAllocator struct (runtimeFieldName maps ptr→state, alloc→alloc, realloc→
+// realloc, free→free), one designated initializer per construction field, so the
+// construction-site field order a RecordConstruct's Fields carry needs no
+// reordering. The four known Allocator fields are handled: ptr's value is built
+// under the pointer grammar (nil, a pointer-typed local, an address-of cast, a
+// pointer-returning call), and each callback field's value must be a reference
+// to a top-level source function, bridged into the runtime callback ABI by
+// buildRuntimeAllocatorCallbackAdapter. Anything else — a non-Allocator runtime
+// type, a wrong field count, an unknown or duplicated field, a malformed field
+// value — is a clean rejection naming what was found. Like every local, the
+// declaration is followed by a (void) cast against -Wunused-variable.
+func buildRuntimeAllocatorRecordDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if runtimeType(unit, snapshot, initValue.Type) != symbol.RuntimeAllocator {
+		return "", fmt.Errorf("%s declares a runtime-typed local of type %s initialized from a RecordConstruct, which is supported only for the built-in Allocator", context, runtimeTypeName(unit, snapshot, initValue.Type))
+	}
+	info := unit.Runtime()
+	if len(initValue.Fields) != 4 {
+		return "", fmt.Errorf("%s constructs an Allocator with %d field initializer(s), want exactly 4 (ptr, alloc, realloc, free)", context, len(initValue.Fields))
+	}
+	inits := make([]string, 0, len(initValue.Fields))
+	seen := make(map[symbol.SymbolID]bool, len(initValue.Fields))
+	for _, field := range initValue.Fields {
+		if seen[field.Field] {
+			return "", fmt.Errorf("%s constructs an Allocator with a duplicate initializer for field %d", context, field.Field)
+		}
+		seen[field.Field] = true
+		cname, mapped := runtimeFieldName(unit, initValue.Type, field.Field)
+		if !mapped {
+			return "", fmt.Errorf("%s constructs an Allocator with a field that is not one of ptr, alloc, realloc, or free", context)
+		}
+		valueNode, ok := unit.Node(field.Value)
+		if !ok {
+			return "", fmt.Errorf("%s constructs an Allocator referencing invalid field value node %d", context, field.Value)
+		}
+		var expr string
+		var err error
+		switch field.Field {
+		case info.AllocatorPtr:
+			// ptr maps to the C state field, typed void *. The value is built
+			// under the same pointer grammar buildExpr's pointer branch uses
+			// (nil, a reference to a pointer-typed local, an address-of cast, a
+			// pointer-returning call), and its C expression already matches the
+			// void * state field type with no cast.
+			if !isPointer(snapshot, valueNode.Type) {
+				return "", fmt.Errorf("%s constructs an Allocator whose ptr initializer is %s, want a pointer value", context, describeType(snapshot, valueNode.Type))
+			}
+			expr, err = buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
+		case info.AllocatorAlloc, info.AllocatorRealloc, info.AllocatorFree:
+			// alloc/realloc/free map to the runtime ABI callback fields, typed
+			// PebbleAllocFn/PebbleReallocFn/PebbleFreeFn. The construction value
+			// is bridged into the runtime ABI by a file-scope adapter, whose C
+			// name the designated initializer references directly (a plain
+			// compatible assignment, no function-pointer cast in emitted C).
+			expr, err = buildRuntimeAllocatorCallbackAdapter(unit, snapshot, field.Field, valueNode, context)
+		default:
+			return "", fmt.Errorf("%s constructs an Allocator with unknown field %d", context, field.Field)
+		}
+		if err != nil {
+			return "", err
+		}
+		inits = append(inits, fmt.Sprintf(".%s = %s", cname, expr))
+	}
+	scope[statement.Symbol] = localInfo{runtimeType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, strings.Join(inits, ", "), indent, statement.Symbol), nil
+}
+
+// collectRuntimeAllocatorAdapters walks the reachable tree (the entry body
+// followed by every reachable helper's body) for runtime Allocator
+// RecordConstructs and registers, into the package-level emitAllocatorAdapters
+// map, the C bridge each callback field needs. The walk must run before any
+// function body is emitted: a helper body that constructs an Allocator literal
+// references its bridges by name in the construction's designated initializers,
+// and C requires the bridges' declarations (prototypes) to precede those bodies,
+// so the bridges are discovered here and Emit merges their prototypes into the
+// helper-prototype pass. buildRuntimeAllocatorRecordDeclaration registers the
+// same bridges again, idempotently, while it builds a construction's C text
+// (the map is keyed by bridge name), so the two can never diverge on which
+// bridge a construction references. The traversal mirrors collectDirectCalls
+// (Children + DeferChain, skipping a DeferRegister child at its registration
+// position so a deferred construction that never fires is never registered — a
+// registered-but-unreferenced static bridge would trip -Wunused-function under
+// the mandated -Wall -Wextra -Werror build), so the registered set is exactly
+// the set the emitted bodies reference.
+func collectRuntimeAllocatorAdapters(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) error {
+	var walk func(nodeID tir.NodeID) error
+	walk = func(nodeID tir.NodeID) error {
+		node, ok := unit.Node(nodeID)
+		if !ok {
+			return fmt.Errorf("runtime-allocator walk references invalid node %d", nodeID)
+		}
+		if node.Kind == tir.RecordConstruct && runtimeType(unit, snapshot, node.Type) == symbol.RuntimeAllocator {
+			info := unit.Runtime()
+			for _, field := range node.Fields {
+				switch field.Field {
+				case info.AllocatorAlloc, info.AllocatorRealloc, info.AllocatorFree:
+					valueNode, ok := unit.Node(field.Value)
+					if !ok {
+						return fmt.Errorf("runtime-allocator walk references invalid field value node %d", field.Value)
+					}
+					if _, err := buildRuntimeAllocatorCallbackAdapter(unit, snapshot, field.Field, valueNode, "runtime-allocator walk"); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if node.Kind == tir.RecordConstruct {
+			// A construction's field values are stored in node.Fields
+			// ([]FieldInit), NOT node.Children, so the Children-following
+			// recursion below never reaches a NESTED construction used only as
+			// this construction's field value — the same special-case every
+			// collect*Types walk makes for this reason.
+			for _, field := range node.Fields {
+				if err := walk(field.Value); err != nil {
+					return err
+				}
+			}
+		}
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && child.Kind == tir.DeferRegister {
+				continue
+			}
+			if err := walk(childID); err != nil {
+				return err
+			}
+		}
+		for _, deferID := range node.DeferChain {
+			if err := walk(deferID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(entryBlockID); err != nil {
+		return err
+	}
+	for _, helper := range helpers {
+		if err := walk(helper.block); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // resultInfo records what the enclosing function's tail return must produce:
