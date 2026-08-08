@@ -263,7 +263,10 @@ phase. Investigation only. Do not combine this with static methods.
 
 `u64` division, modulo, shifts, and float-to-integer conversion are explicit
 clean rejections because their checked runtime operations do not exist.
-Confirm each operation is intended by the language contract before work.
+Additionally, `std_hash.peb` now reaches `std:hash.peb:12:16`, where the FNV-1a
+`u64` multiplication overflows in SAFE mode and aborts. Confirm whether hash
+arithmetic must wrap modulo 2^64 or remain checked before changing runtime or
+stdlib behavior. This is a language/runtime decision, not a backend gap.
 
 Slices: one operation family per dispatch. Add its runtime helper and smoke
 tests first, then its backend selection and compile-run test.
@@ -308,7 +311,8 @@ Slices:
 1. Add fixed `[N]str` array-literal declarations only, preserving rejection
    of repeat initializers. **Done:** `3a6eb9e`.
 2. Add `str` reads from fixed-array `CheckedIndexPlace` values, then rerun
-   `std_hash.peb`.
+   `std_hash.peb`. **Done:** `b77ef9d`; `std_hash.peb` now reaches a runtime
+   `u64` multiplication overflow in `std:hash.peb:12:16`.
 3. Investigate and implement `[]str` slices separately; do not combine them
    with fixed-array support.
 
