@@ -55,7 +55,7 @@ Slices:
 
 1. Change only aggregate collection so a runtime `RecordConstruct` does not
    enter parsed-struct typedef resolution. Keep recursion through its field
-   values. Add a focused test that pins the next pointer-function rejection.
+   values. Add a focused test that pins the next runtime-record rejection.
 2. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
    Preserve the existing function-pointer calling convention. Add focused
    emitted-C and compile-run tests. Do not widen general record construction.
@@ -76,25 +76,13 @@ fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
 fn my_free(ctx *void, ptr *void) void {}
 ```
 
-After the collection fix (`f5403b5`), emission reaches
-`validateFunctionTypeSignature` and rejects `fn(*void, uint) *void` with
-`parameter 0 has type *void`. Existing function-type lowering accepts scalar,
-bool, char, and str shapes but not pointer parameters or pointer results.
-This blocks custom `Allocator.{ alloc = ..., realloc = ..., free = ... }`
-construction before runtime record emission.
+After the collection fix (`f5403b5`), emission reached
+`validateFunctionTypeSignature` and rejected `fn(*void, uint) *void` with
+`parameter 0 has type *void`. General pointer-bearing function types are now
+validated and emitted (`ac7aa32`), so Allocator construction reaches the next
+backend boundary: a runtime-typed local initialized from a `RecordConstruct`.
 
-Slices:
-
-1. Reproduce and inspect every pointer-bearing function-type path. Confirm the
-   smallest accepted C ABI shape and whether pointer parameters/results already
-   work for direct helper calls outside function-valued fields. Investigation
-   only; no production edit.
-2. Add pointer parameter/result validation and typedef emission for one narrow
-   pointer shape. Add focused emitted-C and compile-run tests.
-3. Add the remaining pointer shapes one at a time. Keep function-value calls
-   and runtime record construction separate.
-
-### 3. Generic `Result[T, E]` methods do not narrow `self`
+### 2. Generic `Result[T, E]` methods do not narrow `self`
 
 **Area:** checker, then backend generator
 
