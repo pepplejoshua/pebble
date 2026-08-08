@@ -326,12 +326,13 @@ removed
 `GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_set.peb`
 now passes interpolation lowering but fails C compilation because the bool
 value part calls `s.contains(...)` and no `pebble_fn_93_64` prototype is emitted.
-Root cause: call-reachability collection walks node children, while
-`InterpolatedString` stores value nodes only in `Parts`; the helper is therefore
-not collected. The interpolation lowering slice is done (`1bafe0a`). Next,
-teach the existing reachability walk to visit interpolation value parts, with a
-focused compile-run test. Do not combine it with the separate `%c` Unicode
-print issue.
+Root cause: call-reachability collection walked node children, while
+`InterpolatedString` stores value nodes only in `Parts`; the helper was
+therefore not collected. The interpolation lowering slice is done (`1bafe0a`),
+and the reachability walk now visits interpolation value parts (`1f0b5aa`).
+`std_set.peb` reaches the same runtime `u64` multiplication overflow in
+`std:hash.peb:12:16`. Do not combine this with the separate `%c` Unicode print
+issue.
 
 ## Verification queue
 
