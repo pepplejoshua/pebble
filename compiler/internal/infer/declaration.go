@@ -87,24 +87,29 @@ func (p *Program) prepareDeclarations() {
 		p.declarations[decl.Symbol] = value
 	}
 
-	// Resolve aliases and generic nominal constructor templates.
+	// Register generic nominal constructor templates before resolving any
+	// alias. Aliases may reference a generic declared in another module whose
+	// SymbolID sorts after the alias, so a single pass would leave that
+	// generic's constructor template unset when the alias resolves against it.
 	for _, decl := range p.TypeDeclarations() {
-		if decl.State != DeclarationReady {
+		if decl.State != DeclarationReady || decl.Form == DeclarationAlias || decl.Template != 0 {
 			continue
 		}
-		if decl.Form == DeclarationAlias {
-			p.resolveAliasDeclaration(decl.Symbol, 0)
+		children := make([]TemplateID, 0, len(decl.Parameters))
+		for _, parameter := range decl.Parameters {
+			children = append(children, p.addTemplate(TypeTemplate{Kind: TemplateParameter, Parameter: parameter}))
+		}
+		value := p.declarations[decl.Symbol]
+		value.Template = p.addTemplate(TypeTemplate{Kind: TemplateNominal, Declaration: decl.Symbol, Children: children})
+		p.declarations[decl.Symbol] = value
+	}
+
+	// Resolve aliases, whose bodies may apply any constructor registered above.
+	for _, decl := range p.TypeDeclarations() {
+		if decl.State != DeclarationReady || decl.Form != DeclarationAlias {
 			continue
 		}
-		if decl.Template == 0 {
-			children := make([]TemplateID, 0, len(decl.Parameters))
-			for _, parameter := range decl.Parameters {
-				children = append(children, p.addTemplate(TypeTemplate{Kind: TemplateParameter, Parameter: parameter}))
-			}
-			value := p.declarations[decl.Symbol]
-			value.Template = p.addTemplate(TypeTemplate{Kind: TemplateNominal, Declaration: decl.Symbol, Children: children})
-			p.declarations[decl.Symbol] = value
-		}
+		p.resolveAliasDeclaration(decl.Symbol, 0)
 	}
 
 	// Member descriptors depend on all constructor templates being registered.
