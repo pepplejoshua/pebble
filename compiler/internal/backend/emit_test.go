@@ -1373,6 +1373,12 @@ func TestEmitLocalDeclarationsCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let x i32 = 1; let y i32 = 2; return x + y; }", false, 3, false)
 }
 
+func TestEmitFixedStrArrayLocalDeclarationCompilesAndRuns(t *testing.T) {
+	// Fixed str arrays are supported for array-literal local declarations only;
+	// array element reads remain outside this backend boundary for now.
+	emitAndRun(t, `fn main() i32 { let values [2]str = ["first", "second"]; return 0; }`, false, 0, false)
+}
+
 func TestEmitLocalReferencingEarlierLocalCompilesAndRuns(t *testing.T) {
 	// A local's initializer references an earlier local (y = x + x = 20) and
 	// the final return references a later one (y - x = 10), confirming the

@@ -7364,8 +7364,11 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	if isEnumType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type %s is an enum type; enum-typed array elements are not supported yet", context, describeType(snapshot, initValue.Type), enumTypeName(elementType))
 	}
-	if !isSupportedSliceElementType(unit, snapshot, elementType) {
+	if !isStr(snapshot, elementType) && !isSupportedSliceElementType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, or an aggregate element type", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
+	}
+	if initValue.Kind == tir.ArrayRepeat && isStr(snapshot, elementType) {
+		return "", fmt.Errorf("%s declares a str array local from an ArrayRepeat, want an ArrayValue (an array literal)", context)
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
 	if initValue.Kind == tir.ArrayRepeat {
@@ -7389,6 +7392,8 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 			// its value at u8), mirroring how buildScalarInitializeCore builds
 			// a scalar local at its own declared width.
 			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, elementWidth, width)
+		} else if isStr(snapshot, elementType) {
+			expr, err = buildStrOperand(unit, snapshot, fileSet, child, scope, width)
 		} else if isTuple(snapshot, elementType) {
 			expr, err = buildNestedAggregateValue(unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else if isStruct(snapshot, elementType) {
@@ -8046,6 +8051,9 @@ func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 }
 
 func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if isStr(snapshot, id) {
+		return "PebbleStr", nil
+	}
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
