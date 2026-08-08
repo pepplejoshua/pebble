@@ -295,13 +295,22 @@ boundaries before making an implementation plan.
 
 **Priority:** medium; blocks `std_hash.peb` and the standard-library sweep
 
-`examples/std_hash.peb` declares `[3]str` and fails during emission with
+`examples/std_hash.peb` declared `[3]str` and failed during emission with
 `array-typed local ... whose element type is str, want a fixed-width integer,
-char, bool, or an aggregate element type`. The verification queue's old `[]str`
-entry is now a confirmed defect. The next slice must determine whether fixed
-arrays, slices, or both are intended to support the byte-oriented `str` value,
-then add one narrowly scoped backend implementation and compile-run test. No
-language decision is assumed yet.
+char, bool, or an aggregate element type`. Fixed array-literal declarations
+now emit (`3a6eb9e`); array reads remain unsupported and are the next exact
+boundary: `str Load` with a `CheckedIndexPlace`. The verification queue's old
+`[]str` entry is still a separate confirmed defect. No language decision is
+assumed yet.
+
+Slices:
+
+1. Add fixed `[N]str` array-literal declarations only, preserving rejection
+   of repeat initializers. **Done:** `3a6eb9e`.
+2. Add `str` reads from fixed-array `CheckedIndexPlace` values, then rerun
+   `std_hash.peb`.
+3. Investigate and implement `[]str` slices separately; do not combine them
+   with fixed-array support.
 
 ## Verification queue
 
