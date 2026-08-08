@@ -829,23 +829,32 @@ not a real check failure). `math` found a genuine new gap:
       committing as pure debug noise, not a real change. Two leftover
       `println("DBG ...")` statements in the real fix's own files were
       also found and removed before verification.
-- [ ] **[generator] `<<`/`>>` (`CheckedShift`) have no runtime helper
-      for any width narrower than `i32`/`i64`.** `checkedShiftHelper`
-      (`emit.go`) calls `checkedSuffix(width)`, which only maps
-      `Int`/`I32`/`I64`/`U64` — a `u8`/`u16`/`i8`/`i16` shift (or a
-      `u32` shift, unconfirmed) fails with a misleadingly-worded error
-      (`"CheckedShift with operator <<, want << or >>"`, which reads
-      like an operator-token mismatch but is actually "no runtime
-      helper for this width" — the switch statement matches the
-      operator fine; a later, separate `width`-based check is what
-      returns false). Confirmed `&`/`|` (bitwise AND/OR, which don't
-      need a checked-overflow runtime helper) already work correctly
-      at `u8`. Found investigating UTF-8 encode/decode for the
-      `String`/`char` redesign (see below) — not blocking that work
-      (the encoder can do its shifts at `i32` width and truncate to
-      `u8` only at the final byte store), but a real, separate,
-      narrower-scope gap worth fixing on its own. Not yet scoped for
-      dispatch.
+- [x] **CLOSED (`1073977`) — `<<`/`>>` now have real runtime helpers
+      for every fixed-width integer narrower than `i32`/`i64`
+      (`u8`/`u16`/`i8`/`i16`/`u32`).** New
+      `pebble_rt_checked_shl/shr_<w>` pairs added to `runtime/src/
+      arith.c` (both `SAFE` and `RELEASE` builds) matching the existing
+      `i32`/`i64` pair's exact contract — `SAFE` panics on an
+      out-of-range count validated against the operand's OWN bit width
+      (`[0,8)`/`[0,16)`/`[0,32)`, not promoted to `i32`'s `[0,32)`),
+      `RELEASE` masks the count to the operand's own width. Left shifts
+      go through the value's unsigned twin to avoid C's UB on
+      left-shifting a negative signed value. New backend
+      `checkedShiftSuffix` (a shift-specific twin of the shared
+      `checkedSuffix`, deliberately kept separate — the other checked
+      -helper families only have `i32`/`i64`/`u64` runtime twins, so
+      widening the shared function would emit calls to nonexistent
+      helpers for them). `u64` shift stays correctly, deliberately
+      rejected (no runtime twin yet), confirmed by a regression test.
+      Nine new backend tests (every narrow width, both directions,
+      negative signed values, `SAFE`-mode abort at each width's own
+      boundary, `RELEASE`-mode masking, an emitted-C shape assertion
+      confirming the width-specific helper is called — not promoted to
+      `i32` — and the `u64`-still-rejected guard) plus matching runtime
+      smoke-test coverage, verified directly under `-Wall -Wextra
+      -Werror` in both build modes. Causation confirmed (revert
+      reproduces the exact original error; restore passes again). Full
+      `go test ./...` and the runtime's own smoke test both green.
 - [x] **CLOSED (`2b8cbbc`) — `String` is now byte-oriented (`[]u8`
       internal storage); a `char` read decodes UTF-8 at the requested
       byte position on demand via a new `char_at(self, byte_pos,
