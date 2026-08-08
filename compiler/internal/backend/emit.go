@@ -6517,6 +6517,33 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 				return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
 			}
 		}
+		if child.Kind == tir.InterpolatedString {
+			for _, part := range child.Parts {
+				switch part.Kind {
+				case tir.InterpolationTextPart:
+					formatParts = append(formatParts, `"%s"`)
+					args = append(args, `(const char *)"`+escapeCString(part.Text)+`"`)
+				case tir.InterpolationValuePart:
+					valueNode, ok := unit.Node(part.Value)
+					if !ok {
+						return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
+					}
+					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
+					if !ok || valueKind != types.Bool {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					}
+					formatParts = append(formatParts, `"%s"`)
+					boolExpr, err := buildBoolExpr(unit, snapshot, fileSet, part.Value, scope, width)
+					if err != nil {
+						return "", "", err
+					}
+					args = append(args, "("+boolExpr+` ? "true" : "false")`)
+				default:
+					return "", "", fmt.Errorf("%s interpolated-string print operand has an unknown part kind %d", context, part.Kind)
+				}
+			}
+			continue
+		}
 		kind, ok := resolvedBuiltin(snapshot, child.Type)
 		if !ok {
 			return "", "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))

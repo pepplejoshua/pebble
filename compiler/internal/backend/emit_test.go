@@ -4652,6 +4652,35 @@ func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
+	// An interpolated-string print operand — `print \`ok? {true}\`;` — prints
+	// its literal text runs and its interpolated bool values as the word
+	// true/false, all folded into the print's one combined printf. The text is
+	// escaped by the same escapeCString a str literal uses, and the value is a
+	// bool under the same `(<expr> ? "true" : "false")` ternary the plain bool
+	// print operand uses. A bool local and a mix with an ordinary operand
+	// prove the value parts build through the bool grammar and the parts still
+	// compose with later print operands in the one combined printf.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"literal true", "fn main() i32 { print `ok? {true}`; return 0; }", "ok? true\n"},
+		{"literal false", "fn main() i32 { print `ok? {false}`; return 0; }", "ok? false\n"},
+		{"bool local", "fn main() i32 { let b bool = true; print `ok? {b}`; return 0; }", "ok? true\n"},
+		{"bool expression", "fn main() i32 { let b bool = false; print `ok? {!b}`; return 0; }", "ok? true\n"},
+		{"mixed with plain operand", "fn main() i32 { print `pre {true}`, 1; return 0; }", "pre true1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
 	// A float operand prints with %f (f32/f64 promote to double in a variadic
 	// call either way, so %f covers both, matching v1). A bare literal resolves
