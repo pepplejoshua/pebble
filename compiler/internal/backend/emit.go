@@ -5857,10 +5857,16 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 		case tir.Print:
 			// A deferred print statement — `defer print a, b;` — built by the
 			// same shared buildPrint a leading print statement uses, so the
-			// emission logic lives in exactly one place.
-			text, err := buildPrint(unit, snapshot, fileSet, stmt, scope, indent, context, width)
+			// emission logic lives in exactly one place. A slice-index
+			// operand's temp declaration is returned as a leading pre-statement
+			// at the same indent, the same mechanical shape the deferred
+			// CompoundStore pre uses.
+			pre, text, err := buildPrint(unit, snapshot, fileSet, stmt, scope, indent, context, width)
 			if err != nil {
 				return "", err
+			}
+			if pre != "" {
+				parts = append(parts, pre)
 			}
 			parts = append(parts, text)
 		case tir.Initialize:
@@ -6123,8 +6129,18 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// A print statement — `print a, b, c;` — emitted as one combined
 		// printf call by the shared buildPrint (also used by buildLoopBody's
 		// explicit Print case and buildDeferredStatements for a deferred
-		// print), so the emission logic lives in exactly one place.
-		return buildPrint(unit, snapshot, fileSet, statement, scope, indent, context, width)
+		// print), so the emission logic lives in exactly one place. A
+		// slice-index operand's temp declaration is returned as a leading
+		// pre-statement and threaded into this statement sequence before the
+		// printf line, exactly as a return threads its pre-return temp.
+		pre, line, err := buildPrint(unit, snapshot, fileSet, statement, scope, indent, context, width)
+		if err != nil {
+			return "", err
+		}
+		if pre != "" {
+			return pre + "\n" + line, nil
+		}
+		return line, nil
 	case tir.If:
 		// A conditional if statement as an ordinary leading statement — the
 		// non-tail shape, e.g. a guard clause `if x > 0 { return 1; }`
@@ -6261,13 +6277,14 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // leading-statement sequences), buildLoopBody's explicit Print case, and
 // buildDeferredStatements' deferred-statement case, so the emission logic
 // lives in exactly one place.
-func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
 	var formatParts []string
 	var args []string
+	var preParts []string
 	for _, childID := range statement.Children {
 		child, ok := unit.Node(childID)
 		if !ok {
-			return "", fmt.Errorf("%s print statement references invalid operand node %d", context, childID)
+			return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, childID)
 		}
 		// A parenthesized operand — `print ("hi")` — arrives wrapped in
 		// tir.SourceAlias nodes (one per grouping level, confirmed against a
@@ -6282,20 +6299,38 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		operandID := childID
 		for child.Kind == tir.SourceAlias {
 			if len(child.Children) != 1 {
-				return "", fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
+				return "", "", fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
 			}
 			operandID = child.Children[0]
 			child, ok = unit.Node(operandID)
 			if !ok {
-				return "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
+				return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
 			}
 		}
 		kind, ok := resolvedBuiltin(snapshot, child.Type)
 		if !ok {
-			return "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+			return "", "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+		}
+		// A bare CheckedIndex whose base is a SLICE-typed value (not a str) —
+		// `print view()[0];`, indexing a call's slice result directly, the
+		// confirmed real-world gap this slice closes. The indexed element read
+		// needs the base materialized into a temp local (see
+		// buildSliceIndexValue), whose temp-declaration statement this print
+		// position — a statement sequence — hosts as a leading pre-statement,
+		// exactly as buildReturnStatement threads a pre-return temp. A
+		// str-index base (char result) stays on buildCharOperand's own
+		// CheckedIndex case below.
+		isSliceIndex := false
+		if child.Kind == tir.CheckedIndex {
+			strBase, err := checkedIndexBaseIsStr(unit, snapshot, child)
+			if err != nil {
+				return "", "", err
+			}
+			isSliceIndex = !strBase
 		}
 		var arg string
 		var err error
+		var sliceIndexPre string
 		switch {
 		case cType(kind) != "":
 			// An integer operand of any builtin width, not just the entry's
@@ -6308,25 +6343,44 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// expands it to the specifier text and the adjacent literals
 			// concatenate into the format string — never spelled
 			// `"%PRId32"`, which would put a literal invalid `%P` specifier
-			// in the format.
+			// in the format. A slice-index operand's read (element C type)
+			// carries the same width as its element, so the same specifier
+			// applies.
 			formatParts = append(formatParts, `"%"`+printfSpecifier(kind))
-			arg, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind, width)
+			if isSliceIndex {
+				sliceIndexPre, arg, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+			} else {
+				arg, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind, width)
+			}
 		case kind == types.Bool:
 			// A bool operand prints as the words true/false: build the bool
 			// expression under the bool grammar, then wrap it in the C ternary
 			// that selects the const char * literal, so the %s specifier's
 			// argument is already the pointer the format string wants — v1's
-			// own approach for bool in print.
+			// own approach for bool in print. A slice-index operand's read is
+			// a C bool, so the same ternary wraps it.
 			formatParts = append(formatParts, `"%s"`)
-			arg, err = buildBoolExpr(unit, snapshot, fileSet, operandID, scope, width)
-			if err == nil {
-				arg = "(" + arg + " ? \"true\" : \"false\")"
+			if isSliceIndex {
+				var read string
+				sliceIndexPre, read, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, true)
+				if err == nil {
+					arg = "(" + read + " ? \"true\" : \"false\")"
+				}
+			} else {
+				arg, err = buildBoolExpr(unit, snapshot, fileSet, operandID, scope, width)
+				if err == nil {
+					arg = "(" + arg + " ? \"true\" : \"false\")"
+				}
 			}
 		case kind == types.Char:
 			// A char operand prints as the single character its int32_t C
 			// value encodes; the value is built under the char grammar.
 			formatParts = append(formatParts, `"%c"`)
-			arg, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+			if isSliceIndex {
+				sliceIndexPre, arg, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+			} else {
+				arg, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+			}
 		case kind == types.Str:
 			// A str operand prints its bytes: the value is built under the
 			// str grammar, and the %s argument is the value's .data field cast
@@ -6346,10 +6400,13 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			formatParts = append(formatParts, `"%f"`)
 			arg, err = buildFloatExpr(unit, snapshot, fileSet, operandID, scope, kind)
 		default:
-			return "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+			return "", "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
 		}
 		if err != nil {
-			return "", err
+			return "", "", err
+		}
+		if sliceIndexPre != "" {
+			preParts = append(preParts, indent+sliceIndexPre)
 		}
 		args = append(args, arg)
 	}
@@ -6357,7 +6414,7 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 	if len(args) != 0 {
 		line += ", " + strings.Join(args, ", ")
 	}
-	return line + ");", nil
+	return strings.Join(preParts, "\n"), line + ");", nil
 }
 
 // printfSpecifier returns the <inttypes.h> PRI* macro name whose
@@ -9355,7 +9412,8 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		}
 		return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, false)
 	case tir.CheckedIndex:
-		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
+		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —
+		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
 		// exactly when the indexed value has no addressable place: a str's
 		// byte-level content is not addressable the way array/slice element
 		// storage is, so str indexing is a pure decode-to-value operation
@@ -9379,21 +9437,41 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		// (pebble_rt.h declares _i32 and _i64 variants; the index parameter's
 		// width varies by the entry's, the int32_t result does not — a char
 		// always fits in 32 bits, so the width-selected helper returns a char
-		// either way). A CheckedIndex whose base does not resolve to a str
-		// value is confirmed reachable from real source too — indexing an
-		// array literal directly (['h', 'i'][0]) lowers to a bare CheckedIndex
-		// with an ArrayValue base, since the literal has no place to address —
-		// and is a clean rejection naming what was found, never a guessed
-		// lowering.
+		// either way).
+		//
+		// Since the slice-index slice, a CheckedIndex whose base is NOT a str
+		// — a slice-element read of a value with no addressable place, the
+		// same char result (`view()[1]` where view returns []char) — is also
+		// accepted, built by the shared buildSliceIndexValue. This char
+		// builder returns only an expression (no leading-statement slot), so a
+		// pure-projection base (a slice-typed local or place, which needs no
+		// temp) is emitted directly; a freshly-computed base (a call result,
+		// which needs a temp-declaration statement) is a clean rejection here —
+		// the positions that CAN host a temp (a print, a local declaration, a
+		// return) intercept the shape before reaching this case and thread
+		// buildSliceIndexValue's pre. A CheckedIndex whose base does not
+		// resolve to a str or a slice type is a clean rejection naming what
+		// was found, never a guessed lowering.
+		strBase, err := checkedIndexBaseIsStr(unit, snapshot, node)
+		if err != nil {
+			return "", err
+		}
+		if !strBase {
+			pre, read, err := buildSliceIndexValue(unit, snapshot, fileSet, id, node, locals, width, false)
+			if err != nil {
+				return "", err
+			}
+			if pre != "" {
+				base, ok := unit.Node(node.Children[0])
+				if !ok {
+					return "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
+				}
+				return "", fmt.Errorf("entry function body expression indexes a %s of type %s in a pure-expression position with nowhere to place the temp-declaration statement the freshly-computed slice value needs; bind the slice into a local first", base.Kind, describeType(snapshot, base.Type))
+			}
+			return read, nil
+		}
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedIndex with %d child(ren), want exactly two (the str value being indexed and the index)", len(node.Children))
-		}
-		baseNode, ok := unit.Node(node.Children[0])
-		if !ok {
-			return "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
-		}
-		if !isStr(snapshot, baseNode.Type) {
-			return "", fmt.Errorf("entry function body expression indexes a %s of type %s, want str (only str indexing is supported; indexing an array literal directly is not lowered)", baseNode.Kind, describeType(snapshot, baseNode.Type))
 		}
 		base, err := buildStrOperand(unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
@@ -10112,6 +10190,40 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression reads element %d of a %s, want a SymbolValue naming a tuple-typed local (indexing a tuple literal is not supported)", node.Ordinal, base.Kind)
 		}
 		return buildTupleElement(unit, snapshot, base.Symbol, node.Ordinal, locals, width, false)
+	case tir.CheckedIndex:
+		// A bare CheckedIndex in a pure scalar-expression position — a
+		// slice-element read of a value with no addressable place
+		// (`view()[0]` in a comparison, arithmetic, or call argument), whose
+		// element type is the entry's width (the width gate above has already
+		// required it). The base here can only be a pure projection safe to
+		// reference twice — a SymbolValue naming a slice-typed local, or a
+		// Load of a slice-typed place — since a freshly-computed base (a call
+		// result) needs a temp-declaration statement this pure-expression
+		// position has nowhere to place (the positions that CAN host a temp —
+		// a print, a local declaration, a return — intercept the shape before
+		// reaching this case and thread buildSliceIndexValue's pre). A str
+		// index's result is char, never the entry's integer width, so a str
+		// base cannot reach this case from real source; if one does (hand-built
+		// IR) it is a clean rejection.
+		strBase, err := checkedIndexBaseIsStr(unit, snapshot, node)
+		if err != nil {
+			return "", err
+		}
+		if strBase {
+			return "", fmt.Errorf("entry function body expression contains a str index whose result type is %s, want %s", describeType(snapshot, node.Type), wantName(width))
+		}
+		pre, read, err := buildSliceIndexValue(unit, snapshot, fileSet, id, node, locals, width, false)
+		if err != nil {
+			return "", err
+		}
+		if pre != "" {
+			base, ok := unit.Node(node.Children[0])
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
+			}
+			return "", fmt.Errorf("entry function body expression indexes a %s of type %s in a pure-expression position with nowhere to place the temp-declaration statement the freshly-computed slice value needs; bind the slice into a local first", base.Kind, describeType(snapshot, base.Type))
+		}
+		return read, nil
 	case tir.SourceAlias:
 		if len(node.Children) == 1 {
 			child, ok := unit.Node(node.Children[0])
@@ -10808,6 +10920,260 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	}
 	literal, _ := arrayLengthLiteral(length, width)
 	return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, %s)]", baseExpr, checkedSuffix(width), index, literal, buildSourceLoc(fileSet, place.Span)), nil
+}
+
+// buildSliceIndexValue builds the C text for a bare tir.CheckedIndex whose
+// base is a slice-typed VALUE with no addressable place — the checker lowers
+// foo()[i] (indexing a call's slice result directly) to a bare CheckedIndex
+// because a call result has no place to address, exactly the reason str
+// indexing lowers to a bare CheckedIndex rather than Load(CheckedIndexPlace),
+// and indexing a method call's slice result inline inside a print statement is
+// an ordinary operation real code hits. Unlike str indexing — whose element
+// read is a stateless UTF-8 decode function, pebble_rt_str_char_at_<suffix>,
+// safely callable on the base expression directly even repeatedly — a
+// slice/array element read needs the base's .data pointer AND its .len (for
+// the bounds check), so a freshly-computed base (a call result) must be
+// materialized ONCE into a temp local before the read: evaluating the base
+// twice (once for .len, once for .data) would run the underlying call twice —
+// wrong (side effects run twice) and wasteful. The returned (pre, expr) pair
+// follows the two-statement shape buildSliceConstruction established for
+// exactly this "evaluate an expression once, then use its pieces multiple
+// times" problem: pre is a leading temp-declaration statement the caller must
+// place in its enclosing statement sequence before the expression (empty when
+// the base is a pure projection safe to reference twice — a SymbolValue
+// naming a slice-typed local, or a Load of a slice-typed place, both
+// side-effect-free lvalues, the same reasoning the slice-of-slice re-slicing
+// fix used), expr is the indexed element read.
+//
+// Exactly four base shapes are accepted:
+//
+//   - a SymbolValue naming a slice-typed local in scope — emitted as the
+//     local's own pebble_local_<symbol> C name, no temp (a pure projection);
+//   - a Load of a slice-typed place (a slice-typed struct field read off an
+//     addressable receiver) — emitted as the place's own lvalue
+//     (buildPlaceLValue), no temp;
+//   - a DirectCall/MethodCall whose result type is a slice — built ONCE via
+//     buildDirectCallWithPre into a temp local of the slice's own C type, then
+//     read off the temp;
+//   - a FieldValue reading a slice-typed field off a call result
+//     (`make_bag().data[i]`) — the call receiver is built once and the field
+//     read <receiver>.pebble_field_<member> materialized into the same temp.
+//
+// Anything else that resolves to a slice/array type (an array literal, an
+// array-typed call result) is a clean rejection naming what was found — such a
+// base is not buildable by buildExpr, so there is no way to materialize it
+// without inventing a new array-temp lowering. The read is emitted as the same
+// real runtime bounds check every other indexing path in this backend
+// performs: <base>.data[pebble_rt_checked_index_<suffix>(<index>, (<cType>)
+// <base>.len, <loc>)].
+//
+// The result's type is the slice's element type (node.Type), which the caller
+// has already validated is what its context needs; wantBool selects the bool
+// grammar exactly as buildArrayPlaceRead's wantBool does (a bool element is
+// required), and any other element must satisfy isSupportedSliceElementType —
+// the same restriction buildArrayPlaceRead and buildSliceConstruction enforce,
+// never a new one. The index is built by the exact four-shape dispatch
+// buildArrayPlaceRead and the CheckedIndexPlace path use (see
+// buildSliceIndexOperand). id is the CheckedIndex node's own NodeID, used to
+// name the temp (pebble_slice_index_<id>) so it can never collide with any
+// other temp this backend emits. width is the entry's resolved integer width,
+// used for the checked-index helper's suffix, the .len width cast, and the
+// index's own width.
+func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, string, error) {
+	if len(node.Children) != 2 {
+		return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex with %d child(ren), want exactly two (the slice value being indexed and the index)", len(node.Children))
+	}
+	baseNode, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
+	}
+	indexNode, ok := unit.Node(node.Children[1])
+	if !ok {
+		return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid index node %d", node.Children[1])
+	}
+	// Unwrap grouped-expression parens on the base (a SourceAlias): the
+	// grouped base carries the same Type the SourceAlias did, so the dispatch
+	// below is exactly what the checker validated.
+	for baseNode.Kind == tir.SourceAlias {
+		if len(baseNode.Children) != 1 {
+			return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex whose base SourceAlias has %d child(ren), want exactly one", len(baseNode.Children))
+		}
+		baseNode, ok = unit.Node(baseNode.Children[0])
+		if !ok {
+			return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", baseNode.Children[0])
+		}
+	}
+	// Resolve the base's slice type and its C expression, plus the leading
+	// temp-declaration statement a freshly-computed base needs.
+	var sliceType types.TypeID
+	var baseExpr, pre string
+	switch baseNode.Kind {
+	case tir.SymbolValue:
+		info, declared := locals[baseNode.Symbol]
+		if !declared || info.sliceType == 0 {
+			return "", "", fmt.Errorf("entry function body expression indexes symbol %d, which is not a slice-typed local declared earlier in the body", baseNode.Symbol)
+		}
+		sliceType = info.sliceType
+		baseExpr = fmt.Sprintf("pebble_local_%d", baseNode.Symbol)
+	case tir.Load:
+		if len(baseNode.Children) != 1 {
+			return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex whose base Load has %d child(ren), want exactly one place", len(baseNode.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, baseNode.Children[0], locals, width)
+		if err != nil {
+			return "", "", fmt.Errorf("entry function body expression slice-index base read: %v", err)
+		}
+		if !isSlice(snapshot, placeType) {
+			return "", "", fmt.Errorf("entry function body expression indexes a Load of a place of type %s, want a slice-typed place", describeType(snapshot, placeType))
+		}
+		sliceType = placeType
+		baseExpr = lvalue
+	case tir.DirectCall, tir.MethodCall:
+		// A slice-typed call result indexed directly (`view()[0]`,
+		// `b.view()[1]`): the call is built ONCE into a temp local holding the
+		// slice VALUE, and the bounds check plus element read run off the
+		// temp's own .data/.len. The temp name derives from the CheckedIndex
+		// node's own NodeID — the only stable identity in hand here (a bare
+		// index has no local symbol to name it from), distinct from the
+		// pebble_slice_start_<symbol> and pebble_slice_ret_<nodeID> temps so
+		// the three can never collide.
+		if !isSlice(snapshot, baseNode.Type) {
+			return "", "", fmt.Errorf("entry function body expression indexes a %s whose result type is %s, want a slice-typed call result", baseNode.Kind, describeType(snapshot, baseNode.Type))
+		}
+		sliceType = baseNode.Type
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, baseNode, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		tempName := fmt.Sprintf("pebble_slice_index_%d", id)
+		pre = fmt.Sprintf("%s %s = %s;", sliceTypeName(sliceType), tempName, callExpr)
+		if callPre != "" {
+			pre = callPre + "\n" + pre
+		}
+		baseExpr = tempName
+	case tir.FieldValue:
+		// A slice-typed struct field read off a call result
+		// (`make_bag().data[i]`): the FieldValue's single child is the struct
+		// receiver, and the field is read as <receiver>.pebble_field_<member> —
+		// the same designated-field naming every other struct field this
+		// backend emits uses (see buildStructFieldRead). The only supported
+		// receiver is a DirectCall/MethodCall (the sole checker-reachable way
+		// to obtain a non-addressable struct value; a struct LOCAL's field
+		// indexes as a place and never reaches a bare CheckedIndex); the field
+		// read off the call result is materialized into a temp because the
+		// call would otherwise run twice (once for .len, once for .data).
+		if !isSlice(snapshot, baseNode.Type) {
+			return "", "", fmt.Errorf("entry function body expression indexes a FieldValue of type %s, want a slice-typed struct field", describeType(snapshot, baseNode.Type))
+		}
+		if len(baseNode.Children) != 1 {
+			return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex whose base FieldValue has %d child(ren), want exactly one (the struct receiver)", len(baseNode.Children))
+		}
+		receiver, ok := unit.Node(baseNode.Children[0])
+		if !ok {
+			return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid receiver node %d", baseNode.Children[0])
+		}
+		if receiver.Kind != tir.DirectCall && receiver.Kind != tir.MethodCall {
+			return "", "", fmt.Errorf("entry function body expression indexes a slice-typed struct field of a %s receiver, want a call result (a non-addressable struct value only arises from a call; a struct local's field indexes as a place)", receiver.Kind)
+		}
+		sliceType = baseNode.Type
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, receiver, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		tempName := fmt.Sprintf("pebble_slice_index_%d", id)
+		pre = fmt.Sprintf("%s %s = (%s).pebble_field_%d;", sliceTypeName(sliceType), tempName, callExpr, baseNode.Member)
+		if callPre != "" {
+			pre = callPre + "\n" + pre
+		}
+		baseExpr = tempName
+	default:
+		return "", "", fmt.Errorf("entry function body expression indexes a %s of type %s, want a slice-typed value (a slice-typed local, a slice-typed place, a call returning a slice, or a slice-typed field of a call result); indexing an array literal or array-typed call result directly is not lowered", baseNode.Kind, describeType(snapshot, baseNode.Type))
+	}
+	sliceKey, ok := snapshot.Key(sliceType)
+	if !ok {
+		return "", "", fmt.Errorf("entry function body expression indexes a slice value whose type %d is not in the type snapshot", sliceType)
+	}
+	element, ok := sliceKey.Child()
+	if !ok {
+		return "", "", fmt.Errorf("entry function body expression indexes a slice value of type %s, which has no element type", describeType(snapshot, sliceType))
+	}
+	if wantBool {
+		if !isBool(snapshot, element) {
+			return "", "", fmt.Errorf("entry function body expression indexes a slice whose element type is %s, want bool", describeType(snapshot, element))
+		}
+	} else if !isSupportedSliceElementType(unit, snapshot, element) {
+		return "", "", fmt.Errorf("entry function body expression indexes a slice whose element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
+	}
+	index, err := buildSliceIndexOperand(unit, snapshot, fileSet, node.Children[1], indexNode, locals, width)
+	if err != nil {
+		return "", "", err
+	}
+	read := fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len, %s)]", baseExpr, checkedSuffix(width), index, cType(width), baseExpr, buildSourceLoc(fileSet, node.Span))
+	return pre, read, nil
+}
+
+// buildSliceIndexOperand builds the C text for one slice-index expression, the
+// index child of a bare CheckedIndex, using the exact four-shape dispatch
+// buildArrayPlaceRead and the CheckedIndexPlace path use (the same dispatch
+// this file's str-indexing case also mirrors): an int-typed IntegerLiteral is
+// emitted as its decimal text, an int-typed SymbolValue (a range loop's
+// iterator referenced directly — the unanchored-int case, always declared at
+// the entry's width) as its pebble_local_<symbol> C name, a uint-typed index
+// via the dedicated buildUintExpr grammar (the general buildExpr path rejects
+// a uint-typed value), and anything else via buildExpr.
+func buildSliceIndexOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, indexID tir.NodeID, indexNode tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
+		if !isNonNegativeDecimal(indexNode.Literal.IntegerNum) {
+			return "", fmt.Errorf("slice index contains an integer literal with malformed text %q", indexNode.Literal.IntegerNum)
+		}
+		return indexNode.Literal.IntegerNum, nil
+	}
+	if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
+		if _, declared := locals[indexNode.Symbol]; !declared {
+			return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", indexNode.Symbol), nil
+	}
+	if isUint(snapshot, indexNode.Type) {
+		index, err := buildUintExpr(unit, snapshot, fileSet, indexID, locals, width)
+		if err != nil {
+			return "", fmt.Errorf("slice index: %v", err)
+		}
+		return index, nil
+	}
+	index, err := buildExpr(unit, snapshot, fileSet, indexID, locals, width, width)
+	if err != nil {
+		return "", fmt.Errorf("slice index: %v", err)
+	}
+	return index, nil
+}
+
+// checkedIndexBaseIsStr reports whether a bare CheckedIndex's base is a str
+// value — the str-indexing case buildCharOperand's CheckedIndex case handles,
+// whose element read is the stateless UTF-8 decoder callable on the base
+// directly — versus a slice-typed value, the case buildSliceIndexValue handles
+// and which needs a base materialized into a temp. The base is unwrapped past
+// any SourceAlias (grouped-expression parens) transparently, exactly as
+// buildPrint unwraps a print operand; the unwrapped base carries the same Type
+// the SourceAlias did, so the check is exactly what the checker validated.
+func checkedIndexBaseIsStr(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node) (bool, error) {
+	if len(node.Children) < 1 {
+		return false, fmt.Errorf("entry function body expression contains a CheckedIndex with %d child(ren), want at least one (the value being indexed)", len(node.Children))
+	}
+	base, ok := unit.Node(node.Children[0])
+	if !ok {
+		return false, fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
+	}
+	for base.Kind == tir.SourceAlias {
+		if len(base.Children) != 1 {
+			return false, fmt.Errorf("entry function body expression contains a CheckedIndex whose base SourceAlias has %d child(ren), want exactly one", len(base.Children))
+		}
+		base, ok = unit.Node(base.Children[0])
+		if !ok {
+			return false, fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", base.Children[0])
+		}
+	}
+	return isStr(snapshot, base.Type), nil
 }
 
 // buildTupleElement builds the C text for reading one element of a tuple local
@@ -12343,6 +12709,36 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, FieldPlace, or DereferencePlace", place.Kind)
 		}
 		return buildTuplePlaceRead(unit, snapshot, fileSet, place, locals, width, true)
+	case tir.CheckedIndex:
+		// A bare CheckedIndex in a pure bool-expression position — a
+		// slice-element read of a bool-typed value with no addressable place
+		// (`boolview()[0]` as a condition, a && / || operand, or a call
+		// argument), the bool twin of buildExpr's CheckedIndex case. Same
+		// pre-threading rule: a pure-projection base (a slice-typed local or
+		// place, which needs no temp) is emitted directly; a freshly-computed
+		// base (a call result) needs a temp-declaration statement this
+		// position has nowhere to place and is a clean rejection — the
+		// positions that CAN host a temp (a print, a local declaration, a
+		// return) intercept the shape before reaching this case.
+		strBase, err := checkedIndexBaseIsStr(unit, snapshot, node)
+		if err != nil {
+			return "", err
+		}
+		if strBase {
+			return "", fmt.Errorf("entry function body expression contains a str index whose result type is %s, want bool", describeType(snapshot, node.Type))
+		}
+		pre, read, err := buildSliceIndexValue(unit, snapshot, fileSet, id, node, locals, width, true)
+		if err != nil {
+			return "", err
+		}
+		if pre != "" {
+			base, ok := unit.Node(node.Children[0])
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a CheckedIndex referencing invalid base node %d", node.Children[0])
+			}
+			return "", fmt.Errorf("entry function body expression indexes a %s of type %s in a pure-expression position with nowhere to place the temp-declaration statement the freshly-computed slice value needs; bind the slice into a local first", base.Kind, describeType(snapshot, base.Type))
+		}
+		return read, nil
 	case tir.TupleElementValue:
 		// Defense for hand-built IR, exactly like buildExpr's TupleElementValue
 		// case: the checker never produces this shape for a bool element read of

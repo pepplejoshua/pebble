@@ -8155,11 +8155,16 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 func TestEmitRejectsNonStrCheckedIndex(t *testing.T) {
 	// Indexing an array literal directly (['h', 'i'][0]) is reachable from
 	// real source and lowers to a bare CheckedIndex too — an array literal
-	// has no addressable place, so it cannot form a Load(CheckedIndexPlace) —
-	// but this slice only lowers a str base. It is therefore a clean
-	// rejection naming what was found (the ArrayValue base and its [2]char
-	// type), never a guessed lowering.
-	emitAndRunRejects(t, "fn main() i32 { let c char = ['h', 'i'][0]; return 0; }", "indexes a ArrayValue of type [2]char, want str")
+	// has no addressable place, so it cannot form a Load(CheckedIndexPlace).
+	// A str base and a slice-typed base (a call result, a slice-typed local
+	// or place) are both accepted (see buildSliceIndexValue), but an
+	// ARRAY-typed base still is not — there is no way to materialize an
+	// array literal's value without inventing a new array-temp lowering.
+	// This remains a clean rejection naming what was found (the ArrayValue
+	// base and its [2]char type), never a guessed lowering; only the
+	// message wording changed (from "want str" to naming the now-wider set
+	// of accepted base shapes) when the slice-typed-base case was added.
+	emitAndRunRejects(t, "fn main() i32 { let c char = ['h', 'i'][0]; return 0; }", "indexes a ArrayValue of type [2]char, want a slice-typed value")
 }
 
 // 10.26 — tuple- and struct-typed function return types
@@ -10651,6 +10656,115 @@ fn main() int {
 		}
 	}
 	compileAndRun(t, buf.Bytes(), 30, false)
+}
+
+func TestEmitPrintIndexesMethodCallSliceResultCompilesAndRuns(t *testing.T) {
+	// The confirmed real-world blocking shape: indexing a MethodCall's slice
+	// result directly inside a print statement (`print b.view()[1];`,
+	// examples/read_file.peb's original contents.as_slice()[i] pattern before
+	// it was rewritten to a workaround). The base (b.view()) has no
+	// addressable place, so the checker lowers this to a bare CheckedIndex;
+	// buildPrint threads buildSliceIndexValue's leading temp-declaration
+	// statement into the print statement's own sequence. Captured stdout
+	// asserts the printed value is the correct element (20, index 1 of
+	// [10,20,30]) - not just that Emit succeeded.
+	output := emitAndRunCapture(t, `type Bag = struct {
+    data []i32;
+    fn view(self Bag) []i32 { return self.data[:]; }
+};
+fn main() int {
+    var a [3]i32 = [10, 20, 30];
+    var b Bag = Bag.{ data = a[:] };
+    print b.view()[1];
+    return 0;
+}`, false, 0, false)
+	if output != "20\n" {
+		t.Fatalf("captured output = %q, want %q", output, "20\n")
+	}
+}
+
+func TestEmitPrintIndexesMethodCallSliceResultEvaluatesBaseOnce(t *testing.T) {
+	// Correctness-critical: the base method call must run EXACTLY ONCE, not
+	// once for the bounds-check .len and again for the .data read - a naive
+	// lowering that referenced the call expression twice would run the
+	// call's side effect (here, a print) twice. The helper prints 99 as its
+	// own side effect before returning the slice; capturing stdout and
+	// counting occurrences of "99" proves single evaluation.
+	output := emitAndRunCapture(t, `type Bag = struct {
+    data []i32;
+    fn view(self Bag) []i32 { print 99; return self.data[:]; }
+};
+fn main() int {
+    var a [3]i32 = [10, 20, 30];
+    var b Bag = Bag.{ data = a[:] };
+    print b.view()[1];
+    return 0;
+}`, false, 0, false)
+	if want := "99\n20\n"; output != want {
+		t.Fatalf("captured output = %q, want %q (base call must be evaluated exactly once)", output, want)
+	}
+}
+
+func TestEmitPrintIndexesMethodCallSliceResultCharElementCompilesAndRuns(t *testing.T) {
+	// The char-element twin: indexing a MethodCall's []char result directly
+	// inside print - the exact type read_file.peb's contents.as_slice()[i]
+	// shape needed. Routed through buildCharOperand's CheckedIndex case
+	// (distinct from the i32 case's buildExpr path) via the same
+	// buildSliceIndexValue helper.
+	output := emitAndRunCapture(t, `type Box = struct {
+    data []char;
+    fn view(self Box) []char { return self.data[:]; }
+};
+fn main() int {
+    var a [3]char = ['h', 'i', '!'];
+    var b Box = Box.{ data = a[:] };
+    print b.view()[1];
+    return 0;
+}`, false, 0, false)
+	if output != "i\n" {
+		t.Fatalf("captured output = %q, want %q", output, "i\n")
+	}
+}
+
+func TestEmitIndexesSliceTypedFieldDirectlyCompilesAndRuns(t *testing.T) {
+	// The "cheap to duplicate" base shape: indexing a slice-typed struct
+	// field directly (self.data[i], a Load of a slice-typed place) needs no
+	// temp - it's a pure, side-effect-free projection, safe to reference
+	// twice (once for the bounds-check .len, once for .data). This must keep
+	// working exactly as before this fix (it was already reachable via
+	// Load(CheckedIndexPlace) for an addressable receiver).
+	emitAndRun(t, `type Bag = struct {
+    data []i32;
+    fn peek(self Bag) i32 { return self.data[1]; }
+};
+fn main() int {
+    var a [3]i32 = [10, 20, 30];
+    var b Bag = Bag.{ data = a[:] };
+    return b.peek();
+}`, false, 20, false)
+}
+
+func TestEmitRejectsMethodCallSliceIndexOutOfBoundsAbnormalExit(t *testing.T) {
+	// Regression guard: bounds checking must not be silently dropped for the
+	// new call-result base shape. An out-of-range index against a
+	// freshly-computed slice base must still abort at runtime, exactly like
+	// every other indexing path in this backend (see
+	// TestEmitArrayOutOfBoundsAborts for the same wantAbnormal convention).
+	// print, not return, is the supported position for this base shape (a
+	// plain return of an indexed call-result slice is a clean, documented
+	// rejection - the pre-threading this fix adds only covers positions
+	// with a statement sequence to host the temp; print/buildLeadingStatement
+	// is one, a scalar return via the general buildExpr path is not).
+	emitAndRun(t, `type Bag = struct {
+    data []i32;
+    fn view(self Bag) []i32 { return self.data[:]; }
+};
+fn main() int {
+    var a [3]i32 = [10, 20, 30];
+    var b Bag = Bag.{ data = a[:] };
+    print b.view()[10];
+    return 0;
+}`, false, 0, true)
 }
 
 // --- Struct fields: slice-typed fields constructed inline ---
