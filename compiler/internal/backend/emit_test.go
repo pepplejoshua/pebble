@@ -539,6 +539,40 @@ func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitRuntimeAllocatorRecordConstructBoundaryPin(t *testing.T) {
+	// TEMPORARY boundary pin for Allocator backend Slice 1: constructing an
+	// Allocator literal (Allocator.{ ptr, alloc, realloc, free }) from source is
+	// a RecordConstruct whose Type is the nominal Allocator runtime type.
+	// collectStructTypesWalk previously appended that type to the struct
+	// collection, and resolveStructInfo then failed because the
+	// compiler-injected Allocator has no parsed TypeDeclaration in the unit.
+	// collectStructTypesWalk now skips a RecordConstruct's own type when
+	// runtimeType(unit, snapshot, node.Type) != 0, so the struct collection pass
+	// succeeds — the old "has no TypeDeclaration" error is gone — and emission
+	// reaches the next independent boundary: the custom Allocator callbacks
+	// (alloc/realloc/free) require function types with pointer parameters and
+	// pointer results, and buildFunctionTypedef's
+	// validateFunctionTypeSignature rejects a pointer parameter as a function-
+	// value signature shape the backend cannot build as a call argument. That
+	// pointer-bearing function-signature gap is out of scope here (it is a
+	// separate backend gap, not the struct-collection rejection this slice
+	// fixes); Slice 2 must replace this test with a positive compile-run test
+	// when runtime record emission AND pointer-bearing function-value
+	// signatures are implemented.
+	emitAndRunRejects(t, `fn my_alloc(ctx *void, size uint) *void { return nil; }
+fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
+fn my_free(ctx *void, ptr *void) void {}
+fn main() int {
+    var a = Allocator.{
+        ptr = nil,
+        alloc = my_alloc,
+        realloc = my_realloc,
+        free = my_free,
+    };
+    return 0;
+}`, "parameter 0 has type *void")
+}
+
 func TestEmitStructWithUintFieldCompilesAndRuns(t *testing.T) {
 	// An ordinary (non-generic) struct field typed as uint -- the same narrow
 	// entry-width/bool-only gate already widened this session for optional

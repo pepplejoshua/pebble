@@ -1750,7 +1750,10 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 // initializer value carries a struct type (a struct-typed local declaration —
 // the local's type is recorded on the initializer value node, not on the
 // Initialize node itself, confirmed against a real fixture, the same finding
-// tuple/array/optional collection made). The same walk also records, in
+// tuple/array/optional collection made). A RecordConstruct whose own type is a
+// compiler-builtin runtime type (Allocator, Context) is excluded — it has no
+// TypeDeclaration in the unit, so resolveStructInfo could never resolve it
+// (see the guard on its append below). The same walk also records, in
 // fieldTypes, every field symbol's resolved type from exactly the two nodes
 // that carry it: a RecordConstruct field value node's own Type, and a
 // FieldPlace node's Type — the only in-unit sources of a field's type, since
@@ -1761,7 +1764,21 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 		return fmt.Errorf("struct-type walk references invalid node %d", nodeID)
 	}
 	if node.Kind == tir.RecordConstruct {
-		*out = append(*out, node.Type)
+		// A compiler-builtin runtime type (Allocator, Context) is Nominal like
+		// a struct but is never a parsed user struct: it has no TypeDeclaration
+		// in the unit, so resolveStructInfo would fail on it, and its C typedef
+		// (PebbleAllocator / PebbleContext) is hand-written in the emitted
+		// header. A source-level Allocator literal lowers to a RecordConstruct
+		// (e.g. std/alloc.peb's Allocator.{ ptr, alloc, realloc, free }), so a
+		// runtime-typed construction must be excluded from the struct
+		// collection here — the same runtimeType guard the Initialize,
+		// Parameters, and ResultType collection paths already use. Its field
+		// value types are still recorded and its field values still recurse
+		// below, so nested ordinary structs inside a runtime construction keep
+		// their typedefs.
+		if runtimeType(unit, snapshot, node.Type) == 0 {
+			*out = append(*out, node.Type)
+		}
 		for _, field := range node.Fields {
 			if value, ok := unit.Node(field.Value); ok && value.Type != 0 {
 				fieldTypes[field.Field] = value.Type
