@@ -679,13 +679,17 @@ not a real check failure). `math` found a genuine new gap:
       DirectCall-as-uint-initializer shape, not specifically
       `read_all`'s own path.
 - [ ] **[generator] New backend gap exposed by the fix above: a
-      slice-typed place built from a `Load`.** Surfaces re-running
-      `examples/read_file.peb` after the `buildUintExpr` `DirectCall`
-      fix above — a different, separate error about a slice's base
-      being built from a `Load` node, not yet root-caused precisely
-      (exact error text, function/line, and the real source shape
-      triggering it not yet pinned down) or scoped for dispatch. Not a
-      regression — emission never previously reached this point.
+      return statement's slice base built from a `Load`.** Confirmed
+      exact error re-running `examples/read_file.peb`: `pebc: emission
+      failed: entry function body return statement slice base is a
+      Load, want a SymbolValue naming an array local`. Likely
+      `std/string.peb`'s `String::as_slice()` (or similar) returning a
+      slice-typed struct field directly (`return self.data;`, a
+      `Load(FieldPlace)`) rather than through an already-declared
+      local — the slice-return builder only accepts a bare
+      `SymbolValue`. Not yet root-caused precisely (exact function/line
+      not pinned down) or scoped for dispatch. Not a regression —
+      emission never previously reached this point.
 
 ---
 
