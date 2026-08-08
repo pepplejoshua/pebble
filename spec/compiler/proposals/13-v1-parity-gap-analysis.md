@@ -705,6 +705,49 @@ not a real check failure). `math` found a genuine new gap:
       -slicing tests pass unchanged (no regression to the original
       path). Re-verified against the real `std/string.peb`:
       `String::as_slice()` now compiles and runs end-to-end.
+- [x] **STALE, file rewritten (`d24779f`) — `examples/read_file.peb`'s
+      `contents.as_slice()[i]` indexed directly into a fresh
+      `MethodCall` result inside the loop body.** This hits a
+      deliberate, documented backend limitation: `buildExpr`'s
+      `CheckedIndex` case only accepts a `str`-typed base — indexing a
+      value with no addressable place (a slice/array construction or
+      call result, not a local/field) is confirmed supported for `str`
+      only, and the case's own doc comment explicitly names the
+      non-str shape ("indexing an array literal directly") as a clean,
+      deliberate rejection, not a bug. Sidestepped (not closed) by
+      binding `as_slice()`'s result to a local once before the loop —
+      more idiomatic anyway (avoids re-calling `as_slice()` every
+      iteration), matching the "bind to a local first" guidance already
+      established multiple times this session for genuinely
+      out-of-scope expression positions. The underlying checker
+      -indexing-a-MethodCall-result limitation is still real and
+      unimplemented, but no longer blocks any file in the tree.
+- [ ] **[generator] New, foundational, general gap found verifying
+      `read_file.peb` further: `extern { type FILE; }` (an opaque
+      extern type with no body) emits as a synthesized
+      `pebble_struct_<N>_t*` instead of mapping to its real C type
+      (`FILE`, already available via the `<stdio.h>` preamble
+      `hasCExterns` already includes).** Confirmed via a minimal
+      standalone repro (`extern { type FILE; fn fopen(...) *FILE; fn
+      fclose(file *FILE) i32; } fn main() int { var f = fopen(...);
+      fclose(f); return 0; }`) — `cc` rejects the emitted C outright:
+      `fopen`/`fclose`/etc. all expect a real `FILE *`, but the backend
+      passes a `pebble_struct_23_t *` it invented for the opaque type
+      instead. This blocks `std/io.peb`'s entire `FILE`/`DIR`-based API
+      (`open`, `close`, `read`, `read_all`, `read_line`, `seek`, `tell`,
+      `filesize`, `flush`, `is_eof`, `get_file_error`, `is_dir`, and
+      more) from ever actually compiling to a working binary — not
+      previously reachable in `examples/read_file.peb` because earlier
+      gaps (now all closed) failed first. Confirmed pre-existing, not a
+      regression — verified via `git stash` that the error surfaces
+      identically without today's `read_file.peb` edit, just masked by
+      the (now-fixed) earlier `MethodCall`-indexing rejection. Not yet
+      root-caused precisely (exact function/line handling `extern type`
+      declarations not pinned down) or scoped for dispatch — likely
+      needs the extern-type declaration's OWN name threaded through as
+      the emitted C type instead of synthesizing a struct, for any
+      `extern type` with no body (an opaque type, as opposed to a
+      transparent struct-mapped extern type, if any exists).
 
 ---
 
