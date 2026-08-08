@@ -924,7 +924,9 @@ not a real check failure). `math` found a genuine new gap:
       `compiler/std/mem/arena.peb` (8 occurrences) — the same staleness
       pattern already fixed elsewhere this session. Found sweeping
       `std/*.peb` for compile status.
-- [ ] **[checker] New, precisely root-caused bug found sweeping
+- [~] **[checker] `Allocator` record construction's symbol-resolution
+      failure is fixed (`c4117b5`); a separate backend-emission gap now
+      remains.** New, precisely root-caused bug found sweeping
       `std/*.peb` further: a record literal (`Type.{ field = value }`)
       cannot be constructed for a RUNTIME/builtin nominal type
       (`Allocator`) — every field is rejected with `N0001: type has no
@@ -971,7 +973,28 @@ not a real check failure). `math` found a genuine new gap:
       `resolveRecord` needs the same kind-based guard `resolveMember`
       already has, deferring early validation for a non-`SymbolType`/
       `SymbolExternType` owner (at minimum `SymbolRuntimeType`) to the
-      later type-driven resolution phase. Not yet dispatched.
+      later type-driven resolution phase. The initial diagnosis was
+      incomplete: simply deferring a runtime record field does not work,
+      because `prepareRecord` and `buildRecordConstruct` require its stable
+      member symbol. `c4117b5` resolves the known compiler-injected runtime
+      member directly from `result.members`, while unknown names remain
+      deferred for the later diagnostic phase. This removes the exact four
+      `N0001` errors and produces valid typed IR; causation was verified by
+      restoring the old `visit.go`, which reproduced all four errors.
+      It exposes the separate emission gap below.
+
+- [ ] **[generator] A typed-IR `Allocator.{ ... }` runtime record cannot yet
+      emit C.** Found after the checker fix `c4117b5`: backend aggregate
+      collection expects every `tir.RecordConstruct.Symbol` to name a parsed
+      `TypeDeclaration`; `Allocator` is a compiler-injected runtime type, so
+      the backend rejects its construction with `struct type has no
+      TypeDeclaration`. The C runtime already provides the exact target type
+      (`PebbleAllocator`) and the backend already maps runtime field reads to
+      its `ptr`/`alloc`/`realloc`/`free` members. This needs a narrow
+      `RecordConstruct` runtime-type emission path that builds a
+      `PebbleAllocator` C99 designated initializer, including the existing
+      function-pointer calling convention. It blocks `std/mem/arena.peb`'s
+      `allocator()` from compiling end to end. Not yet scoped or dispatched.
 
 ---
 
