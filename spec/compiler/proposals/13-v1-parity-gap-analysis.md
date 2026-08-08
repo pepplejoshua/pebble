@@ -678,18 +678,33 @@ not a real check failure). `math` found a genuine new gap:
       graph) — this fix's real-world relevance is the general
       DirectCall-as-uint-initializer shape, not specifically
       `read_all`'s own path.
-- [ ] **[generator] New backend gap exposed by the fix above: a
-      return statement's slice base built from a `Load`.** Confirmed
-      exact error re-running `examples/read_file.peb`: `pebc: emission
-      failed: entry function body return statement slice base is a
-      Load, want a SymbolValue naming an array local`. Likely
-      `std/string.peb`'s `String::as_slice()` (or similar) returning a
-      slice-typed struct field directly (`return self.data;`, a
-      `Load(FieldPlace)`) rather than through an already-declared
-      local — the slice-return builder only accepts a bare
-      `SymbolValue`. Not yet root-caused precisely (exact function/line
-      not pinned down) or scoped for dispatch. Not a regression —
-      emission never previously reached this point.
+- [x] **CLOSED (`6eb5a63`) — re-slicing an existing slice-typed value
+      (not just a fixed-size array).** `buildSliceConstruction`
+      required its base to be a bare `SymbolValue` naming an
+      ARRAY-typed local — `std/string.peb`'s `String::as_slice()` does
+      `return self.data[:self.len];`, where `self.data` is `[]char` (a
+      slice FIELD, not an array), lowering to a `Load(FieldPlace)`
+      base, which failed with `entry function body return statement
+      slice base is a Load, want a SymbolValue naming an array local`.
+      Slicing an array and re-slicing a slice need genuinely different
+      C (an array decays to a pointer with a compile-time length; a
+      slice base has no compile-time length — the new slice's `.data`
+      must offset the EXISTING slice's own runtime `.data`, and the
+      bounds-check upper limit is the existing slice's runtime `.len`).
+      Fixed by adding a second accepted base shape alongside the
+      UNCHANGED array path: a `Load` of a slice-typed place builds its
+      C lvalue via `buildPlaceLValue`, using `<lvalue>.len`/
+      `<lvalue>.data` in place of the array path's compile-time
+      length/decay. No runtime-helper changes needed — the bounds
+      -check helper already accepts its length argument as a plain C
+      expression. Three new tests: the exact `as_slice()` shape (run,
+      correct value); the explicit-start-bound twin (proving the
+      offset math against the base's own `.data`); an emitted-C shape
+      assertion. Causation confirmed (revert reproduces the exact
+      original error; restore passes again); the pre-existing array
+      -slicing tests pass unchanged (no regression to the original
+      path). Re-verified against the real `std/string.peb`:
+      `String::as_slice()` now compiles and runs end-to-end.
 
 ---
 
