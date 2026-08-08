@@ -132,8 +132,6 @@ type HashMap[K, V] = struct {
 
             index = (index + 1) % self.cap;
         }
-
-        return none;
     }
 
     // Returns a value directly.
@@ -174,8 +172,6 @@ type HashMap[K, V] = struct {
 
             index = (index + 1) % self.cap;
         }
-
-        return false;
     }
 
     // Remove all key-value pairs but keep capacity.
