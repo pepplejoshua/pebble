@@ -2775,6 +2775,80 @@ func buildWhileAsTailUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Symb
 	return unit, snapshot, entryID
 }
 
+// buildWhileTrueWithBreakAsTailUnit hand-builds a unit whose i32 entry body's
+// only child is a While whose condition is the literal boolean true but whose
+// loop body contains a Break targeting the loop's own Region (and a Return, so
+// the rejection is specifically about the break). Real source can never produce
+// this shape as a non-void tail: the checker rejects a while-true loop with a
+// break as a non-void function tail (C0607 — the break lets control fall
+// through past the loop), so it is constructed directly through the IR builder,
+// the same pattern buildWhileAsTailUnit uses, to exercise Emit's own
+// terminalWhileIsExhaustive criterion that an accepted terminal while must
+// contain no Break whose Target is the loop's Region. The type snapshot is
+// borrowed from a checker-built fixture so every TypeID the hand-built nodes
+// reference is owned by the snapshot.
+func buildWhileTrueWithBreakAsTailUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+	boolT := snapshot.Builtins().Bool
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	condition, err := builder.AddNode(tir.Node{
+		Kind:    tir.BoolLiteral,
+		Type:    boolT,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralBool, Bool: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	brk, err := builder.AddNode(tir.Node{
+		Kind:   tir.Break,
+		Target: region,
+		Span:   source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "1")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{brk, ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	whileNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.While,
+		Region:   region,
+		Children: []tir.NodeID{condition, bodyBlock},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{whileNode})
+}
+
 // buildSiblingArmLocalLeakUnit hand-builds a unit whose i32 entry is a
 // two-armed if/else where the then-arm declares a local (symbol 25, bound to
 // 100) but the else-arm's return references that same symbol 25. Real source
@@ -3747,14 +3821,64 @@ func TestEmitWhileOverflowInBodyAborts(t *testing.T) {
 }
 
 func TestEmitRejectsWhileAsTail(t *testing.T) {
-	// A while can only be a leading statement in the block grammar, never the
-	// block's tail: a while does not satisfy the "must end in return or if"
-	// requirement a block's tail has. The checker itself rejects this shape
+	// A terminal while is only accepted as the block's tail when it is
+	// exhaustive — a literal `true` condition with no break targeting the
+	// loop (see terminalWhileIsExhaustive). This unit's loop is the opposite:
+	// its condition is a comparison (`1 < 2`, a tir.BinaryValue), which can
+	// exit normally, so a non-void body ending in it falls through and stays
+	// rejected. The checker itself rejects this shape
 	// from real source (C0607: non-void function can fall through without
 	// returning — a while's condition evaluation does not guarantee a return),
 	// so this unit is hand-built through the IR builder to exercise Emit's own
-	// rejection of a While as the last child of the entry body block.
+	// rejection of a non-exhaustive While as the last child of the entry body
+	// block.
 	unit, snapshot, entryID := buildWhileAsTailUnit(t)
+	assertEmitRejects(t, unit, snapshot, entryID)
+}
+
+func TestEmitTerminalWhileTrueEntryCompilesAndRuns(t *testing.T) {
+	// A non-void entry whose body ends directly in an exhaustive `while true`
+	// is now a supported tail shape: the checker accepts a constant-true loop
+	// with no break (control can never fall through past it), and the IR
+	// builder omits the ImplicitReturn tail for a non-void callable, so the
+	// entry body's final child is the raw While. The backend must lower that
+	// loop via the ordinary buildWhile path with no synthetic return — every
+	// exit from the loop is a return, so the C function never falls off the
+	// end. The loop's first (and only) pass returns 42 as the exit code.
+	emitAndRunBounded(t, "fn main() i32 { while true { return 42; } }", false, 42, false)
+}
+
+func TestEmitTerminalWhileTrueHelperCompilesAndRuns(t *testing.T) {
+	// The std/hmap and std/set helpers that motivated this slice are non-void
+	// reachable helpers whose bodies end in an exhaustive `while true`, not the
+	// entry itself — so the terminal-loop tail must be accepted by the same
+	// buildBlock a helper body uses (the exact same builder, just called from
+	// the helper path). f's body ends in the while and returns 7 on its first
+	// pass; main forwards f() as its exit code.
+	emitAndRunBounded(t, "fn f() i32 { while true { return 7; } } fn main() i32 { return f(); }", false, 7, false)
+}
+
+func TestEmitTerminalWhileTrueConditionalReturnCompilesAndRuns(t *testing.T) {
+	// The exact std/hmap get_by_ref / remove shape: a `while true` whose body
+	// is a conditional if whose arm returns, with no break anywhere. The loop
+	// never falls through (every iteration either returns from the if arm or
+	// loops again), so the non-void helper needs no trailing return after the
+	// loop. Calling f(5) returns on the first pass with x = 5.
+	emitAndRunBounded(t, "fn f(x i32) i32 { while true { if x == 5 { return x; } } } fn main() i32 { return f(5); }", false, 5, false)
+}
+
+func TestEmitRejectsWhileTrueWithBreakAsTail(t *testing.T) {
+	// A terminal while with a constant-true condition is only exhaustive when
+	// its loop body never breaks out of the loop itself: a break targeting the
+	// loop is the one way control can leave an otherwise-infinite loop and fall
+	// through past it, which a non-void body cannot allow without a trailing
+	// return. The checker itself rejects this shape from real source (C0607 —
+	// the break makes the loop fall through), so this unit is hand-built
+	// through the IR builder, the same pattern buildWhileAsTailUnit uses, to
+	// pin the backend's own criterion that a terminal while must contain no
+	// Break whose Target is the loop's Region. The loop body also carries a
+	// return so the rejection is specifically about the break, not the body.
+	unit, snapshot, entryID := buildWhileTrueWithBreakAsTailUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

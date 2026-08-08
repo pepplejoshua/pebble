@@ -25,7 +25,10 @@
 // by buildRangeLoop), and break/continue
 // statements (built by buildLoopJump), with no required tail (see
 // buildLoopBody); a while can only be a leading statement, never the block's
-// tail. A `loop start..end : name { <body> }` range loop (or `..=`, the
+// tail, except for one terminal shape: a final `while true { ... }` whose
+// loop body never breaks out of it (every exit is a return) is exhaustive
+// and may be the last statement of a non-void body, lowered by the same
+// buildWhile with no trailing return (see the tail switch's While case). A `loop start..end : name { <body> }` range loop (or `..=`, the
 // inclusive form) is a leading statement exactly like a while, lowering to a
 // C for loop whose loop counter IS the bound iterator (a tir.RangeLoop with
 // the iterator's own symbol.SymbolID on its Symbol field and Children
@@ -3574,10 +3577,13 @@ func validateEmptyBody(unit *tir.Unit, block tir.Node) error {
 // or more `for (<init>; <cond>; <update>) { <loop body> }` classic for loop
 // statements (one per For, built by buildFor), and zero or more range loop
 // statements (one per RangeLoop, built by buildRangeLoop) — a
-// loop is only ever a leading statement here, never the block's tail —
+// loop is a leading statement here except for one terminal shape — a while
+// is only ever a leading statement unless it is the block's final statement
+// and exhaustive (see the tail switch's While case) —
 // followed by a tail that is either the single `return <expression>;`, a
-// two-armed if/else built by buildIf, or a switch statement built by
-// buildSwitch; each if arm and each case body is itself a block under the
+// two-armed if/else built by buildIf, a switch statement built by
+// buildSwitch, or a terminal exhaustive `while true` loop built by the same
+// buildWhile; each if arm and each case body is itself a block under the
 // same grammar, so buildBlock recurses into both arms and case bodies.
 // width is the entry's
 // resolved integer width (types.Int, types.I32, or types.I64), threaded through to every
@@ -3614,8 +3620,10 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			return "", fmt.Errorf("entry function body block references invalid statement node %d", block.Children[i])
 		}
 		if statement.Kind == tir.While {
-			// A while loop is a leading statement in the block grammar, never
-			// the tail: it runs its body (which may itself declare locals and
+			// A while loop is a leading statement in the block grammar, the
+			// tail only when it is the block's final statement and exhaustive
+			// (see the tail switch's While case): a leading while runs its
+			// body (which may itself declare locals and
 			// reassign enclosing ones) as many times as its condition holds,
 			// then control falls through to the statements after it. The loop
 			// body is its own scope (buildWhile clones, exactly as buildIf's
@@ -3719,10 +3727,123 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			return "", err
 		}
 		statements = append(statements, switchText)
+	case tir.While:
+		// A terminal while — the final statement of a non-void body whose IR
+		// ends in a raw While (the IR builder omits the ImplicitReturn tail
+		// for non-void callables; a void body always ends in the ImplicitReturn
+		// the checker appends, so this case only fires for non-void bodies or
+		// hand-built IR) — is accepted only when the loop can never fall
+		// through: its condition is the literal `true` and its loop-body
+		// subtree contains no Break targeting this loop's own region (the
+		// checker's constant-true-loop acceptance predicate, in shape form, per
+		// terminalWhileIsExhaustive). Such a loop is lowered by the exact same
+		// buildWhile a leading while uses, with no synthetic return: every exit
+		// from the loop is a return, so the C function never falls off the end
+		// and a missing return line is not a defect. Any other terminal while —
+		// a comparison condition, a constant-true loop with a break to this
+		// loop, or a genuinely fall-through body — cannot satisfy a non-void
+		// result and stays rejected with the same message the default case
+		// below would produce.
+		if terminalWhileIsExhaustive(unit, last) {
+			whileText, err := buildWhile(unit, snapshot, fileSet, last, scope, depth, width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			statements = append(statements, whileText)
+		} else {
+			return "", fmt.Errorf("entry function body block statement is a %s, want a Return of an integer expression, a two-armed if/else, or a switch", last.Kind)
+		}
 	default:
 		return "", fmt.Errorf("entry function body block statement is a %s, want a Return of an integer expression, a two-armed if/else, or a switch", last.Kind)
 	}
 	return strings.Join(statements, "\n"), nil
+}
+
+// terminalWhileIsExhaustive reports whether a tir.While can serve as the final
+// statement of a non-void body block without a trailing return: whether it can
+// never fall through. It is the backend's conservative, shape-based form of the
+// checker's constant-true-loop acceptance predicate (the checker accepts a
+// while whose condition is a known constant true and that contains no break;
+// see control_flow_validation.go's infinite/breakFound analysis). A terminal
+// while is exhaustive exactly when two conditions both hold:
+//
+//   - the loop's condition is the literal boolean true — a tir.BoolLiteral with
+//     Literal.Bool set, the exact condition real `while true { ... }` source
+//     produces. A comparison condition (`while i < 5 { ... }`) can exit
+//     normally and is not exhaustive; a constant-folded-but-not-literal shape
+//     (`while (1 == 1) { ... }`) is intentionally narrower and stays rejected,
+//     so this predicate does not need the checker's constant folding.
+//
+//   - the loop-body subtree contains no tir.Break whose Target is the loop's
+//     own Region (the While node's Region). A break targeting this loop is the
+//     one remaining way control can leave the loop and fall through past it,
+//     so its presence means the loop is not exhaustive even though the
+//     condition is constant true. A break targeting an enclosing loop or a
+//     switch's region is fine — it does not exit this loop.
+//
+// The subtree walk follows Children and DeferChain, the same reachability
+// pattern collectDirectCalls uses, skipping a DeferRegister at its registration
+// position so the deferred statement is only examined once (via the exit
+// point's DeferChain). Any malformed shape — a missing child, a wrong child
+// count, an invalid node reference — reports false (not exhaustive), so the
+// caller falls back to its normal clean rejection rather than a panic or a
+// partial lowering.
+func terminalWhileIsExhaustive(unit *tir.Unit, whileNode tir.Node) bool {
+	if len(whileNode.Children) != 2 {
+		return false
+	}
+	condition, ok := unit.Node(whileNode.Children[0])
+	if !ok {
+		return false
+	}
+	if condition.Kind != tir.BoolLiteral || !condition.Literal.Bool {
+		return false
+	}
+	hasBreak, valid := loopBodyHasBreakTargeting(unit, whileNode.Children[1], whileNode.Region)
+	if !valid {
+		return false
+	}
+	return !hasBreak
+}
+
+// loopBodyHasBreakTargeting walks one node's subtree — Children and DeferChain,
+// the same reachability pattern collectDirectCalls uses — looking for a
+// tir.Break whose Target is loopRegion. It reports whether such a break was
+// found and whether the subtree was fully traversable (false on any invalid
+// node reference, so the caller treats an incomplete walk as not exhaustive).
+func loopBodyHasBreakTargeting(unit *tir.Unit, nodeID tir.NodeID, loopRegion tir.RegionID) (found, valid bool) {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return false, false
+	}
+	if node.Kind == tir.Break && node.Target == loopRegion {
+		return true, true
+	}
+	for _, childID := range node.Children {
+		if child, ok := unit.Node(childID); ok && child.Kind == tir.DeferRegister {
+			// A DeferRegister child is a registration marker whose statement
+			// is reached via exit-point DeferChains, exactly as collectDirectCalls
+			// skips it here, so the deferred statement is examined once.
+			continue
+		}
+		childFound, childValid := loopBodyHasBreakTargeting(unit, childID, loopRegion)
+		if !childValid {
+			return false, false
+		}
+		if childFound {
+			return true, true
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		deferFound, deferValid := loopBodyHasBreakTargeting(unit, deferID, loopRegion)
+		if !deferValid {
+			return false, false
+		}
+		if deferFound {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // buildReturnStatement validates and builds the C text for one return
