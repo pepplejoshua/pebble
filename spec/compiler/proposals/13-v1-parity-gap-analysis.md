@@ -705,31 +705,47 @@ not a real check failure). `math` found a genuine new gap:
       -slicing tests pass unchanged (no regression to the original
       path). Re-verified against the real `std/string.peb`:
       `String::as_slice()` now compiles and runs end-to-end.
-- [ ] **[generator] Indexing directly into a value with no addressable
-      place (a slice/array-typed call result, not a local/field) is
-      unimplemented for anything but `str`.** `buildExpr`'s
-      `CheckedIndex` case only accepts a `str`-typed base — an
-      ordinary, unrestricted operation in the language (`foo()[i]` is
-      not a special or discouraged form; nothing in the language design
-      forbids indexing a computed expression). This is a REAL, missing
-      capability, not a deliberate scope boundary — corrected framing
-      from an earlier note in this doc, which mischaracterized the
-      existing clean rejection ("confirmed reachable from real source,
-      never a guessed lowering") as evidence of intentional
-      out-of-scope status; that phrasing describes defensive
-      engineering (reject cleanly rather than miscompile an
-      unimplemented shape), not a design decision that the shape should
-      stay unsupported. It's the identical class of gap as several
-      other items closed this session (`SliceFromRaw` as a return
-      value, `DirectCall` in `buildUintExpr`, a struct-returning
-      `DirectCall` as a return statement) — each was a real,
-      reachable, cleanly-rejected shape that got fixed, not routed
-      around. `examples/read_file.peb`'s own instance of this gap
-      (`contents.as_slice()[i]`) was sidestepped, not closed, by
-      binding the result to a local first (`d24779f`) — a reasonable
-      standalone improvement regardless (avoids re-calling
-      `as_slice()` every loop iteration), but not a substitute for
-      implementing the real capability. Not yet scoped for dispatch.
+- [x] **CLOSED (`6426177`) — indexing directly into a value with no
+      addressable place (a slice/array-typed call result) is now
+      supported, not just `str`.** `foo()[i]` is an ordinary operation
+      in the language; the fix is a REAL capability, not routing around
+      a deliberate restriction (see the corrected framing this doc
+      carried briefly before the fix landed). Root design constraint:
+      unlike `str` (a stateless decode function safely callable on the
+      base repeatedly), a slice/array read needs the base's `.data`
+      AND `.len`, so a freshly-computed base (a call result) evaluated
+      twice would run the underlying call twice — wrong and wasteful.
+      New `buildSliceIndexValue` handles four base shapes: a
+      `SymbolValue` naming a slice-typed local or a `Load` of a
+      slice-typed place (pure projections, safe to reference twice, no
+      temp needed) build directly; a `DirectCall`/`MethodCall` or a
+      `FieldValue` reading a slice field off a call result are built
+      ONCE into a temp local, then bounds-checked and read off the
+      temp (the same two-statement pattern `buildSliceConstruction`
+      established). The temp-declaration statement is threaded as a
+      leading pre-statement into `buildPrint` (now `(pre, expr,
+      error)`, the established `preReturn` convention) and its
+      callers; positions with no statement sequence to host a temp
+      (`return`, comparisons, arguments) accept only the
+      no-temp-needed base shapes and cleanly reject a call-result base
+      with an actionable "bind the slice into a local first" message.
+      Five new tests: the confirmed real-world shape (captured stdout,
+      correct value); a single-evaluation proof (the base call's own
+      side-effect marker prints exactly once, not twice — the
+      correctness property that matters most here); the char-element
+      twin; the pure-projection base shape (unaffected, still works);
+      a bounds-check regression guard. One pre-existing test's
+      assertion was updated, not weakened (the same array-literal
+      -indexing scenario is still correctly rejected, just with
+      updated wording for the now-wider accepted set). Causation
+      confirmed; full suite green. Independently re-verified beyond
+      what the dispatch itself checked: correct values, single
+      -evaluation, and bounds-checking all confirmed via direct `pebc`
+      runs before committing. `examples/read_file.peb`'s own instance
+      of this gap was already sidestepped (`d24779f`, binding
+      `as_slice()`'s result to a local) — that workaround stays in
+      place (still a reasonable standalone improvement), but the real
+      underlying capability is now genuinely implemented too.
 - [ ] **[generator] New, foundational, general gap found verifying
       `read_file.peb` further: `extern { type FILE; }` (an opaque
       extern type with no body) emits as a synthesized
