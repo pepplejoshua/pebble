@@ -1694,7 +1694,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// the helper's C signature even if no reachable body ever constructs a
 		// struct of that type, so its typedef must be discovered here too.
 		for _, param := range helper.decl.Parameters {
-			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) {
+			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) && !isOpaqueExternType(snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
 			// A pointer-typed parameter whose pointee is a struct (including
@@ -1702,7 +1702,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 			// pointee's typedef in its own C signature, the same reason a
 			// plain struct parameter does above.
 			if isPointer(snapshot, param.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(snapshot, pointee) {
 					collected = append(collected, pointee)
 				}
 			}
@@ -1717,11 +1717,11 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// produce a struct to return — and resolveStructInfo still needs the
 		// field types the body walk accumulates — so this closes the same class
 		// of gap 10.24's Parameters scan closed, for the return side.)
-		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) {
+		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) && !isOpaqueExternType(snapshot, helper.decl.ResultType) {
 			collected = append(collected, helper.decl.ResultType)
 		}
 		if isPointer(snapshot, helper.decl.ResultType) {
-			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) {
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(snapshot, pointee) {
 				collected = append(collected, pointee)
 			}
 		}
@@ -2801,7 +2801,7 @@ func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
 // variadic function type is rejected by the checker too), and every parameter
 // and the result must be typed by a C spelling this backend can emit at a call
 // site — a fixed-width integer builtin (including uint/u64, each resolved to
-// its own C type), bool, char, str (PebbleStr), a pointer to a supported
+// its own C type), bool, char, str (const char *), a pointer to a supported
 // pointee, f32/f64, or a void result. This mirrors validateHelperSignature's
 // own gate but narrowed to the shapes an extern call site can actually
 // produce: the parameter grammar is exactly buildCallArgument's and the result
@@ -10411,8 +10411,14 @@ func buildFunctionIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		return "", fmt.Errorf("indirect call passes %d argument(s), want %d (the callee's function type %s declares %d parameter(s))", len(node.Children)-1, len(parameters), describeType(snapshot, fnType), len(parameters))
 	}
 	args := make([]string, 0, len(parameters))
+	// A C-convention indirect callee (an extern function referenced as a
+	// value, or a C-convention function pointer) declares its str parameters
+	// against the libc header, so a str argument must be lowered to
+	// `const char *` exactly like a direct C-convention call's (see
+	// buildCallArguments); the callee's own convention decides.
+	convention, _, _, _, _ := key.Function()
 	for i, id := range node.Children[1:] {
-		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, locals, width)
+		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, convention == types.C, locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -11737,8 +11743,14 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	}
 	var pres []string
 	args := make([]string, 0, len(call.Children))
+	// A C-convention callee (an extern declaration) declares its parameters
+	// against the real libc header, so a str argument must be lowered to the
+	// C representation a real C function consumes — `const char *`, from the
+	// PebbleStr value's .data — not passed as the whole PebbleStr struct a
+	// Pebble-convention helper's own C signature accepts.
+	cConvention := callee.Convention == types.C
 	for i := 0; i < fixedCount; i++ {
-		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], locals, width)
+		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], cConvention, locals, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -11774,6 +11786,11 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // The checker has already coerced the argument to the parameter's type, so a
 // mismatch here is hand-built IR. position is the call-site argument index,
 // used only to name the offending argument in rejection messages.
+// cConvention is true when the callee is a C-convention extern declaration: a
+// str argument to such a callee must be lowered to the const char * a real C
+// function consumes (the PebbleStr value's .data field) rather than passed as
+// the whole PebbleStr struct, so the emitted call site agrees with the libc
+// header's own parameter type (fopen's path/mode, and so on).
 //
 // The return is a (pre, expr) pair: expr is the argument's C expression, and
 // pre is an optional indent-free pre-statement the caller must emit BEFORE the
@@ -11783,7 +11800,7 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // other argument shape is a pure expression (pre == ""). The pre is only
 // consumable when the enclosing call is itself in a leading-statement position;
 // buildDirectCall's expression-position wrapper rejects it upstream.
-func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
+func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, cConvention bool, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
 	// A parameter's own resolved integer width, when the parameter is an
 	// integer builtin the backend emits (the entry's width, uint, u64, or
 	// any other fixed-width integer). Deciding the argument grammar from the
@@ -11887,10 +11904,18 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// string literal directly (f("hi")), or a call to a str-returning
 		// helper (f(g())) — emitted as a PebbleStr value, the same C type
 		// the parameter is declared with, so passing a str by value is
-		// trivially valid C.
+		// trivially valid C. When the callee is a C-convention extern, the
+		// real libc parameter is `const char *`, not a PebbleStr struct, so
+		// the argument is the PebbleStr value's .data field cast to
+		// const char * instead — the natural C spelling of a Pebble str (the
+		// same cast buildPrint uses for a %s operand) — making the emitted
+		// call site agree with the libc header (fopen's path/mode, and so on).
 		expr, err := buildStrOperand(unit, snapshot, fileSet, argID, locals, width)
 		if err != nil {
 			return "", "", err
+		}
+		if cConvention {
+			expr = "(const char *)(" + expr + ").data"
 		}
 		return "", expr, nil
 	case isSlice(snapshot, param.Type):
@@ -12066,7 +12091,11 @@ func buildVariadicSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	firstVariadic := len(call.Children) - len(variadicIDs)
 	elems := make([]string, 0, len(variadicIDs))
 	for j, argID := range variadicIDs {
-		pre, expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, locals, width)
+		// A C-convention variadic callee is rejected upstream
+		// (validateExternSignature), so a variadic slice element is always
+		// built for a Pebble-convention callee and a str element stays a
+		// PebbleStr value — cConvention is false by construction here.
+		pre, expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, false, locals, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -13347,9 +13376,57 @@ func pointerPointeeType(snapshot *types.Snapshot, pointerType types.TypeID) (typ
 	return key.Child()
 }
 
+// opaqueExternTypeName reports whether id is a Nominal type declared by an
+// `extern { type Name; }` with no body — an OPAQUE extern type, meaning "this
+// exists in C, I'm not describing its layout" — and, if so, returns its real
+// authored C name (FILE, DIR, ...). The mapping is resolved the same way
+// externCName resolves a function's real C name: a Nominal type's key carries
+// its declaring symbol.SymbolID (see types.NominalKey), and the symbol table
+// threaded into Emit (emitSymbols) classifies that declaration as
+// SymbolExternType and holds the exact identifier written after `type` in the
+// source. An ordinary Pebble struct/enum/union is a SymbolType symbol, never
+// SymbolExternType, so the kind check is what distinguishes an opaque extern
+// type from a real struct (both are Nominal in the type snapshot). A nil or
+// missing symbol table yields ok=false: without the table the real name cannot
+// be known, and the caller must not guess a pebble_struct_<id>_t name for a
+// type whose layout it does not describe.
+func opaqueExternTypeName(snapshot *types.Snapshot, id types.TypeID) (string, bool) {
+	if snapshot == nil || emitSymbols == nil || emitSymbols.Symbols == nil {
+		return "", false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return "", false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return "", false
+	}
+	s, ok := emitSymbols.Symbols.Symbol(decl)
+	if !ok || s.Kind != symbol.SymbolExternType {
+		return "", false
+	}
+	return s.Name, true
+}
+
+// isOpaqueExternType reports whether id is an opaque extern type (a
+// `type Name;` inside an extern block, no body). It is the bool-only form of
+// opaqueExternTypeName, used by struct-type collection to exclude such a type
+// from the synthesized struct-typedef machinery: an opaque extern type has no
+// layout of its own to emit — its real C name (FILE, DIR) is supplied by the
+// libc header the preamble already includes — so collecting it as a struct
+// would both emit a bogus empty typedef and break resolveStructInfo's
+// field-resolution assumptions.
+func isOpaqueExternType(snapshot *types.Snapshot, id types.TypeID) bool {
+	_, ok := opaqueExternTypeName(snapshot, id)
+	return ok
+}
+
 // pointerTypeName returns the full C type name for a pointer to the given
 // pointee type: `int32_t *` for *i32, `bool *` for *bool, `pebble_struct_<id>_t *`
-// for *Point, `pebble_tuple_<id>_t *` for a tuple pointer, etc. The pointee
+// for *Point, `pebble_tuple_<id>_t *` for a tuple pointer, `FILE *` for a
+// pointer to an opaque extern type (its real C name, declared by the <stdio.h>
+// preamble hasCExterns includes), etc. The pointee
 // type must be a valid type in the snapshot. Returns "" for any unsupported
 // pointee kind (defense for hand-built IR).
 func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
@@ -13385,6 +13462,15 @@ func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
 	}
 	if isTuple(snapshot, pointee) {
 		return tupleTypeName(pointee) + " *"
+	}
+	// An opaque extern type (type FILE;) is Nominal like a struct, so the
+	// extern-type case must come BEFORE the isStruct fall-through: the real C
+	// type name (FILE, from the already-included header) replaces the
+	// synthesized pebble_struct_<id>_t a struct-typed pointee would get, and
+	// the C that results actually agrees with the libc declaration of every
+	// function that takes or returns such a pointer.
+	if name, ok := opaqueExternTypeName(snapshot, pointee); ok {
+		return name + " *"
 	}
 	if isStruct(snapshot, pointee) {
 		return structTypeName(pointee) + " *"
@@ -14417,9 +14503,12 @@ func floatCType(width types.BuiltinKind) string {
 // with the libc header's own declaration. It accepts exactly the shapes an
 // extern call site can build and consume: a fixed-width integer builtin (each
 // resolved to its own C type, uint/u64 to uint64_t), bool, char (int32_t, the
-// same convention a char value/local uses), str (PebbleStr), f32/f64, a
+// same convention a char value/local uses), str (const char *, the C spelling
+// a real libc string parameter/result is declared with), f32/f64, a
 // pointer to a supported pointee (via pointerTypeName), or void (result only).
-// Any other type — a tuple, struct, slice, optional, function type, or an
+// Any other type — a tuple, struct, slice, optional, function type, a bare
+// opaque extern type (which has no known size/layout, so only its pointer
+// form is spellable), or an
 // opaque struct pointer whose pointee this backend cannot spell — is a clean
 // rejection naming what was found, never a guessed C type.
 func externCType(snapshot *types.Snapshot, id types.TypeID) (string, error) {
@@ -14440,7 +14529,7 @@ func externCType(snapshot *types.Snapshot, id types.TypeID) (string, error) {
 		}
 	}
 	if isStr(snapshot, id) {
-		return "PebbleStr", nil
+		return "const char *", nil
 	}
 	if isPointer(snapshot, id) {
 		if pointee, ok := pointerPointeeType(snapshot, id); ok {

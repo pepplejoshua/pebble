@@ -298,6 +298,89 @@ func TestEmitExternCallWithArgumentsAndReturnCompilesAndRuns(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 42, false)
 }
 
+func TestEmitOpaqueExternTypeFileRoundTripCompilesAndRuns(t *testing.T) {
+	// An opaque extern type (`type FILE;`, no body — "this exists in C, I'm
+	// not describing its layout") previously emitted as a synthesized
+	// pebble_struct_<id>_t instead of its real C name, so every real libc
+	// call taking or returning *FILE (fopen/fclose/fputs/fgetc) failed to
+	// compile with "incompatible pointer types". This is the full write
+	// -then-read-back round trip against a REAL file on disk: fopen(w),
+	// fputs, fclose, fopen(r), fgetc, fclose, remove — each call must use
+	// the genuine FILE * (not a bogus struct) and each str argument
+	// (fopen's path/mode, fputs's string) must lower to const char * (not a
+	// PebbleStr struct) to agree with the real libc signatures. Compiled
+	// under -Wall -Wextra -Werror; the exit code encodes exactly which step
+	// failed (0 = every step succeeded, including reading back the 'h' the
+	// write step wrote), so a wrong exit code pinpoints the failure.
+	path := filepath.Join(t.TempDir(), "pebble_opaque_extern_test.txt")
+	source := fmt.Sprintf(`extern {
+    type FILE;
+    fn fopen(path str, mode str) *FILE;
+    fn fclose(file *FILE) i32;
+    fn fputs(s str, file *FILE) i32;
+    fn fgetc(file *FILE) i32;
+    fn remove(path str) i32;
+}
+fn main() int {
+    var f = fopen(%q, "w");
+    if f == nil { return 1; }
+    var w = fputs("hello", f);
+    if w < 0 { return 2; }
+    var closed = fclose(f);
+    if closed != 0 { return 3; }
+    var g = fopen(%q, "r");
+    if g == nil { return 4; }
+    var c = fgetc(g);
+    if c != 104 { return 5; }
+    var closed2 = fclose(g);
+    if closed2 != 0 { return 6; }
+    var removed = remove(%q);
+    if removed != 0 { return 7; }
+    return 0;
+}`, path, path, path)
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, source)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
+func TestEmitOpaqueExternTypeWritesRealCTypeName(t *testing.T) {
+	// The emitted-C shape assertion: *FILE must be the real `FILE *`, never
+	// a synthesized pebble_struct_<id>_t, and no bogus empty struct typedef
+	// for FILE may be emitted (collectStructTypes must exclude an opaque
+	// extern type from the struct-typedef machinery entirely).
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern {
+    type FILE;
+    fn fopen(path str, mode str) *FILE;
+    fn fclose(file *FILE) i32;
+}
+fn main() int {
+    var f = fopen("test.txt", "r");
+    fclose(f);
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	emitted := buf.String()
+	if !strings.Contains(emitted, "FILE *") {
+		t.Errorf("emitted C does not declare FILE *:\n%s", emitted)
+	}
+	if strings.Contains(emitted, "pebble_struct_") {
+		t.Errorf("emitted C contains a synthesized pebble_struct_ typedef for the opaque extern type FILE, want none:\n%s", emitted)
+	}
+	if !strings.Contains(emitted, "fopen((const char *)") {
+		t.Errorf("emitted C does not lower fopen's str arguments to const char *:\n%s", emitted)
+	}
+	if strings.Contains(emitted, "fopen((PebbleStr)") {
+		t.Errorf("emitted C passes a PebbleStr struct to fopen, want const char *:\n%s", emitted)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
 func TestEmitGenericReachabilityUsesSpecializationIdentity(t *testing.T) {
 	unit, snapshot, entryID, sources := buildFixture(t, `fn add_one[T](x T, y T) T => x; fn main() i32 { var a i32 = add_one[i32](40, 1); let p *i32 = &a; let b *i32 = add_one[*i32](p, p); return a + *b; }`, "main", false)
 	var buf bytes.Buffer
