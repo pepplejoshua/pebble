@@ -768,44 +768,16 @@ not a real check failure). `math` found a genuine new gap:
       checks: `std/io.peb`'s real `open`/`close` compiles and runs; a
       byte-level `fputs`/`fgetc` round trip through `std/io.peb`'s own
       real `extern` declarations reads back correctly.
-- [ ] **[std-library design, not a backend gap] `String`/`std/io.peb`'s
-      `read_all` and `[]char`'s Unicode-scalar-value semantics are
-      architecturally mismatched — multi-byte file reads corrupt
-      data.** Found verifying the `FILE`-opaque-type fix further: a
-      5-byte file (`"ABCDE"`) read via `io::read_all` then indexed via
-      `String::as_slice()` produces garbage — `chars[0]` reads back as
-      `1145258561` (`0x44434241`, the bytes `'A','B','C','D'` packed
-      little-endian into ONE 32-bit slot) and `chars[1]` reads back as
-      `69` (`'E'`, the fifth byte, now at index 1 instead of 4).
-      Root-caused precisely: `char`'s C representation is `int32_t` (4
-      bytes) by design (`str[i]` is documented Unicode-scalar-value
-      indexing, decoded via UTF-8, elsewhere in this codebase's own
-      comments — `char` is a decoded scalar, not a raw byte), and
-      `String::grow` allocates storage sized for that (`(sizeof char) *
-      new_cap`, i.e. 4 bytes per logical char — confirmed
-      `std/string.peb:17`). But `std/io.peb`'s `read_all` populates
-      that SAME buffer via a raw byte-oriented `fread(s.data.data as
-      *void, 1, size as uint, file)` — reading `size` RAW BYTES
-      directly from disk with no UTF-8 decoding, packing them
-      contiguously into a buffer whose `[]char` indexing stride assumes
-      each slot already holds one decoded 4-byte scalar. `String` (used
-      here as a raw growable BYTE buffer for file contents) and
-      `[]char` (a slice of already-decoded Unicode scalars) are
-      fundamentally different things sharing one type. Confirmed NOT
-      caused by today's `FILE`-opaque-type/`str`-argument fix — a
-      single-byte `fgetc` round trip through the SAME extern
-      declarations reads back correctly; the corruption is specific to
-      multi-byte buffer reads via `fread` into a `[]char`-backed
-      `String`. This is a std-library/language-design question, not a
-      backend code-generation gap — needs a decision on whether
-      `String`'s internal storage should be byte-oriented (`[]u8` or
-      similar) with `char`-decoding happening at a read boundary, or
-      whether `read_all`/`fread`'s usage needs to change, not a blind
-      fix. Blocks any real multi-byte file-content usage of
-      `String`/`io::read_all` (`examples/read_file.peb` included —
-      confirmed the garbled character-by-character print output is
-      this exact bug, not a separate one). Flagged for a design
-      decision before scoping a fix.
+- [x] **SUPERSEDED — see the approved redesign entry below.** Found the
+      `String`/`[]char`/`read_all` architectural mismatch (raw
+      `fread` bytes packed into a buffer whose `[]char` stride assumes
+      each slot is an already-decoded 4-byte scalar — root-caused via
+      a 5-byte-file repro showing `0x44434241`-style byte packing) and
+      flagged it for a design decision. The user approved a direction
+      the same day (Rust-shaped: byte-oriented storage, decode-on-read
+      char access) — see the `[std-library redesign, approved]` entry
+      below for the confirmed direction and dispatch status; this
+      entry is kept only as the original root-cause record.
 - [x] Stale `contents.data + contents.len - 1`/`contents.data + i`
       pointer-arithmetic-on-slice fixed directly in `examples/
       count_lines.peb` (`0c9997b`) — the exact same staleness pattern
@@ -876,40 +848,123 @@ not a real check failure). `math` found a genuine new gap:
       `u8` only at the final byte store), but a real, separate,
       narrower-scope gap worth fixing on its own. Not yet scoped for
       dispatch.
-- [ ] **[std-library redesign, approved, not yet dispatched] `String`
-      becomes byte-oriented (`[]u8` internal storage); a `char` read
-      decodes UTF-8 at the requested position on demand (no O(1)
-      random-access char indexing), the same shape Rust's
-      `String`/`char` split uses.** Direction confirmed by the user
-      (2026-08-07) for the `String`/`char` design mismatch logged
-      above (`e1f7213`) — this entry supersedes that one's "needs a
-      design decision" framing now that the decision is made; the
-      root-cause description there still stands. Investigated the
-      implementation path: no legal Pebble syntax exists to construct
-      a `str` value from a raw byte buffer (`std/string.peb`'s own
-      comment already documents this — `as_str()` was deliberately
-      left unimplemented for exactly this reason), so the redesign
-      cannot reuse the runtime's existing `pebble_rt_str_char_at_*`
-      decoder (which only accepts a `PebbleStr`) — UTF-8 decode AND
-      encode (for `push_char`, which currently just stores one raw
-      `char` per slot and must now encode a scalar into 1-4 output
-      bytes) both need to be written in pure Pebble arithmetic inside
-      `std/string.peb` itself, no new runtime/compiler surface
-      required. Scope: change `String.data` from `[]char` to `[]u8`;
-      add a new byte-position-based char-decode accessor (UTF-8
-      decode, pure Pebble bit arithmetic at `i32`/`u32` width to avoid
-      the narrower-width shift gap above); rewrite `push_char` to
-      UTF-8-encode its argument into 1-4 bytes; update the
-      byte-copy-oriented methods (`push_str`, `substr`, `insert`,
-      `remove`, `starts_with`, `ends_with`, `find`, `eq`) from `[]char`
-      to `[]u8` element type (mostly a type-level change, since their
-      logic already treats elements as raw bytes); replace
-      `as_slice() []char` with a raw-byte accessor plus the new
-      char-decode API; update the two known consumers
-      (`examples/read_file.peb`, `examples/count_lines.peb`) to the
-      new API. Per the user: no requirement for a full ergonomic
-      iteration API in this pass — "String will be later improved to
-      have helpers to make this easier." Not yet dispatched.
+- [x] **CLOSED (`2b8cbbc`) — `String` is now byte-oriented (`[]u8`
+      internal storage); a `char` read decodes UTF-8 at the requested
+      byte position on demand via a new `char_at(self, byte_pos,
+      *width)` method (no O(1) random-access char indexing), the same
+      shape Rust's `String`/`char` split uses.** Direction confirmed by
+      the user (2026-08-07) for the `String`/`char` design mismatch
+      (`e1f7213`). No legal Pebble syntax exists to construct a `str`
+      from a raw byte buffer, so the redesign couldn't reuse the
+      runtime's existing `pebble_rt_str_char_at_*` decoder — UTF-8
+      decode (ported from `runtime/src/str.c`'s own algorithm) and
+      encode (for `push_char`, now encoding 1-4 bytes per call) are
+      both implemented in pure Pebble bit arithmetic inside
+      `std/string.peb`, no new runtime/compiler surface. Malformed
+      UTF-8 is not validated (documented limitation — Pebble source has
+      no way to raise a panic yet; a malformed lead byte degrades to a
+      literal byte value rather than crashing). The byte-copy-oriented
+      methods (`push_str`, `substr`, `insert`, `remove`, `starts_with`,
+      `ends_with`, `find`, `eq`) moved to `[]u8` element type
+      (mostly type-level, since their logic already treated elements
+      as raw bytes — one pre-existing, unrelated, documented limitation
+      noted along the way: `push_str`/`starts_with`/`ends_with`/`find`
+      truncate a decoded `str[i]` character to its low byte rather than
+      copying the true raw UTF-8 byte, which was already wrong for
+      non-ASCII `str` content before this redesign, since `str`
+      exposes no raw-byte access — not a regression, not fixed here).
+      `as_slice() []char` replaced with `as_bytes() []u8`. Both known
+      consumers updated: `examples/read_file.peb`'s print loop now
+      iterates by byte position advancing via `char_at`'s reported
+      width; `examples/count_lines.peb` rewritten to byte-level ASCII
+      whitespace detection (doesn't need character decoding) and to
+      take an out-parameter (`*Stats`) returning `bool` instead of the
+      generic `Result[Stats, str]` alias shape, sidestepping the
+      separate, already-tracked `C0604` gap. Independently re-verified
+      beyond the dispatch's own checks: an ASCII round trip; a genuine
+      multi-byte round trip (a 3-byte Euro sign, encoded then decoded
+      back to the exact scalar and byte width); **the exact original
+      corruption scenario** (a real 5-byte file read via
+      `io::read_all`, decoded byte-by-byte via `char_at`, every
+      character correct); `examples/read_file.peb` run end-to-end
+      against a real file, printing exactly correct content in order.
+      Full `go test ./...` stays green (pure `.peb` change, no `.go`
+      files touched). A NEW, separate, pre-existing gap surfaced while
+      verifying multi-byte content: `print`'s own `%c` formatting
+      cannot render a multi-byte character correctly (C's `%c` only
+      outputs one byte) — confirmed independent of this redesign via a
+      bare `print 'é';` literal touching no `String` code at all;
+      logged separately below.
+- [ ] **[generator] `print`'s char formatting (`%c`) cannot render a
+      multi-byte Unicode scalar — only ASCII prints correctly.** Found
+      verifying the `String`/`char` redesign above with real multi-byte
+      content (`café`) — the first three ASCII characters printed
+      correctly, the fourth (`é`, U+00E9) printed as a replacement
+      character. Confirmed via a minimal, `String`-independent repro
+      (`fn main() int { print 'é'; return 0; }`) that this is a
+      pre-existing limitation of `print`'s own char-formatting, not
+      something the redesign introduced — `buildPrint`'s char case
+      emits a plain C `%c` format specifier, which only ever outputs a
+      single byte after integer promotion, so a `char` value outside
+      ASCII range can never render correctly regardless of how it was
+      produced. Not yet root-caused precisely at the exact backend
+      function/line, or scoped for dispatch — a real fix likely needs
+      `print`'s char case to UTF-8-encode the scalar into 1-4 bytes
+      (the same algorithm `String::push_char` now has, ported to the
+      backend or reused via a runtime helper) and use `%s`-style
+      multi-byte output instead of a single `%c`.
+- [x] Stale `usize` (should be `uint`) fixed directly in
+      `compiler/std/mem/arena.peb` (8 occurrences) — the same staleness
+      pattern already fixed elsewhere this session. Found sweeping
+      `std/*.peb` for compile status.
+- [ ] **[checker] New, precisely root-caused bug found sweeping
+      `std/*.peb` further: a record literal (`Type.{ field = value }`)
+      cannot be constructed for a RUNTIME/builtin nominal type
+      (`Allocator`) — every field is rejected with `N0001: type has no
+      member "..."`, even though the same fields resolve correctly as
+      a struct field type and (per earlier session work) as a member
+      READ target.** Confirmed via a minimal standalone repro (`fn
+      my_alloc(ptr *void, size uint) *void { return nil; } fn
+      my_realloc(...) *void { return nil; } fn my_free(...) void {}
+      fn main() int { var a = Allocator.{ ptr = nil, alloc = my_alloc,
+      realloc = my_realloc, free = my_free }; return 0; }`) — all four
+      fields rejected, despite matching `Allocator`'s real member
+      names AND expected function-type signatures exactly (confirmed
+      by reading `internal/infer/runtime_prelude.go`, where `ptr`/
+      `alloc`/`realloc`/`free` and their exact parameter/result types
+      are defined). Root-caused precisely: `internal/symbol/visit.go`'s
+      `resolveMember` (used for an ordinary member READ, `a.ptr`) has
+      an explicit guard — `if symbol.Kind == SymbolType ||
+      symbol.Kind == SymbolExternType { return
+      r.resolveNamedMember(...) }` — that skips EARLY, syntax-level
+      member validation for any OTHER symbol kind (including
+      `Allocator`'s real kind, `SymbolRuntimeType`), deferring
+      resolution to the later, type-driven phase that already
+      correctly understands `Allocator`'s synthetic runtime-injected
+      members. But the SIBLING function handling record CONSTRUCTION,
+      `resolveRecord` (same file), has NO such guard — it calls
+      `r.resolveNamedMember(ctx, parts[0], name, owner)`
+      UNCONDITIONALLY whenever `owner != 0`, regardless of the owner
+      symbol's kind. `resolveNamedMember` looks up
+      `r.memberBindings[owner][name]` — a map populated purely from
+      PARSED `.peb` struct declarations during symbol resolution;
+      `Allocator` has no such declaration (its members are synthesized
+      entirely in Go, in `internal/infer/runtime_prelude.go`, injected
+      at a LATER phase), so the lookup always misses and reports the
+      misleading "type has no member" error regardless of what's
+      actually being constructed. This fully blocks
+      `compiler/std/mem/arena.peb`'s `allocator()` function (and any
+      other user code constructing a custom `Allocator`) — its entire
+      purpose is building an `Allocator.{ ... }` value. `Context` is a
+      separate case, NOT the same bug — `Context` isn't even a
+      nameable type in user scope at all (`undefined name "Context"`),
+      likely by design (only accessed via the implicit `context`
+      global, never user-constructed) — not investigated further, no
+      evidence this is unintentional. The fix is narrowly scoped:
+      `resolveRecord` needs the same kind-based guard `resolveMember`
+      already has, deferring early validation for a non-`SymbolType`/
+      `SymbolExternType` owner (at minimum `SymbolRuntimeType`) to the
+      later type-driven resolution phase. Not yet dispatched.
 
 ---
 
