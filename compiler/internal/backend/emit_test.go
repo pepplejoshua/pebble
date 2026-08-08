@@ -548,17 +548,16 @@ func TestEmitRuntimeAllocatorRecordConstructBoundaryPin(t *testing.T) {
 	// compiler-injected Allocator has no parsed TypeDeclaration in the unit.
 	// collectStructTypesWalk now skips a RecordConstruct's own type when
 	// runtimeType(unit, snapshot, node.Type) != 0, so the struct collection pass
-	// succeeds — the old "has no TypeDeclaration" error is gone — and emission
-	// reaches the next independent boundary: the custom Allocator callbacks
-	// (alloc/realloc/free) require function types with pointer parameters and
-	// pointer results, and buildFunctionTypedef's
-	// validateFunctionTypeSignature rejects a pointer parameter as a function-
-	// value signature shape the backend cannot build as a call argument. That
-	// pointer-bearing function-signature gap is out of scope here (it is a
-	// separate backend gap, not the struct-collection rejection this slice
-	// fixes); Slice 2 must replace this test with a positive compile-run test
-	// when runtime record emission AND pointer-bearing function-value
-	// signatures are implemented.
+	// succeeds — the old "has no TypeDeclaration" error is gone. The pointer-
+	// bearing function-value signature gap (validateFunctionTypeSignature
+	// rejecting a pointer parameter/result, the previous boundary pinned here)
+	// is now CLOSED (the pointer-bearing general function-types slice), so
+	// emission reaches the next independent boundary: a runtime-typed local
+	// initialized from a RecordConstruct is not a supported local-initializer
+	// shape, and the emitter rejects it. That runtime record emission gap is
+	// out of scope for the function-types slices; a future slice must replace
+	// this test with a positive compile-run test when runtime record emission
+	// is implemented.
 	emitAndRunRejects(t, `fn my_alloc(ctx *void, size uint) *void { return nil; }
 fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
 fn my_free(ctx *void, ptr *void) void {}
@@ -570,7 +569,7 @@ fn main() int {
         free = my_free,
     };
     return 0;
-}`, "parameter 0 has type *void")
+}`, "declares a runtime-typed local initialized from a RecordConstruct")
 }
 
 func TestEmitStructWithUintFieldCompilesAndRuns(t *testing.T) {
@@ -12470,6 +12469,85 @@ func TestEmitU64FunctionTypeResultConsumedAsRvalueCompilesAndRuns(t *testing.T) 
 	// must be built at the u64 width even though the enclosing statement is
 	// entry-width.
 	emitAndRun(t, "fn hashOf(x int) u64 { return x as u64; } fn main() int { var f fn(int) u64 = hashOf; return (f(5) as int) + 1; }", false, 6, false)
+}
+
+// --- Function types: pointer parameter/result support ---
+
+func TestEmitPointerFunctionTypeLocalParameterCompilesAndRuns(t *testing.T) {
+	// The exact minimal repro for the pointer PARAMETER gap: a function-typed
+	// local whose signature takes a `*int` parameter (`fn(*int) int`), called
+	// through an indirect call with the address of an entry local. The fnptr
+	// typedef's parameter slot is spelled `int32_t *` (the same pointerTypeName
+	// spelling helperSignature gives an ordinary helper's pointer parameter),
+	// and buildCallArgument builds the &x argument through buildExpr's pointer
+	// path — no cast at the call site.
+	emitAndRun(t, "fn readPtr(p *int) int { return *p; } fn main() int { var x int = 42; var f fn(*int) int = readPtr; return f(&x); }", false, 42, false)
+}
+
+func TestEmitPointerFunctionTypeResultCompilesAndRuns(t *testing.T) {
+	// The mirror repro for the pointer RESULT gap: a function-typed local
+	// whose signature returns a `*int` result (`fn(*int) *int`), called
+	// through an indirect call and the pointer result consumed as a pointer
+	// value — assigned into a pointer local and dereferenced. Exercises the
+	// `int32_t *` fnptr typedef return type and buildExpr's pointer-typed
+	// indirect-call result path (an IndirectCall bypasses the width gate even
+	// when its result is a pointer).
+	emitAndRun(t, "fn identity(p *int) *int { return p; } fn main() int { var x int = 42; var f fn(*int) *int = identity; var p *int = f(&x); return *p; }", false, 42, false)
+}
+
+func TestEmitPointerFunctionTypeNilResultCompilesAndRuns(t *testing.T) {
+	// A function type whose RESULT is a pointer but whose parameters are all
+	// non-pointer (`fn() *int`): a helper returning nil, referenced as a first
+	// -class value, and the pointer result consumed through an indirect call.
+	// This isolates the pointer-result spelling (an `int32_t *` typedef return
+	// type after `(PebbleContext *ctx)`) from the pointer-parameter spelling.
+	emitAndRun(t, "fn zeroPtr() *int { return nil; } fn main() int { var f fn() *int = zeroPtr; var p *int = f(); return 0; }", false, 0, false)
+}
+
+func TestEmitPointerFunctionTypeStructFieldCompilesAndRuns(t *testing.T) {
+	// A function-valued STRUCT FIELD whose signature takes a `*int` parameter
+	// AND returns a `*int` result (`op fn(*int) *int`), constructed and called
+	// through the field. This is the pointer-bearing mirror of slice 2's
+	// `op fn(int, int) int` field test: the fnptr typedef is collected ahead
+	// of the struct typedef that names it (slice 2's ordering rule), and both
+	// pointer spellings must be correct for the -Wall -Wextra -Werror build.
+	emitAndRun(t, "type Table = struct { op fn(*int) *int; }; fn identity(p *int) *int { return p; } fn main() int { var x int = 7; var t Table = Table.{ op = identity }; var p *int = t.op(&x); return *p; }", false, 7, false)
+}
+
+func TestEmitPointerFunctionTypeHelperParameterAndResultCompilesAndRuns(t *testing.T) {
+	// A pointer-bearing function-type PARAMETER and RESULT in ordinary (non
+	// -function-typed) helper positions: a helper taking a `fn(*int) int`
+	// parameter calls through it with a pointer argument, and a helper
+	// returning `fn(*int) *int` is forwardable — the same rows of
+	// validateHelperSignature / helperSignature / buildCallArgument the u64
+	// function-type tests exercise, for pointer shapes.
+	emitAndRun(t, "fn readPtr(p *int) int { return *p; } fn apply(f fn(*int) int, p *int) int { return f(p); } fn main() int { var x int = 42; return apply(readPtr, &x); }", false, 42, false)
+	// A helper whose RESULT is a function type whose parameter AND result are
+	// pointers, forwarded into a function-typed local and called through it.
+	emitAndRun(t, "fn identity(p *int) *int { return p; } fn choose() fn(*int) *int { return identity; } fn main() int { var x int = 42; var f fn(*int) *int = choose(); var p *int = f(&x); return *p; }", false, 42, false)
+}
+
+func TestEmitPointerFunctionTypeWritesC(t *testing.T) {
+	// Confirm the emitted C directly: the fnptr typedef declares the trailing
+	// PebbleContext *ctx parameter first and the pointer parameter's C type
+	// `int32_t *` right after it — the exact pointer spelling helperSignature
+	// gives an ordinary helper's pointer parameter, not a rejection. The
+	// function value is also assigned bare (no cast) at the declaration site.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn readPtr(p *int) int { return *p; } fn main() int { var x int = 3; var f fn(*int) int = readPtr; return f(&x); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		")(PebbleContext *ctx, int32_t *);", // fn(*int) int: ctx then the pointer C type
+		"(*pebble_fnptr_",
+		"= pebble_fn_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestCheckStdHmapU64HashFnTypes(t *testing.T) {

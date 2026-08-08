@@ -1551,9 +1551,9 @@ func collectFunctionTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 // allocatorCallee branch) using the runtime's own pre-existing
 // PebbleAllocFn/PebbleReallocFn/PebbleFreeFn typedefs, never this general
 // pebble_fnptr_<typeID>_t mechanism — collecting them here would wrongly
-// demand a typedef for a signature this slice's validateFunctionTypeSignature
-// doesn't support (a pointer parameter), breaking every allocator call in the
-// program. An IndirectCall's own FunctionType field is collected too, but
+// demand a general function typedef for the runtime's own callback ABI
+// (PebbleAllocFn/PebbleReallocFn/PebbleFreeFn), which is out of scope here,
+// breaking every allocator call in the program. An IndirectCall's own FunctionType field is collected too, but
 // only for the GENERAL case (an allocator IndirectCall never sets
 // FunctionType, confirmed against a real fixture, so the != 0 guard already
 // excludes it; the explicit node-kind restriction above is the primary,
@@ -1588,8 +1588,9 @@ func collectFunctionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 		// for the general case, which was wrong and caused every allocator
 		// call in the program to be misidentified as needing a general
 		// pebble_fnptr_<typeID>_t typedef for the allocator's own *void
-		// -parameter signature, which validateFunctionTypeSignature correctly
-		// rejects, breaking every allocator call). indirectCalleePlace is the
+		// -parameter runtime-callback ABI, which this backend does not emit
+		// general function typedefs for, breaking every allocator call).
+		// indirectCalleePlace is the
 		// single shared signal (used by buildIndirectCall too) that actually
 		// distinguishes the two: the allocator case's callee unwraps to a
 		// FieldPlace/FieldValue, which is excluded here.
@@ -2961,20 +2962,23 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 // C-convention function value to a fn(...) type and a `fn "C"(...)` type
 // annotation fails typed-IR construction — so it is a clean rejection here,
 // never supported), non-variadic, and every parameter must be one of the
-// entry's resolved width, uint, bool, char, or str, and the result must be one
-// of the entry's resolved width, bool, char, or void. This is deliberately the
+// entry's resolved width, uint, bool, char, str, or a pointer type, and the
+// result must be one of the entry's resolved width, bool, char, void, or a
+// pointer type. This is deliberately the
 // set of shapes this slice can both BUILD (the parameter grammar is exactly
 // buildCallArgument's, so every fn-typed call argument is buildable; the
 // result grammar is exactly the positions the backend can consume an indirect
 // call's result in — the entry's return via buildExpr, a bool position via
-// buildBoolExpr, a char position via buildCharOperand, and a discarded
+// buildBoolExpr, a char position via buildCharOperand, a pointer result
+// consumed by buildExpr's pointer-typed IndirectCall path, and a discarded
 // statement via buildExpressionStatement) and whose C types are fully
-// self-contained (the entry's cType, uint64_t, bool, int32_t, PebbleStr, or
-// void — never a tuple/struct/slice/optional/pointer C type that would drag an
+// self-contained (the entry's cType, uint64_t, bool, int32_t, PebbleStr, a
+// pointer's own `<pointee> *` spelling via pointerTypeName, or
+// void — never a tuple/struct/slice/optional C type that would drag an
 // aggregate typedef into the fnptr typedef and require the aggregate collectors
 // to chase function-type signatures). Any other parameter/result shape — a
 // float (which validateHelperSignature rejects for an ordinary helper anyway),
-// a tuple/struct/slice/optional/pointer, or an aggregate/str result — is a
+// a tuple/struct/slice/optional, or an aggregate/str result — is a
 // clean rejection naming what is unsupported, the same gate buildFunctionTypedef
 // re-checks before emitting a typedef.
 func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
@@ -2998,18 +3002,20 @@ func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.Builtin
 	// being validated from — this is what lets a `fn(int) u64` type be
 	// validated from a u64-width call context and a `fn(u64) int` type from an
 	// entry-width context), or uint/u64 (both resolve to uint64_t), or
-	// bool/char/str. The signature's parameter C types are decided by the same
-	// resolution in functionTypeParamCType, and each call argument is built at
-	// its parameter's own resolved width by buildCallArgument, so the kind of
+	// bool/char/str, or a pointer type (spelled via pointerTypeName, the same
+	// way an ordinary helper's pointer parameter is). The signature's
+	// parameter C types are decided by the same resolution in
+	// functionTypeParamCType, and each call argument is built at its
+	// parameter's own resolved width by buildCallArgument, so the kind of
 	// each parameter determines how it is built rather than the ambient width.
 	for i, parameter := range parameters {
 		paramWidth, integerParam := resolvedBuiltin(snapshot, parameter)
-		if !(integerParam && cType(paramWidth) != "") && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) {
-			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, u64, or another fixed-width integer, bool, char, or str (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
+		if !(integerParam && cType(paramWidth) != "") && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) && !isPointer(snapshot, parameter) {
+			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, u64, or another fixed-width integer, bool, char, str, or a pointer type (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
 		}
 	}
-	if !isWidth(snapshot, width, result) && !isU64(snapshot, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isVoid(snapshot, result) {
-		return fmt.Errorf("function type %s has result type %s, want %s, u64, bool, char, or void (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
+	if !isWidth(snapshot, width, result) && !isU64(snapshot, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isVoid(snapshot, result) && !isPointer(snapshot, result) {
+		return fmt.Errorf("function type %s has result type %s, want %s, u64, bool, char, void, or a pointer type (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
 	}
 	return nil
 }
@@ -14419,7 +14425,8 @@ func buildFunctionTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, id
 // clean rejection — see validateFunctionTypeSignature), so the typedef always
 // carries the trailing PebbleContext *ctx parameter. Every parameter/result C
 // type is self-contained (the entry's cType, uint64_t, bool, int32_t,
-// PebbleStr, or void), so the typedef never references an aggregate typedef
+// PebbleStr, a pointer's own `<pointee> *` spelling via pointerTypeName, or
+// void), so the typedef never references an aggregate typedef
 // that might be emitted after it.
 func buildFunctionTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if err := validateFunctionTypeSignature(snapshot, width, id); err != nil {
@@ -14454,8 +14461,11 @@ func buildFunctionTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id 
 // functionTypeParamCType resolves one function type's parameter to the C type
 // an ordinary Pebble-convention helper's parameter of that type is declared
 // with (see buildHelperFunctions): the entry's cType(width) for a width
-// parameter, uint64_t for uint, bool for bool, int32_t for char, and PebbleStr
-// for str — the exact self-contained set validateFunctionTypeSignature admits.
+// parameter, uint64_t for uint, bool for bool, int32_t for char, PebbleStr
+// for str, and the pointee's own `<pointee> *` via pointerTypeName for a
+// pointer parameter (the same spelling helperSignature gives an ordinary
+// helper's pointer parameter) — the exact self-contained set
+// validateFunctionTypeSignature admits.
 // Anything else is a clean rejection, defense for hand-built IR (the
 // validation has already ruled every reachable parameter shape out).
 func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
@@ -14472,14 +14482,29 @@ func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, p
 		return "int32_t", nil
 	case isStr(snapshot, param):
 		return "PebbleStr", nil
+	case isPointer(snapshot, param):
+		// A pointer parameter is spelled the same way helperSignature spells
+		// an ordinary helper's pointer parameter: pointerTypeName takes the
+		// pointee, not the pointer type itself (it appends " *" to the
+		// pointee's own C type), so the pointee must be extracted first.
+		pointeeTypeID, ok := pointerPointeeType(snapshot, param)
+		if !ok {
+			return "", fmt.Errorf("function type parameter type %s has no pointer pointee", describeType(snapshot, param))
+		}
+		if ctypeName := pointerTypeName(snapshot, pointeeTypeID); ctypeName != "" {
+			return ctypeName, nil
+		}
+		return "", fmt.Errorf("function type parameter type %s has a pointee %s whose C type is unsupported", describeType(snapshot, param), describeType(snapshot, pointeeTypeID))
 	}
-	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, or str", describeType(snapshot, param), wantName(width))
+	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, str, or a pointer type", describeType(snapshot, param), wantName(width))
 }
 
 // functionTypeResultCType resolves one function type's result to the C return
 // type an ordinary Pebble-convention helper with that result is declared with
 // (see buildHelperFunctions): the entry's cType(width) for a width result,
-// bool, int32_t for char, and void — the exact self-contained set
+// bool, int32_t for char, the pointee's own `<pointee> *` via pointerTypeName
+// for a pointer result (the same spelling helperSignature gives an ordinary
+// helper's pointer result), and void — the exact self-contained set
 // validateFunctionTypeSignature admits. Anything else is a clean rejection,
 // defense for hand-built IR (the validation has already ruled every reachable
 // result shape out).
@@ -14495,8 +14520,21 @@ func functionTypeResultCType(snapshot *types.Snapshot, width types.BuiltinKind, 
 		return "int32_t", nil
 	case isVoid(snapshot, result):
 		return "void", nil
+	case isPointer(snapshot, result):
+		// A pointer result is spelled the same way helperSignature spells an
+		// ordinary helper's pointer result: pointerTypeName takes the
+		// pointee, not the pointer type itself (it appends " *" to the
+		// pointee's own C type), so the pointee must be extracted first.
+		pointeeTypeID, ok := pointerPointeeType(snapshot, result)
+		if !ok {
+			return "", fmt.Errorf("function type result type %s has no pointer pointee", describeType(snapshot, result))
+		}
+		if ctypeName := pointerTypeName(snapshot, pointeeTypeID); ctypeName != "" {
+			return ctypeName, nil
+		}
+		return "", fmt.Errorf("function type result type %s has a pointee %s whose C type is unsupported", describeType(snapshot, result), describeType(snapshot, pointeeTypeID))
 	}
-	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, or void", describeType(snapshot, result), wantName(width))
+	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, void, or a pointer type", describeType(snapshot, result), wantName(width))
 }
 
 // joinTypedefs joins two typedef text blocks into a single block, with a blank
