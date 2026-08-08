@@ -69,9 +69,12 @@ Slices:
 Ordinary tagged-union narrowing works. It does not cover a method receiver
 that refers to its own generic union, such as `self Result[T, E]`.
 `is_ok`, `unwrap_or`, `map`, and `set_error` cannot read `self.Ok` or
-`self.Err` inside the matching switch arm. Prior investigation saw
-`aggregateTaggedVariant` lose the declaration identity and reach
-`Declaration=0`; this needs current confirmation before implementation.
+`self.Err` inside the matching switch arm. The case-label
+`aggregateEnumVariant` loses its declaration identity and reaches
+`Declaration=0` because the generic receiver template is not materialized
+into `knownValues`, so `knownDestination` cannot recover the nominal
+declaration. Read-side narrowing, narrowed writes, and later `str` payload
+emission are separate gaps.
 
 Narrowed writes are a separate checker gap. `set_error` needs to write
 `self.Err`, but the existing widening applies only to read-side member
@@ -80,16 +83,15 @@ validation. After checker support, a later backend defect is expected:
 
 Slices:
 
-1. Investigation only. Produce a minimal generic-self read reproduction and
-   trace the first lost declaration or specialization identity. Do not edit
-   production code.
-2. Fix only read-side generic-self narrowing. Add positive matching-arm and
+1. Fix only read-side generic-self narrowing. Recover the declaration from the
+   solved receiver type when the case-label aggregate has `Declaration=0`.
+   Add positive matching-arm and
    negative wrong-arm/outside-arm checker tests.
-3. Fix only narrowed writes. Add focused assignment/place tests. Do not touch
+2. Fix only narrowed writes. Add focused assignment/place tests. Do not touch
    backend emission.
-4. If now reachable, add only `str` `FieldPlace` load emission and its focused
+3. If now reachable, add only `str` `FieldPlace` load emission and its focused
    compile-run test.
-5. Compile and run real consumers of `std:result`; then run full checks and
+4. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 
 ### 3. Qualified static methods do not exist
@@ -169,15 +171,16 @@ Removing the two `std/hmap.peb` returns exposes a separate backend gap:
 non-void helper bodies whose final statement is an exhaustive `while true`
 are rejected because the backend expects a trailing return node. The exact
 error is `entry function body ... ends in a While statement`; the same shape
-may exist in `std/io.peb`. The source cleanup is therefore not committed until
-the backend can emit this valid control-flow shape.
+exists in `std/io.peb` and `std/set.peb`. The source cleanup is therefore not
+committed until the backend can emit this valid control-flow shape.
 
 Slices:
 
-1. Verify and remove only the dead return in `std/hmap.peb` if its loop paths
-   are exhaustive. Compile and run a real hmap consumer.
-2. Verify and remove only the dead return in `std/set.peb` if its loop paths
-   are exhaustive. Compile and run a real set consumer.
+1. After the terminal-loop backend gap is fixed, remove only the dead return
+   in `std/hmap.peb` if its loop paths are exhaustive. Compile and run a real
+   hmap consumer.
+2. Remove only the dead return in `std/set.peb` if its loop paths are
+   exhaustive. Compile and run a real set consumer.
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
@@ -193,14 +196,18 @@ Emission rejects it with `entry function body ... ends in a While statement`.
 The control flow is exhaustive because every loop exit returns; the trailing
 source return only existed to satisfy the current backend shape.
 
+Root cause: `buildBlock` in `compiler/internal/backend/emit.go` accepts only
+`Return`, `ImplicitReturn`, `If`, or `Switch` as the final statement of a
+non-void block. The checker already accepts constant-true loops with no break,
+and the IR builder omits `ImplicitReturn` for non-void callables. This is a
+backend-only gap; no language decision is needed.
+
 Slices:
 
-1. Investigation only. Trace helper tail validation and identify the smallest
-   backend representation for a terminal exhaustive loop. Do not edit code.
-2. Add backend lowering for one terminal `while true` shape with a focused
+1. Add backend lowering for one terminal `while true` shape with a focused
    compile-run test. Preserve rejection of genuinely fall-through non-void
    bodies.
-3. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
+2. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
    the source cleanup and consumer check for `std/set.peb`.
 
 ### 8. A generic struct method cannot inherit the owner type parameter
