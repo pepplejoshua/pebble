@@ -117,7 +117,7 @@ fn read_all(file *FILE) string::String {
     }
 
     s.len = bytes_read;
-    s.data[s.len] = '\0';
+    s.data[s.len] = 0 as u8;
     fseek(file, pos, SeekStart); // Restore
 
     return s;
@@ -148,7 +148,7 @@ fn read_line(file *FILE) string::String {
         if ch == '\n' {
             // strip trailing \n
             s.len -= 1;
-            s.data[s.len] = '\0';
+            s.data[s.len] = 0 as u8;
             return s;
         }
     }

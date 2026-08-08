@@ -9,9 +9,15 @@ fn main() int {
         var contents = io::read_all(file);
         defer string::delete(&contents);
 
-        var chars = contents.as_slice();
-        loop 0..contents.len : i {
-            print chars[i];
+        // String is byte-oriented: byte length and character count genuinely
+        // differ for multi-byte content, so iterate by byte position and
+        // advance by each decoded character's own UTF-8 width.
+        var pos = 0;
+        while pos < contents.len {
+            var width uint = 0;
+            var c = contents.char_at(pos, &width);
+            print c;
+            pos += width;
         }
     } else {
         print "Cannot read ", path, ".";

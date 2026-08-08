@@ -1,7 +1,5 @@
-import "std:vec";
 import "std:io";
 import "std:string";
-import "std:result";
 
 type Stats = struct {
     lines uint;
@@ -9,47 +7,45 @@ type Stats = struct {
     chars uint;
 };
 
-type StatsResult = result::Result[Stats, str];
-
-fn count_file(filename str) StatsResult {
-    if !io::exists(filename) {
-        return result::result_err[Stats, str]("File not found");
-    }
-
+// Fills *stats with the line/word/char counts for filename. Returns false if
+// the file could not be opened.
+fn count_file(filename str, stats *Stats) bool {
     var file = io::open(filename, io::MODE_READ);
-    defer io::close(file);
-
     if file == nil {
-        return result::result_err[Stats, str]("Cannot open file");
+        return false;
     }
 
     var contents = io::read_all(file);
-    defer string::delete(&contents);
+    io::close(file);
 
-    var stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
+    stats.lines = 0;
+    stats.words = 0;
     stats.chars = contents.len;
 
-    // Count lines using vec::find_all for newlines
-    var file_slice = contents.as_slice();
-    var v = vec::from_slice(file_slice);
-    defer vec::delete(&v);
-    var all_newlines = v.find_all(fn (ch char) bool => ch == '\n');
-    stats.lines = all_newlines.len;
+    // Count newline bytes. String.data is raw UTF-8 bytes, so byte-level
+    // ASCII detection is correct here (no decoding needed).
+    var i = 0;
+    while i < contents.len {
+        if contents.data[i] == ('\n' as u8) {
+            stats.lines++;
+        }
+        i++;
+    }
 
     // Add 1 to line count if file doesn't end with newline and has content
     if contents.len > 0 {
         var last_char = contents.data[contents.len - 1];
-        if last_char != '\n' {
+        if last_char != ('\n' as u8) {
             stats.lines++;
         }
     }
 
     // Count words
     var in_word = false;
-    var i = 0;
-    while i < contents.len {
-        var c = contents.data[i];
-        if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+    var j = 0;
+    while j < contents.len {
+        var c = contents.data[j];
+        if c == (' ' as u8) || c == ('\t' as u8) || c == ('\n' as u8) || c == ('\r' as u8) {
             in_word = false;
         } else {
             if !in_word {
@@ -57,50 +53,51 @@ fn count_file(filename str) StatsResult {
                 in_word = true;
             }
         }
-        i++;
+        j++;
     }
 
-    return result::result_ok[Stats, str](stats);
+    string::delete(&contents);
+    return true;
 }
 
 fn main() int {
-    var file_paths = [
-        "compiler/std/func.peb",
-        "compiler/std/hash.peb",
-        "compiler/std/hmap.peb",
-        "compiler/std/io.peb",
-        "compiler/std/libc.peb",
-        "compiler/std/mem.peb",
-        "compiler/std/set.peb",
-        "compiler/std/string.peb",
-        "compiler/std/vec.peb",
-        "compiler/std/mem/arena.peb"
-    ];
-
     var total_stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
     var successful_files = 0;
+    var paths = 10;
 
-    loop 0..file_paths.len : i {
-        var result = count_file(file_paths[i]);
-        switch result {
-            case .Ok: {
-                var stats = result.Ok;
-                total_stats.lines += stats.lines;
-                total_stats.words += stats.words;
-                total_stats.chars += stats.chars;
-                successful_files++;
-                print `{file_paths[i]}: {stats.lines} lines, {stats.words} words, {stats.chars} chars`;
-            }
-            case .Err: {
-                print `Error reading {file_paths[i]}: {result.Err}`;
-            }
+    // Count and report each file.
+    var index = 0;
+    while index < paths {
+        var filename str = "";
+        if index == 0 { filename = "compiler/std/func.peb"; }
+        if index == 1 { filename = "compiler/std/hash.peb"; }
+        if index == 2 { filename = "compiler/std/hmap.peb"; }
+        if index == 3 { filename = "compiler/std/io.peb"; }
+        if index == 4 { filename = "compiler/std/libc.peb"; }
+        if index == 5 { filename = "compiler/std/mem.peb"; }
+        if index == 6 { filename = "compiler/std/set.peb"; }
+        if index == 7 { filename = "compiler/std/string.peb"; }
+        if index == 8 { filename = "compiler/std/vec.peb"; }
+        if index == 9 { filename = "compiler/std/mem/arena.peb"; }
+
+        var stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
+        if count_file(filename, &stats) {
+            total_stats.lines += stats.lines;
+            total_stats.words += stats.words;
+            total_stats.chars += stats.chars;
+            successful_files++;
+            print filename, ": ", stats.lines, " lines, ", stats.words, " words, ", stats.chars, " chars";
+        } else {
+            print "Error reading ", filename;
         }
+        index++;
     }
 
-    print `\nSummary for {successful_files}/{file_paths.len} files:`;
-    print `Total lines: {total_stats.lines}`;
-    print `Total words: {total_stats.words}`;
-    print `Total chars: {total_stats.chars}`;
+    print "";
+    print "Summary for ", successful_files, "/", paths, " files:";
+    print "Total lines: ", total_stats.lines;
+    print "Total words: ", total_stats.words;
+    print "Total chars: ", total_stats.chars;
 
     return 0;
 }

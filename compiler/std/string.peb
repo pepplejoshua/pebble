@@ -1,4 +1,33 @@
 // An implementation of a growable string type
+//
+// String is a BYTE-oriented growable buffer: `data` stores raw UTF-8 bytes
+// and `len` is a byte count (mirroring Rust's String, whose storage is UTF-8
+// bytes). Random-access character indexing is deliberately NOT provided —
+// there is no O(1) `s[i]` that yields a decoded scalar. To read a character
+// you decode ON DEMAND at a byte position via `char_at`, which walks the
+// UTF-8 sequence starting at that byte offset and reports both the decoded
+// scalar value and how many bytes it occupied, so callers can iterate:
+//
+//     var pos = 0;
+//     while pos < s.len {
+//         var width uint = 0;
+//         var c = s.char_at(pos, &width);
+//         // use c ...
+//         pos += width;
+//     }
+//
+// The one asymmetry to know: reading bytes is O(1) (`self.data[i]` is a raw
+// u8), reading characters is O(sequence length) — decode on demand, never a
+// direct index, exactly like Rust's String/char split.
+//
+// Malformed UTF-8 (an invalid lead byte, an invalid continuation byte, or a
+// sequence truncated by the end of the buffer) is NOT checked: the runtime's
+// own str decoder panics on such input, but Pebble source has no way to raise
+// a panic, so this implementation degrades gracefully instead — a malformed
+// lead byte is treated as a literal single-byte value and a bad/truncated
+// continuation stops the sequence early. In practice String content comes from
+// push_str/push_char (valid UTF-8 by construction) or read_all's raw file
+// bytes, whose validity is not yet validated either.
 import "std:mem";
 
 extern {
@@ -6,7 +35,7 @@ extern {
 }
 
 type String = struct {
-    data []char;
+    data []u8;
     len uint;
     capacity uint;
 
@@ -14,13 +43,15 @@ type String = struct {
         if new_cap == 0 {
             new_cap = 16; // Minimum capacity
         }
-        let ptr *char = mem::realloc(self.data.data as *void, (sizeof char) * new_cap) as *char;
+        let ptr *u8 = mem::realloc(self.data.data as *void, (sizeof u8) * new_cap) as *u8;
         self.data = slice ptr, new_cap;
         self.capacity = new_cap;
     }
 
+    // Appends one character, UTF-8-encoding it into 1-4 raw bytes.
     fn push_char(self *String, c char) void {
-        if self.len + 1 >= self.capacity {
+        // Room for up to 4 encoded bytes plus the trailing null terminator.
+        if self.len + 4 >= self.capacity {
             var new_cap = self.capacity;
             if new_cap == 0 {
                 new_cap = 16;
@@ -30,9 +61,34 @@ type String = struct {
             self.grow(new_cap);
         }
 
-        self.data[self.len] = c;
-        self.len++;
-        self.data[self.len] = '\0';
+        var cp i32 = c as i32;
+        if cp < 0x80 {
+            self.data[self.len] = cp as u8;
+            self.len++;
+        }
+        if cp >= 0x80 {
+            if cp < 0x800 {
+                self.data[self.len] = (0xC0 | (cp >> 6)) as u8;
+                self.data[self.len + 1] = (0x80 | (cp & 0x3F)) as u8;
+                self.len += 2;
+            }
+        }
+        if cp >= 0x800 {
+            if cp < 0x10000 {
+                self.data[self.len] = (0xE0 | (cp >> 12)) as u8;
+                self.data[self.len + 1] = (0x80 | ((cp >> 6) & 0x3F)) as u8;
+                self.data[self.len + 2] = (0x80 | (cp & 0x3F)) as u8;
+                self.len += 3;
+            }
+        }
+        if cp >= 0x10000 {
+            self.data[self.len] = (0xF0 | (cp >> 18)) as u8;
+            self.data[self.len + 1] = (0x80 | ((cp >> 12) & 0x3F)) as u8;
+            self.data[self.len + 2] = (0x80 | ((cp >> 6) & 0x3F)) as u8;
+            self.data[self.len + 3] = (0x80 | (cp & 0x3F)) as u8;
+            self.len += 4;
+        }
+        self.data[self.len] = 0 as u8;
     }
 
     fn push_str(self *String, new_str str) void {
@@ -44,15 +100,19 @@ type String = struct {
         // Reserve space for the new string plus null terminator
         self.reserve(len);
 
-        // Copy the new string, one char at a time -- str has no legal
+        // Copy the new string, one byte at a time -- str has no legal
         // conversion to a raw pointer, so a bulk memcpy isn't available here.
+        // new_str[i] decodes a character, whose low byte equals the raw byte
+        // for ASCII content; for non-ASCII str content this byte-indexed
+        // decode is the same pre-existing limitation str always had (str
+        // exposes no raw-byte access), not a regression of this redesign.
         loop 0..len : i {
-            self.data[self.len + i] = new_str[i];
+            self.data[self.len + i] = new_str[i] as u8;
         }
 
         // Update length and null-terminate
         self.len += len;
-        self.data[self.len] = '\0';
+        self.data[self.len] = 0 as u8;
     }
 
     fn reserve(self *String, additional uint) void {
@@ -69,6 +129,70 @@ type String = struct {
         }
     }
 
+    // Decodes the character whose UTF-8 sequence starts at byte offset
+    // byte_pos. Returns the decoded scalar value and stores the number of
+    // bytes it occupied into *width, so a caller can advance by the
+    // character's own byte width. If byte_pos is past the end, returns '\0'
+    // with width 1. char and i32 are both int32_t in the runtime, so the
+    // decoded scalar is written into the returned char through a pointer
+    // cast -- the language deliberately forbids an integer-to-char cast, and
+    // this is the only legal way to produce a char value from an arbitrary
+    // scalar.
+    fn char_at(self String, byte_pos uint, width *uint) char {
+        if byte_pos >= self.len {
+            *width = 1;
+            return '\0';
+        }
+
+        var lead32 i32 = self.data[byte_pos] as i32;
+        var seq_len uint = 1;
+        var cp i32 = lead32;
+        if (lead32 & 0x80) == 0x00 {
+            seq_len = 1;
+            cp = lead32;
+        }
+        if (lead32 & 0xE0) == 0xC0 {
+            seq_len = 2;
+            cp = lead32 & 0x1F;
+        }
+        if (lead32 & 0xF0) == 0xE0 {
+            seq_len = 3;
+            cp = lead32 & 0x0F;
+        }
+        if (lead32 & 0xF8) == 0xF0 {
+            seq_len = 4;
+            cp = lead32 & 0x07;
+        }
+        // A lead byte matching none of the patterns above is malformed:
+        // treat it as a literal single-byte value (the default seq_len=1,
+        // cp=lead32 above).
+
+        if byte_pos + seq_len > self.len {
+            // Sequence runs past the end of the buffer: clamp to whatever
+            // bytes remain.
+            seq_len = self.len - byte_pos;
+        }
+
+        var i uint = 1;
+        while i < seq_len {
+            var cont = self.data[byte_pos + i] as i32;
+            if (cont & 0xC0) != 0x80 {
+                // Not a continuation byte: truncate the sequence to the valid
+                // prefix already consumed.
+                seq_len = i;
+                break;
+            }
+            cp = (cp << 6) | (cont & 0x3F);
+            i++;
+        }
+
+        *width = seq_len;
+        var result char = '\0';
+        let p *i32 = &result as *i32;
+        *p = cp;
+        return result;
+    }
+
     // NOTE: there is deliberately no as_str() here. Constructing a real str
     // value from arbitrary runtime buffer data has no legal conversion in
     // this language today (str's only legal conversion is identity; str/
@@ -77,7 +201,9 @@ type String = struct {
     // backed by a real runtime implementation), which is out of scope for
     // this pointer-arithmetic redesign. Tracked as a follow-up.
 
-    fn as_slice(self String) []char {
+    // Returns the raw UTF-8 bytes held by the string, for callers that want
+    // byte-level access. To read characters, use char_at instead.
+    fn as_bytes(self String) []u8 {
         return self.data[:self.len];
     }
 
@@ -88,7 +214,7 @@ type String = struct {
     fn clear(self *String) void {
         self.len = 0;
         if (self.capacity != 0) {
-            self.data[0] = '\0';
+            self.data[0] = 0 as u8;
         }
     }
 
@@ -97,12 +223,12 @@ type String = struct {
             if (self.len == 0) {
                 if (self.capacity != 0) {
                     mem::delete(self.data.data as *void);
-                    let empty *char = nil;
+                    let empty *u8 = nil;
                     self.data = slice empty, 0;
                 }
                 self.capacity = 0;
             } else {
-                let ptr *char = mem::realloc(self.data.data as *void, self.len + 1) as *char;
+                let ptr *u8 = mem::realloc(self.data.data as *void, self.len + 1) as *u8;
                 self.data = slice ptr, self.len + 1;
                 self.capacity = self.len + 1;
             }
@@ -119,13 +245,16 @@ type String = struct {
         return memcmp(self.data.data as *void, b.data.data as *void, self.len) == 0;
     }
 
+    // Byte-level prefix comparison. prefix[i] decodes a character; its low
+    // byte equals the raw byte for ASCII prefixes, which is what these
+    // byte-oriented methods compare against.
     fn starts_with(self String, prefix str) bool {
         var prefix_len = prefix.len;
         if (prefix_len > self.len) {
             return false;
         }
         loop 0..prefix_len : i {
-            if self.data[i] != prefix[i] {
+            if self.data[i] != prefix[i] as u8 {
                 return false;
             }
         }
@@ -139,7 +268,7 @@ type String = struct {
         }
         var start_pos = self.len - suffix_len;
         loop 0..suffix_len : i {
-            if self.data[start_pos + i] != suffix[i] {
+            if self.data[start_pos + i] != suffix[i] as u8 {
                 return false;
             }
         }
@@ -159,7 +288,7 @@ type String = struct {
         while (i <= self.len - needle_len) {
             var matched = true;
             loop 0..needle_len : j {
-                if self.data[i + j] != needle[j] {
+                if self.data[i + j] != needle[j] as u8 {
                     matched = false;
                 }
             }
@@ -186,7 +315,7 @@ type String = struct {
         if (actual_count > 0) {
             mem::copy(result.data.data as *void, &self.data[start] as *void, actual_count);
             result.len = actual_count;
-            result.data[result.len] = '\0';
+            result.data[result.len] = 0 as u8;
         }
 
         return result;
@@ -209,13 +338,13 @@ type String = struct {
             mem::copy(&self.data[pos + insert_len] as *void, &self.data[pos] as *void, self.len - pos);
         }
 
-        // Insert new data, one char at a time -- new_str has no legal
+        // Insert new data, one byte at a time -- new_str has no legal
         // conversion to a raw pointer.
         loop 0..insert_len : i {
-            self.data[pos + i] = new_str[i];
+            self.data[pos + i] = new_str[i] as u8;
         }
         self.len += insert_len;
-        self.data[self.len] = '\0';
+        self.data[self.len] = 0 as u8;
     }
 
     fn remove(self *String, pos uint, count uint) void {
@@ -233,12 +362,12 @@ type String = struct {
         }
 
         self.len -= actual_count;
-        self.data[self.len] = '\0';
+        self.data[self.len] = 0 as u8;
     }
 };
 
 fn new() String {
-    let empty *char = nil;
+    let empty *u8 = nil;
     return String.{
         data = slice empty, 0,
         capacity = 0,
@@ -250,7 +379,7 @@ fn delete(s *String) void {
     if (s.capacity != 0) {
         mem::delete(s.data.data as *void);
     }
-    let empty *char = nil;
+    let empty *u8 = nil;
     s.data = slice empty, 0;
     s.len = 0;
     s.capacity = 0;
