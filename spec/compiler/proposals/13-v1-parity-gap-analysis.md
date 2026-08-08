@@ -179,8 +179,8 @@ Slices:
 1. Completed for `std/hmap.peb` in `baa4a72`; its consumer now reaches the
    separate `str`-typed struct-field backend rejection below.
 2. Remove only the dead return in `std/set.peb` if its loop paths are
-   exhaustive. Compile and run a real set consumer after the backend gap is
-   fixed.
+   exhaustive. **Done:** `7c6d0f2`; its consumer now reaches the separate
+   `InterpolatedString` backend boundary.
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
@@ -208,9 +208,9 @@ Slices:
    compile-run test. Preserve rejection of genuinely fall-through non-void
    bodies.
 2. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
-   the source cleanup and consumer check for `std/set.peb`. `std/set.peb`
-   currently has the same two unreachable trailing returns at lines 132 and
-   160; its consumer is not yet clean.
+   the source cleanup and consumer check for `std/set.peb`. **Done for the
+   source cleanup:** `7c6d0f2`; the set consumer now reaches the separate
+   `InterpolatedString` backend boundary.
 
 ### 8. `str`-typed struct fields cannot fully round-trip
 
@@ -315,6 +315,21 @@ Slices:
    `u64` multiplication overflow in `std:hash.peb:12:16`.
 3. Investigate and implement `[]str` slices separately; do not combine them
    with fixed-array support.
+
+### 14. `InterpolatedString` values are not accepted by `print`
+
+**Area:** backend generator
+
+**Priority:** medium; blocks `std_set.peb` after its unreachable returns are
+removed
+
+`GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_set.peb`
+now fails with `entry function body expression contains a InterpolatedString,
+want a str-typed local reference, a string literal, or a call to a
+str-returning function`. The failing source is the ordinary `print` expression
+in `examples/std_set.peb`. Investigate the existing interpolation lowering and
+add one focused compile-run slice; do not combine it with the separate `%c`
+Unicode print issue.
 
 ## Verification queue
 
