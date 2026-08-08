@@ -7682,13 +7682,63 @@ func TestEmitI64StructWritesC(t *testing.T) {
 
 func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {
 	// A struct whose field type is neither a fixed-width integer nor a
-	// supported compound type — here a str field — is reachable from real
+	// supported compound type — here a char field — is reachable from real
 	// source (the checker builds the declaration and construction fine), so
 	// this is a genuine backend-scope rejection. The struct typedef pass
-	// inspects each field's resolved type first and rejects the str field with
-	// a clear error naming the wanted types, so no C is written.
-	unit, snapshot, entryID, _ := buildFixture(t, "type S = struct { s str; };\nfn main() i32 { let x S = S.{ s = \"hi\" }; return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "field type str is not supported, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, function type, or runtime type")
+	// inspects each field's resolved type first and rejects the char field with
+	// a clear error naming the wanted types, so no C is written. A str field,
+	// by contrast, is now supported (TestEmitStrStructField*).
+	unit, snapshot, entryID, _ := buildFixture(t, "type S = struct { c char; };\nfn main() i32 { let x S = S.{ c = 'x' }; return 1; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "field type char is not supported, want a fixed-width integer, bool, str, tuple, struct, enum, pointer, slice, function type, or runtime type")
+}
+
+func TestEmitStrStructFieldLiteralC(t *testing.T) {
+	// A struct whose field type is str now emits: the struct typedef declares
+	// the field as the runtime's PebbleStr (the same C type a str local is
+	// declared with), and a literal construction value lowers through
+	// buildStrOperand's StringLiteral path to the same byte-oriented
+	// `(PebbleStr){ .data = ..., .len = <N> }` compound literal a str local's
+	// declaration embeds. Field order is preserved by the designated
+	// initializer.
+	unit, snapshot, entryID, sources := buildFixture(t, "type S = struct { s str; n i32; };\nfn main() i32 { let x S = S.{ n = 7, s = \"hi\" }; return x.n; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    PebbleStr pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
+		"pebble_struct_23_t pebble_local_28 = { .pebble_field_26 = 7, .pebble_field_25 = (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 } };",
+		"return pebble_local_28.pebble_field_26;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitStrStructFieldLiteralRuns(t *testing.T) {
+	// A struct with a str field constructed from a string literal compiles
+	// and runs: the byte-oriented PebbleStr field is part of the struct
+	// layout, the designated initializer places the literal into it, and the
+	// (numeric) field read returns through the runtime. Reading the str field
+	// itself back is a separate backend gap (Load(FieldPlace) in
+	// buildStrOperand), so the value is verified here by the emitted-C test.
+	emitAndRun(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; return x.n; }", false, 5, false)
+}
+
+func TestEmitStrStructFieldLocalValueRuns(t *testing.T) {
+	// A str field constructed from an in-scope str local (the SymbolValue
+	// shape buildStrOperand accepts for a str call argument) compiles and
+	// runs: the construction copies the local's PebbleStr by value into the
+	// field.
+	emitAndRun(t, "type S = struct { s str; n int; };\nfn main() int { let k str = \"ho\"; let x S = S.{ s = k, n = 6 }; return x.n; }", false, 6, false)
+}
+
+func TestEmitStrStructFieldCallValueRuns(t *testing.T) {
+	// A str field constructed from a call to a str-returning helper (the
+	// DirectCall shape buildStrOperand accepts) compiles and runs.
+	emitAndRun(t, "fn mk() str { return \"hi\"; }\ntype S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = mk(), n = 7 }; return x.n; }", false, 7, false)
 }
 
 func TestEmitRejectsStructWholeReassignment(t *testing.T) {

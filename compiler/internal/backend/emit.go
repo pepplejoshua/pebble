@@ -184,8 +184,9 @@
 // (the i'th codepoint, not the i'th byte), and the runtime panics on a
 // negative or out-of-range index or on malformed UTF-8 encountered along the
 // way. Everything else str-shaped remains out of scope and a clean rejection:
-// str fields/elements inside a tuple, array, optional, or struct, and
-// concatenation and interpolation (InterpolatedString).
+// str elements inside a tuple, array, or optional, and concatenation and
+// interpolation (InterpolatedString). A str field inside a struct is supported
+// (see structFieldCType / buildStructBraceList).
 //
 // Since 10.36, a str-typed local may also be reassigned (a tir.Store whose
 // place names a str local), and a helper function may declare str-typed
@@ -8320,9 +8321,9 @@ func mustNode(unit *tir.Unit, id tir.NodeID) tir.Node { n, _ := unit.Node(id); r
 // order. Designated initializers are standard C99 and compile clean under
 // -Wall -Wextra -Werror (confirmed by a real cc compile through this test
 // suite's own harness). Every field type must be exactly the entry's width or
-// bool; anything else (a str field, a nested struct field) is a clean
+// bool, or str; anything else (a char field, a nested struct field) is a clean
 // rejection naming the field position, since this backend emits exactly those
-// two C field types. Three initializer shapes are supported (10.26): a
+// three C field types. Three initializer shapes are supported (10.26): a
 // RecordConstruct (a struct literal), emitted as a designated-initializer
 // brace list, a DirectCall to a struct-returning helper whose result type
 // matches the local's declared type, emitted by the same call-building
@@ -8401,13 +8402,15 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 // designated-initializer brace list with one designated initializer per
 // constructed field. Each field's value is built by the grammar its own type
 // selects — buildExpr for a field of the entry's width, buildBoolExpr for a
-// bool field. The designated form places each value under exactly the C field
-// its member symbol names, so the construction-site field order a
-// RecordConstruct's Fields carry (which need not match the struct's declared
-// order — a site may write Point.{ y = 2, x = 1 }) needs no reordering.
-// Every field type must be exactly the entry's width or bool; anything else
-// (a str field, a nested struct field) is a clean rejection naming the field
-// position, since this backend emits exactly those two C field types. context
+// bool field, buildStrOperand for a str field. The designated form places each
+// value under exactly the C field its member symbol names, so the
+// construction-site field order a RecordConstruct's Fields carry (which need
+// not match the struct's declared order — a site may write Point.{ y = 2, x =
+// 1 }) needs no reordering.
+// Every field type must be exactly the entry's width, bool, or str; anything
+// else (a char field, a nested struct field) is a clean rejection naming the
+// field position, since this backend emits exactly those three C field types.
+// context
 // names the enclosing construct in error messages. The function is shared by
 // the two places a RecordConstruct's fields are built (10.25): a struct-typed
 // local's declaration initializer (buildStructLocalDeclaration embeds the
@@ -8497,6 +8500,21 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			expr = built
 		case isBool(snapshot, fieldType):
 			built, err := buildBoolExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isStr(snapshot, fieldType):
+			// A str-typed field's construction value (Entry's `key = k`,
+			// std/hmap.peb's insert) is one of the same three shapes
+			// buildStrOperand accepts anywhere a str value is built — a string
+			// literal, a reference to an in-scope str-typed local, or a call to
+			// a str-returning helper — built by the same buildStrOperand a str
+			// local's declaration initializer, a str call argument, and a str
+			// comparison operand use. The C field's type is PebbleStr (see
+			// structFieldCType), so the built expression matches the field type
+			// with no cast.
+			built, err := buildStrOperand(unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -8626,7 +8644,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			}
 			expr = built
 		default:
-			return "", "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, or function type", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType))
+			return "", "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want a fixed-width integer, bool, str, tuple, struct, enum, pointer, slice, or function type", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType))
 		}
 		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
 	}
@@ -14424,19 +14442,24 @@ func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 // declared with in its struct's typedef: any fixed-width integer builtin (the
 // entry's resolved width, uint, u64, or any other fixed-width integer, each
 // resolved to its OWN width by the generic resolvedBuiltin/cType pattern — so
-// a uint or u64 field is uint64_t), bool for a bool field, the field's own
-// tuple/optional/struct/pointer/slice/function-type typedef, a plain enum
-// field's own enum typedef (pebble_enum_<typeID>_t, the same C type an
-// enum-typed local/parameter/result is declared with), or a
-// compiler-builtin runtime type's hand-written C type. Any other field type —
-// a str field, a char field — is a clean rejection naming what
-// was found, since this backend emits exactly those C types as struct fields.
+// a uint or u64 field is uint64_t), bool for a bool field, PebbleStr for a
+// str field (the same C type a str local, parameter, result, and union member
+// is declared with), the field's own tuple/optional/struct/pointer/slice/
+// function-type typedef, a plain enum field's own enum typedef
+// (pebble_enum_<typeID>_t, the same C type an enum-typed local/parameter/
+// result is declared with), or a compiler-builtin runtime type's hand-written
+// C type. Any other field type — a char field — is a clean rejection naming
+// what was found, since this backend emits exactly those C types as struct
+// fields.
 func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
 		return cType(fieldWidth), nil
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
+	}
+	if isStr(snapshot, id) {
+		return "PebbleStr", nil
 	}
 	if isTuple(snapshot, id) {
 		return tupleTypeName(id), nil
@@ -14489,10 +14512,10 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
-			return "", fmt.Errorf("field type %s is not supported, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, function type, or runtime type", name)
+			return "", fmt.Errorf("field type %s is not supported, want a fixed-width integer, bool, str, tuple, struct, enum, pointer, slice, function type, or runtime type", name)
 		}
 	}
-	return "", fmt.Errorf("field type %s is not supported, want a fixed-width integer, bool, tuple, struct, enum, pointer, slice, function type, or runtime type", describeType(snapshot, id))
+	return "", fmt.Errorf("field type %s is not supported, want a fixed-width integer, bool, str, tuple, struct, enum, pointer, slice, function type, or runtime type", describeType(snapshot, id))
 }
 
 // optionalPayloadCType is the C field type an optional payload of the given
