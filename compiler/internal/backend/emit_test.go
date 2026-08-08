@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -4332,15 +4333,28 @@ func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
-	// A char operand prints as the single character its int32_t value encodes
-	// (specifier %c), covering both a char literal and a char-typed local.
+	// A char operand prints as the UTF-8 encoding of the single Unicode
+	// scalar its int32_t value encodes: the scalar is routed through the
+	// runtime helper pebble_rt_char_to_utf8 into a per-operand uint8_t[5]
+	// buffer the combined printf prints under %s. ASCII and the full range of
+	// multi-byte scalars (2-, 3-, and 4-byte encodings) must all print their
+	// exact UTF-8 sequences. The two-operand case proves each char operand
+	// gets its own distinctly named buffer (a name collision would fail the
+	// C compile) while preserving operand order, and the mixed case proves a
+	// char operand still composes with another printable type in the one
+	// combined printf.
 	for _, tc := range []struct {
 		name string
 		src  string
 		want string
 	}{
-		{"literal", "fn main() i32 { print 'x'; return 0; }", "x\n"},
-		{"local", "fn main() i32 { let c char = 'x'; print c; return 0; }", "x\n"},
+		{"ascii literal", "fn main() i32 { print 'x'; return 0; }", "x\n"},
+		{"ascii local", "fn main() i32 { let c char = 'x'; print c; return 0; }", "x\n"},
+		{"e-acute", "fn main() i32 { print 'é'; return 0; }", "é\n"},
+		{"euro sign", "fn main() i32 { print '€'; return 0; }", "€\n"},
+		{"grinning face", "fn main() i32 { print '😀'; return 0; }", "😀\n"},
+		{"two char operands", "fn main() i32 { print 'é', '€'; return 0; }", "é€\n"},
+		{"mixed with str", "fn main() i32 { print \"pre\", 'é', \"post\"; return 0; }", "preépost\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
@@ -4425,13 +4439,19 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	// The emitted C for a mixed-type print must be exactly ONE printf call per
 	// print statement whose format string concatenates one specifier per
 	// operand in order (integer via the out-of-quotes "%"PRId32 macro
-	// spelling, bool/char/str/float as %s/%c/%s/%f literals) and ends in the
-	// literal \n, with the same number of comma-separated arguments in operand
-	// order. Asserting the literal C text is what proves the one-call
-	// combined shape, not a per-operand call. The operand texts are confirmed
-	// against the fixture dump: the char literal 'x' emits (int32_t)120, the
-	// string literal "hi" emits its PebbleStr compound literal's .data field
-	// cast to const char *, and the bool emits the "true"/"false" ternary.
+	// spelling, bool/char/str/float as %s literals — a char operand's %s is
+	// backed by its own UTF-8 buffer, see below) and ends in the literal \n,
+	// with the same number of comma-separated arguments in operand order.
+	// Asserting the literal C text is what proves the one-call combined
+	// shape, not a per-operand call. The operand texts are confirmed against
+	// the fixture dump: the char literal 'x' emits (int32_t)120, encoded to
+	// UTF-8 by pebble_rt_char_to_utf8 into a per-operand uint8_t[5] buffer
+	// named from the operand's node ID, the string literal "hi" emits its
+	// PebbleStr compound literal's .data field cast to const char *, and the
+	// bool emits the "true"/"false" ternary. The buffer name is captured
+	// from the declaration so the assertion is robust to the fixture's normal
+	// symbol/numbering, and the absence of any %c proves the old char path is
+	// gone.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { print 1, true, 'x', \"hi\", 3.5; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -4441,12 +4461,23 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	if count := strings.Count(out, "printf("); count != 1 {
 		t.Errorf("emitted C has %d printf( calls, want exactly one:\n%s", count, out)
 	}
+	bufferRE := regexp.MustCompile(`uint8_t (pebble_char_utf8_\d+)\[5\];`)
+	match := bufferRE.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("emitted C missing the char operand's uint8_t[5] UTF-8 buffer:\n%s", out)
+	}
+	bufferName := match[1]
 	for _, want := range []string{
-		"printf(\"%\"PRId32\"%s\"\"%c\"\"%s\"\"%f\"\"\\n\", 1, (true ? \"true\" : \"false\"), (int32_t)120, (const char *)(PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }.data, 3.5);",
+		fmt.Sprintf("uint8_t %s[5];", bufferName),
+		fmt.Sprintf("pebble_rt_char_to_utf8((int32_t)120, %s);", bufferName),
+		fmt.Sprintf("printf(\"%%\"PRId32\"%%s\"\"%%s\"\"%%s\"\"%%f\"\"\\n\", 1, (true ? \"true\" : \"false\"), (const char *)%s, (const char *)(PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }.data, 3.5);", bufferName),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "%c") {
+		t.Errorf("emitted C still contains the old char %%c path:\n%s", out)
 	}
 }
 
@@ -4491,6 +4522,18 @@ func TestEmitDeferredPrintAtVoidHelperExitCompilesAndRuns(t *testing.T) {
 	// entry returns 0.
 	out := emitAndRunCapture(t, "fn helper() void { defer print 7; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
 	if want := "7\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
+	// A deferred char print routes through the same shared buildPrint, so a
+	// multi-byte char operand's UTF-8 buffer and pebble_rt_char_to_utf8
+	// pre-statements must land in the deferred statement sequence at the
+	// ImplicitReturn exit, ahead of the combined printf. Calling the helper
+	// prints the exact UTF-8 encoding of 'é' and the entry returns 0.
+	out := emitAndRunCapture(t, "fn helper() void { defer print 'é'; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
+	if want := "é\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
 }

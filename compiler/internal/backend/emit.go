@@ -6245,8 +6245,14 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 //     "false"`) so the printed text is the word true/false; the format
 //     specifier is %s, exactly v1's approach of making the bool argument a
 //     const char * before the format string is built.
-//   - char — buildCharOperand (a char's C type is the fixed int32_t, which
-//     %c accepts after default argument promotion), specifier %c.
+//   - char — buildCharOperand (a char's C type is the fixed int32_t scalar
+//     value, which this backend never hands to printf directly): the scalar is
+//     encoded to UTF-8 by the runtime helper pebble_rt_char_to_utf8 into a
+//     fresh per-operand uint8_t[5] buffer declared in the print's leading
+//     pre-statements, and the combined printf gets the buffer cast to
+//     const char * under a %s specifier. A bare %c would write only one byte,
+//     corrupting every char beyond U+007F, so every char operand — ASCII or
+//     not — goes through the helper.
 //   - str — buildStrOperand (a str local, a string literal, or a call to a
 //     str-returning helper), with the argument being the value's .data field
 //     cast to const char * (the runtime's PebbleStr is
@@ -6268,8 +6274,9 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // emitted as the macro name OUTSIDE the surrounding quotes (`"%"PRId32`, not
 // `"%PRId32"`), so the preprocessor expands the macro to the exact-width
 // specifier text and adjacent-literal concatenation folds it into the format
-// string; the bool/char/str/float specifiers are plain `%s`/`%c`/`%f`
-// literals. Every operand value is built
+// string; the bool/char/str/float specifiers are the plain `%s`/`%s`/`%s`/`%f`
+// literals (a char's %s is backed by the pre-statement UTF-8 buffer above).
+// Every operand value is built
 // under the grammar its own resolved type selects; a print operand of any type
 // the checker does not allow as printable is a clean rejection naming what was
 // found, never guessed. The function is shared by buildLeadingStatement's
@@ -6331,6 +6338,7 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		var arg string
 		var err error
 		var sliceIndexPre string
+		var charPreParts []string
 		switch {
 		case cType(kind) != "":
 			// An integer operand of any builtin width, not just the entry's
@@ -6373,13 +6381,37 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 				}
 			}
 		case kind == types.Char:
-			// A char operand prints as the single character its int32_t C
-			// value encodes; the value is built under the char grammar.
-			formatParts = append(formatParts, `"%c"`)
+			// A char operand prints as the UTF-8 encoding of the single
+			// character its int32_t scalar value encodes. The scalar is built
+			// under the char grammar (buildCharOperand, or the slice-index
+			// read for a slice-element operand — both yield the same int32_t
+			// char value), then the runtime helper pebble_rt_char_to_utf8
+			// encodes it — 1-4 UTF-8 bytes plus the trailing NUL — into a
+			// fresh per-operand uint8_t[5] buffer declared in this print's
+			// pre-statements, and the combined printf's %s consumes that
+			// buffer. The scalar is never passed to printf directly: a %c
+			// writes only a single byte, so any char beyond U+007F would print
+			// corrupt bytes instead of its full UTF-8 sequence (the exact bug
+			// this encoding closes); routing every char operand — ASCII
+			// included — through the helper keeps the emitted C uniform. The
+			// buffer name derives from the operand's own unwrapped node ID —
+			// the stable identity of this operand, unique across the unit — so
+			// a print with several char operands gets one distinct buffer each
+			// with no collision, the same pebble_slice_index_<nodeID>
+			// convention buildSliceIndexValue uses for its temp.
+			formatParts = append(formatParts, `"%s"`)
+			var scalar string
 			if isSliceIndex {
-				sliceIndexPre, arg, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+				sliceIndexPre, scalar, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
 			} else {
-				arg, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+				scalar, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+			}
+			if err == nil {
+				bufferName := fmt.Sprintf("pebble_char_utf8_%d", operandID)
+				charPreParts = append(charPreParts,
+					fmt.Sprintf("uint8_t %s[5];", bufferName),
+					fmt.Sprintf("pebble_rt_char_to_utf8(%s, %s);", scalar, bufferName))
+				arg = "(const char *)" + bufferName
 			}
 		case kind == types.Str:
 			// A str operand prints its bytes: the value is built under the
@@ -6407,6 +6439,9 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		}
 		if sliceIndexPre != "" {
 			preParts = append(preParts, indent+sliceIndexPre)
+		}
+		for _, pre := range charPreParts {
+			preParts = append(preParts, indent+pre)
 		}
 		args = append(args, arg)
 	}
