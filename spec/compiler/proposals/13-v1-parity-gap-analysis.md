@@ -55,14 +55,46 @@ Slices:
 
 1. Change only aggregate collection so a runtime `RecordConstruct` does not
    enter parsed-struct typedef resolution. Keep recursion through its field
-   values. Add a focused test that pins the next runtime-local rejection.
+   values. Add a focused test that pins the next pointer-function rejection.
 2. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
    Preserve the existing function-pointer calling convention. Add focused
    emitted-C and compile-run tests. Do not widen general record construction.
 3. Compile and run a real `std:mem/arena` consumer, then run full checks and
    the causation checks.
 
-### 2. Generic `Result[T, E]` methods do not narrow `self`
+### 2. Pointer-bearing function types are rejected
+
+**Area:** backend generator
+
+**Priority:** high for Allocator; possibly broader function-type parity
+
+**Reproduction:** custom Allocator callbacks require these function types:
+
+```pebble
+fn my_alloc(ctx *void, size uint) *void { return nil; }
+fn my_realloc(ctx *void, ptr *void, size uint) *void { return nil; }
+fn my_free(ctx *void, ptr *void) void {}
+```
+
+After the collection fix (`f5403b5`), emission reaches
+`validateFunctionTypeSignature` and rejects `fn(*void, uint) *void` with
+`parameter 0 has type *void`. Existing function-type lowering accepts scalar,
+bool, char, and str shapes but not pointer parameters or pointer results.
+This blocks custom `Allocator.{ alloc = ..., realloc = ..., free = ... }`
+construction before runtime record emission.
+
+Slices:
+
+1. Reproduce and inspect every pointer-bearing function-type path. Confirm the
+   smallest accepted C ABI shape and whether pointer parameters/results already
+   work for direct helper calls outside function-valued fields. Investigation
+   only; no production edit.
+2. Add pointer parameter/result validation and typedef emission for one narrow
+   pointer shape. Add focused emitted-C and compile-run tests.
+3. Add the remaining pointer shapes one at a time. Keep function-value calls
+   and runtime record construction separate.
+
+### 3. Generic `Result[T, E]` methods do not narrow `self`
 
 **Area:** checker, then backend generator
 
@@ -94,7 +126,7 @@ Slices:
 5. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 
-### 3. Qualified static methods do not exist
+### 4. Qualified static methods do not exist
 
 **Area:** checker facts, validation, inference, and typed IR
 
@@ -120,7 +152,7 @@ Slices, only if this low-priority feature is approved later:
 4. Implement only typed-IR construction.
 5. Add backend and end-to-end tests for plain and generic owners.
 
-### 4. `main(argv []str)` cannot read process arguments
+### 5. `main(argv []str)` cannot read process arguments
 
 **Area:** typed IR and backend generator
 
@@ -138,7 +170,7 @@ Slices:
 2. Carry only that parameter through IR construction.
 3. Add the C `argc`/`argv` to `[]str` adapter and compile-run tests.
 
-### 5. Inline slice construction fails in pure expression positions
+### 6. Inline slice construction fails in pure expression positions
 
 **Area:** backend generator
 
@@ -156,7 +188,7 @@ Slices:
 2. Implement one form only, with one compile-run test.
 3. Repeat for each remaining form. Do not combine all call sites in one task.
 
-### 6. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
+### 7. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
 
 **Area:** Pebble standard library or CLI diagnostic policy
 
@@ -176,7 +208,7 @@ Slices:
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
-### 7. A generic struct method cannot inherit the owner type parameter
+### 8. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -188,7 +220,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 8. Some checked numeric operations have no `u64` runtime helper
+### 9. Some checked numeric operations have no `u64` runtime helper
 
 **Area:** runtime and backend generator
 
@@ -201,7 +233,7 @@ Confirm each operation is intended by the language contract before work.
 Slices: one operation family per dispatch. Add its runtime helper and smoke
 tests first, then its backend selection and compile-run test.
 
-### 9. Enum-to-integer conversion lacks backend lowering
+### 10. Enum-to-integer conversion lacks backend lowering
 
 **Area:** backend generator
 
@@ -211,7 +243,7 @@ The checker accepts the conversion, but the backend does not lower it. First
 slice: reproduce against current HEAD and identify the exact TIR node and
 missing builder case. Do not implement until the reproduction is recorded.
 
-### 10. Whole dereferenced structs cannot become values
+### 11. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
