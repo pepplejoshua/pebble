@@ -24,33 +24,7 @@ the permanent record for completed work.
 
 ## Active defects
 
-### 1. `print` cannot render a multi-byte `char`
-
-**Area:** runtime, then backend generator
-
-**Priority:** high
-
-**Reproduction:** `fn main() int { print 'é'; return 0; }`
-
-**Failure:** the generated C uses `%c`, which writes only one byte.
-
-`compiler/internal/backend/emit.go` builds one combined `printf` call.
-The char branch passes the Unicode scalar to C `%c`. It must instead encode
-the scalar as UTF-8 and pass a short, terminated byte buffer to `%s`.
-`std/string.peb` already contains the required encoding algorithm in
-`push_char`, but the print path needs a C runtime helper.
-
-Slices:
-
-1. Add and directly test one C runtime UTF-8 encode helper. Touch only its
-   header, implementation, and runtime smoke tests. Test ASCII and 2-, 3-,
-   and 4-byte scalars in safe and release modes.
-2. Teach only `buildPrint` to create the small buffer through its existing
-   leading-statement mechanism. Add focused generated-C and compile-run tests
-   for mixed ASCII and multi-byte output.
-3. Run the full Go checks, both C runtime smoke modes, and the causation check.
-
-### 2. `Allocator.{ ... }` record construction cannot compile
+### 1. `Allocator.{ ... }` record construction cannot compile
 
 **Area:** symbol/checker, then backend generator
 
@@ -88,7 +62,7 @@ Slices:
 3. Compile and run a real `std:mem/arena` consumer, then run full checks and
    the causation checks for both slices.
 
-### 3. Generic `Result[T, E]` methods do not narrow `self`
+### 2. Generic `Result[T, E]` methods do not narrow `self`
 
 **Area:** checker, then backend generator
 
@@ -120,7 +94,7 @@ Slices:
 5. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 
-### 4. Qualified static methods do not exist
+### 3. Qualified static methods do not exist
 
 **Area:** checker facts, validation, inference, and typed IR
 
@@ -146,7 +120,7 @@ Slices, only if this low-priority feature is approved later:
 4. Implement only typed-IR construction.
 5. Add backend and end-to-end tests for plain and generic owners.
 
-### 5. `main(argv []str)` cannot read process arguments
+### 4. `main(argv []str)` cannot read process arguments
 
 **Area:** typed IR and backend generator
 
@@ -164,7 +138,7 @@ Slices:
 2. Carry only that parameter through IR construction.
 3. Add the C `argc`/`argv` to `[]str` adapter and compile-run tests.
 
-### 6. Inline slice construction fails in pure expression positions
+### 5. Inline slice construction fails in pure expression positions
 
 **Area:** backend generator
 
@@ -182,7 +156,7 @@ Slices:
 2. Implement one form only, with one compile-run test.
 3. Repeat for each remaining form. Do not combine all call sites in one task.
 
-### 7. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
+### 6. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
 
 **Area:** Pebble standard library or CLI diagnostic policy
 
@@ -202,7 +176,7 @@ Slices:
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
-### 8. A generic struct method cannot inherit the owner type parameter
+### 7. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -214,7 +188,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 9. Some checked numeric operations have no `u64` runtime helper
+### 8. Some checked numeric operations have no `u64` runtime helper
 
 **Area:** runtime and backend generator
 
@@ -227,7 +201,7 @@ Confirm each operation is intended by the language contract before work.
 Slices: one operation family per dispatch. Add its runtime helper and smoke
 tests first, then its backend selection and compile-run test.
 
-### 10. Enum-to-integer conversion lacks backend lowering
+### 9. Enum-to-integer conversion lacks backend lowering
 
 **Area:** backend generator
 
@@ -237,7 +211,7 @@ The checker accepts the conversion, but the backend does not lower it. First
 slice: reproduce against current HEAD and identify the exact TIR node and
 missing builder case. Do not implement until the reproduction is recorded.
 
-### 11. Whole dereferenced structs cannot become values
+### 10. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
