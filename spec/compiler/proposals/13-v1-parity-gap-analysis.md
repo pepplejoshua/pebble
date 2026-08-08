@@ -165,6 +165,13 @@ an unreachable-statement warning. `pebc` exits with failure for every
 diagnostic, including warnings. A similar dead return was safely removed from
 `std/io.peb`, but each remaining function must be checked on its own.
 
+Removing the two `std/hmap.peb` returns exposes a separate backend gap:
+non-void helper bodies whose final statement is an exhaustive `while true`
+are rejected because the backend expects a trailing return node. The exact
+error is `entry function body ... ends in a While statement`; the same shape
+may exist in `std/io.peb`. The source cleanup is therefore not committed until
+the backend can emit this valid control-flow shape.
+
 Slices:
 
 1. Verify and remove only the dead return in `std/hmap.peb` if its loop paths
@@ -174,7 +181,29 @@ Slices:
 3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
    change CLI policy as part of either standard-library slice.
 
-### 7. A generic struct method cannot inherit the owner type parameter
+### 7. Non-void helper bodies cannot end in an exhaustive `while true`
+
+**Area:** backend generator
+
+**Priority:** medium; blocks the hmap and set library consumer sweep
+
+**Reproduction:** after removing the dead return from `HashMap.get_by_ref` or
+`HashMap.remove`, the helper's typed-IR body ends directly in a `While` node.
+Emission rejects it with `entry function body ... ends in a While statement`.
+The control flow is exhaustive because every loop exit returns; the trailing
+source return only existed to satisfy the current backend shape.
+
+Slices:
+
+1. Investigation only. Trace helper tail validation and identify the smallest
+   backend representation for a terminal exhaustive loop. Do not edit code.
+2. Add backend lowering for one terminal `while true` shape with a focused
+   compile-run test. Preserve rejection of genuinely fall-through non-void
+   bodies.
+3. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
+   the source cleanup and consumer check for `std/set.peb`.
+
+### 8. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -186,7 +215,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 8. Some checked numeric operations have no `u64` runtime helper
+### 9. Some checked numeric operations have no `u64` runtime helper
 
 **Area:** runtime and backend generator
 
@@ -199,7 +228,7 @@ Confirm each operation is intended by the language contract before work.
 Slices: one operation family per dispatch. Add its runtime helper and smoke
 tests first, then its backend selection and compile-run test.
 
-### 9. Enum-to-integer conversion lacks backend lowering
+### 10. Enum-to-integer conversion lacks backend lowering
 
 **Area:** backend generator
 
@@ -209,7 +238,7 @@ The checker accepts the conversion, but the backend does not lower it. First
 slice: reproduce against current HEAD and identify the exact TIR node and
 missing builder case. Do not implement until the reproduction is recorded.
 
-### 10. Whole dereferenced structs cannot become values
+### 11. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
