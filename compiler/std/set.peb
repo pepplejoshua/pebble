@@ -128,8 +128,6 @@ type Set[K] = struct {
 
             index = (index + 1) % self.cap;
         }
-
-        return false;
     }
 
     // Remove a key. Returns true if removed.
@@ -156,8 +154,6 @@ type Set[K] = struct {
 
             index = (index + 1) % self.cap;
         }
-
-        return false;
     }
 
     // Remove all key entries but keep capacity.
