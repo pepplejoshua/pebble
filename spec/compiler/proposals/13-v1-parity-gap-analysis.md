@@ -44,4 +44,56 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+### `main(argv []str)` cannot receive C process arguments
+
+**Source:** proposal 14's "Confirmed open tracker items" list, item 5.
+
+**Area:** backend generator, `compiler/internal/backend/validate.go`
+(`validateEntrySignature`, line 24) and the entry-point C bridge (search
+`emit.go` for `emitEntryC` and the literal `int main(int argc, const char
+**argv)` text)
+
+**Priority:** low — no current example depends on it, but it's a real,
+self-contained feature, not a small fix.
+
+**Reproduction:**
+
+```pebble
+fn main(argv []str) int {
+    return argv.len;
+}
+```
+
+`go run ./cmd/pebc -o` fails cleanly:
+
+```
+pebc: emission failed: entry function has 1 parameter(s), want 0
+(main([]str) and main(i32, []str) are not supported yet)
+```
+
+**Root cause:** `validateEntrySignature` unconditionally rejects any
+nonzero parameter count — the message even names the exact unsupported
+shape. Separately, the emitted C entry bridge already generates a real
+`int main(int argc, const char **argv)` (confirmed by inspecting other
+emitted programs tonight), but immediately discards both with `(void)argc;
+(void)argv;` before calling `pebble_user_main(&ctx)` with no arguments.
+
+**Scope for a first slice** (matches this item's own historical slice
+plan, not yet executed): accept exactly the one-parameter
+`main(argv []str) int` form (not the two-parameter `main(argc, argv)`
+form — that stays intentionally unsupported, a documented V1-parity
+decision, do not implement it). At the C entry point, build a `[]str`
+value (this backend's `PebbleStr`-slice shape) from the real `argc`/`argv`
+and pass it as `pebble_user_main`'s argument. Open question to resolve
+during implementation, not assumed here: does the `[]str` include
+`argv[0]` (the program name, that being the raw C convention) or start
+from `argv[1]` (excluding the program name, matching most modern
+language runtimes' convention)? Neither is asserted correct here — decide
+based on whatever's more consistent with this project's other conventions,
+or default to excluding the program name (`argv[1..argc]`) if nothing else
+dictates otherwise, and document the choice clearly.
+
+**Not yet done:** the actual implementation — checker/typed-IR-side
+carrying of the parameter is claimed already accepted by the checker
+(confirm this still holds), and the backend-side changes above. Next step:
+dispatch through Orc per the tracker's dispatch rules.
