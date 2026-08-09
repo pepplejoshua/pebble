@@ -44,4 +44,65 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+### The checker accepts a `str`-typed switch subject, but the backend has no lowering
+
+**Source:** proposal 14, "New findings" table, row "V2 checker accepts
+string switch, but backend has no lowering."
+
+**Area:** backend generator, `compiler/internal/backend/statements.go`,
+switch-subject builder
+
+**Priority:** low — clean rejection, not a correctness hazard. Architecturally
+bigger than the char-switch fix just landed (`72f0207`), so scoping it
+correctly matters.
+
+**Reproduction:**
+
+```pebble
+fn classify(s str) int {
+    switch s {
+        case "a": return 1;
+        case "b": return 2;
+        else: return 0;
+    }
+}
+
+fn main() int {
+    return classify("b");
+}
+```
+
+Fails cleanly at emission (error message already updated by the char-switch
+fix to list char, confirming that fix landed correctly):
+
+```
+pebc: emission failed: switch subject has type str, want int, bool, or
+char, or an enum/tagged-union type
+```
+
+**Root cause and why this is NOT a same-shape fix as char:** every other
+supported switch subject (int, bool, char, enum, tagged-union) maps
+directly to a native C `switch` statement, because C `switch` only accepts
+integer-constant case labels — char lowers to an `int32_t` scalar compare,
+enum lowers to its underlying integer tag. A `str` subject cannot use a
+native C `switch` at all; V1 (per the audit) emits it as an `strcmp`
+if/else chain instead. This backend already has exactly the runtime helper
+needed for that: `pebble_rt_str_eq` (used for `==`/`!=` on two `str`
+values, see `buildComparison` in `values.go`). The fix is not "add a
+branch to the existing switch builder" like char was — it's "detect a
+`str`-typed subject early and emit a completely different C shape" (a
+chain of `if (pebble_rt_str_eq(subject, "case1")) { ... } else if
+(pebble_rt_str_eq(subject, "case2")) { ... } else { <default/else arm> }`),
+sharing the case-body emission logic with the normal switch path but not
+its native-`switch`-statement shape.
+
+**Not yet done:** implement the if/else-chain lowering for a `str`-typed
+switch subject, reusing `pebble_rt_str_eq` and whatever case-body-emission
+helper the normal switch path already uses (so the arm bodies themselves —
+including defer/break/fallthrough semantics if switch supports those —
+stay consistent between the native-switch and if/else-chain lowering
+paths). Confirm how `switch`-targeted `break` (a documented V2 extension
+over V1, per proposal 14) should behave inside an if/else-chain lowering —
+it likely needs to become a labeled break or an equivalent since there's no
+enclosing native `switch`/loop construct to break out of. Next step:
+dispatch through Orc per the tracker's dispatch rules.
