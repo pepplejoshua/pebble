@@ -430,13 +430,16 @@ func TestEmitRejectsStrLoadOfNonFieldPlace(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "contains a str Load whose place is a StoragePlace, want a FieldPlace")
 }
 
-func TestEmitRejectsStructWholeReassignment(t *testing.T) {
-	// Reassigning a whole struct-typed local (p = Point.{ ... }) is out of
-	// scope this slice. The Store's place names a struct-typed local, so
-	// buildLeadingStatement rejects it with a clear error naming the
-	// reassignment, not a guessed lowering.
-	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var p Point = Point.{ x = 1, y = 2 }; p = Point.{ x = 3, y = 4 }; return p.x; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole struct is not supported")
+func TestEmitRejectsStructWholeReassignmentFromCallValue(t *testing.T) {
+	// Reassigning a whole struct-typed local from a call to a struct-returning
+	// helper (`p = make_point();`) is reachable from real source but out of
+	// scope this slice: the supported new-value shapes are a reference to an
+	// in-scope struct-typed local or a struct literal (a RecordConstruct),
+	// mirroring buildAggregateArgument's struct argument shapes. A DirectCall
+	// value reaches buildStoreCore's struct branch and is a clean rejection
+	// naming what was found, never a guessed lowering.
+	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn make_point() Point { return Point.{ x = 9, y = 9 }; }\nfn main() i32 { var p Point = Point.{ x = 1, y = 2 }; p = make_point(); return p.x; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigns a struct-typed place")
 }
 
 func TestEmitRejectsStructFieldAssignment(t *testing.T) {

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -1362,6 +1363,58 @@ func TestEmitI64StructCompilesAndRuns(t *testing.T) {
 	// (i64, i64) struct's typedef fields are int64_t, and the field read feeds
 	// the i64 entry's return. Exit code 22.
 	emitAndRun(t, "type T = struct { a i64; b i64; };\nfn main() i64 { let t T = T.{ a = 20, b = 22 }; return t.b; }", false, 22, false)
+}
+
+func TestEmitStructWholeReassignmentCompilesAndRuns(t *testing.T) {
+	// Reassigning a whole struct-typed local from another struct-typed local
+	// (`p = q;`), the reproduction's plain-local shape: the Store's place names
+	// a struct-typed local and the new value is a reference to an in-scope
+	// struct-typed local of the same type, emitted as a plain C struct
+	// assignment `pebble_local_<p> = pebble_local_<q>;`. The reassigned local's
+	// fields must reflect q's values (9), not the original p's (1).
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn main() int { var p = Point.{ x = 1, y = 2 }; let q = Point.{ x = 9, y = 9 }; p = q; return p.x; }", false, 9, false)
+}
+
+func TestEmitStructWholeReassignmentFromLiteralCompilesAndRuns(t *testing.T) {
+	// Reassigning a whole struct-typed local from a fresh struct literal
+	// (`p = Point.{ x = 3, y = 4 };`): the Store's new value is a
+	// RecordConstruct, emitted as the same designated-initializer compound
+	// literal buildStructValueExpr builds, so `pebble_local_<p> = (pebble_struct_
+	// <id>_t){ .pebble_field_<x> = 3, .pebble_field_<y> = 4 };` replaces the
+	// whole value. The reassigned local's fields must reflect the literal (3).
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var p Point = Point.{ x = 1, y = 2 }; p = Point.{ x = 3, y = 4 }; return p.x; }", false, 3, false)
+}
+
+func TestEmitStructPointerDerefWholeReassignmentCompilesAndRuns(t *testing.T) {
+	// Reassigning a whole struct through a pointer deref (`*self = other;`),
+	// the reproduction's reset shape: the Store's place is a DereferencePlace
+	// whose resolved element type is the struct type, and the new value is a
+	// reference to the struct-typed parameter, emitted as a plain C struct
+	// assignment through the null-checked deref lvalue. The reassigned local's
+	// fields must reflect the value written through the pointer (9), not the
+	// original (1).
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn reset(self *Point, other Point) void { *self = other; }\nfn main() int { var p = Point.{ x = 1, y = 2 }; let q = Point.{ x = 9, y = 9 }; reset(&p, q); return p.x; }", false, 9, false)
+}
+
+func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
+	// The emitted C for the plain-local whole-struct reassignment: the store
+	// lowers to a plain C struct assignment `pebble_local_<p> = pebble_local_<q>;`
+	// — the struct's own pebble_struct_<typeID>_t typedef makes the by-value
+	// copy trivially valid C, so no member-wise lowering is needed, and the
+	// struct typedef is still emitted ahead of main.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn main() int { var p = Point.{ x = 1, y = 2 }; let q = Point.{ x = 9, y = 9 }; p = q; return p.x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-struct local copy %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "typedef struct {\n    int32_t pebble_field_") {
+		t.Errorf("emitted C missing the Point struct typedef:\n%s", out)
+	}
 }
 
 func TestEmitStructLocalInsideHelperCompilesAndRuns(t *testing.T) {

@@ -327,6 +327,24 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			}
 			return store(fmt.Sprintf("pebble_local_%d", valueNode.Symbol)), nil
 		}
+		if isStruct(snapshot, elementType) {
+			// A struct-typed place write through a pointer deref, a struct
+			// field write, or an indexed write of a struct element —
+			// `*self = other;`, the reproduction's reset shape: the target
+			// lvalue is the struct's own pebble_struct_<typeID>_t, and the new
+			// value is a whole-struct C value (a reference to an in-scope
+			// struct-typed local of the matching type, or a fresh RecordConstruct
+			// compound literal), so `lvalue = <value>;` is the direct,
+			// uncoerced C store — a plain C struct assignment, valid for value
+			// types with no pointers/slices needing special handling, the same
+			// by-value copy convention struct call arguments and returns already
+			// use (see buildAggregateArgument).
+			storeValue, err := buildStructStoreValue(unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			return store(storeValue), nil
+		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
@@ -521,7 +539,20 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.structType != 0 {
-			return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
+			// A Store whose place names a struct-typed local is a whole-struct
+			// reassignment — `p = q;` or `p = Point.{ x = 9, y = 9 };` — whose
+			// new value is a whole-struct C value built by buildStructStoreValue
+			// (a reference to an in-scope struct-typed local of the matching
+			// type, or a fresh RecordConstruct compound literal), emitted as
+			// `pebble_local_<sym> = <value>;` — a plain C struct assignment,
+			// valid for value types with no pointers/slices needing special
+			// handling, the same by-value copy convention struct call arguments
+			// and returns already use.
+			storeValue, err := buildStructStoreValue(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.structType, context, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.pointerType != 0 {
 			// A Store whose place names a pointer-typed local is a pointer
@@ -536,6 +567,44 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		}
 		return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 	}
+}
+
+// buildStructStoreValue builds the C value text for a whole-struct
+// reassignment whose place resolves to the struct type wantType, shared by
+// buildStoreCore's two struct-reassignment paths (the plain-local path and the
+// pointer-deref/field/indexed-element path). Two value shapes are supported,
+// mirroring buildAggregateArgument's struct argument shapes: a plain
+// SymbolValue naming an already-declared struct-typed local in scope whose
+// declared type is exactly wantType, emitted as the local's own
+// pebble_local_<symbol> C name — the struct's own typedef makes the by-value C
+// copy trivially valid, so `lvalue = pebble_local_<symbol>;` is the whole
+// store; or a freshly-constructed RecordConstruct of exactly wantType, emitted
+// as the same C99 designated-initializer compound literal buildStructValueExpr
+// builds (a construction site's field order still need not match the declared
+// order). Any other value shape — a local that is not struct-typed of that
+// type, or any other node kind — is a clean rejection naming what was found,
+// matching buildAggregateArgument's own discipline. width is the entry's
+// resolved integer width, threaded through to the inline construction builder
+// so each field is built at the width the struct's own typedef uses.
+func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	valueNode, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s reassignment references invalid value node %d", context, id)
+	}
+	if valueNode.Kind == tir.RecordConstruct {
+		if valueNode.Type != wantType {
+			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a RecordConstruct of type %s", context, structTypeName(wantType), describeType(snapshot, valueNode.Type))
+		}
+		return buildStructValueExpr(unit, snapshot, fileSet, valueNode, scope, context, width)
+	}
+	if valueNode.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct)", context, structTypeName(wantType), valueNode.Kind)
+	}
+	valueInfo, declared := scope[valueNode.Symbol]
+	if !declared || valueInfo.structType != wantType {
+		return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from symbol %d, which is not a struct-typed local in scope of that type", context, structTypeName(wantType), valueNode.Symbol)
+	}
+	return fmt.Sprintf("pebble_local_%d", valueNode.Symbol), nil
 }
 
 // buildCompoundStore builds the value text for a compound assignment — a
