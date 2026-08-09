@@ -1495,6 +1495,77 @@ func TestEmitSwitchI64EntryCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i64 { switch 2 { case 1: return 100; case 2: return 200; else: return 0; } }", false, 200, false)
 }
 
+func TestEmitStrSwitchCompilesAndRuns(t *testing.T) {
+	// A str-typed switch subject: the exact reproduction from proposal 13. A
+	// str subject cannot use a native C switch (C switch labels must be
+	// integer constants), so it is lowered as an if/else chain using
+	// pebble_rt_str_eq. classify("b") must return 2, proving the branch
+	// selection is correct.
+	for _, tc := range []struct {
+		name string
+		arg  string
+		want int
+	}{
+		{"case a", `"a"`, 1},
+		{"case b", `"b"`, 2},
+		{"else", `"c"`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `fn classify(s str) int { switch s { case "a": return 1; case "b": return 2; else: return 0; } } fn main() int { return classify(` + tc.arg + `); }`
+			emitAndRun(t, src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStrSwitchMultiLabelPerCaseCompilesAndRuns(t *testing.T) {
+	// A str switch with multiple case labels sharing one arm: `case "a",
+	// "c": return 1;` — the two equality checks are ORed into a single if
+	// condition. classify("a") and classify("c") both return 1; classify("b")
+	// returns 2; anything else returns 0.
+	for _, tc := range []struct {
+		name string
+		arg  string
+		want int
+	}{
+		{"a matches multi", `"a"`, 1},
+		{"b single", `"b"`, 2},
+		{"c matches multi", `"c"`, 1},
+		{"d else", `"d"`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `fn classify(s str) int { switch s { case "a", "c": return 1; case "b": return 2; else: return 0; } } fn main() int { return classify(` + tc.arg + `); }`
+			emitAndRun(t, src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStrSwitchWriteC(t *testing.T) {
+	// The emitted C for a str switch must contain the pebble_rt_str_eq calls
+	// and the if/else chain structure, not a native C switch.
+	src := `fn classify(s str) int { switch s { case "a": return 1; case "b": return 2; else: return 0; } } fn main() int { return classify("b"); }`
+	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"pebble_rt_str_eq",
+		"if (pebble_rt_str_eq(",
+		"} else if (pebble_rt_str_eq(",
+		"} else {",
+		".data = (const uint8_t *)\"a\"",
+		".data = (const uint8_t *)\"b\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "switch (") {
+		t.Errorf("emitted C contains native switch, want if/else chain:\n%s", out)
+	}
+}
+
 func TestEmitDeferBeforeReturnCompilesAndRuns(t *testing.T) {
 	// A single defer running before a return, observably changing the returned
 	// value. var x i32 = 0; defer x = x + 1; return x; should return 1, not 0,

@@ -607,6 +607,11 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// C switch can compare against char-literal case labels (emitted by
 		// buildCaseLabel as `case (int32_t)<scalar>:`).
 		subjectExpr, err = buildCharOperand(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+	} else if isStr(snapshot, subjectNode.Type) {
+		// A str-typed subject cannot use a native C switch (C switch labels
+		// must be integer-constant expressions). Lowered as an if/else chain
+		// calling the runtime helper pebble_rt_str_eq for each case.
+		return buildStrSwitchStatement(unit, snapshot, fileSet, switchNode, subjectNode, locals, depth, width, result, unions, fallThrough)
 	} else if subjectNode.Kind == tir.IntegerLiteral && subjectNode.Type == snapshot.Builtins().Int {
 		// An int-typed integer literal as the subject: the checker leaves
 		// it as the unanchored int builtin when no width-anchoring position
@@ -631,65 +636,28 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	if err != nil {
 		return "", err
 	}
-	// Group case nodes by shared body node ID to detect multi-value case
-	// labels (a `case 1, 2:` clause produces two SwitchCase nodes sharing
-	// one body node ID). Preserve encounter order within each group and
-	// across groups.
-	type caseGroup struct {
-		bodyID  tir.NodeID
-		caseIDs []tir.NodeID
-		elseID  tir.NodeID // non-zero if this group is the else/default arm
-	}
-	// Use a slice to preserve encounter order; a map for O(1) body-to-group
-	// lookup.
-	groupByBody := make(map[tir.NodeID]int)
-	var groups []caseGroup
-	for _, caseID := range switchNode.Children[1:] {
-		caseNode, ok := unit.Node(caseID)
-		if !ok {
-			return "", fmt.Errorf("switch statement references invalid case node %d", caseID)
-		}
-		if caseNode.Kind != tir.SwitchCase {
-			return "", fmt.Errorf("switch statement child is a %s, want a SwitchCase", caseNode.Kind)
-		}
-		if caseNode.HasElse {
-			// The else/default arm has no Literal and no CaseValue.
-			groups = append(groups, caseGroup{bodyID: caseNode.Children[0], elseID: caseID})
-			continue
-		}
-		if caseNode.CaseValue != 0 {
-			// An enum-variant case: its CaseValue is the variant symbol, which
-			// becomes the C enum constant label. It requires an enum-typed
-			// subject (the checker only produces CaseValue cases for an
-			// enum/tagged-union subject — confirmed against a real fixture),
-			// and the variant must be one of the subject enum's declared
-			// variants.
-			if enumSubject == 0 {
-				return "", fmt.Errorf("switch case references enum variant symbol %d, but the subject is not an enum or tagged-union type", caseNode.CaseValue)
+	// Validate enum-variant cases before grouping: every CaseValue must name
+	// a variant of the subject enum (confirmed checker-reachable for an
+	// enum/tagged-union subject). Scalar (non-CaseValue) cases are validated
+	// by grouping and by case-label emission.
+	if enumSubject != 0 {
+		for _, caseID := range switchNode.Children[1:] {
+			caseNode, ok := unit.Node(caseID)
+			if !ok || caseNode.Kind != tir.SwitchCase || caseNode.HasElse || caseNode.CaseValue == 0 {
+				continue
 			}
 			if !containsVariant(enumVariants, caseNode.CaseValue) {
 				return "", fmt.Errorf("switch case references variant symbol %d, which is not one of the subject enum %s's declared variants", caseNode.CaseValue, enumTypeName(enumSubject))
 			}
 		}
-		// Case body node: a SwitchCase with 1 child has the body directly as
-		// Children[0]; with 2 children the body is still Children[0] (the
-		// second is unused defense — the body block arrives as the direct
-		// child, confirmed against real fixtures).
-		var bodyID tir.NodeID
-		if len(caseNode.Children) == 1 {
-			bodyID = caseNode.Children[0]
-		} else if len(caseNode.Children) == 2 {
-			bodyID = caseNode.Children[0]
-		} else {
-			return "", fmt.Errorf("switch case has %d child(ren), want 1 or 2 (the body block)", len(caseNode.Children))
-		}
-		if idx, exists := groupByBody[bodyID]; exists {
-			groups[idx].caseIDs = append(groups[idx].caseIDs, caseID)
-		} else {
-			idx := len(groups)
-			groupByBody[bodyID] = idx
-			groups = append(groups, caseGroup{bodyID: bodyID, caseIDs: []tir.NodeID{caseID}})
-		}
+	}
+	// Group case nodes by shared body node ID to detect multi-value case
+	// labels (a `case 1, 2:` clause produces two SwitchCase nodes sharing
+	// one body node ID). Preserve encounter order within each group and
+	// across groups.
+	groups, err := groupSwitchCases(unit, switchNode.Children[1:])
+	if err != nil {
+		return "", err
 	}
 	indent := strings.Repeat("    ", depth+1)
 	caseIndent := strings.Repeat("    ", depth+2)
@@ -749,6 +717,180 @@ func buildSwitchCaseBodyOrFallthrough(unit *tir.Unit, snapshot *types.Snapshot, 
 		return buildLoopSwitchCaseBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
 	}
 	return buildSwitchCaseBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
+}
+
+// switchCaseGroup groups one switch case arm's SwitchCase nodes by their shared
+// body node ID (a multi-value `case v1, v2:` clause produces several SwitchCase
+// nodes sharing one body), preserving encounter order within each group and
+// across groups. The else/default arm is its own group with elseID set.
+type switchCaseGroup struct {
+	bodyID  tir.NodeID
+	caseIDs []tir.NodeID
+	elseID  tir.NodeID // non-zero if this group is the else/default arm
+}
+
+// groupSwitchCases groups a switch's SwitchCase children by shared body node
+// ID to detect multi-value case labels. Each case node is validated for the
+// expected kind and child count. The else arm's body is Children[0]; a non-else
+// arm's body is also Children[0] (a SwitchCase with 1 child has the body
+// directly; with 2 children the body is still Children[0], the second is
+// unused defense — confirmed against real fixtures).
+func groupSwitchCases(unit *tir.Unit, caseIDs []tir.NodeID) ([]switchCaseGroup, error) {
+	groupByBody := make(map[tir.NodeID]int)
+	var groups []switchCaseGroup
+	for _, caseID := range caseIDs {
+		caseNode, ok := unit.Node(caseID)
+		if !ok {
+			return nil, fmt.Errorf("switch statement references invalid case node %d", caseID)
+		}
+		if caseNode.Kind != tir.SwitchCase {
+			return nil, fmt.Errorf("switch statement child is a %s, want a SwitchCase", caseNode.Kind)
+		}
+		if caseNode.HasElse {
+			groups = append(groups, switchCaseGroup{bodyID: caseNode.Children[0], elseID: caseID})
+			continue
+		}
+		if len(caseNode.Children) != 1 && len(caseNode.Children) != 2 {
+			return nil, fmt.Errorf("switch case has %d child(ren), want 1 or 2 (the body block)", len(caseNode.Children))
+		}
+		bodyID := caseNode.Children[0]
+		if idx, exists := groupByBody[bodyID]; exists {
+			groups[idx].caseIDs = append(groups[idx].caseIDs, caseID)
+		} else {
+			idx := len(groups)
+			groupByBody[bodyID] = idx
+			groups = append(groups, switchCaseGroup{bodyID: bodyID, caseIDs: []tir.NodeID{caseID}})
+		}
+	}
+	return groups, nil
+}
+
+// buildStrSwitchStatement validates and builds the C text for a switch whose
+// subject is a str value. A str subject cannot use a native C switch (C switch
+// labels must be integer-constant expressions), so the lowering is a chain of
+// if / else if tests, one per case, each calling the runtime helper
+// pebble_rt_str_eq (the exact helper buildComparison uses for a == between two
+// str values) against the subject and the case's string literal. Multiple case
+// labels sharing one arm (`case "a", "b":`) are ORed into a single if
+// condition. The else/default arm becomes the chain's final else. The emitted
+// text, indented at this switch's depth, is:
+//
+//	<indent>if (pebble_rt_str_eq(<subject>, (PebbleStr){...})) {
+//	<indent>    <body>
+//	<indent>} else if (pebble_rt_str_eq(<subject>, (PebbleStr){...})) {
+//	<indent>    <body>
+//	<indent>} else {
+//	<indent>    <body>
+//	<indent>}
+//
+// Each arm body is built by the exact same buildSwitchCaseBodyOrFallthrough
+// helper the native-switch path uses (buildSwitchCaseBody's every-arm-ends-in-
+// return grammar for a tail-position switch, buildLoopSwitchCaseBody's
+// may-fall-through grammar for a fall-through switch), so defer/return/
+// break/continue semantics inside an arm are identical between the two
+// lowerings. A fall-through switch's case body does NOT get the trailing
+// `break;` the native C switch path adds: an if/else chain has no C
+// fall-through into the next arm, so a body that simply ends terminates the
+// switch by falling past the chain — the same behavior the native path's
+// trailing break produces. When the switch's case bodies contain a tir.Break
+// whose Target is the switch's own region (Pebble's break targets the nearest
+// enclosing loop or switch), the whole chain is wrapped in a do { ... } while
+// (0) block, the idiomatic C pattern that gives the emitted `break;` a valid
+// enclosing loop/switch construct to target — the break then exits the chain,
+// i.e. breaks out of the switch, exactly as it does in the native C switch.
+func buildStrSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, subjectNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
+	if len(switchNode.Children) < 2 {
+		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
+	}
+	// The str subject is built by the same buildStrOperand every other
+	// str-typed position in this backend uses (a str local reference, a
+	// string literal, or a call to a str-returning helper).
+	subjectExpr, err := buildStrOperand(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+	if err != nil {
+		return "", err
+	}
+	// Group case nodes by shared body node ID (multi-value case labels).
+	groups, err := groupSwitchCases(unit, switchNode.Children[1:])
+	if err != nil {
+		return "", err
+	}
+	indent := strings.Repeat("    ", depth+1)
+	// Detect a break targeting this switch (a tir.Break whose Target names
+	// the switch's region) anywhere in the case bodies: the if/else chain
+	// has no enclosing native switch/loop for the emitted `break;` to
+	// target, so the whole chain is wrapped in do { ... } while (0) — the
+	// idiomatic C pattern giving break a valid target (it then exits the
+	// chain = breaks the switch). A tail-position switch (fallThrough
+	// false) cannot contain such a break: every arm ends in a return and
+	// buildSwitchCaseBody rejects a non-return tail — so only a
+	// fall-through switch ever needs the wrapper.
+	needsDoWhile := false
+	for _, g := range groups {
+		found, valid := loopBodyHasBreakTargeting(unit, g.bodyID, switchNode.Region)
+		if !valid {
+			return "", fmt.Errorf("switch statement references invalid case body node %d", g.bodyID)
+		}
+		if found {
+			needsDoWhile = true
+		}
+	}
+	var lines []string
+	for idx, g := range groups {
+		bodyText, err := buildSwitchCaseBodyOrFallthrough(unit, snapshot, fileSet, g.bodyID, locals, depth+1, width, result, unions, fallThrough)
+		if err != nil {
+			return "", err
+		}
+		if g.elseID != 0 {
+			header := "} else"
+			if idx == 0 {
+				header = "else"
+			}
+			lines = append(lines, fmt.Sprintf("%s%s {", indent, header))
+			lines = append(lines, bodyText)
+			continue
+		}
+		// One equality check per case label in the group; multiple labels
+		// on one arm are ORed together into a single if condition.
+		conds := make([]string, 0, len(g.caseIDs))
+		for _, caseID := range g.caseIDs {
+			caseNode, _ := unit.Node(caseID)
+			lit, err := buildStrCaseLiteral(snapshot, caseNode)
+			if err != nil {
+				return "", err
+			}
+			conds = append(conds, "pebble_rt_str_eq("+subjectExpr+", "+lit+")")
+		}
+		header := "if"
+		if idx > 0 {
+			header = "} else if"
+		}
+		lines = append(lines, fmt.Sprintf("%s%s (%s) {", indent, header, strings.Join(conds, " || ")))
+		lines = append(lines, bodyText)
+	}
+	lines = append(lines, indent+"}")
+	chain := strings.Join(lines, "\n")
+	if needsDoWhile {
+		return fmt.Sprintf("%sdo {\n%s\n%s} while (0);", indent, chain, indent), nil
+	}
+	return chain, nil
+}
+
+// buildStrCaseLiteral emits the C text for one str switch case's literal: the
+// case's decoded string as a PebbleStr compound literal,
+// `(PebbleStr){ .data = (const uint8_t *)"<escaped>", .len = N }`. The
+// literal text comes from the SwitchCase node's Literal.String field (set by the
+// checker's constantToLiteral from constantString), the same decoded string
+// buildStrLiteralValue produces for a StringLiteral node — reused here via the
+// same compound-literal shape so every str value in the emitted C uses one
+// uniform representation. A case node whose Literal is not LiteralString is a
+// clean rejection (the checker only produces LiteralString cases for a str
+// subject, confirmed against real fixtures).
+func buildStrCaseLiteral(snapshot *types.Snapshot, caseNode tir.Node) (string, error) {
+	if caseNode.Literal.Kind != tir.LiteralString {
+		return "", fmt.Errorf("switch case has literal kind %s, want a string constant", caseNode.Literal.Kind)
+	}
+	text := caseNode.Literal.String
+	return fmt.Sprintf("(PebbleStr){ .data = (const uint8_t *)\"%s\", .len = %d }", escapeCString(text), len(text)), nil
 }
 
 // buildCaseLabel emits one C `case <value>:` label from a SwitchCase node.
