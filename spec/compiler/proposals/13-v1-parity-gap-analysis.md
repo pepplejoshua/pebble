@@ -49,4 +49,87 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+### A helper returning a plain enum or tagged union is misclassified as a struct result
+
+**Source:** proposal 14, "New findings" table, row "A helper that returns a
+plain enum or tagged union is classified as a struct result."
+
+**Area:** backend generator, `compiler/internal/backend/calls.go`,
+`helperSignature`'s return-type switch (~line 371), and
+`compiler/internal/backend/emit.go`'s `resultInfo` struct (line 1152) and
+whatever builds a tail-position `Return` from it
+
+**Priority:** low — clean rejection, not a correctness hazard. Bigger scope
+than the earlier `isStruct`/`isEnumType`-ordering bugs fixed tonight — this
+one is a genuinely missing case, not a misordering, and needs a new
+`resultInfo` field plus new Return-building logic, not a one-line switch
+addition.
+
+**Reproduction:**
+
+```pebble
+type Color = enum { red, green, blue };
+
+fn pick() Color {
+    return Color.green;
+}
+
+fn main() int {
+    let c = pick();
+    switch c {
+        case Color.red: return 0;
+        case Color.green: return 1;
+        case Color.blue: return 2;
+    }
+}
+```
+
+Fails cleanly at emission, with an error message that literally talks about
+struct returns for an enum-returning function:
+
+```
+pebc: emission failed: entry function body return statement returns a
+EnumVariantValue, want a reference to a struct-typed local in scope, a
+struct literal (a RecordConstruct), or a call to a struct-returning helper
+(a DirectCall); only returning an already-declared struct-typed local,
+constructing a fresh struct literal inline, or forwarding a struct-returning
+helper call is supported
+```
+
+**Root cause, confirmed by reading the code directly:** `helperSignature`'s
+PARAMETER-type switch (line ~184) already has a correct, working
+`case isEnumType(unit, snapshot, param.Type):` branch before its
+`case isStruct(...)` branch (line ~215) — enum parameters already work.
+The RETURN-type switch (starting ~line 371) has NO enum case at all — it
+goes straight from `isTuple` to `isStruct` (line 374, which uses
+`runtimeTypeName` and sets `result = resultInfo{structType: ...}`) with
+nothing for `isEnumType` in between, so an enum-typed return falls through
+and gets treated as an unrecognized struct-shaped return, hence the
+struct-flavored error message on a return statement that's actually
+returning an enum variant.
+
+`resultInfo` (`emit.go:1152`) has fields for every OTHER supported return
+shape (`tuple`, `structType`, `sliceType`, `pointerType`, `optionalType`,
+`functionType`, `arrayType`, plus `isStr`/`isChar`/scalar `kind`) but no
+enum-shaped field at all — this needs to be added, then whatever builds the
+tail-position `Return` statement (likely in `buildBlock`, look for how it
+switches on `resultInfo`'s populated field to decide how to build the
+return value) needs a new branch for it too, mirroring how each other
+`resultInfo` shape already has its own Return-building logic.
+
+**Not yet done:**
+1. Add an enum-shaped field to `resultInfo` (and a tagged-union-shaped one
+   too, if the audit's "or tagged union" half of this finding is also being
+   fixed in the same pass — confirm both are in scope, or split into two
+   dispatches if that's cleaner).
+2. Add the missing `isEnumType`/`isTaggedUnionType` case(s) to
+   `helperSignature`'s return-type switch, mirroring the parameter-type
+   switch's already-working structure, using `enumTypeName`/`unionTypeName`
+   as appropriate (matching tonight's earlier `isTaggedUnionType`-before-
+   `isEnumType` ordering fixes).
+3. Add the corresponding Return-value-building logic for an enum/union
+   result, reusing whatever helper already builds enum/union values
+   elsewhere (`buildEnumValue`, `buildUnionValueExpr`) rather than
+   inventing new lowering.
+
+Next step: dispatch through Orc per the tracker's dispatch rules.
