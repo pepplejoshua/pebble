@@ -281,7 +281,7 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			paramPointeeTypeID, paramPointeeOK := pointerPointeeType(snapshot, param.Type)
 			ctypeName := ""
 			if paramPointeeOK {
-				ctypeName = pointerTypeName(snapshot, paramPointeeTypeID)
+				ctypeName = pointerTypeNameForUnit(unit, snapshot, paramPointeeTypeID)
 			}
 			if ctypeName == "" {
 				return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has unsupported pointer type %s", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type))
@@ -449,7 +449,7 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 		if !ok {
 			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d has unsupported pointer result type %s", helper.decl.Symbol, describeType(snapshot, helper.decl.ResultType))
 		}
-		returnType = pointerTypeName(snapshot, pointeeTypeID)
+		returnType = pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
 		result = resultInfo{pointerType: helper.decl.ResultType}
 	case isOptional(snapshot, helper.decl.ResultType):
 		// An optional-result helper is declared with the optional type's

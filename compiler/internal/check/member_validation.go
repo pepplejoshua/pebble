@@ -95,7 +95,7 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 					break
 				}
 			}
-			if !matched && !narrowedUnionVariantAccess(handoff, resolution, declaration, member) {
+			if !matched && !narrowedUnionVariantAccess(handoff, resolution, declaration, member) && !unionVariantPayloadWrite(handoff, resolution, declaration, member) {
 				report(member.Header)
 			}
 		case memberTuple:
@@ -136,4 +136,43 @@ func narrowedUnionVariantAccess(handoff *solveHandoff, resolution *symbol.Result
 		return false
 	}
 	return switchCaseNarrowing(handoff, resolution, member)
+}
+
+// unionVariantPayloadWrite accepts a member access that matched no real field
+// of its base's declaration when that declaration is a union, the member names
+// one of its declared variants, and the access is the write target of an
+// assignment (`self.Err = e;`). Writing a variant's own payload member
+// establishes that variant as the active one — the backend sets the union's
+// .tag to the variant's discriminant on the write — so, unlike a read, it
+// needs no enclosing switch-case narrowing and is legal on a pointer receiver,
+// a value receiver, or a plain local. A member whose name is not one of the
+// union's declared variants stays rejected, exactly as an unknown field does.
+func unionVariantPayloadWrite(handoff *solveHandoff, resolution *symbol.Result, declaration symbol.SymbolID, member *memberRecord) bool {
+	if handoff == nil || resolution == nil || member == nil || declaration == 0 {
+		return false
+	}
+	typeDecl, ok := handoff.Semantics.TypeDeclaration(declaration)
+	if !ok || (typeDecl.Nominal != infer.NominalEnum && typeDecl.Nominal != infer.NominalTaggedUnion) {
+		return false
+	}
+	variant := false
+	for _, id := range resolution.Members(declaration) {
+		selected, found := resolution.Symbols.Symbol(id)
+		if found && selected.Kind == symbol.SymbolVariant && selected.Name == member.Name {
+			variant = true
+			break
+		}
+	}
+	if !variant {
+		return false
+	}
+	for _, retained := range handoff.Records.Records() {
+		if retained.Assignment == nil || !activeOperatorRecord(handoff, retained.Header) {
+			continue
+		}
+		if retained.Assignment.Place == member.Result {
+			return true
+		}
+	}
+	return false
 }

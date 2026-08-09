@@ -1539,13 +1539,13 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains an AddressOf with unsupported pointer type %s", describeType(snapshot, node.Type))
 			}
-			return "(" + pointerTypeName(snapshot, pointeeTypeID) + ")(&" + placeLValue + ")", nil
+			return "(" + pointerTypeNameForUnit(unit, snapshot, pointeeTypeID) + ")(&" + placeLValue + ")", nil
 		case tir.NilPointer:
 			pointeeTypeID, ok := pointerPointeeType(snapshot, node.Type)
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains a NilPointer with unsupported pointer type %s", describeType(snapshot, node.Type))
 			}
-			return "(" + pointerTypeName(snapshot, pointeeTypeID) + ")(NULL)", nil
+			return "(" + pointerTypeNameForUnit(unit, snapshot, pointeeTypeID) + ")(NULL)", nil
 		case tir.SymbolValue:
 			if _, declared := locals[node.Symbol]; !declared {
 				return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
@@ -1619,7 +1619,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains a PointerCast with unsupported pointer type %s", describeType(snapshot, node.Type))
 			}
-			return "(" + pointerTypeName(snapshot, pointeeTypeID) + ")(" + child + ")", nil
+			return "(" + pointerTypeNameForUnit(unit, snapshot, pointeeTypeID) + ")(" + child + ")", nil
 		default:
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}

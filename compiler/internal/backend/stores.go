@@ -219,12 +219,24 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if err != nil {
 			return "", err
 		}
+		tagLvalue := ""
+		if payloadLvalue, unionTagLvalue, ok, err := unionVariantPayloadStoreTarget(unit, snapshot, fileSet, place, scope, width); err != nil {
+			return "", err
+		} else if ok {
+			lvalue, tagLvalue = payloadLvalue, unionTagLvalue
+		}
+		store := func(value string) string {
+			if tagLvalue == "" {
+				return fmt.Sprintf("%s = %s", lvalue, value)
+			}
+			return fmt.Sprintf("%s = (%s = %s, %s)", lvalue, tagLvalue, enumVariantName(place.Member), value)
+		}
 		if isBool(snapshot, elementType) {
 			storeValue, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+			return store(storeValue), nil
 		}
 		if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			// An integer element of any fixed-width builtin, not just the
@@ -236,28 +248,28 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+			return store(storeValue), nil
 		}
 		if isChar(snapshot, elementType) {
 			storeValue, err := buildCharOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+			return store(storeValue), nil
 		}
 		if isPointer(snapshot, elementType) {
 			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width, width)
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+			return store(storeValue), nil
 		}
 		if isStr(snapshot, elementType) {
 			storeValue, err := buildStrOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+			return store(storeValue), nil
 		}
 		if isEnumType(unit, snapshot, elementType) {
 			// An enum-typed field (or indexed element) write — `entry.state =
@@ -270,7 +282,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
+			return store(storeValue), nil
 		}
 		if isSlice(snapshot, elementType) {
 			// A slice-typed field (or indexed element) write — `self.entries =
@@ -304,7 +316,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 				if err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("%s = %s", lvalue, construction), nil
+				return store(construction), nil
 			}
 			if valueNode.Kind != tir.SymbolValue {
 				return "", fmt.Errorf("%s reassigns a slice-typed place from a %s, want a reference to a slice-typed local in scope", context, valueNode.Kind)
@@ -313,7 +325,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if !declared || valueInfo.sliceType != elementType {
 				return "", fmt.Errorf("%s reassigns a slice-typed place of type %s from symbol %d, which is not a slice-typed local in scope of that type", context, sliceTypeName(elementType), valueNode.Symbol)
 			}
-			return fmt.Sprintf("%s = %s", lvalue, fmt.Sprintf("pebble_local_%d", valueNode.Symbol)), nil
+			return store(fmt.Sprintf("pebble_local_%d", valueNode.Symbol)), nil
 		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}

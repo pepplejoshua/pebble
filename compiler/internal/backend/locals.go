@@ -869,7 +869,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 	if !ok {
 		return "", fmt.Errorf("%s declares a pointer-typed local with invalid pointer type", context)
 	}
-	ctypeName := pointerTypeName(snapshot, pointeeTypeID)
+	ctypeName := pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
 	if ctypeName == "" {
 		return "", fmt.Errorf("%s declares a pointer-typed local with unsupported pointee type %s", context, describeType(snapshot, pointeeTypeID))
 	}

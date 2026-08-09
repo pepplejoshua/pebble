@@ -1273,6 +1273,25 @@ func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types
 		byMember[node.Member] = payloadNode.Type
 		*out = append(*out, node.Type)
 	}
+	if node.Kind == tir.FieldPlace && len(node.Children) == 1 {
+		base, ok := unit.Node(node.Children[0])
+		ownerType := types.TypeID(0)
+		if ok {
+			ownerType = base.Type
+			if pointee, pointer := pointerPointeeType(snapshot, ownerType); pointer {
+				ownerType = pointee
+			}
+		}
+		if ok && isUnionEnumType(unit, snapshot, ownerType) && node.Type != 0 && !isVoid(snapshot, node.Type) {
+			byMember, seen := payloads[ownerType]
+			if !seen {
+				byMember = make(map[symbol.SymbolID]types.TypeID)
+				payloads[ownerType] = byMember
+			}
+			byMember[node.Member] = node.Type
+			*out = append(*out, ownerType)
+		}
+	}
 	for _, childID := range node.Children {
 		if err := collectUnionTypesWalk(unit, snapshot, width, childID, out, payloads); err != nil {
 			return err

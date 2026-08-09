@@ -529,7 +529,7 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	// checker — the C type of the emitted projection is the payload member's
 	// declared C type (unionMemberCType), which agrees.
 	if unionVariantPayloadMember(unit, snapshot, structType, place.Member) {
-		return fmt.Sprintf("%s%spayload%spebble_field_%d", baseExpr, access, access, place.Member), nil
+		return fmt.Sprintf("%s%spayload.pebble_field_%d", baseExpr, access, place.Member), nil
 	}
 	fieldType, ok := declaredFieldType(unit, snapshot, structType, place.Member)
 	if runtimeType(unit, snapshot, structType) != 0 {
@@ -613,7 +613,7 @@ func buildDereferencePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	// dereferenced value), the same reason it passes buildExpr's width gate
 	// unmodified for a width-typed pointee.
 	pointeeTypeID := place.Type
-	pointeeCType := pointerTypeName(snapshot, pointeeTypeID)
+	pointeeCType := pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
 	if pointeeCType == "" {
 		return "", fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
 	}
@@ -746,7 +746,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		// lvalue's type is the variant's payload type, already resolved onto
 		// the place node's own Type by the checker.
 		if unionVariantPayloadMember(unit, snapshot, typ, n.Member) {
-			return fmt.Sprintf("%s%spayload%spebble_field_%d", base, access, access, n.Member), n.Type, nil
+			return fmt.Sprintf("%s%spayload.pebble_field_%d", base, access, n.Member), n.Type, nil
 		}
 		ft, ok := declaredFieldType(unit, snapshot, typ, n.Member)
 		if !ok {
@@ -833,7 +833,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		// n.Type is already the pointee type, not the pointer type (see the
 		// matching comment in buildDereferencePlaceRead).
 		pointeeTypeID := n.Type
-		pointeeCType := pointerTypeName(snapshot, pointeeTypeID)
+		pointeeCType := pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
 		if pointeeCType == "" {
 			return "", 0, fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
 		}
@@ -841,4 +841,33 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		return castExpr, pointeeTypeID, nil
 	}
 	return "", 0, fmt.Errorf("place base %s is unsupported", n.Kind)
+}
+
+// unionVariantPayloadStoreTarget returns the payload lvalue and tag lvalue for
+// a direct write to a tagged-union variant payload. The ordinary place builder
+// must remain tag-free because it is also used for reads; Store emission uses
+// this companion result to update the discriminant in the same C expression.
+func unionVariantPayloadStoreTarget(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, bool, error) {
+	if place.Kind != tir.FieldPlace || len(place.Children) != 1 {
+		return "", "", false, nil
+	}
+	base, typ, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
+	if err != nil {
+		return "", "", false, err
+	}
+	access := "."
+	if key, found := snapshot.Key(typ); found && key.Kind() == types.Pointer {
+		pointee, ok := key.Child()
+		if !ok {
+			return "", "", false, fmt.Errorf("union variant payload store pointer has no pointee")
+		}
+		typ = pointee
+		access = "->"
+	}
+	if !unionVariantPayloadMember(unit, snapshot, typ, place.Member) {
+		return "", "", false, nil
+	}
+	payload := fmt.Sprintf("%s%spayload.pebble_field_%d", base, access, place.Member)
+	tag := fmt.Sprintf("%s%stag", base, access)
+	return payload, tag, true, nil
 }

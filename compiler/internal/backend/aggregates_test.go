@@ -16,6 +16,26 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
+func TestEmitUnionVariantPayloadWriteUpdatesTag(t *testing.T) {
+	emitAndRun(t, `
+type Choice = union enum {
+    Ok i32;
+    Err str;
+};
+fn set_err(self *Choice, e str) void {
+    self.Err = e;
+}
+fn main() i32 {
+    var c Choice = Choice.Ok(5);
+    set_err(&c, "oops");
+    switch c {
+        case .Ok: return 1;
+        case .Err: return 0;
+    }
+}
+`, false, 0, false)
+}
+
 func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
 	unit, snapshot, entryID, sources := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { var values []i32 = mem::new_slice[i32](3); values[0] = 42; return values[0]; }`, "main")
 	var buf bytes.Buffer

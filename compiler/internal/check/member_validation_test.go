@@ -58,9 +58,46 @@ fn check() i32 {
     return pointer.get() + pointer.other() + p.cap;
 }
 `
+
 	diagnostics, _, _ := runMemberValidation(t, source)
 	if diagnostics.HasErrors() {
 		t.Fatalf("pointer field access was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsAcceptsUnionVariantPayloadWrite(t *testing.T) {
+	source := `
+type Choice = union enum { Ok i32; Err str; };
+fn set_err(self *Choice, e str) void {
+    self.Err = e;
+}
+fn check() void {
+    var c Choice = Choice.Ok(1);
+    set_err(&c, "oops");
+}
+`
+	diagnostics, _, _ := runMemberValidation(t, source)
+	if diagnostics.HasErrors() {
+		t.Fatalf("union variant payload write was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsRejectsUnknownUnionVariantPayloadWrite(t *testing.T) {
+	source := `
+type Choice = union enum { Ok i32; Err str; };
+fn set_err(self *Choice, e str) void {
+    self.Err = e;
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	for _, retained := range handoff.Records.values {
+		if retained.Member != nil && retained.Member.Kind == memberField && retained.Member.Name == "Err" {
+			retained.Member.Name = "Typo"
+			break
+		}
+	}
+	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("unknown union variant payload write was accepted: %+v", diagnostics.Items())
 	}
 }
 

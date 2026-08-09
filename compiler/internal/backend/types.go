@@ -380,6 +380,19 @@ func unionVariantPayloadMember(unit *tir.Unit, snapshot *types.Snapshot, ownerTy
 			return true
 		}
 	}
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.FieldPlace || node.Member != member || len(node.Children) != 1 {
+			continue
+		}
+		base, found := unit.Node(node.Children[0])
+		baseType := base.Type
+		if pointee, pointer := pointerPointeeType(snapshot, baseType); pointer {
+			baseType = pointee
+		}
+		if found && baseType == ownerType {
+			return true
+		}
+	}
 	return false
 }
 
@@ -852,6 +865,10 @@ func isOpaqueExternType(snapshot *types.Snapshot, id types.TypeID) bool {
 // type must be a valid type in the snapshot. Returns "" for any unsupported
 // pointee kind (defense for hand-built IR).
 func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
+	return pointerTypeNameForUnit(nil, snapshot, pointee)
+}
+
+func pointerTypeNameForUnit(unit *tir.Unit, snapshot *types.Snapshot, pointee types.TypeID) string {
 	if snapshot == nil {
 		return ""
 	}
@@ -893,6 +910,9 @@ func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
 	// function that takes or returns such a pointer.
 	if name, ok := opaqueExternTypeName(snapshot, pointee); ok {
 		return name + " *"
+	}
+	if isUnionEnumType(unit, snapshot, pointee) {
+		return unionTypeName(pointee) + " *"
 	}
 	if isStruct(snapshot, pointee) {
 		return structTypeName(pointee) + " *"
@@ -1071,7 +1091,7 @@ func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 	}
 	if isPointer(snapshot, id) {
 		if pointee, ok := pointerPointeeType(snapshot, id); ok {
-			if name := pointerTypeName(snapshot, pointee); name != "" {
+			if name := pointerTypeNameForUnit(unit, snapshot, pointee); name != "" {
 				return name, nil
 			}
 		}
@@ -1194,7 +1214,7 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 		if !ok {
 			return "", fmt.Errorf("field type %s has no pointer pointee", describeType(snapshot, id))
 		}
-		if name := pointerTypeName(snapshot, pointee); name != "" {
+		if name := pointerTypeNameForUnit(unit, snapshot, pointee); name != "" {
 			return name, nil
 		}
 	}
@@ -1271,7 +1291,7 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 		if !ok {
 			return "", fmt.Errorf("payload type %s has no pointer pointee", describeType(snapshot, id))
 		}
-		if name := pointerTypeName(snapshot, pointee); name != "" {
+		if name := pointerTypeNameForUnit(unit, snapshot, pointee); name != "" {
 			return name, nil
 		}
 		return "", fmt.Errorf("payload type %s has a pointee %s whose C type is unsupported", describeType(snapshot, id), describeType(snapshot, pointee))
