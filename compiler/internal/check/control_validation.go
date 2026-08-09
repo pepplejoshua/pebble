@@ -22,10 +22,15 @@ const (
 //
 // A switch is exhaustive (contributes no extra fallthrough) when:
 //   - bool subject with both true and false case arms present, or
+//   - u8 subject with every value in 0..255 covered, or
+//   - i8 subject with every value in -128..127 covered, or
 //   - enum/tagged-union subject with every variant covered by some case arm.
 //
 // For any other subject category or an unresolved subject type, it returns
 // false (conservatively treats the switch as potentially fall-through).
+// Wider integer widths (u16/i16 and up) are intentionally not enumerated:
+// their domains are too large to prove exhaustive case-by-case, so they
+// conservatively always require a fallback arm.
 func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *controlRecord, bySyntax map[symbol.SyntaxRef]*controlRecord) bool {
 	if ctrl == nil || ctrl.Kind != controlSwitch || ctrl.ElsePresent {
 		return false
@@ -54,6 +59,7 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 
 	// Collect covered case constants by iterating the switch's composition.
 	coveredBools := make(map[bool]bool)
+	coveredIntegers := make(map[int64]bool)
 	coveredEnumVariants := make(map[symbol.SymbolID]bool)
 	variantBySyntax := make(map[symbol.SyntaxRef]symbol.SymbolID)
 	resolution := handoff.Semantics.Resolution()
@@ -98,7 +104,14 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 				case constantBoolean:
 					coveredBools[constResult.Value.Boolean] = true
 				case constantInteger:
-					// Integer subjects are not exhaustively enumerable here.
+					// Only finite-width integer subjects with enumerable domains
+					// (u8/i8) can be proven exhaustive, so track covered values
+					// here and let the width-specific check below consume them.
+					// Values outside int64 range are never in a u8/i8 domain and
+					// can be skipped safely.
+					if constResult.Value.Integer != nil && constResult.Value.Integer.IsInt64() {
+						coveredIntegers[constResult.Value.Integer.Int64()] = true
+					}
 				}
 			}
 		}
@@ -107,6 +120,29 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 	// Bool exhaustiveness: both true and false must be covered.
 	if builtin, ok := typeKey.Builtin(); ok && builtin == types.Bool {
 		return coveredBools[true] && coveredBools[false]
+	}
+
+	// u8/i8 exhaustiveness: every value in the width's exact range must be
+	// covered. Wider integer widths are intentionally excluded — their domains
+	// are too large to enumerate case-by-case, so they fall through to false.
+	if builtin, ok := typeKey.Builtin(); ok {
+		var min, max int64
+		switch builtin {
+		case types.U8:
+			min, max = 0, 255
+		case types.I8:
+			min, max = -128, 127
+		default:
+			min, max = 1, 0
+		}
+		if min <= max {
+			for value := min; value <= max; value++ {
+				if !coveredIntegers[value] {
+					return false
+				}
+			}
+			return true
+		}
 	}
 
 	// Enum/tagged-union exhaustiveness: every variant must be covered.

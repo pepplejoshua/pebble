@@ -1,6 +1,8 @@
 package check
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
@@ -863,6 +865,73 @@ fn classify(flag bool) i32 {
 `)
 	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
 		t.Fatalf("exhaustive bool switch without else was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// generatedIntegerSwitch builds a switch on an integer-typed subject covering
+// every value in [start, end] inclusive with no else arm. The test suite
+// generates these rather than hand-writing them because the u8/i8 exhaustive
+// cases need the full 256-value domain.
+func generatedIntegerSwitch(subjectType string, start, end int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "fn classify(v %s) i32 {\n", subjectType)
+	b.WriteString("    switch v {\n")
+	for i := start; i <= end; i++ {
+		fmt.Fprintf(&b, "    case %d: return %d;\n", i, i)
+	}
+	b.WriteString("    }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// TestValidateControlFlowExhaustiveU8SwitchNoElse verifies that a u8 switch
+// covering ALL 256 values (0..255) without else, where every case returns, is
+// accepted (no false-positive C0607).
+func TestValidateControlFlowExhaustiveU8SwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("u8", 0, 255))
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("exhaustive u8 switch without else was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowNonExhaustiveU8SwitchNoElse verifies that a u8
+// switch covering only 255 of 256 values (missing exactly 255), without else,
+// is still correctly rejected with C0607.
+func TestValidateControlFlowNonExhaustiveU8SwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("u8", 0, 254))
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("non-exhaustive u8 switch without else was accepted: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowExhaustiveI8SwitchNoElse verifies that an i8 switch
+// covering ALL 256 values (-128..127) without else, where every case returns,
+// is accepted (no false-positive C0607).
+func TestValidateControlFlowExhaustiveI8SwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("i8", -128, 127))
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("exhaustive i8 switch without else was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowNonExhaustiveI8SwitchNoElse verifies that an i8
+// switch covering only 255 of 256 values (missing exactly 127), without else,
+// is still correctly rejected with C0607.
+func TestValidateControlFlowNonExhaustiveI8SwitchNoElse(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("i8", -128, 126))
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("non-exhaustive i8 switch without else was accepted: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowWiderIntegerSwitchStillNeedsFallback verifies that a
+// u16 switch covering as many values as the exhaustive u8 case (0..255) still
+// requires a fallback arm. Wider integer widths are intentionally not
+// enumerated for exhaustiveness, so C0607 must still fire.
+func TestValidateControlFlowWiderIntegerSwitchStillNeedsFallback(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("u16", 0, 255))
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("wider-integer switch should still require a fallback arm: %+v", diagnostics.Items())
 	}
 }
 
