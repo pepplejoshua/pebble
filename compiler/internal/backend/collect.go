@@ -756,15 +756,18 @@ func collectFunctionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 // the emitted program actually references: the entry body (root) followed by
 // every reachable helper's body, each walked by the same Children + DeferChain
 // traversal collectDirectCalls uses. A struct type is referenced in exactly
-// four places in the emitted C — a struct-typed local's declaration (an
+// five places in the emitted C — a struct-typed local's declaration (an
 // Initialize whose initializer value carries the struct type), a struct
 // construction (a RecordConstruct, whose Type is the struct type), a
 // struct-typed parameter of a reachable helper (a FunctionDeclaration.Parameters
-// entry's Type), and a struct-typed result of a reachable helper (a
+// entry's Type), a struct-typed result of a reachable helper (a
 // FunctionDeclaration.ResultType, whose typedef its C signature names as its
-// return type) — so collecting exactly those node shapes, each reachable
-// helper's Parameters list, and each reachable helper's ResultType guarantees
-// every typedef the program needs is discovered. The Parameters/ResultType
+// return type), and a bare `sizeof Pair` expression (a SizeofType node whose
+// TypeArg is the struct type — with no other reference to the type anywhere
+// the walk must still collect it, mirroring collectUnionTypesWalk and
+// collectArrayTypesWalk) — so collecting exactly those node shapes, each
+// reachable helper's Parameters list, and each reachable helper's ResultType
+// guarantees every typedef the program needs is discovered. The Parameters/ResultType
 // coverage closes a real gap: a struct type used only as a parameter type or
 // only as a helper's result type (never constructed in any reachable body)
 // still needs its typedef emitted, since the helper's C signature names
@@ -865,12 +868,17 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 // collectStructTypesWalk appends every struct type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Two node shapes carry a
-// struct type: a RecordConstruct node's own Type, and an Initialize whose
+// region of the node graph the body builders consume. Three node shapes carry
+// a struct type: a RecordConstruct node's own Type, an Initialize whose
 // initializer value carries a struct type (a struct-typed local declaration —
 // the local's type is recorded on the initializer value node, not on the
 // Initialize node itself, confirmed against a real fixture, the same finding
-// tuple/array/optional collection made). A RecordConstruct whose own type is a
+// tuple/array/optional collection made), and a SizeofType node whose TypeArg
+// is a struct type (a bare `sizeof Pair` with no other reference to the type
+// anywhere — no construction, field access, local, or helper signature — so
+// only the SizeofType node carries it, the same SizeofType collection gap
+// collectUnionTypesWalk and collectArrayTypesWalk close for their own kinds).
+// A RecordConstruct whose own type is a
 // compiler-builtin runtime type (Allocator, Context) is excluded — it has no
 // TypeDeclaration in the unit, so resolveStructInfo could never resolve it
 // (see the guard on its append below). The same walk also records, in
@@ -882,6 +890,19 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 	node, ok := unit.Node(nodeID)
 	if !ok {
 		return fmt.Errorf("struct-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.SizeofType && isStruct(snapshot, node.TypeArg) && runtimeType(unit, snapshot, node.TypeArg) == 0 && !isEnumType(unit, snapshot, node.TypeArg) {
+		// A bare `sizeof` of a plain struct (no construction, field access,
+		// local declaration, or helper signature anywhere, so no other node
+		// carries the type): the struct's pebble_struct_<typeID>_t typedef
+		// must still be collected and emitted, or the lowered
+		// sizeof(pebble_struct_<typeID>_t) names an undeclared C type (see
+		// sizeofCTypeName). The same guard every other struct-collection shape
+		// uses applies here: a compiler-builtin runtime type (Allocator,
+		// Context) has no TypeDeclaration, so resolveStructInfo could never
+		// resolve it, and an enum-shaped type (a plain enum or tagged union)
+		// is collected by collectEnumTypes/collectUnionTypes instead.
+		*out = append(*out, node.TypeArg)
 	}
 	if node.Kind == tir.RecordConstruct {
 		// A compiler-builtin runtime type (Allocator, Context) is Nominal like
@@ -1041,7 +1062,7 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 // collectEnumTypesWalk appends every enum type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Four node shapes carry
+// region of the node graph the body builders consume. Five node shapes carry
 // an enum type: an EnumVariantValue node's own Type (a variant literal,
 // e.g. Color.green), a VariantConstruct node's own Type (a variant
 // construction, e.g. Color.red() — the parenthesized-call form of a plain
@@ -1051,7 +1072,13 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 // CheckedIntegerToEnum node's own Type (an integer cast to an enum, e.g.
 // `5 as Color` — the node's Type is the destination enum type, so a cast that
 // never participates in a local declaration still gets its typedef emitted),
-// and an
+// an OptionalIntegerToEnum node's payload type (an integer cast to an optional
+// enum, e.g. `5 as ?Color` — the node's own Type is the OPTIONAL type, so the
+// destination enum is its payload), and a SizeofType node whose TypeArg is an
+// enum type (a bare `sizeof Color` with no other reference to the type
+// anywhere, so only the SizeofType node carries it — the same SizeofType
+// collection gap collectUnionTypesWalk and collectArrayTypesWalk close for
+// their own kinds), and an
 // Initialize whose initializer value carries an enum type (an enum-typed local
 // declaration — the local's type is recorded on the initializer value node,
 // not on the Initialize node itself, confirmed against a real fixture, the
@@ -1067,6 +1094,18 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 	node, ok := unit.Node(nodeID)
 	if !ok {
 		return fmt.Errorf("enum-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.SizeofType && isEnumType(unit, snapshot, node.TypeArg) {
+		// A bare `sizeof` of a plain enum (no variant literal, construction,
+		// cast, or local declaration anywhere, so no other node carries the
+		// type): the enum's pebble_enum_<typeID>_t typedef must still be
+		// collected and emitted, or the lowered sizeof(pebble_enum_<typeID>_t)
+		// names an undeclared C type (see sizeofCTypeName). The caller's
+		// tagged-union filter applies the same way it does to the
+		// variant-shape rules above — a union enum is enum-shaped too, but is
+		// not a plain enum, and collectUnionTypesWalk collects it for the
+		// union typedef pair.
+		*out = append(*out, node.TypeArg)
 	}
 	if node.Kind == tir.EnumVariantValue {
 		*out = append(*out, node.Type)

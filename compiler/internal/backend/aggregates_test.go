@@ -2956,6 +2956,150 @@ func TestEmitSizeofFixedArrayOnlyReferenceEmitsArrayTypedef(t *testing.T) {
 	}
 }
 
+func TestEmitSizeofPlainStructOnlyReferenceCompilesAndRuns(t *testing.T) {
+	// The tracker's exact repro shape: sizeof Pair is the ONLY reference to
+	// the plain struct in the whole program — no construction, no field
+	// access, no optional payload, no helper signature — yet the program must
+	// compile and run, printing the struct's real size. int is int32_t in this
+	// backend, so Pair (x int; y int;) is 4 + 4 = 8 bytes. Before the fix the
+	// sizeof's lowered pebble_struct_<typeID>_t named a typedef that was never
+	// collected (sizeof is not among the struct shapes collectStructTypesWalk
+	// collected), so cc rejected the program with "use of undeclared
+	// identifier".
+	out := emitAndRunCapture(t, `type Pair = struct {
+    x int;
+    y int;
+};
+fn main() int {
+    let s = sizeof Pair;
+    print s;
+    return 0;
+}`, false, 0, false)
+	if out != "8\n" {
+		t.Errorf("program printed %q, want the struct's field-sum size %q", out, "8\n")
+	}
+}
+
+func TestEmitSizeofPlainStructOnlyReferenceEmitsStructTypedef(t *testing.T) {
+	// Emitted-C shape check for the typedef-collection fix, using the exact
+	// repro shape (sizeof is the ONLY reference to the struct): the sizeof must
+	// reference the struct's own pebble_struct_<typeID>_t typedef, and the
+	// typedef must be collected and emitted even though nothing else in the
+	// program references the type; before the fix the lowered sizeof named a
+	// typedef that was never declared, which cc rejected.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Pair = struct {
+    x int;
+    y int;
+};
+fn main() int {
+    let s = sizeof Pair;
+    print s;
+    return 0;
+}`, "main", false)
+	var structType types.TypeID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.SizeofType {
+			structType = node.TypeArg
+			break
+		}
+	}
+	if structType == 0 {
+		t.Fatal("fixture has no SizeofType node to read its struct TypeArg from")
+	}
+	var members []symbol.SymbolID
+	for _, td := range unit.TypeDeclarations() {
+		members = td.Members
+		break
+	}
+	if len(members) != 2 {
+		t.Fatalf("fixture declares %d struct members, want 2 (x, y)", len(members))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sizeof("+structTypeName(structType)+")") {
+		t.Errorf("emitted C does not sizeof the struct's own typedef %q:\n%s", structTypeName(structType), out)
+	}
+	structTypedef := "typedef struct {\n" +
+		"    int32_t pebble_field_" + strconv.Itoa(int(members[0])) + ";\n" +
+		"    int32_t pebble_field_" + strconv.Itoa(int(members[1])) + ";\n" +
+		"} " + structTypeName(structType) + ";"
+	if !strings.Contains(out, structTypedef) {
+		t.Errorf("emitted C is missing the struct typedef %q (sizeof is the only reference, so the struct's typedef must still be collected):\n%s", structTypedef, out)
+	}
+}
+
+func TestEmitSizeofPlainEnumOnlyReferenceCompilesAndRuns(t *testing.T) {
+	// The tracker's exact repro shape: sizeof Color is the ONLY reference to
+	// the plain enum in the whole program — no variant literal, no
+	// construction, no cast, no local declaration — yet the program must
+	// compile and run, printing the enum's real size (4 bytes, the C enum's
+	// int-sized discriminant). Before the fix the sizeof's lowered
+	// pebble_enum_<typeID>_t named a typedef that was never collected (sizeof
+	// is not among the enum shapes collectEnumTypesWalk collected), so cc
+	// rejected the program with "use of undeclared identifier".
+	out := emitAndRunCapture(t, `type Color = enum { red, green, blue };
+fn main() int {
+    let s = sizeof Color;
+    print s;
+    return 0;
+}`, false, 0, false)
+	if out != "4\n" {
+		t.Errorf("program printed %q, want the enum's discriminant size %q", out, "4\n")
+	}
+}
+
+func TestEmitSizeofPlainEnumOnlyReferenceEmitsEnumTypedef(t *testing.T) {
+	// Emitted-C shape check for the typedef-collection fix, using the exact
+	// repro shape (sizeof is the ONLY reference to the enum): the sizeof must
+	// reference the enum's own pebble_enum_<typeID>_t typedef, and the typedef
+	// must be collected and emitted even though nothing else in the program
+	// references the type; before the fix the lowered sizeof named a typedef
+	// that was never declared, which cc rejected.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Color = enum { red, green, blue };
+fn main() int {
+    let s = sizeof Color;
+    print s;
+    return 0;
+}`, "main", false)
+	var enumType types.TypeID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.SizeofType {
+			enumType = node.TypeArg
+			break
+		}
+	}
+	if enumType == 0 {
+		t.Fatal("fixture has no SizeofType node to read its enum TypeArg from")
+	}
+	var members []symbol.SymbolID
+	for _, td := range unit.TypeDeclarations() {
+		members = td.Members
+		break
+	}
+	if len(members) != 3 {
+		t.Fatalf("fixture declares %d enum members, want 3 (red, green, blue)", len(members))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sizeof("+enumTypeName(enumType)+")") {
+		t.Errorf("emitted C does not sizeof the enum's own typedef %q:\n%s", enumTypeName(enumType), out)
+	}
+	enumTypedef := "typedef enum {\n" +
+		"    pebble_variant_" + strconv.Itoa(int(members[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(members[1])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(members[2])) + ",\n" +
+		"} " + enumTypeName(enumType) + ";"
+	if !strings.Contains(out, enumTypedef) {
+		t.Errorf("emitted C is missing the enum typedef %q (sizeof is the only reference, so the enum's typedef must still be collected):\n%s", enumTypedef, out)
+	}
+}
+
 func TestEmitEnumSwitchInHelperCompilesAndRuns(t *testing.T) {
 	// A plain enum local and switch inside a reachable helper, the entry
 	// calling the helper: collectEnumTypes walks every reachable helper's body,
