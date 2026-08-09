@@ -321,6 +321,7 @@ func Prepare(inputs ProgramInputs, diagnostics *diagnostic.DiagnosticSet, config
 	p.prepareRuntimePrelude()
 	p.prepareDeclarations()
 	p.prepareSignatures()
+	p.prepareBuiltinSignatures()
 	p.reporter.flush()
 	return p
 }

@@ -443,7 +443,7 @@ func (w *walker) successfulValueSymbol(id symbol.SymbolID) bool {
 	case symbol.SymbolBinding, symbol.SymbolParameter, symbol.SymbolLoopBinding,
 		symbol.SymbolField, symbol.SymbolVariant, symbol.SymbolExternBinding:
 		return true
-	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction:
+	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
 		return !value.Generic
 	default:
 		return false

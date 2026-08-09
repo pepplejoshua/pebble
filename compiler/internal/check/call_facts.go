@@ -192,7 +192,7 @@ func (w *walker) staticTarget(ref symbol.SyntaxRef, tree *syntax.Tree) (symbol.S
 		return 0, 0, site, false
 	}
 	switch s.Kind {
-	case symbol.SymbolFunction, symbol.SymbolExternFunction:
+	case symbol.SymbolFunction, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
 		return s.ID, callDirect, site, true
 	case symbol.SymbolVariant:
 		return s.ID, callVariant, site, true

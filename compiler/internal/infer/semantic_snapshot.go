@@ -832,7 +832,7 @@ func (b *semanticSnapshotBuilder) validateSignature(id symbol.SymbolID, value Si
 		return err
 	}
 	ownerSymbol, _ := b.program.inputs.Resolution.Symbols.Symbol(id)
-	if ownerSymbol.Kind != symbol.SymbolFunction && ownerSymbol.Kind != symbol.SymbolMethod && ownerSymbol.Kind != symbol.SymbolExternFunction {
+	if ownerSymbol.Kind != symbol.SymbolFunction && ownerSymbol.Kind != symbol.SymbolMethod && ownerSymbol.Kind != symbol.SymbolExternFunction && ownerSymbol.Kind != symbol.SymbolBuiltinFunction {
 		return fmt.Errorf("semantic snapshot signature has the wrong symbol kind")
 	}
 	if value.Convention != 0 && value.Convention != types.Pebble && value.Convention != types.C {
@@ -876,7 +876,12 @@ func (b *semanticSnapshotBuilder) validateSignature(id symbol.SymbolID, value Si
 		return fmt.Errorf("semantic snapshot signature result is invalid")
 	}
 	if value.State == DeclarationReady {
-		if len(value.Parameters) != len(value.Inputs) || value.Result == 0 || (value.Convention != types.Pebble && value.Convention != types.C) {
+		// A builtin function signature carries no authored Parameter symbols
+		// (prepareBuiltinSignatures registers only Inputs/Result), so the
+		// parameter/input width match that holds for every authored callable is
+		// deliberately not required of it. Everything else must still hold.
+		if value.Result == 0 || (value.Convention != types.Pebble && value.Convention != types.C) ||
+			(ownerSymbol.Kind != symbol.SymbolBuiltinFunction && len(value.Parameters) != len(value.Inputs)) {
 			return fmt.Errorf("semantic snapshot ready signature is incomplete")
 		}
 		for _, input := range value.Inputs {
@@ -921,7 +926,7 @@ func (b *semanticSnapshotBuilder) genericParameters(id symbol.SymbolID) ([]symbo
 			return nil, false
 		}
 		return declaration.Parameters, true
-	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction:
+	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
 		signature, ok := b.program.signatures[id]
 		if !ok {
 			return nil, false

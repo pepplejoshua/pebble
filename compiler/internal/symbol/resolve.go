@@ -81,11 +81,38 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	for _, item := range graph.Modules() {
 		r.collectModule(item)
 	}
+	r.registerBuiltinFunctions()
 	for _, item := range graph.Modules() {
 		r.resolveModule(item)
 	}
 	r.flushDiagnostics()
 	return r.result
+}
+
+// registerBuiltinFunctions binds the compiler-owned builtin function symbols
+// into the prelude scope. They are deliberately registered AFTER module
+// collection — rather than in installPrelude with the other prelude symbols —
+// so the two extra prelude identities never renumber the module symbols that
+// resolve against them (the golden typed-IR dumps and the backend's
+// hardcoded pebble_fn_<symbolID> fixtures depend on module symbol IDs being
+// stable). Because module collection only registers declarations and never
+// performs name lookup, the prelude bindings need only exist before
+// resolveModule runs, which is exactly when this runs.
+func (r *resolver) registerBuiltinFunctions() {
+	scope := r.result.prelude
+	if scope == 0 {
+		return
+	}
+	for _, function := range []struct {
+		name string
+		kind BuiltinFunction
+	}{
+		{"wrapping_mul_u64", BuiltinWrappingMulU64},
+		{"wrapping_add_u64", BuiltinWrappingAddU64},
+	} {
+		id := r.addSymbol(Symbol{Name: function.name, Kind: SymbolBuiltinFunction, Scope: scope, BuiltinFunction: function.kind}, true, 0)
+		r.result.builtinFunctions[function.kind] = id
+	}
 }
 
 func (r *resolver) installPrelude() {

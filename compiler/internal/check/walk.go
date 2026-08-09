@@ -158,6 +158,7 @@ func (w *walker) run() {
 	if w == nil || w.generation == nil || w.generation.inputs.Graph == nil {
 		return
 	}
+	w.prepareBuiltinCallables()
 	for _, moduleID := range w.generation.inputs.Graph.DependencyOrder() {
 		item, ok := w.generation.inputs.Graph.Module(moduleID)
 		if !ok || item.Tree == nil {

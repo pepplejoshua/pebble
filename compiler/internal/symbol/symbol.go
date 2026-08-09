@@ -71,6 +71,7 @@ const (
 	SymbolExternBinding
 	SymbolBuiltinType
 	SymbolRuntimeType
+	SymbolBuiltinFunction
 )
 
 func (k SymbolKind) String() string {
@@ -107,6 +108,8 @@ func (k SymbolKind) String() string {
 		return "builtin type"
 	case SymbolRuntimeType:
 		return "runtime type"
+	case SymbolBuiltinFunction:
+		return "builtin function"
 	default:
 		return "unknown"
 	}
@@ -159,6 +162,16 @@ const (
 	RuntimeContext
 )
 
+// BuiltinFunction identifies a compiler-owned builtin function independently
+// of any source spelling or backend name. Each carries a fixed signature the
+// inference phase registers without an authored declaration.
+type BuiltinFunction uint8
+
+const (
+	BuiltinWrappingMulU64 BuiltinFunction = iota + 1
+	BuiltinWrappingAddU64
+)
+
 // ScopeKind describes an authored or declaration environment.
 type ScopeKind uint8
 
@@ -195,19 +208,20 @@ func (k ScopeKind) String() string {
 
 // Symbol is an immutable semantic declaration value returned by SymbolStore.
 type Symbol struct {
-	ID           SymbolID
-	Name         string
-	Kind         SymbolKind
-	Span         source.Span
-	Module       ModuleID
-	Scope        ScopeID
-	Declaration  SyntaxRef
-	Containing   SymbolID
-	ImportTarget ModuleID
-	Generic      bool
-	Builtin      BuiltinType
-	Runtime      RuntimeType
-	Error        bool
+	ID              SymbolID
+	Name            string
+	Kind            SymbolKind
+	Span            source.Span
+	Module          ModuleID
+	Scope           ScopeID
+	Declaration     SyntaxRef
+	Containing      SymbolID
+	ImportTarget    ModuleID
+	Generic         bool
+	Builtin         BuiltinType
+	Runtime         RuntimeType
+	BuiltinFunction BuiltinFunction
+	Error           bool
 }
 
 // Scope is an immutable lexical environment value returned by ScopeStore.
@@ -305,17 +319,18 @@ type Capture struct {
 
 // Result is the immutable output of one Resolve invocation.
 type Result struct {
-	Scopes       *ScopeStore
-	Symbols      *SymbolStore
-	prelude      ScopeID
-	builtins     [BuiltinF64 + 1]SymbolID
-	runtimes     [RuntimeContext + 1]SymbolID
-	references   map[SyntaxRef]Resolution
-	qualifiers   map[SyntaxRef]ModuleID
-	brackets     map[SyntaxRef]BracketMode
-	captures     map[SyntaxRef][]SymbolID
-	captureOrder []SyntaxRef
-	members      map[SymbolID][]SymbolID
+	Scopes           *ScopeStore
+	Symbols          *SymbolStore
+	prelude          ScopeID
+	builtins         [BuiltinF64 + 1]SymbolID
+	runtimes         [RuntimeContext + 1]SymbolID
+	builtinFunctions [BuiltinWrappingAddU64 + 1]SymbolID
+	references       map[SyntaxRef]Resolution
+	qualifiers       map[SyntaxRef]ModuleID
+	brackets         map[SyntaxRef]BracketMode
+	captures         map[SyntaxRef][]SymbolID
+	captureOrder     []SyntaxRef
+	members          map[SymbolID][]SymbolID
 }
 
 func (r *Result) Prelude() ScopeID {
@@ -338,6 +353,14 @@ func (r *Result) Runtime(kind RuntimeType) (SymbolID, bool) {
 		return 0, false
 	}
 	id := r.runtimes[kind]
+	return id, id != 0
+}
+
+func (r *Result) BuiltinFunction(kind BuiltinFunction) (SymbolID, bool) {
+	if r == nil || kind == 0 || int(kind) >= len(r.builtinFunctions) {
+		return 0, false
+	}
+	id := r.builtinFunctions[kind]
 	return id, id != 0
 }
 

@@ -85,6 +85,14 @@
  *      the returned byte count, the exact encoded bytes, and the
  *      always-written trailing NUL. Mode-independent, so it runs
  *      unconditionally in main in both builds.
+ *  20. The explicit wrapping u64 builtins (pebble_rt_wrapping_mul_u64 /
+ *      pebble_rt_wrapping_add_u64): ordinary operands produce the arithmetic
+ *      result and overflowing operands wrap modulo 2^64 (UINT64_MAX * 2 wraps
+ *      to UINT64_MAX - 1, UINT64_MAX + 1 wraps to 0) IDENTICALLY in both
+ *      modes — the helpers never panic, so there is nothing mode-dependent to
+ *      gate. This is the mode-independence requirement: wrapping must not
+ *      behave differently in SAFE (which panics on checked overflow) and
+ *      RELEASE, so it runs unconditionally in main.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -230,6 +238,32 @@ static void test_checked_arithmetic_normal(void) {
      */
     assert(pebble_rt_checked_mod_i32(INT32_MIN, -1, (PebbleSourceLoc){0}) == 0);
     assert(pebble_rt_checked_mod_i64(INT64_MIN, -1, (PebbleSourceLoc){0}) == 0);
+}
+
+/* The explicit wrapping u64 arithmetic builtins (the compiler's
+ * wrapping_mul_u64 / wrapping_add_u64 lowering targets) wrap modulo 2^64 by
+ * plain unsigned C arithmetic in BOTH modes, so these assertions run
+ * unconditionally in main exactly like test_int_to_enum_is_valid — there is
+ * nothing mode-dependent to gate. The ordinary results assert the arithmetic
+ * is correct; the boundary cases assert the wrap is real (UINT64_MAX * 2 ==
+ * UINT64_MAX - 1 and UINT64_MAX + 1 == 0), the exact values the approved
+ * boundary test requires. The mode-independent result is a requirement: a
+ * wrapping helper must not panic in SAFE (it never does — the very point of
+ * wrapping) and must not change answer in RELEASE.
+ */
+static void test_wrapping_arithmetic_normal(void) {
+    assert(pebble_rt_wrapping_mul_u64(6, 7) == 42);
+    assert(pebble_rt_wrapping_mul_u64(1, UINT64_MAX) == UINT64_MAX);
+    assert(pebble_rt_wrapping_mul_u64(0, UINT64_MAX) == 0);
+    /* The approved boundary: UINT64_MAX * 2 wraps to UINT64_MAX - 1. */
+    assert(pebble_rt_wrapping_mul_u64(UINT64_MAX, 2) == UINT64_MAX - 1);
+
+    assert(pebble_rt_wrapping_add_u64(2, 3) == 5);
+    assert(pebble_rt_wrapping_add_u64(0, 0) == 0);
+    assert(pebble_rt_wrapping_add_u64(UINT64_MAX, 0) == UINT64_MAX);
+    /* The approved boundary's addition twin: UINT64_MAX + 1 wraps to 0. */
+    assert(pebble_rt_wrapping_add_u64(UINT64_MAX, 1) == 0);
+    assert(pebble_rt_wrapping_add_u64(UINT64_MAX, UINT64_MAX) == UINT64_MAX - 1);
 }
 
 static void test_checked_shift_normal(void) {
@@ -985,6 +1019,9 @@ int main(void) {
 
     test_checked_arithmetic_normal();
     printf("ok: checked arithmetic normal results\n");
+
+    test_wrapping_arithmetic_normal();
+    printf("ok: wrapping u64 arithmetic normal results and boundaries\n");
 
     test_checked_shift_normal();
     printf("ok: checked shift normal results\n");

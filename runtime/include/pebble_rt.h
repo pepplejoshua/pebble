@@ -178,6 +178,18 @@ uint64_t pebble_rt_checked_add_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 
+/* ---- wrapping u64 arithmetic ------------------------------------------------
+ * The explicit wrapping builtins wrapping_mul_u64 / wrapping_add_u64 lower to
+ * these helpers. They implement the operation's modular-arithmetic wraparound
+ * via plain unsigned C arithmetic, which is defined to wrap modulo 2^64 (C11
+ * 6.3.1.3 / 6.2.5), so the implementation is identical in SAFE and RELEASE
+ * modes: the helpers are defined once, outside the mode gating, and take no
+ * PebbleSourceLoc because they never panic in either mode. Normal checked u64
+ * arithmetic (pebble_rt_checked_add/sub/mul_u64) is unaffected.
+ */
+uint64_t pebble_rt_wrapping_mul_u64(uint64_t a, uint64_t b);
+uint64_t pebble_rt_wrapping_add_u64(uint64_t a, uint64_t b);
+
 /* ---- checked bit shifts -----------------------------------------------------
  * Shift counts outside [0, 32) or [0, 64) are invalid. SAFE mode panics with
  * PEBBLE_PANIC_ARITHMETIC_OVERFLOW; RELEASE mode masks the count to the

@@ -414,6 +414,22 @@ uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSource
 
 #endif /* PEBBLE_RT_MODE_SAFE / PEBBLE_RT_MODE_RELEASE */
 
+/* The explicit wrapping u64 arithmetic builtins, defined once for BOTH modes
+ * (outside the mode gating): plain unsigned C arithmetic wraps modulo 2^64 by
+ * definition (C11 6.3.1.3 / 6.2.5), so the wrapped result IS the direct
+ * operation and there is nothing mode-specific to decide — no panic in SAFE,
+ * no different answer in RELEASE. They take no PebbleSourceLoc for the same
+ * reason: a wrapping operation is never a fault. Normal checked u64 arithmetic
+ * (pebble_rt_checked_add/sub/mul_u64 above) is unaffected.
+ */
+uint64_t pebble_rt_wrapping_mul_u64(uint64_t a, uint64_t b) {
+    return a * b;
+}
+
+uint64_t pebble_rt_wrapping_add_u64(uint64_t a, uint64_t b) {
+    return a + b;
+}
+
 /* Float-to-integer conversion must check before the C cast: an out-of-range
  * or NaN conversion is undefined. The upper bounds are exclusive powers of
  * two, which remain correct when INT32_MAX/INT64_MAX are rounded by conversion

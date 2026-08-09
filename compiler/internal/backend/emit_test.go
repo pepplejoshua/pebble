@@ -965,8 +965,8 @@ func TestEmitGenericStructOptionalTwoSpecializationsCompileAndRun(t *testing.T) 
 	// The exact repro that was broken before this slice: TWO specializations
 	// of the same generic struct in one program, the field type a compound
 	// wrapping the struct's own parameter. Before the fix, Box[bool]'s struct
-	// typedef reused Box[int]'s Optional(int) field type (pebble_optional_29_t)
-	// and the Box[bool] construction referenced pebble_optional_30_t which was
+	// typedef reused Box[int]'s Optional(int) field type (pebble_optional_30_t)
+	// and the Box[bool] construction referenced pebble_optional_31_t which was
 	// never defined — a real cc failure (undeclared identifier). The
 	// specialization is now resolved from its own construction evidence, so
 	// each struct typedef carries its own payload optional and every optional
@@ -1037,11 +1037,11 @@ func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *tes
 func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
 	// The emitted-C shape check for the optional two-specialization case: each
 	// specialization's typedef must name its OWN payload optional type —
-	// pebble_optional_29_t (Optional(int)) for Box[int], pebble_optional_30_t
+	// pebble_optional_30_t (Optional(int)) for Box[int], pebble_optional_31_t
 	// (Optional(bool)) for Box[bool] — and BOTH optional typedefs must be
 	// emitted (before this slice the bool-payload optional was referenced but
 	// never defined, a real cc error). Struct type IDs 24/25, optional types
-	// 29/30, field symbol 26 from a real fixture dump.
+	// 30/31, field symbol 26 from a real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Box[K] = struct { value ?K; }; fn main() int { var b Box[int] = Box[int].{ value = some 5 }; var c Box[bool] = Box[bool].{ value = some true }; var d Box[bool] = Box[bool].{ value = none }; if c.value! { if d.value! { return 1; } else { return b.value!; } } else { return 0; } }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -1049,8 +1049,8 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    pebble_optional_29_t pebble_field_26;\n} pebble_struct_24_t;",
-		"typedef struct {\n    pebble_optional_30_t pebble_field_26;\n} pebble_struct_25_t;",
+		"typedef struct {\n    pebble_optional_30_t pebble_field_26;\n} pebble_struct_24_t;",
+		"typedef struct {\n    pebble_optional_31_t pebble_field_26;\n} pebble_struct_25_t;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1058,7 +1058,7 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	}
 	// Both optional typedefs must exist: the bool-payload optional is what was
 	// referenced-but-undefined before this slice.
-	if strings.Count(out, "} pebble_optional_29_t;") != 1 || strings.Count(out, "} pebble_optional_30_t;") != 1 {
+	if strings.Count(out, "} pebble_optional_30_t;") != 1 || strings.Count(out, "} pebble_optional_31_t;") != 1 {
 		t.Errorf("expected exactly one typedef each for the two optional payloads:\n%s", out)
 	}
 }
@@ -1563,8 +1563,8 @@ func TestEmitLogicalAndWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_25 = 7;",
-		"    if ((pebble_local_25 < 10 && 1 < 2)) {\n",
+		"int32_t pebble_local_27 = 7;",
+		"    if ((pebble_local_27 < 10 && 1 < 2)) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1577,7 +1577,7 @@ func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
 	// SourceAlias (confirmed against a real fixture dump), which buildBoolExpr
 	// must unwrap before lowering the comparison. The emitted C must therefore
 	// carry the comparison directly inside the parenthesized &&, with the bool
-	// local referenced by name: (pebble_local_25 && 1 < 2). Symbol 25 is the
+	// local referenced by name: (pebble_local_27 && 1 < 2). Symbol 27 is the
 	// flag local.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var flag bool = true; if flag && (1 < 2) { return 1; } else { return 0; } }", "main", false)
 	var buf bytes.Buffer
@@ -1585,7 +1585,7 @@ func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "if ((pebble_local_25 && 1 < 2)) {") {
+	if !strings.Contains(out, "if ((pebble_local_27 && 1 < 2)) {") {
 		t.Errorf("emitted C missing the unwrapped parenthesized comparison &&:\n%s", out)
 	}
 }
@@ -3469,7 +3469,7 @@ func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, 1, (PebbleSourceLoc){\"main.peb\", 1, 32})") {
+	if !strings.Contains(out, "pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, 1, (PebbleSourceLoc){\"main.peb\", 1, 32})") {
 		t.Fatalf("emitted C does not combine through the checked helper:\n%s", out)
 	}
 	if strings.Contains(out, " += ") {
@@ -3602,7 +3602,7 @@ func TestEmitCheckedShiftNarrowWidthCallsItsOwnHelper(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_rt_checked_shl_u8(pebble_local_25, (uint8_t)(2)") {
+	if !strings.Contains(out, "pebble_rt_checked_shl_u8(pebble_local_27, (uint8_t)(2)") {
 		t.Fatalf("emitted C does not call the u8 shift helper at its own width:\n%s", out)
 	}
 	if strings.Contains(out, "pebble_rt_checked_shl_i32") {
@@ -3694,7 +3694,7 @@ func TestEmitCompoundI64LocalCombinesViaI64Helper(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_rt_checked_add_i64(pebble_local_25, 5") {
+	if !strings.Contains(out, "pebble_rt_checked_add_i64(pebble_local_27, 5") {
 		t.Fatalf("emitted C does not combine at i64 through the checked helper:\n%s", out)
 	}
 	if strings.Contains(out, "pebble_rt_checked_add_i32") {
@@ -3954,9 +3954,9 @@ func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    while (pebble_local_25 < 10) {\n",
-		"        if (pebble_local_25 < 5) {\n",
-		"            pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, pebble_local_25, (PebbleSourceLoc){\"main.peb\", 1, 81});",
+		"    while (pebble_local_27 < 10) {\n",
+		"        if (pebble_local_27 < 5) {\n",
+		"            pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 81});",
 		"        }",
 	} {
 		if !strings.Contains(out, want) {
@@ -4063,8 +4063,8 @@ func TestEmitBoolLocalIfWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"#include <stdbool.h>",
-		"bool pebble_local_25 = true;",
-		"    if (pebble_local_25) {\n",
+		"bool pebble_local_27 = true;",
+		"    if (pebble_local_27) {\n",
 		"        return 1;",
 		"        return 0;",
 	} {
@@ -4100,10 +4100,10 @@ func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"bool pebble_local_25 = false;",
-		"    while (!(pebble_local_25)) {\n",
-		"        if (pebble_local_26 == 5) {\n",
-		"            pebble_local_25 = true;",
+		"bool pebble_local_27 = false;",
+		"    while (!(pebble_local_27)) {\n",
+		"        if (pebble_local_28 == 5) {\n",
+		"            pebble_local_27 = true;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -4230,7 +4230,7 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
-	if !strings.Contains(out, "    if ((pebble_local_25) == (pebble_local_26)) {\n") {
+	if !strings.Contains(out, "    if ((pebble_local_27) == (pebble_local_28)) {\n") {
 		t.Errorf("emitted C missing the parenthesized bool-local equality:\n%s", out)
 	}
 }
@@ -4258,8 +4258,8 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    while (!(pebble_local_25 >= 5)) {\n",
-		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, 1, (PebbleSourceLoc){\"main.peb\", 1, 54});",
+		"    while (!(pebble_local_27 >= 5)) {\n",
+		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, 1, (PebbleSourceLoc){\"main.peb\", 1, 54});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -4395,8 +4395,8 @@ func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    while (pebble_local_25 < 10) {\n",
-		"        if (pebble_local_25 == 5) {\n",
+		"    while (pebble_local_27 < 10) {\n",
+		"        if (pebble_local_27 == 5) {\n",
 		"            break;",
 		"        }",
 	} {
@@ -4417,7 +4417,7 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"        if (pebble_local_25 == 3) {\n",
+		"        if (pebble_local_27 == 3) {\n",
 		"            continue;",
 	} {
 		if !strings.Contains(out, want) {
@@ -5031,8 +5031,8 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26++) {\n",
-		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26, (PebbleSourceLoc){\"main.peb\", 1, 56});",
+		"    for (int32_t pebble_local_28 = 0; pebble_local_28 < 3; pebble_local_28++) {\n",
+		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 56});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5044,7 +5044,7 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
-	if !strings.Contains(out, "    for (int32_t pebble_local_26 = 0; pebble_local_26 <= 3; pebble_local_26++) {\n") {
+	if !strings.Contains(out, "    for (int32_t pebble_local_28 = 0; pebble_local_28 <= 3; pebble_local_28++) {\n") {
 		t.Errorf("emitted C missing the inclusive for-loop header:\n%s", out)
 	}
 }
@@ -5244,9 +5244,9 @@ func TestEmitForLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (int32_t pebble_local_26 = 0; pebble_local_26 < 3; pebble_local_26 = pebble_rt_checked_add_i32(pebble_local_26, 1, (PebbleSourceLoc){\"main.peb\", 1, 75})) {\n",
-		"        (void)pebble_local_26;",
-		"        pebble_local_25 = pebble_rt_checked_add_i32(pebble_local_25, pebble_local_26, (PebbleSourceLoc){\"main.peb\", 1, 94});",
+		"    for (int32_t pebble_local_28 = 0; pebble_local_28 < 3; pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, 1, (PebbleSourceLoc){\"main.peb\", 1, 75})) {\n",
+		"        (void)pebble_local_28;",
+		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 94});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5444,7 +5444,7 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	// The emitted C for the i64 accumulation loop must declare its locals at
 	// int64_t and use the i64 checked helpers, proving the width threads
 	// through declarations, loop conditions, and arithmetic together. The
-	// symbol IDs 25 (i) and 26 (sum) are the same ones the i32 fixture dump
+	// symbol IDs 27 (i) and 28 (sum) are the same ones the i32 fixture dump
 	// established, so the assertions are exact.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i64 { var i i64 = 0; var sum i64 = 0; while i < 5 { sum = sum + i; i = i + 1; } return sum; }", "main", false)
 	var buf bytes.Buffer
@@ -5453,10 +5453,10 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int64_t pebble_local_25 = 0;",
-		"int64_t pebble_local_26 = 0;",
-		"    while (pebble_local_25 < 5) {\n",
-		"        pebble_local_26 = pebble_rt_checked_add_i64(pebble_local_26, pebble_local_25, (PebbleSourceLoc){\"main.peb\", 1, 69});",
+		"int64_t pebble_local_27 = 0;",
+		"int64_t pebble_local_28 = 0;",
+		"    while (pebble_local_27 < 5) {\n",
+		"        pebble_local_28 = pebble_rt_checked_add_i64(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 69});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5551,9 +5551,9 @@ func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
-		"    bool pebble_local_26 = false;",
-		"    while (!(pebble_local_26)) {\n",
-		"    if (pebble_local_27 > 3) {\n",
+		"    bool pebble_local_28 = false;",
+		"    while (!(pebble_local_28)) {\n",
+		"    if (pebble_local_29 > 3) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6667,9 +6667,9 @@ func TestEmitTupleThreeElementWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n    int32_t _2;\n} pebble_tuple_23_t;",
-		"pebble_tuple_23_t pebble_local_25 = { 10, 20, 30 };",
-		"    (void)pebble_local_25;",
-		"return pebble_rt_checked_add_i32(pebble_local_25._1, pebble_local_25._2, (PebbleSourceLoc){\"main.peb\", 1, 62});",
+		"pebble_tuple_23_t pebble_local_27 = { 10, 20, 30 };",
+		"    (void)pebble_local_27;",
+		"return pebble_rt_checked_add_i32(pebble_local_27._1, pebble_local_27._2, (PebbleSourceLoc){\"main.peb\", 1, 62});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6716,8 +6716,8 @@ func TestEmitTupleBoolElementDrivesIfWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t _0;\n    bool _1;\n} pebble_tuple_23_t;",
-		"pebble_tuple_23_t pebble_local_25 = { 1, true };",
-		"    if (pebble_local_25._1) {\n",
+		"pebble_tuple_23_t pebble_local_27 = { 1, true };",
+		"    if (pebble_local_27._1) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6750,8 +6750,8 @@ func TestEmitTupleElementAsCallArgumentWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
-		"pebble_tuple_23_t pebble_local_28 = { 20, 22 };",
-		"return pebble_fn_24(ctx, pebble_local_28._1, pebble_local_28._1);",
+		"pebble_tuple_23_t pebble_local_30 = { 20, 22 };",
+		"return pebble_fn_24(ctx, pebble_local_30._1, pebble_local_30._1);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6793,8 +6793,8 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int64_t _0;\n    int64_t _1;\n} pebble_tuple_23_t;",
-		"pebble_tuple_23_t pebble_local_25 = { 20, 22 };",
-		"return pebble_local_25._1;",
+		"pebble_tuple_23_t pebble_local_27 = { 20, 22 };",
+		"return pebble_local_27._1;",
 		"static int64_t pebble_user_main(PebbleContext *ctx)",
 	} {
 		if !strings.Contains(out, want) {
@@ -6867,8 +6867,8 @@ func TestEmitArrayWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_25[3] = { 10, 20, 30 };",
-		"return pebble_local_25[pebble_rt_checked_index_i32(1, 3, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_local_27[3] = { 10, 20, 30 };",
+		"return pebble_local_27[pebble_rt_checked_index_i32(1, 3, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6927,7 +6927,7 @@ func TestEmitArrayRepeatWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    int32_t pebble_local_25[3];\n    int32_t pebble_repeat_25 = 5;\n    for (size_t pebble_i_25 = 0; pebble_i_25 < 3; pebble_i_25++) {\n        pebble_local_25[pebble_i_25] = pebble_repeat_25;\n    }\n    (void)pebble_local_25;",
+		"    int32_t pebble_local_27[3];\n    int32_t pebble_repeat_27 = 5;\n    for (size_t pebble_i_27 = 0; pebble_i_27 < 3; pebble_i_27++) {\n        pebble_local_27[pebble_i_27] = pebble_repeat_27;\n    }\n    (void)pebble_local_27;",
 		"pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
@@ -6959,7 +6959,7 @@ func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
 	if got := strings.Count(out, "pebble_fn_24(ctx)"); got != 1 {
 		t.Errorf("pebble_fn_24(ctx) appears %d time(s) in the emitted C, want exactly 1 (the repeat value must be evaluated once, not once per slot):\n%s", got, out)
 	}
-	if !strings.Contains(out, "int32_t pebble_repeat_26 = pebble_fn_24(ctx);") {
+	if !strings.Contains(out, "int32_t pebble_repeat_28 = pebble_fn_24(ctx);") {
 		t.Errorf("emitted C missing the one-time repeat temp initialized from the call:\n%s", out)
 	}
 	compileAndRun(t, buf.Bytes(), 15, false)
@@ -7063,8 +7063,8 @@ func TestEmitTupleParameterWritesC(t *testing.T) {
 		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_tuple_23_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
 		"    return pebble_rt_checked_add_i32(pebble_local_25._0, pebble_local_25._1, (PebbleSourceLoc){\"main.peb\", 1, 36});",
-		"pebble_tuple_23_t pebble_local_27 = { 20, 22 };",
-		"return pebble_fn_24(ctx, pebble_local_27);",
+		"pebble_tuple_23_t pebble_local_29 = { 20, 22 };",
+		"return pebble_fn_24(ctx, pebble_local_29);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7160,7 +7160,7 @@ func TestEmitOptionalUnwrapNoneEmitsRealSourceLoc(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, `pebble_rt_checked_unwrap_i32(pebble_local_25.has_value, pebble_local_25.value, (PebbleSourceLoc){"main.peb", 1, `) {
+	if !strings.Contains(out, `pebble_rt_checked_unwrap_i32(pebble_local_27.has_value, pebble_local_27.value, (PebbleSourceLoc){"main.peb", 1, `) {
 		t.Errorf("emitted C lacks a real source location on the checked-unwrap call:\n%s", out)
 	}
 	if strings.Contains(out, "(PebbleSourceLoc){0}") {
@@ -7671,9 +7671,9 @@ func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_28 = { .pebble_field_26 = 2, .pebble_field_25 = 1 };",
-		"    (void)pebble_local_28;",
-		"return pebble_local_28.pebble_field_25;",
+		"pebble_struct_23_t pebble_local_30 = { .pebble_field_26 = 2, .pebble_field_25 = 1 };",
+		"    (void)pebble_local_30;",
+		"return pebble_local_30.pebble_field_25;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7701,8 +7701,8 @@ func TestEmitStructBoolFieldWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t pebble_field_25;\n    bool pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_28 = { .pebble_field_25 = 1, .pebble_field_26 = true };",
-		"    if (pebble_local_28.pebble_field_26) {\n",
+		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 1, .pebble_field_26 = true };",
+		"    if (pebble_local_30.pebble_field_26) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7724,8 +7724,8 @@ func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_31 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
-		"return pebble_fn_27(ctx, pebble_local_31.pebble_field_25, pebble_local_31.pebble_field_26);",
+		"pebble_struct_23_t pebble_local_33 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"return pebble_fn_27(ctx, pebble_local_33.pebble_field_25, pebble_local_33.pebble_field_26);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7750,8 +7750,8 @@ func TestEmitI64StructWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int64_t pebble_field_25;\n    int64_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_28 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
-		"return pebble_local_28.pebble_field_26;",
+		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"return pebble_local_30.pebble_field_26;",
 		"static int64_t pebble_user_main(PebbleContext *ctx)",
 	} {
 		if !strings.Contains(out, want) {
@@ -7791,8 +7791,8 @@ func TestEmitStrStructFieldLiteralC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    PebbleStr pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_28 = { .pebble_field_26 = 7, .pebble_field_25 = (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 } };",
-		"return pebble_local_28.pebble_field_26;",
+		"pebble_struct_23_t pebble_local_30 = { .pebble_field_26 = 7, .pebble_field_25 = (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 } };",
+		"return pebble_local_30.pebble_field_26;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -7859,7 +7859,7 @@ func TestEmitStrStructFieldReadWritesC(t *testing.T) {
 	// field must lower to the plain projection pebble_local_<sym>.pebble_field_
 	// <member> — the field's PebbleStr C type is exactly the str value's C
 	// type, so no cast or coercion wraps the read, and the equality feeds it
-	// straight into pebble_rt_str_eq. Symbols 25 (s), 26 (n), 28 (x) come
+	// straight into pebble_rt_str_eq. Symbols 25 (s), 26 (n), 30 (x) come
 	// from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; if x.s == \"hi\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
@@ -7867,7 +7867,7 @@ func TestEmitStrStructFieldReadWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_28.pebble_field_25, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {") {
+	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_30.pebble_field_25, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {") {
 		t.Errorf("emitted C missing the str field-read projection fed to pebble_rt_str_eq:\n%s", out)
 	}
 }
@@ -8211,8 +8211,8 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 		"static int32_t pebble_fn_27(PebbleContext *ctx, pebble_struct_23_t pebble_local_28) {",
 		"    (void)pebble_local_28;",
 		"    return pebble_rt_checked_add_i32(pebble_local_28.pebble_field_25, pebble_local_28.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 28});",
-		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
-		"return pebble_fn_27(ctx, pebble_local_30);",
+		"pebble_struct_23_t pebble_local_32 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"return pebble_fn_27(ctx, pebble_local_32);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8411,9 +8411,9 @@ func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 };",
-		"    (void)pebble_local_25;",
-		"if (pebble_rt_str_eq(pebble_local_25, (PebbleStr){ .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 })) {",
+		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 };",
+		"    (void)pebble_local_27;",
+		"if (pebble_rt_str_eq(pebble_local_27, (PebbleStr){ .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 })) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8436,9 +8436,9 @@ func TestEmitStrWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"    (void)pebble_local_25;",
-		"if (pebble_rt_str_eq(pebble_local_25, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
+		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"    (void)pebble_local_27;",
+		"if (pebble_rt_str_eq(pebble_local_27, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8458,9 +8458,9 @@ func TestEmitStrNotEqualWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"PebbleStr pebble_local_26 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
-		"if (!pebble_rt_str_eq(pebble_local_25, pebble_local_26)) {",
+		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"if (!pebble_rt_str_eq(pebble_local_27, pebble_local_28)) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8548,9 +8548,9 @@ func TestEmitStrOrderingWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"PebbleStr pebble_local_26 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
-		"if (pebble_rt_str_cmp(pebble_local_25, pebble_local_26) < 0) {",
+		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"if (pebble_rt_str_cmp(pebble_local_27, pebble_local_28) < 0) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8568,7 +8568,7 @@ func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_25, pebble_local_26)) {") {
+	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_27, pebble_local_28)) {") {
 		t.Errorf("expected pebble_rt_str_eq for ==, got:\n%s", out)
 	}
 	if strings.Contains(out, "pebble_rt_str_cmp") {
@@ -8615,9 +8615,9 @@ func TestEmitStrReassignmentWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_25 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"pebble_local_25 = (PebbleStr){ .data = (const uint8_t *)\"ho\", .len = 2 };",
-		"    (void)pebble_local_25;",
+		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"pebble_local_27 = (PebbleStr){ .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"    (void)pebble_local_27;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8783,7 +8783,7 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 	// typedef — its return statement forwards the parameter, and the call site
 	// passes the literal as a PebbleStr compound literal and declares the
 	// entry's local from the call. Symbols 24 (greet), 25 (the name
-	// parameter), and 27 (the entry's s local) come from the real fixture dump.
+	// parameter), and 29 (the entry's s local) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn greet(name str) str { return name; } fn main() i32 { let s str = greet(\"hi\"); if s == \"hi\" { return 7; } else { return 3; } }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -8794,9 +8794,9 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 		"static PebbleStr pebble_fn_24(PebbleContext *ctx, PebbleStr pebble_local_25) {",
 		"    (void)pebble_local_25;",
 		"    return pebble_local_25;",
-		"PebbleStr pebble_local_27 = pebble_fn_24(ctx, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 });",
-		"    (void)pebble_local_27;",
-		"if (pebble_rt_str_eq(pebble_local_27, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
+		"PebbleStr pebble_local_29 = pebble_fn_24(ctx, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 });",
+		"    (void)pebble_local_29;",
+		"if (pebble_rt_str_eq(pebble_local_29, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8831,7 +8831,7 @@ func TestEmitStrIndexWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_26 = pebble_rt_str_char_at_i32(pebble_local_25, 0, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_local_28 = pebble_rt_str_char_at_i32(pebble_local_27, 0, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -8964,7 +8964,7 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_26 = pebble_rt_str_char_at_i64(pebble_local_25, 0, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_local_28 = pebble_rt_str_char_at_i64(pebble_local_27, 0, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -9077,9 +9077,9 @@ func TestEmitTupleReturningHelperWritesC(t *testing.T) {
 		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
 		"static pebble_tuple_23_t pebble_fn_24(PebbleContext *ctx) {",
 		"    return (pebble_tuple_23_t){ 20, 22 };",
-		"pebble_tuple_23_t pebble_local_26 = pebble_fn_24(ctx);",
-		"    (void)pebble_local_26;",
-		"return pebble_rt_checked_add_i32(pebble_local_26._0, pebble_local_26._1, (PebbleSourceLoc){\"main.peb\", 1, 95});",
+		"pebble_tuple_23_t pebble_local_28 = pebble_fn_24(ctx);",
+		"    (void)pebble_local_28;",
+		"return pebble_rt_checked_add_i32(pebble_local_28._0, pebble_local_28._1, (PebbleSourceLoc){\"main.peb\", 1, 95});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -9110,8 +9110,8 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
 		"static pebble_struct_23_t pebble_fn_27(PebbleContext *ctx) {",
 		"    return (pebble_struct_23_t){ .pebble_field_25 = 20, .pebble_field_26 = 22 };",
-		"pebble_struct_23_t pebble_local_29 = pebble_fn_27(ctx);",
-		"return pebble_rt_checked_add_i32(pebble_local_29.pebble_field_25, pebble_local_29.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 101});",
+		"pebble_struct_23_t pebble_local_31 = pebble_fn_27(ctx);",
+		"return pebble_rt_checked_add_i32(pebble_local_31.pebble_field_25, pebble_local_31.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 101});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -9137,9 +9137,9 @@ func TestEmitTupleReturningHelperForwardsLocalWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"static pebble_tuple_23_t pebble_fn_24(PebbleContext *ctx) {",
-		"    pebble_tuple_23_t pebble_local_26 = { 20, 22 };",
-		"    return pebble_local_26;",
-		"pebble_tuple_23_t pebble_local_27 = pebble_fn_24(ctx);",
+		"    pebble_tuple_23_t pebble_local_28 = { 20, 22 };",
+		"    return pebble_local_28;",
+		"pebble_tuple_23_t pebble_local_29 = pebble_fn_24(ctx);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -10992,6 +10992,83 @@ func TestEmitRejectsU64CheckedDivision(t *testing.T) {
 	emitAndRunRejects(t, "fn f() u64 { var x u64 = 10; x %= 2; return x; } fn main() int { return f() as int; }", "no checked division/modulo runtime helper")
 }
 
+func TestEmitWrappingU64BuiltinsCompileAndRun(t *testing.T) {
+	// The explicit wrapping u64 builtins (wrapping_mul_u64 / wrapping_add_u64)
+	// lower to the runtime's pebble_rt_wrapping_<op>_u64 helpers. The lowering
+	// resolves the call's symbol back to its BuiltinFunction identity through
+	// the symbol table (emitSymbols, exactly like externCName), so these run
+	// through the buildFixtureWithSymbols path, not the symbol-free
+	// emitAndRun. Normal-case results surface through the entry exit code
+	// (wrapping_mul_u64(6, 7) == 42, wrapping_add_u64(2, 3) == 5); then the
+	// full boundary set mirrors runtime/test/smoke_test.c's
+	// test_wrapping_arithmetic_normal, each assertion contributing a distinct
+	// failure code so a regression in any one boundary is distinguishable.
+	// Wrapping must not panic in SAFE mode, so every case runs in the standard
+	// compileAndRun harness.
+	emitAndRunWithSymbols(t, "fn main() int { return wrapping_mul_u64(6, 7) as int; }", 42)
+	emitAndRunWithSymbols(t, "fn main() int { return wrapping_add_u64(2, 3) as int; }", 5)
+	emitAndRunWithSymbols(t, `fn main() int {
+    var r u64 = wrapping_mul_u64(6, 7);
+    if r != 42 { return 1; }
+    var w u64 = wrapping_mul_u64(1, 18446744073709551615);
+    if w != 18446744073709551615 { return 2; }
+    var z u64 = wrapping_mul_u64(0, 18446744073709551615);
+    if z != 0 { return 3; }
+    var m u64 = wrapping_mul_u64(18446744073709551615, 2);
+    if m != 18446744073709551614 { return 4; }
+    var a u64 = wrapping_add_u64(2, 3);
+    if a != 5 { return 5; }
+    var b u64 = wrapping_add_u64(0, 0);
+    if b != 0 { return 6; }
+    var c u64 = wrapping_add_u64(18446744073709551615, 0);
+    if c != 18446744073709551615 { return 7; }
+    var d u64 = wrapping_add_u64(18446744073709551615, 1);
+    if d != 0 { return 8; }
+    var e u64 = wrapping_add_u64(18446744073709551615, 18446744073709551615);
+    if e != 18446744073709551614 { return 9; }
+    return 0;
+}`, 0)
+}
+
+func TestEmitRejectsWrappingU64BuiltinNonU64Argument(t *testing.T) {
+	// A non-u64 argument to a wrapping builtin is a CLEAN rejection, never a
+	// crash and never silently-wrong C: an i32-typed argument cannot satisfy
+	// the builtin's u64 parameter, and Emit rejects the call with an error that
+	// names the offending width ("want u64") instead of emitting a call that
+	// would only fail at cc compile time. The symbol table is required for the
+	// builtin identity lookup, so the fixture is built with symbols like the
+	// positive case.
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `fn main() int { var x i32 = 6; var r u64 = wrapping_mul_u64(x, 7); return r as int; }`)
+	var buf bytes.Buffer
+	err := Emit(unit, snapshot, entryID, sources, resolution, &buf)
+	if err == nil {
+		t.Fatal("Emit succeeded for a non-u64 wrapping builtin argument, want rejection")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("Emit wrote output on failure: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "want u64") {
+		t.Fatalf("Emit rejection error %q does not contain \"want u64\"", err.Error())
+	}
+}
+
+// emitAndRunWithSymbols is emitAndRun for programs whose lowering needs the
+// symbol table: the wrapping u64 builtins resolve their symbol back to a
+// BuiltinFunction identity through emitSymbols (like externCName does), so the
+// fixture is built with buildFixtureWithSymbols and Emit is called with the
+// resolution threaded through. Behavior is otherwise identical to emitAndRun:
+// compile the emitted C against the runtime in SAFE mode and assert the exit
+// code.
+func emitAndRunWithSymbols(t *testing.T, sourceText string, wantCode int) {
+	t.Helper()
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, sourceText)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), wantCode, false)
+}
+
 func TestEmitU8ComparisonCompilesAndRuns(t *testing.T) {
 	// A different non-entry-width integer (u8 in an int-entry main) confirms
 	// the fix generalizes rather than being u64-specific: both == and the
@@ -11356,9 +11433,9 @@ func TestEmitSliceReturningHelperWritesC(t *testing.T) {
 		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_23_t;",
 		"static pebble_slice_23_t pebble_fn_24(PebbleContext *ctx) {",
 		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
-		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
-		"pebble_slice_23_t pebble_local_27 = pebble_fn_24(ctx);",
-		"return pebble_local_27.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_27.len, (PebbleSourceLoc){\"main.peb\"",
+		"return (pebble_slice_23_t){ .data = pebble_local_28 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
+		"pebble_slice_23_t pebble_local_29 = pebble_fn_24(ctx);",
+		"return pebble_local_29.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_29.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -11381,7 +11458,7 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	for _, want := range []string{
 		"int64_t *data;",
 		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
-		"return (pebble_slice_23_t){ .data = pebble_local_26 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
+		"return (pebble_slice_23_t){ .data = pebble_local_28 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -11633,8 +11710,8 @@ fn main() int {
 		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_24_t;",
 		"pebble_slice_24_t pebble_field_25;",
 		"int32_t pebble_field_slice_17 = pebble_rt_checked_slice_start_i32(0, 3, 3, (PebbleSourceLoc){\"main.peb\"",
-		"pebble_struct_23_t pebble_local_28 = { .pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_27 + pebble_field_slice_17, .len = (size_t)(3 - pebble_field_slice_17) } };",
-		"return pebble_local_28.pebble_field_25.data[pebble_rt_checked_index_i32(1, (int32_t)pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
+		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_29 + pebble_field_slice_17, .len = (size_t)(3 - pebble_field_slice_17) } };",
+		"return pebble_local_30.pebble_field_25.data[pebble_rt_checked_index_i32(1, (int32_t)pebble_local_30.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -11668,7 +11745,7 @@ fn main() i32 {
 	if strings.Contains(out, "pebble_field_slice_") {
 		t.Errorf("emitted C unexpectedly contains a field temp statement:\n%s", out)
 	}
-	if !strings.Contains(out, ".pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_28, .len = (size_t)(1) }") {
+	if !strings.Contains(out, ".pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_30, .len = (size_t)(1) }") {
 		t.Errorf("emitted C missing the inline SliceFromRaw field construction:\n%s", out)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
@@ -11881,9 +11958,9 @@ func TestEmitOptionalResultWritesC(t *testing.T) {
 		"typedef struct {\n    bool has_value;\n    int32_t value;\n} pebble_optional_23_t;",
 		"static pebble_optional_23_t pebble_fn_24(PebbleContext *ctx) {",
 		"    return (pebble_optional_23_t){ .has_value = true, .value = 5 };",
-		"pebble_optional_23_t pebble_local_26 = pebble_fn_24(ctx);",
-		"    (void)pebble_local_26;",
-		"if (pebble_local_26.has_value) {",
+		"pebble_optional_23_t pebble_local_28 = pebble_fn_24(ctx);",
+		"    (void)pebble_local_28;",
+		"if (pebble_local_28.has_value) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -11914,7 +11991,7 @@ func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
 		"typedef struct {\n    bool has_value;\n    pebble_struct_23_t value;\n} pebble_optional_24_t;",
 		"static pebble_optional_24_t pebble_fn_27(PebbleContext *ctx) {",
 		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_struct_23_t){ .pebble_field_25 = 1, .pebble_field_26 = 2 } };",
-		"pebble_optional_24_t pebble_local_29 = pebble_fn_27(ctx);",
+		"pebble_optional_24_t pebble_local_31 = pebble_fn_27(ctx);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -11945,7 +12022,7 @@ func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
 		"typedef struct {\n    bool has_value;\n    pebble_tuple_23_t value;\n} pebble_optional_24_t;",
 		"static pebble_optional_24_t pebble_fn_24(PebbleContext *ctx) {",
 		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_tuple_23_t){ 1, 2 } };",
-		"pebble_optional_24_t pebble_local_26 = pebble_fn_24(ctx);",
+		"pebble_optional_24_t pebble_local_28 = pebble_fn_24(ctx);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -12066,7 +12143,7 @@ func TestEmitSliceParameterWritesC(t *testing.T) {
 		"static int32_t pebble_fn_24(PebbleContext *ctx, pebble_slice_23_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
 		"return pebble_local_25.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_25.len, (PebbleSourceLoc){\"main.peb\"",
-		"return pebble_fn_24(ctx, pebble_local_28);",
+		"return pebble_fn_24(ctx, pebble_local_30);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -12345,8 +12422,8 @@ func TestEmitArrayElementWriteWritesC(t *testing.T) {
 	// The emitted C for an array element write: the Store lowers to a plain
 	// assignment expression whose lvalue is the exact bounds-checked subscript
 	// buildPlaceLValue's CheckedIndexPlace case produces for an array base —
-	// pebble_local_25[pebble_rt_checked_index_i32(0, 5)] = 9; — with no new
-	// bounds-check call site. Symbols 25 (the array local a) come from the real
+	// pebble_local_27[pebble_rt_checked_index_i32(0, 5)] = 9; — with no new
+	// bounds-check call site. Symbols 27 (the array local a) come from the real
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; a[0] = 9; return a[0]; }", "main", false)
 	var buf bytes.Buffer
@@ -12355,9 +12432,9 @@ func TestEmitArrayElementWriteWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_25[5] = { 1, 2, 3, 4, 5 };",
-		"pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){\"main.peb\"",
-		"return pebble_local_25[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_local_27[5] = { 1, 2, 3, 4, 5 };",
+		"pebble_local_27[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){\"main.peb\"",
+		"return pebble_local_27[pebble_rt_checked_index_i32(0, 5, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -12370,9 +12447,9 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 	// The emitted C for a slice element write: the Store lowers to a plain
 	// assignment expression whose lvalue is the exact bounds-checked .data
 	// subscript buildPlaceLValue's CheckedIndexPlace case produces for a slice
-	// base — pebble_local_26.data[pebble_rt_checked_index_i32(0,
-	// (int32_t)pebble_local_26.len)] = 9; — the .len bound checked against the
-	// slice's own length. Symbols 25 (array a), 26 (slice s) come from the real
+	// base — pebble_local_28.data[pebble_rt_checked_index_i32(0,
+	// (int32_t)pebble_local_28.len)] = 9; — the .len bound checked against the
+	// slice's own length. Symbols 27 (array a), 28 (slice s) come from the real
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; s[0] = 9; return s[0]; }", "main", false)
 	var buf bytes.Buffer
@@ -12381,9 +12458,9 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_start_26 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
-		"pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){\"main.peb\"",
-		"return pebble_local_26.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_26.len, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_slice_start_28 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
+		"pebble_local_28.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_28.len, (PebbleSourceLoc){\"main.peb\"",
+		"return pebble_local_28.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_28.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -12548,9 +12625,9 @@ func TestEmitCharWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"static int32_t pebble_fn_24(PebbleContext *ctx, int32_t pebble_local_25) {",
-		"int32_t pebble_local_27 = (int32_t)97;",
-		"pebble_local_27 = pebble_fn_24(ctx, (int32_t)98);",
-		"if (pebble_local_27 == (int32_t)98) {",
+		"int32_t pebble_local_29 = (int32_t)97;",
+		"pebble_local_29 = pebble_fn_24(ctx, (int32_t)98);",
+		"if (pebble_local_29 == (int32_t)98) {",
 		"return pebble_local_25;",
 	} {
 		if !strings.Contains(out, want) {

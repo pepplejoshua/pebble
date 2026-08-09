@@ -514,6 +514,53 @@ func (w *walker) callableSymbolID(ref symbol.SyntaxRef) symbol.SymbolID {
 	return callable.ID
 }
 
+// prepareBuiltinCallables publishes the callable shape of every compiler-owned
+// builtin function before the module walk begins. Builtin functions have no
+// authored declaration, so handleNamedCallable never runs for them; without a
+// FunctionShape constraint their symbol term would stay a free variable and a
+// direct call's callee value could not resolve to its function type. The
+// signature is registered by the inference phase (prepareBuiltinSignatures)
+// with known u64 templates, so each input and the result ground to the concrete
+// u64 type ID.
+func (w *walker) prepareBuiltinCallables() {
+	if w.program == nil || w.session == nil {
+		return
+	}
+	for _, value := range w.generation.inputs.Resolution.Symbols.All() {
+		if value.Error || value.Kind != symbol.SymbolBuiltinFunction {
+			continue
+		}
+		signature, ok := w.program.Signature(value.ID)
+		if !ok || signature.State != infer.DeclarationReady {
+			origin := infer.Origin{Role: "damaged builtin callable", Symbol: value.ID}
+			w.publishSymbol(value.ID, w.session.Error(origin), origin)
+			continue
+		}
+		origin := infer.Origin{Role: "builtin callable", Symbol: value.ID}
+		shapes := make([]infer.Shape, len(signature.Inputs))
+		valid := true
+		for index, input := range signature.Inputs {
+			template, found := w.program.Template(input)
+			if !found || template.Kind != infer.TemplateKnown {
+				valid = false
+				break
+			}
+			shapes[index] = infer.Leaf(w.session.Known(template.Known))
+		}
+		resultTemplate, found := w.program.Template(signature.Result)
+		if valid && (!found || resultTemplate.Kind != infer.TemplateKnown) {
+			valid = false
+		}
+		if !valid {
+			w.publishSymbol(value.ID, w.session.Error(origin), origin)
+			continue
+		}
+		term := w.session.Variable(origin)
+		w.addConstraint(infer.ConstrainShape(term, infer.FunctionShape(signature.Convention, shapes, infer.Leaf(w.session.Known(resultTemplate.Known)), signature.Variadic), origin))
+		w.publishSymbol(value.ID, term, origin)
+	}
+}
+
 func (w *walker) bindingKind(value symbol.Symbol, node syntax.Node) (bindingKind, bool, bool) {
 	mutable := node.Token() == syntax.KwVar
 	if value.Kind == symbol.SymbolExternBinding {

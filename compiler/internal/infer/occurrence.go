@@ -194,7 +194,7 @@ func (s *Session) valueOccurrenceConflict(ref symbol.SyntaxRef, origin Origin, d
 			return &inferenceConflict{code: CodeDamagedInput, message: "value occurrence has damaged symbol evidence", origin: origin}
 		}
 		switch selected.Kind {
-		case symbol.SymbolFunction, symbol.SymbolBinding, symbol.SymbolParameter, symbol.SymbolLoopBinding, symbol.SymbolField, symbol.SymbolVariant, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolExternBinding:
+		case symbol.SymbolFunction, symbol.SymbolBinding, symbol.SymbolParameter, symbol.SymbolLoopBinding, symbol.SymbolField, symbol.SymbolVariant, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolExternBinding, symbol.SymbolBuiltinFunction:
 			return nil
 		default:
 			return &inferenceConflict{code: CodeInvalidType, message: "syntax occurrence resolves to a type-only or wrong-category symbol", origin: origin}

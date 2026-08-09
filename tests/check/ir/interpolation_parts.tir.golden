@@ -1,4 +1,4 @@
-unit nodes=12 components=36 snapshot=23 regions=2 functions=1 temps=0
+unit nodes=12 components=36 snapshot=24 regions=2 functions=1 temps=0
 module id=1 package="facts" path="main.peb" source=0 span=0[0,86)
   decl symbol=24
 funcdecl symbol=24 fid=1 node=11 span=0[3,4)

@@ -847,7 +847,7 @@ func isTypeSymbol(kind SymbolKind) bool {
 	return kind == SymbolType || kind == SymbolExternType || kind == SymbolTypeParameter || kind == SymbolBuiltinType || kind == SymbolRuntimeType
 }
 func isCallableSymbol(kind SymbolKind) bool {
-	return kind == SymbolFunction || kind == SymbolExternFunction || kind == SymbolMethod
+	return kind == SymbolFunction || kind == SymbolExternFunction || kind == SymbolMethod || kind == SymbolBuiltinFunction
 }
 func isRuntimeSymbol(kind SymbolKind) bool {
 	return kind == SymbolBinding || kind == SymbolExternBinding || kind == SymbolParameter || kind == SymbolLoopBinding || kind == SymbolField || kind == SymbolVariant

@@ -812,6 +812,34 @@ func externCName(decl tir.Node) (string, error) {
 	return s.Name, nil
 }
 
+// builtinFunctionCName reports the runtime C helper a compiler-owned builtin
+// function call must lower to, resolving the call's symbol back to its
+// BuiltinFunction identity via the symbol table threaded into Emit
+// (emitSymbols, exactly like externCName). The wrapping u64 builtins lower to
+// the runtime's pebble_rt_wrapping_<op>_u64 helpers, which implement plain
+// modular-arithmetic wraparound in both SAFE and RELEASE modes and take no
+// context. A symbol that is not a recognized builtin function reports false;
+// a missing symbol table is a clean false (the caller then falls through to
+// the ordinary declaration-resolution machinery, whose own error is the more
+// precise one for a genuinely unresolvable callee).
+func builtinFunctionCName(symbolID symbol.SymbolID) (string, bool) {
+	if emitSymbols == nil || emitSymbols.Symbols == nil {
+		return "", false
+	}
+	s, ok := emitSymbols.Symbols.Symbol(symbolID)
+	if !ok || s.Error || s.Kind != symbol.SymbolBuiltinFunction {
+		return "", false
+	}
+	switch s.BuiltinFunction {
+	case symbol.BuiltinWrappingMulU64:
+		return "pebble_rt_wrapping_mul_u64", true
+	case symbol.BuiltinWrappingAddU64:
+		return "pebble_rt_wrapping_add_u64", true
+	default:
+		return "", false
+	}
+}
+
 func findCallDeclaration(unit *tir.Unit, call tir.Node) (tir.Node, error) {
 	if len(call.TypeArgs) != 0 {
 		return findCalledFunctionDeclaration(unit, call.Symbol, call.TypeArgs)
@@ -1021,6 +1049,15 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 		return err
 	}
 	for _, call := range calls {
+		// A call to a compiler-owned builtin function (wrapping_mul_u64 /
+		// wrapping_add_u64) has no declaration in the unit to walk and no
+		// pebble_fn_<symbolID> helper to emit: its call site lowers directly to
+		// the runtime's pebble_rt_wrapping_<op>_u64 helper, which the runtime
+		// library provides, so the callee is skipped exactly like an extern
+		// declaration is skipped below — no body walk, no order entry.
+		if _, builtin := builtinFunctionCName(call.Symbol); builtin {
+			continue
+		}
 		var calleeDecl tir.Node
 		var err error
 		if len(call.TypeArgs) != 0 {
@@ -11216,6 +11253,30 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // rejects a non-empty pre. The returned pre has no indent; the caller prepends
 // its own.
 func buildDirectCallWithPre(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
+	// A call to a compiler-owned builtin function (wrapping_mul_u64 /
+	// wrapping_add_u64) is lowered directly to its runtime helper:
+	// pebble_rt_wrapping_<op>_u64(<arg0>, <arg1>). The helper is a real C
+	// function in the runtime library with plain uint64_t parameters and a
+	// uint64_t result and no context parameter, so the call is a bare two-arg
+	// C call — no ctx, no pebble_fn_<symbolID> helper (the builtin has no
+	// declaration in the unit). Each argument is built by buildExpr at the
+	// operand's own resolved u64 width, matching the builtin's two u64
+	// parameters; both are pure expressions, so no pre-statement is ever
+	// produced.
+	if builtinName, builtin := builtinFunctionCName(node.Symbol); builtin {
+		if len(node.Children) != 2 {
+			return "", "", fmt.Errorf("entry function body expression contains a call to builtin function symbol %d with %d argument(s), want exactly two (the wrapping u64 arithmetic builtins take two u64 operands)", node.Symbol, len(node.Children))
+		}
+		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, types.U64, width)
+		if err != nil {
+			return "", "", fmt.Errorf("entry function body expression contains a call to builtin function symbol %d whose first argument is invalid: %v", node.Symbol, err)
+		}
+		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, types.U64, width)
+		if err != nil {
+			return "", "", fmt.Errorf("entry function body expression contains a call to builtin function symbol %d whose second argument is invalid: %v", node.Symbol, err)
+		}
+		return "", fmt.Sprintf("%s(%s, %s)", builtinName, left, right), nil
+	}
 	// A C-convention call (direct call to an extern fn declaration) is
 	// lowered differently from a Pebble-convention call: no context parameter
 	// is threaded, the callee is called by its real C name (malloc, not

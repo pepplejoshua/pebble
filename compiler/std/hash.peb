@@ -9,7 +9,7 @@ fn hash_str(s str) u64 {
     var i = 0;
     loop 0..libc::strlen(s) : i {
         hash = hash ^ (s[i] as u64);
-        hash = hash * fnv_prime;
+        hash = wrapping_mul_u64(hash, fnv_prime);
     }
 
     return hash;
@@ -56,9 +56,9 @@ fn hash_u32(val u32) u64 {
 fn hash_u64(val u64) u64 {
     var x = val;
     x = x ^ (x >> 30);
-    x = x * 0xbf58476d1ce4e5b9;
+    x = wrapping_mul_u64(x, 0xbf58476d1ce4e5b9);
     x = x ^ (x >> 27);
-    x = x * 0x94d049bb133111eb;
+    x = wrapping_mul_u64(x, 0x94d049bb133111eb);
     x = x ^ (x >> 31);
     return x;
 }
@@ -94,7 +94,7 @@ fn hash_bytes(data []u8) u64 {
     var i = 0;
     loop 0..data.len : i {
         hash = hash ^ (data[i] as u64);
-        hash = hash * fnv_prime;
+        hash = wrapping_mul_u64(hash, fnv_prime);
     }
 
     return hash;
