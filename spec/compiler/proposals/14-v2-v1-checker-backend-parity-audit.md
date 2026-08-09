@@ -461,7 +461,7 @@ root cause before an Orc implementation task starts.
 | V2 checker accepts character switch, but backend rejects it | high; checker test and backend label code disagree | one compile-to-C reproduction |
 | V2 checker accepts string switch, but backend has no lowering | high; checker test and backend subject/label code disagree | one compile-to-C reproduction |
 | V2 does not prove a complete `u8` or `i8` switch exhaustive | high; exhaustiveness code has no integer-domain path | one checker reproduction for each width |
-| Descending range loops execute zero iterations | high; lowering always increments and compares upward | one compile-run reproduction |
+| ~~Descending range loops execute zero iterations~~ | **RESOLVED (`8baeb8e`).** Fixed for the literal-bound case (direction known statically); non-literal bounds are unchanged (always ascending in the current grammar — not yet independently confirmed whether the grammar actually forbids a descending non-literal-bound range or just doesn't need to distinguish it, worth a follow-up check if that syntax is ever used). 4 new tests; independently verified descending now runs the correct count, ascending/zero-length unregressed, causation-checked by reverting and reproducing. | — |
 | A nontrivial range end is evaluated on every loop test instead of once | high; V1 stores the bound, while V2 writes `endText` directly in the C condition | one side-effecting helper-bound compile-run reproduction |
 | Mutable globals have no backend storage | high; IR source comment states this directly | one read/write reproduction |
 | Extern variables and constants have no backend declaration/use path | high; extern TIR is function-shaped | one read and one write reproduction |
