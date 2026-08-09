@@ -53,7 +53,21 @@ end-to-end until tonight. `compiler/std/vec.peb`'s `self.backing = allocator;`
 against this — it may be similarly broken and simply never exercised by an
 end-to-end compile-and-run before.
 
-Slices:
+**Planned fix superseded the original slices below.** Patching the special
+`SymbolRuntimeType` path three more times (once per failure) only closes
+these three cases and leaves the same shape of bug ready to recur. Decision:
+register `Allocator`/`Context` as ordinary parsed structs — confirmed
+against both Pebble v1 (`src/type.c`, which registers them via the same
+`type_create_struct` ordinary user structs use, no special path at all) and
+Odin (`core/runtime`, same split: ordinary struct types, with only the
+implicit `context`-threading calling convention kept separate and special).
+Full reasoning and design in
+`spec/compiler/proposals/15-allocator-context-as-ordinary-structs.md`. Two
+orc investigation dispatches (`deepseek-v4-flash`, then `gpt-5.6-luna`)
+failed to produce a usable implementation plan tonight — proposal 15's "open
+questions" section is where the next real investigation should start.
+
+Original slices, kept for reference, not the current plan:
 
 1. Investigation only. Reproduce each of the three failures above with a
    minimal standalone `.peb` file (not `arena.peb` — isolate one at a time).
