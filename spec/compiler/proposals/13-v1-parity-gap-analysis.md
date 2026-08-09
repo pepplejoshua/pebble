@@ -44,4 +44,50 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+### `sizeof` on a fixed array passes the checker but the backend rejects it
+
+**Source:** proposal 14, "New findings" table, row "`sizeof` a fixed array
+passes validation but the backend rejects it."
+
+**Area:** backend generator, `compiler/internal/backend/types.go`,
+`sizeofCTypeName` (line 976)
+
+**Priority:** low — clean rejection, not a silent-wrong-behavior bug like
+the last three items. Missing capability, not a correctness hazard.
+
+**Reproduction:**
+
+```pebble
+fn main() int {
+    let s = sizeof [4]int;
+    print "{}\n", s;
+    return 0;
+}
+```
+
+The checker accepts this (`let s = ...` type-checks fine); it fails at
+emission with a clean Go-level diagnostic, not a raw `cc` crash:
+
+```
+pebc: emission failed: sizeof of type [4]int is not supported, want a
+fixed-width integer, bool, char, str, tuple, optional, slice, enum,
+struct, or pointer
+```
+
+**Root cause:** `sizeofCTypeName` has one branch per supported kind
+(integer, bool, char, str, runtime type, tuple, optional, slice, enum,
+struct, pointer) and simply has no `isArray` branch — arrays were never
+added to this function's coverage. `arrayTypeName(id)` already exists
+(used elsewhere for array typedef naming) and follows the exact same
+`pebble_array_<typeID>_t` convention as every other type-name helper this
+function already calls.
+
+**Not yet done:** add an `isArray` branch to `sizeofCTypeName`, returning
+`arrayTypeName(id)`, following the existing pattern. Also check — matching
+the exact compounding issue found while fixing the tagged-union
+`sizeof` bug (`f2e8c62`) — whether a bare `sizeof [N]T` with no other
+reference to that array type anywhere in the program correctly forces the
+array's typedef to be collected/emitted; if not, fix that too, the same way
+`collectUnionTypesWalk` was extended for `SizeofType` nodes referencing a
+union enum. Next step: dispatch through Orc per the tracker's dispatch
+rules.
