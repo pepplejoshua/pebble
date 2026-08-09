@@ -24,66 +24,141 @@ the permanent record for completed work.
 
 ## Active defects
 
-### 1. Pointer arithmetic (`*T + uint`, `*T - uint`) does not type-check
+### 1. `Allocator` values cannot cross a function boundary
+
+**Area:** backend generator
+
+**Priority:** high; blocks all real Allocator-backed library code, not just
+`arena.peb`
+
+**Discovered while attempting the arena.peb rewrite below (uncommitted
+session, not yet landed).** An `Allocator` value can only exist as a
+`RecordConstruct` declaration initializer, a field read, or the special
+allocator-call `ctx` position. It cannot be:
+
+- passed as a function argument (`init(&a, 256, alloc)` fails: "argument ...
+  passes ... not a struct-typed local"),
+- returned from a function (`arena::allocator()` returning `Allocator.{...}`
+  fails: "struct value ... no TypeDeclaration"), or
+- assigned into a struct field (`arena.backing = backing` fails: "reassigns
+  an element of type nominal").
+
+This directly threatens the "Allocator record construction now compiles"
+close recorded on this item historically (`da4559f`, `f5403b5`, `ac7aa32`,
+`78e70de`) — those commits made the *literal construction* work, but never
+verified a value actually surviving a function call, a return, or a field
+write, because no real multi-function Allocator consumer had been compiled
+end-to-end until tonight. `compiler/std/vec.peb`'s `self.backing = allocator;`
+(in `reserve`) has the same field-assignment shape and needs to be checked
+against this — it may be similarly broken and simply never exercised by an
+end-to-end compile-and-run before.
+
+Slices:
+
+1. Investigation only. Reproduce each of the three failures above with a
+   minimal standalone `.peb` file (not `arena.peb` — isolate one at a time).
+   Confirm whether `vec.peb`'s `self.backing = allocator;` is actually
+   reachable/compiled by any existing test, or whether it's dead code that
+   was never emitted. Identify the exact backend code path(s) responsible for
+   each of the three rejections (they may be one shared cause — "runtime
+   nominal types only handled in declaration position" — or three separate
+   gaps).
+2. Fix argument-passing first (smallest surface), with a focused compile-run
+   test.
+3. Fix struct-field assignment, with a focused compile-run test. Re-check
+   `vec.peb`'s `reserve` against it.
+4. Fix return values, with a focused compile-run test.
+
+### 2. Pointer arithmetic (`*T + uint`, `*T - uint`) does not type-check
 
 **Area:** backend generator
 
 **Priority:** high; blocks `compiler/std/mem/arena.peb`
 
-**Reproduction:** construct `Allocator.{ ptr = nil, alloc = my_alloc,
-realloc = my_realloc, free = my_free }` with the runtime signatures:
+**Decision made:** do not reverse the reaffirmed pointer-arithmetic ban
+(`open-language-decisions.md` §1.5). Instead `compiler/std/mem/arena.peb` is
+being rewritten to avoid needing pointer arithmetic at all (see item 3
+below), which is also more consistent with the rest of `std` (`Vec`/
+`HashMap` use safe slice indexing throughout; nothing else needs raw pointer
+walking). This item's investigation
+(`spec/compiler/proposals/14-pointer-arithmetic.md`, uncommitted) is kept as
+a record of the path considered and not taken — do not act on it without a
+fresh decision.
 
-```pebble
-fn my_alloc(context *void, size uint) *void { return nil; }
-fn my_realloc(context *void, ptr *void, size uint) *void { return nil; }
-fn my_free(context *void, ptr *void) void {}
-```
+Original reproduction, for the record: `current.ptr + total_aligned`,
+`curr_ptr + sizeof MemHeader`, `data - sizeof MemHeader`, `arena.current
+.buffer + arena.current.used` in the pre-rewrite `arena.peb` all failed
+`error[T0505]: cannot unify semantic type kind 2 with kind 1`.
 
-**Current status:** the original claim in this item's title is resolved.
-`Allocator.{ ... }` record construction — including `arena::allocator()`'s
-own `Allocator.{ ptr = arena, alloc = alloc, realloc = realloc, free = free }`
-— compiles cleanly. The checker and typed IR succeed (`da4559f`), aggregate
-collection skips the runtime type (`f5403b5`), general pointer-bearing
-function types emit correctly (`ac7aa32`), and Allocator `RecordConstruct`
-values lower to `PebbleAllocator` with ABI-safe callback bridges (`78e70de`).
+Not currently being pursued — superseded by item 3's rewrite. Revisit only if
+the rewrite proves impractical.
 
-**The item is not actually closed.** The real `std:mem/arena` consumer check
-(slice 3 below) was attempted for the first time this session, using a new
-`examples/arena_alloc.peb`, and it surfaces a different, deeper, previously
-undiscovered gap: raw pointer arithmetic. `compiler/std/mem/arena.peb` itself
-fails to type-check with repeated `error[T0505]: cannot unify semantic type
-kind 2 with kind 1` on expressions like `current.ptr + total_aligned`,
-`curr_ptr + sizeof MemHeader`, `data - sizeof MemHeader`, and `arena.current
-.buffer + arena.current.used` — i.e. `*T + uint` / `*T - uint` does not
-type-unify at all. Grepping the entire `compiler/std` and `examples` tree
-found zero other uses of pointer arithmetic anywhere, and grepping
-`internal/check`/`internal/infer` found no pointer-arithmetic handling under
-any name — this is not a narrow edge case, it looks entirely unimplemented.
+### 3. `arena.peb` rewrite (avoid pointer arithmetic) is checker-clean but two backend bugs block real compilation
 
-Rename this item's remaining scope to: **pointer arithmetic (`*T + uint`,
-`*T - uint`) does not type-check.** The Allocator-construction part of the
-original title is done and should not be re-investigated.
+**Area:** Pebble standard library (`compiler/std/mem/arena.peb`) and backend
+generator
+
+**Priority:** high; blocks `examples/arena_alloc.peb` and item 1 above
+
+**Status:** a full rewrite of `arena.peb`'s `init`+`alloc` (fresh-allocation
+path only; `relink_slot`/`add_free_slot`/`realloc`/`free`/`destroy` not yet
+touched) is sitting uncommitted in the working tree. It replaces raw pointer
+walking with a `[]u8` slice plus `uint` byte offsets, converting the offset
+to an address only via safe indexing + address-of (`&buf[offset]`) at actual
+read/write sites — no pointer arithmetic anywhere. It passes the Go-level
+checker. **It does not actually compile to C** — verified directly, not just
+by the dispatch's own self-report, which claimed success prematurely based
+on the checker pass alone.
+
+Real `cc` compilation of a standalone consumer test fails with two distinct
+backend bugs, neither related to pointer arithmetic:
+
+1. **Struct/slice C-typedef ID confusion.** The emitted C confuses
+   `pebble_struct_29_t` with `pebble_slice_33_t` (and similar) — "incompatible
+   pointer types", "no member named ... in ...", "unknown type name". Looks
+   like the backend's struct-ordering/typedef-ID assignment gets confused by
+   `Slab` being self-referential (`next *Slab`) combined with its new `[]u8`
+   slice field; needs its own investigation, independent of the arena
+   rewrite itself.
+2. **Checked-arithmetic helper names emitted with a missing type suffix.**
+   `pebble_rt_checked_mod_`, `pebble_rt_checked_div_`, `pebble_rt_checked_add_`
+   — calls to C functions that don't exist (should presumably end in `_u32`/
+   `_uint`/etc.). Also independent of pointer arithmetic.
+
+Also surfaced along the way (already folded into the rewrite, not blocking):
+`slice ptr, count` is std-only (`C0619` outside `std`); the backend has no
+`u64`/`uint` shift helpers (`uint` bitwise `&`/`~`/`<<`/`>>` all rejected —
+`mem::align_up` needed its own `+`/`/`/`*`-only reimplementation inside
+arena.peb); passing a slice-typed *struct field* as a function argument is
+rejected (only slice-typed locals work) — the rewrite works around this by
+having helpers take `*Slab` and index `.buffer` directly, matching
+`vec.peb`'s own style.
 
 Slices:
 
-1. Investigation only. Decide the semantics first: does `ptr + n` mean
-   `n` bytes (matching this arena's own `*u8` byte-cursor usage) or `n`
-   elements of `sizeof T` (matching C/Rust pointer arithmetic on typed
-   pointers)? `arena.peb` uses `*u8` exclusively for its byte-level
-   arithmetic and casts to typed pointers only at the edges, so a
-   byte-stride-only rule (arithmetic legal on `*u8`/`*void`, not on other
-   `*T`) may be sufficient for this consumer and simpler to specify — confirm
-   against every arithmetic site in `arena.peb` before deciding. Identify the
-   exact checker constraint that currently rejects the operator (binary `+`/`-`
-   likely never considers a pointer operand a valid arithmetic term at all).
-   No production edit.
-2. Implement the decided semantics for `+` only, checker then backend, with
-   focused positive/negative tests. Do not implement `-` in the same slice.
-3. Implement `-` (pointer minus integer). Add focused tests.
-4. Compile and run `examples/arena_alloc.peb` end to end, then run full
-   checks and the causation checks.
+1. Investigate and fix the struct/slice typedef-ID confusion (bug 1 above)
+   with a minimal standalone repro (a self-referential struct with a slice
+   field, no Allocator involved) — independent of arena.peb.
+2. Investigate and fix the checked-arithmetic helper name generation gap
+   (bug 2 above) with a minimal repro.
+3. Once both backend bugs are fixed, re-verify the existing `init`+`alloc`
+   rewrite compiles and runs (a standalone test exists in the session
+   worklog for `ses_6a77ef1a9f5e09c47d9ff2dc` if needed as a starting point,
+   though it was deleted as scratch — rewrite a small one).
+4. Continue the rewrite: `relink_slot`, `add_free_slot`, `realloc`, `free`,
+   `destroy` still use the old `*u8` pointer-arithmetic style and need the
+   same slice+offset treatment. `realloc`/`free` additionally need to recover
+   "which slab, what offset" from a bare incoming `*void` — do this via the
+   already-implemented pointer-to-uint cast plus plain `uint` range
+   comparison against each slab's buffer-start address, not new pointer
+   arithmetic.
+5. Compile and run `examples/arena_alloc.peb` end to end, then run full
+   checks and causation checks. This slice also depends on item 1
+   (`Allocator` cannot cross a function boundary) being fixed first, or
+   `arena.peb`'s public API (`init`, `allocator`) cannot actually be called
+   the way `examples/arena_alloc.peb` calls it.
 
-### 2. Generic `Result[T, E]` methods do not narrow `self`
+### 4. Generic `Result[T, E]` methods do not narrow `self`
 
 **Area:** checker, then backend generator
 
@@ -117,7 +192,7 @@ Slices:
 4. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 
-### 3. Qualified static methods do not exist
+### 5. Qualified static methods do not exist
 
 **Area:** checker facts, validation, inference, and typed IR
 
@@ -143,7 +218,7 @@ Slices, only if this low-priority feature is approved later:
 4. Implement only typed-IR construction.
 5. Add backend and end-to-end tests for plain and generic owners.
 
-### 4. `main(argv []str)` cannot read process arguments
+### 6. `main(argv []str)` cannot read process arguments
 
 **Area:** typed IR and backend generator
 
@@ -161,7 +236,7 @@ Slices:
 2. Carry only that parameter through IR construction.
 3. Add the C `argc`/`argv` to `[]str` adapter and compile-run tests.
 
-### 5. Inline slice construction fails in pure expression positions
+### 7. Inline slice construction fails in pure expression positions
 
 **Area:** backend generator
 
@@ -179,7 +254,7 @@ Slices:
 2. Implement one form only, with one compile-run test.
 3. Repeat for each remaining form. Do not combine all call sites in one task.
 
-### 6. An array literal of non-primitive elements cannot initialize a slice-typed local
+### 8. An array literal of non-primitive elements cannot initialize a slice-typed local
 
 **Area:** checker
 
@@ -212,7 +287,7 @@ element support and struct/tuple/optional/generic-struct slice elements —
 both reproduce the same `C0601` failure and are almost certainly one root
 cause, not two.
 
-### 7. A generic struct method cannot inherit the owner type parameter
+### 9. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -224,7 +299,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 8. Whole dereferenced structs cannot become values
+### 10. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
@@ -235,7 +310,7 @@ a `DereferencePlace` through this struct-value position. A skipped backend
 test records the known reproduction. Investigate the checker and backend
 boundaries before making an implementation plan.
 
-### 9. `emit.go` and `emit_test.go` have grown too large for one file
+### 11. `emit.go` and `emit_test.go` have grown too large for one file
 
 **Area:** backend generator, codebase maintainability
 
