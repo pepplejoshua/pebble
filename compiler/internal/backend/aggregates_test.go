@@ -2802,6 +2802,102 @@ fn main() int {
 	}
 }
 
+func TestEmitSizeofTaggedUnionCompilesAndRuns(t *testing.T) {
+	// sizeof on a tagged union must resolve to the union's OWN typedef
+	// (pebble_union_<typeID>_t) — never the bare tag enum — and the returned
+	// size must be large enough to actually hold a payload-carrying variant's
+	// payload. This fixture constructs Choice.value("..."), so the union's
+	// str payload member is emitted and the union typedef is sized as tag +
+	// payload (4-byte tag enum + 16-byte PebbleStr, i.e. 24), which is at
+	// least as large as the str payload type's own size. Before the fix the
+	// sizeof lowered to sizeof(pebble_enum_<typeID>_t) — the bare tag enum
+	// (4 bytes), too small to hold the payload, and in this program the enum
+	// typedef was never even emitted, so it didn't compile at all. The program
+	// returns 0 only if sizeof(Choice) >= sizeof(str).
+	emitAndRun(t, `type Choice = union enum {
+    empty void;
+    value str;
+};
+fn main() int {
+    let c = Choice.value("hello");
+    let s = sizeof Choice;
+    let p = sizeof str;
+    if s < p { return 1; }
+    return 0;
+}`, false, 0, false)
+}
+
+func TestEmitSizeofTaggedUnionOnlyReferenceCompilesAndRuns(t *testing.T) {
+	// The tracker's exact repro shape: sizeof Choice is the ONLY reference to
+	// the tagged union in the whole program — no construction, no struct
+	// field, no optional payload — yet the program must compile and run,
+	// printing the union's real size. With no constructed payload member the
+	// union's size is just its 4-byte discriminant tag (the tag-plus-payload
+	// struct's payload union is empty), so the printed size is 4.
+	out := emitAndRunCapture(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+fn main() int {
+    let s = sizeof Choice;
+    print s;
+    return 0;
+}`, false, 0, false)
+	if out != "4\n" {
+		t.Errorf("program printed %q, want the tag-plus-payload union's size %q", out, "4\n")
+	}
+}
+
+func TestEmitSizeofTaggedUnionOnlyReferenceEmitsUnionTypedef(t *testing.T) {
+	// Emitted-C shape check for the typedef-collection fix, using the exact
+	// repro shape (sizeof is the ONLY reference to the union): the sizeof must
+	// reference the union's own pebble_union_<typeID>_t typedef — never the
+	// bare pebble_enum_<typeID>_t — and the union typedef PAIR (the
+	// discriminant tag enum followed by the tagged struct, see buildUnionTypedef)
+	// must be collected and emitted even though nothing else in the program
+	// references the type; before the fix the lowered sizeof named a typedef
+	// that was never declared, which cc rejected.
+	unit, snapshot, entryID, unionType, variants, sources := unionFixture(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+fn main() int {
+    let s = sizeof Choice;
+    print s;
+    return 0;
+}`)
+	if len(variants) != 2 {
+		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(variants))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sizeof("+unionTypeName(unionType)+")") {
+		t.Errorf("emitted C does not sizeof the union's own typedef %q:\n%s", unionTypeName(unionType), out)
+	}
+	if strings.Contains(out, "sizeof("+enumTypeName(unionType)+")") {
+		t.Errorf("emitted C sizes the bare tag enum typedef %q, want the union's own typedef:\n%s", enumTypeName(unionType), out)
+	}
+	tagEnum := "typedef enum {\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(variants[1])) + ",\n" +
+		"} " + enumTypeName(unionType) + ";"
+	if !strings.Contains(out, tagEnum) {
+		t.Errorf("emitted C is missing the tag enum typedef %q (sizeof is the only reference, so the union typedef pair must still be collected):\n%s", tagEnum, out)
+	}
+	unionStruct := "typedef struct {\n" +
+		"    " + enumTypeName(unionType) + " tag;\n" +
+		"    union {\n" +
+		"\n" +
+		"    } payload;\n" +
+		"} " + unionTypeName(unionType) + ";"
+	if !strings.Contains(out, unionStruct) {
+		t.Errorf("emitted C is missing the tagged-struct typedef %q (sizeof is the only reference, so the union typedef pair must still be collected):\n%s", unionStruct, out)
+	}
+}
+
 func TestEmitEnumSwitchInHelperCompilesAndRuns(t *testing.T) {
 	// A plain enum local and switch inside a reachable helper, the entry
 	// calling the helper: collectEnumTypes walks every reachable helper's body,

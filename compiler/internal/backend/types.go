@@ -294,6 +294,51 @@ func isTaggedUnionType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 	return false
 }
 
+// isUnionEnumType reports whether id is a tagged-union (union enum) type by
+// DECLARATION alone: an enum-shaped Nominal type (see isEnumType) whose
+// TypeDeclaration carries at least one non-void member type — i.e. it was
+// declared as `union enum { ... }` with at least one payload-carrying variant,
+// regardless of whether any construction of it exists anywhere in the program.
+// A plain enum's variants are payload-less and all carry void member types
+// (confirmed against real fixtures: `enum { red, green, blue }` resolves every
+// member type to void), so a non-void member type is exactly the
+// declaration-level signal that distinguishes a union enum from a plain enum.
+// An all-void union enum (`union enum { a void; b void; }`) has no non-void
+// member type and is deliberately reported false, matching the backend's
+// existing convention that such a type is emitted as a plain
+// pebble_enum_<typeID>_t typedef (see isTaggedUnionType's doc: a union every
+// variant of which is payload-less is a plain enum). This is the
+// construction-independent complement to isTaggedUnionType, which requires a
+// payload-carrying VariantConstruct in the unit: a tagged union referenced
+// ONLY by a bare `sizeof` (sizeofCTypeName) is never constructed, so only this
+// declaration-level test recognizes it and routes it to the union typedef pair.
+func isUnionEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if !isEnumType(unit, snapshot, id) {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	for _, memberType := range typeDecl.MemberTypes {
+		// A zero member type is an unresolved template (a member whose type
+		// wraps the type's own parameter), not a payload-carrying declaration;
+		// a non-zero non-void member type is a declared payload variant.
+		if memberType != 0 && !isVoid(snapshot, memberType) {
+			return true
+		}
+	}
+	return false
+}
+
 // unionVariantPayloadMember reports whether (ownerType, member) is the payload
 // member of a tagged-union variant in this program: ownerType is a tagged-union
 // type, member is one of its declared variants, and a payload-carrying
@@ -997,6 +1042,23 @@ func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 	}
 	if isSlice(snapshot, id) {
 		return sliceTypeName(id), nil
+	}
+	// A tagged union is enum-shaped (isEnumType reports true for it), but its
+	// real C representation is the tag-plus-payload struct its typedef pair
+	// emits, not a bare C enum — so `sizeof` on a tagged union must size the
+	// union's own typedef (pebble_union_<typeID>_t), the same C type a
+	// tagged-union local, parameter, and result are declared with (see
+	// unionTypeName), and the same distinction structFieldCType /
+	// optionalPayloadCType draw. This must run before the isEnumType check,
+	// which would otherwise misclassify the tagged union as a plain enum and
+	// size the bare tag enum typedef (too small) or, in a bare-sizeof program,
+	// name a typedef that was never emitted. isUnionEnumType is the
+	// declaration-level test (union enum with a declared payload variant),
+	// independent of whether any construction exists — a tagged union reached
+	// only by `sizeof` is never constructed, so the construction-based
+	// isTaggedUnionType could not recognize it.
+	if isUnionEnumType(unit, snapshot, id) {
+		return unionTypeName(id), nil
 	}
 	if isEnumType(unit, snapshot, id) {
 		return enumTypeName(id), nil

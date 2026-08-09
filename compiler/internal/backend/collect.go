@@ -1104,24 +1104,37 @@ func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // collectUnionTypesWalk appends every tagged-union type encountered in the
 // tree rooted at nodeID to out, in first-encountered order, following Children
 // and DeferChain exactly like collectDirectCalls so it visits the same
-// reachable region of the node graph the body builders consume. The one node
-// shape that carries a tagged-union type is a VariantConstruct with one or
-// more children: its Type is the union's own TypeID, its Member the variant
-// symbol, and each child the payload expression whose own Type is the
-// variant's declared payload type (confirmed against real fixtures). The walk
-// records node.Type as a union type and, for each construction, the payload
-// type under the variant's member symbol; a second construction of the same
-// variant must carry the same payload type (the checker enforces one declared
-// type per variant, so this is guaranteed for real source; a mismatch is a
-// clean rejection for hand-built IR, never a guessed layout). The payload type
-// is gated here — it must be exactly the entry's resolved width, bool, or str,
-// since this backend emits exactly those three C types as union members; any
-// other payload (a tuple/struct/array/optional/nested-enum) is a clean
-// rejection naming what is unsupported.
+// reachable region of the node graph the body builders consume. Two node
+// shapes carry a tagged-union type. The primary one is a VariantConstruct
+// with one or more children: its Type is the union's own TypeID, its Member
+// the variant symbol, and each child the payload expression whose own Type is
+// the variant's declared payload type (confirmed against real fixtures). The
+// walk records node.Type as a union type and, for each construction, the
+// payload type under the variant's member symbol; a second construction of the
+// same variant must carry the same payload type (the checker enforces one
+// declared type per variant, so this is guaranteed for real source; a mismatch
+// is a clean rejection for hand-built IR, never a guessed layout). The payload
+// type is gated here — it must be exactly the entry's resolved width, bool, or
+// str, since this backend emits exactly those three C types as union members;
+// any other payload (a tuple/struct/array/optional/nested-enum) is a clean
+// rejection naming what is unsupported. The second shape is a SizeofType node
+// whose TypeArg is a union enum: a bare `sizeof Choice` references the union
+// type with no construction anywhere, so only the SizeofType node carries it —
+// and without this case the union's typedef pair would never be emitted and
+// the lowered sizeof would name an undeclared C type (see sizeofCTypeName).
 func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, nodeID tir.NodeID, out *[]types.TypeID, payloads map[types.TypeID]map[symbol.SymbolID]types.TypeID) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
 		return fmt.Errorf("union-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.SizeofType && isUnionEnumType(unit, snapshot, node.TypeArg) {
+		// A bare `sizeof` of a tagged union (no construction anywhere, so no
+		// VariantConstruct ever carries the type): the union's typedef pair
+		// must still be collected and emitted, or the lowered
+		// sizeof(pebble_union_<typeID>_t) names an undeclared C type. The
+		// declaration-level isUnionEnumType test is what recognizes the type
+		// here — the construction-based isTaggedUnionType would miss it.
+		*out = append(*out, node.TypeArg)
 	}
 	if node.Kind == tir.VariantConstruct && len(node.Children) >= 1 {
 		// A payload-carrying variant construction. node.Type is the union's
