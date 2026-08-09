@@ -1,0 +1,23 @@
+import "std:mem/arena";
+
+type Point = struct {
+    x int;
+    y int;
+};
+
+fn main() int {
+    var a arena::Arena;
+    arena::init(&a, 256, context.default_allocator);
+    let backing = arena::allocator(&a);
+
+    var p *Point = backing.alloc(backing.ptr, sizeof Point) as *Point;
+    p.x = 3;
+    p.y = 4;
+    print("point: {} {}\n", p.x, p.y);
+
+    var q *Point = backing.realloc(backing.ptr, p as *void, sizeof Point) as *Point;
+    print("realloced point: {} {}\n", q.x, q.y);
+
+    arena::destroy(&a);
+    return 0;
+}

@@ -24,7 +24,7 @@ the permanent record for completed work.
 
 ## Active defects
 
-### 1. `Allocator.{ ... }` record construction cannot compile
+### 1. Pointer arithmetic (`*T + uint`, `*T - uint`) does not type-check
 
 **Area:** backend generator
 
@@ -39,26 +39,49 @@ fn my_realloc(context *void, ptr *void, size uint) *void { return nil; }
 fn my_free(context *void, ptr *void) void {}
 ```
 
-**Current status:** checker, typed IR, and backend Allocator construction now
-pass. A real `std:mem/arena` consumer is still required for closure.
+**Current status:** the original claim in this item's title is resolved.
+`Allocator.{ ... }` record construction — including `arena::allocator()`'s
+own `Allocator.{ ptr = arena, alloc = alloc, realloc = realloc, free = free }`
+— compiles cleanly. The checker and typed IR succeed (`da4559f`), aggregate
+collection skips the runtime type (`f5403b5`), general pointer-bearing
+function types emit correctly (`ac7aa32`), and Allocator `RecordConstruct`
+values lower to `PebbleAllocator` with ABI-safe callback bridges (`78e70de`).
 
-The checker and typed IR now succeed (`da4559f`). Aggregate collection skips
-the runtime type (`f5403b5`), general pointer-bearing function types emit
-correctly (`ac7aa32`), and Allocator `RecordConstruct` values now lower to
-`PebbleAllocator` with ABI-safe callback bridges (`78e70de`). The remaining
-open work is a real `std:mem/arena` consumer check.
+**The item is not actually closed.** The real `std:mem/arena` consumer check
+(slice 3 below) was attempted for the first time this session, using a new
+`examples/arena_alloc.peb`, and it surfaces a different, deeper, previously
+undiscovered gap: raw pointer arithmetic. `compiler/std/mem/arena.peb` itself
+fails to type-check with repeated `error[T0505]: cannot unify semantic type
+kind 2 with kind 1` on expressions like `current.ptr + total_aligned`,
+`curr_ptr + sizeof MemHeader`, `data - sizeof MemHeader`, and `arena.current
+.buffer + arena.current.used` — i.e. `*T + uint` / `*T - uint` does not
+type-unify at all. Grepping the entire `compiler/std` and `examples` tree
+found zero other uses of pointer arithmetic anywhere, and grepping
+`internal/check`/`internal/infer` found no pointer-arithmetic handling under
+any name — this is not a narrow edge case, it looks entirely unimplemented.
+
+Rename this item's remaining scope to: **pointer arithmetic (`*T + uint`,
+`*T - uint`) does not type-check.** The Allocator-construction part of the
+original title is done and should not be re-investigated.
 
 Slices:
 
-1. Change only aggregate collection so a runtime `RecordConstruct` does not
-   enter parsed-struct typedef resolution. Keep recursion through its field
-   values. Add a focused test that pins the next runtime-record rejection.
-2. Add only runtime `RecordConstruct` C emission for `PebbleAllocator`.
-   Preserve the existing function-pointer calling convention. Add focused
-   emitted-C and compile-run tests. Do not widen general record construction.
-   Completed in `78e70de`.
-3. Compile and run a real `std:mem/arena` consumer, then run full checks and
-   the causation checks.
+1. Investigation only. Decide the semantics first: does `ptr + n` mean
+   `n` bytes (matching this arena's own `*u8` byte-cursor usage) or `n`
+   elements of `sizeof T` (matching C/Rust pointer arithmetic on typed
+   pointers)? `arena.peb` uses `*u8` exclusively for its byte-level
+   arithmetic and casts to typed pointers only at the edges, so a
+   byte-stride-only rule (arithmetic legal on `*u8`/`*void`, not on other
+   `*T`) may be sufficient for this consumer and simpler to specify — confirm
+   against every arithmetic site in `arena.peb` before deciding. Identify the
+   exact checker constraint that currently rejects the operator (binary `+`/`-`
+   likely never considers a pointer operand a valid arithmetic term at all).
+   No production edit.
+2. Implement the decided semantics for `+` only, checker then backend, with
+   focused positive/negative tests. Do not implement `-` in the same slice.
+3. Implement `-` (pointer minus integer). Add focused tests.
+4. Compile and run `examples/arena_alloc.peb` end to end, then run full
+   checks and the causation checks.
 
 ### 2. Generic `Result[T, E]` methods do not narrow `self`
 
@@ -156,94 +179,40 @@ Slices:
 2. Implement one form only, with one compile-run test.
 3. Repeat for each remaining form. Do not combine all call sites in one task.
 
-### 6. `std/hmap.peb` and `std/set.peb` stop the CLI on `C0618`
+### 6. An array literal of non-primitive elements cannot initialize a slice-typed local
 
-**Area:** Pebble standard library or CLI diagnostic policy
+**Area:** checker
 
-**Priority:** low
+**Priority:** low; no current repository consumer requires the pattern
 
-Each file has a trailing return after a `while true` loop. The checker reports
-an unreachable-statement warning. `pebc` exits with failure for every
-diagnostic, including warnings. A similar dead return was safely removed from
-`std/io.peb`, but each remaining function must be checked on its own.
+**Reproduction:**
 
-Removing the two `std/hmap.peb` returns (`baa4a72`) exposes a separate backend gap:
-non-void helper bodies whose final statement is an exhaustive `while true`
-are rejected because the backend expects a trailing return node. The exact
-error is `entry function body ... ends in a While statement`; the same shape
-exists in `std/io.peb` and `std/set.peb`. The source cleanup is therefore not
-committed until the backend can emit this valid control-flow shape.
+```pebble
+let items []str = ["a", "b", "c"];
+```
 
-Slices:
+and
 
-1. Completed for `std/hmap.peb` in `baa4a72`; its consumer now reaches the
-   separate `str`-typed struct-field backend rejection below.
-2. Remove only the dead return in `std/set.peb` if its loop paths are
-   exhaustive. **Done:** `7c6d0f2`; its consumer now reaches the separate
-   `InterpolatedString` backend boundary.
-3. Separately decide whether CLI warnings should cause a nonzero exit. Do not
-   change CLI policy as part of either standard-library slice.
+```pebble
+type Point = struct { x int; y int; };
+let pts []Point = [Point.{ x = 1, y = 2 }, Point.{ x = 3, y = 4 }];
+```
 
-### 7. Non-void helper bodies cannot end in an exhaustive `while true`
+Both fail with `error[C0601]: cannot convert value for assignment` on the
+`let` line. This is narrower than it looks: struct-field initialization from
+an inline array literal already works (closed, see git history), and named
+top-level `let`/`var` locals with array element types already work. The gap
+is specifically an array literal directly initializing a slice-typed
+(`[]T`) top-level local when `T` is not a primitive. Confirmed by direct
+reproduction; not yet root-caused. Investigation only until the exact
+conversion path that rejects it is identified.
 
-**Area:** backend generator
+This replaces the two now-confirmed verification-queue entries for `[]str`
+element support and struct/tuple/optional/generic-struct slice elements —
+both reproduce the same `C0601` failure and are almost certainly one root
+cause, not two.
 
-**Priority:** medium; blocks the hmap and set library consumer sweep
-
-**Reproduction:** after removing the dead return from `HashMap.get_by_ref` or
-`HashMap.remove`, the helper's typed-IR body ends directly in a `While` node.
-Emission rejects it with `entry function body ... ends in a While statement`.
-The control flow is exhaustive because every loop exit returns; the trailing
-source return only existed to satisfy the current backend shape.
-
-Root cause: `buildBlock` in `compiler/internal/backend/emit.go` accepts only
-`Return`, `ImplicitReturn`, `If`, or `Switch` as the final statement of a
-non-void block. The checker already accepts constant-true loops with no break,
-and the IR builder omits `ImplicitReturn` for non-void callables. This is a
-backend-only gap; no language decision is needed.
-
-Slices:
-
-1. Add backend lowering for one terminal `while true` shape with a focused
-   compile-run test. Preserve rejection of genuinely fall-through non-void
-   bodies.
-2. Remove the dead return from `std/hmap.peb`, run `std_hash.peb`, then repeat
-   the source cleanup and consumer check for `std/set.peb`. **Done for the
-   source cleanup:** `7c6d0f2`; the set consumer now reaches the separate
-   `InterpolatedString` backend boundary.
-
-### 8. `str`-typed struct fields cannot fully round-trip
-
-**Area:** backend generator
-
-**Priority:** medium; blocks `std_hash.peb` and likely other library consumers
-
-**Construction and read status:** struct typedefs and construction emit
-(`3566586`), and `str` field reads through `Load(FieldPlace)` now emit
-(`b329ab2`).
-
-**Reproduction:** after the hmap C0618 cleanup, run
-`GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_hash.peb`.
-After the read and write slices below, emission now stops earlier on the
-example's `[3]str` local with `array-typed local ... whose element type is str,
-want a fixed-width integer, char, bool, or an aggregate element type`.
-
-Root cause: the backend's struct-field C-type and record-construction builders
-support `str` as `PebbleStr`. The read path lowers to `Load(FieldPlace)` and
-now reuses `buildStructFieldRead` from `buildStrOperand`. The read and write
-paths are backend lowering gaps, not language decisions.
-
-Slices:
-
-1. Add only `str` `Load(FieldPlace)` lowering through the existing field-read
-   projection, with a focused compile-run test. Preserve the byte-oriented
-   String ABI and reject unrelated str-shaped loads. **Done:** `b329ab2`.
-2. Add only `str` element/field write lowering for the indexed hmap entry
-   shape, with a focused compile-run test. Preserve existing rejection of
-   unsupported aggregate writes. **Done:** `b2e7093`.
-3. Run `std_hash.peb`, then audit and run `std_set.peb` for the next boundary.
-
-### 9. A generic struct method cannot inherit the owner type parameter
+### 7. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -255,33 +224,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 10. Some checked numeric operations have no `u64` runtime helper
-
-**Area:** runtime and backend generator
-
-**Priority:** low
-
-`u64` division, modulo, shifts, and float-to-integer conversion are explicit
-clean rejections because their checked runtime operations do not exist.
-Additionally, `std_hash.peb` now reaches `std:hash.peb:12:16`, where the FNV-1a
-`u64` multiplication overflows in SAFE mode and aborts. Confirm whether hash
-arithmetic must wrap modulo 2^64 or remain checked before changing runtime or
-stdlib behavior. This is a language/runtime decision, not a backend gap.
-
-Slices: one operation family per dispatch. Add its runtime helper and smoke
-tests first, then its backend selection and compile-run test.
-
-### 11. Enum-to-integer conversion lacks backend lowering
-
-**Area:** backend generator
-
-**Priority:** low
-
-The checker accepts the conversion, but the backend does not lower it. First
-slice: reproduce against current HEAD and identify the exact TIR node and
-missing builder case. Do not implement until the reproduction is recorded.
-
-### 12. Whole dereferenced structs cannot become values
+### 8. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
@@ -292,47 +235,34 @@ a `DereferencePlace` through this struct-value position. A skipped backend
 test records the known reproduction. Investigate the checker and backend
 boundaries before making an implementation plan.
 
-### 13. Array locals with `str` elements are rejected
+### 9. `emit.go` and `emit_test.go` have grown too large for one file
 
-**Area:** backend generator
+**Area:** backend generator, codebase maintainability
 
-**Priority:** medium; blocks `std_hash.peb` and the standard-library sweep
+**Priority:** low; does not block parity work, but is actively hurting the
+ability to navigate and review backend changes
 
-`examples/std_hash.peb` declared `[3]str` and failed during emission with
-`array-typed local ... whose element type is str, want a fixed-width integer,
-char, bool, or an aggregate element type`. Fixed array-literal declarations
-now emit (`3a6eb9e`); array reads remain unsupported and are the next exact
-boundary: `str Load` with a `CheckedIndexPlace`. The verification queue's old
-`[]str` entry is still a separate confirmed defect. No language decision is
-assumed yet.
+`compiler/internal/backend/emit.go` is 15,652 lines and `emit_test.go` is
+13,386 lines — both roughly an order of magnitude larger than every other
+file in the compiler (the next largest is 4,060 lines). Nearly every backend
+feature this project has landed has added another case to one of a handful
+of giant type-switches in this one file, and the file has never been split
+along those seams.
 
 Slices:
 
-1. Add fixed `[N]str` array-literal declarations only, preserving rejection
-   of repeat initializers. **Done:** `3a6eb9e`.
-2. Add `str` reads from fixed-array `CheckedIndexPlace` values, then rerun
-   `std_hash.peb`. **Done:** `b77ef9d`; `std_hash.peb` now reaches a runtime
-   `u64` multiplication overflow in `std:hash.peb:12:16`.
-3. Investigate and implement `[]str` slices separately; do not combine them
-   with fixed-array support.
-
-### 14. `InterpolatedString` values are not accepted by `print`
-
-**Area:** backend generator
-
-**Priority:** medium; blocks `std_set.peb` after its unreachable returns are
-removed
-
-`GOCACHE=/tmp/pebble-go-cache go run ./cmd/pebc -run ../examples/std_set.peb`
-now passes interpolation lowering but fails C compilation because the bool
-value part calls `s.contains(...)` and no `pebble_fn_93_64` prototype is emitted.
-Root cause: call-reachability collection walked node children, while
-`InterpolatedString` stores value nodes only in `Parts`; the helper was
-therefore not collected. The interpolation lowering slice is done (`1bafe0a`),
-and the reachability walk now visits interpolation value parts (`1f0b5aa`).
-`std_set.peb` reaches the same runtime `u64` multiplication overflow in
-`std:hash.peb:12:16`. Do not combine this with the separate `%c` Unicode print
-issue.
+1. Investigation only: inventory `emit.go`'s top-level declarations and
+   propose a split along existing natural seams (e.g. expression-position
+   builders, place/lvalue builders, struct/enum/union record construction,
+   slice/array construction, call-site builders, reachability/collection
+   passes). No production edit. Confirm the split preserves all unexported
+   symbol visibility within `package backend` (same package, multiple files
+   — no API change).
+2. Execute the split as one mechanical, behavior-preserving move per
+   proposed seam, each as its own slice with a full build+test+diff review
+   before the next. Do not change any logic while moving it.
+3. Split `emit_test.go` to mirror the same seams once `emit.go` itself is
+   split.
 
 ## Verification queue
 
@@ -344,13 +274,9 @@ dispatching implementation work.
 2. `extern { type FILE; }` opaque extern types.
 3. Three-level nested generic types such as
    `Vec[HashMap[str, Result[T, E]]]`.
-4. `[]str` element support. Old tracker text may be stale after later slice
-   and aggregate element work.
-5. A slice whose element is a struct, tuple, optional, or generic struct.
-   Old tracker text conflicts with later completed work and must be tested.
-6. `TupleCoerce` backend reachability and emission.
-7. Confirm that `TypeUse` is compile-time-only and needs no backend case.
-8. Re-audit `open-language-decisions.md` against the current compiler. Its
+4. `TupleCoerce` backend reachability and emission.
+5. Confirm that `TypeUse` is compile-time-only and needs no backend case.
+6. Re-audit `open-language-decisions.md` against the current compiler. Its
    old status and some individual claims are known to be stale.
 
 ## Design decisions, not implementation defects
@@ -367,6 +293,14 @@ dispatching implementation work.
 - The v2 CLI stays smaller than the v1 CLI. Do not recreate old flags without
   a separate decision.
 - The two-parameter v1 `main(argc, argv)` form stays unsupported.
+- **Open:** should a CLI diagnostic that is only a warning (not an error)
+  cause `pebc` to exit nonzero? Both `std/hmap.peb` and `std/set.peb` used to
+  carry dead `return` statements after an exhaustive `while true` purely to
+  avoid an unreachable-statement warning tripping the CLI's exit code; both
+  dead returns are now removed (the backend gap that motivated keeping them
+  is fixed — non-void bodies ending in an exhaustive `while true` now emit
+  correctly). No consumer currently depends on warnings being fatal. Needs a
+  real decision, not an implementation task.
 
 ## Deferred language and runtime work
 
