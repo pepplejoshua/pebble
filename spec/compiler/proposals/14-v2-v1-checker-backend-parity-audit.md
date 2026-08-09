@@ -390,7 +390,19 @@ copy their full reproduction or plan.
 7. A non-primitive array literal cannot directly initialize a slice local.
 8. A generic struct method cannot inherit its owner type parameter.
 9. A whole dereferenced struct cannot become a value.
-10. `emit.go` and `emit_test.go` need a behavior-preserving file split.
+10. ~~`emit.go` and `emit_test.go` need a behavior-preserving file split.~~
+    **RESOLVED (`bf16ffe`).** Split into 12 production files + 13 test files
+    along natural function-name seams (types, typedefs, collect, values,
+    locals, calls, places, statements, stores, aggregates, operators,
+    validate). Verified independently: function count preserved exactly
+    (260 before/after), two spot-checked functions byte-identical to their
+    pre-split versions, full test suite passes with zero failures.
+
+**Note on this section:** proposal 13 was restructured after this audit was
+written — it is no longer a 10-item backlog mirror, it now holds exactly one
+reproduced item at a time, sourced from this document's own findings tables.
+This numbered list is a historical snapshot of what proposal 13 held when
+this audit was last read in full, not a live mirror going forward.
 
 Proposal 13 item 3 contains one stale predicted backend gap. It says that
 `buildStrOperand` has no `Load(FieldPlace)` path. The current source has that
