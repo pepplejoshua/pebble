@@ -96,6 +96,7 @@ func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[s
 		{"buildModules", state.buildModules}, {"buildTypes", state.buildTypes},
 		{"buildDeclarations", state.buildDeclarations}, {"buildTypeUses", state.buildTypeUses},
 		{"indexExpressions", state.indexExpressions}, {"indexControls", state.indexControls},
+		{"buildGlobalInitializers", state.buildGlobalInitializers},
 		{"buildBlocks", state.buildBlocks}, {"finishFunctionDeclarations", state.finishFunctionDeclarations},
 		{"buildRequirements", func() bool { return state.buildRequirements(requirements) }},
 		{"buildSpecializations", state.buildSpecializations},
@@ -509,6 +510,37 @@ func (s *irBuildState) buildDeclarations() bool {
 		}
 		if retained.Control.Callable.Symbol != 0 {
 			s.functionRegions[retained.Control.Callable.Symbol] = retained.Control.Region
+		}
+	}
+	return true
+}
+
+// buildGlobalInitializers builds the compile-time-constant initializer value
+// node for every mutable (`var`) module-level global and attaches it to the
+// global's GlobalDecl (builder.SetGlobalInitializer). It runs as its own step
+// after indexExpressions — the initializer's expression record must be
+// indexed before buildValue can lower it — and before buildBlocks. An
+// immutable (`let`) global's initializer is deliberately skipped: its value is
+// inlined at each reference site by buildValueRecord's
+// globalLetInitializers path, so the backend never needs storage (or a stored
+// initializer) for it. A `var` global instead resolves through real storage,
+// and this step is what seeds that storage's initial value: the checker has
+// already validated the initializer is a compile-time constant (C0616), so the
+// built node is always a constant expression the backend can emit as a C
+// static initializer. Records are iterated in their fixed order so node
+// creation order (and therefore every emitted NodeID) stays deterministic.
+func (s *irBuildState) buildGlobalInitializers() bool {
+	for _, retained := range s.handoff.Records.Records() {
+		b := retained.Binding
+		if b == nil || b.Kind != bindingGlobalVar || !b.InitializerPresent || b.Initializer == 0 {
+			continue
+		}
+		initializerNode, ok := s.buildValue(b.Initializer)
+		if !ok {
+			return false
+		}
+		if err := s.builder.SetGlobalInitializer(b.Symbol, initializerNode); err != nil {
+			return false
 		}
 	}
 	return true

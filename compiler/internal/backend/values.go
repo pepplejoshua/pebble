@@ -139,10 +139,10 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		}
 		return "sizeof(" + typeName + ")", nil
 	case tir.SymbolValue:
-		if _, ok := locals[node.Symbol]; !ok {
-			return "", fmt.Errorf("uint expression references unknown symbol %d", node.Symbol)
+		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+			return name, nil
 		}
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Errorf("uint expression references unknown symbol %d", node.Symbol)
 	case tir.IntegerCast:
 		// An integer value cast to uint (`x as uint`), the std/hmap.peb
 		// insert/get shape (`(hash as uint) % self.cap`). The destination is
@@ -438,6 +438,12 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.enumType == 0 {
+			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+				if ginfo.info.enumType == 0 {
+					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not an enum-typed global", node.Symbol)
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not an enum-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
@@ -640,6 +646,12 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.enumType == 0 {
+			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+				if ginfo.info.enumType != want {
+					return "", fmt.Errorf("%s references global symbol %d, which is not a tagged-union-typed global of type %s", context, node.Symbol, unionTypeName(want))
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
 			return "", fmt.Errorf("%s references symbol %d, which is not an enum/tagged-union-typed local declared earlier in the body", context, node.Symbol)
 		}
 		if info.enumType != want {
@@ -1100,10 +1112,10 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		return text, nil
 	}
 	if node.Kind == tir.SymbolValue && node.Type == snapshot.Builtins().Int {
-		if _, declared := locals[node.Symbol]; !declared {
-			return "", fmt.Errorf("entry function body if condition references symbol %d, which is not a local in scope", node.Symbol)
+		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+			return name, nil
 		}
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Errorf("entry function body if condition references symbol %d, which is not a local in scope", node.Symbol)
 	}
 	operandWidth, integerOperand := resolvedBuiltin(snapshot, node.Type)
 	if integerOperand && cType(operandWidth) != "" && !isUint(snapshot, node.Type) {
@@ -1143,7 +1155,16 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	switch node.Kind {
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
-		if !declared || !info.isStr {
+		if !declared {
+			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+				if !ginfo.info.isStr {
+					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a str-typed global", node.Symbol)
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a str-typed local declared earlier in the body", node.Symbol)
+		}
+		if !info.isStr {
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a str-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
@@ -1225,7 +1246,16 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		return valueText, nil
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
-		if !declared || !info.isChar {
+		if !declared {
+			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+				if !ginfo.info.isChar {
+					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a char-typed global", node.Symbol)
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
+			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a char-typed local declared earlier in the body", node.Symbol)
+		}
+		if !info.isChar {
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a char-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
@@ -1354,10 +1384,11 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			// buildComparisonOperand and buildArrayPlaceRead handle), and the
 			// iterator is always declared in C at the entry's width, so its
 			// name is the correct C lvalue for the index.
-			if _, declared := locals[indexNode.Symbol]; !declared {
+			if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+				index = name
+			} else {
 				return "", fmt.Errorf("str index references symbol %d, which is not a local in scope", indexNode.Symbol)
 			}
-			index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 		} else if isUint(snapshot, indexNode.Type) {
 			// A uint-typed str index (a uint-typed local or loop iterator):
 			// built by the dedicated uint grammar, mirroring the slice/array
@@ -1905,10 +1936,10 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		}
 		return "~(" + child + ")", nil
 	case tir.SymbolValue:
-		if _, declared := locals[node.Symbol]; !declared {
-			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
+		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+			return name, nil
 		}
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an optional-typed local (x!). The child is a
 		// SymbolValue naming the optional local, and this node's Type is the
@@ -2453,6 +2484,12 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		return "false", nil
 	case tir.SymbolValue:
 		if locals[node.Symbol].kind != types.Bool {
+			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+				if ginfo.info.kind != types.Bool {
+					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a bool-typed global", node.Symbol)
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
@@ -2685,6 +2722,12 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.kind != width {
+			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+				if ginfo.info.kind != width {
+					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a %s global", node.Symbol, wantName(width))
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a %s local declared earlier in the body", node.Symbol, wantName(width))
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil

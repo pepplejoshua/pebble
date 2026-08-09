@@ -600,6 +600,13 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			case tir.SymbolValue:
 				info, declared := locals[subjectNode.Symbol]
 				if !declared || info.enumType == 0 {
+					if ginfo, isGlobal := emitGlobals[subjectNode.Symbol]; isGlobal {
+						if ginfo.info.enumType != enumSubject {
+							return "", fmt.Errorf("switch subject references global symbol %d, a global of type %s, not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, ginfo.info.enumType), unionTypeName(enumSubject))
+						}
+						subjectExpr = fmt.Sprintf("pebble_global_%d.tag", subjectNode.Symbol)
+						break
+					}
 					return "", fmt.Errorf("switch subject references symbol %d, which is not an enum-typed local declared earlier in the body", subjectNode.Symbol)
 				}
 				if info.enumType != enumSubject {
@@ -651,10 +658,11 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// An int-typed SymbolValue: only reachable from hand-built IR in
 		// this backend's grammar (no real source produces an int-typed
 		// local), but accepted for completeness.
-		if _, declared := locals[subjectNode.Symbol]; !declared {
+		if name, ok := localOrGlobalName(subjectNode.Symbol, locals); ok {
+			subjectExpr = name
+		} else {
 			return "", fmt.Errorf("switch subject references symbol %d, which is not a local in scope", subjectNode.Symbol)
 		}
-		subjectExpr = fmt.Sprintf("pebble_local_%d", subjectNode.Symbol)
 	} else {
 		return "", fmt.Errorf("switch subject has type %s, want %s, bool, or char, or an enum/tagged-union type", describeType(snapshot, subjectNode.Type), wantName(width))
 	}
@@ -1326,10 +1334,10 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		return text, nil
 	}
 	if node.Kind == tir.SymbolValue && node.Type == snapshot.Builtins().Int {
-		if _, declared := locals[node.Symbol]; !declared {
-			return "", fmt.Errorf("entry function body block range loop bound references symbol %d, which is not a local in scope", node.Symbol)
+		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+			return name, nil
 		}
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Errorf("entry function body block range loop bound references symbol %d, which is not a local in scope", node.Symbol)
 	}
 	// Any other bound is built at its OWN resolved integer width rather than
 	// the ambient entry width, exactly as buildComparisonOperand and

@@ -512,8 +512,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return fmt.Errorf("cannot emit C: nil writer")
 	}
 	emitSymbols = symbols
+	emitGlobals = nil
 	emitAllocatorAdapters = make(map[string]runtimeAllocatorAdapter)
-	defer func() { emitSymbols = nil; emitAllocatorAdapters = nil }()
+	defer func() { emitSymbols = nil; emitGlobals = nil; emitAllocatorAdapters = nil }()
 
 	decl, err := findEntryDeclaration(unit, entrySymbol)
 	if err != nil {
@@ -546,13 +547,44 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			return err
 		}
 		if argvParam != nil {
-			return emitEntryC(w, "", "", "", fmt.Sprintf(voidEntryUserMainArgv, argvParam.Symbol, argvParam.Symbol), fmt.Sprintf(voidEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+			return emitEntryC(w, "", "", "", "", fmt.Sprintf(voidEntryUserMainArgv, argvParam.Symbol, argvParam.Symbol), fmt.Sprintf(voidEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
 		}
-		return emitEntryC(w, "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false)
+		return emitEntryC(w, "", "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false)
 	}
 	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
 	if err != nil {
 		return err
+	}
+	// Resolve the mutable globals the reachable program actually references
+	// before any function body is built, so the read/write builders below can
+	// resolve a global symbol to its real C storage. The storage declarations
+	// themselves are emitted by buildGlobalStorage (called at the end) into the
+	// file-scope region, ahead of every function that uses them. Only globals
+	// with a recorded initializer are candidates: the checker records one
+	// exactly for a mutable `var` global (an immutable `let` global's value is
+	// inlined at each reference site, never resolved to storage), so the
+	// candidate set is precisely the var globals.
+	candidates := make(map[symbol.SymbolID]struct{})
+	for _, g := range unit.GlobalDeclarations() {
+		if g.Initializer == 0 {
+			continue
+		}
+		candidates[g.Symbol] = struct{}{}
+	}
+	used := collectReferencedGlobals(unit, blockID, helpers, candidates)
+	if len(used) > 0 {
+		emitGlobals = make(map[symbol.SymbolID]globalInfo, len(used))
+		for id := range used {
+			g, ok := globalDeclBySymbol(unit, id)
+			if !ok {
+				return fmt.Errorf("global symbol %d has no declaration container", id)
+			}
+			info, resolveErr := resolveGlobalInfo(unit, snapshot, g)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			emitGlobals[id] = info
+		}
 	}
 	if err := collectRuntimeAllocatorAdapters(unit, snapshot, blockID, helpers); err != nil {
 		return err
@@ -711,6 +743,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	globalStorage, err := buildGlobalStorage(unit, snapshot)
+	if err != nil {
+		return err
+	}
 	// Every runtime Allocator callback bridge discovered by the
 	// collectRuntimeAllocatorAdapters walk needs its C prototype declared before
 	// the function body that references it (a helper body that constructs an
@@ -735,9 +771,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		helpersText += "\n" + strings.Join(adapterDefinitions, "\n")
 	}
 	if argvParam != nil {
-		return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+		return emitEntryC(w, typedefs, globalStorage, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
 	}
-	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false)
+	return emitEntryC(w, typedefs, globalStorage, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false)
 }
 
 // hasCExterns reports whether the unit declares at least one C-convention
@@ -1572,7 +1608,7 @@ func entryReturnType(width types.BuiltinKind) string {
 // <inttypes.h> PRI* macros for its fixed-width integer specifiers, so both
 // headers are needed the moment any print is emitted, and adding them for
 // programs with no print at all is harmless.
-func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody string, hasExterns, hasArgv bool) error {
+func emitEntryC(w io.Writer, typedefs, globals, prototypes, helpers, userMain, mainBody string, hasExterns, hasArgv bool) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -1595,6 +1631,11 @@ func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody s
 	}
 	if typedefs != "" {
 		if _, err := fmt.Fprint(w, "\n"+typedefs+"\n"); err != nil {
+			return err
+		}
+	}
+	if globals != "" {
+		if _, err := fmt.Fprint(w, "\n"+globals+"\n"); err != nil {
 			return err
 		}
 	}

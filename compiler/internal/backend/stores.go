@@ -318,8 +318,19 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
+	lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 	if !declared {
-		return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
+		// A plain StoragePlace whose symbol is not a local in scope: the write
+		// targets a mutable module-level global, whose storage was emitted as a
+		// file-scope static. The new value is built against the global's own
+		// resolved type exactly as a local's is, and the store writes the
+		// global's C name instead of a pebble_local_ name.
+		ginfo, isGlobal := emitGlobals[place.Symbol]
+		if !isGlobal {
+			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
+		}
+		targetInfo = ginfo.info
+		lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
 	}
 	// The new value is validated and emitted against the local's own declared
 	// type: the local's own integer width for an integer local (buildExpr at
@@ -337,7 +348,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+		return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 	case types.Uint:
 		// A Store whose place names a uint-typed local is a uint
 		// reassignment: the new value is built by buildUintExpr at uint's
@@ -353,7 +364,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+		return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 	case types.F32, types.F64:
 		// A Store whose place names a float-typed local (f32 or f64, Stage A)
 		// is a float reassignment: the new value is built by buildFloatExpr at
@@ -365,13 +376,13 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+		return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 	case types.Bool:
 		storeValue, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+		return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 	default:
 		if targetInfo.enumType != 0 {
 			if _, isUnion := unions[targetInfo.enumType]; isUnion {
@@ -385,7 +396,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 				if err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+				return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 			}
 			// A Store whose place names an enum-typed local is a whole-value
 			// reassignment of a plain enum local — c = Color.red; — whose new
@@ -396,7 +407,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.isStr {
 			// A Store whose place names a str-typed local is a whole-str
@@ -427,7 +438,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pebble_local_%d = (PebbleStr)%s", place.Symbol, valueText), nil
+			return fmt.Sprintf("%s = (PebbleStr)%s", lvalue, valueText), nil
 		}
 		if targetInfo.isChar {
 			// A Store whose place names a char-typed local is a char
@@ -444,7 +455,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.functionType != 0 {
 			// A Store whose place names a function-typed local is a
@@ -460,7 +471,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.tuple != 0 {
 			// A Store whose place names a tuple-typed local is a
@@ -487,7 +498,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.structType != 0 {
 			return "", fmt.Errorf("%s reassigns symbol %d, a struct-typed local of type %s; reassigning a whole struct is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.structType))
@@ -501,7 +512,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("pebble_local_%d = %s", place.Symbol, storeValue), nil
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		return "", fmt.Errorf("%s reassigns symbol %d, which is a local of type %s, want %s or bool", context, place.Symbol, describeType(snapshot, place.Type), wantName(width))
 	}
@@ -573,8 +584,19 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	}
 	if place.Kind == tir.StoragePlace {
 		targetInfo, declared := scope[place.Symbol]
+		lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 		if !declared {
-			return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, which is not a local in scope", context, place.Symbol)
+			// A plain StoragePlace whose symbol is not a local in scope: the
+			// compound assignment targets a mutable module-level global, exactly
+			// as buildStoreCore resolves a plain global reassignment — the
+			// combined value is built against the global's own resolved type and
+			// the write lands on the global's file-scope C name.
+			ginfo, isGlobal := emitGlobals[place.Symbol]
+			if !isGlobal {
+				return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, which is not a local in scope", context, place.Symbol)
+			}
+			targetInfo = ginfo.info
+			lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
 		}
 		// The lvalue is the local's own C name; the combined value is built
 		// against the local's own declared type, mirroring buildStoreCore's
@@ -583,7 +605,6 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// local at its own float kind, and everything else — bool, str, char,
 		// enum, union, tuple, array, optional, struct, slice, pointer, runtime —
 		// is a clean rejection naming the local's type.
-		lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 		switch targetInfo.kind {
 		case types.Int, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
 			core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context, width)

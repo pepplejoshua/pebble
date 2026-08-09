@@ -109,8 +109,8 @@ func (d *dumper) dumpUnit(u *Unit) error {
 		}
 	}
 	for _, g := range u.globals {
-		if err := d.cw.printf("global symbol=%d type=%d node=%d span=%s\n",
-			g.Symbol, g.Type, g.Node, spanString(g.Span)); err != nil {
+		if err := d.cw.printf("global symbol=%d type=%d node=%d initializer=%d span=%s\n",
+			g.Symbol, g.Type, g.Node, g.Initializer, spanString(g.Span)); err != nil {
 			return err
 		}
 	}

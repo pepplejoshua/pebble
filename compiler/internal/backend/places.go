@@ -148,10 +148,11 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 				}
 				index = indexNode.Literal.IntegerNum
 			} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-				if _, declared := locals[indexNode.Symbol]; !declared {
+				if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+					index = name
+				} else {
 					return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
 				}
-				index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 			} else if isUint(snapshot, indexNode.Type) {
 				// A uint-typed slice index (the loop iterator from a
 				// `loop 0..new_cap : i { ... }` whose bounds the checker
@@ -207,10 +208,11 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		// buildComparisonOperand handles), and the iterator is always declared
 		// in C at the entry's width, so its name is the correct C lvalue for
 		// the subscript.
-		if _, declared := locals[indexNode.Symbol]; !declared {
+		if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+			index = name
+		} else {
 			return "", fmt.Errorf("array index references symbol %d, which is not a local in scope", indexNode.Symbol)
 		}
-		index = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 	} else if isUint(snapshot, indexNode.Type) {
 		// A uint-typed array index (a uint-typed local or loop iterator):
 		// built by the dedicated uint grammar, not the general buildExpr
@@ -437,10 +439,10 @@ func buildSliceIndexOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		return indexNode.Literal.IntegerNum, nil
 	}
 	if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-		if _, declared := locals[indexNode.Symbol]; !declared {
-			return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
+		if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+			return name, nil
 		}
-		return fmt.Sprintf("pebble_local_%d", indexNode.Symbol), nil
+		return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
 	}
 	if isUint(snapshot, indexNode.Type) {
 		index, err := buildUintExpr(unit, snapshot, fileSet, indexID, locals, width)
@@ -770,10 +772,11 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
 			idx = indexNode.Literal.IntegerNum
 		} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-			if _, declared := locals[indexNode.Symbol]; !declared {
+			if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+				idx = name
+			} else {
 				return "", 0, fmt.Errorf("symbol %d is not a local in scope", indexNode.Symbol)
 			}
-			idx = fmt.Sprintf("pebble_local_%d", indexNode.Symbol)
 		} else if isUint(snapshot, indexNode.Type) {
 			// A uint-typed index (`self.entries[index]` where index is a uint
 			// local, or the uint-typed loop iterator `new_entries[i]` from a

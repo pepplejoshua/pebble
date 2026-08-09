@@ -342,6 +342,15 @@ type GlobalDecl struct {
 	Span   source.Span
 	Type   types.TypeID
 	Node   NodeID
+	// Initializer is the value node holding the global's compile-time constant
+	// initializer (an IntegerLiteral/BoolLiteral/... node), when the checker
+	// records one. It is always set for a mutable `var` global (whose value
+	// could change, so the backend needs real storage seeded with this value);
+	// it stays zero for an immutable `let` global, whose value is inlined at
+	// every reference site instead. The global's initializer is validated as a
+	// compile-time constant (check C0616), so the node is always a constant
+	// expression the backend can lower into a C static initializer.
+	Initializer NodeID
 }
 
 // Node is the closed, tag-typed IR payload. Every field has exactly one meaning

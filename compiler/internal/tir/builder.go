@@ -222,6 +222,25 @@ func (b *Builder) AddGlobalDecl(g GlobalDecl) error {
 	return nil
 }
 
+// SetGlobalInitializer attaches the initializer value node to the global
+// declaration identified by symbol. The checker records a `var` global's
+// initializer only after the declaration container was added (the initializer
+// value node cannot be built during buildDeclarations, since the expression
+// index it needs is populated in a later step), so the container's Initializer
+// field is filled in place through this method before the builder freezes.
+func (b *Builder) SetGlobalInitializer(symbol symbol.SymbolID, node NodeID) error {
+	if err := b.checkFrozen(); err != nil {
+		return err
+	}
+	for i := range b.globals {
+		if b.globals[i].Symbol == symbol {
+			b.globals[i].Initializer = node
+			return nil
+		}
+	}
+	return fmt.Errorf("no global declaration recorded for symbol %d", symbol)
+}
+
 // AddRequirement appends one normalized requirement.
 func (b *Builder) AddRequirement(r Requirement) error {
 	if err := b.checkFrozen(); err != nil {

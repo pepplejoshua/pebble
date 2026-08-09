@@ -1209,6 +1209,16 @@ func (v *verifier) verifyDeclarations() {
 		if g.Node != 0 && (uint64(g.Node) > uint64(len(v.u.nodes)) || v.u.nodes[g.Node-1].Kind != GlobalDeclaration) {
 			v.errorf("global decl %d node is not GlobalDeclaration", g.Symbol)
 		}
+		if g.Initializer != 0 {
+			if uint64(g.Initializer) > uint64(len(v.u.nodes)) {
+				v.errorf("global decl %d initializer node %d is out of range", g.Symbol, g.Initializer)
+				continue
+			}
+			category, ok := CategoryOf(v.u.nodes[g.Initializer-1].Kind)
+			if !ok || category != CategoryValue {
+				v.errorf("global decl %d initializer node %d is not a value", g.Symbol, g.Initializer)
+			}
+		}
 	}
 }
 
