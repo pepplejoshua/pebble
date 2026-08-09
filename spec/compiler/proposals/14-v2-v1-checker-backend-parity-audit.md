@@ -458,7 +458,7 @@ root cause before an Orc implementation task starts.
 
 | Finding | Confidence | Next small slice |
 |---|---|---|
-| V2 checker accepts character switch, but backend rejects it | high; checker test and backend label code disagree | one compile-to-C reproduction |
+| ~~V2 checker accepts character switch, but backend rejects it~~ | **RESOLVED (`72f0207`).** Added an `isChar` branch to the switch-subject builder (reusing `buildCharOperand`) and a char-literal branch to `buildCaseLabel`. 6 new tests including a non-ASCII scalar case. Independently verified, causation-checked. | — |
 | V2 checker accepts string switch, but backend has no lowering | high; checker test and backend subject/label code disagree | one compile-to-C reproduction |
 | V2 does not prove a complete `u8` or `i8` switch exhaustive | high; exhaustiveness code has no integer-domain path | one checker reproduction for each width |
 | ~~Descending range loops execute zero iterations~~ | **RESOLVED (`8baeb8e`).** Fixed for the literal-bound case (direction known statically); non-literal bounds are unchanged (always ascending in the current grammar — not yet independently confirmed whether the grammar actually forbids a descending non-literal-bound range or just doesn't need to distinguish it, worth a follow-up check if that syntax is ever used). 4 new tests; independently verified descending now runs the correct count, ascending/zero-length unregressed, causation-checked by reverting and reproducing. | — |
