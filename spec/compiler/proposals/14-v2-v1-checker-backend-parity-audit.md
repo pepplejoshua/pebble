@@ -72,7 +72,7 @@ using one broad row:
 | Capturing closure | V1 anonymous functions use module scope as parent and cannot capture a local | V2 reports C0617 for a capture | **Intentional difference from closure languages; parity with V1** |
 | Generic anonymous function | V1 rejects it | V2 reports C0608 | **Intentional difference from generic named functions; parity with V1** |
 | Entry with no parameters | V1 and V2 emit a C bridge | V2 has focused backend tests | **Verified** |
-| Entry with one `[]str` parameter | V1 builds an argument slice | V2 checker accepts it, but the C bridge discards `argc` and `argv` | **Absent**; tracker item 5 |
+| ~~Entry with one `[]str` parameter~~ | V1 builds an argument slice | **RESOLVED (`fb94640`).** The C bridge now builds the `[]str` via a pre-existing, previously-unused runtime helper (`pebble_rt_args_from_argv`) instead of discarding `argc`/`argv`. `argv[0]` (program name) included, matching both V1 and that helper's own convention. Independently verified with a real compiled binary run against actual OS argv, causation-checked. | ~~**Absent**; tracker item 5~~ |
 | Entry with `argc` and `argv` parameters | V1 accepts the old two-parameter form | V2 rejects it | **Intentional difference** |
 
 ## Type and member ledger
@@ -385,7 +385,7 @@ copy their full reproduction or plan.
 3. Generic `Result[T,E]` methods do not narrow `self` for variant reads and
    writes.
 4. Qualified static methods are unsupported.
-5. `main(argv []str)` cannot receive C process arguments.
+5. ~~`main(argv []str)` cannot receive C process arguments.~~ RESOLVED (`fb94640`).
 6. Inline slice construction fails in pure nested expression positions.
 7. A non-primitive array literal cannot directly initialize a slice local.
 8. A generic struct method cannot inherit its owner type parameter.
