@@ -44,4 +44,66 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+### Extern variables/constants have no backend declaration/read/write path
+
+**Source:** proposal 14, "New findings" table, row "Extern variables and
+constants have no backend declaration/use path."
+
+**Area:** backend generator; root cause in
+`compiler/internal/tir/node.go:35` (`ExternDeclaration`, the single TIR
+node kind used for both extern functions and extern data)
+
+**Priority:** high — batch item 2 of 7. Real, ordinary feature (accessing
+extern C globals like `errno`), flatly absent, matching the same shape as
+the mutable-globals gap just fixed (`14739f3`), reusable pattern.
+
+**Reproduction:**
+
+```pebble
+extern {
+    var errno int;
+}
+
+fn main() int {
+    return errno;
+}
+```
+
+`go run ./cmd/pebc -run` fails: `pebc: emission failed: entry function body
+expression references symbol N, which is not a local declared earlier in
+the entry body` — the checker accepts the extern variable declaration
+(the failure is purely at emission), but the backend has no path for it.
+
+**Root cause:** only one `ExternDeclaration` TIR node kind exists (single
+entry in `node.go`'s kind table, `CategoryNonvalue`), used uniformly for
+both `extern fn` declarations and extern data declarations. The backend
+only knows how to treat this shape as "a callable extern function" (see
+`externCName`, `emit.go:810`, used to resolve an extern function's real C
+name for a call) — there is no extern-data emission or reference-resolution
+path at all.
+
+**Scope for this slice, directly reusable from the just-landed
+mutable-globals fix (`14739f3`):**
+1. Emit a forward `extern <ctype> <realCName>;` declaration for each
+   referenced extern variable — NOT a `static ... = ...;` definition with
+   synthesized storage like the mutable-globals fix does, since an extern
+   variable's real storage is defined elsewhere (e.g. inside libc itself);
+   this backend only needs to declare it exists and its type, then
+   reference it by its REAL C name (reuse `externCName` exactly as extern
+   functions already do — do not synthesize a `pebble_global_<id>`-style
+   name for extern data).
+2. Make read references resolve to that real C name, reusing the same set
+   of "not a local in scope" touch points the mutable-globals fix just
+   updated (`values.go`, `places.go`, `statements.go` — check each site
+   the prior fix touched, since extern-variable reads need the identical
+   treatment, just resolving to a different name-construction rule).
+3. Make write references (if extern variables can be mutable — confirm
+   whether `extern { var ... }` vs `extern { let ... }` distinguishes
+   mutability, and whether writing to an extern variable is even something
+   this reproduction needs, or whether read-only is the realistic first
+   scope) resolve via `buildStoreCore`/`buildCompoundStore`, mirroring the
+   mutable-globals fix's write-path changes.
+
+**Not yet done:** the actual implementation. Next step: dispatch through
+Orc per the tracker's dispatch rules, pointing directly at commit `14739f3`
+as the pattern to mirror.
