@@ -10690,6 +10690,183 @@ fn main() int {
 }`, false, 142, false)
 }
 
+func TestEmitTaggedUnionStructFieldCompilesAndRuns(t *testing.T) {
+	// The tagged-union-as-struct-field fix (proposal 13, case 1), proven end to
+	// end: a struct whose field type is a tagged union must both (a) declare
+	// the field with the union's own pebble_union_<typeID>_t typedef — never
+	// the bare tag-enum pebble_enum_<typeID>_t — and (b) emit that union
+	// typedef before the struct typedef that references it, or cc rejects the
+	// emitted C. The round trip is the real proof, not just clean emission: the
+	// payload-carrying variant Choice.value(42) is constructed, stored into the
+	// Holder.tag field, read back out (h.tag), and the payload 42 is recovered
+	// through a narrowing switch on a function parameter — the working switch
+	// position (a same-scope let-bound switch subject is a separate, unrelated
+	// tracker gap that this test deliberately avoids). The exit code is 42 only
+	// if the value survives construction -> storage -> field read -> narrowing
+	// switch intact.
+	emitAndRun(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+type Holder = struct {
+    tag Choice;
+};
+fn readBack(c Choice) int {
+    switch c {
+        case Choice.empty: return -1;
+        case Choice.value: return c.value;
+    }
+}
+fn main() int {
+    let c = Choice.value(42);
+    var h = Holder.{ tag = c };
+    return readBack(h.tag);
+}`, false, 42, false)
+}
+
+func TestEmitTaggedUnionOptionalPayloadCompilesAndRuns(t *testing.T) {
+	// The tagged-union-as-optional-payload fix (proposal 13, case 2), proven
+	// end to end: an optional whose payload is a tagged union must declare its
+	// .value field with the union's own pebble_union_<typeID>_t typedef, and a
+	// `some <union>` construction must store the full union value into it. The
+	// round trip: the payload-carrying variant Choice.value(42) is constructed,
+	// stored into the ?Choice optional, force-unwrapped (o!), and the payload
+	// 42 is recovered through a narrowing switch on a function parameter. The
+	// exit code is 42 only if the value survives construction -> storage ->
+	// unwrap -> narrowing switch intact; the has_value guard plus the -2
+	// fallback prove the some branch (not a vacuous path) produced it.
+	emitAndRun(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+fn readBack(c Choice) int {
+    switch c {
+        case Choice.empty: return -1;
+        case Choice.value: return c.value;
+    }
+}
+fn main() int {
+    let c = Choice.value(42);
+    var o ?Choice = some c;
+    if o.has_value {
+        return readBack(o!);
+    }
+    return -2;
+}`, false, 42, false)
+}
+
+func TestEmitTaggedUnionOptionalUnwrapNonePanics(t *testing.T) {
+	// The union-payload optional force-unwrap is a checked operation, not a
+	// bare field read: force-unwrapping a `none`-carrying ?Choice must panic
+	// with the runtime's unwrap-of-empty-optional panic (PEBBLE_PANIC_UNWRAP_
+	// FAILED), the same failure the scalar unwrap helpers raise — the inline
+	// ternary's absent branch is dead only when has_value is true, so this
+	// proves the panic path is wired, not just that the some path round-trips.
+	// The let c = Choice.value(42) construction makes Choice a tagged union in
+	// this program (so the optional is a union-payload optional, not a plain
+	// enum payload), while the optional itself holds none.
+	emitAndRun(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+fn readBack(c Choice) int {
+    switch c {
+        case Choice.empty: return -1;
+        case Choice.value: return c.value;
+    }
+}
+fn main() int {
+    let c = Choice.value(42);
+    var o ?Choice = none;
+    if o.has_value { return 99; }
+    return readBack(o!);
+}`, false, 0, true)
+}
+
+func TestEmitTaggedUnionStructFieldWritesC(t *testing.T) {
+	// Emitted-C shape check for the struct-field fix, locking in the typedef
+	// ORDERING that is bug 1: the union's typedef pair (the discriminant
+	// pebble_enum_<typeID>_t followed by the tagged pebble_union_<typeID>_t
+	// struct) must appear in the output BEFORE the struct typedef that
+	// references the union as a field type — C requires a type fully defined
+	// before use, and this ordering was the raw cc failure before the fix. And
+	// the struct field must be declared with the union's own typedef name
+	// (pebble_union_<typeID>_t pebble_field_<m>;), never the bare tag-enum
+	// pebble_enum_<typeID>_t — bug 2's wrong type.
+	unit, snapshot, entryID, unionType, _, sources := unionFixture(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+type Holder = struct {
+    tag Choice;
+};
+fn main() int {
+    let c = Choice.value(42);
+    var h = Holder.{ tag = c };
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	unionClose := "} " + unionTypeName(unionType) + ";"
+	unionCloseIdx := strings.Index(out, unionClose)
+	fieldUse := unionTypeName(unionType) + " pebble_field_"
+	fieldUseIdx := strings.Index(out, fieldUse)
+	if unionCloseIdx < 0 {
+		t.Errorf("emitted C missing the union typedef close %q:\n%s", unionClose, out)
+	}
+	if fieldUseIdx < 0 {
+		t.Errorf("emitted C missing the union-typed struct field declaration %q (the field must be typed with the union's own typedef):\n%s", fieldUse, out)
+	}
+	if unionCloseIdx >= 0 && fieldUseIdx >= 0 && unionCloseIdx > fieldUseIdx {
+		t.Errorf("emitted C defines the struct typedef (%q at index %d) BEFORE the union typedef it references (%q at index %d); the union typedef must precede the struct typedef:\n%s", fieldUse, fieldUseIdx, unionClose, unionCloseIdx, out)
+	}
+	if strings.Contains(out, enumTypeName(unionType)+" pebble_field_") {
+		t.Errorf("emitted C declares the tagged-union struct field with the bare tag-enum typedef %q, want the union's own typedef %q:\n%s", enumTypeName(unionType)+" pebble_field_", unionTypeName(unionType)+" pebble_field_", out)
+	}
+}
+
+func TestEmitTaggedUnionOptionalPayloadWritesC(t *testing.T) {
+	// Emitted-C shape check for the optional-payload fix: the optional struct's
+	// .value field must be declared with the union's own
+	// pebble_union_<typeID>_t typedef — never the bare tag-enum
+	// pebble_enum_<typeID>_t — and the union's typedef pair must precede the
+	// optional typedef that references it (the same C define-before-use
+	// ordering bug 1 fixed for struct fields).
+	unit, snapshot, entryID, unionType, _, sources := unionFixture(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+fn main() int {
+    let c = Choice.value(42);
+    var o ?Choice = some c;
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	unionClose := "} " + unionTypeName(unionType) + ";"
+	unionCloseIdx := strings.Index(out, unionClose)
+	valueField := unionTypeName(unionType) + " value;"
+	valueFieldIdx := strings.Index(out, valueField)
+	if unionCloseIdx < 0 {
+		t.Errorf("emitted C missing the union typedef close %q:\n%s", unionClose, out)
+	}
+	if valueFieldIdx < 0 {
+		t.Errorf("emitted C missing the union-typed optional value field %q (the payload must be typed with the union's own typedef):\n%s", valueField, out)
+	}
+	if unionCloseIdx >= 0 && valueFieldIdx >= 0 && unionCloseIdx > valueFieldIdx {
+		t.Errorf("emitted C defines the optional typedef (%q at index %d) BEFORE the union typedef it references (%q at index %d); the union typedef must precede the optional typedef:\n%s", valueField, valueFieldIdx, unionClose, unionCloseIdx, out)
+	}
+	if strings.Contains(out, enumTypeName(unionType)+" value;") {
+		t.Errorf("emitted C declares the tagged-union optional value field with the bare tag-enum typedef %q, want the union's own typedef %q:\n%s", enumTypeName(unionType)+" value;", unionTypeName(unionType)+" value;", out)
+	}
+}
+
 func emitAndRunRejects(t *testing.T, sourceText, wantSubstring string) {
 	t.Helper()
 	unit, snapshot, entryID, _ := buildFixture(t, sourceText, "main", false)

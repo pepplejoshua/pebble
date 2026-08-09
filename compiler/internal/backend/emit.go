@@ -627,13 +627,13 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	// The enum typedef block is emitted BEFORE the aggregate typedef block
-	// (and, transitively, before the unions): since the OptionalIntegerToEnum
-	// slice an optional's value field may name a plain enum typedef
-	// (pebble_enum_<typeID>_t, see optionalPayloadCType), C requires the enum
-	// typedef to be defined before the optional struct typedef that references
-	// it. Enum typedefs are self-contained (variant constants only), so they
-	// have no forward dependencies and can safely lead the block.
+	// The enum typedef block is emitted BEFORE the aggregate typedef block:
+	// since the OptionalIntegerToEnum slice an optional's value field may name
+	// a plain enum typedef (pebble_enum_<typeID>_t, see optionalPayloadCType),
+	// C requires the enum typedef to be defined before the optional struct
+	// typedef that references it. Enum typedefs are self-contained (variant
+	// constants only), so they have no forward dependencies and can safely lead
+	// the block.
 	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos)
 	if err != nil {
 		return err
@@ -653,12 +653,23 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, aggTypedefs))
 	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, result, unionInfos)
 	if err != nil {
 		return err
 	}
-	typedefs = appendTypedefBlock(typedefs, unionTypedefs)
+	// The union typedef block is emitted BEFORE the aggregate typedef block: a
+	// struct field or optional payload whose type is a tagged union names the
+	// union's own typedef (pebble_union_<typeID>_t, see structFieldCType /
+	// optionalPayloadCType), so C requires the union typedef to be defined
+	// before the aggregate typedef that references it. Each union typedef pair
+	// (the discriminant enum typedef followed by the tagged struct typedef, see
+	// buildUnionTypedef) is self-contained — union payloads are restricted to
+	// fixed-width integers, bool, and str, never another aggregate — so no
+	// union typedef depends on an aggregate typedef, and the whole block can
+	// safely lead the aggregate block (mirroring how the plain-enum block leads
+	// it for enum-typed fields).
+	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, unionTypedefs))
+	typedefs = appendTypedefBlock(typedefs, aggTypedefs)
 	arrayTypes := collectHelperArrayTypes(snapshot, helpers)
 	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, arrayTypes)
 	if err != nil {
@@ -4189,7 +4200,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				}
 				subjectExpr = fmt.Sprintf("pebble_local_%d.tag", subjectNode.Symbol)
 			case tir.VariantConstruct, tir.EnumVariantValue:
-				construction, buildErr := buildUnionConstruction(unit, snapshot, fileSet, subjectNode, locals, "switch subject", unions, width)
+				construction, buildErr := buildUnionConstruction(unit, snapshot, fileSet, subjectNode, locals, "switch subject", unions[enumSubject], width)
 				if buildErr != nil {
 					return "", buildErr
 				}
@@ -5431,7 +5442,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 				// buildUnionConstruction (a C99 compound literal of the
 				// union's struct typedef), emitted as
 				// `pebble_local_<sym> = (pebble_union_<id>_t){ .tag = ... };`.
-				storeValue, err := buildUnionConstruction(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, unions, width)
+				storeValue, err := buildUnionConstruction(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, unions[targetInfo.enumType], width)
 				if err != nil {
 					return "", err
 				}
@@ -8261,6 +8272,23 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 				return "", err
 			}
 			valueExpr = expr
+		case isTaggedUnionType(unit, snapshot, payloadType):
+			// A tagged-union-payload optional initialized from `some <union>`:
+			// the payload is a union value (a reference to an already-declared
+			// union-typed local, a variant construction, a union-typed field
+			// read, or a union-payload force-unwrap), built by buildUnionValueExpr
+			// into the optional struct's .value field — which the optional
+			// typedef declares with the union's own pebble_union_<typeID>_t
+			// (see optionalPayloadCType). This must precede the isEnumType case
+			// below: a tagged union is enum-shaped exactly like a plain enum,
+			// but it is a real payload the optional must carry, not the bare
+			// tag enum a plain-enum payload's only-supported integer cast
+			// lowers through.
+			expr, err := buildUnionValueExpr(unit, snapshot, fileSet, initValue.Children[0], scope, context, payloadType, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
 		case isEnumType(unit, snapshot, payloadType):
 			// An enum-payload optional initialized from `some <variant>` — the
 			// only enum-payload optional initializer this backend supports is
@@ -8341,6 +8369,16 @@ func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloa
 	if isTuple(snapshot, payloadType) {
 		return "{0}"
 	}
+	// A tagged-union payload's C type is the union's own tag-plus-payload
+	// struct (see optionalPayloadCType), not a scalar: it needs the aggregate
+	// {0} zero-initializer exactly like a tuple/struct payload, so it is
+	// checked BEFORE the isStruct/isEnumType split below (a union is both
+	// Nominal and enum-shaped, so the plain-enum scalar-0 path below would
+	// otherwise return a bare 0 that -Wmissing-braces rejects for the struct
+	// .value field).
+	if isTaggedUnionType(unit, snapshot, payloadType) {
+		return "{0}"
+	}
 	// isStruct also reports true for an enum payload (both are Nominal keys,
 	// indistinguishable at this level) — an enum's C type is a plain scalar
 	// C enum, not a struct, so it must NOT take the aggregate {0} literal (a
@@ -8380,6 +8418,17 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		value, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isTuple(snapshot, payload):
 		value, err = buildTupleValueExpr(unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+	case isTaggedUnionType(unit, snapshot, payload):
+		// A tagged-union payload's some/injected value is a union value (a
+		// reference to an already-declared union-typed local, a variant
+		// construction, a union-typed field read, or a union-payload
+		// force-unwrap), built by buildUnionValueExpr into the optional's
+		// .value field — the same C type the optional typedef declares the
+		// field with (see optionalPayloadCType). This precedes the isStruct
+		// case below exactly as the SomeOptional case's own union branch
+		// precedes isEnumType: a tagged union is Nominal like a struct but its
+		// value is a union value, never a RecordConstruct.
+		value, err = buildUnionValueExpr(unit, snapshot, fileSet, node.Children[0], scope, context, payload, width)
 	case isStruct(snapshot, payload):
 		value, err = buildStructValueExpr(unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	case isPointer(snapshot, payload):
@@ -9127,7 +9176,7 @@ func buildUnionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	if _, ok := unions[initValue.Type]; !ok {
 		return "", fmt.Errorf("%s declares an enum-typed local of type %s, which is not a tagged-union type in this program", context, describeType(snapshot, initValue.Type))
 	}
-	construction, err := buildUnionConstruction(unit, snapshot, fileSet, initValue, scope, context, unions, width)
+	construction, err := buildUnionConstruction(unit, snapshot, fileSet, initValue, scope, context, unions[initValue.Type], width)
 	if err != nil {
 		return "", err
 	}
@@ -9157,15 +9206,10 @@ func buildUnionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // pebble_field_<member> exactly as the union's typedef declares it. The node's
 // Type is the union type and its Member the variant symbol (both confirmed
 // against real fixtures); the member must be one of the union's declared
-// variants, and a payload-carrying construction must name a variant whose
-// payload member the union's typedef declares (both guaranteed for real source
-// by the checker; the checks are defense for hand-built IR). Any other node
-// kind is a clean rejection, never a guessed lowering.
-func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, unions map[types.TypeID]unionInfo, width types.BuiltinKind) (string, error) {
-	info, ok := unions[node.Type]
-	if !ok {
-		return "", fmt.Errorf("%s constructs an enum-typed value of type %s, which is not a tagged-union type in this program", context, describeType(snapshot, node.Type))
-	}
+// variants (info.variants), and a payload-carrying construction must name a
+// variant whose payload member the union's typedef declares (info.members).
+// Any other node kind is a clean rejection, never a guessed lowering.
+func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, info unionInfo, width types.BuiltinKind) (string, error) {
 	if !containsVariant(info.variants, node.Member) {
 		return "", fmt.Errorf("%s constructs variant symbol %d, which is not one of the union %s's declared variants", context, node.Member, unionTypeName(node.Type))
 	}
@@ -9230,6 +9274,200 @@ func unionMemberType(members []unionMemberInfo, member symbol.SymbolID) (types.T
 		}
 	}
 	return 0, false
+}
+
+// resolveUnionInfoForValue resolves one tagged-union type's unionInfo from the
+// unit's own construction nodes, on demand, for the union-value expression
+// positions that sit outside the builders holding Emit's pre-collected union
+// map (an optional's `some <union>` payload, a union-typed call argument): the
+// payload-carrying VariantConstructs of that type anywhere in the unit supply
+// each constructed member's payload type, exactly the evidence
+// collectUnionTypes accumulates before calling resolveUnionInfo, so a fresh
+// resolution agrees with the emitted union typedef by construction. The
+// checker has already validated every construction, so the payload-type gate
+// collectUnionTypesWalk enforces at collection time needs no repetition here.
+func resolveUnionInfoForValue(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (unionInfo, error) {
+	payloads := make(map[symbol.SymbolID]types.TypeID)
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.VariantConstruct || node.Type != id || len(node.Children) == 0 {
+			continue
+		}
+		if len(node.Children) != 1 {
+			return unionInfo{}, fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload", node.Member, len(node.Children))
+		}
+		payloadNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return unionInfo{}, fmt.Errorf("union variant symbol %d references invalid payload node %d", node.Member, node.Children[0])
+		}
+		payloads[node.Member] = payloadNode.Type
+	}
+	return resolveUnionInfo(unit, snapshot, id, payloads)
+}
+
+// buildUnionValueExpr builds the C expression text for one tagged-union value
+// in a pure value position (an optional's `some <expr>` payload or a union-
+// typed call argument): a reference to an already-declared union-typed local in
+// scope of exactly want (a SymbolValue, emitted as the local's own
+// pebble_local_<symbol> C name), a read of a union-typed struct field (a Load
+// of a FieldPlace, `h.tag`), a force-unwrap of a union-payload optional (a
+// CheckedOptionalUnwrap, `o!`), or a fresh variant construction
+// (Choice.value(5) / Choice.empty / Choice.empty(), built by the same
+// buildUnionConstruction a union local's declaration uses, with the union's
+// info resolved on demand by resolveUnionInfoForValue). A SourceAlias is
+// transparent and unwrapped to its single child, exactly as buildEnumValue
+// unwraps one. Every shape must resolve to exactly the want union type (the
+// checker guarantees it for real source; the check is defense for hand-built
+// IR) and emits a value of that union's own pebble_union_<typeID>_t C type, so
+// the value is trivially valid wherever the union typedef is expected. Any
+// other node kind is a clean rejection, never a guessed lowering.
+func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, context string, want types.TypeID, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s references invalid node %d", context, id)
+	}
+	switch node.Kind {
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || info.enumType == 0 {
+			return "", fmt.Errorf("%s references symbol %d, which is not an enum/tagged-union-typed local declared earlier in the body", context, node.Symbol)
+		}
+		if info.enumType != want {
+			return "", fmt.Errorf("%s references symbol %d, a local of type %s, not the union type %s", context, node.Symbol, describeType(snapshot, info.enumType), unionTypeName(want))
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.EnumVariantValue, tir.VariantConstruct:
+		if node.Type != want {
+			return "", fmt.Errorf("%s constructs union type %s, want %s", context, unionTypeName(node.Type), unionTypeName(want))
+		}
+		info, err := resolveUnionInfoForValue(unit, snapshot, node.Type)
+		if err != nil {
+			return "", err
+		}
+		return buildUnionConstruction(unit, snapshot, fileSet, node, locals, context, info, width)
+	case tir.Load:
+		// A read of a union-typed struct field (`h.tag`, the struct-field
+		// read-back shape): a Load of a FieldPlace whose place's declared field
+		// type is the tagged union, lowered by buildStructFieldRead to the
+		// field's own C projection, which the struct's typedef declares with the
+		// union's own pebble_union_<typeID>_t (see structFieldCType).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s contains a Load referencing invalid place node %d", context, node.Children[0])
+		}
+		if place.Kind != tir.FieldPlace {
+			return "", fmt.Errorf("%s contains a Load whose place is a %s, want a FieldPlace (a tagged-union struct field read)", context, place.Kind)
+		}
+		if node.Type != want {
+			return "", fmt.Errorf("%s contains a Load of type %s, want a field of the union type %s", context, describeType(snapshot, node.Type), unionTypeName(want))
+		}
+		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of a union-payload optional (`o!`, the optional
+		// read-back shape): the unwrap's own Type is the union, and the optional
+		// local's payload must be exactly that union (see
+		// buildUnionUnwrapExpr).
+		if node.Type != want {
+			return "", fmt.Errorf("%s contains a CheckedOptionalUnwrap of union type %s, want %s", context, unionTypeName(node.Type), unionTypeName(want))
+		}
+		return buildUnionUnwrapExpr(unit, snapshot, fileSet, node, locals, width)
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
+		}
+		return buildUnionValueExpr(unit, snapshot, fileSet, node.Children[0], locals, context, want, width)
+	default:
+		return "", fmt.Errorf("%s contains a %s of tagged-union type, want a reference to a union-typed local, a union variant construction, a union-typed struct field read, or a union-payload optional force-unwrap", context, node.Kind)
+	}
+}
+
+// buildUnionUnwrapExpr builds the C expression text for one force-unwrap of an
+// optional whose payload is a tagged union (a tir.CheckedOptionalUnwrap whose
+// own Type is the union, e.g. `o!` where o is ?Choice): the union value read
+// back out of the optional's .value field, checked for presence. The runtime's
+// pebble_rt_checked_unwrap_* helpers are one-per-scalar-width and have no
+// struct-returning form, so the check is emitted inline as a C conditional
+// whose absent branch panics:
+//
+//	<base>.has_value ? <base>.value : (pebble_rt_panic(&(PebblePanicInfo){ .kind = PEBBLE_PANIC_UNWRAP_FAILED, ... }), (pebble_union_<typeID>_t){0})
+//
+// the absent branch's comma expression reuses the same
+// PEBBLE_PANIC_UNWRAP_FAILED panic the scalar unwrap helpers raise (see
+// buildUnionUnwrapPanicElse), and the ternary's two branches share the union's
+// own typedef type, so the whole expression is a valid C value of
+// pebble_union_<typeID>_t. The base is either an optional-typed local
+// (a SymbolValue, `pebble_local_<sym>`) or an optional-typed struct field read
+// (a Load of a FieldPlace, the `b.value!` shape); the optional's payload must
+// be exactly the unwrap's own union Type (guaranteed for real source by the
+// checker; the check is defense for hand-built IR).
+func buildUnionUnwrapExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if len(node.Children) != 1 {
+		return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+	}
+	child, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+	}
+	var base string
+	var optionalType types.TypeID
+	switch child.Kind {
+	case tir.SymbolValue:
+		info, declared := locals[child.Symbol]
+		if !declared || info.optional == 0 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		base = fmt.Sprintf("pebble_local_%d", child.Symbol)
+		optionalType = info.optional
+	case tir.Load:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of a %s, want a place", child.Kind)
+		}
+		expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		if !isOptional(snapshot, typ) {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of a %s, want an optional-typed place", describeType(snapshot, typ))
+		}
+		base = expr
+		optionalType = typ
+	default:
+		return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local or a Load of an optional-typed place", child.Kind)
+	}
+	payloadKey, ok := snapshot.Key(optionalType)
+	if !ok || payloadKey.Kind() != types.Optional {
+		return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of an unresolvable optional type %d", optionalType)
+	}
+	payload, ok := payloadKey.Child()
+	if !ok || payload != node.Type {
+		return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d whose payload %s is not the union type %s the unwrap yields", child.Symbol, describeType(snapshot, payload), unionTypeName(node.Type))
+	}
+	return fmt.Sprintf("%s.has_value ? %s.value : %s", base, base, buildUnionUnwrapPanicElse(fileSet, node.Span, node.Type)), nil
+}
+
+// buildUnionUnwrapPanicElse is the absent-optional branch of a union-payload
+// force-unwrap's inline conditional: a comma expression whose first operand
+// panics with PEBBLE_PANIC_UNWRAP_FAILED via the runtime's noreturn
+// pebble_rt_panic (the same panic the scalar pebble_rt_checked_unwrap_*
+// helpers raise) and whose second operand is a zero-valued compound literal of
+// the union's own typedef, so the comma expression is itself a well-typed
+// pebble_union_<typeID>_t value the conditional's other branch can share. The
+// panic's file/line/column come from the unwrap node's own Span, resolved
+// exactly like buildSourceLoc resolves a checked call's location.
+func buildUnionUnwrapPanicElse(fileSet *source.FileSet, span source.Span, unionType types.TypeID) string {
+	file := "NULL"
+	line, column := 0, 0
+	if fileSet != nil {
+		if f, ok := fileSet.File(span.Source); ok {
+			pos := f.Position(span.Start)
+			file = fmt.Sprintf("%q", escapeCString(f.Path()))
+			line, column = pos.Line, pos.Column
+		}
+	}
+	info := fmt.Sprintf("(PebblePanicInfo){ .kind = PEBBLE_PANIC_UNWRAP_FAILED, .message = NULL, .file = %s, .line = %d, .column = %d }", file, line, column)
+	return fmt.Sprintf("(pebble_rt_panic(&%s), (%s){0})", info, unionTypeName(unionType))
 }
 
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
@@ -12481,26 +12719,41 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		}
 		return "", expr, nil
 	case isEnumType(unit, snapshot, param.Type):
-		// An enum/union-typed parameter: the argument is a reference to an
-		// already-declared enum/union-typed local in scope of exactly the
+		// An enum/union-typed parameter: the argument is a value of exactly
+		// the parameter's type, emitted at the parameter's own C typedef (the
+		// plain pebble_enum_<typeID>_t for a plain-enum parameter, or the
+		// union's pebble_union_<typeID>_t for a tagged-union parameter — the
+		// C type helperSignature declares the parameter with). For a plain
+		// enum the only supported argument is a reference to an
+		// already-declared enum-typed local in scope of exactly the
 		// parameter's type (a SymbolValue — e.g. unwrap_or(a, 0) passing the
-		// union local a), emitted as the local's own pebble_local_<symbol> C
-		// name. The type's own typedef (pebble_enum_<typeID>_t /
-		// pebble_union_<typeID>_t) makes passing the whole value by value
-		// trivially valid C, matching the C type the parameter is declared
-		// with (see helperSignature). An inline variant construction or a
-		// reference to a nonmatching local is a clean rejection, never a
-		// guessed lowering.
+		// union local a); for a tagged union the argument may additionally be
+		// a union-typed struct field read (h.tag), a union-payload optional
+		// force-unwrap (o!), or an inline variant construction, all built by
+		// the same buildUnionValueExpr a tagged-union payload uses (see
+		// buildCallArgument's isTaggedUnionType branch below). The type's own
+		// typedef makes passing the whole value by value trivially valid C,
+		// matching the C type the parameter is declared with. Anything else —
+		// a nonmatching local, a variant literal to a plain-enum parameter
+		// without binding it into a local first — is a clean rejection, never
+		// a guessed lowering.
+		if isTaggedUnionType(unit, snapshot, param.Type) {
+			expr, err := buildUnionValueExpr(unit, snapshot, fileSet, argID, locals, fmt.Sprintf("call to symbol %d parameter %d (symbol %d) of union type %s", calleeSymbol, position, param.Symbol, unionTypeName(param.Type)), param.Type, width)
+			if err != nil {
+				return "", "", err
+			}
+			return "", expr, nil
+		}
 		argNode, ok := unit.Node(argID)
 		if !ok {
 			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) references invalid node %d", calleeSymbol, position, param.Symbol, argID)
 		}
 		if argNode.Kind != tir.SymbolValue {
-			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) of type %s is a %s, want a reference to an enum/union-typed local of exactly that type in scope (binding the value into a local first is required)", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), argNode.Kind)
+			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) of type %s is a %s, want a reference to an enum-typed local of exactly that type in scope (binding the value into a local first is required)", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), argNode.Kind)
 		}
 		info, declared := locals[argNode.Symbol]
 		if !declared || info.enumType != param.Type {
-			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) passes symbol %d, which is not a local of the parameter's enum/union type %s", calleeSymbol, position, param.Symbol, argNode.Symbol, describeType(snapshot, param.Type))
+			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) passes symbol %d, which is not a local of the parameter's enum type %s", calleeSymbol, position, param.Symbol, argNode.Symbol, describeType(snapshot, param.Type))
 		}
 		return "", fmt.Sprintf("pebble_local_%d", argNode.Symbol), nil
 	case isStruct(snapshot, param.Type):
@@ -14615,6 +14868,17 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 		return runtimeTypeName(unit, snapshot, id), nil
 	}
 	if isStruct(snapshot, id) {
+		// A tagged union and a plain enum are both enum-shaped (isEnumType
+		// reports true for each), but only a plain enum's C representation is a
+		// bare C enum typedef — a tagged union's real representation is the
+		// tag-plus-payload struct its buildUnionTypedef pair emits, so a field
+		// whose type is a tagged union is declared with the union's own typedef
+		// name (pebble_union_<typeID>_t), the same C type a tagged-union local,
+		// parameter, and result are declared with (see unionTypeName), and the
+		// same distinction isTaggedUnionType draws everywhere else in this file.
+		if isTaggedUnionType(unit, snapshot, id) {
+			return unionTypeName(id), nil
+		}
 		if isEnumType(unit, snapshot, id) {
 			return enumTypeName(id), nil
 		}
@@ -14680,6 +14944,18 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 		return tupleTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
+		// A tagged union and a plain enum are both enum-shaped (isEnumType
+		// reports true for each), but only a plain enum's C representation is a
+		// bare C enum typedef — a tagged union's real representation is the
+		// tag-plus-payload struct its buildUnionTypedef pair emits, so an
+		// optional payload that is a tagged union is declared with the union's
+		// own typedef name (pebble_union_<typeID>_t) as the optional struct's
+		// .value field, the same C type a tagged-union local, parameter, and
+		// result are declared with (see unionTypeName), and the same distinction
+		// isTaggedUnionType draws everywhere else in this file.
+		if isTaggedUnionType(unit, snapshot, id) {
+			return unionTypeName(id), nil
+		}
 		if isEnumType(unit, snapshot, id) {
 			return enumTypeName(id), nil
 		}
