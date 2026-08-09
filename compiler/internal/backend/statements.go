@@ -972,8 +972,15 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 //	<indent>}
 //
 // `<` for the exclusive form (`..`), `<=` for the inclusive form (`..=`),
-// from the node's RangeInclusive field. The iterator's own C type is the
-// entry's resolved width (cType(width)); the start/end are ordinary integer
+// from the node's RangeInclusive field. When the end bound is not an integer
+// literal, a `pebble_temp_<endNodeID>` C local holding the end value is
+// declared before the loop (at the same indent, as the loop's own leading
+// statement) and the condition compares against that local instead of
+// re-splicing the raw end expression — so a side-effecting or expensive end
+// bound is evaluated exactly once, not once per condition check. A literal end
+// bound is spliced directly (re-splicing a decimal number has no
+// evaluation-order consequence). The iterator's own C type is the entry's
+// resolved width (cType(width)); the start/end are ordinary integer
 // expressions built by buildRangeBound (an int-typed integer literal lowered
 // as its decimal text, anything else via buildExpr at the entry's width — the
 // checker leaves the bounds as the unanchored int builtin whenever the
@@ -1071,7 +1078,32 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		step = "++"
 	}
 	indent := strings.Repeat("    ", depth+1)
-	return fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d%s) {\n%s\n%s}", indent, cType(boundType), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endText, rangeNode.Symbol, step, bodyText, indent), nil
+	// A non-literal end bound is evaluated exactly once, into its own C local
+	// declared before the loop, rather than spliced directly into the for-loop
+	// condition (where ordinary C for semantics would re-evaluate it before
+	// every iteration — a side-effecting or expensive end expression would run
+	// once per iteration check instead of once total). The start bound needs no
+	// such treatment: it is assigned into the C loop-variable initializer,
+	// which C evaluates exactly once already. A plain integer literal end bound
+	// keeps the existing fast path (re-splicing a decimal number has no
+	// evaluation-order consequence), mirroring the literal/non-literal split
+	// the descending-range direction logic above already makes. The temp's C
+	// type is the loop's own bound type — the checker anchors the start bound
+	// to the end bound's type, so boundType is the end expression's type too
+	// and the cached local compares against the iterator without any new
+	// signedness or width concern.
+	endExpr := endText
+	var endPre string
+	if endIsLiteral != nil {
+		endTemp := fmt.Sprintf("pebble_temp_%d", rangeNode.Children[1])
+		endPre = fmt.Sprintf("%s%s %s = %s;", indent, cType(boundType), endTemp, endText)
+		endExpr = endTemp
+	}
+	forText := fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d%s) {\n%s\n%s}", indent, cType(boundType), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endExpr, rangeNode.Symbol, step, bodyText, indent)
+	if endPre != "" {
+		return endPre + "\n" + forText, nil
+	}
+	return forText, nil
 }
 
 // buildRangeBound builds one bound (the start or the end) of a range loop. A

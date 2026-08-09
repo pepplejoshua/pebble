@@ -1524,6 +1524,83 @@ func TestEmitDescendingRangeLoopInclusiveCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceCompilesAndRuns(t *testing.T) {
+	// A non-literal end bound (a side-effecting helper call) must be evaluated
+	// exactly once, not once per loop condition check. This is the tracker's
+	// reproduction: bound() prints on every call, so the number of printed
+	// lines counts the actual number of calls. Before the fix the emitted C
+	// spliced pebble_fn_<callee>(ctx) directly into the for-condition, and C
+	// re-evaluated it before every iteration, printing 4 times for a
+	// 3-iteration loop; now the end value is cached in a pebble_temp_<id> C
+	// local before the loop and the condition compares against that local, so
+	// bound() runs once. The loop still iterates correctly (count = 3 is the
+	// exit code) — the assertion here is about call count, not iteration
+	// count. Bounded execution.
+	src := "fn bound() int { print \"bound called\\n\"; return 3; } fn main() int { var count = 0; loop 0..bound() : i { count = count + 1; } return count; }"
+	out := emitAndRunCaptureBounded(t, src, false, 3, false)
+	if got := strings.Count(out, "bound called"); got != 1 {
+		t.Fatalf("bound() called %d time(s), want exactly 1 (once for the whole loop); output:\n%s", got, out)
+	}
+}
+
+func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceWritesC(t *testing.T) {
+	// The emitted C must cache a non-literal end bound in a pebble_temp_<id>
+	// local declared before the loop, and the for-loop condition must compare
+	// against that local rather than re-splicing the raw end expression — the
+	// shape of the once-only evaluation fix. The temp line initializes from
+	// the helper call (pebble_fn_...), and the for-header references the temp
+	// name instead of that call.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn bound() int { print \"bound called\\n\"; return 3; } fn main() int { var count = 0; loop 0..bound() : i { count = count + 1; } return count; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	var tempLine, forLine string
+	foundTemp, foundFor := false, false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "pebble_temp_") && strings.Contains(line, " = ") && strings.HasSuffix(line, ";") {
+			tempLine = line
+			foundTemp = true
+		}
+		if strings.Contains(line, "for (int32_t pebble_local_") {
+			forLine = line
+			foundFor = true
+		}
+	}
+	if !foundTemp {
+		t.Fatalf("emitted C missing a pebble_temp_<id> declaration for the end bound:\n%s", out)
+	}
+	if !strings.Contains(tempLine, "pebble_fn_") {
+		t.Errorf("pebble_temp_ line does not initialize from the bound() call:\n%s", tempLine)
+	}
+	if !foundFor {
+		t.Fatalf("emitted C missing the range-loop for-header:\n%s", out)
+	}
+	if !strings.Contains(forLine, "pebble_temp_") {
+		t.Errorf("for-header compares against the raw end expression instead of the pebble_temp_<id> local:\n%s", forLine)
+	}
+	if strings.Contains(forLine, "pebble_fn_") {
+		t.Errorf("for-header still re-splices the end-bound call expression:\n%s", forLine)
+	}
+}
+
+func TestEmitRangeLoopNonLiteralDescendingBoundStaysAscendingCompilesAndRuns(t *testing.T) {
+	// A non-literal descending scenario (start > runtime end value): the
+	// checker allows it (it cannot know the end value at compile time), and
+	// the descending-range fix is deliberately scoped to literal bounds only,
+	// so a non-literal end bound keeps the ascending `<` + `++` lowering.
+	// bound() returns 3, so 5..3 is an ascending range that is false on the
+	// first check: zero iterations (count = 0, exit code 0), and the
+	// once-only evaluation fix still holds (bound() called exactly once, by
+	// the single condition check). Bounded execution.
+	src := "fn bound() int { print \"bound called\\n\"; return 3; } fn main() int { var count = 0; loop 5..bound() : i { count = count + 1; } return count; }"
+	out := emitAndRunCaptureBounded(t, src, false, 0, false)
+	if got := strings.Count(out, "bound called"); got != 1 {
+		t.Fatalf("bound() called %d time(s), want exactly 1; output:\n%s", got, out)
+	}
+}
+
 func TestEmitZeroLengthRangeLoopCompilesAndRuns(t *testing.T) {
 	// A zero-length range (start == end) must still correctly run zero times
 	// — this is not a regression from the descending fix. Both exclusive and
