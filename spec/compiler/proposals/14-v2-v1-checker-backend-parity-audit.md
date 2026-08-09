@@ -382,14 +382,23 @@ copy their full reproduction or plan.
 2. The arena rewrite exposes struct/slice typedef identity errors and missing
    checked-arithmetic suffixes. The remaining arena functions still need the
    slice-and-offset rewrite.
-3. **READ-SIDE RESOLVED (`7b7eee0`).** `self.Ok`/`self.Err` now correctly
-   readable inside a narrowed switch arm for a generic-self receiver (4
-   new tests, checker-verified, causation-checked). Write-side (e.g.
-   `set_error`'s `self.Err = error;`) is a SEPARATE, pre-existing gap —
-   confirmed to fail identically for a non-generic union too, so it is not
-   the generic-narrowing defect. `std/result.peb` still does not compile
-   end-to-end until the write-side is fixed. See the new finding below for
-   the write-side gap and a real latent-corruption risk found alongside it.
+3. **RESOLVED (`7b7eee0` read-side, `7e7163e` write-side).** `self.Ok`/
+   `self.Err` correctly readable inside a narrowed switch arm for a
+   generic-self receiver (4 tests, checker-verified, causation-checked).
+   Write-side (`self.Err = error;`) now accepted by the checker for any
+   receiver form (pointer, value, plain local) and correctly sets the
+   union's `.tag` in the backend on write (2 more tests, causation-
+   checked). The tag-omission latent-corruption risk noted below is
+   fixed as part of the same commit. `std/result.peb`'s `set_error`
+   method itself now checker/backend-verified via a direct non-generic
+   reproduction of the same pattern; full end-to-end compile of
+   `std/result.peb` via module import syntax was not separately
+   exercised (out of scope). Fixing this also fixed a distinct pre-
+   existing bug found along the way: `pointerTypeName` had no case for
+   a pointer-to-union pointee at all (only `isStruct` was handled), so
+   any `*SomeUnion`-typed pointer receiver/parameter emitted a bogus C
+   type name — now fixed as `pointerTypeNameForUnit`, used at every
+   `pointerTypeName` call site.
 4. Qualified static methods are unsupported.
 5. ~~`main(argv []str)` cannot receive C process arguments.~~ RESOLVED (`fb94640`).
 6. Inline slice construction fails in pure nested expression positions.
@@ -493,7 +502,7 @@ root cause before an Orc implementation task starts.
 | ~~An enum/tagged-union-returning `DirectCall` used directly in a general value position still cleanly rejects~~ | **RESOLVED (`2978280`)** for the positions that route through `buildEnumValue`/`buildUnionValueExpr` (switch subject for enums, comparison operands, call arguments) — added the missing `DirectCall` case to both, mirroring the existing `buildUintExpr`/`buildStrOperand` pattern. Independently verified, causation-checked. | — |
 | **Corrected/re-scoped:** a tagged union used directly as a **switch subject** specifically (`switch make() { case .value: ...; else: ... }` where `make()` returns a union) was assumed to be a `statements.go` backend gap, but direct reproduction shows it actually fails at the **checker**, not the backend: `error[C0611]: switch case value is not a variant of the subject type` — the checker cannot resolve `.value` as a variant of the subject's type when the subject is a call expression rather than a local/parameter. This may be a third variant of the same-scope-narrowing family already logged below (parameter subjects work, same-scope-`let`-bound-local subjects fail with `C0605`, and now call-expression subjects fail differently with `C0611`) — not yet confirmed whether they share one root cause or are three separate checker gaps. | high, directly reproduced, but root cause not yet fully isolated (checker vs. narrower backend-adjacent gap; relationship to the existing narrowing finding below is unconfirmed) | one checker-level investigation: trace why `.value` fails to resolve as a `Choice` variant specifically when the switch subject is a `DirectCall` node, and whether this is the same code path that already fails for a same-scope local subject |
 | Value-source support changes by argument, initializer, return, index, projection, and assignment position | high from the dedicated builders and their clean rejections | reproduce one destination position and one source node shape per slice |
-| **New, found while fixing generic `Result[T,E]` read-side narrowing:** writing to a tagged-union variant member (e.g. `self.Err = error;`) is rejected with `C0605` — and this is unconditional, not specific to generic-self receivers; it fails identically for a plain non-generic union too. The checker currently requires switch-narrowing (`narrowedUnionVariantAccess`) for ANY variant-name member access, including a pure lvalue write with no enclosing switch at all. **Real latent risk found alongside this:** the backend's existing lvalue-write path for a union variant payload (`places.go`'s `buildPlaceLValue`, `unionVariantPayloadMember` case) already emits the `.payload.pebble_field_<m>` projection — but does NOT update the union's `.tag`. So once the checker-side write gap is eventually fixed, a naive implementation would silently write a payload value without marking which variant is active, corrupting any later `switch`/narrowing read of that same union. Whoever picks this up must decide write semantics (does a variant write also set the tag?) before touching the checker rule, not after. | high, directly reproduced (both the checker rejection and the tag-omission in the backend code) | decide write semantics first (does assigning a variant member also set the tag — almost certainly yes), then fix the checker rule, then verify/fix the backend tag handling; `std/result.peb`'s `set_error` is the real consumer to prove against |
+| ~~writing to a tagged-union variant member (e.g. `self.Err = error;`) is rejected with `C0605`~~ | **RESOLVED (`7e7163e`).** Checker's `unionVariantPayloadWrite` accepts a write to a union's own declared variant payload member (pointer, value, or plain-local receiver), still hard-rejecting any non-variant name. Backend's `unionVariantPayloadStoreTarget` + a comma-expression store now sets `.tag` to the correct discriminant on the same write, closing the latent-corruption risk. Also fixed a distinct bug found while wiring this up: `pointerTypeName` had no case for a pointer-to-union pointee at all, so `*SomeUnion` params/receivers emitted a bogus C type name — replaced with `pointerTypeNameForUnit` at every call site. 3 new tests (checker accept/reject, backend compile-run), causation-checked by reverting all touched files to HEAD and confirming the original `C0605` rejection reproduces exactly. | — |
 | Tagged-union switch narrowing works when the subject is a function parameter but fails (`C0605`) when the subject is an ordinary same-scope `let`-bound local (`let c = Choice.value(42); switch c { case .value: return c.value; }`) | confirmed by direct reproduction while working the struct-field/optional-payload C-type fix; not yet root-caused | one checker-level reproduction isolating why narrowing recognizes a parameter binding but not a local binding in the same scope |
 
 ## Accepted V2 differences and extensions
