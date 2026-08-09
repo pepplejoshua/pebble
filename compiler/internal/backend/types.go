@@ -1009,15 +1009,15 @@ func enumTypeName(id types.TypeID) string {
 // — the type's own C storage type: a fixed-width integer at its own cType
 // (int32_t for int/i32, int64_t for i64, uint64_t for uint/u64, and so on),
 // bool as bool, char as the fixed int32_t, str as PebbleStr, a tuple/optional/
-// struct/slice/enum as its own typedef name (tupleTypeName/optionalTypeName/
-// structTypeName/sliceTypeName/enumTypeName), and a runtime type as its
-// hand-written C type (runtimeTypeName). This is the general form of the
-// SizeofType case's original builtin-only three-width dispatch; it exists so
-// `sizeof` of an aggregate type (std/hmap.peb's `sizeof Entry[K, V]`, where
-// the TypeArg is the Entry struct type) sizes the storage by the aggregate's
-// OWN typedef, never the fallback sizeof(uint64_t) the builtin-only dispatch
-// would produce. Anything without a C type this backend emits is a clean
-// rejection naming the type.
+// struct/slice/enum/array as its own typedef name (tupleTypeName/
+// optionalTypeName/structTypeName/sliceTypeName/enumTypeName/arrayTypeName),
+// and a runtime type as its hand-written C type (runtimeTypeName). This is the
+// general form of the SizeofType case's original builtin-only three-width
+// dispatch; it exists so `sizeof` of an aggregate type (std/hmap.peb's
+// `sizeof Entry[K, V]`, where the TypeArg is the Entry struct type) sizes the
+// storage by the aggregate's OWN typedef, never the fallback sizeof(uint64_t)
+// the builtin-only dispatch would produce. Anything without a C type this
+// backend emits is a clean rejection naming the type.
 func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
@@ -1042,6 +1042,9 @@ func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 	}
 	if isSlice(snapshot, id) {
 		return sliceTypeName(id), nil
+	}
+	if isArray(snapshot, id) {
+		return arrayTypeName(id), nil
 	}
 	// A tagged union is enum-shaped (isEnumType reports true for it), but its
 	// real C representation is the tag-plus-payload struct its typedef pair
@@ -1073,7 +1076,7 @@ func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 			}
 		}
 	}
-	return "", fmt.Errorf("sizeof of type %s is not supported, want a fixed-width integer, bool, char, str, tuple, optional, slice, enum, struct, or pointer", describeType(snapshot, id))
+	return "", fmt.Errorf("sizeof of type %s is not supported, want a fixed-width integer, bool, char, str, tuple, optional, slice, array, enum, struct, or pointer", describeType(snapshot, id))
 }
 
 // unionTypeName is the deterministic C name of one distinct tagged-union type's

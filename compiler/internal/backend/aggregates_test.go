@@ -12,6 +12,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -2895,6 +2896,63 @@ fn main() int {
 		"} " + unionTypeName(unionType) + ";"
 	if !strings.Contains(out, unionStruct) {
 		t.Errorf("emitted C is missing the tagged-struct typedef %q (sizeof is the only reference, so the union typedef pair must still be collected):\n%s", unionStruct, out)
+	}
+}
+
+func TestEmitSizeofFixedArrayCompilesAndRuns(t *testing.T) {
+	// sizeof on a fixed array must resolve to the array's OWN typedef
+	// (pebble_array_<typeID>_t, the struct wrapper the backend emits for every
+	// array type, see buildArrayTypedefs) — never a clean rejection — and the
+	// returned size must be the element size times the array length. The
+	// tracker's exact repro shape (sizeof [4]int is the ONLY reference to the
+	// array type in the whole program): the C typedef is `typedef struct {
+	// int32_t data[4]; } pebble_array_N_t;`, i.e. 4 * 4 = 16 bytes. Before the
+	// fix sizeofCTypeName had no isArray branch, so emission failed outright
+	// with "sizeof of type [4]int is not supported, want ... slice, enum,
+	// struct, or pointer".
+	out := emitAndRunCapture(t, `fn main() int {
+    let s = sizeof [4]int;
+    print s;
+    return 0;
+}`, false, 0, false)
+	if out != "16\n" {
+		t.Errorf("program printed %q, want the array's element-size-times-length size %q", out, "16\n")
+	}
+}
+
+func TestEmitSizeofFixedArrayOnlyReferenceEmitsArrayTypedef(t *testing.T) {
+	// Emitted-C shape check for the typedef-collection fix, using the exact
+	// repro shape (sizeof is the ONLY reference to the array): the sizeof must
+	// reference the array's own pebble_array_<typeID>_t typedef, and the
+	// typedef must be collected and emitted even though nothing else in the
+	// program references the type; before the fix the lowered sizeof named a
+	// typedef that was never declared, which cc rejected.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn main() int {
+    let s = sizeof [4]int;
+    print s;
+    return 0;
+}`, "main", false)
+	var arrayType types.TypeID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.SizeofType {
+			arrayType = node.TypeArg
+			break
+		}
+	}
+	if arrayType == 0 {
+		t.Fatal("fixture has no SizeofType node to read its array TypeArg from")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sizeof("+arrayTypeName(arrayType)+")") {
+		t.Errorf("emitted C does not sizeof the array's own typedef %q:\n%s", arrayTypeName(arrayType), out)
+	}
+	arrayTypedef := "typedef struct {\n    int32_t data[4];\n} " + arrayTypeName(arrayType) + ";"
+	if !strings.Contains(out, arrayTypedef) {
+		t.Errorf("emitted C is missing the array typedef %q (sizeof is the only reference, so the array's typedef must still be collected):\n%s", arrayTypedef, out)
 	}
 }
 

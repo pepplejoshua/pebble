@@ -97,22 +97,90 @@ func findFunctionBody(unit *tir.Unit, decl tir.Node, what string) (tir.Node, tir
 	return tir.Node{}, 0, fmt.Errorf("%s body declaration not found in unit: no FunctionDecl for FunctionID %d", what, decl.Function)
 }
 
-func collectHelperArrayTypes(snapshot *types.Snapshot, helpers []helperInfo) []types.TypeID {
-	seen := make(map[types.TypeID]bool)
-	var ids []types.TypeID
+// collectArrayTypes resolves, in first-encountered order, every array type
+// the emitted program actually references: the entry body (root) followed by
+// every reachable helper's body, each walked by the same Children + DeferChain
+// traversal collectDirectCalls uses, plus each reachable helper's own declared
+// parameter types and result type (the collectHelperArrayTypes scan, which
+// covers an array type referenced only by a helper's C signature — an
+// array-typed parameter or array-returning helper names
+// pebble_array_<typeID>_t even if no reachable body ever constructs an array
+// of that type). The walk closes the same compounding gap the tagged-union
+// sizeof fix (f2e8c62) closed for union enums: a bare `sizeof [N]T` with no
+// other reference to that array type anywhere in the program must still force
+// the array's typedef to be emitted, or the lowered sizeof(pebble_array_
+// <typeID>_t) names an undeclared C type. Array types referenced only as
+// entry-body locals need no typedef here — such a local is emitted as a plain
+// C array (element C type + `[length]`, see buildArrayLocalDeclaration), not
+// as its pebble_array_<typeID>_t typedef — so the walk deliberately does not
+// collect every array-typed local, matching what the emitted C actually
+// references. The caller deduplicates (see Emit) so each distinct array type
+// yields exactly one typedef, emitted before any function definition in the
+// final output.
+func collectArrayTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) ([]types.TypeID, error) {
+	var collected []types.TypeID
+	if err := collectArrayTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
 	for _, helper := range helpers {
+		if err := collectArrayTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
 		for _, param := range helper.decl.Parameters {
-			if isArray(snapshot, param.Type) && !seen[param.Type] {
-				seen[param.Type] = true
-				ids = append(ids, param.Type)
+			if isArray(snapshot, param.Type) {
+				collected = append(collected, param.Type)
 			}
 		}
-		if isArray(snapshot, helper.decl.ResultType) && !seen[helper.decl.ResultType] {
-			seen[helper.decl.ResultType] = true
-			ids = append(ids, helper.decl.ResultType)
+		if isArray(snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
 		}
 	}
-	return ids
+	seen := make(map[types.TypeID]bool, len(collected))
+	var deduplicated []types.TypeID
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		deduplicated = append(deduplicated, id)
+	}
+	return deduplicated, nil
+}
+
+// collectArrayTypesWalk appends every array type encountered in the tree
+// rooted at nodeID to out, in first-encountered order, following Children and
+// DeferChain exactly like collectDirectCalls so it visits the same reachable
+// region of the node graph the body builders consume. One node shape carries
+// an array type the emitted C actually references a typedef for: a SizeofType
+// node whose TypeArg is an array type — a bare `sizeof [N]T` references the
+// array's pebble_array_<typeID>_t typedef even though nothing else in the
+// program may construct or pass an array of that type, so only the SizeofType
+// node carries it (the same SizeofType collection gap collectUnionTypesWalk
+// closes for union enums).
+func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("array-type walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.SizeofType && isArray(snapshot, node.TypeArg) {
+		// A bare `sizeof` of a fixed array (no construction or helper
+		// signature anywhere, so no other node carries the type): the array's
+		// pebble_array_<typeID>_t typedef must still be collected and emitted,
+		// or the lowered sizeof(pebble_array_<typeID>_t) names an undeclared C
+		// type (see sizeofCTypeName).
+		*out = append(*out, node.TypeArg)
+	}
+	for _, childID := range node.Children {
+		if err := collectArrayTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectArrayTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // discoverReachableHelpers finds exactly the set of non-entry functions the

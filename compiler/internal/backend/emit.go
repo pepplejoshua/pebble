@@ -667,7 +667,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// it for enum-typed fields).
 	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, unionTypedefs))
 	typedefs = appendTypedefBlock(typedefs, aggTypedefs)
-	arrayTypes := collectHelperArrayTypes(snapshot, helpers)
+	arrayTypes, err := collectArrayTypes(unit, snapshot, blockID, helpers)
+	if err != nil {
+		return err
+	}
 	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, arrayTypes)
 	if err != nil {
 		return err
