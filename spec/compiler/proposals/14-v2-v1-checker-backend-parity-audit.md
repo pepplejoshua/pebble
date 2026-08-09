@@ -473,7 +473,7 @@ root cause before an Orc implementation task starts.
 | Assignment-form classic-for initializer reaches TIR but backend rejects it | high; backend documents and tests the rejection | decide whether grammar acceptance is intentional, then track or reject earlier |
 | Whole tuple, array, struct, enum, and string copy/reassignment paths are incomplete | high from explicit backend errors | one type and one operation per investigation; do not combine them |
 | Enum array/slice elements and ordinary optional enum payloads are incomplete | high from explicit backend errors | one shape per investigation |
-| Entry-function recursion cycle is rejected | high; focused backend rejection test exists | decide whether calling `main` is legal source behavior |
+| ~~Entry-function recursion cycle is rejected~~ | **DECIDED (2026-08-09, direct instruction):** current V2 behavior (rejecting a call cycle through `main`) is correct and intentional — `main` is the entry point, it should not be callable from anywhere. Move to "Accepted V2 differences" below; not a defect. | — |
 | Checked numeric helper coverage is incomplete beyond the two symptoms in tracker item 2 | high from helper tables and suffix functions | build a checker-accepted width/operation matrix, then fix one family per task |
 | Each aggregate/container C position accepts a different child-type set | high from the dedicated array, slice, tuple, optional, struct, union, and function-type C-name gates | reproduce one container plus one rejected child type per slice; do not dispatch a general container task |
 | ~~A tagged union used as a struct field or optional payload receives the plain-enum C type name~~ | **RESOLVED (`4d1ef51`).** Reproduced two stacked bugs: a typedef-ordering defect (union typedef emitted after first use, hard `cc` failure) and the predicted wrong-type-selection bug underneath it (confirmed real, but caught by `-Werror` as a hard error, not silent). Both fixed in `emit.go`; `structFieldCType`/`optionalPayloadCType` now use the existing `isTaggedUnionType` distinction. 5 new compile-run tests; construct-store-read-back round-trip and panic-on-none independently verified, not just clean compilation. | — |
@@ -504,7 +504,8 @@ These items must not return as parity defects without a new language decision:
 - local and global non-extern bindings require initialization;
 - C convention is an extern boundary, not a user-function body convention;
 - boolean switch and switch-targeted `break` are V2 extensions;
-- richer module-level constant evaluation is a V2 extension.
+- richer module-level constant evaluation is a V2 extension;
+- `main` cannot be called recursively or from anywhere else in the program — it is the entry point only, decided 2026-08-09.
 
 ## Build configuration and ABI ledger
 
