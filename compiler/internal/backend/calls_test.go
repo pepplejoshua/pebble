@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1424,5 +1425,141 @@ fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
 	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
 	if !result.Successful() {
 		t.Fatalf("check failed on minimal std-module generic indexed field write: %+v", diagnostics.Items())
+	}
+}
+
+func TestEmitEnumHelperReturnCompilesAndRuns(t *testing.T) {
+	// The exact reproduction from the gap analysis (proposal 13, active
+	// defect): a plain-enum-returning helper called from the entry, its result
+	// bound into an enum-typed local via a DirectCall initializer and then
+	// read back through a narrowing switch. Before the fix, helperSignature's
+	// return-type switch had no isEnumType case — an enum result fell through
+	// to the isStruct case (an enum is Nominal, so isStruct reports true) and
+	// the tail return was rejected with a struct-flavored error. pick() returns
+	// Color.green, so the green case fires and the exit code is 1.
+	emitAndRun(t, `type Color = enum { red, green, blue };
+
+fn pick() Color {
+    return Color.green;
+}
+
+fn main() int {
+    let c = pick();
+    switch c {
+        case Color.red: return 0;
+        case Color.green: return 1;
+        case Color.blue: return 2;
+    }
+}`, false, 1, false)
+}
+
+func TestEmitEnumHelperReturnWritesC(t *testing.T) {
+	// The emitted C for the enum-returning helper: the helper's prototype and
+	// definition are declared with the enum's own pebble_enum_<typeID>_t C
+	// return type (never a struct typedef), its tail return emits the
+	// variant's C constant, and the entry binds the call's result into an
+	// enum-typed local of the same typedef. The pebble_struct_<typeID>_t
+	// negative check proves the helper no longer falls through to the struct
+	// result shape the bug produced.
+	unit, snapshot, entryID, enumType, variants, sources := enumFixture(t, `type Color = enum { red, green, blue };
+
+fn pick() Color {
+    return Color.green;
+}
+
+fn main() int {
+    let c = pick();
+    switch c {
+        case Color.red: return 0;
+        case Color.green: return 1;
+        case Color.blue: return 2;
+    }
+}`)
+	if len(variants) != 3 {
+		t.Fatalf("fixture has %d variants, want 3 (red, green, blue)", len(variants))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static " + enumTypeName(enumType) + " pebble_fn_",
+		"return pebble_variant_" + strconv.Itoa(int(variants[1])) + ";",
+		enumTypeName(enumType) + " pebble_local_",
+		"= pebble_fn_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_struct_"+strconv.Itoa(int(enumType))+"_t pebble_fn") {
+		t.Errorf("emitted C declared the enum-returning helper with a struct typedef, want the enum typedef:\n%s", out)
+	}
+}
+
+func TestEmitUnionHelperReturnCompilesAndRuns(t *testing.T) {
+	// The "or tagged union" half of the gap: a tagged-union-returning helper
+	// constructs a payload-carrying variant, returns it, and the entry binds
+	// the result into a union-typed local and reads it back through a
+	// narrowing switch. pick() constructs Choice.value(5), so the value case
+	// fires and the exit code is 1. This exercises the isTaggedUnionType
+	// result case (declared with the union's pebble_union_<typeID>_t return
+	// type), buildUnionCallInitializer at the call site, and
+	// buildReturnStatement's union branch building the variant construction.
+	emitAndRun(t, `type Choice = union enum { empty void; value int; };
+
+fn pick() Choice {
+    return Choice.value(5);
+}
+
+fn main() int {
+    let c = pick();
+    switch c {
+        case Choice.empty: return 0;
+        case Choice.value: return 1;
+    }
+}`, false, 1, false)
+}
+
+func TestEmitUnionHelperReturnWritesC(t *testing.T) {
+	// The emitted C for the tagged-union-returning helper: the helper is
+	// declared with the union's own pebble_union_<typeID>_t C return type
+	// (never a struct typedef), the entry binds the call's result into a
+	// union-typed local of the same typedef, and the payload-carrying
+	// construction's compound literal is present in the helper body.
+	unit, snapshot, entryID, unionType, variants, sources := unionFixture(t, `type Choice = union enum { empty void; value int; };
+
+fn pick() Choice {
+    return Choice.value(5);
+}
+
+fn main() int {
+    let c = pick();
+    switch c {
+        case Choice.empty: return 0;
+        case Choice.value: return 1;
+    }
+}`)
+	if len(variants) != 2 {
+		t.Fatalf("fixture has %d variants, want 2 (empty, value)", len(variants))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static " + unionTypeName(unionType) + " pebble_fn_",
+		unionTypeName(unionType) + " pebble_local_",
+		"= pebble_fn_",
+		".tag = pebble_variant_" + strconv.Itoa(int(variants[1])),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_struct_"+strconv.Itoa(int(unionType))+"_t pebble_fn") {
+		t.Errorf("emitted C declared the union-returning helper with a struct typedef, want the union typedef:\n%s", out)
 	}
 }

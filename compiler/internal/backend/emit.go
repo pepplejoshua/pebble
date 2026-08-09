@@ -1119,16 +1119,23 @@ type runtimeAllocatorAdapter struct {
 // resultInfo records what the enclosing function's tail return must produce:
 // an ordinary scalar — the entry's resolved integer width, in kind — a str
 // value, in isStr, a char value, in isChar, a tuple, in tuple (its types.TypeID), a struct, in
-// structType, a slice, in sliceType, an optional, in optionalType, or a
+// structType, a plain enum, in enumType, a tagged union, in unionType, a slice, in sliceType, an optional, in optionalType, or a
 // function value, in functionType (its types.TypeID). The fields are
 // mutually exclusive, mirroring localInfo: kind is zero for a compound or str
 // or char result (a tuple/struct is not a types.BuiltinKind), isStr is true only for a
 // str result, isChar is true only for a char result (whose C return type is
-// the fixed int32_t, independent of the entry's width), and tuple/structType/sliceType/optionalType/functionType are zero
+// the fixed int32_t, independent of the entry's width), and tuple/structType/enumType/unionType/sliceType/optionalType/functionType are zero
 // for a scalar result. It is threaded alongside width through buildBlock and
 // buildIf so a tuple/struct-returning helper's tail-position Return builds its
 // value via buildAggregateReturnValue (a SymbolValue naming a matching
 // aggregate-typed local, or a fresh TupleValue/RecordConstruct), a
+// plain-enum-returning helper's tail-position Return builds its value via
+// buildEnumValue (a variant literal, a reference to an enum-typed local, an
+// integer-to-enum cast, or an enum-typed struct field read), a
+// tagged-union-returning helper's tail-position Return builds its value via
+// buildUnionValueExpr (a reference to a union-typed local, a variant
+// construction, a union-typed struct field read, or a union-payload optional
+// force-unwrap), a
 // slice-returning helper's tail-position Return builds its value via
 // buildSliceReturnValue (a SymbolValue naming a matching slice-typed local, or
 // a fresh CheckedSlice construction emitted as the two-statement temp-then-
@@ -1155,6 +1162,8 @@ type resultInfo struct {
 	isChar       bool
 	tuple        types.TypeID
 	structType   types.TypeID
+	enumType     types.TypeID
+	unionType    types.TypeID
 	sliceType    types.TypeID
 	pointerType  types.TypeID
 	optionalType types.TypeID

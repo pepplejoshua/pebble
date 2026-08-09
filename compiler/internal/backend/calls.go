@@ -371,6 +371,41 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 	case isTuple(snapshot, helper.decl.ResultType):
 		returnType = tupleTypeName(helper.decl.ResultType)
 		result = resultInfo{tuple: helper.decl.ResultType}
+	case isTaggedUnionType(unit, snapshot, helper.decl.ResultType):
+		// A tagged-union-result helper (the "or tagged union" half of the
+		// enum/union helper-return gap) is declared with the union's own
+		// pebble_union_<typeID>_t as its C return type — the same typedef a
+		// tagged-union local is declared with, no new typedef shape needed —
+		// and resultInfo records the union-result shape
+		// (resultInfo.unionType, mirroring how resultInfo.enumType was added
+		// for plain-enum results) so buildBlock's tail-position Return builds
+		// its value via buildUnionValueExpr (a SymbolValue naming a
+		// union-typed local, a fresh variant construction, a union-typed
+		// struct field read, or a union-payload optional force-unwrap)
+		// rather than buildAggregateReturnValue, which would reject an
+		// EnumVariantValue/VariantConstruct as a struct return. This must
+		// precede the isEnumType case below (and the isStruct case): a tagged
+		// union is enum-shaped exactly like a plain enum and Nominal like a
+		// struct, but its real C type is the tag-plus-payload struct, never
+		// the bare tag enum or a struct typedef.
+		returnType = unionTypeName(helper.decl.ResultType)
+		result = resultInfo{unionType: helper.decl.ResultType}
+	case isEnumType(unit, snapshot, helper.decl.ResultType):
+		// A plain-enum-result helper (the reported gap: an enum-typed return
+		// previously fell through to the isStruct case below — an enum is
+		// Nominal, so isStruct reports true for it — and got a struct-flavored
+		// rejection on a perfectly valid enum return) is declared with the
+		// enum's own pebble_enum_<typeID>_t as its C return type — the same
+		// typedef an enum local is declared with, no new typedef shape needed —
+		// and resultInfo records the enum-result shape (resultInfo.enumType,
+		// a field added alongside this case) so buildBlock's tail-position
+		// Return builds its value via buildEnumValue (a variant literal, a
+		// SymbolValue naming an enum-typed local or parameter, an
+		// integer-to-enum cast, an enum-typed struct field read, or an
+		// enum-payload optional force-unwrap) rather than buildExpr, which
+		// would reject an enum-typed value.
+		returnType = enumTypeName(helper.decl.ResultType)
+		result = resultInfo{enumType: helper.decl.ResultType}
 	case isStruct(snapshot, helper.decl.ResultType):
 		returnType = runtimeTypeName(unit, snapshot, helper.decl.ResultType)
 		result = resultInfo{structType: helper.decl.ResultType}
@@ -574,6 +609,80 @@ func buildOptionalCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, file
 	}
 	scope[statement.Symbol] = localInfo{optional: initValue.Type}
 	return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
+}
+
+// buildEnumCallInitializer builds a plain enum-typed local's declaration whose
+// initializer is a DirectCall to a helper returning the same enum type:
+// `let c Color = pick();`. This is the call-site half of the enum helper-return
+// gap: once helperSignature admits an enum result type and declares the helper
+// with the enum's own pebble_enum_<typeID>_t C return type, a caller binding
+// that result into a matching enum-typed local needs this direct-initializer
+// shape (mirroring the tuple/struct buildAggregateCallInitializer and the
+// optional buildOptionalCallInitializer). The call's result type is the
+// DirectCall node's own Type, which is the callee's resolved result type, and
+// it must be exactly the local's declared type — double-checked against the
+// callee's declared ResultType (defense for hand-built IR), so the emitted C
+// never initializes a local of one enum type from a call returning another.
+// The call itself is built by buildDirectCallWithPre, the same call-building
+// machinery buildExpr's DirectCall case uses, and the call expression is the
+// local's whole initializer — a `pebble_enum_<typeID>_t pebble_local_<symbol>
+// = f(ctx, ...);` assignment, trivially valid C since the helper's C return
+// type is the local's own typedef (see helperSignature's isEnumType case). The
+// local's scope entry records its enum type (localInfo.enumType), so a later
+// switch subject, reference, or comparison resolves the enum type being used.
+// Like every local, the declaration is followed by a (void) cast against
+// -Wunused-variable.
+func buildEnumCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	calleeDecl, err := findCallDeclaration(unit, initValue)
+	if err != nil {
+		return "", err
+	}
+	if calleeDecl.ResultType != initValue.Type {
+		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+	}
+	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+	return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
+}
+
+// buildUnionCallInitializer builds a tagged-union-typed local's declaration
+// whose initializer is a DirectCall to a helper returning the same union type:
+// `let c Choice = pick();`. This is the call-site half of the tagged-union
+// helper-return support (the "or tagged union" half of the enum/union
+// helper-return gap): once helperSignature admits a tagged-union result type
+// and declares the helper with the union's own pebble_union_<typeID>_t C
+// return type, a caller binding that result into a matching union-typed local
+// needs this direct-initializer shape, mirroring buildEnumCallInitializer. The
+// call's result type is the DirectCall node's own Type, which is the callee's
+// resolved result type, and it must be exactly the local's declared type —
+// double-checked against the callee's declared ResultType (defense for
+// hand-built IR). The call itself is built by buildDirectCallWithPre, the same
+// call-building machinery buildExpr's DirectCall case uses, and the call
+// expression is the local's whole initializer — a `pebble_union_<typeID>_t
+// pebble_local_<symbol> = f(ctx, ...);` assignment, trivially valid C since
+// the helper's C return type is the local's own typedef (see helperSignature's
+// isTaggedUnionType case). The local's scope entry records its union type
+// (localInfo.enumType, exactly as buildUnionLocalDeclaration records it — a
+// tagged union is enum-shaped like a plain enum), so a later switch subject,
+// reference, or comparison resolves the union type being used. Like every
+// local, the declaration is followed by a (void) cast against -Wunused-variable.
+func buildUnionCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	calleeDecl, err := findCallDeclaration(unit, initValue)
+	if err != nil {
+		return "", err
+	}
+	if calleeDecl.ResultType != initValue.Type {
+		return "", fmt.Errorf("%s declares a union-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+	}
+	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+	return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, unionTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 }
 
 func buildIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {

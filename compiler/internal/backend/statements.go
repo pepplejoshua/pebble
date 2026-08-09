@@ -372,6 +372,31 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// construction pre is threaded into the statement sequence ahead of
 		// the final return line, exactly as the slice path below does.
 		preReturn, returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
+	} else if result.unionType != 0 {
+		// The enclosing function returns a tagged union (a reachable helper
+		// whose ResultType is a tagged-union type — the entry always threads
+		// a scalar resultInfo), so the return value is built under the union
+		// grammar by buildUnionValueExpr rather than buildAggregateReturnValue
+		// (which would reject an EnumVariantValue/VariantConstruct as a struct
+		// return) or buildExpr. Supported return shapes are a SymbolValue
+		// naming a union-typed local or parameter in scope of the matching
+		// type, a fresh variant construction (an EnumVariantValue /
+		// VariantConstruct with a payload), a union-typed struct field read, or
+		// a union-payload optional force-unwrap; anything else is a clean
+		// rejection.
+		returnValue, err = buildUnionValueExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, "entry function body return statement", result.unionType, width)
+	} else if result.enumType != 0 {
+		// The enclosing function returns a plain enum (a reachable helper
+		// whose ResultType is an enum type — the entry always threads a scalar
+		// resultInfo), so the return value is built under the enum grammar by
+		// buildEnumValue rather than buildAggregateReturnValue (which would
+		// reject an EnumVariantValue as a struct return) or buildExpr.
+		// Supported return shapes are a variant literal (an
+		// EnumVariantValue / payload-less VariantConstruct), a SymbolValue
+		// naming an enum-typed local or parameter in scope, an integer-to-enum
+		// cast, an enum-typed struct field read, or an enum-payload optional
+		// force-unwrap; anything else is a clean rejection.
+		returnValue, err = buildEnumValue(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else if result.arrayType != 0 {
 		returnValue, err = buildArrayReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, width)
 	} else if result.sliceType != 0 {
@@ -2175,6 +2200,17 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// Color.green, or a zero-payload VariantConstruct, e.g.
 			// Color.red()); every other enum initializer shape is a clean
 			// rejection.
+			if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
+				// A call to an enum/union-returning helper used as the direct
+				// initializer of a matching enum/union-typed local —
+				// `let c Color = pick();` — the call-site half of the
+				// enum/union helper-return support (see
+				// buildEnumCallInitializer / buildUnionCallInitializer).
+				if _, isUnion := unions[initValue.Type]; isUnion {
+					return buildUnionCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+				}
+				return buildEnumCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			}
 			if _, isUnion := unions[initValue.Type]; isUnion {
 				return buildUnionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, unions, width)
 			}
