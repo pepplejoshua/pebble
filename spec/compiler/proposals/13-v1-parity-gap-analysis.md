@@ -41,6 +41,11 @@ being reproduced, worked, and closed.
   and a causation check before commit and push.
 - Delete failed/stalled/killed Orc sessions with `orc delete` immediately,
   not just their scratch files.
+- Never let a worker use `git stash` for its own causation checks — it
+  shares one global stack with anything else that's ever stashed in this
+  repo and can silently pop/lose unrelated WIP. Instruct file-copy
+  revert/restore instead (`cp file backup`, `git show HEAD:file > file` to
+  revert, `cp backup file` to restore).
 
 ## Active defect
 
