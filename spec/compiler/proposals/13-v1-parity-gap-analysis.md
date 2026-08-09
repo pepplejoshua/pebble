@@ -69,31 +69,14 @@ Slices:
    `vec.peb`'s `reserve` against it.
 4. Fix return values, with a focused compile-run test.
 
-### 2. Pointer arithmetic (`*T + uint`, `*T - uint`) does not type-check
+### 2. `arena.peb` rewrite (avoid pointer arithmetic) is checker-clean but two backend bugs block real compilation
 
-**Area:** backend generator
-
-**Priority:** high; blocks `compiler/std/mem/arena.peb`
-
-**Decision made:** do not reverse the reaffirmed pointer-arithmetic ban
-(`open-language-decisions.md` §1.5). Instead `compiler/std/mem/arena.peb` is
-being rewritten to avoid needing pointer arithmetic at all (see item 3
-below), which is also more consistent with the rest of `std` (`Vec`/
-`HashMap` use safe slice indexing throughout; nothing else needs raw pointer
-walking). This item's investigation
-(`spec/compiler/proposals/14-pointer-arithmetic.md`, uncommitted) is kept as
-a record of the path considered and not taken — do not act on it without a
-fresh decision.
-
-Original reproduction, for the record: `current.ptr + total_aligned`,
-`curr_ptr + sizeof MemHeader`, `data - sizeof MemHeader`, `arena.current
-.buffer + arena.current.used` in the pre-rewrite `arena.peb` all failed
-`error[T0505]: cannot unify semantic type kind 2 with kind 1`.
-
-Not currently being pursued — superseded by item 3's rewrite. Revisit only if
-the rewrite proves impractical.
-
-### 3. `arena.peb` rewrite (avoid pointer arithmetic) is checker-clean but two backend bugs block real compilation
+**Decided against reversing pointer arithmetic itself** (`open-language-
+decisions.md` §1.5, reaffirmed ban) — investigated in
+`spec/compiler/proposals/14-pointer-arithmetic.md`, kept only as a decision
+record, not active work. Rewriting `arena.peb` to not need it instead, which
+is also more consistent with the rest of `std` (`Vec`/`HashMap` use safe
+slice indexing throughout; nothing else needs raw pointer walking).
 
 **Area:** Pebble standard library (`compiler/std/mem/arena.peb`) and backend
 generator
@@ -158,7 +141,7 @@ Slices:
    `arena.peb`'s public API (`init`, `allocator`) cannot actually be called
    the way `examples/arena_alloc.peb` calls it.
 
-### 4. Generic `Result[T, E]` methods do not narrow `self`
+### 3. Generic `Result[T, E]` methods do not narrow `self`
 
 **Area:** checker, then backend generator
 
@@ -192,7 +175,7 @@ Slices:
 4. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 
-### 5. Qualified static methods do not exist
+### 4. Qualified static methods do not exist
 
 **Area:** checker facts, validation, inference, and typed IR
 
@@ -218,7 +201,7 @@ Slices, only if this low-priority feature is approved later:
 4. Implement only typed-IR construction.
 5. Add backend and end-to-end tests for plain and generic owners.
 
-### 6. `main(argv []str)` cannot read process arguments
+### 5. `main(argv []str)` cannot read process arguments
 
 **Area:** typed IR and backend generator
 
@@ -236,7 +219,7 @@ Slices:
 2. Carry only that parameter through IR construction.
 3. Add the C `argc`/`argv` to `[]str` adapter and compile-run tests.
 
-### 7. Inline slice construction fails in pure expression positions
+### 6. Inline slice construction fails in pure expression positions
 
 **Area:** backend generator
 
@@ -254,7 +237,7 @@ Slices:
 2. Implement one form only, with one compile-run test.
 3. Repeat for each remaining form. Do not combine all call sites in one task.
 
-### 8. An array literal of non-primitive elements cannot initialize a slice-typed local
+### 7. An array literal of non-primitive elements cannot initialize a slice-typed local
 
 **Area:** checker
 
@@ -287,7 +270,7 @@ element support and struct/tuple/optional/generic-struct slice elements —
 both reproduce the same `C0601` failure and are almost certainly one root
 cause, not two.
 
-### 9. A generic struct method cannot inherit the owner type parameter
+### 8. A generic struct method cannot inherit the owner type parameter
 
 **Area:** checker or backend; exact layer needs confirmation
 
@@ -299,7 +282,7 @@ its own `[K]`. Methods that redeclare `[K]` work and cover current stdlib use.
 First slice: reproduce against current HEAD and identify the first failing
 phase. Investigation only. Do not combine this with static methods.
 
-### 10. Whole dereferenced structs cannot become values
+### 9. Whole dereferenced structs cannot become values
 
 **Area:** checker place tracking and backend struct rvalues
 
@@ -310,7 +293,7 @@ a `DereferencePlace` through this struct-value position. A skipped backend
 test records the known reproduction. Investigate the checker and backend
 boundaries before making an implementation plan.
 
-### 11. `emit.go` and `emit_test.go` have grown too large for one file
+### 10. `emit.go` and `emit_test.go` have grown too large for one file
 
 **Area:** backend generator, codebase maintainability
 
