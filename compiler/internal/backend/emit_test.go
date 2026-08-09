@@ -1109,6 +1109,110 @@ func buildStoreToNonStoragePlaceUnit(t *testing.T) (*tir.Unit, *types.Snapshot, 
 	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{init, store, ret})
 }
 
+// buildStrConcatReassignmentUnit hand-builds a unit whose i32 entry body is an
+// Initialize (symbol 25 declared as a str local from the literal "hi"), a
+// Store reassigning that str local from a str-typed BinaryValue (the lowering
+// `s = "h" + "i"` produces for string concatenation), and the final Return of
+// 0. Real source can no longer produce this shape — the checker rejects
+// `str + str` (C0603) before the backend ever sees it — so it is constructed
+// directly through the IR builder to keep exercising Emit's own rejection of a
+// str local reassigned from anything other than a string literal. The type
+// snapshot is borrowed from a checker-built fixture so every TypeID the
+// hand-built nodes reference is owned by the snapshot.
+func buildStrConcatReassignmentUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	str := snapshot.Builtins().Str
+	i32 := snapshot.Builtins().I32
+
+	init, err := builder.AddNode(tir.Node{
+		Kind:     tir.Initialize,
+		Symbol:   25,
+		Children: []tir.NodeID{addStrLiteral(t, builder, str, "hi")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := builder.AddNode(tir.Node{
+		Kind:    tir.StringLiteral,
+		Type:    str,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralString, String: "h"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := builder.AddNode(tir.Node{
+		Kind:    tir.StringLiteral,
+		Type:    str,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralString, String: "i"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	concat, err := builder.AddNode(tir.Node{
+		Kind:     tir.BinaryValue,
+		Type:     str,
+		Operator: syntax.Plus,
+		Children: []tir.NodeID{left, right},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	place, err := builder.AddNode(tir.Node{
+		Kind:     tir.StoragePlace,
+		Type:     str,
+		Symbol:   25,
+		Writable: true,
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := builder.AddNode(tir.Node{
+		Kind:     tir.Store,
+		Children: []tir.NodeID{place, concat},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "0")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{init, store, ret})
+}
+
+// addStrLiteral adds a StringLiteral node carrying the given raw text, typed to
+// the snapshot's str builtin.
+func addStrLiteral(t *testing.T, builder *tir.Builder, str types.TypeID, text string) tir.NodeID {
+	t.Helper()
+	id, err := builder.AddNode(tir.Node{
+		Kind:    tir.StringLiteral,
+		Type:    str,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralString, String: text},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 // buildIfWithoutElseUnit hand-builds a unit whose i32 entry ends with a tir.If
 // that has no else arm (HasElse unset, two children: a bool comparison and the
 // then-arm block). The checker refuses to produce this shape from source (a

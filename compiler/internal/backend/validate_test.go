@@ -489,14 +489,15 @@ func TestEmitRejectsStrReassignmentFromCall(t *testing.T) {
 }
 
 func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
-	// Reassigning a str local from concatenation (s = "h" + "i") is reachable
-	// from real source (confirmed against a real fixture dump: the Store's
-	// value child is a BinaryValue of type str — concatenation lowers to a
-	// str-typed BinaryValue, and interpolation is the separate
-	// InterpolatedString node) but out of scope — concatenation/interpolation
-	// needs runtime primitives this backend has none of — so it is a clean
-	// rejection naming what was found.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var s str = \"hi\"; s = \"h\" + \"i\"; return 0; }", "main", false)
+	// Reassigning a str local from concatenation (s = "h" + "i") lowers to a
+	// Store whose value child is a BinaryValue of type str — concatenation
+	// lowers to a str-typed BinaryValue, and interpolation is the separate
+	// InterpolatedString node. Since the checker now rejects `str + str`
+	// (C0603) this shape is no longer reachable from real source, so it is
+	// hand-built through the IR builder to keep exercising Emit's own
+	// rejection — concatenation/interpolation needs runtime primitives this
+	// backend has none of — as a clean rejection naming what was found.
+	unit, snapshot, entryID := buildStrConcatReassignmentUnit(t)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a BinaryValue")
 }
 

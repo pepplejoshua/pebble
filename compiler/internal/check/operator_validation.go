@@ -159,8 +159,18 @@ func validateArithmeticOperators(handoff *solveHandoff, records *solvedRecords, 
 		case operatorAdd:
 			left, leftOK := builtin(0)
 			right, rightOK := builtin(1)
-			bad = concrete(0) && (!leftOK || !(isIntegerBuiltin(left) || isFloatBuiltin(left) || left == types.Str))
-			bad = bad || concrete(1) && (!rightOK || !(isIntegerBuiltin(right) || isFloatBuiltin(right) || right == types.Str))
+			if (concrete(0) && leftOK && left == types.Str) || (concrete(1) && rightOK && right == types.Str) {
+				failed = true
+				reporter.add(diagnostic.Diagnostic{
+					Severity: diagnostic.Error,
+					Code:     CodeOperator,
+					Message:  "cannot use '+' on 'str' operands; use the String type with push_str (std/string) to concatenate strings instead",
+					Primary:  diagnostic.Label{Span: op.Header.Span},
+				})
+				continue
+			}
+			bad = concrete(0) && (!leftOK || !(isIntegerBuiltin(left) || isFloatBuiltin(left)))
+			bad = bad || concrete(1) && (!rightOK || !(isIntegerBuiltin(right) || isFloatBuiltin(right)))
 			bad = bad || !sameConcrete(0, 1) || !resultMatches(0)
 		case operatorIntegralSame:
 			left, leftOK := builtin(0)

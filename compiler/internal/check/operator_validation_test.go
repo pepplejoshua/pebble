@@ -1,6 +1,7 @@
 package check
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
@@ -53,7 +54,6 @@ fn arithmetic(a i32, b i64, x f32, y f64) void {
   let sub = a - a;
   let mul = a * a;
   let div = a / a;
-  let text = "a" + "b";
   let bits = ~a;
   let remainder = a % a;
   let anded = a & a;
@@ -66,6 +66,27 @@ fn arithmetic(a i32, b i64, x f32, y f64) void {
 }`)
 	if !successful || hasOperatorDiagnostic(diagnostics) {
 		t.Fatalf("valid arithmetic was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateArithmeticOperatorsRejectsStringConcatenation(t *testing.T) {
+	diagnostics, successful := validateOperatorFixture(t, `
+fn main() int {
+    let a = "hello";
+    let b = "world";
+    let c = a + b;
+    return c.len as int;
+}`)
+	if successful || !hasOperatorDiagnostic(diagnostics) {
+		t.Fatalf("str + str was not rejected: successful=%v diagnostics=%+v", successful, diagnostics.Items())
+	}
+	for _, item := range diagnostics.Items() {
+		if item.Code != CodeOperator {
+			continue
+		}
+		if !strings.Contains(item.Message, "push_str") || !strings.Contains(item.Message, "String") {
+			t.Fatalf("str + str message does not point at String/push_str: %+v", item.Message)
+		}
 	}
 }
 
