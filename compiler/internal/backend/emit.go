@@ -513,8 +513,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	}
 	emitSymbols = symbols
 	emitGlobals = nil
+	emitExternData = nil
 	emitAllocatorAdapters = make(map[string]runtimeAllocatorAdapter)
-	defer func() { emitSymbols = nil; emitGlobals = nil; emitAllocatorAdapters = nil }()
+	defer func() { emitSymbols = nil; emitGlobals = nil; emitExternData = nil; emitAllocatorAdapters = nil }()
 
 	decl, err := findEntryDeclaration(unit, entrySymbol)
 	if err != nil {
@@ -584,6 +585,40 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 				return resolveErr
 			}
 			emitGlobals[id] = info
+		}
+	}
+	// Resolve the extern variables the reachable program actually references
+	// before any function body is built, so the read/write builders below can
+	// resolve an extern-binding symbol to its real C name. The forward
+	// declarations themselves are emitted by buildExternDataDeclarations
+	// (called at the end) into the file-scope region, ahead of every function
+	// that uses them, mirroring buildGlobalStorage. The candidate set is the
+	// unit's extern-binding declarations — the ExternDeclaration nodes with no
+	// reserved FunctionID (a function extern always reserves one), the single
+	// discriminator that separates `extern { var errno int; }` data from
+	// `extern fn` declarations. Only referenced extern variables are resolved:
+	// an unreferenced one emits no declaration, and its real C name is not
+	// required to exist in this program at all.
+	externCandidates := make(map[symbol.SymbolID]struct{})
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.ExternDeclaration && node.Function == 0 {
+			externCandidates[node.Symbol] = struct{}{}
+		}
+	}
+	externUsed := collectReferencedExternData(unit, blockID, helpers, externCandidates)
+	if len(externUsed) > 0 {
+		emitExternData = make(map[symbol.SymbolID]externDataInfo, len(externUsed))
+		for id, typ := range externUsed {
+			info, resolveErr := resolveExternDataInfo(unit, snapshot, id, typ)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			name, nameErr := externDataName(id)
+			if nameErr != nil {
+				return nameErr
+			}
+			info.name = name
+			emitExternData[id] = info
 		}
 	}
 	if err := collectRuntimeAllocatorAdapters(unit, snapshot, blockID, helpers); err != nil {
@@ -747,6 +782,17 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	externDataDeclarations, err := buildExternDataDeclarations(unit, snapshot)
+	if err != nil {
+		return err
+	}
+	// The extern-variable forward declarations and the mutable-global storage
+	// definitions share one file-scope region, emitted together ahead of every
+	// function that uses them (after the typedefs both kinds may name).
+	fileScope := globalStorage
+	if externDataDeclarations != "" {
+		fileScope = externDataDeclarations + "\n" + fileScope
+	}
 	// Every runtime Allocator callback bridge discovered by the
 	// collectRuntimeAllocatorAdapters walk needs its C prototype declared before
 	// the function body that references it (a helper body that constructs an
@@ -771,9 +817,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		helpersText += "\n" + strings.Join(adapterDefinitions, "\n")
 	}
 	if argvParam != nil {
-		return emitEntryC(w, typedefs, globalStorage, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+		return emitEntryC(w, typedefs, fileScope, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
 	}
-	return emitEntryC(w, typedefs, globalStorage, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false)
+	return emitEntryC(w, typedefs, fileScope, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false)
 }
 
 // hasCExterns reports whether the unit declares at least one C-convention

@@ -444,6 +444,12 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
+			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+				if einfo.info.enumType == 0 {
+					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not an enum-typed extern variable", node.Symbol)
+				}
+				return einfo.name, nil
+			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not an enum-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
@@ -651,6 +657,12 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 					return "", fmt.Errorf("%s references global symbol %d, which is not a tagged-union-typed global of type %s", context, node.Symbol, unionTypeName(want))
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
+			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+				if einfo.info.enumType != want {
+					return "", fmt.Errorf("%s references extern variable symbol %d, which is not a tagged-union-typed extern variable of type %s", context, node.Symbol, unionTypeName(want))
+				}
+				return einfo.name, nil
 			}
 			return "", fmt.Errorf("%s references symbol %d, which is not an enum/tagged-union-typed local declared earlier in the body", context, node.Symbol)
 		}
@@ -1162,6 +1174,12 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
+			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+				if !einfo.info.isStr {
+					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a str-typed extern variable", node.Symbol)
+				}
+				return einfo.name, nil
+			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a str-typed local declared earlier in the body", node.Symbol)
 		}
 		if !info.isStr {
@@ -1252,6 +1270,12 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a char-typed global", node.Symbol)
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
+			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+				if !einfo.info.isChar {
+					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a char-typed extern variable", node.Symbol)
+				}
+				return einfo.name, nil
 			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a char-typed local declared earlier in the body", node.Symbol)
 		}
@@ -2490,6 +2514,12 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
+			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+				if einfo.info.kind != types.Bool {
+					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a bool-typed extern variable", node.Symbol)
+				}
+				return einfo.name, nil
+			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a bool local declared earlier in the entry body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
@@ -2727,6 +2757,12 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a %s global", node.Symbol, wantName(width))
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
+			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+				if einfo.info.kind != width {
+					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a %s extern variable", node.Symbol, wantName(width))
+				}
+				return einfo.name, nil
 			}
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a %s local declared earlier in the body", node.Symbol, wantName(width))
 		}

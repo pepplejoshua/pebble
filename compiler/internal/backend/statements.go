@@ -607,6 +607,13 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 						subjectExpr = fmt.Sprintf("pebble_global_%d.tag", subjectNode.Symbol)
 						break
 					}
+					if einfo, isExtern := emitExternData[subjectNode.Symbol]; isExtern {
+						if einfo.info.enumType != enumSubject {
+							return "", fmt.Errorf("switch subject references extern variable symbol %d, an extern variable of type %s, not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, einfo.info.enumType), unionTypeName(enumSubject))
+						}
+						subjectExpr = einfo.name + ".tag"
+						break
+					}
 					return "", fmt.Errorf("switch subject references symbol %d, which is not an enum-typed local declared earlier in the body", subjectNode.Symbol)
 				}
 				if info.enumType != enumSubject {

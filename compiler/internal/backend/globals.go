@@ -47,16 +47,20 @@ func globalCName(symbolID symbol.SymbolID) (string, bool) {
 	return fmt.Sprintf("pebble_global_%d", symbolID), true
 }
 
-// localOrGlobalName resolves a symbol reference that must be either an
-// already-declared local in scope or a mutable module-level global: a local
-// resolves to its own pebble_local_<symbolID> C name, a global to its
-// pebble_global_<symbolID> C name. ok is false when the symbol is neither —
-// the caller then reports its own "not a local" error.
+// localOrGlobalName resolves a symbol reference that must be an already-
+// declared local in scope, a mutable module-level global, or an extern
+// variable: a local resolves to its own pebble_local_<symbolID> C name, a
+// global to its pebble_global_<symbolID> C name, and an extern variable to its
+// real C name (errno). ok is false when the symbol is none of these — the
+// caller then reports its own "not a local" error.
 func localOrGlobalName(symbolID symbol.SymbolID, locals map[symbol.SymbolID]localInfo) (string, bool) {
 	if _, declared := locals[symbolID]; declared {
 		return fmt.Sprintf("pebble_local_%d", symbolID), true
 	}
-	return globalCName(symbolID)
+	if name, ok := globalCName(symbolID); ok {
+		return name, true
+	}
+	return externDataCName(symbolID)
 }
 
 // globalDeclBySymbol returns the unit's GlobalDecl container for one symbol.
@@ -76,57 +80,54 @@ func globalDeclBySymbol(unit *tir.Unit, symbolID symbol.SymbolID) (tir.GlobalDec
 // aggregate/slice/optional/pointer/function shapes it cannot yet initialize
 // with a C static initializer, never guessing.
 func resolveGlobalInfo(unit *tir.Unit, snapshot *types.Snapshot, g tir.GlobalDecl) (globalInfo, error) {
-	info := globalInfo{typ: g.Type}
+	info, err := resolveTypedInfo(unit, snapshot, g.Type)
+	if err != nil {
+		return globalInfo{typ: g.Type}, fmt.Errorf("global symbol %d %v", g.Symbol, err)
+	}
+	return globalInfo{typ: g.Type, info: info}, nil
+}
+
+// resolveTypedInfo classifies one types.TypeID into the localInfo shape a local
+// of the same type would carry, mirroring how helperSignature seeds a
+// parameter's locals scope. Every type the backend can declare as a local is
+// classified here; the caller wraps the single unclassifiable case (a type the
+// backend cannot store) with its own declaration-context error text.
+func resolveTypedInfo(unit *tir.Unit, snapshot *types.Snapshot, typ types.TypeID) (localInfo, error) {
 	switch {
-	case isStr(snapshot, g.Type):
-		info.info = localInfo{isStr: true}
-		return info, nil
-	case isChar(snapshot, g.Type):
-		info.info = localInfo{isChar: true}
-		return info, nil
-	case isBool(snapshot, g.Type):
-		info.info = localInfo{kind: types.Bool}
-		return info, nil
-	case isFloat(snapshot, g.Type):
-		info.info = localInfo{kind: resolvedFloatKind(snapshot, g.Type)}
-		return info, nil
-	case isEnumType(unit, snapshot, g.Type):
-		info.info = localInfo{enumType: g.Type}
-		return info, nil
-	case isTuple(snapshot, g.Type):
-		info.info = localInfo{tuple: g.Type}
-		return info, nil
-	case isArray(snapshot, g.Type):
-		info.info = localInfo{array: g.Type, arrayWrapped: true}
-		return info, nil
-	case isOptional(snapshot, g.Type):
-		info.info = localInfo{optional: g.Type}
-		return info, nil
-	case isStruct(snapshot, g.Type):
-		info.info = localInfo{structType: g.Type}
-		return info, nil
-	case isSlice(snapshot, g.Type):
-		info.info = localInfo{sliceType: g.Type}
-		return info, nil
-	case isPointer(snapshot, g.Type):
-		info.info = localInfo{pointerType: g.Type}
-		return info, nil
-	case isFunctionType(snapshot, g.Type):
-		info.info = localInfo{functionType: g.Type}
-		return info, nil
-	case isUint(snapshot, g.Type):
-		info.info = localInfo{kind: types.Uint}
-		return info, nil
-	case isU64(snapshot, g.Type):
-		info.info = localInfo{kind: types.U64}
-		return info, nil
+	case isStr(snapshot, typ):
+		return localInfo{isStr: true}, nil
+	case isChar(snapshot, typ):
+		return localInfo{isChar: true}, nil
+	case isBool(snapshot, typ):
+		return localInfo{kind: types.Bool}, nil
+	case isFloat(snapshot, typ):
+		return localInfo{kind: resolvedFloatKind(snapshot, typ)}, nil
+	case isEnumType(unit, snapshot, typ):
+		return localInfo{enumType: typ}, nil
+	case isTuple(snapshot, typ):
+		return localInfo{tuple: typ}, nil
+	case isArray(snapshot, typ):
+		return localInfo{array: typ, arrayWrapped: true}, nil
+	case isOptional(snapshot, typ):
+		return localInfo{optional: typ}, nil
+	case isStruct(snapshot, typ):
+		return localInfo{structType: typ}, nil
+	case isSlice(snapshot, typ):
+		return localInfo{sliceType: typ}, nil
+	case isPointer(snapshot, typ):
+		return localInfo{pointerType: typ}, nil
+	case isFunctionType(snapshot, typ):
+		return localInfo{functionType: typ}, nil
+	case isUint(snapshot, typ):
+		return localInfo{kind: types.Uint}, nil
+	case isU64(snapshot, typ):
+		return localInfo{kind: types.U64}, nil
 	}
-	kind, ok := resolvedBuiltin(snapshot, g.Type)
+	kind, ok := resolvedBuiltin(snapshot, typ)
 	if !ok {
-		return info, fmt.Errorf("global symbol %d has type %s, which the backend cannot store", g.Symbol, describeType(snapshot, g.Type))
+		return localInfo{}, fmt.Errorf("has type %s, which the backend cannot store", describeType(snapshot, typ))
 	}
-	info.info = localInfo{kind: kind}
-	return info, nil
+	return localInfo{kind: kind}, nil
 }
 
 // collectReferencedGlobals walks the entry body and every reachable helper
@@ -191,7 +192,7 @@ func buildGlobalStorage(unit *tir.Unit, snapshot *types.Snapshot) (string, error
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	lines := make([]string, 0, len(ids))
 	for _, id := range ids {
-		ctype, err := globalStorageCType(unit, snapshot, emitGlobals[id].info)
+		ctype, err := globalStorageCType(unit, snapshot, emitGlobals[id].info, "global")
 		if err != nil {
 			return "", fmt.Errorf("global symbol %d: %v", id, err)
 		}
@@ -204,14 +205,19 @@ func buildGlobalStorage(unit *tir.Unit, snapshot *types.Snapshot) (string, error
 	return strings.Join(lines, "\n"), nil
 }
 
-// globalStorageCType returns the C file-scope type a mutable global is
-// declared with — the same C type a local of the same Pebble type is declared
-// with (cType for a fixed-width integer, bool for bool, int32_t for char,
-// floatCType for a float, PebbleStr for str, and the type's own typedef name
-// for an enum). The aggregate shapes are clean rejections, not guesses: the
-// backend cannot initialize a tuple/struct/array/slice/optional/pointer/
-// function global with a C static initializer yet.
-func globalStorageCType(unit *tir.Unit, snapshot *types.Snapshot, info localInfo) (string, error) {
+// globalStorageCType returns the C file-scope type a mutable global or an
+// extern variable is declared with — the same C type a local of the same
+// Pebble type is declared with (cType for a fixed-width integer, bool for bool,
+// int32_t for char, floatCType for a float, PebbleStr for str, and the type's
+// own typedef name for an enum). what names the declaration being typed in the
+// clean-rejection error text ("global" or "extern variable"), so an aggregate
+// extern variable reports itself as such rather than as a global. The
+// aggregate shapes are clean rejections, not guesses: the backend cannot
+// initialize a tuple/struct/array/slice/optional/pointer/function global with
+// a C static initializer, and cannot sensibly declare an extern variable of
+// one of those shapes (whose real C layout lives in another translation unit)
+// either.
+func globalStorageCType(unit *tir.Unit, snapshot *types.Snapshot, info localInfo, what string) (string, error) {
 	switch {
 	case info.isStr:
 		return "PebbleStr", nil
@@ -234,25 +240,25 @@ func globalStorageCType(unit *tir.Unit, snapshot *types.Snapshot, info localInfo
 		}
 	}
 	if info.tuple != 0 {
-		return "", fmt.Errorf("tuple-typed globals are not supported yet")
+		return "", fmt.Errorf("tuple-typed %s are not supported yet", what)
 	}
 	if info.array != 0 {
-		return "", fmt.Errorf("array-typed globals are not supported yet")
+		return "", fmt.Errorf("array-typed %s are not supported yet", what)
 	}
 	if info.optional != 0 {
-		return "", fmt.Errorf("optional-typed globals are not supported yet")
+		return "", fmt.Errorf("optional-typed %s are not supported yet", what)
 	}
 	if info.structType != 0 {
-		return "", fmt.Errorf("struct-typed globals are not supported yet")
+		return "", fmt.Errorf("struct-typed %s are not supported yet", what)
 	}
 	if info.sliceType != 0 {
-		return "", fmt.Errorf("slice-typed globals are not supported yet")
+		return "", fmt.Errorf("slice-typed %s are not supported yet", what)
 	}
 	if info.pointerType != 0 {
-		return "", fmt.Errorf("pointer-typed globals are not supported yet")
+		return "", fmt.Errorf("pointer-typed %s are not supported yet", what)
 	}
 	if info.functionType != 0 {
-		return "", fmt.Errorf("function-typed globals are not supported yet")
+		return "", fmt.Errorf("function-typed %s are not supported yet", what)
 	}
 	return "", fmt.Errorf("has a type the backend cannot store")
 }

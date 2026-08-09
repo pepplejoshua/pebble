@@ -321,16 +321,24 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 	if !declared {
 		// A plain StoragePlace whose symbol is not a local in scope: the write
-		// targets a mutable module-level global, whose storage was emitted as a
-		// file-scope static. The new value is built against the global's own
-		// resolved type exactly as a local's is, and the store writes the
-		// global's C name instead of a pebble_local_ name.
+		// targets a mutable module-level global (whose storage was emitted as a
+		// file-scope static) or an extern variable (whose storage lives in
+		// another translation unit and is referenced by its real C name). The
+		// new value is built against the target's own resolved type exactly as
+		// a local's is, and the store writes the target's C name instead of a
+		// pebble_local_ name. The checker guarantees the target is mutable
+		// (writing an extern `let` binding fails at check, C0606), so every
+		// reachable store to an extern variable is legal.
 		ginfo, isGlobal := emitGlobals[place.Symbol]
-		if !isGlobal {
+		if isGlobal {
+			targetInfo = ginfo.info
+			lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
+		} else if einfo, isExtern := emitExternData[place.Symbol]; isExtern {
+			targetInfo = einfo.info
+			lvalue = einfo.name
+		} else {
 			return "", fmt.Errorf("%s reassigns symbol %d, which is not a local in scope", context, place.Symbol)
 		}
-		targetInfo = ginfo.info
-		lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
 	}
 	// The new value is validated and emitted against the local's own declared
 	// type: the local's own integer width for an integer local (buildExpr at
@@ -587,16 +595,23 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		lvalue := fmt.Sprintf("pebble_local_%d", place.Symbol)
 		if !declared {
 			// A plain StoragePlace whose symbol is not a local in scope: the
-			// compound assignment targets a mutable module-level global, exactly
-			// as buildStoreCore resolves a plain global reassignment — the
-			// combined value is built against the global's own resolved type and
-			// the write lands on the global's file-scope C name.
+			// compound assignment targets a mutable module-level global (its
+			// file-scope static C name) or an extern variable (its real C name
+			// in another translation unit), exactly as buildStoreCore resolves
+			// a plain reassignment — the combined value is built against the
+			// target's own resolved type and the write lands on the target's C
+			// name. The checker guarantees the target is mutable (C0606), so
+			// every reachable compound store to an extern variable is legal.
 			ginfo, isGlobal := emitGlobals[place.Symbol]
-			if !isGlobal {
+			if isGlobal {
+				targetInfo = ginfo.info
+				lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
+			} else if einfo, isExtern := emitExternData[place.Symbol]; isExtern {
+				targetInfo = einfo.info
+				lvalue = einfo.name
+			} else {
 				return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, which is not a local in scope", context, place.Symbol)
 			}
-			targetInfo = ginfo.info
-			lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
 		}
 		// The lvalue is the local's own C name; the combined value is built
 		// against the local's own declared type, mirroring buildStoreCore's
