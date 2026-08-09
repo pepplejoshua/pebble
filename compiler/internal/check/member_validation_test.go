@@ -151,3 +151,87 @@ fn get(self Data) int {
 		t.Fatalf("union variant read outside any switch was not rejected: %+v", diagnostics.Items())
 	}
 }
+
+func TestValidateMemberRecordsAcceptsGenericSelfNarrowedVariantRead(t *testing.T) {
+	// The dispatch's read-side fix: a method whose receiver refers to its own
+	// generic union type (`fn unwrap_or(self Result[T, E], ...)`) reads a
+	// variant's payload (`self.Ok`) inside the switch arm narrowed to that
+	// variant. Before the fix, the case-label aggregate lost its declaration
+	// (Declaration=0) so the narrowed read was rejected with C0605.
+	source := `
+type Result[T, E] = union enum {
+    Ok T;
+    Err E;
+    fn unwrap_or(self Result[T, E], def T) T {
+        switch self {
+        case .Ok: return self.Ok;
+        case .Err: return def;
+        }
+    }
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if !validateMemberRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("generic-self union variant read in its narrowed case arm was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsAcceptsGenericSelfNarrowedVariantReadInConstruction(t *testing.T) {
+	// The map-shaped read: a generic-self variant read inside a record
+	// construction in a narrowed arm (result.peb's `map`), the second place the
+	// original C0605 fired.
+	source := `
+type Result[T, E] = union enum {
+    Ok T;
+    Err E;
+    fn map[U](self Result[T, E], f fn(T) U) Result[U, E] {
+        switch self {
+        case .Ok: return Result[U, E].{ Ok = f(self.Ok) };
+        case .Err: return Result[U, E].{ Err = self.Err };
+        }
+    }
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if !validateMemberRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("generic-self union variant read in a narrowed construction was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsRejectsGenericSelfVariantReadInWrongCase(t *testing.T) {
+	// The fix must not make narrowing overly permissive: reading one variant's
+	// payload inside the arm narrowed to a different variant stays rejected.
+	source := `
+type Result[T, E] = union enum {
+    Ok T;
+    Err E;
+    fn get(self Result[T, E]) T {
+        switch self {
+        case .Err: return self.Ok;
+        case .Ok: return self.Ok;
+        }
+    }
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("generic-self union variant read in a different case arm was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsRejectsGenericSelfVariantReadOutsideSwitch(t *testing.T) {
+	// And a generic-self variant read outside any narrowing arm stays rejected.
+	source := `
+type Result[T, E] = union enum {
+    Ok T;
+    Err E;
+    fn get(self Result[T, E]) T {
+        return self.Ok;
+    }
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("generic-self union variant read outside any switch was not rejected: %+v", diagnostics.Items())
+	}
+}

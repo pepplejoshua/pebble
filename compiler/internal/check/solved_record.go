@@ -33,6 +33,48 @@ func (s *solvedRecords) Constant(ref symbol.SyntaxRef) (constantResult, bool) {
 	return result.clone(), ok
 }
 
+// resolvedRootType resolves a value's solved type directly through the handoff,
+// mirroring resolveRecords' guarded-root handling. It recovers information that
+// walk-time facts could not pin down because the involved types were still
+// solver variables then (for example, a generic union receiver's nominal
+// declaration, which only exists once solving materializes the template).
+func resolvedRootType(handoff *solveHandoff, value valueID) (infer.TypeResult, bool) {
+	if handoff == nil || handoff.Solution == nil {
+		return infer.TypeResult{}, false
+	}
+	root, ok := handoff.Roots.Root(value)
+	if !ok {
+		return infer.TypeResult{}, false
+	}
+	if root.Alternative.Guarded {
+		selected, ok := handoff.Solution.Selection(root.Alternative.Choice)
+		if !ok || selected != root.Alternative.Index {
+			return infer.TypeResult{}, false
+		}
+	}
+	switch root.Kind {
+	case rootSyntax:
+		return handoff.Solution.SyntaxType(root.Syntax)
+	case rootSymbol:
+		return handoff.Solution.SymbolType(root.Symbol)
+	case rootSlot:
+		return handoff.Solution.Slot(root.Slot)
+	case rootInstantiation:
+		inst, ok := handoff.Solution.Instantiation(root.Syntax)
+		if !ok || root.Parameter >= uint32(len(inst.Arguments)) {
+			return infer.TypeResult{}, false
+		}
+		return inst.Arguments[root.Parameter], true
+	case rootMethod:
+		method, ok := handoff.Solution.Method(root.Syntax)
+		if !ok || root.Parameter >= uint32(len(method.Arguments)) {
+			return infer.TypeResult{}, false
+		}
+		return method.Arguments[root.Parameter], true
+	}
+	return infer.TypeResult{}, false
+}
+
 // resolveRecords consumes handoff.Roots and handoff.Constants exactly once each,
 // audits them, resolves active roots through handoff.Solution, and builds a local
 // lookup arena.

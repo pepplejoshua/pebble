@@ -62,7 +62,6 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 	coveredIntegers := make(map[int64]bool)
 	coveredEnumVariants := make(map[symbol.SymbolID]bool)
 	variantBySyntax := make(map[symbol.SyntaxRef]symbol.SymbolID)
-	resolution := handoff.Semantics.Resolution()
 	for _, record := range handoff.Records.Records() {
 		if !activeOperatorRecord(handoff, record.Header) {
 			continue
@@ -77,7 +76,7 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 		// names — mirrors validateSwitches' identical indexing in
 		// switch_validation.go and caseVariantMember's doc comment there.
 		if record.Aggregate != nil && (record.Aggregate.Kind == aggregateEnumVariant || record.Aggregate.Kind == aggregateTaggedVariant) && len(record.Aggregate.Fields) != 0 {
-			if member := caseVariantMember(resolution, record.Aggregate); member != 0 {
+			if member := caseVariantMember(handoff, record.Aggregate); member != 0 {
 				variantBySyntax[record.Header.Syntax] = member
 			}
 		}

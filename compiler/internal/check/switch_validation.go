@@ -30,7 +30,7 @@ func validateSwitches(handoff *solveHandoff, records *solvedRecords, diagnostics
 	}
 
 	bySyntax := make(map[symbol.SyntaxRef]*controlRecord)
-	variantBySyntax := collectVariantBySyntax(handoff, resolution)
+	variantBySyntax := collectVariantBySyntax(handoff)
 	for _, retained := range handoff.Records.Records() {
 		if !activeOperatorRecord(handoff, retained.Header) {
 			continue
@@ -98,20 +98,35 @@ func validateSwitches(handoff *solveHandoff, records *solvedRecords, diagnostics
 // so an aggregateEnumVariant/aggregateTaggedVariant record carries the authored
 // name rather than a resolved member; the member is re-derived by name from the
 // record's solved nominal declaration here, mirroring validateAggregateRecords
-// and ir_builder_literals.go.
-func caseVariantMember(resolution *symbol.Result, aggregate *aggregateRecord) symbol.SymbolID {
-	if resolution == nil || aggregate == nil || len(aggregate.Fields) == 0 {
+// and ir_builder_literals.go. When the record has no declaration (a generic
+// receiver's case label is authored against a template that only solving
+// materializes), the declaration is recovered from the solved receiver type.
+func caseVariantMember(handoff *solveHandoff, aggregate *aggregateRecord) symbol.SymbolID {
+	if handoff == nil || aggregate == nil || len(aggregate.Fields) == 0 {
 		return 0
 	}
 	if member := aggregate.Fields[0].Member; member != 0 {
 		return member
 	}
 	name := aggregate.Fields[0].Name
-	if aggregate.Declaration == 0 || name == "" {
+	if name == "" {
 		return 0
 	}
-	for _, memberID := range resolution.Members(aggregate.Declaration) {
-		selected, ok := resolution.Symbols.Symbol(memberID)
+	declaration := aggregate.Declaration
+	if declaration == 0 {
+		if typeResult, ok := resolvedRootType(handoff, aggregate.Receiver); ok && typeResult.State == infer.TypeFinal {
+			if key, found := handoff.Semantics.Types().Key(typeResult.Type); found {
+				if decl, _, ok := key.Nominal(); ok {
+					declaration = decl
+				}
+			}
+		}
+	}
+	if declaration == 0 {
+		return 0
+	}
+	for _, memberID := range handoff.Semantics.Resolution().Members(declaration) {
+		selected, ok := handoff.Semantics.Resolution().Symbols.Symbol(memberID)
 		if ok && selected.Kind == symbol.SymbolVariant && selected.Name == name {
 			return memberID
 		}
@@ -123,9 +138,9 @@ func caseVariantMember(resolution *symbol.Result, aggregate *aggregateRecord) sy
 // the variant symbol it names, for both memberVariant member records and
 // base-less .name aggregate records, mirroring how validateSwitches relates a
 // case arm to its subject declaration's variants.
-func collectVariantBySyntax(handoff *solveHandoff, resolution *symbol.Result) map[symbol.SyntaxRef]symbol.SymbolID {
+func collectVariantBySyntax(handoff *solveHandoff) map[symbol.SyntaxRef]symbol.SymbolID {
 	variantBySyntax := make(map[symbol.SyntaxRef]symbol.SymbolID)
-	if handoff == nil || resolution == nil {
+	if handoff == nil {
 		return variantBySyntax
 	}
 	for _, retained := range handoff.Records.Records() {
@@ -136,7 +151,7 @@ func collectVariantBySyntax(handoff *solveHandoff, resolution *symbol.Result) ma
 			variantBySyntax[retained.Header.Syntax] = retained.Member.Member
 		}
 		if retained.Aggregate != nil && (retained.Aggregate.Kind == aggregateEnumVariant || retained.Aggregate.Kind == aggregateTaggedVariant) && len(retained.Aggregate.Fields) != 0 {
-			if member := caseVariantMember(resolution, retained.Aggregate); member != 0 {
+			if member := caseVariantMember(handoff, retained.Aggregate); member != 0 {
 				variantBySyntax[retained.Header.Syntax] = member
 			}
 		}
@@ -155,7 +170,7 @@ func switchCaseNarrowing(handoff *solveHandoff, resolution *symbol.Result, membe
 	if handoff == nil || resolution == nil || member == nil {
 		return false
 	}
-	variantBySyntax := collectVariantBySyntax(handoff, resolution)
+	variantBySyntax := collectVariantBySyntax(handoff)
 	var bestSpan source.Span
 	var bestValues []controlValue
 	best := false
