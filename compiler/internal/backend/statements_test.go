@@ -1496,3 +1496,81 @@ func TestEmitCharInLoopBodyCompilesAndRuns(t *testing.T) {
 	// leading-statement and condition paths.
 	emitAndRunBounded(t, "fn main() i32 { var i i32 = 0; var sum i32 = 0; while i < 3 { let c char = 'a'; if c == 'a' { sum = sum + 1; } i = i + 1; } return sum; }", false, 3, false)
 }
+
+func TestEmitDescendingRangeLoopCompilesAndRuns(t *testing.T) {
+	// A descending range loop (start > end): loop 5..0 counts down, running
+	// 5 iterations (i=5,4,3,2,1) and accumulating count = 5. This is the
+	// reproduction of the zero-iteration bug: the old emitter unconditionally
+	// emitted `<` and `++`, producing `for (i = 5; i < 0; i++)` which is
+	// false on the first check and never executes the body.
+	emitAndRunBounded(t, "fn main() i32 { var count i32 = 0; loop 5..0 : i { count = count + 1; } return count; }", false, 5, false)
+}
+
+func TestEmitDescendingRangeLoopInclusiveCompilesAndRuns(t *testing.T) {
+	// A descending inclusive range loop (start >= end): loop 5..=0 counts
+	// down including the end bound, running 6 iterations (i=5,4,3,2,1,0)
+	// and accumulating count = 6. The inclusive form must emit `>=` and `--`.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"exclusive descending", "fn main() i32 { var count i32 = 0; loop 5..0 : i { count = count + 1; } return count; }", 5},
+		{"inclusive descending", "fn main() i32 { var count i32 = 0; loop 5..=0 : i { count = count + 1; } return count; }", 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRunBounded(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitZeroLengthRangeLoopCompilesAndRuns(t *testing.T) {
+	// A zero-length range (start == end) must still correctly run zero times
+	// — this is not a regression from the descending fix. Both exclusive and
+	// inclusive forms of start == end must produce zero iterations (the
+	// inclusive form would also produce zero when start > end, but start ==
+	// end inclusive still runs once — check both).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"zero-length exclusive", "fn main() i32 { var count i32 = 0; loop 3..3 : i { count = count + 1; } return count; }", 0},
+		{"zero-length inclusive", "fn main() i32 { var count i32 = 0; loop 3..=3 : i { count = count + 1; } return count; }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRunBounded(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
+	// The emitted C for a descending range loop must use `>` (or `>=` for
+	// inclusive) as the condition and `--` as the step, confirming the
+	// direction fix is reflected in the generated code.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var count i32 = 0; loop 5..0 : i { count = count + 1; } return count; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "for (int32_t pebble_local_") {
+		t.Errorf("emitted C missing for-loop header:\n%s", out)
+	}
+	if !strings.Contains(out, "pebble_local_") || !strings.Contains(out, "--") {
+		t.Errorf("emitted C missing decrement step for descending range:\n%s", out)
+	}
+	// Inclusive descending: must use `>=` and `--`.
+	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var count i32 = 0; loop 5..=0 : i { count = count + 1; } return count; }", "main", false)
+	buf.Reset()
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out = buf.String()
+	if !strings.Contains(out, ">=") {
+		t.Errorf("emitted C missing `>=` for inclusive descending range:\n%s", out)
+	}
+	if !strings.Contains(out, "--") {
+		t.Errorf("emitted C missing decrement step for inclusive descending range:\n%s", out)
+	}
+}

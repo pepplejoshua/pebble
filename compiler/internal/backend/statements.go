@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
@@ -1042,12 +1043,35 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	if err != nil {
 		return "", err
 	}
-	rangeOp := "<"
-	if rangeNode.RangeInclusive {
-		rangeOp = "<="
+	// Determine loop direction. When both bounds are compile-time integer
+	// literals (their buildRangeBound text is a plain decimal), compare them
+	// statically to choose the comparison operator and step direction. This
+	// handles descending ranges correctly (start > end emits `>` and `--`
+	// instead of the old unconditional `<` and `++` which caused zero
+	// iterations). Non-literal bounds (variables, expressions, function calls)
+	// keep the existing ascending behavior unchanged.
+	startVal, startIsLiteral := strconv.Atoi(startText)
+	endVal, endIsLiteral := strconv.Atoi(endText)
+	var rangeOp, step string
+	if startIsLiteral == nil && endIsLiteral == nil && startVal > endVal {
+		// Descending range: condition checks `>` (or `>=` for inclusive),
+		// step decrements.
+		rangeOp = ">"
+		if rangeNode.RangeInclusive {
+			rangeOp = ">="
+		}
+		step = "--"
+	} else {
+		// Ascending, zero-length, or non-literal bounds: condition checks `<`
+		// (or `<=` for inclusive), step increments.
+		rangeOp = "<"
+		if rangeNode.RangeInclusive {
+			rangeOp = "<="
+		}
+		step = "++"
 	}
 	indent := strings.Repeat("    ", depth+1)
-	return fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d++) {\n%s\n%s}", indent, cType(boundType), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endText, rangeNode.Symbol, bodyText, indent), nil
+	return fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d%s) {\n%s\n%s}", indent, cType(boundType), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endText, rangeNode.Symbol, step, bodyText, indent), nil
 }
 
 // buildRangeBound builds one bound (the start or the end) of a range loop. A
