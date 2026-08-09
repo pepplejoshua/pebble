@@ -29,9 +29,11 @@ being reproduced, worked, and closed.
 - Use one small, decisive Orc slice at a time. Review and verify each slice
   before the next dispatch.
 - Use `opencode-go/deepseek-v4-flash` by default. Do not give it a long,
-  multi-layer task. Escalate only after a real capability failure — and
-  check `orc list` for the user's own concurrent Luna usage before ever
-  escalating to Luna.
+  multi-layer task. If flash stalls or fails, escalate to
+  `opencode-go/mimo-v2.5`, then `openai/gpt-5.6-luna` if mimo also fails —
+  and check `orc list` for the user's own concurrent Luna usage before ever
+  escalating to Luna. When escalating a stuck session, prefer resuming the
+  same session with the new `--model` over deleting and dispatching fresh.
 - Before each dispatch, require a clean worktree and no active Orc or
   OpenCode worker for this repository.
 - After each dispatch, inspect the diff and check for scratch files, debug
