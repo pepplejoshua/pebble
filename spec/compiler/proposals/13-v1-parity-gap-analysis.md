@@ -87,7 +87,7 @@ Original slices, kept for reference, not the current plan:
 
 **Decided against reversing pointer arithmetic itself** (`open-language-
 decisions.md` §1.5, reaffirmed ban) — investigated in
-`spec/compiler/proposals/14-pointer-arithmetic.md`, kept only as a decision
+`spec/compiler/proposals/16-pointer-arithmetic.md`, kept only as a decision
 record, not active work. Rewriting `arena.peb` to not need it instead, which
 is also more consistent with the rest of `std` (`Vec`/`HashMap` use safe
 slice indexing throughout; nothing else needs raw pointer walking).
@@ -173,8 +173,16 @@ emission are separate gaps.
 
 Narrowed writes are a separate checker gap. `set_error` needs to write
 `self.Err`, but the existing widening applies only to read-side member
-validation. After checker support, a later backend defect is expected:
-`buildStrOperand` has no `Load(FieldPlace)` path for a `str` variant payload.
+validation.
+
+**Correction (proposal 14's audit, 2026-08-08):** the predicted backend gap
+below no longer exists — `buildStrOperand` DOES have a `Load(FieldPlace)`
+path (`emit.go:9867-9935`, including tagged-union payload projection in
+`buildStructFieldRead`), with focused compile-run tests near
+`emit_test.go:7828-7868`. Generic-self narrowing can still block this path
+before the backend ever receives TIR, so slice 3 below may already be a
+no-op once slices 1-2 land — confirm with a real `Result` test before
+assuming any backend work is still needed here.
 
 Slices:
 
@@ -184,8 +192,9 @@ Slices:
    negative wrong-arm/outside-arm checker tests.
 2. Fix only narrowed writes. Add focused assignment/place tests. Do not touch
    backend emission.
-3. If now reachable, add only `str` `FieldPlace` load emission and its focused
-   compile-run test.
+3. Confirm with a real `std:result` consumer whether `str` `FieldPlace` load
+   emission is already reachable and correct (see correction above) before
+   assuming any backend work remains.
 4. Compile and run real consumers of `std:result`; then run full checks and
    causation checks.
 

@@ -1,4 +1,4 @@
-# 14 — pointer arithmetic (`*T + uint`, `*T - uint`)
+# 16 — pointer arithmetic (`*T + uint`, `*T - uint`)
 
 **Path considered and not taken.** After this investigation, the decision
 was made to rewrite `compiler/std/mem/arena.peb` to avoid needing pointer
