@@ -392,13 +392,17 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 }
 
 // buildEnumValue builds the C expression text for a plain enum value node of
-// six shapes (all confirmed against real fixtures): an EnumVariantValue
+// seven shapes (all confirmed against real fixtures): an EnumVariantValue
 // (Color.green, a variant literal with no payload), a zero-payload
 // VariantConstruct (Color.red(), the parenthesized-call form of a plain
 // enum's payload-less variant), a SymbolValue naming an enum-typed local
 // declared earlier in the body (emitted as its pebble_local_<symbolID> C name),
-// a SourceAlias (transparent grouped-expression parens, e.g. `(2 as Color)`,
-// unwrapped to its single child), a Load of an enum-typed struct field
+// a DirectCall to an enum-returning helper (`switch pick() { ... }`, `pick()
+// == Color.red`, or a return forward `return pick();` — the call already
+// returns the enum's own C type, so the whole call expression is directly an
+// enum value), a SourceAlias (transparent grouped-expression parens, e.g.
+// `(2 as Color)`, unwrapped to its single child), a Load of an enum-typed
+// struct field
 // (`entry.state`, the enum-typed-struct-field shape — the projection carries
 // the field's own pebble_enum_<typeID>_t C type), and — since
 // CheckedIntegerToEnum support landed — an integer cast to an enum (`5 as
@@ -437,6 +441,43 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not an enum-typed local declared earlier in the body", node.Symbol)
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.DirectCall:
+		// A call to an enum-returning helper used directly as an enum value:
+		// `switch pick() { ... }` (the tracker's repro), `pick() ==
+		// Color.red` (a comparison operand), a reassignment's new value, a
+		// struct field's value, or a return forward (`return pick();` in an
+		// enum-returning helper). The emitted C is
+		// `pebble_fn_<callee>(ctx, ...)` — a C function call whose return
+		// type IS the callee's declared enum-typed result (helperSignature
+		// declares an enum-result helper with the enum's own
+		// pebble_enum_<typeID>_t C return type, the exact C type an enum
+		// value uses), so the whole call expression is directly an enum
+		// value, no cast or intermediate local needed. The callee's declared
+		// result type is double-checked to be an enum type (defense for
+		// hand-built IR — buildEnumValue's callers are enum-typed positions,
+		// and the reachability walk has already validated the callee for real
+		// source). The call is built by buildDirectCallWithPre, and a
+		// non-empty pre (an inline slice-construction argument, whose temp
+		// declaration a pure expression position cannot place) is a clean
+		// rejection, never silently dropped — buildEnumValue returns (string,
+		// error) with no pre-threading and is called from pure expression
+		// positions throughout this file (switch subjects, comparison
+		// operands, struct field values, reassignments, and returns).
+		calleeDecl, err := findCallDeclaration(unit, node)
+		if err != nil {
+			return "", err
+		}
+		if !isEnumType(unit, snapshot, calleeDecl.ResultType) {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose declared result type %s is not an enum type", node.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", err
+		}
+		if callPre != "" {
+			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this enum value position: a pure expression position has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", node.Symbol)
+		}
+		return callExpr, nil
 	case tir.SourceAlias:
 		// A SourceAlias is transparent — it records grouped-expression parens
 		// (e.g. `(2 as Color) == Color.blue`) and nothing else — so it is
@@ -573,7 +614,12 @@ func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fil
 // in a pure value position (an optional's `some <expr>` payload or a union-
 // typed call argument): a reference to an already-declared union-typed local in
 // scope of exactly want (a SymbolValue, emitted as the local's own
-// pebble_local_<symbol> C name), a read of a union-typed struct field (a Load
+// pebble_local_<symbol> C name), a DirectCall to a union-returning helper
+// (`takes(pick())` passing a freshly-returned union to a union parameter, or a
+// return forward `return pick();` in a union-returning helper — the call
+// already returns the union's own C type, so the whole call expression is
+// directly a union value of exactly want), a read of a union-typed struct field
+// (a Load
 // of a FieldPlace, `h.tag`), a force-unwrap of a union-payload optional (a
 // CheckedOptionalUnwrap, `o!`), or a fresh variant construction
 // (Choice.value(5) / Choice.empty / Choice.empty(), built by the same
@@ -600,6 +646,39 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			return "", fmt.Errorf("%s references symbol %d, a local of type %s, not the union type %s", context, node.Symbol, describeType(snapshot, info.enumType), unionTypeName(want))
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.DirectCall:
+		// A call to a union-returning helper used directly as a tagged-union
+		// value: `takes(pick())` (a union-typed call argument, e.g. the
+		// std/optional.peb unwrap_or shape), `some pick()` (an optional's
+		// union payload), or a return forward (`return pick();` in a
+		// union-returning helper). The emitted C is
+		// `pebble_fn_<callee>(ctx, ...)` — a C function call whose return
+		// type IS the callee's declared union-typed result (helperSignature
+		// declares a union-result helper with the union's own
+		// pebble_union_<typeID>_t C return type, the exact C type a union
+		// value uses), so the whole call expression is directly a union value
+		// of exactly want, no cast or intermediate local needed. The call's
+		// own Type (the callee's resolved result type) is double-checked to
+		// be exactly want (defense for hand-built IR — the reachability walk
+		// has already validated the callee for real source). The call is
+		// built by buildDirectCallWithPre, and a non-empty pre (an inline
+		// slice-construction argument, whose temp declaration a pure
+		// expression position cannot place) is a clean rejection, never
+		// silently dropped — buildUnionValueExpr returns (string, error)
+		// with no pre-threading and is called from pure expression positions
+		// throughout this file and its callers (call arguments, optional
+		// payloads, and returns).
+		if node.Type != want {
+			return "", fmt.Errorf("%s contains a call to symbol %d whose declared result type %s is not the union type %s", context, node.Symbol, describeType(snapshot, node.Type), unionTypeName(want))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", err
+		}
+		if callPre != "" {
+			return "", fmt.Errorf("%s contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this union value position: a pure expression position has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", context, node.Symbol)
+		}
+		return callExpr, nil
 	case tir.EnumVariantValue, tir.VariantConstruct:
 		if node.Type != want {
 			return "", fmt.Errorf("%s constructs union type %s, want %s", context, unionTypeName(node.Type), unionTypeName(want))

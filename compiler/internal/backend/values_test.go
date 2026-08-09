@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1258,4 +1259,111 @@ fn main() int {
     return 1;
 }
 `, true, 1, false)
+}
+
+// --- 13: enum/union-returning DirectCall in a general value position ---
+
+// TestEmitEnumReturningCallAsSwitchSubjectCompilesAndRuns is the exact
+// reproduction from tracker proposal 13: an enum-returning helper's result used
+// directly as a switch subject (`switch pick() { ... }`) instead of being bound
+// to a local first. buildEnumValue previously rejected the DirectCall node
+// cleanly; the call is now built by buildDirectCallWithPre into
+// `switch (pebble_fn_<callee>(ctx)) { ... }`. pick() returns Color.green, so
+// the green case fires and the process exits 1.
+func TestEmitEnumReturningCallAsSwitchSubjectCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `type Color = enum { red, green, blue };
+
+fn pick() Color {
+    return Color.green;
+}
+
+fn main() int {
+    switch pick() {
+        case Color.red: return 0;
+        case Color.green: return 1;
+        case Color.blue: return 2;
+    }
+}`, false, 1, false)
+}
+
+// TestEmitEnumReturningCallAsSwitchSubjectWritesC checks the emitted C for the
+// switch-subject shape: the entry's switch subject must be the helper call
+// pebble_fn_<callee>(ctx) directly, never a temp local or a struct typedef.
+func TestEmitEnumReturningCallAsSwitchSubjectWritesC(t *testing.T) {
+	unit, snapshot, entryID, enumType, variants, sources := enumFixture(t, `type Color = enum { red, green, blue };
+
+fn pick() Color {
+    return Color.green;
+}
+
+fn main() int {
+    switch pick() {
+        case Color.red: return 0;
+        case Color.green: return 1;
+        case Color.blue: return 2;
+    }
+}`)
+	if len(variants) != 3 {
+		t.Fatalf("fixture has %d variants, want 3 (red, green, blue)", len(variants))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"switch (pebble_fn_",
+		"case pebble_variant_" + strconv.Itoa(int(variants[1])) + ":",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, enumTypeName(enumType)+" pebble_local_") {
+		t.Errorf("emitted C bound the switch subject into a temp local, want the helper call directly:\n%s", out)
+	}
+}
+
+// TestEmitEnumReturningCallAsComparisonOperandCompilesAndRuns exercises the
+// same buildEnumValue DirectCall case in a second general value position: an
+// enum-returning call used directly as a == comparison operand
+// (`pick() == Color.green`). pick() returns Color.green, so the comparison is
+// true and the process exits 1.
+func TestEmitEnumReturningCallAsComparisonOperandCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `type Color = enum { red, green, blue };
+
+fn pick() Color {
+    return Color.green;
+}
+
+fn main() int {
+    if pick() == Color.green { return 1; }
+    return 0;
+}`, false, 1, false)
+}
+
+// TestEmitUnionReturningCallAsCallArgumentCompilesAndRuns is the tagged-union
+// half of the gap, exercised in a general value position that routes through
+// buildUnionValueExpr: a union-returning helper's result passed directly as a
+// union-typed call argument (`takes(pick())`) rather than bound to a local
+// first. The callee takes() switches on its union-typed parameter, so the
+// runtime behavior is asserted end to end: pick() constructs Choice.value(5),
+// so the value case fires and the process exits 1.
+func TestEmitUnionReturningCallAsCallArgumentCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `type Choice = union enum { empty void; value int; };
+
+fn pick() Choice {
+    return Choice.value(5);
+}
+
+fn takes(c Choice) int {
+    switch c {
+        case Choice.empty: return 0;
+        case Choice.value: return 1;
+    }
+}
+
+fn main() int {
+    return takes(pick());
+}`, false, 1, false)
 }
