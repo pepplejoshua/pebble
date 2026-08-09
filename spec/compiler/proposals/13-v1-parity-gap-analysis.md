@@ -42,4 +42,62 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+### Descending range loops execute zero iterations
+
+**Source:** proposal 14, "New findings" table, row "Descending range loops
+execute zero iterations."
+
+**Area:** backend generator, `compiler/internal/backend/statements.go`,
+`buildRangeLoop` (line 996)
+
+**Priority:** dangerous — silent wrong behavior, no compile error, no
+runtime panic. The program simply skips the loop body entirely. This is
+worse than a clean rejection because nothing signals that anything is
+wrong; the same class of severity as the tagged-union C-type bug just
+fixed, but with a much larger blast radius since a descending range needs
+no special nesting or type to trigger — any ordinary `loop start..end` with
+`start > end` hits it unconditionally.
+
+**Reproduction:**
+
+```pebble
+fn main() int {
+    var count = 0;
+    loop 5..0 : i {
+        count = count + 1;
+    }
+    return count;
+}
+```
+
+`go run ./cmd/pebc -run` returns exit 0 (`count` stayed 0 — the loop body
+never ran). An ascending range with the same span,
+`loop 0..5 : i { count = count + 1; }`, correctly returns exit 5, confirming
+the range machinery itself works and this is specifically a
+direction/step-sign bug.
+
+**Root cause, confirmed from the emitted C** (`go run ./cmd/pebc -o` and
+inspecting the output directly):
+
+```c
+for (int32_t pebble_local_28 = 5; pebble_local_28 < 0; pebble_local_28++) {
+```
+
+The loop starts at `5`, but the condition is unconditionally `<` (never
+`>`), and the step is unconditionally `++` (never `--`). Since `5 < 0` is
+false on the very first check, the loop body never executes — it's not a
+narrow off-by-one, the loop condition is inverted relative to the actual
+iteration direction. Matches proposal 14's own analysis exactly: "V2 always
+writes `<`/`<=` and `iterator++` ... a descending range runs zero times."
+V1 (`codegen.c:2568`, per the audit) evaluates both bounds once, chooses
+step `+1` or `-1` based on their relative order, and emits the matching
+comparison direction.
+
+**Not yet done:** find the exact comparison-operator and step-sign
+selection logic inside `buildRangeLoop` and fix it to choose `>`/`--` when
+the start bound is greater than the end bound (a compile-time-constant
+check when both bounds are literals; likely needs a runtime `>` vs `<`
+branch, matching V1's approach, when a bound is not a literal — check
+whether the inclusive/exclusive range distinction and this direction choice
+interact before implementing). Next step: dispatch through Orc per the
+tracker's dispatch rules.
