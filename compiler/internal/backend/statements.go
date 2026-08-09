@@ -535,7 +535,8 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	}
 	// Build the subject expression. The subject's resolved type decides the
 	// grammar: an integer subject (the entry's width) is built by buildExpr,
-	// a bool subject by buildBoolExpr, a tagged-union subject by
+	// a bool subject by buildBoolExpr, a char subject by buildCharOperand, a
+	// tagged-union subject by
 	// buildUnionConstruction (reading its .tag field), a plain enum subject
 	// by buildEnumValue.
 	// The subject type is on the subject node itself (Children[0]).
@@ -599,6 +600,13 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width, width)
 	} else if isBool(snapshot, subjectNode.Type) {
 		subjectExpr, err = buildBoolExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+	} else if isChar(snapshot, subjectNode.Type) {
+		// A char-typed subject: built by buildCharOperand, the same builder
+		// every other char-typed position in this backend uses. A char's C
+		// type is the fixed int32_t, so the subject is an integral value the
+		// C switch can compare against char-literal case labels (emitted by
+		// buildCaseLabel as `case (int32_t)<scalar>:`).
+		subjectExpr, err = buildCharOperand(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if subjectNode.Kind == tir.IntegerLiteral && subjectNode.Type == snapshot.Builtins().Int {
 		// An int-typed integer literal as the subject: the checker leaves
 		// it as the unanchored int builtin when no width-anchoring position
@@ -618,7 +626,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		}
 		subjectExpr = fmt.Sprintf("pebble_local_%d", subjectNode.Symbol)
 	} else {
-		return "", fmt.Errorf("switch subject has type %s, want %s or bool, or an enum/tagged-union type", describeType(snapshot, subjectNode.Type), wantName(width))
+		return "", fmt.Errorf("switch subject has type %s, want %s, bool, or char, or an enum/tagged-union type", describeType(snapshot, subjectNode.Type), wantName(width))
 	}
 	if err != nil {
 		return "", err
@@ -751,7 +759,10 @@ func buildSwitchCaseBodyOrFallthrough(unit *tir.Unit, snapshot *types.Snapshot, 
 // subject's own typedef by construction. An integer literal is emitted as its
 // decimal text; a bool literal is emitted as `0` (false) or `1` (true), since
 // C treats bool as an integer type and switch cases require integral constant
-// expressions. Any other case shape is a clean rejection.
+// expressions; a char literal is emitted as `case (int32_t)<scalar>:`, the
+// same int32_t spelling buildCharOperand gives a char value everywhere, so
+// the label matches a char-typed subject's integral C representation. Any
+// other case shape is a clean rejection.
 func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.BuiltinKind) (string, error) {
 	if caseNode.CaseValue != 0 {
 		// An enum-variant case label, emitted as the variant's C enum constant
@@ -760,6 +771,17 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 		return "case " + enumVariantName(caseNode.CaseValue) + ":", nil
 	}
 	switch caseNode.Literal.Kind {
+	case tir.LiteralChar:
+		// A char case label, emitted as the char's int32_t scalar value, the
+		// same C representation buildCharOperand gives a char literal (see
+		// buildCharLiteralValue). C switch case labels require integral
+		// constant expressions, so the cast of the scalar literal is exactly
+		// right.
+		valueText, err := buildCharLiteralValue(caseNode)
+		if err != nil {
+			return "", err
+		}
+		return "case " + valueText + ":", nil
 	case tir.LiteralInteger:
 		text := caseNode.Literal.IntegerNum
 		if !isNonNegativeDecimal(text) {
@@ -773,7 +795,7 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 		}
 		return "case 0:", nil
 	default:
-		return "", fmt.Errorf("switch case has literal kind %s, want an integer or bool constant", caseNode.Literal.Kind)
+		return "", fmt.Errorf("switch case has literal kind %s, want an integer, bool, or char constant", caseNode.Literal.Kind)
 	}
 }
 

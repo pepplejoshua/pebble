@@ -1265,6 +1265,68 @@ func TestEmitSwitchBoolSubjectFalseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { switch false { case true: return 1; else: return 0; } }", false, 0, false)
 }
 
+func TestEmitSwitchCharSubjectCompilesAndRuns(t *testing.T) {
+	// A char-typed switch subject with char case labels and an else/default
+	// arm, the checker/backend parity gap from proposal 13: the checker
+	// accepts a char switch (char subject, char case values) but the backend
+	// previously rejected it at emission because the switch-subject builder
+	// had no char branch and buildCaseLabel only handled integer/bool labels.
+	// classify('b') must hit the second case and return 2.
+	emitAndRun(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'b': return 2; else: return 0; } } fn main() int { return classify('b'); }", false, 2, false)
+}
+
+func TestEmitSwitchCharSubjectFirstCaseCompilesAndRuns(t *testing.T) {
+	// Same switch, subject 'a' hits the first case and returns 1.
+	emitAndRun(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'b': return 2; else: return 0; } } fn main() int { return classify('a'); }", false, 1, false)
+}
+
+func TestEmitSwitchCharSubjectElseCompilesAndRuns(t *testing.T) {
+	// Same switch, subject 'z' (not among the case labels) falls to the
+	// else/default arm and returns 0.
+	emitAndRun(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'b': return 2; else: return 0; } } fn main() int { return classify('z'); }", false, 0, false)
+}
+
+func TestEmitSwitchCharSubjectNonAsciiCompilesAndRuns(t *testing.T) {
+	// A char switch over a non-ASCII Unicode scalar value: 'é' (U+00E9, 233)
+	// is matched as the full int32_t scalar, proving the char case label
+	// compares the same full scalar the subject carries, not a truncated byte.
+	emitAndRun(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'é': return 2; else: return 0; } } fn main() int { return classify('é'); }", false, 2, false)
+}
+
+func TestEmitSwitchCharSubjectLiteralCompilesAndRuns(t *testing.T) {
+	// A char literal used directly as the switch subject — the CharLiteral
+	// path in the subject builder, distinct from the char-parameter SymbolValue
+	// path the fixtures above exercise. Subject 'a' (97) hits the 'a' case.
+	emitAndRun(t, "fn main() int { switch 'a' { case 'a': return 1; case 'b': return 2; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchCharSubjectWritesC(t *testing.T) {
+	// Confirm the emitted C for a char switch: the subject is the char
+	// parameter's int32_t local, and each char case label is emitted as
+	// `case (int32_t)<scalar>:` — the same int32_t spelling buildCharOperand
+	// gives a char literal, so the labels match the subject's C type.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'b': return 2; else: return 0; } } fn main() int { return classify('b'); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"switch (pebble_local_25)",
+		"case (int32_t)97:",
+		"case (int32_t)98:",
+		"default:",
+		"return 1;",
+		"return 2;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
 func TestEmitSwitchWritesC(t *testing.T) {
 	// Confirm the emitted C for a switch fixture contains the expected
 	// stacked case labels and body structure.
