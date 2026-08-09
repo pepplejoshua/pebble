@@ -8,20 +8,29 @@ import (
 )
 
 // validateEntrySignature checks the entry's calling convention, parameter
-// count, and result type against the supported shapes: a void result (empty
-// body), an int/i32/i64 result, or, since Float Stage A, an f32/f64 result
-// (body under the recursive block grammar). On
-// success it returns the resolved result builtin (types.Void, types.Int,
-// types.I32, types.I64, types.F32, or types.F64) — for an integer entry that returned builtin IS the width every
+// count, and result type against the supported shapes: zero parameters, or
+// exactly one parameter of the []str argv form (main(argv []str)), plus a void
+// result (empty body), an int/i32/i64 result, or, since Float Stage A, an
+// f32/f64 result (body under the recursive block grammar). The two-parameter
+// main(argc int, argv []str) form stays intentionally unsupported (a
+// documented V1-parity decision). On success it returns the resolved result
+// builtin (types.Void, types.Int, types.I32, types.I64, types.F32, or
+// types.F64) — for an integer entry that returned builtin IS the width every
 // builder downstream emits at, threaded through Emit rather than re-derived.
 // Whether the body actually matches the result's shape is decided by the
-// body-validation step the caller dispatches on.
+// body-validation step the caller dispatches on. When the single-parameter
+// argv form is accepted, Emit reads decl.Parameters itself to wire the slice
+// into pebble_user_main's signature and the body's locals scope (see
+// emitEntryC).
 func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.BuiltinKind, error) {
 	if decl.Convention != types.Pebble {
 		return 0, fmt.Errorf("entry function uses %s calling convention, want Pebble", callingConventionName(decl.Convention))
 	}
-	if len(decl.Parameters) != 0 {
-		return 0, fmt.Errorf("entry function has %d parameter(s), want 0 (main([]str) and main(i32, []str) are not supported yet)", len(decl.Parameters))
+	if len(decl.Parameters) > 1 {
+		return 0, fmt.Errorf("entry function has %d parameter(s), want 0 or a single []str argv (main(argc int, argv []str) is not supported yet)", len(decl.Parameters))
+	}
+	if len(decl.Parameters) == 1 && !isStrSlice(snapshot, decl.Parameters[0].Type) {
+		return 0, fmt.Errorf("entry function parameter is a %s, want []str (main(argv []str) is the only parameterized entry shape supported)", describeType(snapshot, decl.Parameters[0].Type))
 	}
 	key, ok := snapshot.Key(decl.ResultType)
 	if !ok {
@@ -32,6 +41,31 @@ func validateEntrySignature(decl tir.Node, snapshot *types.Snapshot) (types.Buil
 		return 0, fmt.Errorf("entry function result type is %s, want void, int, i32, i64, f32, or f64", describeType(snapshot, decl.ResultType))
 	}
 	return builtin, nil
+}
+
+// isStrSlice reports whether a type is a slice whose element type is str. It is
+// the backend mirror of the checker's validArgvParameter (entry_validation.go)
+// and gates exactly the one parameterized entry shape this backend supports:
+// main(argv []str). A slice of str is NOT a general slice element this backend
+// can lower (sliceElementCType rejects str by design — validateHelperSignature
+// documents the deliberate gate), so this test is only consulted for the
+// entry's own parameter, whose C type is the runtime's fixed PebbleStrSlice
+// (pebble_rt.h), never a pebble_slice_<typeID>_t typedef.
+func isStrSlice(snapshot *types.Snapshot, id types.TypeID) bool {
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Slice {
+		return false
+	}
+	element, ok := key.Child()
+	if !ok {
+		return false
+	}
+	elementKey, ok := snapshot.Key(element)
+	if !ok {
+		return false
+	}
+	builtin, ok := elementKey.Builtin()
+	return ok && builtin == types.Str
 }
 
 // validateSliceElementType rejects a slice type whose element type is anything

@@ -165,9 +165,20 @@ func TestEmitRejectsI32EmptyBody(t *testing.T) {
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
-func TestEmitRejectsParameters(t *testing.T) {
+func TestEmitAcceptsArgvParameter(t *testing.T) {
+	// The single-parameter main(argv []str) entry form is now a supported
+	// shape. This test used to be TestEmitRejectsParameters and pinned the old
+	// behavior that ANY entry parameter was rejected; the checker has accepted
+	// the []str argv form since its entry-validation audit (validArgvParameter),
+	// and this backend now wires it through (see TestEntryArgvSlice /
+	// TestEntryArgvVoid in emit_test.go). A void-result argv entry emits
+	// cleanly; the two-parameter main(argc int, argv []str) form remains
+	// intentionally unsupported and is pinned by TestEntryArgvRejectsTwoParameters.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main(args []str) void {}", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, nil, nil, &buf); err != nil {
+		t.Fatalf("Emit failed for main(argv []str) void: %v", err)
+	}
 }
 
 func TestEmitRejectsUnsupportedResultType(t *testing.T) {

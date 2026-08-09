@@ -2404,3 +2404,181 @@ func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 // --- Function types: u64 parameter/result support ---
 
 // --- Function types: pointer parameter/result support ---
+
+// --- Entry argv: main(argv []str) receives the real C process arguments ---
+
+// emitArgvAndRun drives one .peb entry source through buildFixture, Emit, and
+// the end-to-end cc compile + run, executing the compiled binary with the given
+// command-line arguments rather than bare (the other run helpers pass none) and
+// asserting its exit code. It is the argv-specific sibling of emitAndRun: the
+// hosted main's argc/argv are only observable when the test actually passes
+// arguments or asserts the bare-run count.
+func emitArgvAndRun(t *testing.T, sourceText string, args []string, wantCode int) {
+	t.Helper()
+	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", true)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedC(t, buf.Bytes())
+	run := exec.Command(binary, args...)
+	output, err := run.CombinedOutput()
+	if run.ProcessState == nil {
+		t.Fatalf("compiled program did not start: %v\n%s", err, output)
+	}
+	code := run.ProcessState.ExitCode()
+	if code != wantCode {
+		t.Fatalf("compiled program exited %d, want %d (args %v)\n%s", code, wantCode, args, output)
+	}
+	t.Logf("compiled program exited %d, want %d (args %v)", code, wantCode, args)
+}
+
+// TestEntryArgvSlice is the focused compile-run test for the main(argv []str)
+// entry form. The []str argv INCLUDES argv[0] (the program name) — the raw C
+// convention V1's codegen (codegen.c's `slice_str __argv = { argv, argc }`) and
+// the runtime's own pebble_rt_args_from_argv (runtime/src/platform_host.c,
+// whose smoke test asserts slice.len == argc) both adopt — so argv.len equals
+// argc: 1 for a bare run, 1+N once N command-line arguments are passed. The
+// program returns argv.len cast to int: a slice/str .len is a uint in this
+// backend's value grammar, and every existing test returning one uses the same
+// `as int` — the task's bare `return argv.len;` hits that pre-existing
+// value-grammar rule (it fails identically for a plain `let s str = "hi";
+// return s.len;`), not anything argv-specific.
+func TestEntryArgvSlice(t *testing.T) {
+	const program = "fn main(argv []str) int { return argv.len as int; }"
+	emitArgvAndRun(t, program, nil, 1)
+	emitArgvAndRun(t, program, []string{"alpha"}, 2)
+	emitArgvAndRun(t, program, []string{"alpha", "beta", "gamma"}, 4)
+	emitArgvAndRun(t, program, []string{"", "with space", "x=y"}, 4)
+}
+
+// TestEntryArgvVoid exercises the void-result argv form: pebble_user_main
+// returns nothing, argv is still wired through, and the emitted
+// (void)pebble_local_<sym>; keeps the -Wall -Wextra -Werror build clean even
+// though the body never reads the parameter.
+func TestEntryArgvVoid(t *testing.T) {
+	emitArgvAndRun(t, "fn main(argv []str) void { }", []string{"a", "b"}, 0)
+}
+
+// TestEntryArgvEmittedCShape pins the entry-bridge C shape for the argv form:
+// pebble_user_main takes the runtime's fixed PebbleStrSlice (the []str slice
+// shape, matching pebble_rt_args_from_argv's return type directly — no
+// pebble_slice_<typeID>_t typedef is involved), and the hosted main adapts the
+// real OS argc/argv instead of discarding them.
+func TestEntryArgvEmittedCShape(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main(argv []str) int { return argv.len as int; }", "main", true)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int pebble_user_main(PebbleContext *ctx, PebbleStrSlice pebble_local_",
+		"= pebble_rt_args_from_argv(&ctx, argc, argv);",
+		"return pebble_user_main(&ctx, pebble_local_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(void)argc;") || strings.Contains(out, "(void)argv;") {
+		t.Errorf("emitted C still discards argc/argv for the argv entry:\n%s", out)
+	}
+}
+
+// buildEntryWithParamsUnit hand-builds a unit whose i32 entry declares the
+// given parameters, so validateEntrySignature's parameter gate can be exercised
+// directly. The checker refuses these shapes from real source (its own entry
+// validation requires zero parameters or exactly the []str argv form), so they
+// are constructed through the IR builder exactly like the other
+// hand-built-rejection fixtures in this package. The snapshot and entryID come
+// from the caller's checker-built fixture, so every TypeID the params reference
+// (i32, or a []i32 slice type borrowed from that same fixture) is owned by the
+// unit's store.
+func buildEntryWithParamsUnit(t *testing.T, snapshot *types.Snapshot, entryID symbol.SymbolID, params []tir.Parameter) *tir.Unit {
+	t.Helper()
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := addI32Literal(t, builder, i32, "0")
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{zero},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: []tir.NodeID{ret},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.AddNode(tir.Node{
+		Kind:       tir.FunctionDeclaration,
+		Symbol:     entryID,
+		Function:   fid,
+		Parameters: params,
+		ResultType: i32,
+		Convention: types.Pebble,
+		Span:       source.NewSpan(0, 0, 1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.CompleteFunctionDecl(fid, block); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := builder.Build()
+	if err != nil {
+		t.Fatalf("builder rejected the hand-built unit: %v", err)
+	}
+	return unit
+}
+
+func TestEntryArgvRejectsTwoParameters(t *testing.T) {
+	// The two-parameter main(argc int, argv []str) form stays intentionally
+	// unsupported per the project's V1-parity decision — do not implement it.
+	// The checker already rejects it from real source (validArgvParameter
+	// admits exactly one parameter), so this hand-built unit pins the backend's
+	// own validateEntrySignature gate for the count.
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	i32 := snapshot.Builtins().I32
+	unit := buildEntryWithParamsUnit(t, snapshot, entryID, []tir.Parameter{
+		{Symbol: 25, Type: i32},
+		{Symbol: 26, Type: i32},
+	})
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "main(argc int, argv []str) is not supported yet")
+}
+
+// TestEntryArgvRejectsNonStrSliceParameter pins the other half of the
+// validateEntrySignature parameter gate: a single parameter whose type is a
+// slice but not of str (here []i32) is rejected, not silently wired as argv.
+// The checker refuses it from real source too, so the []i32 type is borrowed
+// from a checker-built fixture and the unit is hand-built on the same snapshot.
+func TestEntryArgvRejectsNonStrSliceParameter(t *testing.T) {
+	realUnit, snapshot, entryID, _ := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { return 0; }", "main", false)
+	var i32Slice types.TypeID
+	for _, n := range realUnit.Nodes() {
+		if n.Kind == tir.FunctionDeclaration && len(n.Parameters) == 1 && n.Symbol != entryID {
+			i32Slice = n.Parameters[0].Type
+			break
+		}
+	}
+	if i32Slice == 0 {
+		t.Fatal("checker-built fixture has no []i32 parameter to borrow its type from")
+	}
+	unit := buildEntryWithParamsUnit(t, snapshot, entryID, []tir.Parameter{{Symbol: 25, Type: i32Slice}})
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want []str")
+}

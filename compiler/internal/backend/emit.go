@@ -527,11 +527,28 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	// A single-parameter entry is exactly the main(argv []str) shape
+	// validateEntrySignature admitted. The parameter is emitted as
+	// pebble_user_main's trailing PebbleStrSlice argument and seeded into the
+	// body's locals scope as a slice local, so the body reads argv through the
+	// same slice machinery a []i32 slice local uses (`.len`/`.data` structural
+	// projections; index reads of a []str element remain a clean rejection,
+	// since str is not a supported slice element type for ordinary slices — see
+	// validateHelperSignature).
+	var argvParam *tir.Parameter
+	var entryLocals map[symbol.SymbolID]localInfo
+	if len(decl.Parameters) == 1 {
+		argvParam = &decl.Parameters[0]
+		entryLocals = map[symbol.SymbolID]localInfo{argvParam.Symbol: {sliceType: argvParam.Type}}
+	}
 	if result == types.Void {
 		if err := validateEmptyBody(unit, block); err != nil {
 			return err
 		}
-		return emitEntryC(w, "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit))
+		if argvParam != nil {
+			return emitEntryC(w, "", "", "", fmt.Sprintf(voidEntryUserMainArgv, argvParam.Symbol, argvParam.Symbol), fmt.Sprintf(voidEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+		}
+		return emitEntryC(w, "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false)
 	}
 	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
 	if err != nil {
@@ -690,7 +707,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	statements, err := buildBlock(unit, snapshot, fileSet, blockID, nil, 0, result, resultInfo{kind: result}, unions)
+	statements, err := buildBlock(unit, snapshot, fileSet, blockID, entryLocals, 0, result, resultInfo{kind: result}, unions)
 	if err != nil {
 		return err
 	}
@@ -717,7 +734,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		helperPrototypes += "\n" + strings.Join(adapterPrototypes, "\n")
 		helpersText += "\n" + strings.Join(adapterDefinitions, "\n")
 	}
-	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit))
+	if argvParam != nil {
+		return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+	}
+	return emitEntryC(w, typedefs, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false)
 }
 
 // hasCExterns reports whether the unit declares at least one C-convention
@@ -1439,6 +1459,21 @@ const voidEntryUserMain = `static void pebble_user_main(PebbleContext *ctx) {
 const voidEntryMainBody = `pebble_user_main(&ctx);
     return 0;`
 
+// voidEntryUserMainArgv is the void-returning pebble_user_main shape for the
+// main(argv []str) entry form: a single %d is the argv parameter's symbol, and
+// the parameter is declared as the runtime's fixed PebbleStrSlice (the []str
+// slice shape pebble_rt.h defines, returned by pebble_rt_args_from_argv). The
+// (void)pebble_local_%d; suppresses -Wunused-parameter under the mandated
+// -Wall -Wextra -Werror build whether or not the body reads argv.
+const voidEntryUserMainArgv = `static void pebble_user_main(PebbleContext *ctx, PebbleStrSlice pebble_local_%d) {
+    (void)ctx;
+    (void)pebble_local_%d;
+}`
+
+const voidEntryMainBodyArgv = `PebbleStrSlice pebble_local_%d = pebble_rt_args_from_argv(&ctx, argc, argv);
+    pebble_user_main(&ctx, pebble_local_%d);
+    return 0;`
+
 // integerEntryUserMain is a format string; the first %s is the pebble_user_main
 // return type for the entry's resolved width (entryReturnType) and the second
 // %s is the statement sequence for
@@ -1458,6 +1493,33 @@ const integerEntryUserMain = `static %s pebble_user_main(PebbleContext *ctx) {
 }`
 
 const integerEntryMainBody = `return pebble_user_main(&ctx);`
+
+// integerEntryUserMainArgv is the integer-result pebble_user_main shape for
+// the main(argv []str) entry form, mirroring integerEntryUserMain plus a
+// trailing argv parameter. The first %s is the return type (entryReturnType),
+// the second %d the argv parameter's symbol, and the third %s the body
+// statements. The parameter is declared as the runtime's fixed PebbleStrSlice
+// (the []str slice shape pebble_rt.h defines, returned by
+// pebble_rt_args_from_argv) so the hosted main assigns the runtime helper's
+// result directly — no pebble_slice_<typeID>_t typedef is involved, since str
+// is deliberately not a general slice element type (see validateHelperSignature).
+// The (void)pebble_local_%d; suppresses -Wunused-parameter whether or not the
+// body reads argv.
+const integerEntryUserMainArgv = `static %s pebble_user_main(PebbleContext *ctx, PebbleStrSlice pebble_local_%d) {
+    (void)ctx;
+    (void)pebble_local_%d;
+%s
+}`
+
+// integerEntryMainBodyArgv is the hosted main's body for the main(argv []str)
+// form: it adapts the real OS argc/argv into a PebbleStrSlice via the runtime
+// helper and forwards it to pebble_user_main. Two %d arguments name the argv
+// parameter's symbol. pebble_rt_args_from_argv includes argv[0] (the program
+// name, the raw C convention this backend adopts — see the construction site
+// comment in Emit's argvParam block for the full reasoning), so argv.len is
+// exactly argc.
+const integerEntryMainBodyArgv = `PebbleStrSlice pebble_local_%d = pebble_rt_args_from_argv(&ctx, argc, argv);
+    return pebble_user_main(&ctx, pebble_local_%d);`
 
 // entryReturnType is the C return type pebble_user_main is declared with for
 // a supported scalar entry result. An i32 entry keeps the legacy "int"
@@ -1510,7 +1572,7 @@ func entryReturnType(width types.BuiltinKind) string {
 // <inttypes.h> PRI* macros for its fixed-width integer specifiers, so both
 // headers are needed the moment any print is emitted, and adding them for
 // programs with no print at all is harmless.
-func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody string, hasExterns bool) error {
+func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody string, hasExterns, hasArgv bool) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -1550,13 +1612,23 @@ func emitEntryC(w io.Writer, typedefs, prototypes, helpers, userMain, mainBody s
 %s
 
 int main(int argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    PebbleContext ctx = pebble_rt_default_context();
+%s    PebbleContext ctx = pebble_rt_default_context();
     %s
 }
-`, userMain, mainBody)
+`, userMain, argvUnusedSuppression(hasArgv), mainBody)
 	return err
+}
+
+// argvUnusedSuppression returns the C text that keeps the hosted main's
+// argc/argv parameters warning-free under -Wall -Wextra -Werror. A no-argv
+// entry never reads either, so both are explicitly discarded; a main(argv
+// []str) entry adapts both into the argv slice (the mainBody passed to
+// emitEntryC references them), so no suppression is needed.
+func argvUnusedSuppression(hasArgv bool) string {
+	if hasArgv {
+		return ""
+	}
+	return "    (void)argc;\n    (void)argv;\n"
 }
 
 func callingConventionName(c types.CallingConvention) string {
