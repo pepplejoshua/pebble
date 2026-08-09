@@ -42,4 +42,75 @@ being reproduced, worked, and closed.
 - Delete failed/stalled/killed Orc sessions with `orc delete` immediately,
   not just their scratch files.
 
-_(empty — pick the next item from proposal 14 to begin)_
+## Active defect
+
+### `sizeof` on a tagged union selects the wrong C type and doesn't compile
+
+**Source:** proposal 14, "New findings" table, row "`sizeof` a tagged union
+selects the discriminant enum C type instead of the tagged-union C type."
+
+**Area:** backend generator, `compiler/internal/backend/types.go`,
+`sizeofCTypeName` (line 976)
+
+**Priority:** dangerous — same root-cause family as the struct-field/
+optional-payload C-type bug already fixed (`4d1ef51`). If a `sizeof`
+result on a tagged union ever drove an allocation size, the size would be
+wrong (too small — the bare tag enum instead of the full tag+payload
+union). In practice it's worse than that: it doesn't even compile.
+
+**Reproduction:**
+
+```pebble
+type Choice = union enum {
+    empty void;
+    value int;
+};
+
+fn main() int {
+    let s = sizeof Choice;
+    print "{}\n", s;
+    return 0;
+}
+```
+
+`go run ./cmd/pebc -run` fails:
+
+```
+program.c:8:39: error: use of undeclared identifier 'pebble_enum_23_t'
+    8 |     uint64_t pebble_local_30 = sizeof(pebble_enum_23_t);
+```
+
+Not just the wrong type — the referenced type isn't even declared anywhere
+in the emitted C, because nothing else in this minimal program forces the
+union's typedef pair to be collected (the earlier struct-field fix's own
+root-cause note applies here too: a tagged union's discriminant enum
+typedef is only emitted as part of the union typedef pair, and a bare
+`sizeof` expression doesn't trigger that collection path the way a struct
+field or optional payload does).
+
+**Root cause, confirmed by reading `sizeofCTypeName` directly:**
+
+```go
+if isEnumType(unit, snapshot, id) {
+    return enumTypeName(id), nil
+}
+if isStruct(snapshot, id) {
+    return structTypeName(id), nil
+}
+```
+
+Exactly the same shape as the already-fixed bug: `isEnumType` returns true
+for both plain enums AND tagged unions, and this check runs before any
+tagged-union-specific branch (there isn't one), so a tagged union always
+gets misclassified as a plain enum here too.
+
+**Not yet done:** add an `isTaggedUnionType` check before the `isEnumType`
+check in `sizeofCTypeName`, returning `unionTypeName(id)` for that case —
+directly mirroring the fix already applied to `structFieldCType`/
+`optionalPayloadCType`. Also confirm (may already be handled, verify)
+whether `sizeof` on a tagged union needs to force the union typedef pair to
+be collected/emitted even when nothing else in the program references it,
+the same way a struct field or optional payload already does — otherwise
+the fixed `sizeofCTypeName` will correctly choose `unionTypeName` but still
+fail to compile if the typedef itself never gets emitted into a bare-sizeof
+program. Next step: dispatch through Orc per the tracker's dispatch rules.
