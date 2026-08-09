@@ -1,0 +1,1099 @@
+package backend
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/pepplejoshua/pebble/compiler/internal/source"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
+)
+
+// resolveSliceInfo turns one collected slice TypeID into a sliceInfo with its
+// element type resolved. The element type comes from the slice type's own
+// Child() key, which for a Slice kind returns the element type.
+func resolveSliceInfo(snapshot *types.Snapshot, id types.TypeID) (sliceInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return sliceInfo{}, fmt.Errorf("slice type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Slice {
+		return sliceInfo{}, fmt.Errorf("type %s is a %v, want a slice type", describeType(snapshot, id), key.Kind())
+	}
+	child, ok := key.Child()
+	if !ok {
+		return sliceInfo{}, fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
+	}
+	return sliceInfo{typ: id, elementType: child}, nil
+}
+
+// resolveStructInfo turns one collected struct TypeID into a structInfo with
+// its fields in declared order. The declaration symbol comes from the type's
+// own Nominal key (TypeKey.Nominal); the declared field order comes from the
+// corresponding TypeDecl's Members (unit.TypeDeclarations), which lists the
+// field symbols in the struct's source declaration order — NOT the
+// construction-site order a RecordConstruct's Fields carry, which is why the
+// order is resolved here rather than from any construction node. Each field's
+// type comes from TypeDecl.MemberTypes. For a generic instantiation the
+// TypeKey.Nominal arguments are the instantiation's concrete type arguments,
+// so a member whose recorded type is one of the struct's own type parameters
+// (the checker records the parameter's TypeID for a directly parameter-typed
+// field) is substituted against those arguments — resolving Pair[K, V]'s `key
+// K` to Pair[int, int]'s int and Pair[int, bool]'s int independently, from the
+// instantiation's own evidence rather than the per-symbol fallback below.
+// Members whose template the checker left unresolved (unless the usage-derived
+// fieldTypes map provides a type) are rejected rather than guessed.
+func resolveStructInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID, fieldTypes map[symbol.SymbolID]types.TypeID) (structInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return structInfo{}, fmt.Errorf("struct type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return structInfo{}, fmt.Errorf("type %s is a %v, want a struct type", structTypeName(id), key.Kind())
+	}
+	decl, arguments, ok := key.Nominal()
+	if !ok {
+		return structInfo{}, fmt.Errorf("type %s has no nominal declaration", structTypeName(id))
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return structInfo{}, fmt.Errorf("struct type %s has no TypeDeclaration for symbol %d in the unit", structTypeName(id), decl)
+	}
+	var substitutions map[symbol.SymbolID]types.TypeID
+	if len(arguments) > 0 {
+		substitutions = structSubstitutions(unit, snapshot, decl, arguments)
+	}
+	fields := make([]structFieldInfo, len(typeDecl.Members))
+	for i, member := range typeDecl.Members {
+		fieldType := types.TypeID(0)
+		if i < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType != 0 && substitutions != nil {
+			substituted, err := snapshot.Substitute(fieldType, substitutions)
+			if err != nil {
+				return structInfo{}, fmt.Errorf("struct type %s field symbol %d type substitution: %v", structTypeName(id), member, err)
+			}
+			fieldType = substituted
+		}
+		if fieldType == 0 {
+			// A member whose template wraps the struct's own parameter (e.g.
+			// `?K` or `*K`) has no parameterized TypeID to substitute, so the
+			// concrete field type is recovered per instantiation from the
+			// struct's OWN construction evidence first: any RecordConstruct
+			// whose type is exactly this instantiation (node.Type, not merely
+			// the shared declaration) names the field's resolved type on its
+			// value node. Two specializations share every field symbol, so the
+			// per-symbol fieldTypes fallback below would let one
+			// instantiation's type win over the other's; the scoped recovery
+			// is what keeps them distinct.
+			fieldType, ok = instantiatedFieldType(unit, id, member)
+			if !ok {
+				fieldType, ok = fieldTypes[member]
+			}
+			if !ok {
+				return structInfo{}, fmt.Errorf("struct type %s field symbol %d has no resolvable type in the unit", structTypeName(id), member)
+			}
+		}
+		fields[i] = structFieldInfo{member: member, typ: fieldType}
+	}
+	return structInfo{typ: id, decl: decl, fields: fields}, nil
+}
+
+// resolveUnionInfo turns one collected union TypeID into a unionInfo with its
+// variants in declared order and its constructed members resolved. The
+// declaration symbol comes from the type's own Nominal key (TypeKey.Nominal);
+// the declared variant order comes from the corresponding TypeDecl's Members
+// (unit.TypeDeclarations), the same mechanism resolveEnumInfo uses for a plain
+// enum (the TypeDeclaration *node* carries only the symbol, so the container is
+// authoritative). The constructed members come from the payloads map the walk
+// accumulated (member symbol -> resolved payload type), listed in declared
+// variant order so the C union member order is deterministic regardless of
+// construction-site order. The type must actually be enum-shaped, not a struct
+// that shares the Nominal key shape — isEnumType distinguishes the two from the
+// unit's own node graph, so a collected non-enum Nominal type is a clean
+// rejection, not a guessed layout.
+func resolveUnionInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID, payloads map[symbol.SymbolID]types.TypeID) (unionInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return unionInfo{}, fmt.Errorf("union type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return unionInfo{}, fmt.Errorf("type %s is a %v, want a tagged-union type", unionTypeName(id), key.Kind())
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return unionInfo{}, fmt.Errorf("type %s has no nominal declaration", unionTypeName(id))
+	}
+	if !isEnumType(unit, snapshot, id) {
+		return unionInfo{}, fmt.Errorf("type %s is not a tagged-union type (its declaration symbol %d's members resolve to struct fields, not enum variants)", unionTypeName(id), decl)
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return unionInfo{}, fmt.Errorf("union type %s has no TypeDeclaration for symbol %d in the unit", unionTypeName(id), decl)
+	}
+	if len(typeDecl.Members) == 0 {
+		return unionInfo{}, fmt.Errorf("union type %s has no declared variants", unionTypeName(id))
+	}
+	members := make([]unionMemberInfo, 0, len(payloads))
+	for _, variant := range typeDecl.Members {
+		if payloadType, ok := payloads[variant]; ok {
+			members = append(members, unionMemberInfo{member: variant, payloadType: payloadType})
+		}
+	}
+	return unionInfo{typ: id, decl: decl, variants: append([]symbol.SymbolID(nil), typeDecl.Members...), members: members}, nil
+}
+
+// resolveEnumInfo turns one collected enum TypeID into an enumInfo with its
+// variants in declared order. The declaration symbol comes from the type's own
+// Nominal key (TypeKey.Nominal); the declared variant order comes from the
+// corresponding TypeDecl's Members (unit.TypeDeclarations), which lists the
+// variant symbols in the enum's source declaration order — the same mechanism
+// resolveStructInfo uses for structs (the TypeDeclaration *node* carries only
+// the symbol, so the container is authoritative). The type must actually be a
+// plain enum, not a struct that shares the Nominal key shape — isEnumType
+// distinguishes the two from the unit's own node graph, so a collected
+// non-enum Nominal type is a clean rejection, not a guessed layout.
+func resolveEnumInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (enumInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return enumInfo{}, fmt.Errorf("enum type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return enumInfo{}, fmt.Errorf("type %s is a %v, want an enum type", enumTypeName(id), key.Kind())
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return enumInfo{}, fmt.Errorf("type %s has no nominal declaration", enumTypeName(id))
+	}
+	if !isEnumType(unit, snapshot, id) {
+		return enumInfo{}, fmt.Errorf("type %s is not a plain enum (its declaration symbol %d's members resolve to struct fields, not enum variants)", enumTypeName(id), decl)
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return enumInfo{}, fmt.Errorf("enum type %s has no TypeDeclaration for symbol %d in the unit", enumTypeName(id), decl)
+	}
+	if len(typeDecl.Members) == 0 {
+		return enumInfo{}, fmt.Errorf("enum type %s has no declared variants", enumTypeName(id))
+	}
+	return enumInfo{typ: id, decl: decl, variants: append([]symbol.SymbolID(nil), typeDecl.Members...)}, nil
+}
+
+// containsVariant reports whether id is one of the variant symbols in variants.
+func containsVariant(variants []symbol.SymbolID, id symbol.SymbolID) bool {
+	for _, variant := range variants {
+		if variant == id {
+			return true
+		}
+	}
+	return false
+}
+
+// buildRuntimeAllocatorCallbackAdapter validates one Allocator callback field's
+// construction value (a member of AllocatorAlloc/AllocatorRealloc/AllocatorFree)
+// and, when it is a supported source-level function reference, registers — into
+// the package-level emitAllocatorAdapters map, deduplicated by bridge name — the
+// file-scope C bridge that adapts the user's emitted helper into the field's
+// runtime ABI type, returning the bridge's C name for the construction's
+// designated initializer to reference. Anything else is a clean rejection
+// naming what was found. The checker already requires a callback field's value
+// to be exactly the field's function type (fn(ctx *void, size uint) *void and
+// friends), so the only reachable shape is a HoistedFunctionValue; everything
+// else is defense for hand-built IR.
+func buildRuntimeAllocatorCallbackAdapter(unit *tir.Unit, snapshot *types.Snapshot, member symbol.SymbolID, valueNode tir.Node, context string) (string, error) {
+	if valueNode.Kind != tir.HoistedFunctionValue {
+		return "", fmt.Errorf("%s constructs an Allocator callback field from a %s, want a reference to a top-level function (e.g. `alloc = my_alloc`)", context, valueNode.Kind)
+	}
+	if !isFunctionType(snapshot, valueNode.Type) {
+		return "", fmt.Errorf("%s constructs an Allocator callback field from a %s, want a function value", context, describeType(snapshot, valueNode.Type))
+	}
+	decl, err := findFunctionDeclaration(unit, valueNode.Symbol, "Allocator callback function")
+	if err != nil {
+		return "", err
+	}
+	info := unit.Runtime()
+	name := ""
+	prototype := ""
+	definition := ""
+	switch member {
+	case info.AllocatorAlloc:
+		name = fmt.Sprintf("pebble_rt_alloc_adapter_%d", decl.Symbol)
+		prototype = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size);", name)
+		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size) {\n    return %s(ctx, (void *)ctx, size);\n}", name, helperCName(decl))
+	case info.AllocatorRealloc:
+		name = fmt.Sprintf("pebble_rt_realloc_adapter_%d", decl.Symbol)
+		prototype = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size);", name)
+		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size) {\n    return %s(ctx, (void *)ctx, ptr, new_size);\n}", name, helperCName(decl))
+	case info.AllocatorFree:
+		name = fmt.Sprintf("pebble_rt_free_adapter_%d", decl.Symbol)
+		prototype = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr);", name)
+		definition = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr) {\n    %s(ctx, (void *)ctx, ptr);\n}", name, helperCName(decl))
+	default:
+		return "", fmt.Errorf("%s references Allocator callback field %d, which is not alloc, realloc, or free", context, member)
+	}
+	if _, exists := emitAllocatorAdapters[name]; exists {
+		return name, nil
+	}
+	emitAllocatorAdapters[name] = runtimeAllocatorAdapter{name: name, prototype: prototype, definition: definition}
+	return name, nil
+}
+
+// buildRuntimeAllocatorRecordDeclaration builds one runtime Allocator literal's
+// C local declaration:
+//
+//	PebbleAllocator pebble_local_<sym> = { .state = <ptr>, .alloc = <bridge>,
+//	                                        .realloc = <bridge>, .free = <bridge> };
+//	(void)pebble_local_<sym>;
+//
+// a C99 designated-initializer brace list over the hand-written runtime
+// PebbleAllocator struct (runtimeFieldName maps ptr→state, alloc→alloc, realloc→
+// realloc, free→free), one designated initializer per construction field, so the
+// construction-site field order a RecordConstruct's Fields carry needs no
+// reordering. The four known Allocator fields are handled: ptr's value is built
+// under the pointer grammar (nil, a pointer-typed local, an address-of cast, a
+// pointer-returning call), and each callback field's value must be a reference
+// to a top-level source function, bridged into the runtime callback ABI by
+// buildRuntimeAllocatorCallbackAdapter. Anything else — a non-Allocator runtime
+// type, a wrong field count, an unknown or duplicated field, a malformed field
+// value — is a clean rejection naming what was found. Like every local, the
+// declaration is followed by a (void) cast against -Wunused-variable.
+func buildRuntimeAllocatorRecordDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if runtimeType(unit, snapshot, initValue.Type) != symbol.RuntimeAllocator {
+		return "", fmt.Errorf("%s declares a runtime-typed local of type %s initialized from a RecordConstruct, which is supported only for the built-in Allocator", context, runtimeTypeName(unit, snapshot, initValue.Type))
+	}
+	info := unit.Runtime()
+	if len(initValue.Fields) != 4 {
+		return "", fmt.Errorf("%s constructs an Allocator with %d field initializer(s), want exactly 4 (ptr, alloc, realloc, free)", context, len(initValue.Fields))
+	}
+	inits := make([]string, 0, len(initValue.Fields))
+	seen := make(map[symbol.SymbolID]bool, len(initValue.Fields))
+	for _, field := range initValue.Fields {
+		if seen[field.Field] {
+			return "", fmt.Errorf("%s constructs an Allocator with a duplicate initializer for field %d", context, field.Field)
+		}
+		seen[field.Field] = true
+		cname, mapped := runtimeFieldName(unit, initValue.Type, field.Field)
+		if !mapped {
+			return "", fmt.Errorf("%s constructs an Allocator with a field that is not one of ptr, alloc, realloc, or free", context)
+		}
+		valueNode, ok := unit.Node(field.Value)
+		if !ok {
+			return "", fmt.Errorf("%s constructs an Allocator referencing invalid field value node %d", context, field.Value)
+		}
+		var expr string
+		var err error
+		switch field.Field {
+		case info.AllocatorPtr:
+			// ptr maps to the C state field, typed void *. The value is built
+			// under the same pointer grammar buildExpr's pointer branch uses
+			// (nil, a reference to a pointer-typed local, an address-of cast, a
+			// pointer-returning call), and its C expression already matches the
+			// void * state field type with no cast.
+			if !isPointer(snapshot, valueNode.Type) {
+				return "", fmt.Errorf("%s constructs an Allocator whose ptr initializer is %s, want a pointer value", context, describeType(snapshot, valueNode.Type))
+			}
+			expr, err = buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
+		case info.AllocatorAlloc, info.AllocatorRealloc, info.AllocatorFree:
+			// alloc/realloc/free map to the runtime ABI callback fields, typed
+			// PebbleAllocFn/PebbleReallocFn/PebbleFreeFn. The construction value
+			// is bridged into the runtime ABI by a file-scope adapter, whose C
+			// name the designated initializer references directly (a plain
+			// compatible assignment, no function-pointer cast in emitted C).
+			expr, err = buildRuntimeAllocatorCallbackAdapter(unit, snapshot, field.Field, valueNode, context)
+		default:
+			return "", fmt.Errorf("%s constructs an Allocator with unknown field %d", context, field.Field)
+		}
+		if err != nil {
+			return "", err
+		}
+		inits = append(inits, fmt.Sprintf(".%s = %s", cname, expr))
+	}
+	scope[statement.Symbol] = localInfo{runtimeType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, strings.Join(inits, ", "), indent, statement.Symbol), nil
+}
+
+// buildTupleBraceList validates one TupleValue node's element list and builds
+// its brace-list content, `{ <e0>, <e1>, ... }`, with each element expression
+// built by the grammar its own element type selects — buildExpr for an element
+// of the entry's width, buildBoolExpr for a bool element. Every element type
+// must be exactly the entry's width or bool; anything else (a str element, a
+// nested tuple element) is a clean rejection naming the element position,
+// since this backend emits exactly those two C field types. context names the
+// enclosing construct in error messages. The function is shared by the two
+// places a TupleValue's elements are built (10.25): a tuple-typed local's
+// declaration initializer (buildTupleLocalDeclaration embeds the returned
+// brace list in the declaration statement) and a freshly-constructed tuple
+// built inline as a call argument (buildTupleValueExpr wraps the same brace
+// list in a compound-literal cast), so element-type validation and the
+// buildExpr/buildBoolExpr dispatch live in exactly one place.
+func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(node.Type)
+	if !ok {
+		return "", fmt.Errorf("%s contains a tuple value whose type %d is not in the type snapshot", context, node.Type)
+	}
+	elements, ok := key.Elements()
+	if !ok {
+		return "", fmt.Errorf("%s contains a tuple value of type %s, which has no element list", context, tupleTypeName(node.Type))
+	}
+	if len(node.Children) != len(elements) {
+		return "", fmt.Errorf("%s contains a tuple value of type %s with %d element expression(s), want %d (one per declared element)", context, tupleTypeName(node.Type), len(node.Children), len(elements))
+	}
+	exprs := make([]string, len(elements))
+	for i, elementType := range elements {
+		switch {
+		case isWidth(snapshot, width, elementType):
+			elementExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[i], scope, width, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isBool(snapshot, elementType):
+			elementExpr, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[i], scope, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isTuple(snapshot, elementType):
+			elementExpr, err := buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isStruct(snapshot, elementType):
+			elementExpr, err := buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		case isOptional(snapshot, elementType):
+			elementExpr, err := buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			exprs[i] = elementExpr
+		default:
+			return "", fmt.Errorf("%s contains a tuple value of type %s whose element %d is %s, want %s or bool", context, tupleTypeName(node.Type), i, describeType(snapshot, elementType), wantName(width))
+		}
+	}
+	return "{ " + strings.Join(exprs, ", ") + " }", nil
+}
+
+func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, error) {
+	if len(node.Children) != 2 {
+		return "", fmt.Errorf("%s SliceFromRaw has %d children, want two", context, len(node.Children))
+	}
+	ptr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
+	if err != nil {
+		return "", err
+	}
+	countNode, ok := unit.Node(node.Children[1])
+	if !ok {
+		return "", fmt.Errorf("%s SliceFromRaw references invalid count node", context)
+	}
+	var count string
+	if countNode.Kind == tir.SymbolValue {
+		if _, declared := scope[countNode.Symbol]; !declared {
+			return "", fmt.Errorf("%s slice count references symbol %d outside the current scope", context, countNode.Symbol)
+		}
+		count = fmt.Sprintf("pebble_local_%d", countNode.Symbol)
+	} else if countNode.Kind == tir.IntegerLiteral {
+		litWidth, _ := resolvedBuiltin(snapshot, countNode.Type)
+		count = integerLiteralText(countNode.Literal.IntegerNum, litWidth)
+	} else {
+		count, err = buildUintExpr(unit, snapshot, fileSet, node.Children[1], scope, width)
+		if err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("(%s){ .data = %s, .len = (size_t)(%s) }", sliceTypeName(node.Type), ptr, count), nil
+}
+
+// buildSliceConstruction validates one CheckedSlice node (a slice expression
+// `a[start:end]`) and builds the two pieces of C text its construction needs:
+// a temp-declaration statement holding the checked-start result, and the
+// compound-literal construction expression that uses that temp for both its
+// .data pointer offset and its .len subtraction. The two-statement shape is
+// required because the temp can't be a sub-expression of the very compound
+// literal it initializes (the pointer offset would reference a value not yet
+// computed in a well-defined order within one expression) — the same
+// construction shape 10.37 established for a slice-typed local's declaration,
+// kept here so both callers share one source of truth rather than two copies
+// that could drift. tempName is the deterministic C identifier of the temp
+// variable, derived by the caller from a stable identity (a slice local's own
+// declaration symbol for a local declaration; the return value node's NodeID
+// for a slice-returning helper's tail return). The declaration statement (with
+// indent) and the construction expression (unindented, a C99 compound literal)
+// are returned separately so each caller assembles them into its own statement
+// shape: buildSliceLocalDeclaration embeds the expression in a local
+// declaration statement, and buildSliceReturnValue hands the declaration back
+// to buildBlock/buildSwitchCaseBody to thread in as an extra pre-return
+// statement before the final return line. The construction reuses the exact
+// validation 10.37 established: the base must be an array-typed local in
+// scope, the slice's element type must equal the base array's element type,
+// and that element type must be the entry's resolved width or bool.
+func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, tempName string) (string, string, error) {
+	if initValue.Kind != tir.CheckedSlice {
+		return "", "", fmt.Errorf("%s slice construction is a %s, want a CheckedSlice", context, initValue.Kind)
+	}
+	if len(initValue.Children) < 1 {
+		return "", "", fmt.Errorf("%s CheckedSlice has %d child(ren), want at least one (the base array)", context, len(initValue.Children))
+	}
+	baseNode, ok := unit.Node(initValue.Children[0])
+	if !ok {
+		return "", "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
+	}
+	// Two base shapes are accepted:
+	//
+	// 1. A SymbolValue naming an ARRAY-typed local in scope (the original,
+	//    unchanged path): the array local decays to a pointer to its first
+	//    element, and the array's length is a compile-time constant
+	//    (arrayLengthLiteral) used both as the default end bound and as the
+	//    upper bound the runtime helper validates the range against.
+	//
+	// 2. A Load of a SLICE-typed place — re-slicing an EXISTING slice value
+	//    (`self.data[:self.len]`, std/string.peb's String::as_slice, lowered
+	//    to a Load(FieldPlace) reading the slice-typed struct field). There is
+	//    no compile-time length for a slice base: the new slice's .data
+	//    pointer must offset the EXISTING slice's own runtime .data, and the
+	//    upper bound is the EXISTING slice's runtime .len field.
+	isSliceBase := baseNode.Kind == tir.Load && isSlice(snapshot, baseNode.Type)
+	var baseInfo localInfo
+	if !isSliceBase {
+		if baseNode.Kind != tir.SymbolValue {
+			return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
+		}
+		var declared bool
+		baseInfo, declared = scope[baseNode.Symbol]
+		if !declared {
+			return "", "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
+		}
+		if baseInfo.array == 0 {
+			return "", "", fmt.Errorf("%s slice base is not an array-typed local", context)
+		}
+	}
+	sliceType := initValue.Type
+	sliceKey, ok := snapshot.Key(sliceType)
+	if !ok {
+		return "", "", fmt.Errorf("%s slice type %d is not in the type snapshot", context, sliceType)
+	}
+	sliceElementType, ok := sliceKey.Child()
+	if !ok {
+		return "", "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
+	}
+	if !isSupportedSliceElementType(unit, snapshot, sliceElementType) {
+		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", context, describeType(snapshot, sliceElementType))
+	}
+	// Per-base resolve the element type the new slice's element type must
+	// match, plus the base-specific length and data-pointer expressions. The
+	// array base's validations are exactly the original ones; the slice base
+	// is the parallel Load(FieldPlace) path.
+	var lengthLiteral, defaultEnd, dataExpr string
+	if !isSliceBase {
+		arrayKey, ok := snapshot.Key(baseInfo.array)
+		if !ok {
+			return "", "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
+		}
+		length, arrayElementType, ok := arrayKey.Array()
+		if !ok {
+			return "", "", fmt.Errorf("%s base is not an array type", context)
+		}
+		if sliceElementType != arrayElementType {
+			return "", "", fmt.Errorf("%s slice element type %s does not match base array element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
+		}
+		if _, err := arrayLengthLiteral(length, width); err != nil {
+			return "", "", fmt.Errorf("%s: %v", context, err)
+		}
+		lengthLiteral, _ = arrayLengthLiteral(length, width)
+		defaultEnd = fmt.Sprintf("%d", length)
+		dataExpr = fmt.Sprintf("pebble_local_%d", baseNode.Symbol)
+	} else {
+		// A Load of a slice-typed place: the base slice value's own C lvalue
+		// (built by buildPlaceLValue, the same projection a slice-typed struct
+		// field read in any other value position uses). Its .data and .len
+		// sub-fields are the base slice's own storage pointer and runtime
+		// length.
+		if len(baseNode.Children) != 1 {
+			return "", "", fmt.Errorf("%s slice base Load has %d child(ren), want exactly one place", context, len(baseNode.Children))
+		}
+		baseLvalue, baseType, err := buildPlaceLValue(unit, snapshot, fileSet, baseNode.Children[0], scope, width)
+		if err != nil {
+			return "", "", fmt.Errorf("%s slice base read: %v", context, err)
+		}
+		if !isSlice(snapshot, baseType) {
+			return "", "", fmt.Errorf("%s slice base Load reads a place of type %s, want a slice-typed place", context, describeType(snapshot, baseType))
+		}
+		baseSliceKey, ok := snapshot.Key(baseType)
+		if !ok {
+			return "", "", fmt.Errorf("%s base slice type %d is not in the type snapshot", context, baseType)
+		}
+		baseSliceElementType, ok := baseSliceKey.Child()
+		if !ok {
+			return "", "", fmt.Errorf("%s base slice type %s has no element type", context, describeType(snapshot, baseType))
+		}
+		if sliceElementType != baseSliceElementType {
+			return "", "", fmt.Errorf("%s slice element type %s does not match base slice element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, baseSliceElementType))
+		}
+		lengthLiteral = baseLvalue + ".len"
+		defaultEnd = baseLvalue + ".len"
+		dataExpr = baseLvalue + ".data"
+	}
+	// Extract start and end bounds from children. Children layout is
+	// [base, start?, end?] with presence determined by
+	// SliceStartPresent/SliceEndPresent.
+	childIdx := 1
+	var startExpr, endExpr string
+	if initValue.SliceStartPresent {
+		if childIdx >= len(initValue.Children) {
+			return "", "", fmt.Errorf("%s CheckedSlice claims start present but has no start child", context)
+		}
+		startExpr = buildSliceBoundExpr(unit, snapshot, fileSet, initValue.Children[childIdx], scope, width, context)
+		if startExpr == "" {
+			return "", "", fmt.Errorf("%s failed to build slice start bound", context)
+		}
+		childIdx++
+	} else {
+		startExpr = "0"
+	}
+	if initValue.SliceEndPresent {
+		if childIdx >= len(initValue.Children) {
+			return "", "", fmt.Errorf("%s CheckedSlice claims end present but has no end child", context)
+		}
+		endExpr = buildSliceBoundExpr(unit, snapshot, fileSet, initValue.Children[childIdx], scope, width, context)
+		if endExpr == "" {
+			return "", "", fmt.Errorf("%s failed to build slice end bound", context)
+		}
+		childIdx++
+	} else {
+		endExpr = defaultEnd
+	}
+	if _, err := sliceElementCType(unit, snapshot, width, sliceElementType); err != nil {
+		return "", "", fmt.Errorf("%s: %v", context, err)
+	}
+	startArg := startExpr
+	if !initValue.SliceStartPresent {
+		startArg = "0"
+	}
+	endArg := endExpr
+	if !initValue.SliceEndPresent {
+		endArg = lengthLiteral
+	}
+	sliceCType := sliceTypeName(sliceType)
+	// Emit as two statements: first the checked-start call stored in a temp,
+	// then the struct construction using the temp. The temp is declared at the
+	// entry's own resolved width (cType(width)), matching whichever of
+	// pebble_rt_checked_slice_start_i32/_i64 checkedSuffix(width) selects —
+	// declaring it as a fixed int32_t regardless of width would silently
+	// narrow an i64 entry's checked-start result.
+	tempDecl := fmt.Sprintf("%s%s %s = pebble_rt_checked_slice_start_%s(%s, %s, %s, %s);", indent, cType(width), tempName, checkedSuffix(width), startArg, endArg, lengthLiteral, buildSourceLoc(fileSet, initValue.Span))
+	constructionExpr := fmt.Sprintf("(%s){ .data = %s + %s, .len = (size_t)(%s - %s) }", sliceCType, dataExpr, tempName, endExpr, tempName)
+	return tempDecl, constructionExpr, nil
+}
+
+// buildSliceBoundExpr builds the C expression for one slice bound (start or
+// end). The bound may be an integer literal or a reference to a local.
+func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, nodeID tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) string {
+	boundNode, ok := unit.Node(nodeID)
+	if !ok {
+		return ""
+	}
+	if boundNode.Kind == tir.IntegerLiteral && boundNode.Type == snapshot.Builtins().Int {
+		return boundNode.Literal.IntegerNum
+	}
+	if boundNode.Kind == tir.SymbolValue {
+		if _, declared := scope[boundNode.Symbol]; declared {
+			return fmt.Sprintf("pebble_local_%d", boundNode.Symbol)
+		}
+	}
+	if isUint(snapshot, boundNode.Type) {
+		// A uint-typed slice bound (a range-loop iterator or uint local whose
+		// type the checker anchored to uint): built by the dedicated uint
+		// grammar, mirroring the slice/array index dispatch — the general
+		// buildExpr path rejects non-entry-width types.
+		expr, err := buildUintExpr(unit, snapshot, fileSet, nodeID, scope, width)
+		if err != nil {
+			return ""
+		}
+		return expr
+	}
+	expr, err := buildExpr(unit, snapshot, fileSet, nodeID, scope, width, width)
+	if err != nil {
+		return ""
+	}
+	return expr
+}
+
+// zeroOptionalPayloadLiteral is the C literal a NoneOptional's irrelevant
+// .value field is initialized with — a bare 0 for a scalar payload type
+// (int/bool/enum, all of which accept a plain 0 as a valid, warning-clean
+// initializer), or the aggregate zero-initializer {0} for a struct/tuple
+// payload (a bare 0 there triggers -Wmissing-field-initializers /
+// -Wmissing-braces under -Werror, since the .value field's own C type is a
+// struct, not a scalar).
+func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloadType types.TypeID) string {
+	if isTuple(snapshot, payloadType) {
+		return "{0}"
+	}
+	// A tagged-union payload's C type is the union's own tag-plus-payload
+	// struct (see optionalPayloadCType), not a scalar: it needs the aggregate
+	// {0} zero-initializer exactly like a tuple/struct payload, so it is
+	// checked BEFORE the isStruct/isEnumType split below (a union is both
+	// Nominal and enum-shaped, so the plain-enum scalar-0 path below would
+	// otherwise return a bare 0 that -Wmissing-braces rejects for the struct
+	// .value field).
+	if isTaggedUnionType(unit, snapshot, payloadType) {
+		return "{0}"
+	}
+	// isStruct also reports true for an enum payload (both are Nominal keys,
+	// indistinguishable at this level) — an enum's C type is a plain scalar
+	// C enum, not a struct, so it must NOT take the aggregate {0} literal (a
+	// brace-enclosed initializer around a scalar is itself a clean
+	// -Wmissing-braces target). isEnumType resolves the ambiguity the same
+	// way every other struct/enum-payload site in this file already does.
+	if isStruct(snapshot, payloadType) && !isEnumType(unit, snapshot, payloadType) {
+		return "{0}"
+	}
+	return "0"
+}
+
+// buildStructBraceList validates one RecordConstruct node's field list and
+// builds its brace-list content, `{ .pebble_field_<m0> = <e0>, ... }`, a C99
+// designated-initializer brace list with one designated initializer per
+// constructed field. Each field's value is built by the grammar its own type
+// selects — buildExpr for a field of the entry's width, buildBoolExpr for a
+// bool field, buildStrOperand for a str field. The designated form places each
+// value under exactly the C field its member symbol names, so the
+// construction-site field order a RecordConstruct's Fields carry (which need
+// not match the struct's declared order — a site may write Point.{ y = 2, x =
+// 1 }) needs no reordering.
+// Every field type must be exactly the entry's width, bool, or str; anything
+// else (a char field, a nested struct field) is a clean rejection naming the
+// field position, since this backend emits exactly those three C field types.
+// context
+// names the enclosing construct in error messages. The function is shared by
+// the two places a RecordConstruct's fields are built (10.25): a struct-typed
+// local's declaration initializer (buildStructLocalDeclaration embeds the
+// returned brace list in the declaration statement) and a freshly-constructed
+// struct built inline as a call argument (buildStructValueExpr wraps the same
+// brace list in a compound-literal cast), so field-type validation and the
+// buildExpr/buildBoolExpr dispatch live in exactly one place.
+//
+// The return is two pieces of C text rather than one so a slice-typed field
+// whose construction value is an inline slice construction (`Bag.{ items =
+// arr[:] }`, a bare CheckedSlice, or `slice ptr, n`, a SliceFromRaw) can be
+// supported. A CheckedSlice construction needs the same two-statement
+// temp-then-construction shape a slice local's declaration and a slice return
+// use: the checked-start result is stored in a temp statement first, then the
+// compound-literal construction uses that temp for both its pointer offset and
+// its length subtraction, so the potentially-aborting checked call (and any
+// side-effecting bound expression) is evaluated exactly once. That temp
+// declaration has no place inside a brace list, so it is returned separately
+// as preStatements (already indented) for a caller in a statement position
+// (buildStructLocalDeclaration) to thread ahead of the declaration line; a
+// caller in a pure expression position (buildStructValueExpr) must reject a
+// non-empty preStatements rather than drop it, the same discipline
+// buildSliceArgument applies to an inline slice construction passed as a call
+// argument. A SliceFromRaw field value is a single expression with no temp
+// (buildRawSliceConstruction emits the compound literal directly), so it needs
+// no pre-statement. A slice-typed field whose construction value is a
+// SymbolValue naming an already-declared slice-typed local is the same
+// single-expression forward as before, with empty preStatements. indent indents
+// the temp declarations to match the enclosing declaration line.
+func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
+	key, ok := snapshot.Key(node.Type)
+	if !ok {
+		return "", "", fmt.Errorf("%s contains a struct value whose type %d is not in the type snapshot", context, node.Type)
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return "", "", fmt.Errorf("%s contains a struct value of type %s, which has no nominal declaration", context, structTypeName(node.Type))
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return "", "", fmt.Errorf("%s contains a struct value of type %s whose declaration symbol %d has no TypeDeclaration in the unit", context, structTypeName(node.Type), decl)
+	}
+	members := typeDecl.Members
+	if len(node.Fields) != len(members) {
+		return "", "", fmt.Errorf("%s contains a struct value of type %s with %d field initializer(s), want %d (one per declared field)", context, structTypeName(node.Type), len(node.Fields), len(members))
+	}
+	inits := make([]string, len(node.Fields))
+	var pres []string
+	for i, field := range node.Fields {
+		declared := false
+		for _, member := range members {
+			if member == field.Field {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return "", "", fmt.Errorf("%s contains a struct value of type %s with an initializer for symbol %d, which is not one of its declared fields", context, structTypeName(node.Type), field.Field)
+		}
+		valueNode, ok := unit.Node(field.Value)
+		if !ok {
+			return "", "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
+		}
+		fieldType, found := declaredFieldType(unit, snapshot, node.Type, field.Field)
+		if !found {
+			fieldType = valueNode.Type
+		}
+		var expr string
+		fieldWidth, integerField := resolvedBuiltin(snapshot, fieldType)
+		switch {
+		case integerField && cType(fieldWidth) != "" && !isUint(snapshot, fieldType):
+			// Any fixed-width integer field other than uint (uint flows
+			// through its own dedicated grammar below) is built at its OWN
+			// resolved width, mirroring buildCallArgument/buildComparisonOperand
+			// and the optional-payload widening (d737242) — so an i64 field
+			// inside an i32 function builds its value at i64, not i32.
+			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, fieldWidth, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isUint(snapshot, fieldType):
+			built, err := buildUintExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isBool(snapshot, fieldType):
+			built, err := buildBoolExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isStr(snapshot, fieldType):
+			// A str-typed field's construction value (Entry's `key = k`,
+			// std/hmap.peb's insert) is one of the same three shapes
+			// buildStrOperand accepts anywhere a str value is built — a string
+			// literal, a reference to an in-scope str-typed local, or a call to
+			// a str-returning helper — built by the same buildStrOperand a str
+			// local's declaration initializer, a str call argument, and a str
+			// comparison operand use. The C field's type is PebbleStr (see
+			// structFieldCType), so the built expression matches the field type
+			// with no cast.
+			built, err := buildStrOperand(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isTuple(snapshot, fieldType):
+			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isOptional(snapshot, fieldType):
+			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case runtimeType(unit, snapshot, fieldType) != 0:
+			// A field of a compiler-builtin runtime type (Allocator, Context) is
+			// initialized from the same runtime-value grammar a runtime-typed
+			// local's declaration uses (buildRuntimeValue: `context.default_allocator`,
+			// a runtime-typed local, or a load of a runtime-typed field) — NOT the
+			// nested-aggregate grammar the isStruct case below would send it to
+			// (Allocator is Nominal like a struct, but its value is never a
+			// RecordConstruct). The C field's type is PebbleAllocator /
+			// PebbleContext (see structFieldCType), so the built expression matches
+			// the field type with no cast.
+			built, err := buildRuntimeValueNode(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isEnumType(unit, snapshot, fieldType):
+			// An enum-typed field's construction value (Entry's `state = .Empty`,
+			// std/hmap.peb's insert) is a variant literal — an EnumVariantValue or
+			// a zero-payload VariantConstruct — built by the same buildEnumValue an
+			// enum-typed local's declaration uses, NOT the nested-aggregate grammar
+			// the isStruct case below would send it to (a plain enum is Nominal
+			// exactly like a struct — see isEnumType — but its value is never a
+			// RecordConstruct, so buildNestedAggregateValue's SymbolValue-or-nested-
+			// construction dispatch would mishandle it). The variant literal lowers
+			// to the variant's C enum constant, whose type matches the field's own
+			// pebble_enum_<typeID>_t C type with no cast needed.
+			built, err := buildEnumValue(unit, snapshot, fileSet, field.Value, scope, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isStruct(snapshot, fieldType):
+			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isSlice(snapshot, fieldType):
+			// A slice-typed field's construction value is one of three shapes
+			// (all confirmed against real fixtures): a SymbolValue naming an
+			// already-declared slice-typed local in scope of exactly the
+			// field's type (a single-expression forward, the shape that always
+			// worked); a bare CheckedSlice (`arr[:]` used directly as the
+			// field's value — the general struct-field-construction gap this
+			// case closes, reachable in both non-generic and generic struct
+			// constructions), which needs the same two-statement
+			// temp-then-construction shape a slice local's declaration uses,
+			// so its temp declaration is returned as a pre-statement; or a
+			// bare SliceFromRaw (`slice ptr, n` — restricted to std-package
+			// source, where the raw-pointer slice builtin is available),
+			// whose construction is a single expression (buildRawSliceConstruction
+			// needs no temp) and needs no pre-statement. Anything else is a
+			// clean rejection naming what was found.
+			fieldValue, ok := unit.Node(field.Value)
+			if !ok {
+				return "", "", fmt.Errorf("%s contains a struct value of type %s referencing invalid field value node %d", context, structTypeName(node.Type), field.Value)
+			}
+			switch fieldValue.Kind {
+			case tir.SymbolValue:
+				local, declared := scope[fieldValue.Symbol]
+				if !declared || local.sliceType != fieldType {
+					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a nonmatching local", context, field.Field)
+				}
+				expr = fmt.Sprintf("pebble_local_%d", fieldValue.Symbol)
+			case tir.CheckedSlice:
+				if fieldValue.Type != fieldType {
+					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a CheckedSlice of type %s, not a slice-typed value of type %s", context, field.Field, describeType(snapshot, fieldValue.Type), sliceTypeName(fieldType))
+				}
+				// The temp name derives from the field value node's own NodeID
+				// — the only stable identity in hand here (a struct field has
+				// no local symbol to name it from), distinct from the
+				// pebble_slice_start_<symbol> temps a slice local's declaration
+				// uses and the pebble_slice_ret_<nodeID> temps a slice return
+				// uses, so the three can never collide even when a symbol ID
+				// numerically equals a node ID.
+				tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, indent, context, width, fmt.Sprintf("pebble_field_slice_%d", field.Value))
+				if err != nil {
+					return "", "", err
+				}
+				pres = append(pres, tempDecl)
+				expr = constructionExpr
+			case tir.SliceFromRaw:
+				if fieldValue.Type != fieldType {
+					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a SliceFromRaw of type %s, not a slice-typed value of type %s", context, field.Field, describeType(snapshot, fieldValue.Type), sliceTypeName(fieldType))
+				}
+				construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, width, context)
+				if err != nil {
+					return "", "", err
+				}
+				expr = construction
+			default:
+				return "", "", fmt.Errorf("%s contains a slice field %d initialized from a %s, want a slice local or a fresh slice construction (a CheckedSlice or a slice-from-raw)", context, field.Field, fieldValue.Kind)
+			}
+		case isPointer(snapshot, fieldType):
+			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		case isFunctionType(snapshot, fieldType):
+			// A function-typed field's construction value (`Table.{ op = add }`,
+			// function-types slice 2): built by the same buildFunctionValue a
+			// function-typed local's declaration and the general indirect call's
+			// callee already use (slice 1) — a bare top-level function reference
+			// (HoistedFunctionValue) or a reference to an in-scope function-typed
+			// local (SymbolValue), whose C value already matches the field's own
+			// pebble_fnptr_<typeID>_t C type with no cast needed.
+			built, err := buildFunctionValue(unit, snapshot, fileSet, valueNode, scope, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
+		default:
+			return "", "", fmt.Errorf("%s contains a struct value of type %s whose field %d is %s, want a fixed-width integer, bool, str, tuple, struct, enum, pointer, slice, or function type", context, structTypeName(node.Type), field.Field, describeType(snapshot, fieldType))
+		}
+		inits[i] = fmt.Sprintf(".pebble_field_%d = %s", field.Field, expr)
+	}
+	preStatements := ""
+	if len(pres) > 0 {
+		preStatements = strings.Join(pres, "\n")
+	}
+	return preStatements, "{ " + strings.Join(inits, ", ") + " }", nil
+}
+
+// buildUnionConstruction builds the C expression text for one tagged-union
+// variant construction, of three shapes (all confirmed against real fixtures):
+// a payload-carrying VariantConstruct (Choice.value(5), the variant's payload
+// expression as its one child), a payload-less EnumVariantValue (Choice.empty,
+// the member-access form), and a zero-payload VariantConstruct (Choice.empty(),
+// the parenthesized-call form). All three lower to a C99 compound literal of
+// the union's own struct typedef:
+//
+//	(pebble_union_<typeID>_t){ .tag = pebble_variant_<member> }
+//	(pebble_union_<typeID>_t){ .tag = pebble_variant_<member>, .payload = { .pebble_field_<member> = <payload expr> } }
+//
+// The tag is the variant's C enum constant (the same pebble_variant_<member>
+// name a plain enum uses — the discriminant ordinal scheme is identical), so a
+// payload-less construction leaves the payload union unspecified, which is
+// legal C: the tag alone determines which member, if any, is meaningful. A
+// payload-carrying construction's payload expression is built by the grammar
+// its own type selects — buildExpr for a payload of the entry's width,
+// buildBoolExpr for a bool payload, buildStrOperand for a str payload — and
+// the payload union member is named
+// pebble_field_<member> exactly as the union's typedef declares it. The node's
+// Type is the union type and its Member the variant symbol (both confirmed
+// against real fixtures); the member must be one of the union's declared
+// variants (info.variants), and a payload-carrying construction must name a
+// variant whose payload member the union's typedef declares (info.members).
+// Any other node kind is a clean rejection, never a guessed lowering.
+func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, info unionInfo, width types.BuiltinKind) (string, error) {
+	if !containsVariant(info.variants, node.Member) {
+		return "", fmt.Errorf("%s constructs variant symbol %d, which is not one of the union %s's declared variants", context, node.Member, unionTypeName(node.Type))
+	}
+	tag := enumVariantName(node.Member)
+	switch node.Kind {
+	case tir.EnumVariantValue:
+		if len(node.Children) != 0 {
+			return "", fmt.Errorf("%s constructs union variant symbol %d with %d payload(s), want zero (a payload-less member access)", context, node.Member, len(node.Children))
+		}
+		return fmt.Sprintf("(%s){ .tag = %s }", unionTypeName(node.Type), tag), nil
+	case tir.VariantConstruct:
+		if len(node.Children) == 0 {
+			return fmt.Sprintf("(%s){ .tag = %s }", unionTypeName(node.Type), tag), nil
+		}
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s constructs union variant symbol %d with %d payload(s), want exactly one (a tagged-union variant carries exactly one payload)", context, node.Member, len(node.Children))
+		}
+		payloadNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s constructs union variant symbol %d referencing invalid payload node %d", context, node.Member, node.Children[0])
+		}
+		memberType, hasMember := unionMemberType(info.members, node.Member)
+		if !hasMember {
+			return "", fmt.Errorf("%s constructs union variant symbol %d, whose payload type is not resolved (no construction of it is collected as a union member)", context, node.Member)
+		}
+		if payloadNode.Type != memberType {
+			return "", fmt.Errorf("%s constructs union variant symbol %d with a payload of type %s, want %s (the variant's resolved payload type)", context, node.Member, describeType(snapshot, payloadNode.Type), describeType(snapshot, memberType))
+		}
+		var payloadExpr string
+		var err error
+		if isBool(snapshot, payloadNode.Type) {
+			payloadExpr, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+		} else if isStr(snapshot, payloadNode.Type) {
+			// A str-typed payload (`Result[int, str].{ Err = "bad" }`): built
+			// by the str grammar (buildStrOperand — a string literal, a
+			// reference to a str-typed local, or a call to a str-returning
+			// helper), emitted as a PebbleStr value, the same C type the
+			// union's payload member is declared with (see unionMemberCType),
+			// so the designated initializer needs no cast.
+			payloadExpr, err = buildStrOperand(unit, snapshot, fileSet, node.Children[0], scope, width)
+		} else {
+			payloadExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
+		}
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s){ .tag = %s, .payload = { .pebble_field_%d = %s } }", unionTypeName(node.Type), tag, node.Member, payloadExpr), nil
+	default:
+		return "", fmt.Errorf("%s constructs a %s, want a union variant construction (a VariantConstruct) or a member access (an EnumVariantValue)", context, node.Kind)
+	}
+}
+
+// resolveUnionInfoForValue resolves one tagged-union type's unionInfo from the
+// unit's own construction nodes, on demand, for the union-value expression
+// positions that sit outside the builders holding Emit's pre-collected union
+// map (an optional's `some <union>` payload, a union-typed call argument): the
+// payload-carrying VariantConstructs of that type anywhere in the unit supply
+// each constructed member's payload type, exactly the evidence
+// collectUnionTypes accumulates before calling resolveUnionInfo, so a fresh
+// resolution agrees with the emitted union typedef by construction. The
+// checker has already validated every construction, so the payload-type gate
+// collectUnionTypesWalk enforces at collection time needs no repetition here.
+func resolveUnionInfoForValue(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (unionInfo, error) {
+	payloads := make(map[symbol.SymbolID]types.TypeID)
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.VariantConstruct || node.Type != id || len(node.Children) == 0 {
+			continue
+		}
+		if len(node.Children) != 1 {
+			return unionInfo{}, fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload", node.Member, len(node.Children))
+		}
+		payloadNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return unionInfo{}, fmt.Errorf("union variant symbol %d references invalid payload node %d", node.Member, node.Children[0])
+		}
+		payloads[node.Member] = payloadNode.Type
+	}
+	return resolveUnionInfo(unit, snapshot, id, payloads)
+}
+
+// buildUnionUnwrapPanicElse is the absent-optional branch of a union-payload
+// force-unwrap's inline conditional: a comma expression whose first operand
+// panics with PEBBLE_PANIC_UNWRAP_FAILED via the runtime's noreturn
+// pebble_rt_panic (the same panic the scalar pebble_rt_checked_unwrap_*
+// helpers raise) and whose second operand is a zero-valued compound literal of
+// the union's own typedef, so the comma expression is itself a well-typed
+// pebble_union_<typeID>_t value the conditional's other branch can share. The
+// panic's file/line/column come from the unwrap node's own Span, resolved
+// exactly like buildSourceLoc resolves a checked call's location.
+func buildUnionUnwrapPanicElse(fileSet *source.FileSet, span source.Span, unionType types.TypeID) string {
+	file := "NULL"
+	line, column := 0, 0
+	if fileSet != nil {
+		if f, ok := fileSet.File(span.Source); ok {
+			pos := f.Position(span.Start)
+			file = fmt.Sprintf("%q", escapeCString(f.Path()))
+			line, column = pos.Line, pos.Column
+		}
+	}
+	info := fmt.Sprintf("(PebblePanicInfo){ .kind = PEBBLE_PANIC_UNWRAP_FAILED, .message = NULL, .file = %s, .line = %d, .column = %d }", file, line, column)
+	return fmt.Sprintf("(pebble_rt_panic(&%s), (%s){0})", info, unionTypeName(unionType))
+}
+
+// buildTupleElement builds the C text for reading one element of a tuple local
+// by symbol and ordinal: pebble_local_<symbol>._<ordinal>. The symbol must be a
+// local the scope records as tuple-typed (its localInfo.tuple), the ordinal
+// must be in range for that tuple type's element list, and the element's own
+// type must satisfy the grammar wantBool selects — bool for the buildBoolExpr
+// path, the entry's width for the buildExpr path. The tuple type comes from the
+// scope record, not from any node field, so a read always resolves against the
+// type the local was actually declared with.
+func buildTupleElement(unit *tir.Unit, snapshot *types.Snapshot, symbolID symbol.SymbolID, ordinal uint32, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+	info, declared := locals[symbolID]
+	if !declared || info.tuple == 0 {
+		return "", fmt.Errorf("entry function body expression reads an element of symbol %d, which is not a tuple-typed local declared earlier in the entry body", symbolID)
+	}
+	key, ok := snapshot.Key(info.tuple)
+	if !ok {
+		return "", fmt.Errorf("entry function body expression reads an element of a tuple local whose type %d is not in the type snapshot", info.tuple)
+	}
+	elements, ok := key.Elements()
+	if !ok {
+		return "", fmt.Errorf("entry function body expression reads an element of tuple type %s, which has no element list", tupleTypeName(info.tuple))
+	}
+	if ordinal >= uint32(len(elements)) {
+		return "", fmt.Errorf("entry function body expression reads tuple element %d of %s, which has only %d element(s)", ordinal, tupleTypeName(info.tuple), len(elements))
+	}
+	element := elements[ordinal]
+	if wantBool {
+		if !isBool(snapshot, element) {
+			return "", fmt.Errorf("entry function body expression reads tuple element %d, whose type is %s, want bool", ordinal, describeType(snapshot, element))
+		}
+	} else if !isWidth(snapshot, width, element) {
+		return "", fmt.Errorf("entry function body expression reads tuple element %d, whose type is %s, want %s", ordinal, describeType(snapshot, element), wantName(width))
+	}
+	return fmt.Sprintf("pebble_local_%d._%d", symbolID, ordinal), nil
+}
+
+func runtimeFieldName(unit *tir.Unit, owner types.TypeID, member symbol.SymbolID) (string, bool) {
+	info := unit.Runtime()
+	if runtimeType(unit, unit.Snapshot(), owner) == symbol.RuntimeAllocator {
+		switch member {
+		case info.AllocatorPtr:
+			return "state", true
+		case info.AllocatorAlloc:
+			return "alloc", true
+		case info.AllocatorRealloc:
+			return "realloc", true
+		case info.AllocatorFree:
+			return "free", true
+		}
+	}
+	if runtimeType(unit, unit.Snapshot(), owner) == symbol.RuntimeContext && member == info.ContextDefaultAllocator {
+		return "allocator", true
+	}
+	return "", false
+}
