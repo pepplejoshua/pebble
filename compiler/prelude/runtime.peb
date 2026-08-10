@@ -1,0 +1,37 @@
+// Prelude: the runtime Allocator and Context types as ordinary Pebble structs.
+//
+// This is slice 2 of proposal 15 (Allocator/Context as ordinary structs, not
+// special runtime types). It shadows the current compiler-synthesized versions
+// produced by symbol.Resolve's installPrelude — same field names, same order,
+// ABI-compatible field types — so a compilation that resolves this module via
+// the -prelude mechanism proves the parsed-struct route CAN produce the same
+// shape the backend's existing Allocator/Context adapter bridge already
+// expects. Nothing here is wired into the default compilation path yet; the
+// synthesized path stays active until the slice-3 cutover deletes it.
+//
+// ABI notes (matching the backend's runtime callbacks, see
+// compiler/internal/backend/aggregates.go buildRuntimeAllocatorCallbackAdapter
+// and compiler/internal/infer/runtime_prelude.go):
+//
+//   - ptr     is a void pointer (the C PebbleAllocator .state field).
+//   - alloc   is fn(*void, uint) *void            (C: void *(PebbleContext *, size_t))
+//   - realloc is fn(*void, *void, uint) *void     (C: void *(PebbleContext *, void *, size_t))
+//   - free    is fn(*void, *void) void            (C: void (PebbleContext *, void *))
+//   - Context.default_allocator is an Allocator   (the C PebbleContext .allocator field).
+//
+// The callback signatures are Pebble-convention function types: the hidden
+// PebbleContext *ctx first parameter is threaded by the backend at C-emit
+// time, so the source-level parameter list above is exactly the user-facing
+// parameter list the adapter bridges (matching the my_alloc/my_realloc/my_free
+// helper shapes in compiler/internal/backend/emit_concurrent_test.go).
+
+type Allocator = struct {
+    ptr     *void;
+    alloc   fn (*void, uint) *void;
+    realloc fn (*void, *void, uint) *void;
+    free    fn (*void, *void) void;
+};
+
+type Context = struct {
+    default_allocator Allocator;
+};

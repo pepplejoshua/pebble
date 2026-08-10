@@ -764,6 +764,160 @@ func TestPreludeDeclarationsVisibleFromImportedModules(t *testing.T) {
 	assertResultInvariants(t, result)
 }
 
+// TestParsedPreludeRuntimeStructsMatchSynthesizedShape is the slice-2 shadow
+// verification for proposal 15: it resolves the REAL prelude module
+// (compiler/prelude/runtime.peb, which declares Allocator and Context as
+// ordinary Pebble structs) and proves the parsed-struct route produces the
+// same symbol shape — field names, order, and count — that the still-active
+// synthesized path (resolver.installPrelude) produces today.
+//
+// It does NOT run the parsed declarations through the checker as a real
+// program: the resolver's reservedBuiltin guard (resolve.go addSymbol)
+// deliberately rejects any source declaration of the compiler-owned
+// "Allocator" name with CodeReservedBuiltin, so the parsed Allocator symbol is
+// marked Error and the checker cannot accept a compilation that includes it.
+// That guard is itself part of the runtime-type special-casing the slice-3
+// cutover removes; nothing in this test (or this slice) changes it. The test
+// instead pins down exactly what the parsed route DOES produce today: the
+// correct member shape for both types, a clean (non-error) Context, and a
+// single documented N0007 guard error on Allocator — plus the guarantee that
+// the synthesized runtime identities are untouched and that ordinary
+// references to Allocator in an entry module still resolve to the runtime
+// identity, not the errored parsed symbol.
+func TestParsedPreludeRuntimeStructsMatchSynthesizedShape(t *testing.T) {
+	preludePath := filepath.Join(repoRoot(t), "compiler", "prelude", "runtime.peb")
+	if _, err := os.Stat(preludePath); err != nil {
+		t.Fatalf("real prelude file missing: %v", err)
+	}
+	entry := filepath.Join(t.TempDir(), "main.peb")
+	text := `fn my_alloc(ptr *void, size uint) *void { return nil; }
+fn my_realloc(ptr *void, data *void, size uint) *void { return nil; }
+fn my_free(ptr *void, data *void) void {}
+fn main() int {
+    var a = Allocator.{ ptr = nil, alloc = my_alloc, realloc = my_realloc, free = my_free };
+    return 0;
+}`
+	if err := os.WriteFile(entry, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := diagnostic.NewDiagnosticSet()
+	sources := source.NewFileSet()
+	graph := module.Build(module.BuildConfig{
+		EntryPath: entry, Package: "app", PreludePath: preludePath,
+	}, module.FileSystemProvider{}, sources, diagnostics)
+	result := Resolve(graph, sources, diagnostics, Config{})
+
+	if !graph.HasPrelude() {
+		t.Fatal("graph has no prelude module")
+	}
+	preludeModule, _ := graph.Module(graph.Prelude)
+	if preludeModule.Role != module.RolePrelude {
+		t.Fatalf("prelude role = %v", preludeModule.Role)
+	}
+
+	// Exactly one resolver diagnostic: the documented reserved-name guard on
+	// the parsed Allocator declaration. No other name error is acceptable.
+	items := nameErrors(diagnostics.Items())
+	if len(items) != 1 || items[0].Code != CodeReservedBuiltin {
+		t.Fatalf("resolver diagnostics = %+v, want exactly one N0007", items)
+	}
+
+	var parsedAllocator, parsedContext Symbol
+	parsedCount := 0
+	for _, candidate := range result.Symbols.All() {
+		if candidate.Kind != SymbolType || candidate.Module != preludeModule.ID {
+			continue
+		}
+		parsedCount++
+		switch candidate.Name {
+		case "Allocator":
+			parsedAllocator = candidate
+		case "Context":
+			parsedContext = candidate
+		}
+	}
+	if parsedCount != 2 {
+		t.Fatalf("parsed prelude type symbols = %d, want 2 (Allocator, Context)", parsedCount)
+	}
+	if parsedAllocator.ID == 0 || parsedContext.ID == 0 {
+		t.Fatalf("parsed Allocator/Context not found: %+v / %+v", parsedAllocator, parsedContext)
+	}
+
+	// The parsed Allocator carries exactly the reserved-name guard error; the
+	// parsed Context — "Context" is not a reserved name — is clean. This is the
+	// precise, single obstruction the slice-3 cutover removes.
+	if !parsedAllocator.Error || parsedContext.Error {
+		t.Fatalf("parsed Allocator.Error=%v Context.Error=%v, want true/false (the N0007 guard)", parsedAllocator.Error, parsedContext.Error)
+	}
+
+	parsedAllocatorNames := memberNames(t, result, parsedAllocator.ID)
+	parsedContextNames := memberNames(t, result, parsedContext.ID)
+
+	// The synthesized runtime identities installPrelude still registers must be
+	// untouched and must expose the exact same member names, order, and count
+	// as the parsed declarations.
+	synthesizedAllocator, ok := result.Runtime(RuntimeAllocator)
+	if !ok {
+		t.Fatal("missing synthesized Allocator runtime identity")
+	}
+	synthesizedContext, ok := result.Runtime(RuntimeContext)
+	if !ok {
+		t.Fatal("missing synthesized Context runtime identity")
+	}
+	if !reflect.DeepEqual(memberNames(t, result, synthesizedAllocator), parsedAllocatorNames) {
+		t.Fatalf("parsed Allocator members %v do not match synthesized %v", parsedAllocatorNames, memberNames(t, result, synthesizedAllocator))
+	}
+	if !reflect.DeepEqual(memberNames(t, result, synthesizedContext), parsedContextNames) {
+		t.Fatalf("parsed Context members %v do not match synthesized %v", parsedContextNames, memberNames(t, result, synthesizedContext))
+	}
+	if !reflect.DeepEqual(parsedAllocatorNames, []string{"ptr", "alloc", "realloc", "free"}) {
+		t.Fatalf("parsed Allocator members = %v", parsedAllocatorNames)
+	}
+	if !reflect.DeepEqual(parsedContextNames, []string{"default_allocator"}) {
+		t.Fatalf("parsed Context members = %v", parsedContextNames)
+	}
+
+	// Every parsed member must be a field owned by its parsed type.
+	for _, memberID := range result.Members(parsedAllocator.ID) {
+		member, _ := result.Symbols.Symbol(memberID)
+		if member.Kind != SymbolField || member.Containing != parsedAllocator.ID {
+			t.Fatalf("parsed Allocator member = %+v", member)
+		}
+	}
+	for _, memberID := range result.Members(parsedContext.ID) {
+		member, _ := result.Symbols.Symbol(memberID)
+		if member.Kind != SymbolField || member.Containing != parsedContext.ID {
+			t.Fatalf("parsed Context member = %+v", member)
+		}
+	}
+
+	// Ordinary references to Allocator in the entry module still resolve to the
+	// synthesized runtime identity (the errored parsed symbol is not bound, so
+	// scope lookup falls through to the builtin prelude) — no shadow confusion.
+	mainModule, _ := graph.Module(graph.Root)
+	file, _ := sources.File(mainModule.Source)
+	for _, ref := range namedReferences(t, result, mainModule, file, "Allocator") {
+		if ref.State != ResolutionResolved || ref.Symbol != synthesizedAllocator {
+			t.Fatalf("entry Allocator reference = %+v, want runtime identity %d", ref, synthesizedAllocator)
+		}
+	}
+
+	assertResultInvariants(t, result)
+}
+
+func memberNames(t *testing.T, result *Result, owner SymbolID) []string {
+	t.Helper()
+	names := make([]string, 0, len(result.Members(owner)))
+	for _, memberID := range result.Members(owner) {
+		member, ok := result.Symbols.Symbol(memberID)
+		if !ok {
+			t.Fatalf("missing member symbol %d of %d", memberID, owner)
+		}
+		names = append(names, member.Name)
+	}
+	return names
+}
+
 func TestPreludeConfigurationIsInertInResolution(t *testing.T) {
 	text := "type Unit = struct {}; fn use(value Unit) Unit => value;"
 	absent, absentDiagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
