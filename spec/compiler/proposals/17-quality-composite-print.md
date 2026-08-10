@@ -199,8 +199,15 @@ and a runtime switch only for an enum/union discriminant.
    element, empty (`[]`), and slice-of-struct (nested recursion)
    shapes; not-yet-printable element type still rejects. Causation-
    checked.
-5. **Plain enums** — variant-name generation with an invalid-discriminant
-   defensive case.
+5. ~~**Plain enums**~~ **RESOLVED (`c1bf23b`).** `printableType` splits on
+   `declaration.Nominal` — `NominalEnum` is a leaf case, `NominalTaggedUnion`
+   stays rejected (unions are slice 6). Backend emits one raw C switch
+   over the discriminant, a case per declared variant printing
+   `Type.variant`, a defensive `Type<invalid: N>` default. Verified
+   two variants (proving the tag-to-name mapping); a tagged union still
+   rejects; a stale slice-4 negative fixture (slice-of-enum) was caught
+   and moved to valid/, since enum printability now flows through
+   slice 4's recursive element check. Causation-checked.
 6. **Tagged unions** — tag switch + payload recursion; payload-less
    variants and invalid tags need explicit handling.
 7. **Optionals** — `none`/`some(...)`, reusing the payload formatter

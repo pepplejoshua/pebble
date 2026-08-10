@@ -44,48 +44,5 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: composite print slice 5 — plain enums.**
-
-Sourced from proposal 17, slice 5 of 9. Slices 1-4 landed
-(`c182e73`/`5e6e786`/`b80fbc4`/`21e54ec`).
-
-**Reproduction** (confirmed against current HEAD):
-
-```
-type Color = enum { red, green, blue };
-fn main() int {
-    let c = Color.green;
-    print c;
-    return 0;
-}
-```
-
-Fails with `error[C0612]: print operand is not printable`.
-
-**Scope for this slice:** per proposal 17 — format `Color.red` (declared
-type name, `.`, declared variant name). For an invalid discriminant
-value (defensive, not normally reachable but proposal 17 calls for it),
-print `Color<invalid: N>` rather than reading an arbitrary/garbage name
-table entry.
-- Checker: `printableType` gains a plain-enum case (recursive not
-  needed — an enum has no nested fields — but must still route through
-  the shared function).
-- Backend: a new enum print builder, generating a switch (or equivalent)
-  over the enum's `.tag`/discriminant that emits the matching variant's
-  declared source name as a static string per case, with a defensive
-  default/else case producing `Color<invalid: N>`. Reuse whatever
-  existing enum-tag/variant-name machinery this backend already has
-  (e.g. how a plain enum is already compared/switched on elsewhere) —
-  do not invent new enum representation knowledge.
-- This operand also needs to route through the composite dispatch
-  (`buildSequentialPrint`'s composite recognition) even though an enum
-  has no nested fields to recurse into — it's still not a `printf`-
-  foldable scalar, since it needs a runtime tag comparison, not a
-  static format specifier.
-- Verify the reproduction prints exactly `Color.green`.
-- Confirm slices 1-4 and scalar prints are unaffected.
-- Write tests: checker acceptance for a printable enum value, and a
-  backend compile-run test for at least two different variants (proving
-  the tag-to-name mapping is correct, not just the first variant),
-  asserting exact printed output.
+_(empty — pick the next item from proposal 14 to begin)_
 
