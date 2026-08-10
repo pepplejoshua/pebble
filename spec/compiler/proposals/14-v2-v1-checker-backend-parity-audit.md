@@ -414,7 +414,25 @@ copy their full reproduction or plan.
    invoked with instance syntax (`p.origin()`) still cleanly rejects.
    Causation-checked.
 5. ~~`main(argv []str)` cannot receive C process arguments.~~ RESOLVED (`fb94640`).
-6. Inline slice construction fails in pure nested expression positions.
+6. ~~Inline slice construction fails in pure nested expression positions.~~
+   **RESOLVED (`836fbea`), decided via a policy reversal (2026-08-09,
+   direct instruction).** A prior session had deliberately declined to
+   use GNU statement-expressions for this; that decision was reversed.
+   A `nested bool` parameter now threads through the call-building chain
+   (buildDirectCall/buildCallArgument/buildSliceArgument); in a pure
+   expression position an inline `CheckedSlice` argument's temp
+   declaration and compound literal fold into a single
+   `({ <temp decl>; <compound literal>; })` statement-expression instead
+   of being rejected. Every prior rejection site for this shape
+   (buildUintExpr, buildEnumValue, buildUnionValueExpr,
+   buildStructStoreValue) now routes through the same mechanism. One
+   harder shape is left explicitly out of scope: a struct literal's
+   slice-typed FIELD value from an inline construction, since wrapping
+   it would require folding the whole struct literal into the
+   statement-expression. Verified end-to-end (the exact `wrap(arr[:])`
+   nested-call reproduction returns 6), emitted C inspected directly and
+   confirmed to compile/run via `cc`, existing simple case unaffected,
+   causation-checked.
 7. A non-primitive array literal cannot directly initialize a slice local.
 8. A generic struct method cannot inherit its owner type parameter.
 9. A whole dereferenced struct cannot become a value.
