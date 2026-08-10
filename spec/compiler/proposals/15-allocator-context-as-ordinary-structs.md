@@ -138,13 +138,17 @@ investigation's own session ran out of budget before writing this part):**
    references it with zero imports, compiles and runs, returns 42.
    Backward compatibility and an existing `std:` import both confirmed
    unaffected. Causation-checked.
-2. **Slice 2 — real `.peb` prelude source, shadow-verified.** Write
-   `Allocator`/`Context` as real Pebble struct declarations (matching
-   `installPrelude`'s current field shape: `ptr`, `alloc`, `realloc`,
-   `free` on `Allocator`; `default_allocator` on `Context`), inject via
-   slice 1's mechanism under the real names, but do NOT yet delete the old
-   synthesized path — verify the parsed-struct route alone produces the
-   identical C ABI shape before cutover.
+2. ~~**Slice 2 — real `.peb` prelude source, shadow-verified.**~~
+   **RESOLVED (`dee9b0f`).** `compiler/prelude/runtime.peb` declares
+   `Allocator`/`Context` as ordinary structs with ABI-matching field
+   types, not yet wired into the default compilation path. Two-layer
+   proof: field-type spellings match exactly, and the same type
+   expressions resolve to byte-identical `TypeID`s as the synthesized
+   version (driven under non-reserved mirror names, since the
+   resolver's `reservedBuiltin` guard currently rejects a source
+   declaration literally named `Allocator` — itself one of the exact
+   sites slice 3 removes). A real program's existing use of `Allocator`
+   confirmed completely unaffected. Purely additive; full suite passes.
 3. **Slice 3 — the cutover.** Delete `installPrelude`'s Allocator/Context
    registration and the other four "delete" sites from the Q2 table;
    confirm the backend's ctx-threading is untouched (Q3 says it should be)
