@@ -191,8 +191,14 @@ and a runtime switch only for an enum/union discriminant.
    separate pre-existing gap, logged in proposal 14. Verified, causation-
    checked; a stale slice-1 negative fixture was found and moved to
    valid/.
-4. **Slices** — dynamic runtime loop; scalar slices first, then slices
-   of structs/tuples.
+4. ~~**Slices**~~ **RESOLVED (`21e54ec`).** `printFprintfCall` gained a
+   `raw` field for one pre-rendered C for-loop block (a slice's length
+   is a runtime value, so the element sequence can't be a compile-time
+   call list); the loop body reuses slices 1-3's same recursive
+   `buildPrintValueCalls` against `<expr>.data[i]`. Verified multi-
+   element, empty (`[]`), and slice-of-struct (nested recursion)
+   shapes; not-yet-printable element type still rejects. Causation-
+   checked.
 5. **Plain enums** — variant-name generation with an invalid-discriminant
    defensive case.
 6. **Tagged unions** — tag switch + payload recursion; payload-less

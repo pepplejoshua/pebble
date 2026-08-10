@@ -44,51 +44,5 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: composite print slice 4 — slices (dynamic runtime loop).**
-
-Sourced from proposal 17, slice 4 of 9. Slices 1-3 (struct/tuple/array of
-scalars, then nested aggregates) landed in `c182e73`/`5e6e786`/`b80fbc4`.
-
-**Reproduction** (confirmed against current HEAD):
-
-```
-fn main() int {
-    var arr [3]int = [1, 2, 3];
-    var s []int = arr[:];
-    print s;
-    return 0;
-}
-```
-
-Fails with `error[C0612]: print operand is not printable`.
-
-**Scope for this slice:** per proposal 17 —
-- Format: `[1, 2, 3]`, empty slice prints `[]`.
-- Unlike the fixed array (slice 3, compile-time unrolled since length is
-  part of the type), a slice's length is RUNTIME, so this needs a real C
-  `for` loop over `.len`/`.data` — see proposal 17's own sketch:
-  ```c
-  fprintf(stdout, "[");
-  for (size_t i = 0; i < value.len; i++) {
-      if (i != 0) fprintf(stdout, ", ");
-      /* recursively emitted element formatter */
-  }
-  fprintf(stdout, "]");
-  ```
-  The element formatter itself is still statically generated (reuse
-  `buildPrintValueCalls`'s recursion from slice 3) — only the iteration
-  COUNT is dynamic.
-- Start with a slice of scalars, then (if it composes naturally through
-  the existing recursion) a slice of structs — do not force it if slice
-  elements interact awkwardly with the existing per-element fprintf-call
-  list shape (a runtime loop can only contain a FIXED sequence of C
-  statements per iteration, so this may need the element's calls
-  collapsed into one loop body rather than emitted N times — think this
-  through before implementing, and note any real design tension found).
-- Verify: `[1, 2, 3]` for a 3-element slice, `[]` for an empty slice.
-- Confirm slices 1-3 and scalar prints are unaffected.
-- Write tests: checker acceptance for a printable slice, checker
-  rejection for a slice of a not-yet-printable element type (e.g. enum),
-  and backend compile-run tests for a multi-element slice and an empty
-  slice, asserting exact printed output.
+_(empty — pick the next item from proposal 14 to begin)_
 
