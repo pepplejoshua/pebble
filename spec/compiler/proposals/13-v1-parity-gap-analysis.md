@@ -44,5 +44,53 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+**Item: composite print slice 6 — tagged unions.**
+
+Sourced from proposal 17, slice 6 of 9. Slices 1-5 landed
+(`c182e73`/`5e6e786`/`b80fbc4`/`21e54ec`/`c1bf23b`).
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Result = union enum { ok int; error str; };
+fn main() int {
+    let r = Result.ok(42);
+    print r;
+    return 0;
+}
+```
+
+Fails with `error[C0612]: print operand is not printable`.
+
+**Scope for this slice:** per proposal 17 —
+- Format: `Result.ok(42)`, `Result.error("failed")` — declared type name,
+  `.`, declared variant name, then `(`, the payload's own printed value
+  (recursively formatted via `buildPrintValueCalls`, same as any nested
+  field — the payload could itself be a struct/tuple/array/enum, anything
+  currently printable), `)`.
+- A payload-less variant prints without parens: `Result.done` (no `()`).
+- Payload printability: a union whose ACTIVE variant's payload type is
+  not printable should still be rejected by the checker for values of
+  that declared type overall (same conservative approach slice 1 used
+  for struct fields — a union is printable only if EVERY variant's
+  payload type is printable, since the checker cannot know at
+  compile-time which variant will be active at runtime).
+- Invalid tag defensive case: `Result<invalid-tag: N>`, mirroring the
+  plain-enum invalid-discriminant case from slice 5.
+- Backend: this is a runtime switch on the union's `.tag`, similar in
+  shape to slice 5's enum switch but each case ALSO recurses into the
+  payload (reading `.payload.pebble_field_<variant>`) when the variant
+  has one, and closes the parens. Reuse the same `raw` printFprintfCall
+  mechanism slices 4-5 established.
+- Verify the reproduction prints exactly `Result.ok(42)`.
+- Also verify a payload-less variant (e.g. `union enum { a void; b int;
+  }`, printing `.a`) and a second payload variant (e.g. `Result.error("failed")`)
+  to prove the tag-to-variant mapping and payload-vs-no-payload
+  formatting are both correct.
+- Confirm slices 1-5 and scalar prints are unaffected.
+- Write tests: checker acceptance for a printable union value, checker
+  rejection for a union with a non-printable payload type in any
+  variant, and backend compile-run tests for a payload variant, a
+  payload-less variant, and a second payload variant proving the
+  tag-to-name mapping, asserting exact printed output.
 
