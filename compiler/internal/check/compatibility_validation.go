@@ -46,6 +46,15 @@ func validateCompatibilityRecords(handoff *solveHandoff, records *solvedRecords,
 		}
 		class := classify(handoff.Semantics, source.Type, destination.Type)
 		if class == compatibleForbidden {
+			// An array literal directly initializing a slice-typed binding
+			// (`var s []int = [1, 2, 3];`) is valid — equivalent to constructing
+			// the array then taking a full slice of it — even though classify
+			// still reports array→slice as compatibleForbidden for every other
+			// position (call arguments, returns, casts, plain reassignment),
+			// which keep their existing C0601.
+			if implicitArrayToSlice(handoff, compatibility, source.Type, destination.Type) {
+				continue
+			}
 			failed = true
 			reporter.add(diagnostic.Diagnostic{
 				Severity: diagnostic.Error,

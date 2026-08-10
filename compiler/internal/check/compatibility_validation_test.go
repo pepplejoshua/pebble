@@ -52,6 +52,58 @@ func TestValidateCompatibilityRecordsAcceptsExplicitCast(t *testing.T) {
 	}
 }
 
+func TestValidateCompatibilityRecordsAcceptsArrayLiteralSliceBinding(t *testing.T) {
+	// The primitive-element reproduction: an array literal directly
+	// initializing a slice-typed binding is valid (equivalent to constructing
+	// the array then taking a full slice of it) and must survive both
+	// validation and typed-IR construction.
+	diagnostics, result := runVariadicCheck(t, `fn main() int { var s []int = [1, 2, 3]; return s[1]; }`)
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("array-literal slice binding was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCompatibilityRecordsAcceptsArrayLiteralStructSliceBinding(t *testing.T) {
+	// The struct-element twin: the literal's record values must ground to the
+	// slice's element type, so the whole one-step binding passes the full
+	// pipeline (validation and typed-IR construction).
+	diagnostics, result := runVariadicCheck(t, `
+type Point = struct { x int; };
+fn main() int {
+    var s []Point = [Point.{ x = 1 }, Point.{ x = 2 }];
+    return s[1].x;
+}
+`)
+	if !result.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("struct-element array-literal slice binding was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCompatibilityRecordsRejectsArrayLiteralSliceReassignment(t *testing.T) {
+	// The gap stays narrow: REINITIALIZING an existing slice local from a bare
+	// array literal is not a binding initializer, so it must keep the existing
+	// C0601 rather than leaking into the binding-only acceptance.
+	diagnostics, ok := validateCompatibilityFixture(t, `fn main() int { var s []int = [1, 2, 3]; s = [4, 5, 6]; return s[1]; }`)
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("array-literal slice reassignment was not rejected with C0601: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCompatibilityRecordsRejectsArrayLiteralSliceElementMismatch(t *testing.T) {
+	// The slice binding's element type drives the literal's elements: a
+	// numeric literal where a struct element is required must still fail.
+	diagnostics, result := runVariadicCheck(t, `
+type Point = struct { x int; };
+fn main() int {
+    var s []Point = [1, 2];
+    return s[1].x;
+}
+`)
+	if result.Successful() || !diagnostics.HasErrors() {
+		t.Fatalf("element-mismatched array-literal slice binding was accepted: %+v", diagnostics.Items())
+	}
+}
+
 func compatibilityValidationHandoff(t *testing.T, record retainedRecord) (*solveHandoff, *diagnostic.DiagnosticSet) {
 	t.Helper()
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})

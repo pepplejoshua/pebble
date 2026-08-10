@@ -109,6 +109,18 @@ func (w *walker) prepareArray(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 		if key, found := w.generation.inputs.Types.Key(id); found {
 			if _, element, array := key.Array(); array {
 				knownElement, hasKnownElement = element, true
+			} else if key.Kind() == types.Slice {
+				// An array literal initializing a SLICE-typed binding
+				// (`var s []int = [1, 2, 3];`) is equivalent to constructing the
+				// array then taking a full slice of it, so the literal's element
+				// type is the slice's own element type — exactly as the
+				// array-typed-destination case above grounds it from the array's
+				// element type. This is what lets a struct-element literal
+				// ([Point.{ x = 1 }]) ground its element records' receivers and
+				// lets numeric literals take the slice's element width.
+				if element, ok := key.Child(); ok {
+					knownElement, hasKnownElement = element, true
+				}
 			}
 		}
 	}

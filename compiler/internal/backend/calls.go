@@ -1601,7 +1601,7 @@ func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if node.Type != wantType {
 			return "", "", fmt.Errorf("%s is an inline slice construction (a CheckedSlice) of type %s, not a slice-typed value of type %s", context, describeType(snapshot, node.Type), sliceTypeName(wantType))
 		}
-		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, node, locals, "", context, width, fmt.Sprintf("pebble_slice_arg_%d", argID))
+		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, node, locals, "", context, width, fmt.Sprintf("pebble_slice_arg_%d", argID), fmt.Sprintf("pebble_arg_backing_%d", argID))
 		if err != nil {
 			return "", "", err
 		}
@@ -1823,7 +1823,7 @@ func buildSliceReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// name it from), distinct from the pebble_slice_start_<symbol> temps a
 		// slice local's declaration uses so the two can never collide even when
 		// a symbol ID numerically equals a node ID.
-		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, node, locals, indent, context, width, fmt.Sprintf("pebble_slice_ret_%d", id))
+		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, node, locals, indent, context, width, fmt.Sprintf("pebble_slice_ret_%d", id), fmt.Sprintf("pebble_slice_backing_ret_%d", id))
 		if err != nil {
 			return "", "", err
 		}

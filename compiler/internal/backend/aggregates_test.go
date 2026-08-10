@@ -3277,6 +3277,44 @@ func TestEmitI64SliceNonEntryWidthCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { var arr [3]i64 = [100, 200, 300]; var s []i64 = arr[:]; return s[1] as int; }", false, 200, false)
 }
 
+func TestEmitArrayLiteralDirectlyInitializesSliceCompilesAndRuns(t *testing.T) {
+	// An array literal directly initializing a slice-typed local in one step
+	// (`var s []int = [1, 2, 3];`), equivalent to constructing the array then
+	// taking a full slice of it: s[1] must read back the literal's second
+	// element, 2.
+	emitAndRun(t, "fn main() int { var s []int = [1, 2, 3]; return s[1]; }", false, 2, false)
+}
+
+func TestEmitArrayLiteralDirectlyInitializesStructSliceCompilesAndRuns(t *testing.T) {
+	// The struct-element twin of the array-literal slice initializer: the
+	// literal's record values must construct into the hidden backing array and
+	// be readable through the full slice, returning the second point's x.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var s []Point = [Point.{ x = 1, y = 10 }, Point.{ x = 2, y = 20 }]; return s[1].x; }", false, 2, false)
+}
+
+func TestEmitArrayLiteralDirectlyInitializesSliceWritesC(t *testing.T) {
+	// The emitted C for the one-step array-literal slice initializer must be
+	// exactly the two-step workaround's lowering: a hidden backing array local
+	// (pebble_slice_backing_<symbol>) holding the literal's elements, then a
+	// full checked slice over it. Symbols 27 (s) and slice type 23 come from
+	// the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var s []int = [1, 2, 3]; return s[1]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int32_t pebble_slice_backing_27[3] = { 1, 2, 3 };",
+		"pebble_slice_23_t pebble_local_27 = (pebble_slice_23_t){ .data = pebble_slice_backing_27 + pebble_slice_start_27, .len = (size_t)(3 - pebble_slice_start_27) };",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 2, false)
+}
+
 func TestEmitU64SliceConstructionInHelperCompilesAndRuns(t *testing.T) {
 	// The slice-start gap this slice closes: constructing an ordinary INT
 	// slice (arr[:]) inside a u64-returning helper — the u64-ness comes from

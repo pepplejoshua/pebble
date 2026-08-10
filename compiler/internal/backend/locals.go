@@ -117,6 +117,24 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	if len(initValue.Children) != int(length) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
 	}
+	exprs, err := buildArrayBraceElements(unit, snapshot, fileSet, initValue, scope, context, width, elementType)
+	if err != nil {
+		return "", err
+	}
+	elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	return fmt.Sprintf("%s%s pebble_local_%d[%d] = { %s };\n%s(void)pebble_local_%d;", indent, elementCType, statement.Symbol, length, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+}
+
+// buildArrayBraceElements builds the per-element C expression strings of an
+// ArrayValue literal, using the element type to select the element grammar.
+// It is the shared element builder for an array-typed local's brace-list
+// declaration (buildArrayLocalDeclaration) and for the hidden backing array an
+// array-literal slice initializer constructs before slicing it (the
+// ArrayValue base of buildSliceConstruction).
+func buildArrayBraceElements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, elementType types.TypeID) ([]string, error) {
 	exprs := make([]string, len(initValue.Children))
 	for i, child := range initValue.Children {
 		var expr string
@@ -144,15 +162,11 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, width, width)
 		}
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		exprs[i] = expr
 	}
-	elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
-	if err != nil {
-		return "", fmt.Errorf("%s: %v", context, err)
-	}
-	return fmt.Sprintf("%s%s pebble_local_%d[%d] = { %s };\n%s(void)pebble_local_%d;", indent, elementCType, statement.Symbol, length, strings.Join(exprs, ", "), indent, statement.Symbol), nil
+	return exprs, nil
 }
 
 // buildArrayRepeatLocalDeclaration builds an array-typed local whose
@@ -323,7 +337,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
-	tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol))
+	tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol), fmt.Sprintf("pebble_slice_backing_%d", statement.Symbol))
 	if err != nil {
 		return "", err
 	}

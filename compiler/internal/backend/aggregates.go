@@ -422,7 +422,10 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // that could drift. tempName is the deterministic C identifier of the temp
 // variable, derived by the caller from a stable identity (a slice local's own
 // declaration symbol for a local declaration; the return value node's NodeID
-// for a slice-returning helper's tail return). The declaration statement (with
+// for a slice-returning helper's tail return). backingName is the deterministic
+// C identifier of the hidden backing array an ArrayValue base constructs (the
+// array-literal slice-initializer shape), used only when the base is an
+// ArrayValue. The declaration statement (with
 // indent) and the construction expression (unindented, a C99 compound literal)
 // are returned separately so each caller assembles them into its own statement
 // shape: buildSliceLocalDeclaration embeds the expression in a local
@@ -432,7 +435,7 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // validation 10.37 established: the base must be an array-typed local in
 // scope, the slice's element type must equal the base array's element type,
 // and that element type must be the entry's resolved width or bool.
-func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, tempName string) (string, string, error) {
+func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, tempName, backingName string) (string, string, error) {
 	if initValue.Kind != tir.CheckedSlice {
 		return "", "", fmt.Errorf("%s slice construction is a %s, want a CheckedSlice", context, initValue.Kind)
 	}
@@ -443,7 +446,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !ok {
 		return "", "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
 	}
-	// Two base shapes are accepted:
+	// Three base shapes are accepted:
 	//
 	// 1. A SymbolValue naming an ARRAY-typed local in scope (the original,
 	//    unchanged path): the array local decays to a pointer to its first
@@ -457,9 +460,17 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	//    no compile-time length for a slice base: the new slice's .data
 	//    pointer must offset the EXISTING slice's own runtime .data, and the
 	//    upper bound is the EXISTING slice's runtime .len field.
+	//
+	// 3. An ArrayValue literal base — an array literal directly initializing a
+	//    slice-typed binding (`var s []int = [1, 2, 3];`, lowered by the
+	//    checker to a full CheckedSlice over the ArrayValue). The literal is
+	//    constructed into a hidden backing array local named by backingName and
+	//    the slice slices that array, mirroring exactly what the two-step
+	//    workaround (`var arr [N]T = [...]; var s []T = arr[:];`) lowers to.
 	isSliceBase := baseNode.Kind == tir.Load && isSlice(snapshot, baseNode.Type)
+	isArrayLiteralBase := baseNode.Kind == tir.ArrayValue
 	var baseInfo localInfo
-	if !isSliceBase {
+	if !isSliceBase && !isArrayLiteralBase {
 		if baseNode.Kind != tir.SymbolValue {
 			return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
 		}
@@ -488,8 +499,47 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	// match, plus the base-specific length and data-pointer expressions. The
 	// array base's validations are exactly the original ones; the slice base
 	// is the parallel Load(FieldPlace) path.
-	var lengthLiteral, defaultEnd, dataExpr string
-	if !isSliceBase {
+	var lengthLiteral, defaultEnd, dataExpr, backingDecl string
+	if !isSliceBase && isArrayLiteralBase {
+		// An ArrayValue literal base: construct the literal's elements into a
+		// hidden backing array local (named by backingName) and slice that
+		// array, mirroring exactly the two-step workaround's lowering. The
+		// element validation is the same the array-typed-local path applies
+		// (buildArrayLocalDeclaration), so the literal only builds when the
+		// slice would have been buildable from a real [N]T local.
+		arrayKey, ok := snapshot.Key(baseNode.Type)
+		if !ok {
+			return "", "", fmt.Errorf("%s base array literal type %d is not in the type snapshot", context, baseNode.Type)
+		}
+		length, arrayElementType, ok := arrayKey.Array()
+		if !ok {
+			return "", "", fmt.Errorf("%s base array literal is not an array type", context)
+		}
+		if sliceElementType != arrayElementType {
+			return "", "", fmt.Errorf("%s slice element type %s does not match base array literal element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
+		}
+		if isEnumType(unit, snapshot, arrayElementType) {
+			return "", "", fmt.Errorf("%s base array literal element type %s is an enum type; enum-typed slice elements are not supported yet", context, enumTypeName(arrayElementType))
+		}
+		if _, err := arrayLengthLiteral(length, width); err != nil {
+			return "", "", fmt.Errorf("%s: %v", context, err)
+		}
+		if len(baseNode.Children) != int(length) {
+			return "", "", fmt.Errorf("%s base array literal has %d element expression(s), want %d", context, len(baseNode.Children), length)
+		}
+		exprs, err := buildArrayBraceElements(unit, snapshot, fileSet, baseNode, scope, context, width, arrayElementType)
+		if err != nil {
+			return "", "", err
+		}
+		elementCType, err := arrayElementCType(unit, snapshot, width, arrayElementType)
+		if err != nil {
+			return "", "", fmt.Errorf("%s: %v", context, err)
+		}
+		lengthLiteral, _ = arrayLengthLiteral(length, width)
+		defaultEnd = fmt.Sprintf("%d", length)
+		dataExpr = backingName
+		backingDecl = fmt.Sprintf("%s%s %s[%d] = { %s };", indent, elementCType, backingName, length, strings.Join(exprs, ", "))
+	} else if !isSliceBase {
 		arrayKey, ok := snapshot.Key(baseInfo.array)
 		if !ok {
 			return "", "", fmt.Errorf("%s base array type %d is not in the type snapshot", context, baseInfo.array)
@@ -586,6 +636,14 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	// declaring it as a fixed int32_t regardless of width would silently
 	// narrow an i64 entry's checked-start result.
 	tempDecl := fmt.Sprintf("%s%s %s = pebble_rt_checked_slice_start_%s(%s, %s, %s, %s);", indent, cType(width), tempName, checkedSuffix(width), startArg, endArg, lengthLiteral, buildSourceLoc(fileSet, initValue.Span))
+	if backingDecl != "" {
+		// An ArrayValue base carries its hidden backing-array declaration as a
+		// leading statement ahead of the checked-start temp, so the emitted
+		// sequence is: declare the array from the literal's elements, compute
+		// the checked start, then construct the slice struct over it — the
+		// exact statement order the two-step workaround compiles to.
+		tempDecl = backingDecl + "\n" + tempDecl
+	}
 	constructionExpr := fmt.Sprintf("(%s){ .data = %s + %s, .len = (size_t)(%s - %s) }", sliceCType, dataExpr, tempName, endExpr, tempName)
 	return tempDecl, constructionExpr, nil
 }
@@ -868,7 +926,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				// uses and the pebble_slice_ret_<nodeID> temps a slice return
 				// uses, so the three can never collide even when a symbol ID
 				// numerically equals a node ID.
-				tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, indent, context, width, fmt.Sprintf("pebble_field_slice_%d", field.Value))
+				tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, indent, context, width, fmt.Sprintf("pebble_field_slice_%d", field.Value), fmt.Sprintf("pebble_field_backing_%d", field.Value))
 				if err != nil {
 					return "", "", err
 				}

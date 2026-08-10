@@ -443,6 +443,19 @@ func (s *irBuildState) buildCompatibility(source valueID, compatibility *compati
 	if !ok {
 		return s.buildValueBase(source)
 	}
+	if implicitArrayToSlice(s.handoff, compatibility, sourceType, destination) {
+		// An array literal directly initializing a slice-typed binding: build
+		// the array value and take a full slice of it, mirroring exactly what
+		// the two-step workaround (`var arr [N]T = [...]; var s []T = arr[:];`)
+		// lowers to — an ArrayValue base wrapped in a full CheckedSlice (no
+		// start or end bound), so the backend's existing array-local and slice
+		// construction machinery composes unchanged.
+		child, ok := s.buildValueBase(source)
+		if !ok {
+			return 0, false
+		}
+		return s.addNode(tir.Node{Kind: tir.CheckedSlice, Type: destination, Span: compatibility.Header.Span, Children: []tir.NodeID{child}}, symbol.SyntaxRef{})
+	}
 	class := classify(s.handoff.Semantics, sourceType, destination)
 	if class != compatibleImplicit {
 		return s.buildValueBase(source)

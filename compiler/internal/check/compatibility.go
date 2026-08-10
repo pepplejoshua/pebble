@@ -235,6 +235,66 @@ func coercionFor(snapshot *infer.SemanticSnapshot, class compatibilityClass, sou
 	return coercionNone
 }
 
+// implicitArrayToSlice reports whether a compatibility pair is an ARRAY LITERAL
+// directly initializing a SLICE-TYPED BINDING with a matching element type —
+// the one position where an array value is implicitly converted to a slice.
+// The source must be an authored array literal expression (expressionArray),
+// not any other array-typed value (an array local reference, an array-typed call
+// result, or an array repeat): every other array→slice pair keeps the existing
+// compatibleForbidden classification and its C0601, and a non-literal source has
+// no literal to construct a backing array from. The compatibility must also be a
+// binding-initializer position (its destination is a binding's declared-type
+// annotation), never a plain assignment or compound assignment to an existing
+// slice local, so the slice-local REINITIALIZATION gap stays exactly as narrow
+// as the binding gap is. This is the form `var s []int = [1, 2, 3];`, treated
+// as equivalent to constructing the array and taking a full slice of it. It is
+// consulted in the assignment/binding path BEFORE classify, which still reports
+// array→slice as compatibleForbidden for every other position (call arguments,
+// returns, casts), which must keep their existing rejection.
+func implicitArrayToSlice(handoff *solveHandoff, compatibility *compatibilityRecord, sourceType, destination types.TypeID) bool {
+	if handoff == nil || compatibility == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil {
+		return false
+	}
+	if !isBindingInitializerCompatibility(handoff, compatibility) {
+		return false
+	}
+	sourceKey, sourceOK := handoff.Semantics.Types().Key(sourceType)
+	destinationKey, destinationOK := handoff.Semantics.Types().Key(destination)
+	if !sourceOK || !destinationOK || sourceKey.Kind() != types.Array || destinationKey.Kind() != types.Slice {
+		return false
+	}
+	_, sourceElement, _ := sourceKey.Array()
+	destinationElement, _ := destinationKey.Child()
+	if sourceElement != destinationElement {
+		return false
+	}
+	for _, retained := range handoff.Records.Records() {
+		if retained.Expression != nil && retained.Expression.Result == compatibility.Source && retained.Expression.Kind == expressionArray {
+			return true
+		}
+	}
+	return false
+}
+
+// isBindingInitializerCompatibility reports whether a compatibility record is a
+// binding-initializer position: an assignment-role compatibility whose
+// destination value is a binding's declared-type annotation (the record
+// handleBinding retains for `var s []int = ...`). It is false for a plain
+// reassignment (`s = ...`) or compound assignment (`s += ...`), whose
+// assignment-role compatibility destinations are the target local's own place
+// value instead.
+func isBindingInitializerCompatibility(handoff *solveHandoff, compatibility *compatibilityRecord) bool {
+	if handoff == nil || compatibility == nil || compatibility.Role != compatibilityAssignment || compatibility.Destination == 0 {
+		return false
+	}
+	for _, retained := range handoff.Records.Records() {
+		if retained.Binding != nil && retained.Binding.Annotation == compatibility.Destination {
+			return true
+		}
+	}
+	return false
+}
+
 func classify(snapshot *infer.SemanticSnapshot, sourceID, destinationID types.TypeID) compatibilityClass {
 	if snapshot == nil || snapshot.Types() == nil {
 		return compatibleForbidden
