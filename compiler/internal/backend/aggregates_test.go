@@ -78,6 +78,172 @@ func TestEmitRuntimeAllocatorUnparenthesizedRoundTrip(t *testing.T) {
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = a.alloc(a.ptr, 4) as *i32; *p = 42; let value = *p; a.free(a.ptr, p as *void); return value; }", 42)
 }
 
+func TestEmitContextAsArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The bare `context` expression used directly as a call argument —
+	// `use_context(context)` — is a ContextValue node, a distinct TIR shape
+	// from the SymbolValue/RecordConstruct the Allocator-in-value-position fix
+	// covered. The received Context must be the SAME already-threaded runtime
+	// context (proposal 15 slice 4's missing verification): reading
+	// `c.default_allocator` off the parameter and doing a real
+	// alloc/write/read/free roundtrip through it must return 42 — proving the
+	// received context's default_allocator is the real runtime allocator, not a
+	// zeroed or freshly-constructed value.
+	emitAndRun(t, `fn use_context(c Context) int {
+    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    *p = 42;
+    let value = *p;
+    (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
+    return value;
+}
+fn main() int {
+    return use_context(context);
+}`, false, 42, false)
+}
+
+func TestEmitContextAsArgumentPrintsFieldValue(t *testing.T) {
+	t.Parallel()
+	// The same context-as-argument program, but the received Context's field is
+	// read and PRINTED, asserting the observed runtime value directly ("42") —
+	// real output, not just successful compilation.
+	out := emitAndRunCapture(t, `fn use_context(c Context) int {
+    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    *p = 42;
+    print *p;
+    (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
+    return 0;
+}
+fn main() int {
+    return use_context(context);
+}`, false, 0, false)
+	if want := "42\n"; out != want {
+		t.Errorf("captured output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitContextAsArgumentWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C directly: the context-as-argument call site passes
+	// the dereferenced hidden ctx parameter `(*ctx)` — the SAME underlying
+	// context value the already-working `Holder.{ c = context }` field
+	// construction threads — never a freshly-constructed PebbleContext.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn use_context(c Context) void {}
+fn main() int {
+    use_context(context);
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static void pebble_fn_",
+		"PebbleContext pebble_local_",
+		"ctx, (*ctx))",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitContextAsLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// `let c = context;` — the bare context expression as a Context-typed
+	// local's initializer, a ContextValue node. The local must hold the SAME
+	// already-threaded runtime context: reading `c.default_allocator` off it
+	// and doing a real alloc/write/read/free roundtrip returns 42.
+	emitAndRun(t, `fn make_local() int {
+    let c = context;
+    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    *p = 42;
+    let value = *p;
+    (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
+    return value;
+}
+fn main() int {
+    return make_local();
+}`, false, 42, false)
+}
+
+func TestEmitContextAsLocalInitializerWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C directly: the context-initialized local is declared
+	// as a PebbleContext from the dereferenced hidden ctx parameter `(*ctx)` —
+	// never a freshly-constructed struct.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn make_local() void {
+    let c = context;
+}
+fn main() int {
+    make_local();
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PebbleContext pebble_local_",
+		"= (*ctx);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitContextAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// `return context;` — the bare context expression as a Context-typed
+	// function's return value, a ContextValue node. The returned Context must be
+	// the SAME already-threaded runtime context: binding it into a local and
+	// doing a real alloc/write/read/free roundtrip through its default_allocator
+	// returns 42.
+	emitAndRun(t, `fn returns_context() Context {
+    return context;
+}
+fn use_context(c Context) int {
+    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    *p = 42;
+    let value = *p;
+    (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
+    return value;
+}
+fn main() int {
+    let c = returns_context();
+    return use_context(c);
+}`, false, 42, false)
+}
+
+func TestEmitContextAsReturnValueWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C directly: the context return statement returns the
+	// dereferenced hidden ctx parameter `(*ctx)` — never a freshly-constructed
+	// PebbleContext — from a PebbleContext-returning function.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn returns_context() Context {
+    return context;
+}
+fn main() int {
+    returns_context();
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static PebbleContext pebble_fn_",
+		"return (*ctx);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestEmitStructWithAllocatorFieldCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The standalone synthetic repro of the runtime-builtin struct-field-typedef

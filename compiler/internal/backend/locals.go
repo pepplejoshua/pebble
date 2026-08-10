@@ -42,6 +42,18 @@ func buildRuntimeLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 		scope[statement.Symbol] = localInfo{structType: initValue.Type, runtimeType: initValue.Type}
 		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
+	if initValue.Kind == tir.ContextValue {
+		// The bare `context` expression used directly as a Context-typed local's
+		// initializer — `let c = context;`. ContextValue is the distinct TIR
+		// shape the `context` keyword lowers to, and Context is always the
+		// already-threaded hidden `ctx` parameter — never a value to construct
+		// from scratch (unlike an Allocator RecordConstruct) — so the local is
+		// declared from the dereferenced parameter `(*ctx)`, a PebbleContext
+		// value, and seeded as a struct-typed local so the general by-value
+		// movement machinery treats it like the ordinary struct it is.
+		scope[statement.Symbol] = localInfo{structType: initValue.Type, runtimeType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = (*ctx);\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, indent, statement.Symbol), nil
+	}
 	if initValue.Kind != tir.FieldValue && initValue.Kind != tir.Load && initValue.Kind != tir.SymbolValue {
 		return "", fmt.Errorf("%s declares a runtime-typed local initialized from a %s", context, initValue.Kind)
 	}

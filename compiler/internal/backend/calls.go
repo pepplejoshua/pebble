@@ -1542,6 +1542,22 @@ func buildAggregateArgument(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			}
 			return buildStructValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
 		}
+		if node.Kind == tir.ContextValue {
+			// The bare `context` expression used directly as a call argument —
+			// `use_context(context)`. ContextValue is the distinct TIR shape the
+			// `context` keyword lowers to (not a SymbolValue naming a local, and
+			// not a RecordConstruct, the shape the Allocator-in-value-position
+			// fix covers). Context is always the already-threaded hidden `ctx`
+			// parameter of the enclosing Pebble-convention function, never a
+			// value to construct from scratch, so the argument is the
+			// dereferenced parameter `(*ctx)` — a PebbleContext value matching
+			// the Context parameter's own C type (the same `(*ctx)` lowering
+			// buildExpr/buildRuntimeValueNode use for a ContextValue).
+			if node.Type != wantType {
+				return "", fmt.Errorf("%s is a ContextValue of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
+			}
+			return "(*ctx)", nil
+		}
 		if node.Kind == tir.Load {
 			// A whole struct read through a pointer deref used directly as the
 			// call argument — `use_point(*ptr);`, the read-side twin of the
@@ -1771,6 +1787,20 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 			callPre = indent + callPre
 		}
 		return callPre, callExpr, nil
+	}
+	if node.Kind == tir.ContextValue {
+		// The bare `context` expression used directly as a Context-typed
+		// function's return value — `return context;`. ContextValue is the
+		// distinct TIR shape the `context` keyword lowers to (not a
+		// SymbolValue/RecordConstruct/DirectCall). Context is always the
+		// already-threaded hidden `ctx` parameter, never a value to construct
+		// from scratch, so the returned value is the dereferenced parameter
+		// `(*ctx)` — a PebbleContext value matching the function's result type's
+		// C type.
+		if node.Type != result.structType {
+			return "", "", fmt.Errorf("%s returns a ContextValue of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
+		}
+		return "", "(*ctx)", nil
 	}
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope, a struct literal (a RecordConstruct), or a call to a struct-returning helper (a DirectCall); only returning an already-declared struct-typed local, constructing a fresh struct literal inline, or forwarding a struct-returning helper call is supported", context, node.Kind)
 }
