@@ -44,5 +44,53 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+**Item: `uint` (word-sized unsigned) is still not accepted as a switch subject at the backend.**
+
+Batch item 2 of the current batch of 7. Narrower follow-on to `2b3d684`
+(fixed-width integer switch subjects), which deliberately excluded
+`uint`.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let x uint = 5;
+    switch x {
+        case 5: return 1;
+        else: return 0;
+    }
+}
+```
+
+Current failure:
+
+```
+pebc: emission failed: switch subject has type uint, want int, bool,
+or char, or an enum/tagged-union type
+```
+
+**Known cause / prior investigation:** `2b3d684`'s new switch-subject
+branch used `resolvedBuiltin`/`cType` and deliberately excluded `uint`
+via `!isUint(...)`, since `uint` is the abstract word-sized builtin (like
+`int`), not one of the fixed 8/16/32/64-bit widths. However, `uint`
+VALUES are already readable elsewhere in this backend via the existing
+`buildUintExpr` builder (used for globals, locals, etc.) — the same
+builder `isUint(snapshot, param.Type)` already routes to in
+`helperSignature`. This suggests the fix is a dedicated `isUint(...)`
+branch in `buildSwitchStatement` calling `buildUintExpr`, mirroring how
+`isBool`/`isChar` each get their own dedicated branch — not a deep
+width-resolution rework.
+
+**Scope for this item:**
+1. Add a dedicated `uint` branch to `buildSwitchStatement`'s
+   subject-type dispatch chain (before or after the existing fixed-width
+   branch, matching the isBool/isChar pattern), calling `buildUintExpr`
+   for the subject expression.
+2. Case labels for a `uint` subject must be emitted at the `uint` width
+   (`u64`/whatever `uint`'s cType convention is — check `cType(types.Uint)`)
+   so they carry the correct C suffix/type.
+3. Verify the reproduction above compiles and runs, returning 1.
+4. Confirm the fixed-width-integer and entry-width `int` switch subjects
+   fixed in `2b3d684` are unaffected.
+5. Write a compile-run test for a `uint` switch subject.
 
