@@ -44,47 +44,5 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: fixed-width integers other than the entry width are not accepted as a backend switch subject (checker proves exhaustiveness fine).**
-
-Batch item 2 of a new batch of 5.
-
-**Reproduction** (confirmed against current HEAD):
-
-```
-fn main() int {
-    let x u8 = 5;
-    switch x {
-        case 5: return 1;
-        else: return 0;
-    }
-}
-```
-
-Current failure:
-
-```
-pebc: emission failed: switch subject has type u8, want int, bool, or
-char, or an enum/tagged-union type
-```
-
-**Known cause:** the backend's switch-subject type gate only accepts
-`int` (the entry width), `bool`, `char`, or an enum/tagged-union — no
-other fixed-width integer (`u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `i64`,
-`u64` when not the entry width) is accepted, even though the checker
-already proves exhaustiveness correctly for these widths (confirmed
-working for `u8`/`i8` specifically by the `4817dae` fix earlier
-tonight). Same class of gap as the already-fixed char-switch item — just
-never extended past `char`/`int`.
-
-**Scope for this item:**
-1. Widen the backend's switch-subject type gate to accept any
-   fixed-width integer type, not just the entry width — mirroring the
-   convention already used elsewhere in this codebase for widening a
-   type-acceptance gate to "any fixed-width integer" (e.g. struct field
-   types, task #16 from earlier sessions).
-2. Verify the reproduction above compiles and runs, returning 1.
-3. Confirm a switch on the entry-width `int` type is unaffected (still
-   works exactly as before).
-4. Write compile-run tests covering at least `u8` and one other
-   non-entry width (e.g. `i16` or `u32`).
+_(empty — pick the next item from proposal 14 to begin)_
 
