@@ -346,6 +346,24 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			}
 			return store(storeValue), nil
 		}
+		if isTuple(snapshot, elementType) {
+			// A tuple-typed place write through a pointer deref, a tuple
+			// field write, or an indexed write of a tuple element —
+			// `*self = other;`, the reproduction's reset shape: the target
+			// lvalue is the tuple's own pebble_tuple_<typeID>_t, and the new
+			// value is a whole-tuple C value (a reference to an in-scope
+			// tuple-typed local of the matching type, or a fresh TupleValue
+			// compound literal), so `lvalue = <value>;` is the direct,
+			// uncoerced C store — a plain C struct assignment, valid for value
+			// types with no pointers/slices needing special handling, the same
+			// by-value copy convention tuple call arguments and returns already
+			// use (see buildAggregateArgument).
+			storeValue, err := buildTupleStoreValue(st, unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			return store(storeValue), nil
+		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
@@ -513,11 +531,20 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.tuple != 0 {
-			// A Store whose place names a tuple-typed local is a
-			// whole-tuple reassignment, which is out of scope this slice
-			// (only element reads of a tuple local are supported, never
-			// assignment into or reassignment of one).
-			return "", fmt.Errorf("%s reassigns symbol %d, a tuple-typed local of type %s; reassigning a whole tuple is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.tuple))
+			// A Store whose place names a tuple-typed local is a whole-tuple
+			// reassignment — `p = q;` or `p = (5, 6);` — whose new value is a
+			// whole-tuple C value built by buildTupleStoreValue (a reference to
+			// an in-scope tuple-typed local of the matching type, or a fresh
+			// TupleValue compound literal), emitted as
+			// `pebble_local_<sym> = <value>;` — a plain C struct assignment,
+			// valid for value types with no pointers/slices needing special
+			// handling, the same by-value copy convention tuple call arguments
+			// and returns already use.
+			storeValue, err := buildTupleStoreValue(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.tuple, context, width)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.array != 0 {
 			return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
@@ -643,6 +670,58 @@ func buildStructStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 	valueInfo, declared := scope[valueNode.Symbol]
 	if !declared || valueInfo.structType != wantType {
 		return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from symbol %d, which is not a struct-typed local in scope of that type", context, structTypeName(wantType), valueNode.Symbol)
+	}
+	return fmt.Sprintf("pebble_local_%d", valueNode.Symbol), nil
+}
+
+// buildTupleStoreValue builds the C value text for a whole-tuple
+// reassignment whose place resolves to the tuple type wantType, shared by
+// buildStoreCore's two tuple-reassignment paths (the plain-local path and the
+// pointer-deref/field/indexed-element path). Two value shapes are supported,
+// mirroring buildAggregateArgument's tuple argument shapes: a plain
+// SymbolValue naming an already-declared tuple-typed local in scope whose
+// declared type is exactly wantType, emitted as the local's own
+// pebble_local_<symbol> C name — the tuple's own typedef makes the by-value C
+// copy trivially valid, so `lvalue = pebble_local_<symbol>;` is the whole
+// store; or a freshly-constructed TupleValue of exactly wantType, emitted as
+// the same C99 positional compound literal buildTupleValueExpr builds (the
+// tuple typedef's field order is already the construction order, so a
+// positional compound literal is a direct, correct lowering). Any other value
+// shape — a call to a tuple-returning helper (a DirectCall, deliberately out
+// of scope this slice), a local that is not tuple-typed of that type, or any
+// other node kind — is a clean rejection naming what was found, matching
+// buildAggregateArgument's own discipline. width is the entry's resolved
+// integer width, threaded through to the inline construction builder so each
+// element is built at the width the tuple's own typedef uses.
+func buildTupleStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	valueNode, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s reassignment references invalid value node %d", context, id)
+	}
+	if valueNode.Kind == tir.TupleValue {
+		if valueNode.Type != wantType {
+			return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a TupleValue of type %s", context, tupleTypeName(wantType), describeType(snapshot, valueNode.Type))
+		}
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, valueNode, scope, context, width)
+	}
+	if valueNode.Kind == tir.DirectCall {
+		// A reassignment from a call to a tuple-returning helper —
+		// `p = make_tuple();` — is reachable from real source but out of scope
+		// this slice: the supported new-value shapes are a reference to an
+		// in-scope tuple-typed local or a tuple literal (a TupleValue),
+		// mirroring buildAggregateArgument's tuple argument shapes. A
+		// DirectCall value reaches buildStoreCore's tuple branch and is a
+		// clean rejection naming the unsupported shape, never a guessed
+		// lowering — the deliberate deferral mirroring how buildStructStoreValue's
+		// DirectCall shape landed only in a follow-up commit.
+		return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a call to a tuple-returning helper; reassigning a whole tuple from a call is not supported yet", context, tupleTypeName(wantType))
+	}
+	if valueNode.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue)", context, tupleTypeName(wantType), valueNode.Kind)
+	}
+	valueInfo, declared := scope[valueNode.Symbol]
+	if !declared || valueInfo.tuple != wantType {
+		return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from symbol %d, which is not a tuple-typed local in scope of that type", context, tupleTypeName(wantType), valueNode.Symbol)
 	}
 	return fmt.Sprintf("pebble_local_%d", valueNode.Symbol), nil
 }

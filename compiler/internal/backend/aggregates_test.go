@@ -1134,6 +1134,72 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitTupleWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole tuple-typed local from another tuple-typed local
+	// (`p = q;`), the plain-local shape: the Store's place names a tuple-typed
+	// local and the new value is a reference to an in-scope tuple-typed local
+	// of the same type, emitted as a plain C struct assignment
+	// `pebble_local_<p> = pebble_local_<q>;`. The reassigned local's element
+	// must reflect q's value (3), not the original p's (1).
+	emitAndRun(t, "fn main() int { var p (int, int) = (1, 2); let q (int, int) = (3, 4); p = q; return p.0; }", false, 3, false)
+}
+
+func TestEmitTupleWholeReassignmentFromLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole tuple-typed local from a fresh tuple literal
+	// (`p = (5, 6);`): the Store's new value is a TupleValue, emitted as the
+	// same positional compound literal buildTupleValueExpr builds, so
+	// `pebble_local_<p> = { 5, 6 };` replaces the whole value.
+	emitAndRun(t, "fn main() int { var p (int, int) = (1, 2); p = (5, 6); return p.0; }", false, 5, false)
+}
+
+func TestEmitTuplePointerDerefWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole tuple through a pointer deref (`*self = other;`),
+	// the reset shape: the Store's place is a DereferencePlace whose resolved
+	// element type is the tuple type, and the new value is a reference to the
+	// tuple-typed parameter, emitted as a plain C struct assignment through
+	// the null-checked deref lvalue. The reassigned local's element must
+	// reflect the value written through the pointer (7), not the original (1).
+	emitAndRun(t, "fn reset(self *(int, int), other (int, int)) void { *self = other; }\nfn main() int { var p (int, int) = (1, 2); let q (int, int) = (7, 8); reset(&p, q); return p.0; }", false, 7, false)
+}
+
+func TestEmitThreeElementTupleWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 3-element tuple reassignment proves buildTupleStoreValue's positional
+	// compound literal isn't hardcoded to 2 elements.
+	emitAndRun(t, "fn main() int { var p (int, int, int) = (1, 2, 3); p = (7, 8, 9); return p.2; }", false, 9, false)
+}
+
+func TestEmitMixedTypeTupleWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A (int, str) tuple reassignment proves buildTupleStoreValue composes
+	// with a non-integer element type, not just uniform int tuples.
+	emitAndRun(t, `fn main() int { var p (int, str) = (1, "a"); let q (int, str) = (9, "b"); p = q; return p.0; }`, false, 9, false)
+}
+
+func TestEmitTupleWholeReassignmentWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local whole-tuple reassignment: the store
+	// lowers to a plain C struct assignment `pebble_local_<p> = pebble_local_<q>;`
+	// — the tuple's own pebble_tuple_<typeID>_t typedef makes the by-value copy
+	// trivially valid C, so no member-wise lowering is needed.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var p (int, int) = (1, 2); let q (int, int) = (3, 4); p = q; return p.0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-tuple local copy %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "pebble_tuple_") {
+		t.Errorf("emitted C missing the tuple typedef:\n%s", out)
+	}
+}
+
 func TestEmitArrayElementReadCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", false, 20, false)

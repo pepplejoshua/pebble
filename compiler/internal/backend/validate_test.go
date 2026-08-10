@@ -373,18 +373,6 @@ func TestEmitRejectsTupleNestedMoreThanOneLevel(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported")
 }
 
-func TestEmitRejectsWholeTupleStore(t *testing.T) {
-	t.Parallel()
-	// Reassigning a whole tuple-typed local (t = (3, 4)) is reachable from
-	// real source (the checker builds the Store fine) but is out of scope this
-	// slice: only element reads of a tuple local are supported, never
-	// assignment into or reassignment of one. The Store's place names a
-	// tuple-typed local, so buildLeadingStatement rejects it with a clear
-	// error naming the reassignment, not a guessed lowering.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var t (i32, i32) = (1, 2); t = (3, 4); return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigning a whole tuple is not supported")
-}
-
 func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {
 	t.Parallel()
 	// The one shape in the inline-construction space that is still genuinely
@@ -582,6 +570,20 @@ func TestEmitRejectsStructReturningHelperAsArgument(t *testing.T) {
 	// builder rejects naming what was found.
 	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
+}
+
+func TestEmitRejectsTupleWholeReassignmentFromCallValue(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole tuple-typed local from a call to a tuple-returning
+	// helper (`p = make_tuple();`) is reachable from real source but out of
+	// scope this slice: the supported new-value shapes are a reference to an
+	// in-scope tuple-typed local or a tuple literal (a TupleValue), mirroring
+	// buildAggregateArgument's tuple argument shapes and the struct
+	// reassignment's own DirectCall deferral. A DirectCall value reaches
+	// buildStoreCore's tuple branch and is a clean rejection naming what was
+	// found, never a guessed lowering.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn make_tuple() (int, int) { return (9, 10); } fn main() int { var p (int, int) = (1, 2); p = make_tuple(); return p.0; }", "main", false)
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigns a tuple-typed place")
 }
 
 func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
