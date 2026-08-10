@@ -962,6 +962,22 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			default:
 				return "", "", fmt.Errorf("%s contains a slice field %d initialized from a %s, want a slice local or a fresh slice construction (a CheckedSlice or a slice-from-raw)", context, field.Field, fieldValue.Kind)
 			}
+		case isArray(snapshot, fieldType):
+			// A fixed-array-typed field's construction value (`Holder.{ values
+			// = [1, 2, 3] }`): built by buildStructArrayFieldValue, mirroring
+			// the array call-argument shapes (buildArrayArgument) — an array
+			// literal as the array typedef's C99 compound literal, a reference
+			// to an in-scope array-typed local (directly when the local is a
+			// pebble_array_<typeID>_t wrapped value, element-by-element for a
+			// raw C array local), or a call to an array-returning helper. The
+			// C field is declared at the array's OWN typedef (see
+			// structFieldCType), so the built expression matches the field type
+			// with no cast.
+			built, err := buildStructArrayFieldValue(st, unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
 		case isPointer(snapshot, fieldType):
 			built, err := buildExpr(st, unit, snapshot, fileSet, field.Value, scope, width, width)
 			if err != nil {
@@ -991,6 +1007,72 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		preStatements = strings.Join(pres, "\n")
 	}
 	return preStatements, "{ " + strings.Join(inits, ", ") + " }", nil
+}
+
+// buildStructArrayFieldValue builds the C expression a fixed-array-typed struct
+// field's construction value lowers to, of the shapes real source produces for
+// an array-typed value (mirroring buildArrayArgument, the array call-argument
+// builder): an ArrayValue literal, emitted as the array typedef's C99 compound
+// literal `(pebble_array_<typeID>_t){ .data = { <elements> } }`; a reference to
+// an in-scope array-typed local of exactly the field's type — a
+// pebble_array_<typeID>_t WRAPPED local (the call-initialized,
+// array-parameter, or global shape) emitted directly as its pebble_local_<id>
+// C name, or a raw `int32_t arr[N]`-declared local wrapped element-by-element
+// into the compound literal, exactly as buildArrayArgument does; or a call to
+// an array-returning helper (a DirectCall, whose result C type IS the array
+// typedef). The field's C type is the array's own typedef (see
+// structFieldCType), so the built expression matches with no cast. Anything
+// else is a clean rejection naming what was found. fieldType is the field's own
+// array type, whose length and element type come from the type snapshot.
+func buildStructArrayFieldValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueID tir.NodeID, scope map[symbol.SymbolID]localInfo, fieldType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(fieldType)
+	if !ok {
+		return "", fmt.Errorf("%s array field type %s is not in the type snapshot", context, describeType(snapshot, fieldType))
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("%s array field type %s has no length and element type", context, describeType(snapshot, fieldType))
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	node, ok := unit.Node(valueID)
+	if !ok {
+		return "", fmt.Errorf("%s array field references invalid value node %d", context, valueID)
+	}
+	switch node.Kind {
+	case tir.ArrayValue:
+		if node.Type != fieldType {
+			return "", fmt.Errorf("%s array field initialized from an ArrayValue of type %s, not an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
+		}
+		if uint64(len(node.Children)) != length {
+			return "", fmt.Errorf("%s array field has %d element expression(s), want %d", context, len(node.Children), length)
+		}
+		elementExprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, node, scope, context, width, element)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(elementExprs, ", ")), nil
+	case tir.SymbolValue:
+		info, declared := scope[node.Symbol]
+		if !declared || info.array != fieldType {
+			return "", fmt.Errorf("%s array field initialized from symbol %d, which is not an array-typed local of type %s in scope", context, node.Symbol, arrayTypeName(fieldType))
+		}
+		if info.arrayWrapped {
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		}
+		values := make([]string, 0, int(length))
+		for i := uint64(0); i < length; i++ {
+			values = append(values, fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i))
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(values, ", ")), nil
+	case tir.DirectCall:
+		if node.Type != fieldType {
+			return "", fmt.Errorf("%s array field initialized from a call of type %s, want an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
+		}
+		return buildDirectCall(st, unit, snapshot, fileSet, node, scope, width)
+	}
+	return "", fmt.Errorf("%s array field initialized from a %s, want an array literal, an array-typed local in scope, or a call to an array-returning helper", context, node.Kind)
 }
 
 // buildUnionConstruction builds the C expression text for one tagged-union

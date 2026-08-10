@@ -755,6 +755,19 @@ func buildPlaceLValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 		if field, ok := runtimeFieldName(unit, typ, n.Member); ok {
 			return fmt.Sprintf("%s%s%s", base, access, field), ft, nil
 		}
+		if isArray(snapshot, ft) {
+			// A fixed-array-typed struct field's C declaration is the array's
+			// OWN typedef (pebble_array_<typeID>_t, a struct wrapping a
+			// `elem data[length]` member — see structFieldCType /
+			// buildArrayTypedefs), so the field's addressable array lvalue is
+			// the typedef struct's `.data` member, `X.pebble_field_<m>.data` —
+			// exactly the `.data` projection the WRAPPED array local case two
+			// cases above applies (info.arrayWrapped appends `.data`), and the
+			// same raw-array lvalue the array element read and write paths
+			// subscript. The returned type stays the array type: callers
+			// dispatch on it, never on the projected member.
+			return fmt.Sprintf("%s%spebble_field_%d.data", base, access, n.Member), ft, nil
+		}
 		return fmt.Sprintf("%s%spebble_field_%d", base, access, n.Member), ft, nil
 	case tir.CheckedIndexPlace:
 		if len(n.Children) != 2 {

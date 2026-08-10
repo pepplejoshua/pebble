@@ -476,6 +476,180 @@ func TestEmitStructEnumFieldWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitFixedArrayStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact repro from the fixed-array-typed-struct-field audit finding
+	// (spec/compiler/proposals/14-v2-v1-checker-backend-parity-audit.md): a
+	// struct with a fixed-array-typed field is constructed from an array
+	// literal and read back by index. Before the fix the backend rejected the
+	// field type outright ("field type [3]int is not supported"), and even
+	// after structFieldCType accepted it the array typedef was never
+	// collected and the struct typedef was emitted before it, so cc failed
+	// with an undeclared type. h.values[0] is 1, the expected exit code.
+	emitAndRun(t, "type Holder = struct { values [3]int; };\nfn main() int {\n    let h = Holder.{ values = [1, 2, 3] };\n    return h.values[0];\n}", false, 1, false)
+}
+
+func TestEmitFixedArrayStructFieldIndexReadsAndWritesCompileAndRun(t *testing.T) {
+	t.Parallel()
+	// Construction with an array literal field, reading each element by a
+	// different index, and (since struct-field writes work for other field
+	// types) writing to an element through the struct and reading it back.
+	// The element reads route through Load(CheckedIndexPlace) and the write
+	// through the CheckedIndexPlace lvalue, both of which must subscript the
+	// field's .data member (the array typedef wraps `elem data[length]`).
+	emitAndRun(t, `type Holder = struct { values [3]int; };
+fn main() int {
+    var h Holder = Holder.{ values = [10, 20, 30] };
+    if h.values[0] != 10 { return 100; }
+    if h.values[1] != 20 { return 101; }
+    if h.values[2] != 30 { return 102; }
+    h.values[1] = 99;
+    if h.values[1] != 99 { return 103; }
+    return 0;
+}`, false, 0, false)
+}
+
+func TestEmitFixedArrayStructFieldFromArrayLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Constructing the array field from an already-declared raw C array local
+	// (`int32_t arr[3]`), which the construction wraps element-by-element into
+	// the array typedef's compound literal — the same wrap buildArrayArgument
+	// applies to a non-wrapped array local passed as a call argument.
+	emitAndRun(t, `type Holder = struct { values [3]int; };
+fn main() int {
+    var arr [3]int = [5, 6, 7];
+    var h Holder = Holder.{ values = arr };
+    if h.values[0] != 5 { return 100; }
+    if h.values[2] != 7 { return 101; }
+    return 0;
+}`, false, 0, false)
+}
+
+func TestEmitFixedArrayStructFieldFromArrayReturningCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Constructing the array field from an array-returning helper call, whose
+	// result is already a pebble_array_<typeID>_t value, assigned to the
+	// field directly.
+	emitAndRun(t, `fn make_arr() [3]int {
+    var r [3]int = [11, 22, 33];
+    return r;
+}
+type Wrapper = struct { data [3]int; };
+fn main() int {
+    var w Wrapper = Wrapper.{ data = make_arr() };
+    if w.data[0] != 11 { return 100; }
+    if w.data[2] != 33 { return 101; }
+    return 0;
+}`, false, 0, false)
+}
+
+func TestEmitFixedArrayStructFieldBoolElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A bool-element array field: bool element read and write through the
+	// struct, exercising the bool grammar in the array element read and store
+	// paths (buildArrayPlaceRead / buildStoreCore with a bool element).
+	emitAndRun(t, `type Flags = struct { bits [2]bool; };
+fn main() int {
+    var f Flags = Flags.{ bits = [true, false] };
+    if f.bits[0] != true { return 100; }
+    if f.bits[1] != false { return 101; }
+    f.bits[1] = true;
+    if f.bits[1] != true { return 102; }
+    return 0;
+}`, false, 0, false)
+}
+
+func TestEmitFixedArrayStructFieldAlongsideOtherFieldsCompileAndRun(t *testing.T) {
+	t.Parallel()
+	// Regression: a struct with a fixed-array field alongside every other
+	// supported field type (int, str, slice, nested struct, enum) keeps
+	// working exactly as before, and standalone (non-struct-field) fixed-array
+	// locals plus sizeof of the SAME array type as a field do not regress. The
+	// field-referenced [3]int type is emitted before the aggregate block (the
+	// struct typedef references it), so the sizeof still names the same
+	// pebble_array_<typeID>_t typedef, and sizeof [3]int is 3 * 4 = 12.
+	emitAndRun(t, `type EntryState = enum { Empty, Occupied };
+type Inner = struct { x int; };
+type Mixed = struct {
+    n int;
+    s str;
+    items []int;
+    inner Inner;
+    state EntryState;
+    values [3]int;
+};
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var m Mixed = Mixed.{ n = 5, s = "hi", items = arr[:], inner = Inner.{ x = 9 }, state = .Occupied, values = arr };
+    if m.n != 5 { return 100; }
+    if m.s != "hi" { return 101; }
+    if m.items[2] != 3 { return 102; }
+    if m.inner.x != 9 { return 103; }
+    if m.state != .Occupied { return 104; }
+    if m.values[1] != 2 { return 105; }
+    m.values[0] = 42;
+    if m.values[0] != 42 { return 106; }
+    if arr[0] != 1 { return 107; }
+    let s = sizeof [3]int;
+    if s != 12 { return 108; }
+    var standalone [3]int = [7, 8, 9];
+    if standalone[2] != 9 { return 109; }
+    return 0;
+}`, false, 0, false)
+}
+
+func TestEmitFixedArrayStructFieldWritesC(t *testing.T) {
+	t.Parallel()
+	// Emitted-C shape check for the fixed-array-typed struct field: the field
+	// is declared with the array's OWN typedef (pebble_array_<typeID>_t, the
+	// same C type sizeof names — see structFieldCType), the array typedef must
+	// be collected and emitted BEFORE the struct typedef that references it
+	// (it would otherwise be an undeclared C type at cc time), the construction
+	// initializes the field from the array typedef's compound literal, and the
+	// element read subscripts the field's `.data` member (the array typedef
+	// wraps `elem data[length]`, exactly like a wrapped array local's `.data`
+	// lvalue — see buildPlaceLValue's FieldPlace case).
+	unit, snapshot, entryID, sources := buildFixture(t, `type Holder = struct { values [3]int; };
+fn main() int {
+    let h = Holder.{ values = [1, 2, 3] };
+    return h.values[0];
+}`, "main", false)
+	var arrayType types.TypeID
+	var structType types.TypeID
+	for _, n := range unit.Nodes() {
+		if n.Kind == tir.RecordConstruct {
+			structType = n.Type
+			for _, f := range n.Fields {
+				if value, ok := unit.Node(f.Value); ok && value.Kind == tir.ArrayValue {
+					arrayType = value.Type
+				}
+			}
+		}
+	}
+	if arrayType == 0 {
+		t.Fatal("fixture has no array-typed struct field value")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	arrayTypedef := "typedef struct {\n    int32_t data[3];\n} " + arrayTypeName(arrayType) + ";"
+	if !strings.Contains(out, arrayTypedef) {
+		t.Errorf("emitted C is missing the array typedef %q (the struct field's array type must be collected):\n%s", arrayTypedef, out)
+	}
+	structTypedef := "typedef struct {\n    " + arrayTypeName(arrayType) + " pebble_field_"
+	if !strings.Contains(out, structTypedef) {
+		t.Errorf("emitted C struct typedef does not declare its array field with the array's own typedef:\n%s", out)
+	}
+	if strings.Index(out, arrayTypedef) > strings.Index(out, structTypeName(structType)) {
+		t.Errorf("emitted C emits the array typedef AFTER the struct typedef that references it (undeclared C type):\n%s", out)
+	}
+	if !strings.Contains(out, ".pebble_field_") || !strings.Contains(out, ".data[pebble_rt_checked_index_") {
+		t.Errorf("emitted C element read does not subscript the field's .data member:\n%s", out)
+	}
+}
+
 func TestEmitOptionalHasValueCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, `fn main() i32 { let present ?i32 = some 7; if present.has_value { return 1; } else { return 0; } }`, false, 1, false)

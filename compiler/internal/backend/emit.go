@@ -743,12 +743,52 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// safely lead the aggregate block (mirroring how the plain-enum block leads
 	// it for enum-typed fields).
 	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, unionTypedefs))
-	typedefs = appendTypedefBlock(typedefs, aggTypedefs)
 	arrayTypes, err := collectArrayTypes(unit, snapshot, blockID, helpers)
 	if err != nil {
 		return err
 	}
-	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, arrayTypes)
+	// A fixed-array-typed struct field names its array's OWN typedef
+	// (pebble_array_<typeID>_t, see structFieldCType), so every array type a
+	// struct field references must have its typedef collected AND emitted
+	// BEFORE the aggregate block whose struct typedef references it — the same
+	// struct-field backfill sliceInfos and functionTypes perform above, closing
+	// the "type accepted in one place but its typedef never collected" gap.
+	// Field-referenced array types are separated from the standalone arrayTypes
+	// collected by collectArrayTypes (sizeof/print/helper signatures) because
+	// the two need DIFFERENT typedef-block positions: a field-referenced array
+	// must lead the aggregate block, while a standalone array whose element is
+	// an aggregate (a struct/tuple/optional) must FOLLOW the aggregate block
+	// that fully defines that element — the array typedef's `.data` member is
+	// an inline `elem data[length]`, which requires the COMPLETE element type
+	// (a forward declaration cannot serve an inline array, unlike a slice's
+	// pointer). A struct-field array element is never an aggregate:
+	// orderAggregateTypes' nesting check rejects a struct whose field is an
+	// array of an aggregate as two levels of nesting, so every field-referenced
+	// array is self-contained and safe to emit ahead of the aggregate block.
+	inFieldArrays := make(map[types.TypeID]bool)
+	var fieldArrayTypes []types.TypeID
+	for _, structInfo := range structInfos {
+		for _, field := range structInfo.fields {
+			if !isArray(snapshot, field.typ) || inFieldArrays[field.typ] {
+				continue
+			}
+			inFieldArrays[field.typ] = true
+			fieldArrayTypes = append(fieldArrayTypes, field.typ)
+		}
+	}
+	standaloneArrayTypes := make([]types.TypeID, 0, len(arrayTypes))
+	for _, id := range arrayTypes {
+		if !inFieldArrays[id] {
+			standaloneArrayTypes = append(standaloneArrayTypes, id)
+		}
+	}
+	fieldArrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, fieldArrayTypes)
+	if err != nil {
+		return err
+	}
+	typedefs = appendTypedefBlock(typedefs, fieldArrayTypedefs)
+	typedefs = appendTypedefBlock(typedefs, aggTypedefs)
+	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, standaloneArrayTypes)
 	if err != nil {
 		return err
 	}

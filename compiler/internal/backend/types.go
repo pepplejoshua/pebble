@@ -1308,12 +1308,17 @@ func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // a uint or u64 field is uint64_t), bool for a bool field, PebbleStr for a
 // str field (the same C type a str local, parameter, result, and union member
 // is declared with), the field's own tuple/optional/struct/pointer/slice/
-// function-type typedef, a plain enum field's own enum typedef
+// array/function-type typedef, a plain enum field's own enum typedef
 // (pebble_enum_<typeID>_t, the same C type an enum-typed local/parameter/
 // result is declared with), or a compiler-builtin runtime type's hand-written
-// C type. Any other field type — a char field — is a clean rejection naming
-// what was found, since this backend emits exactly those C types as struct
-// fields.
+// C type. A fixed-array field is declared with the array's OWN typedef
+// (pebble_array_<typeID>_t, the same C type a sizeof array type names — see
+// arrayTypeName), mirroring how a slice field is declared with its
+// pebble_slice_<typeID>_t typedef; the array's element type is validated by
+// buildArrayTypedefs separately from this resolver, exactly like a slice
+// field's element type. Any other field type — a char field — is a clean
+// rejection naming what was found, since this backend emits exactly those C
+// types as struct fields.
 func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
 		return cType(fieldWidth), nil
@@ -1368,6 +1373,9 @@ func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, w
 	}
 	if isSlice(snapshot, id) {
 		return sliceTypeName(id), nil
+	}
+	if isArray(snapshot, id) {
+		return arrayTypeName(id), nil
 	}
 	if isFunctionType(snapshot, id) {
 		// A function-typed field (`op fn(int, int) int;`, function-types
