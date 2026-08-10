@@ -239,16 +239,6 @@ func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unbound range loop")
 }
 
-func TestEmitForLoopRejectsStoreInitializer(t *testing.T) {
-	t.Parallel()
-	// An assignment as the for-loop initializer (for step = 0; ...) is
-	// reachable from real source but out of scope: the initializer must be a
-	// single local declaration, matching the backend's rule that only an
-	// Initialize declares a local.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var step i32 = 0; for step = 0; step < 3; step = step + 1 { } return step; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "for loop initializer is a Store")
-}
-
 func TestEmitForLoopRejectsCompoundStoreInitializer(t *testing.T) {
 	t.Parallel()
 	// A compound-assignment as the for-loop initializer (for x += 1; ...) is

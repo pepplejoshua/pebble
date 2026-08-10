@@ -177,11 +177,11 @@ func buildScalarInitializeCore(st *emitState, unit *tir.Unit, snapshot *types.Sn
 // in scope, WITHOUT the leading indent and WITHOUT the trailing `;` a full
 // block-level Store statement gets: `pebble_local_<symbol> = <expr>`. It is
 // the Store dispatch, shared by buildLeadingStatement (which prepends the
-// indent and appends the `;` to form the full statement) and
-// buildForUpdateClause (which uses the core as the for-header update clause,
-// where the for statement's own syntax supplies the `;`), so the
-// place-validation and the buildExpr/buildBoolExpr/buildFloatExpr dispatch
-// live in exactly
+// indent and appends the `;` to form the full statement), buildForUpdateClause,
+// and buildForInitClause's assignment form (each of which uses the core as a
+// for-header clause, where the for statement's own syntax supplies the `;`),
+// so the place-validation and the buildExpr/buildBoolExpr/buildFloatExpr
+// dispatch live in exactly
 // one place. The place must be a plain StoragePlace naming a local in scope,
 // or, since 10.39, a CheckedIndexPlace naming an element of an array or
 // slice local (`arr[i] = v;` / `s[i] = v;`), and the new value is validated

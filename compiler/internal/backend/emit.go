@@ -41,8 +41,10 @@
 // loop, lowering to a C for loop with the same three individually-optional
 // clauses: each clause is built by the same machinery its block-level
 // counterpart uses — the initializer, when present, is a single Initialize
-// declaring a local of the entry's width or bool (see buildForInitClause,
-// sharing buildScalarInitializeCore with an ordinary leading declaration), the
+// declaring a local of the entry's width or bool or a single Store reassigning
+// a local already in scope (see buildForInitClause, sharing
+// buildScalarInitializeCore with an ordinary leading declaration and
+// buildStoreCore with an ordinary Store), the
 // condition, when present, is built by buildCondition, and the update, when
 // present, is a single Store reassigning a local already in scope (see
 // buildForUpdateClause, sharing buildStoreCore with an ordinary Store), with
@@ -56,7 +58,8 @@
 // before the body is built (mirroring how a range loop seeds its iterator),
 // so references to it inside the condition/update/body resolve through the
 // existing machinery, and a (void) cast for it is emitted as the body's first
-// statement (the -Wunused-variable defense). Locals declared in an enclosing block are visible in
+// statement (the -Wunused-variable defense); an assignment-form initializer
+// declares nothing new, so no cast is emitted for it. Locals declared in an enclosing block are visible in
 // a nested block;
 // locals declared inside an arm or loop body are visible only within that
 // scope. Every expression in an accepted body must carry the entry's own

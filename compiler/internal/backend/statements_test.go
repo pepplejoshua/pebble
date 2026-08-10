@@ -1575,6 +1575,67 @@ func TestEmitForLoopWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitForLoopAssignmentInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An assignment-form initializer (`for step = 0; ...`) reassigns a local
+	// already declared in the enclosing block instead of declaring a new one —
+	// the ordinary pattern of reusing an existing variable as a loop counter.
+	// step is seeded to 0 in the header, counts 0..3, and total accumulates
+	// 0+1+2 = 3, returned as the process exit code. Bounded execution in case
+	// of a miscompiled loop.
+	emitAndRunBounded(t, "fn main() int { var step int = 0; var total int = 0; for step = 0; step < 3; step = step + 1 { total = total + step; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopAssignmentBoolInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The assignment form also works for a bool-typed loop counter: the
+	// initializer reassigns the already-declared bool first (buildStoreCore's
+	// bool case), the condition is the bare bool value, and the update flips it
+	// to false. The loop runs once (first is true), accumulates 1, and the
+	// next condition check stops it, so total = 1. Bounded execution.
+	emitAndRunBounded(t, "fn main() int { var total int = 0; var first bool = true; for first = true; first; first = false { total = total + 1; } return total; }", false, 1, false)
+}
+
+func TestEmitForLoopAssignmentInitializerNoConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The assignment-form initializer works without a condition clause too:
+	// `for step = 0;; step = step + 1 { ... }` reassigns the already-declared
+	// step in the header's initializer slot (positionally distinguished from
+	// the update), with termination from the explicit break in the body. total
+	// accumulates 0+1+2 = 3. Bounded execution.
+	emitAndRunBounded(t, "fn main() int { var step int = 0; var total int = 0; for step = 0;; step = step + 1 { if step >= 3 { break; } total = total + step; } return total; }", false, 3, false)
+}
+
+func TestEmitForLoopAssignmentInitializerWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for an assignment-form initializer must have NO
+	// declaration in the header's init clause: the clause is the bare
+	// assignment `pebble_local_<symbol> = <expr>` (the reassigned variable
+	// was already declared at block level before the for), and because nothing
+	// new is declared there is no -Wunused-variable (void) cast emitted as the
+	// body's first statement (contrast the declaration form, whose cast is
+	// asserted in TestEmitForLoopWritesC). The body's first statement is
+	// directly the accumulation. Symbols 27 (step) and 28 (total) come from
+	// the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var step int = 0; var total int = 0; for step = 0; step < 3; step = step + 1 { total = total + step; } return total; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"    for (pebble_local_27 = 0; pebble_local_27 < 3; pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, 1, (PebbleSourceLoc){\"main.peb\", 1, 85})) {\n",
+		"        pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 104});",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "        (void)pebble_local_27;") {
+		t.Errorf("emitted C has a (void) cast for the assignment-form initializer's variable, but nothing new was declared:\n%s", out)
+	}
+}
+
 func TestEmitI64ReturnEntryWritesC(t *testing.T) {
 	t.Parallel()
 	// Mirror of TestEmitIntegerReturnEntryWritesC at the wider width: the
