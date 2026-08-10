@@ -377,11 +377,25 @@ matrix above.
 This section mirrors only the current open items in proposal 13. It does not
 copy their full reproduction or plan.
 
-1. `Allocator` values cannot cross function boundaries; proposal 15 plans an
-   ordinary-struct redesign for `Allocator` and `Context`.
+1. ~~`Allocator` values cannot cross function boundaries.~~ **RESOLVED
+   (proposal 15, all 4 slices, `b54d79d`/`dee9b0f`/`a404f14`, 2026-08-10).**
+   `Allocator`/`Context` are now ordinary parsed structs, not
+   compiler-synthesized special types — the ordinary-struct redesign
+   proposal 15 planned. A constructed `Allocator` crossing a function
+   boundary as an argument, a return value, and a struct-field
+   assignment, all together, now compiles and runs correctly (verified
+   end-to-end, causation-checked against the exact pre-redesign
+   failure). A real bug in the redesign's own value-position
+   construction path was found and fixed during independent
+   verification.
 2. The arena rewrite exposes struct/slice typedef identity errors and missing
    checked-arithmetic suffixes. The remaining arena functions still need the
-   slice-and-offset rewrite.
+   slice-and-offset rewrite. **Update (2026-08-10):** re-attempted after
+   item 1's resolution — `examples/arena_alloc.peb` still fails, but now
+   with zero `Allocator`/`Context`-related errors; the remaining failures
+   are pointer-arithmetic type-unification errors (`T0505`/`T0507`), a
+   distinct, separately-tracked gap (proposal 16), unaffected by this
+   item.
 3. **RESOLVED (`7b7eee0` read-side, `7e7163e` write-side).** `self.Ok`/
    `self.Err` correctly readable inside a narrowed switch arm for a
    generic-self receiver (4 tests, checker-verified, causation-checked).

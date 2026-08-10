@@ -166,10 +166,21 @@ investigation's own session ran out of budget before writing this part):**
    intentionally changed was updated to assert the new correct
    behavior, not silenced. Full suite passes; the exact original C
    compile failure was causation-checked to confirm the fix is real.
-4. **Slice 4 — verification.** Tracker item 1's original reproduction
-   (a constructed `Allocator` crossing a function boundary — argument,
-   return, and struct-field assignment) passes end-to-end; `arena.peb`
-   (tracker item 2's blocker) re-attempted.
+4. ~~**Slice 4 — verification.**~~ **RESOLVED (2026-08-10).** Tracker
+   item 1's original reproduction (a constructed `Allocator` crossing a
+   function boundary as an argument, a return value, and a struct-field
+   assignment, all together) passes end-to-end — confirmed already
+   during slice 3's own verification, causation-checked against the
+   real pre-cutover failure. `examples/arena_alloc.peb` re-attempted:
+   still fails, but for entirely unrelated reasons — pointer-arithmetic
+   type-unification errors (`T0505`, `T0507`), a separate, already-
+   tracked gap (proposal 16), not anything Allocator/Context-related.
+   Zero Allocator/Context errors remain in its output, confirming the
+   redesign fully resolved that class of problem in this file; the
+   remaining blocker is out of scope for proposal 15.
+
+**Status: all 4 slices complete. The Allocator/Context redesign is
+done.**
 
 Given the architecture risk is concentrated entirely in slice 1 (novel,
 compiler-wide infrastructure) and slice 3 (many coordinated deletions),
