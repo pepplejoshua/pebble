@@ -1036,6 +1036,94 @@ func TestEmitPrintSliceWritesRuntimeLoop(t *testing.T) {
 	}
 }
 
+func TestEmitPrintEnumOfVariantsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 5: a plain enum operand prints as
+	// `<TypeName>.<variant>` — the DECLARED enum type name, a literal dot, and
+	// the matching variant's declared SOURCE name — selected by a runtime tag
+	// comparison. Each variant asserts its exact output, so the tag-to-name
+	// mapping is proven correct across the whole enum, not just coincidentally
+	// for the first variant. The variant literal operand (`print Color.green`)
+	// proves the EnumVariantValue shape, the helper-call operand proves an
+	// enum-returning call is materialized once, and mixed scalar operands
+	// prove an enum composes with the one-line print rule.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"green", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.green; print c; return 0; }", "Color.green\n"},
+		{"red", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.red; print c; return 0; }", "Color.red\n"},
+		{"blue", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.blue; print c; return 0; }", "Color.blue\n"},
+		{"inline variant literal", "type Color = enum { red, green, blue };\nfn main() i32 { print Color.green; return 0; }", "Color.green\n"},
+		{"helper call operand", "type Color = enum { red, green, blue };\nfn pick() Color { return Color.blue; }\nfn main() i32 { print pick(); return 0; }", "Color.blue\n"},
+		{"mixed with scalar operands", "type Color = enum { red, green, blue };\nfn main() i32 { let a = Color.red; let b = Color.green; print a, \" then \", b; return 0; }", "Color.red then Color.green\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintEnumWritesRuntimeSwitch(t *testing.T) {
+	t.Parallel()
+	// An enum operand's print is emitted as DIRECT SEQUENTIAL fprintf(stdout,
+	// ...) calls with the operand's value materialized once into a per-operand
+	// temp, followed by ONE runtime C switch over the temp's stored
+	// discriminant — one case per declared variant emitting the variant's
+	// full `Color.<name>` string, plus a defensive default case emitting
+	// `Color<invalid: %d>` for an out-of-range discriminant. The trailing
+	// newline rides on an empty-string label call (`fprintf(stdout, """"\n");`
+	// = `fprintf(stdout, "\n");`) that follows the raw switch, because a raw
+	// block cannot receive buildSequentialPrint's newline append. Asserting
+	// the literal C text proves the runtime-switch shape, and that an enum
+	// print never folds into the single combined printf the scalar-only path
+	// uses. An enum-returning CALL operand must be materialized exactly once
+	// into the temp — the switch reads the temp, never re-calls the helper,
+	// so the helper call text appears exactly once in the emitted C.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue };\nfn pick() Color { return Color.blue; }\nfn main() i32 { print pick(); return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	tempRE := regexp.MustCompile(`pebble_enum_\d+_t (pebble_print_enum_\d+) = pebble_fn_\d+\(ctx\);`)
+	match := tempRE.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("emitted C missing the enum operand's materialized temp from the call:\n%s", out)
+	}
+	temp := match[1]
+	switchRE := regexp.MustCompile(`(?m)^\s*switch \(` + regexp.QuoteMeta(temp) + `\) \{`)
+	if !switchRE.MatchString(out) {
+		t.Errorf("emitted C missing the runtime switch over the enum's discriminant:\n%s", out)
+	}
+	if count := len(regexp.MustCompile(`case pebble_variant_\d+:`).FindAllString(out, -1)); count != 3 {
+		t.Errorf("emitted C has %d enum variant case labels, want 3 (red, green, blue):\n%s", count, out)
+	}
+	for _, want := range []string{
+		`fprintf(stdout, "Color.red");`,
+		`fprintf(stdout, "Color.green");`,
+		`fprintf(stdout, "Color.blue");`,
+		`fprintf(stdout, "Color<invalid: %d>", ` + temp + `);`,
+		`fprintf(stdout, """\n");`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	combinedRE := regexp.MustCompile(`(?m)^\s*printf\(`)
+	if combinedRE.MatchString(out) {
+		t.Errorf("emitted C still contains a combined printf call for the enum print:\n%s", out)
+	}
+	if callCount := len(regexp.MustCompile(`pebble_fn_\d+\(ctx\)`).FindAllString(out, -1)); callCount != 1 {
+		t.Errorf("emitted C calls the enum-returning helper %d time(s), want exactly once (the temp initializer):\n%s", callCount, out)
+	}
+}
+
 func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A deferred char print routes through the same shared buildPrint, so a

@@ -1,0 +1,6 @@
+type Choice = union enum { empty void; value i32; };
+
+fn f() void {
+    let r = Choice.value(42);
+    print r;
+}

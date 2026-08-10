@@ -1,0 +1,7 @@
+type Color = enum { red, green, blue };
+
+fn f() void {
+    let c = Color.green;
+    print c;
+    print Color.red;
+}

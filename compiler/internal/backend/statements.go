@@ -2691,6 +2691,16 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isTuple(snapshot, child.Type) || isArray(snapshot, child.Type) || isSlice(snapshot, child.Type) {
 			hasComposite = true
 		}
+		// A plain enum operand is also composite for routing purposes
+		// (composite print slice 5): it cannot fold into the combined printf
+		// the way a scalar does, because its output requires a runtime tag
+		// comparison to pick the variant name, not a static format
+		// specifier — even though it has no nested fields to recurse into.
+		// The isEnumType guard above already excludes an enum from the struct
+		// branch, so this line is what routes it to buildSequentialPrint.
+		if isEnumType(unit, snapshot, child.Type) {
+			hasComposite = true
+		}
 	}
 	return operands, hasComposite, nil
 }
@@ -2948,6 +2958,8 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			compositeCalls, pres, err = buildArrayPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isSlice(snapshot, child.Type):
 			compositeCalls, pres, err = buildSlicePrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		case isEnumType(unit, snapshot, child.Type):
+			compositeCalls, pres, err = buildEnumPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
 			compositeCalls, pres, err = buildStructPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		}
@@ -3096,7 +3108,37 @@ func buildSlicePrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	return calls, append(pres, valuePres...), nil
 }
 
-// buildPrintValueCalls is the recursive core of composite printing: it emits
+// buildEnumPrintOperand emits one plain-enum operand of a print statement as
+// its sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then the operand's ONE raw C switch over
+// the enum's discriminant (composite print slice 5). An enum operand has no
+// nested fields to recurse into, so — unlike a struct/tuple/array operand —
+// buildPrintValueCalls contributes no per-element value calls; the switch is
+// the operand's whole output (see buildEnumPrintValueCalls). The operand is
+// materialized once into a per-operand temp (pebble_print_enum_<nodeID>,
+// declared with the enum's own pebble_enum_<typeID>_t C type) so an
+// enum-returning call operand is evaluated exactly once, and the switch
+// compares the temp's stored discriminant against the variant constants.
+func buildEnumPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	valueExpr, err := buildEnumPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Materialize the operand once into a per-operand temp so an
+	// enum-returning call operand is evaluated exactly once, then switch on
+	// the temp's stored discriminant. The temp name derives from the
+	// operand's own unwrapped node ID — the stable identity of this operand,
+	// unique across the unit — so a print with several enum operands gets
+	// distinct temps.
+	tempName := fmt.Sprintf("pebble_print_enum_%d", operandID)
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", enumTypeName(child.Type), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, append(pres, valuePres...), nil
+}
+
 // the fprintf-call sequence that prints ONE value of resolved type valueType
 // whose C expression is expr, reading the value directly from expr — a
 // materialized operand temp (the common case, from the build*PrintOperand
@@ -3146,6 +3188,9 @@ func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	case types.Slice:
 		return buildSlicePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	default:
+		if isEnumType(unit, snapshot, valueType) {
+			return buildEnumPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+		}
 		return buildStructPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	}
 }
@@ -3375,6 +3420,78 @@ func buildSlicePrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	}, nil, nil
 }
 
+// buildEnumPrintValueCalls emits one plain-enum VALUE (a whole operand temp,
+// or a nested enum field/element off an enclosing temp) as its ONE raw
+// pre-rendered C switch over the enum's discriminant (composite print slice 5).
+// A variant's output is a STATIC string — the declared type name, a literal
+// `.`, and the matching variant's declared SOURCE name — selected by a RUNTIME
+// tag comparison, so it can never fold into the combined printf the way a
+// scalar can and it has no nested fields to unroll into per-element calls;
+// instead the whole switch is one printFprintfCall whose raw field is set:
+//
+//	switch (<expr>) {
+//	    case pebble_variant_<m1>:
+//	        fprintf(stdout, "Color.red");
+//	        break;
+//	    case pebble_variant_<m2>:
+//	        fprintf(stdout, "Color.green");
+//	        break;
+//	    default:
+//	        fprintf(stdout, "Color<invalid: %d>", <expr>);
+//	        break;
+//	}
+//
+// The case labels are the variant constants of the enum's own C typedef
+// (pebble_variant_<member>, the exact constants buildCaseLabel reuses for an
+// enum subject's switch — this is a NEW consumer of the existing variant-to-C-
+// constant mapping, not new enum representation knowledge), and the switch's
+// subject is the enum value's C expression (a materialized temp, or a nested
+// field/element projection like <temp>.pebble_field_<member>), whose C type is
+// the enum typedef itself — integral, so the C switch compares it directly.
+// The default case is the proposal-17 defensive invalid-discriminant output
+// `Color<invalid: <discriminant>>`, genuinely unreachable for a well-formed
+// program but present so a memory-corruption scenario never reads a garbage
+// value as a valid name. A trailing empty-string label call follows the raw
+// switch: it is a no-op (`fprintf(stdout, "");`) in the middle of a multi-
+// operand statement, and buildSequentialPrint's trailing-newline append turns
+// it into `fprintf(stdout, "\n");` when the enum is the statement's last
+// operand — the raw switch block itself cannot receive that append, so the
+// no-op carrier is how the one-newline-per-print rule stays uniform. The
+// variant-name and type-name strings come from the unit's own declaration-node
+// spans (variantSourceName/enumSourceName), never the generated C names. No
+// pres are returned — the enum has no pre-statement-bearing scalar children.
+func buildEnumPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	info, err := resolveEnumInfo(unit, snapshot, valueType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s print value of type %s: %v", context, enumTypeName(valueType), err)
+	}
+	typeName, err := enumSourceName(unit, fileSet, info.decl)
+	if err != nil {
+		return nil, nil, err
+	}
+	caseIndent := indent + "    "
+	bodyIndent := indent + "        "
+	var block strings.Builder
+	block.WriteString(indent + "switch (" + expr + ") {\n")
+	for _, variant := range info.variants {
+		variantName, err := variantSourceName(unit, fileSet, variant)
+		if err != nil {
+			return nil, nil, err
+		}
+		block.WriteString(caseIndent + "case " + enumVariantName(variant) + ":\n")
+		block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"."+variantName) + ");\n")
+		block.WriteString(bodyIndent + "break;\n")
+	}
+	block.WriteString(caseIndent + "default:\n")
+	block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"<invalid: %d>") + ", " + expr + ");\n")
+	block.WriteString(bodyIndent + "break;\n")
+	block.WriteString(indent + "}")
+	return []printFprintfCall{
+		{raw: block.String()},
+		{format: `""`},
+	}, nil, nil
+}
+
 // buildTuplePrintValueExpr builds the C expression naming one tuple-typed print
 // operand's value, of the shapes real source produces (all built by the same
 // machinery a tuple-typed call argument uses): a reference to a tuple-typed
@@ -3519,6 +3636,23 @@ func buildSlicePrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Sna
 	return "", fmt.Errorf("%s print operand is a %s of slice type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
 }
 
+// buildEnumPrintValueExpr builds the C expression naming one enum-typed print
+// operand's value, of the shapes real source produces (all built by the same
+// machinery an enum value uses anywhere in this backend — buildEnumValue is
+// the one shared builder for an enum value in every position): a variant
+// literal (Color.green, emitted as its pebble_variant_<member> C constant), a
+// reference to an enum-typed local/global/extern (a SymbolValue, emitted as
+// its pebble_local_<id> / pebble_global_<id> / extern C name), a call to an
+// enum-returning helper (a DirectCall, emitted as the call expression), a
+// SourceAlias (transparent grouped-expression parens), a Load of an enum-typed
+// struct field (emitted as the field projection), an integer-to-enum cast, or
+// an enum-payload optional force-unwrap. Any other shape is a clean rejection,
+// never a guessed lowering. This is a NEW consumer of the existing buildEnumValue
+// machinery (composite print slice 5), not new enum representation knowledge.
+func buildEnumPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	return buildEnumValue(st, unit, snapshot, fileSet, operandID, scope, width)
+}
+
 // buildStructPrintValueExpr builds the C expression naming one struct-typed
 // print operand's value, of the four shapes real source produces (all built by
 // the same machinery a struct-typed call argument uses): a reference to a
@@ -3596,4 +3730,32 @@ func fieldSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.Symb
 		}
 	}
 	return "", fmt.Errorf("struct field symbol %d has no FieldDeclaration node in the unit", member)
+}
+
+// enumSourceName resolves one enum type's declared source name (Color) by
+// slicing the type's own TypeDeclaration node span out of its source file —
+// the same span mechanism structSourceName uses for a struct's declared name,
+// shared because a TypeDeclaration node carries the declared identifier for
+// every nominal kind.
+func enumSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.TypeDeclaration && node.Symbol == decl {
+			return sourceNameAt(fileSet, node.Span)
+		}
+	}
+	return "", fmt.Errorf("enum declaration symbol %d has no TypeDeclaration node in the unit", decl)
+}
+
+// variantSourceName resolves one enum variant's declared source name (red) by
+// slicing the variant's own VariantDeclaration node span out of its source
+// file — the same span mechanism fieldSourceName uses for a struct field's
+// declared name (the checker emits one VariantDeclaration node per enum
+// member, with the member symbol's span covering the variant's identifier).
+func variantSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.SymbolID) (string, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.VariantDeclaration && node.Symbol == member {
+			return sourceNameAt(fileSet, node.Span)
+		}
+	}
+	return "", fmt.Errorf("enum variant symbol %d has no VariantDeclaration node in the unit", member)
 }

@@ -119,13 +119,15 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	// printableType is the RECURSIVE print gate for one resolved concrete type:
 	// a scalar builtin (bool, char, str, any integer width, any float width), or
 	// — composite print slice 1 — a struct value, or — slice 2 — a tuple or
-	// fixed array, or — slice 4 — a slice, provided every field/element is
-	// itself printable by this same rule (slice 3: nested aggregates). The
-	// recursion terminates because a field/element type is a strictly nested
-	// by-value aggregate; Pebble rejects a genuinely infinite-size composite at
-	// declaration/binding time, so no by-value cycle can reach here (verified
-	// against a self-referential struct fixture). A struct with any
-	// non-struct/non-scalar field (an enum, a tagged union, a pointer, an
+	// fixed array, or — slice 4 — a slice, or — slice 5 — a plain enum value,
+	// provided every field/element is itself printable by this same rule
+	// (slice 3: nested aggregates). The recursion terminates because a
+	// field/element type is a strictly nested by-value aggregate; Pebble rejects
+	// a genuinely infinite-size composite at declaration/binding time, so no
+	// by-value cycle can reach here (verified against a self-referential struct
+	// fixture). A plain enum is a LEAF case — it has no fields to recurse into —
+	// but it is still routed through this shared function (slice 5). A struct
+	// with any non-struct/non-scalar field (a tagged union, a pointer, an
 	// optional) still rejects — those are later slices. A field/element of a
 	// type that is not a concrete known type (a generic struct's parameter-typed
 	// field, which resolves only against a specific instantiation's type
@@ -178,15 +180,32 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			return false
 		}
 		declaration, ok := handoff.Semantics.TypeDeclaration(decl)
-		if !ok || declaration.Nominal != infer.NominalStruct {
+		if !ok {
 			return false
 		}
-		for _, member := range declaration.Members {
-			if !memberPrintable(member.Type) {
-				return false
+		switch declaration.Nominal {
+		case infer.NominalEnum:
+			// A plain enum is a LEAF printable case (composite print slice 5):
+			// it has no fields to recurse into, so merely recognizing the
+			// declared kind is enough. The declaration-level distinction is the
+			// same one this package's switch validation uses — a plain enum
+			// is NominalEnum while a tagged union is NominalTaggedUnion, even
+			// though both share the types.Nominal key kind — so a tagged union
+			// (composite print slice 6, a later slice) is NOT accepted here.
+			return true
+		case infer.NominalStruct:
+			for _, member := range declaration.Members {
+				if !memberPrintable(member.Type) {
+					return false
+				}
 			}
+			return true
+		default:
+			// A tagged union (NominalTaggedUnion), a legacy untagged union
+			// (NominalUnion), an extern type, or any other nominal is not a
+			// plain enum, so it stays unprintable.
+			return false
 		}
-		return true
 	}
 	valuePrintable := func(value valueID) bool {
 		resolved, ok := records.Root(value)
