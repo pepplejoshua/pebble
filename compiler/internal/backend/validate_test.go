@@ -727,19 +727,6 @@ func TestEmitRejectsMismatchedNonEntryWidthComparison(t *testing.T) {
 	}
 }
 
-func TestEmitSliceEnumElementRejects(t *testing.T) {
-	t.Parallel()
-	// A slice of enum elements is deliberately unsupported, mirroring the
-	// pre-existing enum-typed ARRAY element restriction: an enum element is a
-	// Nominal type exactly like a struct element, but sliceElementCType /
-	// isSupportedSliceElementType exclude it explicitly (a separate,
-	// already-tracked restriction). The struct/tuple/optional element widening
-	// this test suite gained for slice-of-struct-elements deliberately does
-	// NOT extend to enums, so a slice of an enum element must still be a clean
-	// rejection naming the enum.
-	emitAndRunRejects(t, "type E = enum { A, B }; fn main() i32 { var a [2]E = [E.A, E.B]; var s []E = a[:]; return 0; }", "enum-typed slice elements are not supported yet")
-}
-
 func TestEmitRejectsMethodCallSliceIndexOutOfBoundsAbnormalExit(t *testing.T) {
 	t.Parallel()
 	// Regression guard: bounds checking must not be silently dropped for the

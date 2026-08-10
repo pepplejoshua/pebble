@@ -88,7 +88,7 @@ func validateSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, width ty
 		return fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
 	}
 	if !isSupportedSliceElementType(unit, snapshot, element) {
-		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
+		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", describeType(snapshot, element))
 	}
 	return nil
 }

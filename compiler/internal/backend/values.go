@@ -435,10 +435,14 @@ func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 // `(2 as Color)`, unwrapped to its single child), a Load of an enum-typed
 // struct field
 // (`entry.state`, the enum-typed-struct-field shape — the projection carries
-// the field's own pebble_enum_<typeID>_t C type), and — since
+// the field's own pebble_enum_<typeID>_t C type), — since
 // CheckedIntegerToEnum support landed — an integer cast to an enum (`5 as
 // Color`, built by
-// buildCheckedIntegerToEnumExpr through the checked runtime primitive). A
+// buildCheckedIntegerToEnumExpr through the checked runtime primitive), and —
+// since enum-element slices — a Load of a CheckedIndexPlace, a by-value read
+// of one enum element of an array or slice local (`colors[1]` in a comparison
+// or switch subject, the bounds-checked element projection carrying the
+// element's own pebble_enum_<typeID>_t C type). A
 // variant literal emits its C enum constant
 // pebble_variant_<member>, whose value is the variant's ordinal in the enum's
 // declared order. A payload-carrying variant — an EnumVariantValue or
@@ -570,16 +574,27 @@ func buildEnumValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		}
 		return fmt.Sprintf("(%s)pebble_rt_checked_unwrap_i32(pebble_local_%d.has_value, pebble_local_%d.value, %s)", enumTypeName(node.Type), child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
 	case tir.Load:
-		// A struct field read of an enum-typed field (`entry.state`, the
-		// std/hmap.peb insert comparison shape) — lowered by the checker to a
-		// Load of a FieldPlace whose single child names the struct local,
-		// exactly the shape buildExpr's Load case routes to
-		// buildStructFieldRead. The projection
-		// pebble_local_<sym>.pebble_field_<m> carries the field's own
-		// pebble_enum_<typeID>_t C type, which is directly comparable to
-		// another enum value's constant. The Load's own Type must be the enum
-		// type (the checker guarantees it for real source; a mismatch is a
-		// clean rejection for hand-built IR).
+		// A read of an enum-typed place used directly as an enum value, in two
+		// shapes:
+		//
+		//   - a struct field read of an enum-typed field (`entry.state`, the
+		//     std/hmap.peb insert comparison shape) — lowered by the checker to a
+		//     Load of a FieldPlace whose single child names the struct local,
+		//     exactly the shape buildExpr's Load case routes to
+		//     buildStructFieldRead. The projection
+		//     pebble_local_<sym>.pebble_field_<m> carries the field's own
+		//     pebble_enum_<typeID>_t C type, which is directly comparable to
+		//     another enum value's constant.
+		//   - an enum element of an array or slice local (`colors[1]`, the
+		//     enum-element-slice shape) — lowered to a Load of a
+		//     CheckedIndexPlace whose single child is the StoragePlace naming
+		//     the array/slice local, exactly the shape a scalar element read
+		//     uses. The bounds-checked element projection built by
+		//     buildPlaceLValue carries the element's own pebble_enum_<typeID>_t
+		//     C type.
+		//
+		// The Load's own Type must be the enum type (the checker guarantees it
+		// for real source; a mismatch is a clean rejection for hand-built IR).
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
 		}
@@ -587,13 +602,23 @@ func buildEnumValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
 		}
-		if place.Kind != tir.FieldPlace {
-			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a FieldPlace (an enum-typed struct field read)", place.Kind)
-		}
 		if !isEnumType(unit, snapshot, node.Type) {
 			return "", fmt.Errorf("entry function body expression contains a Load of type %s, want an enum type", describeType(snapshot, node.Type))
 		}
-		return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+		if place.Kind == tir.FieldPlace {
+			return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+		}
+		if place.Kind != tir.CheckedIndexPlace {
+			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a FieldPlace (an enum-typed struct field read) or a CheckedIndexPlace (an enum element of an array or slice)", place.Kind)
+		}
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", fmt.Errorf("entry function body expression contains an enum-element read: %v", err)
+		}
+		if !isEnumType(unit, snapshot, elementType) {
+			return "", fmt.Errorf("entry function body expression contains an enum-element read of type %s, want an enum type", describeType(snapshot, elementType))
+		}
+		return lvalue, nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
 	}

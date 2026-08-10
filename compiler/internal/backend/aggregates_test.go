@@ -4441,6 +4441,108 @@ func TestEmitSliceOfTupleElementsCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var a [3](i32, i32) = [(1, 2), (3, 4), (5, 6)]; var s [](i32, i32) = a[0:2]; return s[1].0; }", false, 3, false)
 }
 
+func TestEmitSliceOfEnumElementsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The enum-element slice, the sibling of the struct/tuple widening (and the
+	// exact reproduction from the enum-slice-element gap): a []Color slice
+	// constructed directly from an enum array literal, then every index shape
+	// the scalar/aggregate element slices use — by-value element reads into
+	// enum locals (`let r = colors[0];`, `let g = colors[1];`), direct index
+	// compares without an intermediate local (colors[2] != Color.blue), an
+	// indexed element WRITE (colors[0] = Color.blue), and a slice .len read.
+	// The exit code depends on all of them working and on the variants
+	// round-tripping correctly through the C enum constants: red/green/blue are
+	// ordinals 0/1/2 in declared order, so a corrupt storage pointer or a
+	// widened/narrowed element would fail one of the compares and return a
+	// non-zero code.
+	emitAndRun(t, "type Color = enum { red, green, blue };\nfn main() int {\nlet colors []Color = [Color.red, Color.green, Color.blue];\nlet r = colors[0];\nlet g = colors[1];\nlet b = colors[2];\nif r != Color.red { return 1; }\nif g != Color.green { return 2; }\nif b != Color.blue { return 3; }\nif colors[0] == Color.blue { return 4; }\nif colors[2] != Color.blue { return 5; }\ncolors[0] = Color.blue;\nif colors[0] != Color.blue { return 6; }\nif colors.len != 3 { return 7; }\nreturn 0;\n}", false, 0, false)
+}
+
+func TestEmitSliceOfEnumElementsEmittedCShape(t *testing.T) {
+	t.Parallel()
+	// The emitted-C shape check for an enum-element slice, the enum twin of
+	// TestEmitSliceOfStructElementsEmittedCShape: the slice typedef's .data
+	// field must be a pointer to the enum's OWN typedef name
+	// (pebble_enum_<typeID>_t *data), not a rejection; the enum's typedef must
+	// be forward-declared BEFORE the slice typedef (C requires the pointer
+	// target's name declared, even incompletely, before the slice block
+	// references it — the slice block is emitted before the enum block that
+	// fully defines the enum); and the enum's full definition must carry the
+	// matching enum tag so the forward declaration and the definition complete
+	// the same C type.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue };\nfn main() i32 { let colors []Color = [Color.red, Color.green, Color.blue]; if colors[1] == Color.green { return 1; } return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// The slice typedef's data field must be a pointer to the enum's own
+	// typedef name.
+	fwdDecl := "typedef enum pebble_enum_"
+	fwdIdx := strings.Index(out, fwdDecl)
+	if fwdIdx < 0 {
+		t.Fatalf("emitted C missing the enum forward typedef declaration:\n%s", out)
+	}
+	// Extract the enum typedef name from the forward declaration
+	// `typedef enum pebble_enum_<id> pebble_enum_<id>_t;`.
+	rest := out[fwdIdx+len(fwdDecl):]
+	tagEnd := strings.Index(rest, " ")
+	if tagEnd < 0 {
+		t.Fatalf("emitted C malformed forward typedef declaration:\n%s", out)
+	}
+	enumTag := "pebble_enum_" + rest[:tagEnd]
+	enumName := enumTag + "_t"
+	if !strings.Contains(out, enumName+" *data;") {
+		t.Fatalf("emitted C slice typedef's .data field is not a pointer to the enum's own typedef name %s:\n%s", enumName, out)
+	}
+	// The enum's typedef name must be forward-declared before the slice typedef
+	// that points at it.
+	sliceIdx := strings.Index(out, "pebble_slice_")
+	fwd := "typedef enum " + enumTag + " " + enumName + ";"
+	if sliceIdx < 0 || !strings.Contains(out[:sliceIdx], fwd) {
+		t.Fatalf("emitted C does not forward-declare the enum typedef before the slice typedef:\n%s", out)
+	}
+	// The enum's full definition must carry the matching tag.
+	tag := "typedef enum " + enumTag
+	if !strings.Contains(out, tag) {
+		t.Fatalf("emitted C enum definition missing the matching enum tag %s:\n%s", tag, out)
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitSliceOfEnumElementsFromRawStdCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The SliceFromRaw shape (`slice ptr, n`) with an enum element — how
+	// std/hmap.peb's rehash/with_capacity construct slices over allocator-
+	// returned pointers. SliceFromRaw is checker-restricted to the standard
+	// library package (a C0619 "slice is restricted to the standard library
+	// package" rejection for user modules), so this fixture builds in the std
+	// package like the existing TestEmitSliceFromRawCompilesAndRuns and the
+	// struct-element twin. The slice's data field points at the backing enum
+	// array behind an existing enum slice (via &colors[0]) and indexes over
+	// it, so the exit code proves the whole SliceFromRaw construction plus an
+	// enum-element index read work.
+	unit, snapshot, entryID, sources := buildStdFixture(t, "type Color = enum { red, green, blue };\nfn main() int { let colors []Color = [Color.red, Color.green, Color.blue]; let s []Color = slice &colors[0], 3; if s[2] == Color.blue { return 0; } return 1; }", "main")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
+func TestEmitSliceTaggedUnionElementRejects(t *testing.T) {
+	t.Parallel()
+	// A tagged union is enum-shaped (isEnumType reports true for it), so the
+	// enum-element widening must NOT sweep it in: a union's C representation is
+	// the tag-plus-payload struct typedef pair, not a bare C enum, so pointing
+	// a slice's data field at the discriminant enum would store tags where
+	// values belong. isUnionEnumType (the declaration-level test) keeps a
+	// tagged-union slice element a clean rejection naming the union, mirroring
+	// how structFieldCType/optionalPayloadCType route a union field/payload to
+	// pebble_union_<typeID>_t.
+	emitAndRunRejects(t, "type U = union enum { A int; B int; };\nfn main() int { let us []U = [U.A(1), U.B(2)]; return 0; }", "tagged-union slice elements are not supported yet")
+}
+
 func TestEmitSliceParameterCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The flagship slice-parameter fixture: first takes a []i32 parameter and

@@ -195,6 +195,16 @@ func buildArrayBraceElements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 			expr, err = buildExpr(st, unit, snapshot, fileSet, child, scope, elementWidth, width)
 		} else if isStr(snapshot, elementType) {
 			expr, err = buildStrOperand(st, unit, snapshot, fileSet, child, scope, width)
+		} else if isDefinitelyEnumType(unit, snapshot, elementType) {
+			// A plain enum element (an enum-shaped Nominal type — the slice
+			// construction backing-array shape `[Color.red, Color.green,
+			// Color.blue]`, since enum-element slices; a user-level array local
+			// of enum elements is still rejected before reaching here by
+			// buildArrayLocalDeclaration, so this branch serves the slice
+			// backing array). Each element is a variant literal built by the
+			// same buildEnumValue an enum-typed local's declaration uses,
+			// emitting the variant's C enum constant.
+			expr, err = buildEnumValue(st, unit, snapshot, fileSet, child, scope, width)
 		} else if isTuple(snapshot, elementType) {
 			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else if isStruct(snapshot, elementType) {
@@ -653,10 +663,14 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 // initializer is a variant literal — an EnumVariantValue (Color.green, the
 // member-access form) or a zero-payload VariantConstruct (Color.red(), the
 // parenthesized-call form, which a plain enum's payload-less variants also
-// produce — confirmed against a real fixture) — or, since CheckedIntegerToEnum
-// support landed, an integer cast to the enum (`5 as Color`, built by
-// buildCheckedIntegerToEnumExpr through the checked runtime primitive, e.g.
-// `pebble_local_<sym> = (pebble_enum_<typeID>_t)pebble_rt_checked_int_to_enum(...);`).
+// produce — confirmed against a real fixture) — an integer cast to the enum
+// (`5 as Color`, built by buildCheckedIntegerToEnumExpr through the checked
+// runtime primitive, e.g. `pebble_local_<sym> =
+// (pebble_enum_<typeID>_t)pebble_rt_checked_int_to_enum(...);`), or — since
+// enum-element slices — a by-value read of one enum element of an array or
+// slice local (`let c = colors[1];`, a Load of a CheckedIndexPlace, the same
+// element-read shape buildStructLocalDeclaration gained for struct-element
+// slices).
 // A variant literal lowers to the variant's C
 // enum constant, whose value is the variant's ordinal in the enum's declared
 // order (the C typedef emits one named constant per variant in TypeDecl order,
@@ -675,6 +689,37 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 // used. Like every scalar local, the declaration is followed by a (void) cast
 // against -Wunused-variable.
 func buildEnumLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if initValue.Kind == tir.Load {
+		// A by-value read of one enum element of an array or slice local — `let
+		// c = colors[1];`, the enum-element-slice shape — lowered by the checker
+		// to a Load of a CheckedIndexPlace whose single child is the
+		// StoragePlace naming the array/slice local (the exact shape a scalar
+		// element read uses). The emitted C is
+		// `pebble_enum_<typeID>_t pebble_local_<symbol> = <lvalue>;`, where the
+		// lvalue is the bounds-checked element projection built by
+		// buildPlaceLValue (the same lvalue an address-of or field-write through
+		// a slice index lowers to), and its resolved element type must be
+		// exactly the local's declared type (defense for hand-built IR).
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, enumTypeName(initValue.Type), len(initValue.Children))
+		}
+		place, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a Load referencing invalid place node %d", context, enumTypeName(initValue.Type), initValue.Children[0])
+		}
+		if place.Kind != tir.CheckedIndexPlace {
+			return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value enum-element read)", context, enumTypeName(initValue.Type), place.Kind)
+		}
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s enum-element read: %v", context, err)
+		}
+		if elementType != initValue.Type {
+			return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a read of element type %s", context, enumTypeName(initValue.Type), describeType(snapshot, elementType))
+		}
+		scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
+	}
 	switch initValue.Kind {
 	case tir.EnumVariantValue:
 		if len(initValue.Children) == 1 {

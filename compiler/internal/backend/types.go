@@ -14,13 +14,21 @@ import (
 // resolvedBuiltin/cType — the entry's width, uint, u8, u16, u32, u64, i8, i16,
 // i32, or i64), char (the fixed int32_t), bool, or — matching the aggregate
 // element types arrayElementCType/sliceElementCType already accept — a tuple,
-// optional, or struct (an enum element is a Nominal type exactly like a struct
-// element, and is deliberately excluded here, mirroring the enum rejection in
-// both element-C-type builders). This is the single shared element gate
-// sliceElementCType, buildSliceConstruction, and the index read/write value
-// grammars all consult, mirroring how the function-types work admitted integer
-// parameters/results by resolvedBuiltin/cType generically instead of a
-// width-specific predicate list.
+// optional, struct, or plain enum element (a plain enum is a simple
+// integer-backed C enum typedef, emitted as the slice's `pebble_enum_<id>_t
+// *data;` pointer — see sliceElementCType). A tagged union is enum-shaped
+// (isDefinitelyEnumType reports true for it) but is NOT a supported element:
+// its C representation is the tag-plus-payload struct typedef pair, and
+// union-typed slice elements are out of scope, so isUnionEnumType (the
+// declaration-level test, independent of whether any payload-carrying
+// construction exists) keeps it a clean rejection. isDefinitelyEnumType — the
+// positive-declaration-evidence form, no no-evidence fallback — is what
+// distinguishes an enum from a method-only struct here (a method-only struct
+// has no FieldDeclaration nodes and would be misreported by isEnumType's
+// fallback). This is the single shared element gate sliceElementCType,
+// buildSliceConstruction, and the index read/write value grammars all consult,
+// mirroring how the function-types work admitted integer parameters/results by
+// resolvedBuiltin/cType generically instead of a width-specific predicate list.
 func isSupportedSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
 	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
 		return true
@@ -28,8 +36,8 @@ func isSupportedSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, id ty
 	if isChar(snapshot, id) || isBool(snapshot, id) {
 		return true
 	}
-	if isEnumType(unit, snapshot, id) {
-		return false
+	if isDefinitelyEnumType(unit, snapshot, id) {
+		return !isUnionEnumType(unit, snapshot, id)
 	}
 	return isTuple(snapshot, id) || isOptional(snapshot, id) || isStruct(snapshot, id)
 }
@@ -527,12 +535,17 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // sliceElementCType resolves the C pointer target type for a slice's data
 // field: the element's C type. Any fixed-width integer builtin (resolved to its
 // own width by resolvedBuiltin/cType), char (the fixed int32_t), bool, tuple
-// (the tuple's own typedef), optional (the optional's own typedef), and struct
-// (the struct's own typedef — an enum element is a Nominal type exactly like a
-// struct element and is rejected here explicitly, since enum-typed slice
-// elements are out of scope) are supported slice element types, matching
-// isSupportedSliceElementType and arrayElementCType's own element handling.
-// Any other element type is a clean rejection naming what was found.
+// (the tuple's own typedef), optional (the optional's own typedef), struct
+// (the struct's own typedef), and plain enum (the enum's own typedef
+// pebble_enum_<typeID>_t — the same C type an enum-typed local/field is
+// declared with) are supported slice element types, matching
+// isSupportedSliceElementType and arrayElementCType's own element handling. A
+// tagged union is enum-shaped (isDefinitelyEnumType reports true for it) but
+// its C representation is the tag-plus-payload struct typedef pair, not a bare
+// C enum — pointing a slice's data field at the discriminant enum would store
+// tags where values belong — so isUnionEnumType (the declaration-level test)
+// keeps it a clean rejection naming what was found. Any other element type is
+// a clean rejection naming what was found.
 func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
@@ -547,8 +560,11 @@ func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		return optionalTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
-		if isEnumType(unit, snapshot, id) {
-			return "", fmt.Errorf("slice element type %s is an enum type; enum-typed slice elements are not supported yet", enumTypeName(id))
+		if isUnionEnumType(unit, snapshot, id) {
+			return "", fmt.Errorf("slice element type %s is a tagged-union (union enum) type; tagged-union slice elements are not supported yet", describeType(snapshot, id))
+		}
+		if isDefinitelyEnumType(unit, snapshot, id) {
+			return enumTypeName(id), nil
 		}
 		return structTypeName(id), nil
 	}
@@ -1048,6 +1064,21 @@ func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	}
 	if isUnionEnumType(unit, snapshot, pointee) {
 		return unionTypeName(pointee) + " *"
+	}
+	// A plain enum pointee (a pointer to an enum value — `&colors[0]` on an
+	// enum-element slice, or the address of an enum-typed field) is declared
+	// with its own pebble_enum_<typeID>_t enum typedef, the same C type an
+	// enum-typed local/field uses; without this case the isStruct fall-through
+	// below (an enum is Nominal like a struct) would name a nonexistent
+	// pebble_struct_<typeID>_t. isDefinitelyEnumType — the positive-evidence
+	// form — is used rather than isEnumType so a method-only struct pointee
+	// (no FieldDeclaration nodes; isEnumType's no-evidence fallback would
+	// misreport it as an enum) keeps its struct typedef name. The
+	// isUnionEnumType check above must stay first: a tagged union is
+	// enum-shaped, but its pointer names the union's own pebble_union_<typeID>_t
+	// typedef.
+	if isDefinitelyEnumType(unit, snapshot, pointee) {
+		return enumTypeName(pointee) + " *"
 	}
 	if isStruct(snapshot, pointee) {
 		return structTypeName(pointee) + " *"

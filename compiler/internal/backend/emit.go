@@ -672,6 +672,15 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	// The element types a slice's .data pointer names in its typedef text (a
+	// struct/tuple/optional — or a plain enum) must have their typedef NAMES
+	// declared — even incompletely — before the slice typedef block that points
+	// at them, since the slice block is emitted before the aggregate/enum block
+	// that fully defines them. This set marks exactly those types whose full
+	// definition must carry the matching tag, so the same set threads into
+	// buildEnumTypedefs, buildAggregateTypedefs, and
+	// buildSliceElementForwardDeclarations.
+	sliceElementForwardDeclared := sliceElementForwardDeclaredTypes(unit, snapshot, sliceInfos)
 	// Function-pointer typedefs (pebble_fnptr_<typeID>_t) are emitted BEFORE
 	// the enum/aggregate typedef block, and merged with every function type
 	// reachable ONLY through a struct field's own resolved type (function
@@ -713,22 +722,22 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// typedef that references it. Enum typedefs are self-contained (variant
 	// constants only), so they have no forward dependencies and can safely lead
 	// the block.
-	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos)
+	enumTypedefs, err := buildEnumTypedefs(snapshot, enumInfos, sliceElementForwardDeclared)
 	if err != nil {
 		return err
 	}
 	// A slice's .data field is a pointer to its element type, so a slice whose
-	// element is a struct/tuple/optional names that aggregate's typedef in its
-	// own typedef text. The aggregate typedefs are fully defined in the
-	// aggregate block emitted AFTER the slices, so those typedef NAMES must be
-	// declared (incompletely) before the slices — a C forward typedef
-	// declaration — or the emitted slice typedef's `pebble_struct_<id>_t
-	// *data;` field would fail cc with "unknown type name". The aggregate
-	// definitions then carry the matching struct tag (see
-	// sliceElementForwardDeclaredAggregates), so the forward declaration and
-	// the definition complete the same C type.
-	sliceElementAggregates := sliceElementForwardDeclaredAggregates(snapshot, sliceInfos)
-	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, result, ordered.all, ordered.structs, sliceElementAggregates)
+	// element is a struct/tuple/optional — or, since enum-element slices, a
+	// plain enum — names that element's typedef in its own typedef text. The
+	// aggregate/enum typedefs are fully defined in the aggregate/enum blocks
+	// emitted AFTER the slices, so those typedef NAMES must be declared
+	// (incompletely) before the slices — a C forward typedef declaration — or
+	// the emitted slice typedef's `pebble_struct_<id>_t *data;` /
+	// `pebble_enum_<id>_t *data;` field would fail cc with "unknown type name".
+	// The definitions then carry the matching struct or enum tag (see
+	// sliceElementForwardDeclaredTypes), so the forward declaration and the
+	// definition complete the same C type.
+	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, result, ordered.all, ordered.structs, sliceElementForwardDeclared)
 	if err != nil {
 		return err
 	}
@@ -802,7 +811,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	sliceForwardDecls := buildAggregateForwardDeclarations(snapshot, sliceElementAggregates)
+	sliceForwardDecls := buildSliceElementForwardDeclarations(unit, snapshot, sliceElementForwardDeclared)
 	typedefs = appendTypedefBlock(sliceForwardDecls, appendTypedefBlock(sliceTypedefs, typedefs))
 	helperPrototypes, err := buildHelperPrototypes(st, unit, snapshot, helpers, result)
 	if err != nil {

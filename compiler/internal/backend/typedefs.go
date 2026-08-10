@@ -439,7 +439,7 @@ func buildUnionTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	if key.Kind() != types.Nominal {
 		return "", fmt.Errorf("type %s is a %v, want a tagged-union type", unionTypeName(info.typ), key.Kind())
 	}
-	enumText, err := buildEnumTypedef(snapshot, enumInfo{typ: info.typ, decl: info.decl, variants: info.variants})
+	enumText, err := buildEnumTypedef(snapshot, enumInfo{typ: info.typ, decl: info.decl, variants: info.variants}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -459,11 +459,15 @@ func buildUnionTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // in infos, in order, each joined by a newline. The caller (Emit) supplies
 // infos in first-encountered order from the enum-type collection pass, so
 // every enum type the emitted program references has exactly one typedef here,
-// written before any function definition in the final output.
-func buildEnumTypedefs(snapshot *types.Snapshot, infos []enumInfo) (string, error) {
+// written before any function definition in the final output. tagged marks the
+// enum types whose typedef must carry the matching enum tag (an enum used as a
+// slice element: its typedef name is forward-declared before the slice block,
+// so the full definition must complete that same tag — see
+// buildSliceElementForwardDeclarations).
+func buildEnumTypedefs(snapshot *types.Snapshot, infos []enumInfo, tagged map[types.TypeID]bool) (string, error) {
 	texts := make([]string, 0, len(infos))
 	for _, info := range infos {
-		text, err := buildEnumTypedef(snapshot, info)
+		text, err := buildEnumTypedef(snapshot, info, tagged)
 		if err != nil {
 			return "", err
 		}
@@ -484,6 +488,12 @@ func buildEnumTypedefs(snapshot *types.Snapshot, infos []enumInfo) (string, erro
 //	    pebble_variant_27,
 //	} pebble_enum_23_t;
 //
+// When tagged marks the type, the typedef carries the matching enum tag
+// (`typedef enum pebble_enum_23 { ... } pebble_enum_23_t;`) so the definition
+// completes the same type a forward declaration emitted before the slice
+// typedef block started (an enum used as a slice element), exactly as a tagged
+// struct's definition completes its own forward declaration.
+//
 // The declared order IS the discriminant: C assigns the constants the ordinal
 // values 0, 1, 2, ... in declaration order, so variant Members[i] is the value
 // i — the natural, stable discriminant the switch case labels and the values
@@ -495,7 +505,7 @@ func buildEnumTypedefs(snapshot *types.Snapshot, infos []enumInfo) (string, erro
 // a guessed layout (defense for hand-built IR; collectEnumTypes has already
 // resolved every collected TypeID through resolveEnumInfo, which requires a
 // plain enum).
-func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo) (string, error) {
+func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo, tagged map[types.TypeID]bool) (string, error) {
 	key, ok := snapshot.Key(info.typ)
 	if !ok {
 		return "", fmt.Errorf("enum type %d is not in the type snapshot", info.typ)
@@ -510,49 +520,58 @@ func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo) (string, error) {
 	for i, variant := range info.variants {
 		constants[i] = "    " + enumVariantName(variant) + ","
 	}
-	return fmt.Sprintf("typedef enum {\n%s\n} %s;", strings.Join(constants, "\n"), enumTypeName(info.typ)), nil
+	head := "typedef enum"
+	if tagged[info.typ] {
+		head = "typedef enum " + strings.TrimSuffix(enumTypeName(info.typ), "_t")
+	}
+	return fmt.Sprintf("%s {\n%s\n} %s;", head, strings.Join(constants, "\n"), enumTypeName(info.typ)), nil
 }
 
-// sliceElementForwardDeclaredAggregates reports, for every slice type in
-// infos, which aggregate element types (a struct, tuple, or optional — an enum
-// element is excluded: it is rejected by sliceElementCType before any typedef
-// could be emitted) its .data pointer names in the slice's typedef text. Those
-// aggregate typedef names must be DECLARED — even incompletely — before the
+// sliceElementForwardDeclaredTypes reports, for every slice type in infos,
+// which element types (a struct, tuple, or optional — or, since enum-element
+// slices, a plain enum) its .data pointer names in the slice's typedef text.
+// Those element typedef names must be DECLARED — even incompletely — before the
 // slice typedef that points at them, because the slice typedef block is
-// emitted before the aggregate block that fully defines them; C resolves a
+// emitted before the aggregate/enum block that fully defines them; C resolves a
 // pointer to a declared-but-incomplete type. The returned set marks exactly
-// those aggregate types whose FULL definition must carry the matching struct
-// tag (buildStructTypedef / buildTupleTypedef / buildOptionalTypedef emit
-// `typedef struct pebble_<kind>_<id> {` for them), so the forward declaration
-// and the definition complete the same C type. A slice whose element is a
-// scalar (integer, char, bool) needs no forward declaration: its data field
-// names a builtin C type that needs no typedef.
-func sliceElementForwardDeclaredAggregates(snapshot *types.Snapshot, infos []sliceInfo) map[types.TypeID]bool {
+// those element types whose FULL definition must carry the matching struct or
+// enum tag (buildStructTypedef / buildTupleTypedef / buildOptionalTypedef emit
+// `typedef struct pebble_<kind>_<id> {` and buildEnumTypedef emits `typedef
+// enum pebble_enum_<id> {` for them), so the forward declaration and the
+// definition complete the same C type. A slice whose element is a scalar
+// (integer, char, bool) needs no forward declaration: its data field names a
+// builtin C type that needs no typedef. A tagged union is excluded: it is
+// rejected by sliceElementCType before any typedef could be emitted.
+func sliceElementForwardDeclaredTypes(unit *tir.Unit, snapshot *types.Snapshot, infos []sliceInfo) map[types.TypeID]bool {
 	out := make(map[types.TypeID]bool)
 	for _, info := range infos {
 		if isStruct(snapshot, info.elementType) || isTuple(snapshot, info.elementType) || isOptional(snapshot, info.elementType) {
+			out[info.elementType] = true
+		} else if isDefinitelyEnumType(unit, snapshot, info.elementType) && !isUnionEnumType(unit, snapshot, info.elementType) {
 			out[info.elementType] = true
 		}
 	}
 	return out
 }
 
-// buildAggregateForwardDeclarations builds the C text of one incomplete typedef
-// declaration per aggregate type in tagged, ordered by TypeID for deterministic
-// output (each declaration is self-contained, so order does not matter
-// semantically):
+// buildSliceElementForwardDeclarations builds the C text of one incomplete
+// typedef declaration per element type in tagged, ordered by TypeID for
+// deterministic output (each declaration is self-contained, so order does not
+// matter semantically):
 //
 //	typedef struct pebble_struct_<typeID> pebble_struct_<typeID>_t;
 //	typedef struct pebble_tuple_<typeID> pebble_tuple_<typeID>_t;
 //	typedef struct pebble_optional_<typeID> pebble_optional_<typeID>_t;
+//	typedef enum pebble_enum_<typeID> pebble_enum_<typeID>_t;
 //
-// Each declares the struct TAG pebble_<kind>_<typeID> and the typedef name
-// pebble_<kind>_<typeID>_t together, so a later full definition of the same
-// tag (emitted with the matching tag by buildStructTypedef /
-// buildTupleTypedef / buildOptionalTypedef) completes the type, and a pointer
-// field in a slice typedef emitted between the two (`pebble_struct_<typeID>_t
-// *data;`) is valid C against the incomplete declaration.
-func buildAggregateForwardDeclarations(snapshot *types.Snapshot, tagged map[types.TypeID]bool) string {
+// Each declares the struct or enum TAG pebble_<kind>_<typeID> and the typedef
+// name pebble_<kind>_<typeID>_t together, so a later full definition of the
+// same tag (emitted with the matching tag by buildStructTypedef /
+// buildTupleTypedef / buildOptionalTypedef / buildEnumTypedef) completes the
+// type, and a pointer field in a slice typedef emitted between the two
+// (`pebble_struct_<typeID>_t *data;`) is valid C against the incomplete
+// declaration.
+func buildSliceElementForwardDeclarations(unit *tir.Unit, snapshot *types.Snapshot, tagged map[types.TypeID]bool) string {
 	ids := make([]types.TypeID, 0, len(tagged))
 	for id := range tagged {
 		ids = append(ids, id)
@@ -561,13 +580,17 @@ func buildAggregateForwardDeclarations(snapshot *types.Snapshot, tagged map[type
 	decls := make([]string, 0, len(ids))
 	for _, id := range ids {
 		name := structTypeName(id)
+		keyword := "struct"
 		if isTuple(snapshot, id) {
 			name = tupleTypeName(id)
 		} else if isOptional(snapshot, id) {
 			name = optionalTypeName(id)
+		} else if isDefinitelyEnumType(unit, snapshot, id) {
+			name = enumTypeName(id)
+			keyword = "enum"
 		}
 		tag := strings.TrimSuffix(name, "_t")
-		decls = append(decls, fmt.Sprintf("typedef struct %s %s;", tag, name))
+		decls = append(decls, fmt.Sprintf("typedef %s %s %s;", keyword, tag, name))
 	}
 	return strings.Join(decls, "\n")
 }

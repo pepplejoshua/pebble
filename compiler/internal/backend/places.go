@@ -135,7 +135,7 @@ func buildArrayPlaceRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 					return "", fmt.Errorf("slice element type is %s, want bool", describeType(snapshot, element))
 				}
 			} else if !isSupportedSliceElementType(unit, snapshot, element) {
-				return "", fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
+				return "", fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", describeType(snapshot, element))
 			}
 			indexNode, ok := unit.Node(place.Children[1])
 			if !ok {
@@ -412,7 +412,7 @@ func buildSliceIndexValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			return "", "", fmt.Errorf("entry function body expression indexes a slice whose element type is %s, want bool", describeType(snapshot, element))
 		}
 	} else if !isSupportedSliceElementType(unit, snapshot, element) {
-		return "", "", fmt.Errorf("entry function body expression indexes a slice whose element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
+		return "", "", fmt.Errorf("entry function body expression indexes a slice whose element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", describeType(snapshot, element))
 	}
 	index, err := buildSliceIndexOperand(st, unit, snapshot, fileSet, node.Children[1], indexNode, locals, width)
 	if err != nil {

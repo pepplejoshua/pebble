@@ -511,7 +511,7 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		return "", "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
 	}
 	if !isSupportedSliceElementType(unit, snapshot, sliceElementType) {
-		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", context, describeType(snapshot, sliceElementType))
+		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", context, describeType(snapshot, sliceElementType))
 	}
 	// Per-base resolve the element type the new slice's element type must
 	// match, plus the base-specific length and data-pointer expressions. The
@@ -536,9 +536,6 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		if sliceElementType != arrayElementType {
 			return "", "", fmt.Errorf("%s slice element type %s does not match base array literal element type %s", context, describeType(snapshot, sliceElementType), describeType(snapshot, arrayElementType))
 		}
-		if isEnumType(unit, snapshot, arrayElementType) {
-			return "", "", fmt.Errorf("%s base array literal element type %s is an enum type; enum-typed slice elements are not supported yet", context, enumTypeName(arrayElementType))
-		}
 		if _, err := arrayLengthLiteral(length, width); err != nil {
 			return "", "", fmt.Errorf("%s: %v", context, err)
 		}
@@ -549,7 +546,13 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		if err != nil {
 			return "", "", err
 		}
-		elementCType, err := arrayElementCType(unit, snapshot, width, arrayElementType)
+		// The hidden backing array's element C type is the slice element's own
+		// C type (the equality check above guarantees they are identical), so
+		// it is resolved by sliceElementCType — which admits a plain enum
+		// element as its own pebble_enum_<typeID>_t — rather than
+		// arrayElementCType, which deliberately still rejects enum-typed array
+		// elements (enum-typed array element support stays out of scope).
+		elementCType, err := sliceElementCType(unit, snapshot, width, arrayElementType)
 		if err != nil {
 			return "", "", fmt.Errorf("%s: %v", context, err)
 		}
