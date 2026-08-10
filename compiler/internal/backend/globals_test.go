@@ -192,17 +192,88 @@ func TestEmitGlobalUnusedDoesNotEmitStorage(t *testing.T) {
 	emitAndRun(t, "var x int = 5;\n\nfn main() int {\n    return 0;\n}", false, 0, false)
 }
 
-// TestEmitGlobalNonLiteralInitializerRejected guards the flagged design
-// boundary: a constant initializer that is not a literal leaf (checked
-// arithmetic over literals) is not a C static-initializable expression, so the
-// backend rejects it cleanly instead of emitting a runtime call into a static
-// initializer.
-func TestEmitGlobalNonLiteralInitializerRejected(t *testing.T) {
-	unit, snapshot, entryID, sources := buildFixture(t, "var x int = 1 + 2;\n\nfn main() int {\n    return x;\n}", "main", false)
+// TestEmitGlobalConstantArithmeticFoldsCompilesAndRuns proves backend-side
+// constant folding: a CheckedArithmetic over pure integer literals (`var x int
+// = 1 + 2;`) folds to a plain literal C constant and the program returns the
+// folded value, exactly the reproduction from the parity-gap tracker.
+func TestEmitGlobalConstantArithmeticFoldsCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "var x int = 1 + 2;\n\nfn main() int {\n    return x;\n}", false, 3, false)
+}
+
+// TestEmitGlobalConstantArithmeticFoldsOperatorsCompilesAndRuns covers a
+// second operator (*) and the / and % operators, whose truncated division and
+// remainder semantics the folder reproduces with big.Int's Quo/Rem: 10 / 3 =
+// 3, 10 % 3 = 1, so the second global folds to 4.
+func TestEmitGlobalConstantArithmeticFoldsOperatorsCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "var x int = 6 * 7;\n\nfn main() int {\n    return x;\n}", false, 42, false)
+	emitAndRun(t, "var y int = 10 / 3 + 10 % 3;\n\nfn main() int {\n    return y;\n}", false, 4, false)
+}
+
+// TestEmitGlobalConstantArithmeticFoldsToLiteralText pins the emitted C shape:
+// the folded value must land in the storage declaration as a plain literal
+// (`static int32_t pebble_global_<id> = 42;`), not a runtime call.
+func TestEmitGlobalConstantArithmeticFoldsToLiteralText(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, "var x int = 6 * 7;\n\nfn main() int {\n    return x;\n}", "main", false)
+	var globalID uint32
+	for _, g := range unit.GlobalDeclarations() {
+		globalID = uint32(g.Symbol)
+	}
+	if globalID == 0 {
+		t.Fatal("fixture has no global declaration")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		fmt.Sprintf("static int32_t pebble_global_%d = 42;", globalID),
+		fmt.Sprintf("return pebble_global_%d;", globalID),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestEmitGlobalConstantArithmeticOverflowRejected proves a folded result that
+// does not fit the global's declared type range is a clean, distinct rejection
+// naming the overflowing value — not a Go panic, not a silent wrap, and not the
+// generic "not a literal constant" message. 250 + 10 folds to 260, outside
+// u8's 0..255 range.
+func TestEmitGlobalConstantArithmeticOverflowRejected(t *testing.T) {
+	unit, snapshot, entryID, sources := buildFixture(t, "var x u8 = 250 + 10;\n\nfn main() int {\n    if x == 255 {\n        return 1;\n    }\n    return 0;\n}", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
-		t.Fatal("Emit accepted a non-literal global initializer")
-	} else if !strings.Contains(err.Error(), "not a literal constant") {
+		t.Fatal("Emit accepted a folded global initializer that overflows its type")
+	} else if !strings.Contains(err.Error(), "outside the global's u8 type range") {
 		t.Fatalf("unexpected rejection: %v", err)
+	} else if !strings.Contains(err.Error(), "260") {
+		t.Fatalf("rejection does not name the overflowing folded value: %v", err)
+	} else if strings.Contains(err.Error(), "not a literal constant") {
+		t.Fatalf("overflow must be a distinct rejection, not the generic one: %v", err)
+	}
+}
+
+// TestEmitGlobalNonLiteralInitializerRejected guards the flagged design
+// boundary: a compile-time-constant initializer that is NOT a foldable
+// integer-literal arithmetic tree is not a C static-initializable expression,
+// so the backend rejects it with the exact "not a literal constant" message
+// instead of emitting a runtime call into a static initializer. The fixture is
+// a CheckedNegate (`-5`), which the checker accepts as a constant but the
+// folder correctly declines; a CheckedArithmetic tree with any such
+// non-literal operand (`1 + -5`) falls back to the same rejection.
+func TestEmitGlobalNonLiteralInitializerRejected(t *testing.T) {
+	for _, fixture := range []string{
+		"var x int = -5;\n\nfn main() int {\n    return x;\n}",
+		"var x int = 1 + -5;\n\nfn main() int {\n    return x;\n}",
+	} {
+		unit, snapshot, entryID, sources := buildFixture(t, fixture, "main", false)
+		var buf bytes.Buffer
+		if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
+			t.Fatal("Emit accepted a non-foldable global initializer")
+		} else if !strings.Contains(err.Error(), "not a literal constant") {
+			t.Fatalf("unexpected rejection: %v", err)
+		}
 	}
 }

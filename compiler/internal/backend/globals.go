@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 
@@ -270,13 +271,16 @@ func globalStorageCType(unit *tir.Unit, snapshot *types.Snapshot, info localInfo
 // IntegerLiteral, BoolLiteral, CharLiteral, FloatLiteral, or StringLiteral
 // (a PebbleStr brace initializer), a NilPointer, a payload-less
 // EnumVariantValue/VariantConstruct, and a transparent SourceAlias unwrap.
-// Any other constant shape — a CheckedArithmetic over literals (`var x int =
-// 1 + 2;`), an IntegerCast, or a variant construction with a payload — would
+// A CheckedArithmetic tree whose operands are, recursively, all integer
+// literals is folded here in Go (see foldConstantIntegerTree): the result is
+// verified to fit the global's declared type range and emitted as a plain
+// literal C constant, reproducing the overflow check the runtime arithmetic
+// helper would have performed, statically. Any other constant shape — an
+// IntegerCast, a variant construction with a payload, a CheckedArithmetic
+// tree containing a non-literal operand, or any other expression that would
 // lower to a runtime call or compound literal that is not a valid C static
-// initializer, so it is a clean rejection naming what was found, never a
-// guessed emission. (Backend-side constant folding, or checker-side
-// serialization of the folded constant, is the natural follow-up that would
-// admit those shapes.)
+// initializer — is a clean rejection naming what was found, never a guessed
+// emission.
 func buildGlobalInitializerText(unit *tir.Unit, snapshot *types.Snapshot, typ types.TypeID, symbolID symbol.SymbolID) (string, error) {
 	g, ok := globalDeclBySymbol(unit, symbolID)
 	if !ok || g.Initializer == 0 {
@@ -295,7 +299,8 @@ func buildGlobalInitializerText(unit *tir.Unit, snapshot *types.Snapshot, typ ty
 
 // buildConstantInitializer is the recursive core of buildGlobalInitializerText
 // (see its doc comment for the supported shape set). info is the global's
-// resolved localInfo, used to pick the right fixed-width integer literal text.
+// resolved localInfo, used to pick the right fixed-width integer literal text
+// and to verify a folded arithmetic result fits the global's declared range.
 func buildConstantInitializer(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node, info localInfo) (string, error) {
 	switch node.Kind {
 	case tir.IntegerLiteral:
@@ -340,7 +345,158 @@ func buildConstantInitializer(unit *tir.Unit, snapshot *types.Snapshot, node tir
 			return "", fmt.Errorf("contains a SourceAlias referencing invalid child node %d", node.Children[0])
 		}
 		return buildConstantInitializer(unit, snapshot, child, info)
+	case tir.CheckedArithmetic:
+		value, foldable, err := foldConstantIntegerTree(unit, node)
+		if err != nil {
+			return "", err
+		}
+		if !foldable {
+			return "", notLiteralConstantError(node.Kind)
+		}
+		min, max, ok := integerKindRange(info.kind)
+		if !ok {
+			return "", notLiteralConstantError(node.Kind)
+		}
+		if value.Cmp(min) < 0 || value.Cmp(max) > 0 {
+			name, _ := builtinName(info.kind)
+			return "", fmt.Errorf("constant initializer folds to %s, which is outside the global's %s type range (%s..%s)", value, name, min, max)
+		}
+		return integerLiteralText(value.String(), info.kind), nil
 	default:
-		return "", fmt.Errorf("contains a %s, which is not a literal constant; only literal constant initializers are supported for mutable globals yet (an arithmetic or cast constant expression is not a C static-initializable expression)", node.Kind)
+		return "", notLiteralConstantError(node.Kind)
 	}
+}
+
+// notLiteralConstantError is the exact shared rejection for a constant global
+// initializer shape this backend cannot turn into a C static initializer. The
+// text is the agreed "not a literal constant" message; callers that fold a
+// shape in (see the CheckedArithmetic case) fall back to it unchanged when
+// the tree is not foldable, so the rejection stays byte-identical for any
+// expression the folder declines.
+func notLiteralConstantError(kind tir.NodeKind) error {
+	return fmt.Errorf("contains a %s, which is not a literal constant; only literal constant initializers are supported for mutable globals yet (an arithmetic or cast constant expression is not a C static-initializable expression)", kind)
+}
+
+// foldConstantIntegerTree recursively folds a constant-initializer value node
+// into its exact integer value, or reports that it is not foldable. The only
+// accepted shapes are an IntegerLiteral leaf (its own non-negative decimal
+// value) and a CheckedArithmetic whose operator is +, -, *, /, or % and whose
+// two operands both fold recursively; a transparent SourceAlias unwraps to
+// its single child. Every other node kind — a SymbolValue, a DirectCall, a
+// BoolLiteral or FloatLiteral, a CheckedNegate, anything that is not an
+// integer literal or integer arithmetic operator — is not foldable, and the
+// caller falls back to the exact pre-existing rejection. Arithmetic runs in
+// arbitrary precision (math/big), so an intermediate product or sum cannot
+// overflow or panic while folding; only the final result is narrowed, and
+// only after the caller has verified it fits the target type's range. Folding
+// uses truncated division and remainder (big.Int's Quo/Rem), the same
+// semantics the runtime checked-div/mod helpers execute.
+func foldConstantIntegerTree(unit *tir.Unit, node tir.Node) (*big.Int, bool, error) {
+	switch node.Kind {
+	case tir.IntegerLiteral:
+		text := node.Literal.IntegerNum
+		if !isNonNegativeDecimal(text) {
+			return nil, false, nil
+		}
+		value, ok := new(big.Int).SetString(text, 10)
+		if !ok {
+			return nil, false, nil
+		}
+		return value, true, nil
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return nil, false, nil
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return nil, false, nil
+		}
+		return foldConstantIntegerTree(unit, child)
+	case tir.CheckedArithmetic:
+		op, ok := arithmeticOperator(node.Operator)
+		if !ok || len(node.Children) != 2 {
+			return nil, false, nil
+		}
+		leftNode, ok := unit.Node(node.Children[0])
+		if !ok {
+			return nil, false, nil
+		}
+		rightNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return nil, false, nil
+		}
+		left, foldable, err := foldConstantIntegerTree(unit, leftNode)
+		if err != nil || !foldable {
+			return nil, foldable, err
+		}
+		right, foldable, err := foldConstantIntegerTree(unit, rightNode)
+		if err != nil || !foldable {
+			return nil, foldable, err
+		}
+		result := new(big.Int)
+		switch op {
+		case "+":
+			result.Add(left, right)
+		case "-":
+			result.Sub(left, right)
+		case "*":
+			result.Mul(left, right)
+		case "/":
+			if right.Sign() == 0 {
+				return nil, false, fmt.Errorf("constant initializer divides by zero")
+			}
+			result.Quo(left, right)
+		case "%":
+			if right.Sign() == 0 {
+				return nil, false, fmt.Errorf("constant initializer takes modulo by zero")
+			}
+			result.Rem(left, right)
+		}
+		return result, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+// integerKindRange returns the inclusive [min, max] value range a value of the
+// given integer builtin kind can hold, using the kind's true bit width and
+// signedness (int is 32-bit signed, uint is 64-bit unsigned, exactly as their
+// C representations int32_t and uint64_t declare). ok is false for any
+// non-integer kind.
+func integerKindRange(kind types.BuiltinKind) (min, max *big.Int, ok bool) {
+	var bits uint
+	signed := false
+	switch kind {
+	case types.Int:
+		bits, signed = 32, true
+	case types.I8:
+		bits, signed = 8, true
+	case types.I16:
+		bits, signed = 16, true
+	case types.I32:
+		bits, signed = 32, true
+	case types.I64:
+		bits, signed = 64, true
+	case types.Uint:
+		bits = 64
+	case types.U8:
+		bits = 8
+	case types.U16:
+		bits = 16
+	case types.U32:
+		bits = 32
+	case types.U64:
+		bits = 64
+	default:
+		return nil, nil, false
+	}
+	if signed {
+		// min = -2^(bits-1), max = 2^(bits-1) - 1.
+		max = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), bits-1), big.NewInt(1))
+		min = new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), bits-1))
+		return min, max, true
+	}
+	// min = 0, max = 2^bits - 1.
+	max = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), bits), big.NewInt(1))
+	return big.NewInt(0), max, true
 }
