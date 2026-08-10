@@ -44,6 +44,15 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — the `context`-as-value gap landed as `64d2e2b`; see proposal
+15 slice 4 and proposal 14 tracker item 1. Both composite print
+(proposal 17) and the Allocator/Context redesign (proposal 15) are now
+genuinely complete — Allocator and Context both move correctly through
+every value position, verified independently in each case, not just
+self-reported.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: `context`-as-value — bare `context` expression fails as a function
 argument and as a `let` local's initializer.**
 
@@ -113,3 +122,14 @@ existing single-site handling.
 return) using the reproductions above as acceptance tests; reconfirm
 the already-working struct-field-value case is unaffected; full suite
 clean; causation-check against the exact errors quoted above.
+
+-->
+
+**Resolution (`64d2e2b`, 2026-08-10).** `buildAggregateArgument`,
+`buildRuntimeLocalDeclaration`, and `buildAggregateReturnValue` each
+gained a `ContextValue` case emitting `(*ctx)`, mirroring the existing
+single-site handling. Verified end-to-end for all three positions via
+a real alloc→write→read→free roundtrip through `default_allocator`;
+the struct-field-value case and Allocator's own slice-3 paths
+reconfirmed unaffected; causation-checked against the exact pre-fix
+rejection messages.

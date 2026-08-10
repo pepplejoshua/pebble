@@ -176,22 +176,37 @@ investigation's own session ran out of budget before writing this part):**
    tracked gap (proposal 16) — zero Allocator/Context errors remain in
    its output.
 
-   **But `Context` was never independently verified the same way, and
-   it is NOT the same — a real gap, found by the user asking "can we
-   use context expr and allocator type as we like?" after this was
-   already (wrongly) declared done.** The bare `context` keyword
-   expression (a distinct `ContextValue` TIR node, a different shape
-   from the `SymbolValue`/`RecordConstruct` the slice-3 fix covered)
-   fails as a function ARGUMENT (`use_context(context)`) and as a
-   LOCAL's initializer (`let c = context;`) — confirmed reproduced.
-   It DOES already work as a struct-field construction value
-   (`Holder.{ c = context }`). This needs its own fix before slice 4
-   — and this whole proposal — can honestly be called done.
+   **`Context` was never independently verified the same way as
+   `Allocator`, and it was NOT the same — a real gap, found by the user
+   asking "can we use context expr and allocator type as we like?"
+   after this was already (wrongly) declared done.** The bare `context`
+   keyword expression (a distinct `ContextValue` TIR node, a different
+   shape from the `SymbolValue`/`RecordConstruct` the slice-3 fix
+   covered) failed as a function ARGUMENT (`use_context(context)`), as
+   a LOCAL's initializer (`let c = context;`), and as a RETURN value
+   (`return context;`) — while already working as a struct-field
+   construction value (`Holder.{ c = context }`).
 
-**Status: 3 of 4 slices complete. Slice 4 needs a real fix for
-`context`-as-argument and `context`-as-local before this proposal is
-actually finished — do not re-mark this "done" until independently
-verified with the same rigor applied to the Allocator fix.**
+   **RESOLVED (`64d2e2b`, 2026-08-10).** `buildAggregateArgument`,
+   `buildRuntimeLocalDeclaration`, and `buildAggregateReturnValue`
+   (`compiler/internal/backend/calls.go`, `locals.go`) each gained a
+   `ContextValue` case emitting the already-threaded hidden `ctx`
+   parameter's dereference, `(*ctx)` — the same lowering
+   `buildExpr`/`buildRuntimeValueNode` already used elsewhere for a
+   `ContextValue`, never a fresh construction (`context` is always the
+   caller-supplied parameter, structurally unlike a constructed
+   `Allocator`). Verified end-to-end for all three positions via a real
+   alloc→write→read→free roundtrip through the received/returned
+   Context's `default_allocator`; the struct-field-construction case
+   and slice 3's Allocator argument/return/field-assignment paths
+   reconfirmed unaffected; causation-checked against the exact pre-fix
+   rejection messages (reverted the fix, reproduced the identical
+   errors, restored it).
+
+**Status: all 4 slices complete, independently verified — both
+`Allocator` and `Context`, in every value position (argument, return,
+local initializer, struct-field construction/assignment). The
+Allocator/Context redesign is done.**
 
 Given the architecture risk is concentrated entirely in slice 1 (novel,
 compiler-wide infrastructure) and slice 3 (many coordinated deletions),
