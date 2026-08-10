@@ -208,8 +208,26 @@ and a runtime switch only for an enum/union discriminant.
    rejects; a stale slice-4 negative fixture (slice-of-enum) was caught
    and moved to valid/, since enum printability now flows through
    slice 4's recursive element check. Causation-checked.
-6. **Tagged unions** — tag switch + payload recursion; payload-less
-   variants and invalid tags need explicit handling.
+6. ~~**Tagged unions**~~ **RESOLVED (`9a0f27d`).** `printableType` gains a
+   `NominalTaggedUnion` case, recursive over each declared variant's
+   payload type (void payload trivially printable). Backend emits one
+   raw C switch over `.tag`; each payload-carrying case recurses into
+   `buildPrintValueCalls` against `<expr>.payload.pebble_field_<variant>`
+   then closes the paren; a payload-less case emits the bare
+   `Type.variant` with no parens; a defensive `default:` emits
+   `Type<invalid-tag: N>`, mirroring slice 5. Verified: a payload
+   variant (`Result.ok(42)`), a second payload variant proving the
+   tag-to-name mapping (`Result.error(failed)`), and a payload-less
+   variant (`Status.done`) — all end-to-end compile-and-run, and a
+   structural test asserting the raw switch shape with both variants
+   actually constructed (a variant's C union payload member only exists
+   if it's constructed somewhere in the unit — an existing convention
+   shared with narrowed union-variant payload access, not new to this
+   slice). Checker rejection of a pointer-payload variant confirmed. A
+   stale `C0612` fixture asserting the old "unions aren't printable"
+   rejection was found and moved to valid/. Causation-checked (reverted
+   both files, confirmed the exact pre-fix `C0612` rejection
+   reproduces). Full suite clean.
 7. **Optionals** — `none`/`some(...)`, reusing the payload formatter
    recursively.
 8. **Pointers** — nil-safe address-only printing; a dedicated test

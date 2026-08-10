@@ -166,21 +166,32 @@ investigation's own session ran out of budget before writing this part):**
    intentionally changed was updated to assert the new correct
    behavior, not silenced. Full suite passes; the exact original C
    compile failure was causation-checked to confirm the fix is real.
-4. ~~**Slice 4 — verification.**~~ **RESOLVED (2026-08-10).** Tracker
-   item 1's original reproduction (a constructed `Allocator` crossing a
-   function boundary as an argument, a return value, and a struct-field
-   assignment, all together) passes end-to-end — confirmed already
-   during slice 3's own verification, causation-checked against the
-   real pre-cutover failure. `examples/arena_alloc.peb` re-attempted:
-   still fails, but for entirely unrelated reasons — pointer-arithmetic
+4. **Slice 4 — verification. PARTIALLY DONE, NOT ACTUALLY COMPLETE
+   (correcting an overclaim from earlier today).** `Allocator`
+   crossing a function boundary as an argument, a return value, and a
+   struct-field assignment, all together, is verified and
+   causation-checked. `examples/arena_alloc.peb` re-attempted: still
+   fails, but for entirely unrelated reasons — pointer-arithmetic
    type-unification errors (`T0505`, `T0507`), a separate, already-
-   tracked gap (proposal 16), not anything Allocator/Context-related.
-   Zero Allocator/Context errors remain in its output, confirming the
-   redesign fully resolved that class of problem in this file; the
-   remaining blocker is out of scope for proposal 15.
+   tracked gap (proposal 16) — zero Allocator/Context errors remain in
+   its output.
 
-**Status: all 4 slices complete. The Allocator/Context redesign is
-done.**
+   **But `Context` was never independently verified the same way, and
+   it is NOT the same — a real gap, found by the user asking "can we
+   use context expr and allocator type as we like?" after this was
+   already (wrongly) declared done.** The bare `context` keyword
+   expression (a distinct `ContextValue` TIR node, a different shape
+   from the `SymbolValue`/`RecordConstruct` the slice-3 fix covered)
+   fails as a function ARGUMENT (`use_context(context)`) and as a
+   LOCAL's initializer (`let c = context;`) — confirmed reproduced.
+   It DOES already work as a struct-field construction value
+   (`Holder.{ c = context }`). This needs its own fix before slice 4
+   — and this whole proposal — can honestly be called done.
+
+**Status: 3 of 4 slices complete. Slice 4 needs a real fix for
+`context`-as-argument and `context`-as-local before this proposal is
+actually finished — do not re-mark this "done" until independently
+verified with the same rigor applied to the Allocator fix.**
 
 Given the architecture risk is concentrated entirely in slice 1 (novel,
 compiler-wide infrastructure) and slice 3 (many coordinated deletions),

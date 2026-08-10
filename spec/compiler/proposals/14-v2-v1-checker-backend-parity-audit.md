@@ -377,8 +377,9 @@ matrix above.
 This section mirrors only the current open items in proposal 13. It does not
 copy their full reproduction or plan.
 
-1. ~~`Allocator` values cannot cross function boundaries.~~ **RESOLVED
-   (proposal 15, all 4 slices, `b54d79d`/`dee9b0f`/`a404f14`, 2026-08-10).**
+1. **PARTIALLY RESOLVED (proposal 15, slices 1-3,
+   `b54d79d`/`dee9b0f`/`a404f14`, 2026-08-10) — NOT fully closed; do not
+   strike through until slice 4 is genuinely done.**
    `Allocator`/`Context` are now ordinary parsed structs, not
    compiler-synthesized special types — the ordinary-struct redesign
    proposal 15 planned. A constructed `Allocator` crossing a function
@@ -387,7 +388,15 @@ copy their full reproduction or plan.
    end-to-end, causation-checked against the exact pre-redesign
    failure). A real bug in the redesign's own value-position
    construction path was found and fixed during independent
-   verification.
+   verification. **However**, independent verification of `Context`
+   specifically (not just `Allocator`) found the bare `context` keyword
+   expression — a distinct `ContextValue` TIR node — still fails as a
+   function argument and as a `let` local's initializer (works fine as
+   a struct-field construction value). This was wrongly marked fully
+   resolved earlier today and corrected after the user asked "so we can
+   use context expr and allocator type as we like?" See proposal 15's
+   slice 4 section for the exact reproductions; this item stays open
+   until that gap is fixed and independently verified.
 2. The arena rewrite exposes struct/slice typedef identity errors and missing
    checked-arithmetic suffixes. The remaining arena functions still need the
    slice-and-offset rewrite. **Update (2026-08-10):** re-attempted after

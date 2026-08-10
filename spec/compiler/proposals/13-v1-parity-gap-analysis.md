@@ -44,53 +44,72 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: composite print slice 6 — tagged unions.**
+**Item: `context`-as-value — bare `context` expression fails as a function
+argument and as a `let` local's initializer.**
 
-Sourced from proposal 17, slice 6 of 9. Slices 1-5 landed
-(`c182e73`/`5e6e786`/`b80fbc4`/`21e54ec`/`c1bf23b`).
+Sourced from proposal 15 slice 4's verification (2026-08-10) — the
+`Allocator`/`Context` ordinary-struct redesign (`b54d79d`/`dee9b0f`/
+`a404f14`) fully fixed `Allocator` crossing a function boundary as an
+argument, a return value, and a struct-field assignment, but `Context`
+specifically was never independently verified. The user asked "so we
+can use context expr and allocator type as we like?", which prompted
+testing `Context` on its own — it's not the same, and it's broken in
+three of four value positions.
 
-**Reproduction** (confirmed against current HEAD):
+**Reproduction** (confirmed against current HEAD, `go run ./cmd/pebc -run <file.peb>`):
 
 ```
-type Result = union enum { ok int; error str; };
-fn main() int {
-    let r = Result.ok(42);
-    print r;
-    return 0;
+fn use_context(c: Context) void {}
+
+fn make_local() void {
+    let c = context;
+}
+
+fn returns_context() Context {
+    return context;
+}
+
+struct Holder { c: Context }
+fn field_works() Holder {
+    return Holder.{ c = context };  // this ONE already works
 }
 ```
 
-Fails with `error[C0612]: print operand is not printable`.
+- Argument: `use_context(context)` fails —
+  `entry function body expression contains a call to symbol 24 whose
+  argument 0 is a ContextValue, want a reference to a struct-typed
+  local in scope or a struct literal (a RecordConstruct); only passing
+  an already-declared struct-typed local or constructing a fresh struct
+  literal inline is supported`
+- Local initializer: `let c = context;` fails —
+  `entry function body block declares a runtime-typed local initialized
+  from a ContextValue`
+- Return: `return context;` fails —
+  `entry function body return statement returns a ContextValue, want a
+  reference to a struct-typed local in scope, a struct literal (a
+  RecordConstruct), or a call to a struct-returning helper (a
+  DirectCall); only returning an already-declared struct-typed local,
+  constructing a fresh struct literal inline, or forwarding a
+  struct-returning helper call is supported`
+- Struct-field construction value (`Holder.{ c = context }`) already
+  works — confirmed via direct repro, exit 1 (no error).
 
-**Scope for this slice:** per proposal 17 —
-- Format: `Result.ok(42)`, `Result.error("failed")` — declared type name,
-  `.`, declared variant name, then `(`, the payload's own printed value
-  (recursively formatted via `buildPrintValueCalls`, same as any nested
-  field — the payload could itself be a struct/tuple/array/enum, anything
-  currently printable), `)`.
-- A payload-less variant prints without parens: `Result.done` (no `()`).
-- Payload printability: a union whose ACTIVE variant's payload type is
-  not printable should still be rejected by the checker for values of
-  that declared type overall (same conservative approach slice 1 used
-  for struct fields — a union is printable only if EVERY variant's
-  payload type is printable, since the checker cannot know at
-  compile-time which variant will be active at runtime).
-- Invalid tag defensive case: `Result<invalid-tag: N>`, mirroring the
-  plain-enum invalid-discriminant case from slice 5.
-- Backend: this is a runtime switch on the union's `.tag`, similar in
-  shape to slice 5's enum switch but each case ALSO recurses into the
-  payload (reading `.payload.pebble_field_<variant>`) when the variant
-  has one, and closes the parens. Reuse the same `raw` printFprintfCall
-  mechanism slices 4-5 established.
-- Verify the reproduction prints exactly `Result.ok(42)`.
-- Also verify a payload-less variant (e.g. `union enum { a void; b int;
-  }`, printing `.a`) and a second payload variant (e.g. `Result.error("failed")`)
-  to prove the tag-to-variant mapping and payload-vs-no-payload
-  formatting are both correct.
-- Confirm slices 1-5 and scalar prints are unaffected.
-- Write tests: checker acceptance for a printable union value, checker
-  rejection for a union with a non-printable payload type in any
-  variant, and backend compile-run tests for a payload variant, a
-  payload-less variant, and a second payload variant proving the
-  tag-to-name mapping, asserting exact printed output.
+**Known cause:** the bare `context` keyword expression lowers to a
+distinct TIR node kind, `ContextValue` — not `SymbolValue` (the existing
+runtime-identity reference handling) and not `RecordConstruct` (the
+shape slice 3's Allocator-in-value-position fix added support for, see
+`compiler/internal/backend/aggregates.go`'s `buildRuntimeAllocatorBraceList`
+and `compiler/internal/backend/values.go`'s `buildRuntimeValue`/
+`buildStructValueExpr`). `buildRuntimeValue` already has a
+`node.Symbol == unit.Runtime().Context` check that returns `"(*ctx)"`
+for one call path, but the argument-building, local-declaration-
+building, and return-building code paths never consult it for a bare
+`ContextValue` node — they only recognize `SymbolValue`/`RecordConstruct`
+shapes. Needs a `ContextValue` case added to whichever functions build
+call arguments, local initializers, and return values, mirroring the
+existing single-site handling.
 
+**Scope:** fix all three broken positions (argument, local initializer,
+return) using the reproductions above as acceptance tests; reconfirm
+the already-working struct-field-value case is unaffected; full suite
+clean; causation-check against the exact errors quoted above.
