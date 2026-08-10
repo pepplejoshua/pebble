@@ -691,9 +691,12 @@ func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloa
 // as preStatements (already indented) for a caller in a statement position
 // (buildStructLocalDeclaration) to thread ahead of the declaration line; a
 // caller in a pure expression position (buildStructValueExpr) must reject a
-// non-empty preStatements rather than drop it, the same discipline
-// buildSliceArgument applies to an inline slice construction passed as a call
-// argument. A SliceFromRaw field value is a single expression with no temp
+// non-empty preStatements rather than drop it — the same reason an inline
+// slice construction passed as a call argument used to be rejected, before the
+// GNU statement-expression lowering in buildSliceArgument /
+// sliceConstructionStatementExpr folded THAT shape inline (a brace-list field
+// value has no single expression to wrap the same way). A SliceFromRaw field
+// value is a single expression with no temp
 // (buildRawSliceConstruction emits the compound literal directly), so it needs
 // no pre-statement. A slice-typed field whose construction value is a
 // SymbolValue naming an already-declared slice-typed local is the same

@@ -613,18 +613,14 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// (defense for hand-built IR), exactly as buildAggregateCallInitializer
 		// and buildAggregateReturnValue's struct DirectCall shape do, so the
 		// emitted C never assigns a value of one struct type into a place of
-		// another. The call itself is built by buildDirectCallWithPre, the
-		// same call-building machinery a struct-returning call's local-
-		// initializer and return-forwarding shapes use, and the call
+		// another. The call itself is built by buildDirectCallNested, the
+		// pure-expression-position call machinery (this store value position
+		// is not a leading statement, so an inline slice-construction
+		// argument folds its temp declaration into a GNU statement-expression
+		// argument rather than returning a pre), and the call
 		// expression is the whole new value — a `lvalue = f(ctx, ...);`
 		// assignment, trivially valid C since the helper's C return type is
-		// the place's own pebble_struct_<typeID>_t. A non-empty pre (an
-		// inline slice-construction argument, whose temp declaration a pure
-		// value-expression position cannot place) is a clean rejection, never
-		// silently dropped: buildStoreCore returns a single value string with
-		// no pre-threading, so the pre-bearing shape is deliberately out of
-		// scope, mirroring how the scalar store path's buildExpr DirectCall
-		// case rejects a pre through buildDirectCall.
+		// the place's own pebble_struct_<typeID>_t.
 		if valueNode.Type != wantType {
 			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call of result type %s", context, structTypeName(wantType), describeType(snapshot, valueNode.Type))
 		}
@@ -635,12 +631,9 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		if calleeDecl.ResultType != wantType {
 			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call to symbol %d whose declared result type %s does not match", context, structTypeName(wantType), valueNode.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, valueNode, scope, width)
+		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, valueNode, scope, width)
 		if err != nil {
 			return "", err
-		}
-		if callPre != "" {
-			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this reassignment position: the store's value expression has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", context, structTypeName(wantType), valueNode.Symbol)
 		}
 		return callExpr, nil
 	}

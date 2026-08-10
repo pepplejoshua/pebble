@@ -712,19 +712,21 @@ fn main() int {
 }`, "nowhere to place the temp-declaration statement")
 }
 
-func TestEmitRejectsSliceConstructionAsCallArgument(t *testing.T) {
+func TestEmitSliceConstructionAsCallArgumentInReturnPositionCompilesAndRuns(t *testing.T) {
 	// An inline slice construction used directly as a call argument (f(a[1:3]))
 	// in a PURE EXPRESSION position — here a return value, `return f(a[1:3]);`
-	// — is confirmed checker-reachable (the DirectCall's child is a bare
-	// CheckedSlice) but has nowhere to place the temp-declaration statement the
-	// construction needs: a C function argument is a pure expression position,
-	// so this remains a clean rejection naming what was found — not a GNU
-	// statement-expression workaround. The leading-statement positions (a bare
-	// call statement or a local's declaration initializer) now DO support it
-	// (see TestEmitSliceConstructionAsCallArgumentCompilesAndRuns); this test
-	// pins the remaining expression-position boundary.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return f(a[1:3]); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "inline slice construction")
+	// — is checker-reachable and, since the GNU statement-expression change,
+	// supported: the construction's temp declaration and compound literal are
+	// folded into a single statement-expression argument, `({ <temp decl>;
+	// <compound literal>; })`, making the call a single primary expression valid
+	// in the return's pure expression position (see buildSliceArgument /
+	// sliceConstructionStatementExpr). Previously this exact shape was a clean
+	// rejection pinning the expression-position boundary; the leading-statement
+	// positions (a bare call statement or a local's declaration initializer)
+	// were and remain supported through the pre-statement path (see
+	// TestEmitSliceConstructionAsCallArgumentCompilesAndRuns). a[1:3] = [2, 3,
+	// 4], so f returns x[0] = 2.
+	emitAndRun(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return f(a[1:3]); }", false, 2, false)
 }
 
 func TestEmitRejectsSliceParameterUnsupportedElementType(t *testing.T) {

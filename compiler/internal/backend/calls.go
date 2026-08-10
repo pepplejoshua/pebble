@@ -828,16 +828,15 @@ func buildFunctionIndirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	// buildCallArguments); the callee's own convention decides.
 	convention, _, _, _, _ := key.Function()
 	for i, id := range node.Children[1:] {
-		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, convention == types.C, locals, width)
+		// Nested mode: an indirect call is a pure expression position (it may
+		// appear anywhere a function value's result is consumed), so an inline
+		// slice-construction argument's temp declaration is folded into a GNU
+		// statement-expression argument by buildSliceArgument (nested == true
+		// means no pre is ever returned, matching this function's single-string
+		// return).
+		_, arg, err := buildCallArgument(unit, snapshot, fileSet, node.Symbol, i, id, tir.Parameter{Type: parameters[i]}, convention == types.C, locals, width, true)
 		if err != nil {
 			return "", err
-		}
-		if pre != "" {
-			// An indirect call is a pure expression position (it may appear
-			// anywhere a function value's result is consumed), so an inline
-			// slice-construction argument's temp declaration has nowhere to
-			// go; reject cleanly rather than drop it.
-			return "", fmt.Errorf("entry function body indirect call argument %d is an inline slice construction, which is not supported as an indirect call argument: a C expression has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", i)
 		}
 		args = append(args, arg)
 	}
@@ -879,29 +878,45 @@ func buildRuntimeCallArg(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // context and argument handling are identical; only the call's result type
 // differs, and that is decided by the caller, never here.
 //
-// This wrapper is the EXPRESSION-position entry point every call site not
-// itself in a leading-statement position uses (19 call sites). It delegates to
-// buildDirectCallWithPre and rejects a non-empty pre: an inline slice
-// construction passed as a call argument (f(a[1:3])) needs a temp-declaration
-// statement before the call, which a pure C expression position has nowhere to
-// place, so in such a position the call is a clean rejection naming what was
-// found (the checker has already coerced the argument, so this only fires for
-// real source — confirmed via the return f(a[1:3]) fixture).
+// This is the EXPRESSION-position entry point every call site not itself in a
+// leading-statement position uses (19 call sites). It routes through the
+// nested path (buildDirectCallNested, nested == true), so an inline slice
+// construction passed as a call argument (f(a[1:3])) has its temp-declaration
+// statement and compound literal folded into a single GNU statement-expression
+// argument, `({ <temp decl>; <compound literal> })`, making the whole call a
+// single primary expression valid in any pure C expression position. (Before
+// the GNU statement-expression change, a non-empty pre was a clean rejection
+// here.)
 func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
-	pre, expr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+	return buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
+}
+
+// buildDirectCallNested is the pure-expression-position twin of
+// buildDirectCallWithPre: it builds the identical call expression, but the
+// nested == true path makes each inline slice-construction argument (f(a[1:3]))
+// fold its temp-declaration statement and compound literal into a single GNU
+// statement-expression argument (see buildSliceArgument /
+// sliceConstructionStatementExpr), so the call is one pure expression valid in
+// any position, with no pre-statement for the caller to place. Every call site
+// not itself in a leading-statement position goes through here (buildDirectCall
+// delegates to it), and a non-empty pre is impossible in nested mode — the
+// check below is defense against a future pre-producing argument shape that
+// forgets to wrap.
+func buildDirectCallNested(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	pre, expr, err := buildDirectCallArgs(unit, snapshot, fileSet, node, locals, width, true)
 	if err != nil {
 		return "", err
 	}
 	if pre != "" {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this expression position: a C function argument is a pure expression position with nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", node.Symbol)
+		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument requires a temp-declaration statement that nested mode failed to fold into a GNU statement-expression", node.Symbol)
 	}
 	return expr, nil
 }
 
 // buildDirectCallWithPre is the leading-statement-position twin of
-// buildDirectCall: it builds the identical call expression but ALSO returns an
-// indent-free pre-statement that the caller must emit BEFORE the call whenever
-// an argument is an inline slice construction (f(a[1:3])) — the
+// buildDirectCallNested: it builds the identical call expression but ALSO
+// returns an indent-free pre-statement that the caller must emit BEFORE the
+// call whenever an argument is an inline slice construction (f(a[1:3])) — the
 // temp-declaration statement the slice construction needs (the same
 // two-statement temp-then-construction shape 10.37's slice local declaration
 // uses). Only the leading-statement call sites call this — a bare call
@@ -909,9 +924,19 @@ func buildDirectCall(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // builder — positions that already have a natural place for a preceding
 // statement, mirroring how buildScalarInitializeCore's pre mechanism threads a
 // force-unwrap temp. Every other call site keeps calling buildDirectCall, which
-// rejects a non-empty pre. The returned pre has no indent; the caller prepends
-// its own.
+// routes through the nested (GNU statement-expression) path instead. The
+// returned pre has no indent; the caller prepends its own.
 func buildDirectCallWithPre(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
+	return buildDirectCallArgs(unit, snapshot, fileSet, node, locals, width, false)
+}
+
+// buildDirectCallArgs is the shared core of buildDirectCallWithPre (nested ==
+// false, the leading-statement lowering: an inline slice-construction
+// argument's temp declaration is returned as a pre for the caller to place
+// before the call) and buildDirectCallNested (nested == true, the
+// pure-expression lowering: each such argument is folded into a GNU
+// statement-expression instead, so no pre is ever returned).
+func buildDirectCallArgs(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, nested bool) (string, string, error) {
 	// A call to a compiler-owned builtin function (wrapping_mul_u64 /
 	// wrapping_add_u64) is lowered directly to its runtime helper:
 	// pebble_rt_wrapping_<op>_u64(<arg0>, <arg1>). The helper is a real C
@@ -969,7 +994,7 @@ func buildDirectCallWithPre(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		if err != nil {
 			return "", "", err
 		}
-		callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
+		callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width, nested)
 		if err != nil {
 			return "", "", err
 		}
@@ -1005,7 +1030,7 @@ func buildDirectCallWithPre(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		}
 		return "", "", err
 	}
-	callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width)
+	callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width, nested)
 	if err != nil {
 		return "", "", err
 	}
@@ -1041,8 +1066,12 @@ func buildDirectCallWithPre(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // the arity requirement for a variadic callee is len(call.Children) >=
 // fixedCount rather than equality. Returns the joined argument text, empty
 // when the callee takes no parameters (the caller then emits
-// pebble_fn_<id>(ctx) with no argument list).
-func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
+// pebble_fn_<id>(ctx) with no argument list). nested is threaded to
+// buildCallArgument for its slice-construction argument shape (see
+// buildCallArgument); the variadic collected-element path always builds under
+// nested == false, since a variadic slice element is never itself a slice
+// construction.
+func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, callee tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, nested bool) (string, string, error) {
 	variadic := callee.Variadic
 	fixedCount := len(callee.Parameters)
 	if variadic {
@@ -1065,7 +1094,7 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	// Pebble-convention helper's own C signature accepts.
 	cConvention := callee.Convention == types.C
 	for i := 0; i < fixedCount; i++ {
-		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], cConvention, locals, width)
+		pre, arg, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, i, call.Children[i], callee.Parameters[i], cConvention, locals, width, nested)
 		if err != nil {
 			return "", "", err
 		}
@@ -1112,10 +1141,12 @@ func buildCallArguments(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // enclosing call expression. Only an inline slice-construction argument
 // (f(a[1:3]), via buildSliceArgument) ever produces a non-empty pre — the
 // two-statement temp-then-construction shape the construction needs — and every
-// other argument shape is a pure expression (pre == ""). The pre is only
-// consumable when the enclosing call is itself in a leading-statement position;
-// buildDirectCall's expression-position wrapper rejects it upstream.
-func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, cConvention bool, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
+// other argument shape is a pure expression (pre == ""). nested selects how
+// that one pre-bearing shape is delivered (see buildSliceArgument): false for a
+// leading-statement position that can place the pre before the call, true for a
+// pure expression position where the construction is folded into a GNU
+// statement-expression argument instead (pre == "").
+func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, calleeSymbol symbol.SymbolID, position int, argID tir.NodeID, param tir.Parameter, cConvention bool, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, nested bool) (string, string, error) {
 	// A parameter's own resolved integer width, when the parameter is an
 	// integer builtin the backend emits (the entry's width, uint, u64, or
 	// any other fixed-width integer). Deciding the argument grammar from the
@@ -1255,10 +1286,11 @@ func buildCallArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		// slice type's own struct typedef makes passing the whole slice by
 		// value trivially valid C, no construction needed at the call site
 		// (confirmed checker-reachable: f(s) passes a plain SymbolValue) —
-		// or, since the leading-statement call-argument slice, an inline
-		// slice construction (f(a[1:3])) whose temp declaration is returned
-		// as the pre (see buildSliceArgument).
-		return buildSliceArgument(unit, snapshot, fileSet, argID, locals, param.Type, calleeSymbol, position, width)
+		// or an inline slice construction (f(a[1:3])) built by
+		// buildSliceArgument, whose temp declaration is returned as the pre
+		// in a leading-statement position or folded into a GNU
+		// statement-expression argument in a nested position (nested).
+		return buildSliceArgument(unit, snapshot, fileSet, argID, locals, param.Type, calleeSymbol, position, width, nested)
 	case isOptional(snapshot, param.Type):
 		// An optional parameter: the argument is an optional value built by
 		// buildOptionalValue — a SymbolValue naming an optional-typed local
@@ -1425,7 +1457,7 @@ func buildVariadicSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		// (validateExternSignature), so a variadic slice element is always
 		// built for a Pebble-convention callee and a str element stays a
 		// PebbleStr value — cConvention is false by construction here.
-		pre, expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, false, locals, width)
+		pre, expr, err := buildCallArgument(unit, snapshot, fileSet, call.Symbol, firstVariadic+j, argID, tir.Parameter{Symbol: sliceParam.Symbol, Type: elementType}, false, locals, width, false)
 		if err != nil {
 			return "", "", err
 		}
@@ -1510,6 +1542,24 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 }
 
+// sliceConstructionStatementExpr folds an inline slice construction's
+// two-statement lowering (the temp-declaration statement and the
+// compound-literal construction expression, exactly as buildSliceConstruction
+// produces them) into a single GNU statement-expression primary expression,
+// `({ <temp decl>; <construction expr>; })`, so the construction can live in a
+// pure expression position that has nowhere for a separate pre-statement. The
+// value of a GNU statement-expression is its last expression statement's
+// value, and — as documented by GCC and confirmed against cc — that final
+// expression statement still needs its terminating semicolon (a compound
+// literal there is otherwise a plain cast-plus-brace sequence). The temp
+// declaration keeps its own semicolon. GCC/Clang (this project's cc
+// toolchain) support the extension, and a statement-expression is a primary
+// expression, so it composes correctly inside a larger expression like a
+// function-call argument list.
+func sliceConstructionStatementExpr(tempDecl, constructionExpr string) string {
+	return "({ " + tempDecl + " " + constructionExpr + "; })"
+}
+
 // buildSliceArgument builds one call-site argument for a slice-typed parameter
 // (10.38). Two argument shapes are supported:
 //
@@ -1523,17 +1573,17 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 //     a bare CheckedSlice, confirmed checker-reachable via a real fixture —
 //     emitted as the same two-statement temp-then-construction shape 10.37's
 //     local declaration and the return side use (a temp holding the checked-
-//     start result, then the compound literal using that temp), with the temp
-//     declaration returned as a separate pre-statement for the caller to place
-//     before the consuming expression. This is only sound because a C function
-//     argument is otherwise a pure expression position with nowhere to place
-//     the temp-declaration statement, so the pre is rejected upstream in
-//     buildDirectCall's expression-position wrapper (buildDirectCall) and only
-//     threaded through when the enclosing call is itself in a leading-statement
-//     position (a bare call statement or a local's declaration initializer) —
-//     this backend still does not reach for a GNU statement-expression or any
-//     other workaround to make an inline construction fit an arbitrary
-//     expression position.
+//     start result, then the compound literal using that temp). How that text
+//     is delivered depends on the caller's position, selected by nested: a
+//     leading-statement position (nested == false) gets the temp declaration
+//     returned as a separate pre-statement to place before the consuming
+//     expression (a bare call statement or a local's declaration initializer),
+//     while a pure expression position (nested == true) has nowhere for a
+//     separate statement, so the temp declaration and compound literal are
+//     instead folded into a GNU statement-expression primary expression by
+//     sliceConstructionStatementExpr and returned as the argument text itself
+//     (with an empty pre) — the REVERSE of the backend's original decision
+//     never to reach for a GNU statement-expression.
 //
 // Any other argument shape — a local that is not slice-typed, a SourceAlias-
 // wrapped argument, or any other node kind — is likewise a clean rejection
@@ -1541,7 +1591,7 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // returned pre is indent-free (buildSliceConstruction is called with an empty
 // indent); the caller prepends its own indent. width is the entry's resolved
 // integer width, threaded through so the temp is declared at the correct width.
-func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, calleeSymbol symbol.SymbolID, position int, width types.BuiltinKind) (string, string, error) {
+func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, calleeSymbol symbol.SymbolID, position int, width types.BuiltinKind, nested bool) (string, string, error) {
 	node, ok := unit.Node(argID)
 	if !ok {
 		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument %d references invalid node %d", calleeSymbol, position, argID)
@@ -1554,6 +1604,9 @@ func buildSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, node, locals, "", context, width, fmt.Sprintf("pebble_slice_arg_%d", argID))
 		if err != nil {
 			return "", "", err
+		}
+		if nested {
+			return "", sliceConstructionStatementExpr(tempDecl, constructionExpr), nil
 		}
 		return tempDecl, constructionExpr, nil
 	}

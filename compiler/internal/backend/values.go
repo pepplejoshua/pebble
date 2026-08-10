@@ -272,16 +272,14 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		// uint (defense for hand-built IR — buildUintExpr's entry gate already
 		// required node.Type to be uint, matching the defensive result-type
 		// checks other cases here do, e.g. CheckedOptionalUnwrap's payload
-		// check). The call is built by buildDirectCallWithPre, and a
-		// non-empty pre (an inline slice-construction argument, whose temp
-		// declaration a pure expression position cannot place) is a clean
-		// rejection, never silently dropped: buildUintExpr returns (string,
+		// check). The call is built by buildDirectCallNested, the pure-
+		// expression-position call machinery: buildUintExpr returns (string,
 		// error) with no pre-threading and is called from pure expression
 		// positions throughout this file (local declarations, returns,
 		// compound assignments, slice/array indices, struct field values,
-		// and more), so the pre-bearing shape is deliberately out of scope
-		// rather than a signature-widening refactor across all its call
-		// sites.
+		// and more), so an inline slice-construction argument folds its temp
+		// declaration into a GNU statement-expression argument rather than
+		// returning a pre the caller cannot place.
 		calleeDecl, err := findCallDeclaration(unit, node)
 		if err != nil {
 			return "", err
@@ -289,12 +287,9 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if !isUint(snapshot, calleeDecl.ResultType) {
 			return "", fmt.Errorf("uint expression contains a call to symbol %d whose declared result type %s is not uint", node.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
-		}
-		if callPre != "" {
-			return "", fmt.Errorf("uint expression contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this uint expression position: a pure expression position has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", node.Symbol)
 		}
 		return callExpr, nil
 	default:
@@ -384,9 +379,15 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// A slice-typed field whose construction value is an inline CheckedSlice
 		// needs its temp-declaration statement, and this is a pure expression
 		// position (a call argument, a return value, or a nested aggregate
-		// field) with nowhere to place it — the same reason buildSliceArgument
-		// rejects an inline slice construction passed as a call argument. The
-		// slice-typed-local-reference shape (empty preStatements) is unaffected.
+		// field) with nowhere to place it. Unlike a bare CheckedSlice call
+		// argument — which the GNU statement-expression lowering in
+		// buildSliceArgument / sliceConstructionStatementExpr now folds inline —
+		// this field value sits inside one brace-list element of the enclosing
+		// struct compound literal, so there is no single expression to wrap:
+		// the whole struct literal would have to become the trailing value of
+		// `({ ...; <struct literal> })`, a larger shape change this backend
+		// deliberately leaves out of scope. The slice-typed-local-reference
+		// shape (empty preStatements) is unaffected.
 		return "", fmt.Errorf("%s is a struct value with a slice field initialized from an inline slice construction, which is not supported in this position: a C expression has nowhere to place the temp-declaration statement the slice construction needs; construct the slice into a local first and reference that local", context)
 	}
 	return fmt.Sprintf("(%s)%s", structTypeName(node.Type), braceList), nil
@@ -469,13 +470,14 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// result type is double-checked to be an enum type (defense for
 		// hand-built IR — buildEnumValue's callers are enum-typed positions,
 		// and the reachability walk has already validated the callee for real
-		// source). The call is built by buildDirectCallWithPre, and a
-		// non-empty pre (an inline slice-construction argument, whose temp
-		// declaration a pure expression position cannot place) is a clean
-		// rejection, never silently dropped — buildEnumValue returns (string,
-		// error) with no pre-threading and is called from pure expression
-		// positions throughout this file (switch subjects, comparison
-		// operands, struct field values, reassignments, and returns).
+		// source). The call is built by buildDirectCallNested, the pure-
+		// expression-position call machinery — buildEnumValue returns
+		// (string, error) with no pre-threading and is called from pure
+		// expression positions throughout this file (switch subjects,
+		// comparison operands, struct field values, reassignments, and
+		// returns), so an inline slice-construction argument folds its temp
+		// declaration into a GNU statement-expression argument rather than
+		// returning a pre the caller cannot place.
 		calleeDecl, err := findCallDeclaration(unit, node)
 		if err != nil {
 			return "", err
@@ -483,12 +485,9 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if !isEnumType(unit, snapshot, calleeDecl.ResultType) {
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose declared result type %s is not an enum type", node.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
-		}
-		if callPre != "" {
-			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this enum value position: a pure expression position has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", node.Symbol)
 		}
 		return callExpr, nil
 	case tir.SourceAlias:
@@ -686,22 +685,19 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		// own Type (the callee's resolved result type) is double-checked to
 		// be exactly want (defense for hand-built IR — the reachability walk
 		// has already validated the callee for real source). The call is
-		// built by buildDirectCallWithPre, and a non-empty pre (an inline
-		// slice-construction argument, whose temp declaration a pure
-		// expression position cannot place) is a clean rejection, never
-		// silently dropped — buildUnionValueExpr returns (string, error)
-		// with no pre-threading and is called from pure expression positions
+		// built by buildDirectCallNested, the pure-expression-position call
+		// machinery — buildUnionValueExpr returns (string, error) with no
+		// pre-threading and is called from pure expression positions
 		// throughout this file and its callers (call arguments, optional
-		// payloads, and returns).
+		// payloads, and returns), so an inline slice-construction argument
+		// folds its temp declaration into a GNU statement-expression argument
+		// rather than returning a pre the caller cannot place.
 		if node.Type != want {
 			return "", fmt.Errorf("%s contains a call to symbol %d whose declared result type %s is not the union type %s", context, node.Symbol, describeType(snapshot, node.Type), unionTypeName(want))
 		}
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, node, locals, width)
+		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
-		}
-		if callPre != "" {
-			return "", fmt.Errorf("%s contains a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this union value position: a pure expression position has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", context, node.Symbol)
 		}
 		return callExpr, nil
 	case tir.EnumVariantValue, tir.VariantConstruct:

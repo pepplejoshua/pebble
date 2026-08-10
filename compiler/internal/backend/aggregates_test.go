@@ -4336,6 +4336,70 @@ fn main() int {
 	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
+func TestEmitSliceConstructionAsNestedCallArgumentCompilesAndRuns(t *testing.T) {
+	// The exact reproduction from spec/compiler/proposals/13's active defect:
+	// an inline slice construction passed as an argument to wrap(), whose own
+	// call is main's return value — a call in a pure expression position where
+	// no pre-statement placement exists. Since the GNU statement-expression
+	// change, the construction's temp declaration and compound literal fold
+	// into a single statement-expression argument, so the whole chain compiles
+	// and runs: sum of [1, 2, 3] is 6.
+	emitAndRun(t, `fn sum(s []int) int {
+    var total = 0;
+    loop 0..s.len : i {
+        total = total + s[i];
+    }
+    return total;
+}
+
+fn wrap(s []int) int {
+    return sum(s);
+}
+
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    return wrap(arr[:]);
+}`, false, 6, false)
+}
+
+func TestEmitNestedSliceConstructionArgumentEmitsStatementExpr(t *testing.T) {
+	// The emitted C for a slice-construction argument in a nested (pure
+	// expression) position: the SAME two-statement text the leading-statement
+	// lowering produces (a pebble_slice_arg_<nodeID> temp declaration holding
+	// the checked slice-start result, then the compound literal using that
+	// temp) is folded into a single GNU statement-expression,
+	// `({ <temp decl>; <compound literal>; })`, used directly as the call
+	// argument — the statement-expression form replaces the separate pre-
+	// statement only when there is nowhere to place it. a[1:3] over a 5-element
+	// i32 array: checked start (1, 3, 5), .data offset 1, .len 2, so f returns
+	// a[1] = 20.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn f(x []i32) i32 { return x[0]; }
+fn main() i32 {
+    var a [5]i32 = [10, 20, 30, 40, 50];
+    return f(a[1:3]);
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"({ int32_t pebble_slice_arg_",
+		"pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
+		"(pebble_slice_",
+		".len = (size_t)(3 - pebble_slice_arg_",
+		"; })",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, ".data = pebble_local_") {
+		t.Errorf("emitted C missing slice compound literal .data offset:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 20, false)
+}
+
 func TestEmitArrayElementWriteCompilesAndRuns(t *testing.T) {
 	// The flagship array element write: a[2] = 99 replaces the middle slot of
 	// [1,2,3,4,5], and the sum of all five slots read back (1 + 2 + 99 + 4 + 5
