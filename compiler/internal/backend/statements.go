@@ -636,6 +636,31 @@ func buildSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 					return "", fmt.Errorf("switch subject references symbol %d, a local of type %s, not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, info.enumType), unionTypeName(enumSubject))
 				}
 				subjectExpr = fmt.Sprintf("pebble_local_%d.tag", subjectNode.Symbol)
+			case tir.DirectCall:
+				// A call to a union-returning helper used directly as the
+				// switch subject (`switch make_result() { ... }`, confirmed
+				// checker-reachable). Mirroring buildUnionValueExpr's
+				// DirectCall case, the call's own Type (the callee's resolved
+				// result type) is double-checked to be exactly the subject's
+				// union type, and the call is built by buildDirectCallNested —
+				// the pure-expression-position call machinery, so an inline
+				// slice-construction argument folds correctly into a call
+				// expression the switch statement can place directly as its
+				// subject. The whole call expression is directly a union
+				// value of exactly enumSubject, so `.tag` reads the stored
+				// discriminant the same way the SymbolValue and
+				// VariantConstruct branches do. The call appears exactly
+				// once in the emitted C — the C switch evaluates its
+				// controlling expression a single time at dispatch, and the
+				// case bodies never re-read the subject.
+				if subjectNode.Type != enumSubject {
+					return "", fmt.Errorf("switch subject is a call to symbol %d whose declared result type %s is not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, subjectNode.Type), unionTypeName(enumSubject))
+				}
+				callExpr, callErr := buildDirectCallNested(st, unit, snapshot, fileSet, subjectNode, locals, width)
+				if callErr != nil {
+					return "", callErr
+				}
+				subjectExpr = callExpr + ".tag"
 			case tir.VariantConstruct, tir.EnumVariantValue:
 				construction, buildErr := buildUnionConstruction(st, unit, snapshot, fileSet, subjectNode, locals, "switch subject", unions[enumSubject], width)
 				if buildErr != nil {

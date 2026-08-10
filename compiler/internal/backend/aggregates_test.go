@@ -3053,6 +3053,82 @@ func TestEmitUnionVariantLiteralSwitchSubjectCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nswitch Choice.value(5) { case Choice.empty: return 0; case Choice.value: return 1; }\n}", false, 1, false)
 }
 
+func TestEmitUnionCallSwitchSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A call to a union-returning helper used directly as the switch subject
+	// (`switch make_result() { case .ok: ... }`) — the DirectCall case of the
+	// tagged-union switch-subject builder, confirmed checker-reachable. The
+	// helper's returned union struct is switched on by its .tag field, exactly
+	// as a union local's would be, so the ok case fires and the exit code is 0.
+	emitAndRun(t, "type Result = union enum { ok int; error str; }; fn make_result() Result { return Result.ok(42); } fn main() int {\nswitch make_result() { case .ok: return 0; case .error: return 1; }\n}", false, 0, false)
+}
+
+func TestEmitUnionCallSwitchSubjectSecondVariantCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same union-returning call as the switch subject, but the helper returns
+	// the OTHER variant (Result.error): the error case fires and the exit code
+	// is 1, proving the discriminant dispatch selects the correct case no matter
+	// which variant the call returns.
+	emitAndRun(t, "type Result = union enum { ok int; error str; }; fn make_error() Result { return Result.error(\"boom\"); } fn main() int {\nswitch make_error() { case .ok: return 0; case .error: return 1; }\n}", false, 1, false)
+}
+
+func TestEmitUnionCallSwitchSubjectElseArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The else-arm form of the same switch: the call returns the variant with
+	// an explicit case (ok), so the case fires and returns 0 rather than
+	// falling through to the else arm — proving the else/default arm coexists
+	// with a DirectCall subject.
+	emitAndRun(t, "type Result = union enum { ok int; error str; }; fn make_result() Result { return Result.ok(42); } fn main() int {\nswitch make_result() { case .ok: return 0; else: return 1; }\n}", false, 0, false)
+}
+
+func TestEmitUnionCallSwitchSubjectInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The fall-through (loop-body) position of the same switch: a while loop
+	// whose body switches on a union-returning call. The subject goes through
+	// the same buildSwitchStatement core the tail-position switch uses, so the
+	// DirectCall subject dispatches the value case on every iteration and the
+	// loop accumulates total = 3; a wrong-case dispatch would return 1 early.
+	// Bounded execution in case of a miscompiled loop.
+	emitAndRunBounded(t, "type Result = union enum { ok int; error str; }; fn make_result() Result { return Result.ok(42); } fn main() int {\nvar i int = 0;\nvar total int = 0;\nwhile i < 3 { switch make_result() { case .ok: { total = total + 1; } case .error: { return 1; } } i = i + 1; }\nreturn total;\n}", false, 3, false)
+}
+
+func TestEmitUnionCallSwitchSubjectWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C directly for the DirectCall switch subject: the
+	// subject is the union-returning call's own expression with .tag appended,
+	// so the switch reads the returned union's discriminant exactly once —
+	// `switch (pebble_fn_<callee>(ctx).tag) {`. A C switch evaluates its
+	// controlling expression a single time at dispatch and the case bodies
+	// never re-read the subject, so the call is evaluated exactly once with no
+	// intermediate temp. The second regexp counts call-site occurrences of
+	// `pebble_fn_<callee>(ctx)` — exactly one — while the callee's forward
+	// declaration and definition spell `(PebbleContext *ctx)` and so do not
+	// match.
+	unit, snapshot, entryID, _, _, sources := unionFixture(t, "type Result = union enum { ok int; error str; }; fn make_result() Result { return Result.ok(42); } fn main() int {\nswitch make_result() { case .ok: return 0; case .error: return 1; }\n}")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	subject := regexp.MustCompile(`switch \(pebble_fn_[0-9]+\(ctx\)\.tag\) \{`)
+	if !subject.MatchString(out) {
+		t.Errorf("emitted C is missing the call-subject switch %q:\n%s", subject.String(), out)
+	}
+	callSites := regexp.MustCompile(`pebble_fn_[0-9]+\(ctx\)`)
+	if got := len(callSites.FindAllString(out, -1)); got != 1 {
+		t.Errorf("union-returning call appears %d time(s) in emitted C, want exactly 1 (the switch subject is evaluated once):\n%s", got, out)
+	}
+}
+
+func TestEmitEnumCallSwitchSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A plain-enum-typed call as the switch subject (switch pick(), pick
+	// returning a plain enum): the plain-enum subject path builds the call via
+	// buildEnumValue and dispatches on the bare enum value, untouched by the
+	// tagged-union DirectCall case. The green case fires and the exit code is 1.
+	emitAndRun(t, "type Color = enum { red, green, blue }; fn pick() Color { return Color.green; } fn main() int {\nswitch pick() { case Color.red: return 0; case Color.green: return 1; case Color.blue: return 2; }\n}", false, 1, false)
+}
+
 func TestEmitUnionPayloadRoundTripsThroughConstruction(t *testing.T) {
 	t.Parallel()
 	// No syntax in the language reads a tagged-union payload back out (a switch
